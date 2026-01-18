@@ -1,0 +1,21 @@
+{
+  "name": "hexarchy-v2",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "katex": "^0.16.27",
+    "marked": "^17.0.1",
+    "three": "^0.172.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.172.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  }
+}

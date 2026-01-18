@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hexarchy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Italiana&family=Crimson+Pro:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        overflow: hidden;
+        background: #E8DCC4;
+        font-family: 'Crimson Pro', serif;
+      }
+      #canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* City Panel */
+      #city-panel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: 360px;
+        height: 100vh;
+        background: #E8DCC4;
+        border-left: 2px solid #6B5344;
+        padding: 1.5rem;
+        transform: translateX(100%);
+        transition: transform 300ms ease-out;
+        overflow-y: auto;
+        z-index: 1000;
+        box-shadow: -4px 0 12px rgba(107, 83, 68, 0.2);
+      }
+
+      #city-panel.visible {
+        transform: translateX(0);
+      }
+
+      #city-panel .close-btn {
+        position: absolute;
+        top: 1rem;
+        right: 1rem;
+        background: none;
+        border: none;
+        font-size: 1.5rem;
+        color: #6B5344;
+        cursor: pointer;
+        padding: 0.25rem 0.5rem;
+        line-height: 1;
+      }
+
+      #city-panel .close-btn:hover {
+        color: #C54B3D;
+      }
+
+      #city-panel .resize-handle {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 6px;
+        height: 100%;
+        cursor: ew-resize;
+        background: transparent;
+      }
+
+      #city-panel .resize-handle:hover,
+      #city-panel .resize-handle.dragging {
+        background: rgba(107, 83, 68, 0.3);
+      }
+
+      #city-panel .city-name {
+        font-family: 'Italiana', serif;
+        font-size: 1.75rem;
+        color: #C54B3D;
+        margin: 0 0 0.25rem 0;
+        padding-right: 2rem;
+      }
+
+      #city-panel .city-path {
+        font-size: 0.85rem;
+        color: #8B7355;
+        margin: 0 0 1.5rem 0;
+        word-break: break-all;
+      }
+
+      #city-panel .fibers {
+        margin-bottom: 1.5rem;
+      }
+
+      #city-panel .fibers h3 {
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #6B5344;
+        margin: 0 0 0.75rem 0;
+        border-bottom: 1px solid #C4956A;
+        padding-bottom: 0.25rem;
+      }
+
+      #city-panel .fiber-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      #city-panel .fiber-item {
+        padding: 0.5rem 0;
+        border-bottom: 1px solid rgba(196, 149, 106, 0.3);
+        cursor: pointer;
+      }
+
+      #city-panel .fiber-item:hover {
+        background: rgba(196, 149, 106, 0.1);
+      }
+
+      #city-panel .fiber-item.has-content {
+        cursor: pointer;
+      }
+
+      #city-panel .fiber-item.has-content .fiber-header::after {
+        content: '▸';
+        color: #8B7355;
+        font-size: 0.7rem;
+        margin-left: auto;
+        padding-left: 0.5rem;
+        transition: transform 150ms ease;
+      }
+
+      #city-panel .fiber-item.has-content.expanded .fiber-header::after {
+        transform: rotate(90deg);
+      }
+
+      #city-panel .fiber-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      #city-panel .fiber-status {
+        font-size: 0.85rem;
+        color: #6B5344;
+      }
+
+      #city-panel .fiber-title {
+        flex: 1;
+        font-size: 0.95rem;
+        color: #6B5344;
+      }
+
+      #city-panel .fiber-kind {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        padding: 0.15rem 0.4rem;
+        background: rgba(107, 83, 68, 0.15);
+        color: #6B5344;
+        border-radius: 3px;
+      }
+
+      #city-panel .fiber-body,
+      #city-panel .fiber-reason {
+        display: none;
+        margin-top: 0.5rem;
+        padding: 0.5rem;
+        font-size: 0.85rem;
+        color: #8B7355;
+        background: rgba(255, 255, 255, 0.3);
+        border-radius: 4px;
+        white-space: pre-wrap;
+      }
+
+      #city-panel .fiber-item.expanded .fiber-body,
+      #city-panel .fiber-item.expanded .fiber-reason {
+        display: block;
+      }
+
+      #city-panel .fiber-reason {
+        border-left: 3px solid #4A7C6F;
+      }
+
+      /* Markdown content styling */
+      #city-panel .fiber-body p,
+      #city-panel .fiber-reason p {
+        margin: 0 0 0.5em 0;
+      }
+
+      #city-panel .fiber-body p:last-child,
+      #city-panel .fiber-reason p:last-child {
+        margin-bottom: 0;
+      }
+
+      #city-panel .fiber-body code,
+      #city-panel .fiber-reason code {
+        background: rgba(107, 83, 68, 0.1);
+        padding: 0.1em 0.3em;
+        border-radius: 3px;
+        font-family: 'SF Mono', 'Menlo', monospace;
+        font-size: 0.85em;
+      }
+
+      #city-panel .fiber-body pre,
+      #city-panel .fiber-reason pre {
+        background: rgba(107, 83, 68, 0.1);
+        padding: 0.75em;
+        border-radius: 4px;
+        overflow-x: auto;
+        margin: 0.5em 0;
+      }
+
+      #city-panel .fiber-body pre code,
+      #city-panel .fiber-reason pre code {
+        background: none;
+        padding: 0;
+      }
+
+      #city-panel .fiber-body ul,
+      #city-panel .fiber-body ol,
+      #city-panel .fiber-reason ul,
+      #city-panel .fiber-reason ol {
+        margin: 0.5em 0;
+        padding-left: 1.5em;
+      }
+
+      #city-panel .fiber-body blockquote,
+      #city-panel .fiber-reason blockquote {
+        border-left: 3px solid #C4956A;
+        margin: 0.5em 0;
+        padding-left: 0.75em;
+        color: #6B5344;
+      }
+
+      /* KaTeX math styling */
+      #city-panel .katex {
+        font-size: 1em;
+      }
+
+      #city-panel .katex-display {
+        margin: 0.5em 0;
+        overflow-x: auto;
+      }
+
+      #city-panel .empty,
+      #city-panel .loading {
+        font-size: 0.85rem;
+        color: #8B7355;
+        font-style: italic;
+        padding: 0.5rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

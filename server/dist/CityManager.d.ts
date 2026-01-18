@@ -1,0 +1,90 @@
+export interface City {
+    id: string;
+    path: string;
+    name: string;
+    position: {
+        q: number;
+        r: number;
+    };
+    fiberCount?: number;
+    createdAt?: number;
+    originId: string;
+}
+export interface SessionInfo {
+    cwd: string;
+    originId: string;
+}
+export interface OriginPosition {
+    q: number;
+    r: number;
+}
+export declare class CityManager {
+    private citiesByKey;
+    private occupiedWorkerHexes;
+    private originPositions;
+    constructor();
+    /**
+     * Set the position for an origin (for remote origins)
+     */
+    setOriginPosition(originId: string, position: OriginPosition): void;
+    /**
+     * Get the position for an origin
+     */
+    getOriginPosition(originId: string): OriginPosition;
+    /**
+     * Make city key from originId and path
+     */
+    private makeKey;
+    /**
+     * Derive cities from a list of sessions.
+     * Cities that no longer have sessions are removed.
+     * New session cwds get cities created.
+     * Returns the current set of cities.
+     */
+    updateFromSessions(sessions: SessionInfo[]): City[];
+    /**
+     * Get all cities, sorted by name
+     */
+    getCities(): City[];
+    /**
+     * Find the city for a given path and origin (exact match)
+     */
+    findCityForPath(cwd: string, originId?: string): City | null;
+    /**
+     * Assign a worker hex position for a session in a city.
+     * Returns the next available hex in spiral order from city center.
+     * First ring (distance 1) = workers 1-6
+     * Second ring (distance 2) = workers 7-18
+     */
+    assignWorkerHex(cityId: string): {
+        q: number;
+        r: number;
+    };
+    /**
+     * Release a worker hex position when a session ends or moves.
+     */
+    releaseWorkerHex(cityId: string, hex: {
+        q: number;
+        r: number;
+    }): void;
+    /**
+     * Auto-assign a hex position by spiraling outward from origin center
+     * Enforces minimum 3-tile spacing between city centers within the same origin
+     */
+    private autoAssignPosition;
+    /**
+     * Calculate hex distance between two positions
+     * Uses axial coordinate system: distance = (|q1-q2| + |q1+r1-q2-r2| + |r1-r2|) / 2
+     */
+    private hexDistance;
+    /**
+     * Generate all hex positions in a ring around (centerQ, centerR)
+     * Uses cube coordinate system
+     */
+    private hexRing;
+    /**
+     * Check if a position is at least minDistance tiles from all existing cities
+     */
+    private isValidCityPosition;
+}
+//# sourceMappingURL=CityManager.d.ts.map
