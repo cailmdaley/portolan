@@ -1,10 +1,9 @@
 /**
  * Hexarchy Server
  *
- * Wires together SessionTracker, CityManager, OriginManager, and FiberReader.
- * Serves state to browser via WebSocket.
- * Handles focus commands from browser (local and remote).
- * Accepts agent connections for remote session discovery.
+ * Wires together all managers and serves state to browser via WebSocket.
+ * HTTP endpoints handled by HttpApi, terminal commands by KittyIntegration,
+ * message routing by MessageRouter.
  */
 export {};
 //# sourceMappingURL=index.d.ts.map

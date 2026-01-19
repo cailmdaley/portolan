@@ -41,6 +41,10 @@ export declare class SessionTracker {
      */
     getSessions(): Session[];
     /**
+     * Update session status (called by EventWatcher)
+     */
+    updateStatus(tmuxSession: string, status: 'idle' | 'working'): boolean;
+    /**
      * Discover sessions from tmux
      */
     private refresh;
@@ -48,6 +52,11 @@ export declare class SessionTracker {
      * Discover all tmux sessions running Claude
      */
     private discoverSessions;
+    /**
+     * Truncate long session names for display
+     * ralph-global-views-map-plots-plans-3374f8fb → ralph-3374f8fb
+     */
+    private truncateName;
     /**
      * Generate stable session ID from tmux session name
      */

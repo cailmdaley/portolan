@@ -1,8 +1,12 @@
 /**
- * CityManager - Derive cities from active sessions
+ * CityManager - Manage cities (both session-derived and persisted)
  *
- * Cities are ephemeral — they exist while ≥1 session has that cwd.
- * No persistence. Cities come and go with sessions.
+ * Cities can be:
+ * - Session-derived: exist while ≥1 session has that cwd
+ * - Persisted (pinned): survive beyond sessions, stored in ~/.hexarchy/cities.json
+ *
+ * Persisted cities form the base layer. Session activity overlays
+ * fiber counts and workers but doesn't change position or existence.
  *
  * Each city has:
  * - A filesystem path (unique per origin)
@@ -12,6 +16,8 @@
  */
 import { resolve, basename } from 'path';
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
+import type { GitStatus } from './GitStatusManager.js';
 
 // ============================================================================
 // Types
@@ -23,6 +29,8 @@ export interface City {
   name: string;         // display name
   position: { q: number; r: number };
   fiberCount?: number;  // injected by FiberReader
+  hasClaims?: boolean;  // has workflow/config or results/claims
+  gitStatus?: GitStatus;  // injected by GitStatusManager
   createdAt?: number;
   originId: string;     // 'local' | 'remote-{hostname}'
 }
@@ -42,8 +50,11 @@ export interface OriginPosition {
 // ============================================================================
 
 export class CityManager {
-  // In-memory only: key → city (key = `${originId}:${path}`)
+  // In-memory: key → city (key = `${originId}:${path}`)
   private citiesByKey = new Map<string, City>();
+
+  // Track which cities are pinned (won't be deleted when sessions leave)
+  private pinnedCityIds = new Set<string>();
 
   // Track occupied worker hexes per city: Map<cityId, Set<hexKey>>
   private occupiedWorkerHexes = new Map<string, Set<string>>();
@@ -71,6 +82,119 @@ export class CityManager {
   }
 
   /**
+   * Add a persisted (pinned) city. Called on startup with cities from CityPersistence.
+   * Position and ID come from persistence, not auto-assigned.
+   */
+  addPinnedCity(
+    id: string,
+    path: string,
+    name: string,
+    position: { q: number; r: number },
+    originId: string
+  ): City {
+    const resolvedPath = resolve(path);
+    const key = this.makeKey(originId, resolvedPath);
+
+    // If city already exists at this path, update it to be pinned
+    const existing = this.citiesByKey.get(key);
+    if (existing) {
+      // Update to persisted values
+      existing.id = id;
+      existing.position = position;
+      existing.name = name;
+      this.pinnedCityIds.add(id);
+      return existing;
+    }
+
+    // Create new pinned city
+    const city: City = {
+      id,
+      path: resolvedPath,
+      name,
+      position,
+      originId,
+    };
+
+    this.citiesByKey.set(key, city);
+    this.pinnedCityIds.add(id);
+    return city;
+  }
+
+  /**
+   * Pin an existing session-derived city or create a new pinned city
+   * Returns the city (for CityPersistence to save)
+   */
+  pinCity(
+    path: string,
+    position: { q: number; r: number },
+    originId: string = 'local',
+    name?: string
+  ): City {
+    const resolvedPath = resolve(path);
+    const key = this.makeKey(originId, resolvedPath);
+    const existing = this.citiesByKey.get(key);
+
+    if (existing) {
+      // Pin the existing city, update position
+      existing.position = position;
+      if (name) existing.name = name;
+      this.pinnedCityIds.add(existing.id);
+      return existing;
+    }
+
+    // Create new pinned city
+    const city: City = {
+      id: randomUUID(),
+      path: resolvedPath,
+      name: name || basename(resolvedPath),
+      position,
+      originId,
+    };
+
+    this.citiesByKey.set(key, city);
+    this.pinnedCityIds.add(city.id);
+    return city;
+  }
+
+  /**
+   * Unpin a city. If it has no sessions, it will be removed.
+   * Returns session count for the city (for warning user).
+   */
+  unpinCity(cityId: string): { removed: boolean; sessionCount: number } {
+    this.pinnedCityIds.delete(cityId);
+
+    // Find the city
+    for (const [key, city] of this.citiesByKey) {
+      if (city.id === cityId) {
+        // City will be removed by next updateFromSessions if no sessions
+        // For now, just return that it's unpinned
+        return { removed: false, sessionCount: 0 };
+      }
+    }
+
+    return { removed: false, sessionCount: 0 };
+  }
+
+  /**
+   * Check if a city is pinned
+   */
+  isPinned(cityId: string): boolean {
+    return this.pinnedCityIds.has(cityId);
+  }
+
+  /**
+   * Get city by ID
+   */
+  getCityById(cityId: string): City | null {
+    for (const city of this.citiesByKey.values()) {
+      if (city.id === cityId) {
+        return city;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Make city key from originId and path
    */
   private makeKey(originId: string, path: string): string {
@@ -79,8 +203,9 @@ export class CityManager {
 
   /**
    * Derive cities from a list of sessions.
-   * Cities that no longer have sessions are removed.
-   * New session cwds get cities created.
+   * Session-derived cities that no longer have sessions are removed.
+   * Pinned cities are preserved regardless of session activity.
+   * New session cwds get cities created (using persisted position if pinned).
    * Returns the current set of cities.
    */
   updateFromSessions(sessions: SessionInfo[]): City[] {
@@ -91,15 +216,23 @@ export class CityManager {
       activeKeys.add(key);
     }
 
-    // Remove cities that no longer have sessions
+    // Remove cities that no longer have sessions (but keep pinned cities)
+    // Collect keys to delete (avoid modifying map during iteration)
+    const keysToDelete: string[] = [];
     for (const [key, city] of this.citiesByKey) {
-      if (!activeKeys.has(key)) {
+      if (!activeKeys.has(key) && !this.pinnedCityIds.has(city.id)) {
+        keysToDelete.push(key);
+      }
+    }
+    for (const key of keysToDelete) {
+      const city = this.citiesByKey.get(key);
+      if (city) {
         this.citiesByKey.delete(key);
         this.occupiedWorkerHexes.delete(city.id);
       }
     }
 
-    // Add cities for new session cwds
+    // Add cities for new session cwds (skip if city already exists from persistence)
     for (const session of sessions) {
       const key = this.makeKey(session.originId, session.cwd);
       if (!this.citiesByKey.has(key)) {
@@ -180,7 +313,7 @@ export class CityManager {
 
   /**
    * Auto-assign a hex position by spiraling outward from origin center
-   * Enforces minimum 3-tile spacing between city centers within the same origin
+   * Enforces minimum 4-tile spacing between city centers within the same origin
    */
   private autoAssignPosition(originPos: OriginPosition, originId: string): { q: number; r: number } {
     // Get cities for this origin only (cities from other origins don't constrain positioning)
@@ -188,7 +321,7 @@ export class CityManager {
 
     // Try origin center first (always valid for first city in this origin)
     const center = { q: originPos.q, r: originPos.r };
-    if (this.isValidCityPosition(center, originCities, 3)) {
+    if (this.isValidCityPosition(center, originCities, 4)) {
       return center;
     }
 
@@ -196,7 +329,7 @@ export class CityManager {
     for (let ring = 1; ring < 100; ring++) {
       const positions = this.hexRing(originPos.q, originPos.r, ring);
       for (const pos of positions) {
-        if (this.isValidCityPosition(pos, originCities, 3)) {
+        if (this.isValidCityPosition(pos, originCities, 4)) {
           return pos;
         }
       }
@@ -265,5 +398,33 @@ export class CityManager {
       }
     }
     return true;
+  }
+
+  /**
+   * Detect if a city has claims (workflow/config or results/claims directories)
+   * Only works for local cities.
+   */
+  detectClaims(city: City): boolean {
+    // Only detect for local cities (remote would need agent support)
+    if (city.originId !== 'local') {
+      return false;
+    }
+
+    const hasWorkflowConfig = existsSync(resolve(city.path, 'workflow/config'));
+    const hasResultsClaims = existsSync(resolve(city.path, 'results/claims'));
+    return hasWorkflowConfig || hasResultsClaims;
+  }
+
+  /**
+   * Update hasClaims for local cities only.
+   * Remote cities get hasClaims from agent data, so we don't overwrite.
+   */
+  updateClaimsStatus(): void {
+    for (const city of this.citiesByKey.values()) {
+      if (city.originId === 'local') {
+        city.hasClaims = this.detectClaims(city);
+      }
+      // Remote cities: hasClaims is set by handleAgentSessionsUpdate
+    }
   }
 }

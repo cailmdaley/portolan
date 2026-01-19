@@ -4,6 +4,7 @@ import {
   Scene,
   Mesh,
   MeshStandardMaterial,
+  MeshBasicMaterial,
   Shape,
   ExtrudeGeometry,
   Group,
@@ -14,16 +15,30 @@ import {
   BufferGeometry,
   LineBasicMaterial,
   Vector3,
+  Sprite,
+  SpriteMaterial,
 } from 'three'
 import { HexGrid } from './HexGrid'
 import type { City, Session, HexCoord } from '../state/types'
-import { PALETTE, PALETTE_CSS } from '../state/types'
+import { PALETTE } from '../state/types'
+
+interface Activity {
+  tool: string
+  summary?: string
+  timestamp: number
+}
 
 interface HexMeshData {
   group: Group
   hex: HexCoord
   type: 'city' | 'worker' | 'empty'
   entityId?: string
+  tmuxSession?: string  // For workers - to route activity events
+  mesh?: Mesh  // For animation (worker breathing pulse)
+  status?: 'idle' | 'working'  // Worker status for animation
+  activityMesh?: Mesh  // Activity ground decal
+  labelSprite?: Sprite  // For screen-space scaling
+  baseScale?: number  // Base scale for label
 }
 
 export class ZoneRenderer {
@@ -37,18 +52,40 @@ export class ZoneRenderer {
   private readonly hexHeight = 0.15
   private readonly workerScale = 0.6
 
+  // Banner images for labels (loaded async)
+  // City banner: parchment scroll, Worker banner: leather patch
+  private cityBannerImage: HTMLImageElement | null = null
+  private workerBannerImage: HTMLImageElement | null = null
+
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
+    this.loadBannerImage()
     this.createGroundPlane()
     this.createBackgroundHexes()
+  }
+
+  private loadBannerImage(): void {
+    // Load city banner (parchment)
+    const cityImg = new Image()
+    cityImg.onload = () => {
+      this.cityBannerImage = cityImg
+    }
+    cityImg.src = '/banner.png'
+
+    // Load worker banner (leather)
+    const workerImg = new Image()
+    workerImg.onload = () => {
+      this.workerBannerImage = workerImg
+    }
+    workerImg.src = '/worker-banner.png'
   }
 
   private createGroundPlane(): void {
     // Paper/parchment texture plane
     const geometry = new PlaneGeometry(500, 500)
     const material = new MeshStandardMaterial({
-      color: PALETTE.sand,
+      color: PALETTE.bgPrimary,
       roughness: 0.9,
       metalness: 0,
       side: DoubleSide,
@@ -63,7 +100,7 @@ export class ZoneRenderer {
 
   private createBackgroundHexes(): void {
     // Create a subtle grid of empty hexes for context
-    const radius = Math.min(this.hexGrid.size, 8)
+    const radius = Math.min(this.hexGrid.size, 30)
     const hexes = this.hexGrid.getHexesInRadius({ q: 0, r: 0 }, radius)
 
     for (const hex of hexes) {
@@ -133,7 +170,7 @@ export class ZoneRenderer {
 
     const geometry = new BufferGeometry().setFromPoints(points)
     const material = new LineBasicMaterial({
-      color: PALETTE.umber,
+      color: PALETTE.border,
       transparent: true,
       opacity: 0.3,
     })
@@ -151,8 +188,8 @@ export class ZoneRenderer {
     // Random subtle elevation for terrain feel
     const elevation = Math.random() * 0.04
 
-    // Subtle hex for background grid (sand = idle per spec)
-    const hexMesh = this.createHexMesh(PALETTE.sand, 0.98, 0.02)
+    // Subtle hex for background grid
+    const hexMesh = this.createHexMesh(PALETTE.emptyHex, 0.98, 0.02)
     hexMesh.position.y = 0.01 + elevation
     group.add(hexMesh)
 
@@ -167,30 +204,95 @@ export class ZoneRenderer {
     this.hexMeshes.set(key, { group, hex, type: 'empty' })
   }
 
-  private createLabel(text: string, fontSize = 48, color: string = PALETTE_CSS.vermillion): CanvasTexture {
+  private createLabel(
+    text: string,
+    fontSize = 48,
+    color: string = '#4A1515',
+    bannerImage: HTMLImageElement | null = null,
+    sliceWidth = 40  // Size of left/right caps (larger = more decorative edges)
+  ): { texture: CanvasTexture; width: number; height: number } {
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d')!
-    canvas.width = 512
-    canvas.height = 128
 
-    ctx.fillStyle = 'transparent'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // Measure text first to determine banner width
+    ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
+    const metrics = ctx.measureText(text)
+    const textWidth = metrics.width
 
-    // Draw text with outline for better contrast
-    ctx.font = `700 ${fontSize}px 'Crimson Pro', serif`
+    // Banner source dimensions (from the PNG)
+    const srcW = 1408
+    const srcH = 768
+    const leftSlice = sliceWidth
+    const rightSlice = sliceWidth
+    const middleSrcW = srcW - leftSlice - rightSlice
+
+    // Calculate output dimensions based on text width
+    const hPadding = fontSize * 0.3  // Horizontal padding
+    const vPadding = fontSize * 0.5   // Vertical padding (taller)
+    const minMiddleW = 20
+    const middleW = Math.max(textWidth + hPadding, minMiddleW)
+    const outW = leftSlice + middleW + rightSlice
+    const outH = fontSize + vPadding * 2  // Height based on font size, not source image
+
+    // Set canvas size (high res)
+    const scale = 1.5
+    canvas.width = outW * scale
+    canvas.height = outH * scale
+    ctx.scale(scale, scale)
+
+    // If banner image is loaded, use 3-slice compositing
+    if (bannerImage) {
+      // Left slice (fixed)
+      ctx.drawImage(
+        bannerImage,
+        0, 0, leftSlice, srcH,           // source
+        0, 0, leftSlice, outH             // dest
+      )
+
+      // Middle slice (stretched)
+      ctx.drawImage(
+        bannerImage,
+        leftSlice, 0, middleSrcW, srcH,   // source
+        leftSlice, 0, middleW, outH       // dest (stretched)
+      )
+
+      // Right slice (fixed)
+      ctx.drawImage(
+        bannerImage,
+        srcW - rightSlice, 0, rightSlice, srcH,  // source
+        leftSlice + middleW, 0, rightSlice, outH  // dest
+      )
+
+    } else {
+      // Fallback: simple parchment rectangle if image not loaded
+      ctx.fillStyle = '#EDE4D6'
+      ctx.fillRect(0, 0, outW, outH)
+      ctx.strokeStyle = '#8B7355'
+      ctx.lineWidth = 3
+      ctx.strokeRect(2, 2, outW - 4, outH - 4)
+    }
+
+    // Draw text centered
+    const cx = outW / 2
+    const cy = outH / 2
+
+    ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
 
-    // White outline for contrast
-    ctx.strokeStyle = 'rgba(232, 220, 196, 0.9)'
-    ctx.lineWidth = 4
-    ctx.strokeText(text, canvas.width / 2, canvas.height / 2)
+    // Text shadow
+    ctx.fillStyle = 'rgba(30, 20, 15, 0.2)'
+    ctx.fillText(text, cx + 2, cy + 3)
 
-    // Main text
+    // Main text - deep blood red
     ctx.fillStyle = color
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
+    ctx.fillText(text, cx, cy)
 
-    return new CanvasTexture(canvas)
+    return {
+      texture: new CanvasTexture(canvas),
+      width: outW,
+      height: outH
+    }
   }
 
   renderCity(city: City): void {
@@ -202,50 +304,37 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(city.hex)
 
-    // City hex - ochre with slight elevation
-    const cityMesh = this.createHexMesh(PALETTE.ochre, 1, this.hexHeight * 1.5)
+    // City hex - gold (active) or muted (dormant, no workers)
+    const hexColor = city.isDormant ? PALETTE.cityDormant : PALETTE.cityHex
+    const cityMesh = this.createHexMesh(hexColor, 1, this.hexHeight * 1.5)
     group.add(cityMesh)
 
     // Border hex
-    const borderMesh = this.createHexMesh(PALETTE.umber, 1.02, 0.02)
+    const borderMesh = this.createHexMesh(PALETTE.border, 1.02, 0.02)
     borderMesh.position.y = -0.01
     group.add(borderMesh)
 
-    // Label (city name) - vermillion for navigation
-    const labelTexture = this.createLabel(city.name, 48, PALETTE_CSS.vermillion)
-    const labelGeometry = new PlaneGeometry(4, 1)
-    const labelMaterial = new MeshStandardMaterial({
-      map: labelTexture,
+    // Label (city name) - billboard sprite, floats above hex
+    const label = this.createLabel(city.name, 240, '#4A1515', this.cityBannerImage)
+    const labelMaterial = new SpriteMaterial({
+      map: label.texture,
       transparent: true,
-      roughness: 1,
-      metalness: 0,
+      rotation: 0,  // Keep horizontal
     })
-    const labelMesh = new Mesh(labelGeometry, labelMaterial)
-    labelMesh.rotation.x = -Math.PI / 2
-    labelMesh.position.y = this.hexHeight * 1.5 + 0.1
-    group.add(labelMesh)
-
-    // Fiber count badge - umber for contrast
-    if (city.fiberCount > 0) {
-      const badgeTexture = this.createLabel(`${city.fiberCount}`, 36, PALETTE_CSS.umber)
-      const badgeGeometry = new PlaneGeometry(0.8, 0.5)
-      const badgeMaterial = new MeshStandardMaterial({
-        map: badgeTexture,
-        transparent: true,
-        roughness: 1,
-        metalness: 0,
-      })
-      const badgeMesh = new Mesh(badgeGeometry, badgeMaterial)
-      badgeMesh.rotation.x = -Math.PI / 2
-      badgeMesh.position.y = this.hexHeight * 1.5 + 0.1
-      badgeMesh.position.z = 0.5
-      group.add(badgeMesh)
-    }
+    const labelSprite = new Sprite(labelMaterial)
+    const aspectRatio = label.width / label.height
+    const baseScale = 1.2  // Base height in world units for cities
+    labelSprite.scale.set(baseScale * aspectRatio, baseScale, 1)
+    labelSprite.position.y = this.hexHeight * 1.5 + 1.0
+    group.add(labelSprite)
 
     group.position.set(pos.x, 0, pos.z)
     this.scene.add(group)
 
-    this.hexMeshes.set(key, { group, hex: city.hex, type: 'city', entityId: city.id })
+    this.hexMeshes.set(key, {
+      group, hex: city.hex, type: 'city', entityId: city.id,
+      labelSprite, baseScale
+    })
   }
 
   renderWorker(session: Session): void {
@@ -253,45 +342,65 @@ export class ZoneRenderer {
 
     const key = this.hexGrid.hexKey(session.hex)
 
-    // Remove existing mesh at this position
+    // Check if worker already exists - just update status color, preserve activity
+    const existing = this.hexMeshes.get(key)
+    if (existing && existing.type === 'worker' && existing.entityId === session.id) {
+      // Update color if status changed
+      if (existing.status !== session.status && existing.mesh) {
+        const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
+        ;(existing.mesh.material as MeshStandardMaterial).color.setHex(color)
+        existing.status = session.status
+      }
+      return  // Don't recreate - preserve activity mesh
+    }
+
+    // Remove existing mesh at this position (different entity)
     this.removeHex(key)
 
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(session.hex)
 
     // Choose color based on status
-    let color: number = PALETTE.sepia
-    let labelColor: string = PALETTE_CSS.sepia
-    if (session.status === 'working') {
-      color = PALETTE.verdigris
-      labelColor = PALETTE_CSS.verdigris
-    } else if (session.status === 'attention') {
-      color = PALETTE.vermillion
-      labelColor = PALETTE_CSS.vermillion
-    }
+    const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
 
     // Worker hex - smaller, positioned around city
     const workerMesh = this.createHexMesh(color, this.workerScale)
     group.add(workerMesh)
 
-    // Worker label - session name, colored by status
-    const labelTexture = this.createLabel(session.name, 32, labelColor)
-    const labelGeometry = new PlaneGeometry(2.5, 0.65)
-    const labelMaterial = new MeshStandardMaterial({
-      map: labelTexture,
+    // Worker label - billboard sprite, floats above hex (lower than cities)
+    const label = this.createLabel(session.name, 160, '#3D2817', this.workerBannerImage, 150)
+    const labelMaterial = new SpriteMaterial({
+      map: label.texture,
       transparent: true,
-      roughness: 1,
-      metalness: 0,
+      rotation: 0,  // Keep horizontal
     })
-    const labelMesh = new Mesh(labelGeometry, labelMaterial)
-    labelMesh.rotation.x = -Math.PI / 2
-    labelMesh.position.y = this.hexHeight + 0.1
-    group.add(labelMesh)
+    const labelSprite = new Sprite(labelMaterial)
+    const aspectRatio = label.width / label.height
+    const baseScale = 0.8  // Base height in world units for workers
+    labelSprite.scale.set(baseScale * aspectRatio, baseScale, 1)
+    labelSprite.position.y = this.hexHeight + 0.4
+    group.add(labelSprite)
 
     group.position.set(pos.x, 0, pos.z)
     this.scene.add(group)
 
-    this.hexMeshes.set(key, { group, hex: session.hex, type: 'worker', entityId: session.id })
+    // Create empty activity decal (will be populated by updateWorkerActivity)
+    const activityMesh = this.createActivityDecal([])
+    activityMesh.position.y = 0.2
+    group.add(activityMesh)
+
+    this.hexMeshes.set(key, {
+      group,
+      hex: session.hex,
+      type: 'worker',
+      entityId: session.id,
+      tmuxSession: session.tmuxSession,
+      mesh: workerMesh,
+      status: session.status,
+      activityMesh,
+      labelSprite,
+      baseScale,
+    })
   }
 
   private removeHex(key: string): void {
@@ -400,14 +509,14 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(hex)
 
-    // Create ring (terracotta glow - Cartographic Warmth)
+    // Create ring (gold highlight - Porch Morning)
     const ringShape = this.createRingShape(1.12, 0.92)
     const ringGeometry = new ExtrudeGeometry(ringShape, {
       depth: 0.08,
       bevelEnabled: false,
     })
     const ringMaterial = new MeshStandardMaterial({
-      color: PALETTE.terracotta,
+      color: PALETTE.selection,
       roughness: 0.6,
       metalness: 0.2,
       transparent: true,
@@ -421,5 +530,127 @@ export class ZoneRenderer {
     group.position.set(pos.x, 0, pos.z)
     this.scene.add(group)
     this.selectionRing = group
+  }
+
+  /**
+   * Animate worker hexes and scale labels for screen-space sizing
+   * Call this from the render loop with camera distance
+   */
+  animate(cameraDistance?: number): void {
+    const now = Date.now()
+    const period = 2500 // 2.5 second breathing cycle
+
+    // Scale factor for labels - keeps them constant screen size
+    // At distance 10, scale = 1.0; at distance 20, scale = 2.0, etc.
+    const labelScaleFactor = cameraDistance ? cameraDistance / 10 : 1
+
+    for (const [, data] of this.hexMeshes) {
+      // Scale labels to maintain screen size
+      if (data.labelSprite && data.baseScale) {
+        const aspectRatio = data.labelSprite.scale.x / data.labelSprite.scale.y
+        const scaledHeight = data.baseScale * labelScaleFactor * 0.5  // 0.5 = smaller labels
+        data.labelSprite.scale.set(scaledHeight * aspectRatio, scaledHeight, 1)
+      }
+
+      if (data.type === 'worker' && data.mesh) {
+        if (data.status === 'working') {
+          // Breathing pulse: scale oscillates 1.0 → 1.03 → 1.0
+          const t = (now % period) / period
+          const scale = 1.0 + 0.03 * Math.sin(t * Math.PI * 2)
+          data.mesh.scale.setScalar(scale)
+        } else {
+          // Ensure idle workers are at base scale
+          data.mesh.scale.setScalar(1.0)
+        }
+      }
+    }
+  }
+
+  /**
+   * Create activity ground decal showing recent tool calls
+   * Returns a flat Mesh that lies on the hex surface
+   */
+  private createActivityDecal(activities: Activity[]): Mesh {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')!
+
+    const width = 256
+    const height = 64
+    const fontSize = 14
+
+    canvas.width = width * 2
+    canvas.height = height * 2
+    ctx.scale(2, 2)
+
+    // Semi-transparent dark background
+    ctx.fillStyle = 'rgba(26, 24, 22, 0.7)'
+    ctx.roundRect(0, 0, width, height, 4)
+    ctx.fill()
+
+    if (activities.length > 0) {
+      const displayActivities = activities.slice(0, 2)
+      const lineHeight = 28
+      const startY = 22
+
+      displayActivities.forEach((activity, i) => {
+        const y = startY + i * lineHeight
+        const opacity = 1 - i * 0.3
+
+        // Tool name in gold
+        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`
+        ctx.fillStyle = `rgba(201, 162, 39, ${opacity})`
+        ctx.textAlign = 'left'
+        ctx.fillText(activity.tool, 8, y)
+
+        // Summary
+        if (activity.summary) {
+          const toolWidth = ctx.measureText(activity.tool).width
+          ctx.font = `${fontSize}px 'JetBrains Mono', monospace`
+          ctx.fillStyle = `rgba(232, 228, 223, ${opacity * 0.7})`
+          const summaryText = activity.summary.length > 18
+            ? activity.summary.slice(0, 15) + '...'
+            : activity.summary
+          ctx.fillText(` ${summaryText}`, 8 + toolWidth, y)
+        }
+      })
+    }
+
+    const texture = new CanvasTexture(canvas)
+    const worldWidth = 1.0
+    const geometry = new PlaneGeometry(worldWidth, worldWidth / 4)
+    const material = new MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      side: DoubleSide,
+      depthWrite: false,
+    })
+
+    const mesh = new Mesh(geometry, material)
+    mesh.rotation.x = -Math.PI / 2  // Lie flat
+    mesh.rotation.z = Math.PI / 3   // 60° rotation
+    return mesh
+  }
+
+  /**
+   * Update activity display for a worker by tmux session
+   */
+  updateWorkerActivity(tmuxSession: string, activities: Activity[]): void {
+    // Find the worker with this tmux session
+    const workers = [...this.hexMeshes.values()].filter(d => d.type === 'worker')
+    console.log(`[ZoneRenderer] Looking for tmux=${tmuxSession} among ${workers.length} workers:`, workers.map(w => w.tmuxSession))
+    for (const [, data] of this.hexMeshes) {
+      if (data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh) {
+        console.log(`[ZoneRenderer] Found match, updating decal`)
+        // Remove old decal
+        data.group.remove(data.activityMesh)
+
+        // Create new decal with updated activities
+        const newMesh = this.createActivityDecal(activities)
+        newMesh.position.y = 0.2  // Float just above hex and label
+        data.group.add(newMesh)
+        data.activityMesh = newMesh
+        break
+      }
+    }
   }
 }

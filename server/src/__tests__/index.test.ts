@@ -39,9 +39,19 @@ vi.mock('child_process', () => {
     return {} as any;
   });
 
+  const mockExecFile = vi.fn((file: string, args: string[], options: any, callback?: any) => {
+    // GitStatusManager uses execFile for git commands
+    // Simulate "not a git repo" by throwing an error
+    if (callback) {
+      callback(new Error('not a git repo'), '', '');
+    }
+    return {} as any;
+  });
+
   return {
     execSync: mockExecSync,
     exec: mockExec,
+    execFile: mockExecFile,
   };
 });
 

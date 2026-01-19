@@ -1,3 +1,4 @@
+import type { GitStatus } from './GitStatusManager.js';
 export interface City {
     id: string;
     path: string;
@@ -7,6 +8,8 @@ export interface City {
         r: number;
     };
     fiberCount?: number;
+    hasClaims?: boolean;
+    gitStatus?: GitStatus;
     createdAt?: number;
     originId: string;
 }
@@ -20,6 +23,7 @@ export interface OriginPosition {
 }
 export declare class CityManager {
     private citiesByKey;
+    private pinnedCityIds;
     private occupiedWorkerHexes;
     private originPositions;
     constructor();
@@ -32,13 +36,46 @@ export declare class CityManager {
      */
     getOriginPosition(originId: string): OriginPosition;
     /**
+     * Add a persisted (pinned) city. Called on startup with cities from CityPersistence.
+     * Position and ID come from persistence, not auto-assigned.
+     */
+    addPinnedCity(id: string, path: string, name: string, position: {
+        q: number;
+        r: number;
+    }, originId: string): City;
+    /**
+     * Pin an existing session-derived city or create a new pinned city
+     * Returns the city (for CityPersistence to save)
+     */
+    pinCity(path: string, position: {
+        q: number;
+        r: number;
+    }, originId?: string, name?: string): City;
+    /**
+     * Unpin a city. If it has no sessions, it will be removed.
+     * Returns session count for the city (for warning user).
+     */
+    unpinCity(cityId: string): {
+        removed: boolean;
+        sessionCount: number;
+    };
+    /**
+     * Check if a city is pinned
+     */
+    isPinned(cityId: string): boolean;
+    /**
+     * Get city by ID
+     */
+    getCityById(cityId: string): City | null;
+    /**
      * Make city key from originId and path
      */
     private makeKey;
     /**
      * Derive cities from a list of sessions.
-     * Cities that no longer have sessions are removed.
-     * New session cwds get cities created.
+     * Session-derived cities that no longer have sessions are removed.
+     * Pinned cities are preserved regardless of session activity.
+     * New session cwds get cities created (using persisted position if pinned).
      * Returns the current set of cities.
      */
     updateFromSessions(sessions: SessionInfo[]): City[];
@@ -69,7 +106,7 @@ export declare class CityManager {
     }): void;
     /**
      * Auto-assign a hex position by spiraling outward from origin center
-     * Enforces minimum 3-tile spacing between city centers within the same origin
+     * Enforces minimum 4-tile spacing between city centers within the same origin
      */
     private autoAssignPosition;
     /**
@@ -86,5 +123,15 @@ export declare class CityManager {
      * Check if a position is at least minDistance tiles from all existing cities
      */
     private isValidCityPosition;
+    /**
+     * Detect if a city has claims (workflow/config or results/claims directories)
+     * Only works for local cities.
+     */
+    detectClaims(city: City): boolean;
+    /**
+     * Update hasClaims for local cities only.
+     * Remote cities get hasClaims from agent data, so we don't overwrite.
+     */
+    updateClaimsStatus(): void;
 }
 //# sourceMappingURL=CityManager.d.ts.map

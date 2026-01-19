@@ -1,10 +1,13 @@
 ---
 title: 'UI aesthetic refinement: align with Porch Morning'
-status: active
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-01-18T14:30:43.959101+01:00
+closed-at: 2026-01-18T15:58:27.581911+01:00
+close-reason: 'Porch Morning palette fully implemented: typography (EB Garamond + JetBrains Mono + small-caps), color palette (PALETTE/PALETTE_CSS), panel styling (grid texture, shadows, borders), 3D rendering (ground/hexes/labels/selection). All TypeScript compiles, builds pass, 80 tests pass.'
 ---
+
 # Ralph Spec
 
 You are in a Ralph loop — autonomous iteration toward completion.

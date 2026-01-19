@@ -14,7 +14,9 @@
     "three": "^0.172.0"
   },
   "devDependencies": {
+    "@types/sharp": "^0.31.1",
     "@types/three": "^0.172.0",
+    "sharp": "^0.34.5",
     "typescript": "~5.9.3",
     "vite": "^7.2.4"
   }

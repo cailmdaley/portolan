@@ -10,6 +10,23 @@ export interface CartesianCoord {
   z: number
 }
 
+// Git status for a repository
+export interface GitStatus {
+  branch: string
+  ahead: number
+  behind: number
+  staged: { added: number; modified: number; deleted: number }
+  unstaged: { added: number; modified: number; deleted: number }
+  untracked: number
+  totalFiles: number
+  linesAdded: number
+  linesRemoved: number
+  lastCommitTime: number | null
+  lastCommitMessage: string | null
+  isRepo: boolean
+  lastChecked: number
+}
+
 // Server types (raw from WebSocket)
 export interface ServerCity {
   id: string
@@ -17,6 +34,9 @@ export interface ServerCity {
   path: string
   position: HexCoord
   fiberCount?: number
+  hasClaims?: boolean  // Has claims directory (workflow/config or results/claims)
+  isDormant?: boolean  // No active sessions (persisted city with no workers)
+  gitStatus?: GitStatus  // Git repository status
   originId: string  // 'local' | 'remote-{hostname}'
 }
 
@@ -50,14 +70,19 @@ export interface City {
   path: string
   hex: HexCoord
   fiberCount: number
+  hasClaims: boolean
+  isDormant: boolean
+  gitStatus?: GitStatus
+  originId: string
 }
 
 export interface Session {
   id: string
   name: string
+  tmuxSession: string
   cityId: string | null
   hex: HexCoord | null
-  status: 'idle' | 'working' | 'attention'
+  status: 'idle' | 'working'
 }
 
 // Transform server city to frontend city
@@ -68,6 +93,10 @@ export function normalizeCity(city: ServerCity): City {
     path: city.path,
     hex: city.position,
     fiberCount: city.fiberCount ?? 0,
+    hasClaims: city.hasClaims ?? false,
+    isDormant: city.isDormant ?? false,
+    gitStatus: city.gitStatus,
+    originId: city.originId,
   }
 }
 
@@ -76,6 +105,7 @@ export function normalizeSession(session: ServerSession): Session {
   return {
     id: session.id,
     name: session.name,
+    tmuxSession: session.tmuxSession,
     cityId: session.cityId ?? null,
     hex: session.workerHex ?? null,
     // Map 'offline' to 'idle' for rendering (offline sessions shouldn't appear anyway)
@@ -83,25 +113,51 @@ export function normalizeSession(session: ServerSession): Session {
   }
 }
 
-// Cartographic Warmth palette
+// Porch Morning palette
 export const PALETTE = {
-  sand: 0xe8dcc4,      // Background, idle hexes
-  ochre: 0xc4956a,     // City hexes
-  terracotta: 0xb87333, // Warm accents
-  verdigris: 0x4a7c6f, // Working state
-  lapis: 0x5b7c99,     // Cool accents
-  umber: 0x6b5344,     // Labels, borders
-  sepia: 0x8b7355,     // Dormant state
-  vermillion: 0xc54b3d, // Attention — vivid
+  // Backgrounds
+  bgPrimary: 0xc8b8a8,     // Main background, ground plane
+  bgCard: 0xede8e0,        // Panels
+  bgElevated: 0xfdfcfa,    // Elevated elements
+
+  // Text
+  textPrimary: 0x2e2a26,
+  textSecondary: 0x4a4540,
+  textMuted: 0x7a7368,
+
+  // Borders
+  border: 0xa89888,
+  borderLight: 0xc8bba8,
+
+  // Semantic
+  accent: 0x5a7b7b,        // Teal — working state
+  gold: 0x9a7b35,          // City hexes
+  goldLight: 0xc4a86a,     // City highlights
+  green: 0x6b8b6b,         // Success states
+  red: 0xa87070,           // Attention state
+
+  // Hex-specific
+  cityHex: 0x9a7b35,       // Gold — cities
+  cityDormant: 0x8a8070,   // Muted gold — dormant cities (no workers)
+  workerIdle: 0x7a7368,    // Muted — dormant workers
+  workerActive: 0x5a7b7b,  // Teal — working
+  // workerAttention removed - attention status was speculative
+  emptyHex: 0xc8b8a8,      // Background terrain
+  selection: 0xc4a86a,     // Gold highlight ring
 } as const
 
 export const PALETTE_CSS = {
-  sand: '#E8DCC4',
-  ochre: '#C4956A',
-  terracotta: '#B87333',
-  verdigris: '#4A7C6F',
-  lapis: '#5B7C99',
-  umber: '#6B5344',
-  sepia: '#8B7355',
-  vermillion: '#C54B3D',
+  bgPrimary: '#C8B8A8',
+  bgCard: '#EDE8E0',
+  bgElevated: '#FDFCFA',
+  textPrimary: '#2E2A26',
+  textSecondary: '#4A4540',
+  textMuted: '#7A7368',
+  border: '#A89888',
+  borderLight: '#C8BBA8',
+  accent: '#5A7B7B',
+  gold: '#9A7B35',
+  goldLight: '#C4A86A',
+  green: '#6B8B6B',
+  red: '#A87070',
 } as const

@@ -47,6 +47,21 @@ export class SessionTracker {
         return Array.from(this.sessions.values());
     }
     /**
+     * Update session status (called by EventWatcher)
+     */
+    updateStatus(tmuxSession, status) {
+        const session = this.sessions.get(tmuxSession);
+        if (session && session.status !== status) {
+            session.status = status;
+            if (status === 'working') {
+                session.lastActivity = Date.now();
+            }
+            this.notifyChange();
+            return true;
+        }
+        return false;
+    }
+    /**
      * Discover sessions from tmux
      */
     async refresh() {
@@ -81,10 +96,10 @@ export class SessionTracker {
                     }
                 }
                 else {
-                    // New session
+                    // New session - starts idle, EventWatcher will update to working
                     const session = {
                         id: this.generateId(tmuxSession),
-                        name: tmuxSession,
+                        name: this.truncateName(tmuxSession),
                         tmuxSession,
                         cwd,
                         status: 'idle',
@@ -125,8 +140,16 @@ export class SessionTracker {
             }
             // Check which panes have claude running
             const claudeSessions = [];
+            // NOTE: Detection logic duplicated in server/agent.js — keep in sync
             for (const { tmuxSession, cwd, panePid } of paneData) {
                 try {
+                    // Check if pane process ITSELF is claude (when zsh -c execs into claude)
+                    const { stdout: paneComm } = await execAsync(`ps -o comm= -p ${panePid} 2>/dev/null || true`);
+                    if (paneComm.trim().includes('claude')) {
+                        claudeSessions.push({ tmuxSession, cwd });
+                        continue;
+                    }
+                    // Also check children (for cases where shell doesn't exec)
                     const { stdout: pgrepOut } = await execAsync(`pgrep -P ${panePid} -f claude 2>/dev/null || true`);
                     if (pgrepOut.trim()) {
                         claudeSessions.push({ tmuxSession, cwd });
@@ -142,6 +165,23 @@ export class SessionTracker {
             // tmux not running or error
             return [];
         }
+    }
+    /**
+     * Truncate long session names for display
+     * ralph-global-views-map-plots-plans-3374f8fb → ralph-3374f8fb
+     */
+    truncateName(tmuxSession) {
+        const MAX_LENGTH = 20;
+        if (tmuxSession.length <= MAX_LENGTH) {
+            return tmuxSession;
+        }
+        // For ralph sessions: keep prefix + hash
+        if (tmuxSession.startsWith('ralph-')) {
+            const hash = tmuxSession.slice(-8);
+            return `ralph-${hash}`;
+        }
+        // Generic: first 8 chars + … + last 8 chars
+        return `${tmuxSession.slice(0, 8)}…${tmuxSession.slice(-8)}`;
     }
     /**
      * Generate stable session ID from tmux session name

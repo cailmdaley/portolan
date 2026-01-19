@@ -77,11 +77,11 @@ describe('CityManager', () => {
       cityManager.updateFromSessions(sessions('/tmp/a', '/tmp/b', '/tmp/c'));
       const cities = cityManager.getCities();
 
-      // Check all pairs are at least 3 tiles apart
+      // Check all pairs are at least 4 tiles apart
       for (let i = 0; i < cities.length; i++) {
         for (let j = i + 1; j < cities.length; j++) {
           const dist = hexDistance(cities[i].position, cities[j].position);
-          expect(dist).toBeGreaterThanOrEqual(3);
+          expect(dist).toBeGreaterThanOrEqual(4);
         }
       }
     });
