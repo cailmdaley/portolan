@@ -14,8 +14,9 @@ import { CityPanel } from './ui/CityPanel'
 import { ContextMenu } from './ui/ContextMenu'
 import { ViewSwitcher, type GlobalView } from './ui/ViewSwitcher'
 import { ViewOverlay } from './ui/ViewOverlay'
+import { TabbedPlansView } from './ui/TabbedPlansView'
 import { ClaimsDashboard } from './ui/ClaimsDashboard'
-import type { City, Session, ServerCity, ServerSession, HexCoord } from './state/types'
+import type { City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
 import { PALETTE, normalizeCity, normalizeSession } from './state/types'
 
 // Get canvas
@@ -68,10 +69,10 @@ const contextMenu = new ContextMenu()
 
 // Setup view switching
 const viewOverlay = new ViewOverlay()
+const tabbedPlansView = new TabbedPlansView()
 
 // View URLs from environment or defaults
 const PLOT_SERVER_URL = 'http://localhost:8873'  // Plot server gallery
-const PLANNOTATOR_URL = 'http://localhost:19473' // Plannotator
 
 // Track current view state (used in handleViewChange)
 // @ts-expect-error Tracked for potential state persistence
@@ -83,15 +84,18 @@ function handleViewChange(view: GlobalView): void {
   if (view === 'map') {
     // Return to hex grid
     viewOverlay.hide()
+    tabbedPlansView.hide()
     canvas.style.display = 'block'
   } else if (view === 'plots') {
     // Show plot server gallery
     canvas.style.display = 'none'
+    tabbedPlansView.hide()
     viewOverlay.show(PLOT_SERVER_URL)
   } else if (view === 'plans') {
-    // Show plannotator
+    // Show tabbed plannotator view
     canvas.style.display = 'none'
-    viewOverlay.show(PLANNOTATOR_URL)
+    viewOverlay.hide()
+    tabbedPlansView.show(origins)
   }
 }
 
@@ -119,6 +123,7 @@ interface Activity {
 // State
 let cities: City[] = []
 let sessions: Session[] = []
+let origins: ServerOrigin[] = []
 let ws: WebSocket | null = null
 // @ts-expect-error Tracked for potential state persistence
 let selectedHex: { q: number; r: number } | null = null
@@ -184,6 +189,7 @@ function connectWebSocket(): void {
 interface ServerState {
   cities: ServerCity[]
   sessions: ServerSession[]
+  origins?: ServerOrigin[]
 }
 
 interface ConfirmUnpinMessage {
@@ -264,11 +270,16 @@ function handleMessage(message: ServerMessage): void {
     }
   }
 
-  // Server sends state directly: { cities: [...], sessions: [...] }
+  // Server sends state directly: { cities: [...], sessions: [...], origins: [...] }
   const state = message as ServerState
   if (state.cities && state.sessions) {
     cities = state.cities.map(normalizeCity)
     sessions = state.sessions.map(normalizeSession)
+    if (state.origins) {
+      origins = state.origins
+      // Update tabbed plans view if visible (handles new agents connecting)
+      tabbedPlansView.update(origins)
+    }
     zoneRenderer.updateState(cities, sessions)
   }
 }
@@ -312,6 +323,34 @@ canvas.addEventListener('click', (e) => {
   console.log('Clicked hex:', hex, 'Entity:', entity)
 })
 
+// Double-click to create workers/cities
+canvas.addEventListener('dblclick', (e) => {
+  // Ignore if dragging
+  if (camera.dragging) return
+
+  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
+  const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
+  const entity = zoneRenderer.getEntityAtHex(hex)
+
+  if (entity?.type === 'city' && entity.entityId) {
+    // Double-click city → new worker
+    const city = cities.find(c => c.id === entity.entityId)
+    if (city) {
+      promptNewWorker(city)
+    }
+  } else if (entity?.type === 'empty' || !entity) {
+    // Check distance to nearest city
+    const nearestCity = findNearestCity(hex)
+
+    if (nearestCity && hexGrid.distance(hex, nearestCity.hex) <= 3) {
+      // Within 3 tiles of a city → new worker
+      promptNewWorker(nearestCity)
+    } else {
+      // Far from any city → add city
+      promptAddCity(hex)
+    }
+  }
+})
 
 // Right-click context menu
 canvas.addEventListener('contextmenu', (e) => {
@@ -325,7 +364,7 @@ canvas.addEventListener('contextmenu', (e) => {
   const entity = zoneRenderer.getEntityAtHex(hex)
 
   if (entity?.type === 'worker' && entity.entityId) {
-    // Worker right-click: show kill option
+    // Worker right-click: show retire option
     const session = sessions.find(s => s.id === entity.entityId)
     if (session) {
       contextMenu.show(e.clientX, e.clientY, [
@@ -334,7 +373,7 @@ canvas.addEventListener('contextmenu', (e) => {
           action: () => focusKittyTab(session.id),
         },
         {
-          label: 'Kill Worker',
+          label: 'Retire Worker',
           action: () => killWorker(session.id),
           danger: true,
         },
