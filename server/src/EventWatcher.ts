@@ -21,7 +21,7 @@ interface HexarchyEvent {
   cwd: string;
   tmuxSession: string;
   tool?: string;
-  toolInput?: Record<string, unknown>;
+  toolInput?: Record<string, unknown>;  // Used to extract summary/fullPath
 }
 
 export interface ActivityEvent {
@@ -29,7 +29,6 @@ export interface ActivityEvent {
   tool: string;
   summary?: string;
   fullPath?: string;                     // Full file path for Read/Write/Edit
-  toolInput?: Record<string, unknown>;   // Full tool parameters
   timestamp: number;
 }
 
@@ -53,7 +52,7 @@ export class EventWatcher {
 
   // Recent activities per tmux session (for initial state)
   private recentActivities: Map<string, ActivityEvent[]> = new Map();
-  private maxActivitiesPerSession = 10;
+  private maxActivitiesPerSession = 50;
 
   constructor(eventsFile?: string) {
     this.eventsFile = eventsFile ?? join(homedir(), '.hexarchy', 'data', 'events.jsonl');
@@ -185,6 +184,9 @@ export class EventWatcher {
       // Track most recent status per tmux session
       const latestStatus: Map<string, { status: 'idle' | 'working'; timestamp: number }> = new Map();
 
+      // Also collect recent activities per session (in chronological order first)
+      const activitiesBySession: Map<string, ActivityEvent[]> = new Map();
+
       for (const line of lines) {
         if (!line) continue;
         try {
@@ -195,9 +197,33 @@ export class EventWatcher {
           if (status && event.timestamp > (latestStatus.get(event.tmuxSession)?.timestamp ?? 0)) {
             latestStatus.set(event.tmuxSession, { status, timestamp: event.timestamp });
           }
+
+          // Collect pre_tool_use events for activity backfill
+          if (event.type === 'pre_tool_use' && event.tool) {
+            const details = extractActivityDetails(event.tool, event.toolInput);
+            const activity: ActivityEvent = {
+              tmuxSession: event.tmuxSession,
+              tool: event.tool,
+              summary: details?.summary,
+              fullPath: details?.fullPath,
+              timestamp: event.timestamp,
+            };
+            let acts = activitiesBySession.get(event.tmuxSession);
+            if (!acts) {
+              acts = [];
+              activitiesBySession.set(event.tmuxSession, acts);
+            }
+            acts.push(activity);
+          }
         } catch {
           // Skip malformed lines
         }
+      }
+
+      // Store activities (reverse to get newest first, keep max)
+      for (const [tmuxSession, acts] of activitiesBySession) {
+        const recent = acts.slice(-this.maxActivitiesPerSession).reverse();
+        this.recentActivities.set(tmuxSession, recent);
       }
 
       // Apply recent status (only if within timeout window)
@@ -285,7 +311,6 @@ export class EventWatcher {
         tool: event.tool,
         summary: details?.summary,
         fullPath: details?.fullPath,
-        toolInput: details?.toolInput,
         timestamp: event.timestamp,
       };
 

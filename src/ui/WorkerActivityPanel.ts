@@ -1,14 +1,6 @@
 // WorkerActivityPanel.ts - Left-side panel showing worker activity history
 
-import type { Session } from '../state/types'
-
-export interface Activity {
-  tool: string
-  summary?: string
-  fullPath?: string
-  toolInput?: Record<string, unknown>
-  timestamp: number
-}
+import type { Activity, Session } from '../state/types'
 
 type FileClickCallback = (activity: Activity, originId: string, workerId: string) => void
 

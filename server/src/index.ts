@@ -48,6 +48,7 @@ import { OriginManager, Origin } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager, GitStatus } from './GitStatusManager.js';
+import { RecentFilesManager, RecentFile } from './RecentFilesManager.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import { EventWatcher, type ActivityEvent } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
@@ -83,6 +84,7 @@ const sessionTracker = new SessionTracker();
 const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
+const recentFilesManager = new RecentFilesManager();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
@@ -105,7 +107,7 @@ const remoteGitStatuses = new Map<string, GitStatus>();
 
 // Track remote activities: Map<tmuxSession, ActivityEvent[]>
 const remoteActivities = new Map<string, ActivityEvent[]>();
-const MAX_REMOTE_ACTIVITIES = 10;
+const MAX_REMOTE_ACTIVITIES = 50;
 
 // Track connected browser clients
 const clients: Set<WebSocket> = new Set();
@@ -221,6 +223,12 @@ httpApi.setOnCreateNewWorker(async (cityPath: string, originId: string) => {
   return tmuxSession;
 });
 
+// Callback for focusing sessions in Kitty (used by send-annotations endpoint)
+httpApi.setOnFocusSession((sessionId: string) => {
+  kitty.focusSession(sessionId);
+  kitty.activateKitty();
+});
+
 // ============================================================================
 // State Management
 // ============================================================================
@@ -247,11 +255,15 @@ async function buildState(): Promise<StateUpdate> {
   const citiesWithFibers = await Promise.all(
     cities.map(async (city) => {
       let gitStatus: GitStatus | undefined;
+      let recentFiles: RecentFile[] = [];
+
       if (city.originId === 'local') {
         gitStatus = gitStatusManager.getStatus(city.path) ?? undefined;
+        recentFiles = recentFilesManager.getFiles(city.path);
       } else {
         const remoteKey = `${city.originId}:${city.path}`;
         gitStatus = remoteGitStatuses.get(remoteKey);
+        // Remote files handled via separate request
       }
 
       return {
@@ -260,6 +272,7 @@ async function buildState(): Promise<StateUpdate> {
         hasClaims: city.hasClaims ?? false,
         isDormant: !activeCityIds.has(city.id),
         gitStatus,
+        recentFiles,
       };
     })
   );
@@ -372,6 +385,7 @@ function rebuildCities(): void {
 
     if (city.originId === 'local') {
       gitStatusManager.track(city.path);
+      recentFilesManager.track(city.path);
     }
   }
 }
@@ -1043,6 +1057,12 @@ gitStatusManager.setUpdateHandler(({ path, status }) => {
 });
 gitStatusManager.start();
 
+recentFilesManager.setUpdateHandler(({ path, files }) => {
+  console.log(`[Files] ${path}: ${files.length} recent files`);
+  buildState().then(broadcast);
+});
+recentFilesManager.start();
+
 setInterval(refreshFiberCounts, FIBER_REFRESH_INTERVAL);
 
 server.listen(PORT, () => {
@@ -1054,6 +1074,7 @@ process.on('SIGINT', () => {
   console.log('\nShutting down...');
   sessionTracker.stop();
   gitStatusManager.stop();
+  recentFilesManager.stop();
   server.close();
   process.exit(0);
 });

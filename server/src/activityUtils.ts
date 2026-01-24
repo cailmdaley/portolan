@@ -12,7 +12,6 @@
 export interface ActivityDetails {
   summary: string;           // Short display text (filename, command, pattern)
   fullPath?: string;         // Full file path for Read/Write/Edit
-  toolInput?: Record<string, unknown>;  // Full tool parameters
 }
 
 /**
@@ -63,9 +62,6 @@ export function extractActivityDetails(tool: string, input?: Record<string, unkn
       }
       break;
   }
-
-  // Include toolInput for potential future use (line numbers, etc.)
-  details.toolInput = input;
 
   return details;
 }

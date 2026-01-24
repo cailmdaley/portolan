@@ -22,8 +22,6 @@
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.11",
     "@replit/codemirror-vim": "^6.3.0",
-    "diff": "^8.0.3",
-    "diff2html": "^3.4.55",
     "katex": "^0.16.27",
     "marked": "^17.0.1",
     "three": "^0.172.0"

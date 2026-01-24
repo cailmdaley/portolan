@@ -340,9 +340,6 @@ function extractActivityDetails(tool, input) {
             break;
     }
 
-    // Include toolInput for file viewer support
-    details.toolInput = input;
-
     return details;
 }
 
@@ -413,7 +410,6 @@ function processEvent(event) {
             tool: event.tool,
             summary: details?.summary,
             fullPath: details?.fullPath,
-            toolInput: details?.toolInput,
             timestamp: event.timestamp,
         };
 

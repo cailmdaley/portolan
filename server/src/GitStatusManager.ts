@@ -49,7 +49,7 @@ export class GitStatusManager {
   private onUpdate: UpdateHandler | null = null;
 
   // Configuration
-  private readonly POLL_INTERVAL_MS = 5000; // Poll every 5 seconds
+  private readonly POLL_INTERVAL_MS = 60000; // Poll every minute
   private readonly EXEC_TIMEOUT_MS = 5000; // Timeout for git commands
 
   /**

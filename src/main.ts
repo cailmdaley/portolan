@@ -18,7 +18,7 @@ import { ViewSwitcher, type GlobalView } from './ui/ViewSwitcher'
 import { ViewOverlay } from './ui/ViewOverlay'
 import { TabbedPlansView } from './ui/TabbedPlansView'
 import { ClaimsDashboard } from './ui/ClaimsDashboard'
-import type { City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
+import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
 import { PALETTE, normalizeCity, normalizeSession } from './state/types'
 
 // Get canvas
@@ -75,7 +75,7 @@ const fileViewerModal = new FileViewerModal()
 // Wire up file click from worker panel to file viewer
 workerActivityPanel.setOnFileClick((activity, originId, workerId) => {
   if (activity.fullPath) {
-    fileViewerModal.show(activity.fullPath, originId, activity, workerId)
+    fileViewerModal.show(activity.fullPath, originId, workerId)
   }
 })
 
@@ -154,15 +154,6 @@ cityPanel.setOnViewClaims((city) => {
 })
 
 
-// Activity type from server
-interface Activity {
-  tool: string
-  summary?: string
-  fullPath?: string                     // Full file path for Read/Write/Edit
-  toolInput?: Record<string, unknown>   // Full tool parameters
-  timestamp: number
-}
-
 // State
 let cities: City[] = []
 let sessions: Session[] = []
@@ -179,7 +170,7 @@ const activityBySession = new Map<string, Activity[]>()
 const MAX_ACTIVITIES_PER_SESSION = 10
 
 // Handle incoming activity event
-function handleActivityEvent(activity: { tmuxSession: string; tool: string; summary?: string; fullPath?: string; toolInput?: Record<string, unknown>; timestamp: number }): void {
+function handleActivityEvent(activity: { tmuxSession: string; tool: string; summary?: string; fullPath?: string; timestamp: number }): void {
   console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '')
   // Store activity
   let activities = activityBySession.get(activity.tmuxSession)
@@ -191,7 +182,6 @@ function handleActivityEvent(activity: { tmuxSession: string; tool: string; summ
     tool: activity.tool,
     summary: activity.summary,
     fullPath: activity.fullPath,
-    toolInput: activity.toolInput,
     timestamp: activity.timestamp,
   })
   if (activities.length > MAX_ACTIVITIES_PER_SESSION) {
@@ -279,7 +269,6 @@ interface ActivityMessage {
     tool: string
     summary?: string
     fullPath?: string
-    toolInput?: Record<string, unknown>
     timestamp: number
   }
 }

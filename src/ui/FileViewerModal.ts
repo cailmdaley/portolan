@@ -2,10 +2,6 @@
 // Extended with annotation support: selection toolbar, highlights, annotations panel
 
 import { marked } from 'marked'
-import { html } from 'diff2html'
-import type { Diff2HtmlConfig } from 'diff2html'
-import * as Diff from 'diff'
-
 // CodeMirror imports
 import { EditorState, type Extension, StateField, StateEffect } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine, Decoration, type DecorationSet } from '@codemirror/view'
@@ -39,14 +35,6 @@ interface FileContent {
   path: string
   type?: 'text' | 'image'
   url?: string  // For images
-}
-
-interface Activity {
-  tool: string
-  summary?: string
-  fullPath?: string
-  toolInput?: Record<string, unknown>
-  timestamp: number
 }
 
 // Annotation type from server
@@ -182,6 +170,7 @@ export class FileViewerModal {
   private modal: HTMLElement
   private pathEl: HTMLElement
   private langEl: HTMLElement
+  private refreshBtn: HTMLElement
   private copyBtn: HTMLElement
   private saveBtn: HTMLElement
   private sendBtn: HTMLElement
@@ -210,6 +199,7 @@ export class FileViewerModal {
     this.modal = this.createModal()
     this.pathEl = this.modal.querySelector('.file-viewer-path')!
     this.langEl = this.modal.querySelector('.file-viewer-lang')!
+    this.refreshBtn = this.modal.querySelector('.file-viewer-refresh')!
     this.copyBtn = this.modal.querySelector('.file-viewer-copy')!
     this.saveBtn = this.modal.querySelector('.file-viewer-save')!
     this.sendBtn = this.modal.querySelector('.file-viewer-send')!
@@ -241,6 +231,7 @@ export class FileViewerModal {
           <span class="file-viewer-lang"></span>
           <button class="file-viewer-btn file-viewer-save" style="display: none;">Save</button>
           <button class="file-viewer-btn file-viewer-send" style="display: none;">Send to Worker</button>
+          <button class="file-viewer-btn file-viewer-refresh" title="Refresh file">↻</button>
           <button class="file-viewer-btn file-viewer-copy">Copy</button>
           <button class="file-viewer-close">&times;</button>
         </div>
@@ -250,7 +241,10 @@ export class FileViewerModal {
         <div class="file-viewer-annotations">
           <div class="annotations-header">
             <span>Annotations</span>
-            <button class="annotations-toggle" title="Toggle panel">◀</button>
+            <div class="annotations-header-actions">
+              <button class="annotations-clear-all" title="Clear all annotations">Clear</button>
+              <button class="annotations-toggle" title="Toggle panel">◀</button>
+            </div>
           </div>
           <div class="annotations-list"></div>
           <div class="annotations-global-comment">
@@ -274,6 +268,9 @@ export class FileViewerModal {
     // Copy button
     this.copyBtn.addEventListener('click', () => this.copyToClipboard())
 
+    // Refresh button
+    this.refreshBtn.addEventListener('click', () => this.refresh())
+
     // Save button
     this.saveBtn.addEventListener('click', () => this.saveFile())
 
@@ -286,6 +283,13 @@ export class FileViewerModal {
       this.annotationsPanel.classList.toggle('collapsed')
       const btn = toggleBtn as HTMLElement
       btn.textContent = this.annotationsPanel.classList.contains('collapsed') ? '▶' : '◀'
+    })
+
+    // Clear all annotations
+    const clearAllBtn = this.annotationsPanel.querySelector('.annotations-clear-all')
+    clearAllBtn?.addEventListener('click', () => {
+      if (this.annotations.length === 0) return
+      this.clearAllAnnotations()
     })
 
     // Global comment textarea
@@ -345,7 +349,6 @@ export class FileViewerModal {
   async show(
     filePath: string,
     originId: string,
-    activity?: Activity,
     sourceWorkerId?: string
   ): Promise<void> {
     // Show loading state
@@ -380,19 +383,6 @@ export class FileViewerModal {
     // Show modal
     this.backdrop.classList.add('visible')
     this.modal.classList.add('visible')
-
-    // Check if this is an Edit activity with diff data
-    if (activity?.tool === 'Edit' && activity.toolInput) {
-      const { old_string, new_string, file_path } = activity.toolInput as {
-        old_string?: string
-        new_string?: string
-        file_path?: string
-      }
-      if (old_string !== undefined && new_string !== undefined) {
-        this.showDiff(file_path || filePath, old_string, new_string)
-        return
-      }
-    }
 
     // Check if this is an image file
     const ext = this.getExtension(filePath)
@@ -455,39 +445,6 @@ export class FileViewerModal {
   private getExtension(filePath: string): string {
     const match = filePath.match(/\.[^.]+$/)
     return match ? match[0].toLowerCase() : ''
-  }
-
-  private showDiff(filePath: string, oldString: string, newString: string): void {
-    this.pathEl.textContent = filePath
-    this.langEl.textContent = 'diff'
-    this.modeLineEl.textContent = ''
-    this.saveBtn.style.display = 'none'
-    this.currentContent = { content: `${oldString}\n---\n${newString}`, language: 'diff', path: filePath }
-
-    // Generate unified diff using jsdiff
-    const unifiedDiff = Diff.createPatch(
-      filePath,
-      oldString,
-      newString,
-      'before',
-      'after'
-    )
-
-    // Render side-by-side with diff2html
-    const config: Diff2HtmlConfig = {
-      outputFormat: 'side-by-side',
-      drawFileList: false,
-      matching: 'lines',
-      diffStyle: 'word',
-    }
-
-    const diffHtml = html(unifiedDiff, config)
-
-    const container = document.createElement('div')
-    container.className = 'file-viewer-diff'
-    container.innerHTML = diffHtml
-    this.contentEl.innerHTML = ''
-    this.contentEl.appendChild(container)
   }
 
   private async showImage(filePath: string, originId: string): Promise<void> {
@@ -578,6 +535,7 @@ export class FileViewerModal {
       history(),
       foldGutter(),
       drawSelection(),
+      EditorView.lineWrapping,
       EditorState.allowMultipleSelections.of(true),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       bracketMatching(),
@@ -755,6 +713,26 @@ export class FileViewerModal {
     }
   }
 
+  private async refresh(): Promise<void> {
+    if (!this.currentContent) return
+
+    // Check for unsaved changes
+    if (this.isDirty) {
+      if (!confirm('You have unsaved changes. Refresh anyway?')) {
+        return
+      }
+    }
+
+    // Show feedback
+    const originalText = this.refreshBtn.textContent
+    this.refreshBtn.textContent = '...'
+
+    // Re-fetch the file
+    await this.show(this.currentContent.path, this.currentOriginId, this.sourceWorkerId || undefined)
+
+    this.refreshBtn.textContent = originalText
+  }
+
   private tryClose(): void {
     if (this.isDirty) {
       if (!confirm('You have unsaved changes. Discard them?')) {
@@ -823,11 +801,17 @@ export class FileViewerModal {
     const toolbar = document.createElement('div')
     toolbar.className = 'selection-toolbar'
     toolbar.innerHTML = `
-      <button class="selection-toolbar-btn" data-action="comment" title="Add comment (c)">
+      <button class="selection-toolbar-btn" data-action="comment" title="Add comment">
         <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
         </svg>
         Comment
+      </button>
+      <button class="selection-toolbar-btn" data-action="delete" title="Mark for deletion">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12" />
+        </svg>
+        Delete
       </button>
       <button class="selection-toolbar-btn selection-toolbar-close" title="Cancel">
         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -848,19 +832,16 @@ export class FileViewerModal {
       this.startAnnotationInput(from, to, selectedText)
     })
 
+    const deleteBtn = toolbar.querySelector('[data-action="delete"]')!
+    deleteBtn.addEventListener('click', () => {
+      this.saveAnnotation(from, to, selectedText, '[DELETE]')
+      this.hideSelectionToolbar()
+    })
+
     const closeBtn = toolbar.querySelector('.selection-toolbar-close')!
     closeBtn.addEventListener('click', () => {
       this.hideSelectionToolbar()
     })
-
-    // Keyboard shortcut: 'c' for comment
-    const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === 'c' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault()
-        this.startAnnotationInput(from, to, selectedText)
-      }
-    }
-    toolbar.addEventListener('keydown', keyHandler)
 
     // Store for cleanup
     this.selectionToolbar = toolbar
@@ -906,7 +887,9 @@ export class FileViewerModal {
     cancelBtn.addEventListener('click', () => this.hideSelectionToolbar())
 
     // Enter to save, Escape to cancel
+    // Stop propagation to prevent toolbar hotkeys (like 'c') from triggering
     textarea.addEventListener('keydown', (e) => {
+      e.stopPropagation()
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         save()
@@ -1075,6 +1058,7 @@ export class FileViewerModal {
     cancelBtn.addEventListener('click', cancel)
 
     textarea.addEventListener('keydown', (e) => {
+      e.stopPropagation()
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         save()
@@ -1129,6 +1113,27 @@ export class FileViewerModal {
     } catch (error: any) {
       console.error('Failed to delete annotation:', error)
       alert(`Failed to delete annotation: ${error.message}`)
+    }
+  }
+
+  private async clearAllAnnotations(): Promise<void> {
+    try {
+      // Delete all annotations in parallel
+      await Promise.all(
+        this.annotations.map(ann =>
+          fetch(`http://${window.location.hostname}:4004/annotations/${ann.id}`, {
+            method: 'DELETE',
+          })
+        )
+      )
+
+      this.annotations = []
+      this.updateAnnotationHighlights()
+      this.renderAnnotationsPanel()
+      this.updateSendButton()
+    } catch (error: any) {
+      console.error('Failed to clear annotations:', error)
+      alert(`Failed to clear annotations: ${error.message}`)
     }
   }
 

@@ -10,8 +10,6 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
     <!-- Prism.js for syntax highlighting -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
-    <!-- diff2html for side-by-side diffs -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/css/diff2html.min.css">
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-typescript.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-javascript.min.js"></script>
@@ -317,14 +315,14 @@
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
       }
 
-      /* ─── Search ──────────────────────────────────────────────── */
+      /* ─── Unified Search ──────────────────────────────────────── */
 
-      #city-panel .search-container {
+      #city-panel .unified-search-container {
         position: relative;
-        margin: 0 1.5rem 1.5rem 1.5rem;
+        margin: 0 1.5rem 1rem 1.5rem;
       }
 
-      #city-panel .search-input {
+      #city-panel .unified-search-input {
         width: 100%;
         padding: 0.65rem 2.5rem 0.65rem 1rem;
         font-family: var(--font-main);
@@ -341,20 +339,20 @@
           0 1px 0 rgba(255,255,255,0.5);
       }
 
-      #city-panel .search-input::placeholder {
+      #city-panel .unified-search-input::placeholder {
         color: var(--text-muted);
         font-style: italic;
         opacity: 0.7;
       }
 
-      #city-panel .search-input:focus {
+      #city-panel .unified-search-input:focus {
         border-color: var(--gold);
         box-shadow:
           inset 0 1px 3px rgba(0,0,0,0.06),
           0 0 0 2px rgba(154, 123, 53, 0.15);
       }
 
-      #city-panel .search-clear {
+      #city-panel .unified-search-clear {
         position: absolute;
         right: 0.5rem;
         top: 50%;
@@ -370,11 +368,192 @@
         transition: color 150ms ease;
       }
 
-      #city-panel .search-clear:hover {
+      #city-panel .unified-search-clear:hover {
         color: var(--red);
       }
 
-      /* ─── File Search ──────────────────────────────────────────── */
+      /* ─── Tab Bar ──────────────────────────────────────────────── */
+
+      #city-panel .tab-bar {
+        display: flex;
+        gap: 0;
+        margin: 0 1.5rem 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-light);
+      }
+
+      #city-panel .tab {
+        flex: 1;
+        padding: 0.5rem 1rem;
+        font-family: var(--font-main);
+        font-size: 0.8rem;
+        font-variant: small-caps;
+        letter-spacing: 0.1em;
+        color: var(--text-muted);
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+        transition: all 200ms ease;
+      }
+
+      #city-panel .tab:hover {
+        color: var(--text-secondary);
+      }
+
+      #city-panel .tab.active {
+        color: var(--gold);
+        border-bottom-color: var(--gold);
+        font-weight: 600;
+      }
+
+      /* ─── Tab Content ──────────────────────────────────────────── */
+
+      #city-panel .tab-content {
+        display: block;
+      }
+
+      #city-panel .tab-pane {
+        display: none;
+      }
+
+      #city-panel .tab-pane.active {
+        display: block;
+      }
+
+      /* ─── Search Results Container ─────────────────────────────── */
+
+      #city-panel .search-results-container {
+        margin: 0;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+      }
+
+      #city-panel .search-results-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: calc(100vh - 350px);
+        overflow-y: auto;
+      }
+
+      #city-panel .search-result {
+        padding: 0.5rem 0.6rem;
+        margin-bottom: 0.25rem;
+        background: rgba(253, 252, 250, 0.6);
+        border: 1px solid transparent;
+        border-left: 3px solid var(--accent);
+        cursor: pointer;
+        transition: all 200ms ease;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.3rem;
+      }
+
+      #city-panel .search-result:hover {
+        background: rgba(253, 252, 250, 0.95);
+        border-color: var(--border-light);
+        box-shadow: 0 2px 6px rgba(46, 42, 38, 0.08);
+        transform: translateX(2px);
+      }
+
+      #city-panel .search-result .result-icon {
+        font-size: 0.8rem;
+        margin-right: 0.3rem;
+      }
+
+      #city-panel .search-result.fiber-result {
+        border-left-color: var(--gold);
+      }
+
+      #city-panel .search-result.fiber-result.task {
+        border-left-color: var(--accent);
+      }
+
+      #city-panel .search-result.fiber-result.decision {
+        border-left-color: var(--gold);
+      }
+
+      #city-panel .search-result.fiber-result.spec {
+        border-left-color: #7B6B8B;
+      }
+
+      #city-panel .search-result.fiber-result.question {
+        border-left-color: var(--green);
+      }
+
+      /* ─── Recent Files Section ─────────────────────────────────── */
+
+      #city-panel .recent-files {
+        margin: 0 0 1rem 0;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+      }
+
+      #city-panel .recent-files h3 {
+        font-family: var(--font-main);
+        font-size: 0.75rem;
+        font-variant: small-caps;
+        text-transform: lowercase;
+        letter-spacing: 0.15em;
+        font-weight: 600;
+        color: var(--gold);
+        margin: 0 0 0.5rem 0;
+        padding: 0.4rem 0;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      #city-panel .recent-files h3::before,
+      #city-panel .recent-files h3::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(90deg, var(--border-light) 0%, transparent 100%);
+      }
+
+      #city-panel .recent-files h3::after {
+        background: linear-gradient(90deg, transparent 0%, var(--border-light) 100%);
+      }
+
+      #city-panel .recent-files-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 250px;
+        overflow-y: auto;
+      }
+
+      #city-panel .recent-file-item {
+        padding: 0.5rem 0.6rem;
+        margin-bottom: 0.25rem;
+        background: rgba(253, 252, 250, 0.6);
+        border: 1px solid transparent;
+        border-left: 3px solid var(--accent);
+        cursor: pointer;
+        transition: all 200ms ease;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.3rem;
+      }
+
+      #city-panel .recent-file-item:hover {
+        background: rgba(253, 252, 250, 0.95);
+        border-color: var(--border-light);
+        box-shadow: 0 2px 6px rgba(46, 42, 38, 0.08);
+        transform: translateX(2px);
+      }
+
+      #city-panel .recent-file-item .file-time {
+        font-family: var(--font-mono);
+        font-size: 0.65rem;
+        color: var(--text-muted);
+        margin-left: auto;
+      }
+
+      /* ─── File Search (legacy - keeping for search results) ───── */
 
       #city-panel .file-search {
         margin: 0 0 1.25rem 0;
@@ -1103,32 +1282,118 @@
         box-shadow: 0 4px 12px rgba(201, 162, 39, 0.25);
       }
 
-      /* ─── Dark Theme: Search ─────────────────────────────────── */
+      /* ─── Dark Theme: Unified Search ─────────────────────────── */
 
-      #city-panel.dark-theme .search-input {
+      #city-panel.dark-theme .unified-search-input {
         color: var(--ui-text);
         background: var(--ui-dark-surface);
         border-color: var(--ui-border);
         box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
       }
 
-      #city-panel.dark-theme .search-input::placeholder {
+      #city-panel.dark-theme .unified-search-input::placeholder {
         color: var(--ui-text-muted);
       }
 
-      #city-panel.dark-theme .search-input:focus {
+      #city-panel.dark-theme .unified-search-input:focus {
         border-color: var(--ui-gold);
         box-shadow:
           inset 0 2px 4px rgba(0, 0, 0, 0.2),
           0 0 0 2px rgba(201, 162, 39, 0.2);
       }
 
-      #city-panel.dark-theme .search-clear {
+      #city-panel.dark-theme .unified-search-clear {
         color: var(--ui-text-muted);
       }
 
-      #city-panel.dark-theme .search-clear:hover {
+      #city-panel.dark-theme .unified-search-clear:hover {
         color: var(--ui-red);
+      }
+
+      /* ─── Dark Theme: Tab Bar ──────────────────────────────────── */
+
+      #city-panel.dark-theme .tab-bar {
+        border-bottom-color: var(--ui-border);
+      }
+
+      #city-panel.dark-theme .tab {
+        color: var(--ui-text-muted);
+      }
+
+      #city-panel.dark-theme .tab:hover {
+        color: var(--ui-text-secondary);
+      }
+
+      #city-panel.dark-theme .tab.active {
+        color: var(--ui-gold);
+        border-bottom-color: var(--ui-gold);
+      }
+
+      /* ─── Dark Theme: Search Results ───────────────────────────── */
+
+      #city-panel.dark-theme .search-result {
+        background: rgba(45, 41, 38, 0.6);
+        border-left-color: var(--ui-accent);
+      }
+
+      #city-panel.dark-theme .search-result:hover {
+        background: var(--ui-dark-surface);
+        border-color: var(--ui-border-light);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+
+      #city-panel.dark-theme .search-result.fiber-result.task {
+        border-left-color: var(--ui-accent);
+      }
+
+      #city-panel.dark-theme .search-result.fiber-result.decision {
+        border-left-color: var(--ui-gold);
+      }
+
+      #city-panel.dark-theme .search-result.fiber-result.spec {
+        border-left-color: var(--ui-purple);
+      }
+
+      #city-panel.dark-theme .search-result.fiber-result.question {
+        border-left-color: var(--ui-green);
+      }
+
+      /* ─── Dark Theme: Recent Files ─────────────────────────────── */
+
+      #city-panel.dark-theme .recent-files h3 {
+        color: var(--ui-gold);
+      }
+
+      #city-panel.dark-theme .recent-files h3::before,
+      #city-panel.dark-theme .recent-files h3::after {
+        background: linear-gradient(90deg, var(--ui-border) 0%, transparent 100%);
+      }
+
+      #city-panel.dark-theme .recent-files h3::after {
+        background: linear-gradient(90deg, transparent 0%, var(--ui-border) 100%);
+      }
+
+      #city-panel.dark-theme .recent-file-item {
+        background: rgba(45, 41, 38, 0.6);
+        border-left-color: var(--ui-accent);
+      }
+
+      #city-panel.dark-theme .recent-file-item:hover {
+        background: var(--ui-dark-surface);
+        border-color: var(--ui-border-light);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+
+      #city-panel.dark-theme .recent-file-item .file-name {
+        color: var(--ui-text);
+      }
+
+      #city-panel.dark-theme .recent-file-item .file-dir {
+        color: var(--ui-text-muted);
+      }
+
+      #city-panel.dark-theme .recent-file-item .file-time {
+        color: var(--ui-text-muted);
       }
 
       /* ─── Dark Theme: File Search ──────────────────────────────── */
@@ -1967,83 +2232,6 @@
         overflow-x: auto;
       }
 
-      /* diff2html customizations - parchment theme */
-      .file-viewer-diff {
-        font-family: var(--font-mono);
-        font-size: 0.85rem;
-        overflow: auto;
-        max-width: 100%;
-      }
-      .file-viewer-diff .d2h-wrapper {
-        background: var(--bg-elevated);
-        overflow-x: auto;
-      }
-      .file-viewer-diff .d2h-file-header {
-        display: none;  /* We show our own header */
-      }
-      .file-viewer-diff .d2h-file-wrapper {
-        border: none;
-      }
-      .file-viewer-diff .d2h-diff-table {
-        font-family: var(--font-mono);
-        background: var(--bg-elevated);
-      }
-      .file-viewer-diff .d2h-code-side-linenumber,
-      .file-viewer-diff .d2h-code-linenumber {
-        background: var(--bg-card) !important;
-        color: var(--text-muted) !important;
-        border-right: 1px solid var(--border-light);
-      }
-      /* Reset all line backgrounds to parchment */
-      .file-viewer-diff .d2h-code-line,
-      .file-viewer-diff .d2h-code-side-line {
-        background: var(--bg-elevated) !important;
-        color: var(--text-primary) !important;
-        padding: 0 8px;
-      }
-      /* Deletion lines - soft rose on parchment */
-      .file-viewer-diff .d2h-del {
-        background-color: #F5E6E6 !important;  /* soft rose parchment */
-      }
-      .file-viewer-diff .d2h-code-line-ctn.d2h-del {
-        background-color: #F5E6E6 !important;
-      }
-      /* Addition lines - soft sage on parchment */
-      .file-viewer-diff .d2h-ins {
-        background-color: #E8F0E8 !important;  /* soft sage parchment */
-      }
-      .file-viewer-diff .d2h-code-line-ctn.d2h-ins {
-        background-color: #E8F0E8 !important;
-      }
-      /* Word-level highlights */
-      .file-viewer-diff .d2h-del del,
-      .file-viewer-diff del {
-        background-color: #E8C4C4 !important;  /* slightly stronger rose */
-        text-decoration: none;
-        color: var(--text-primary) !important;
-      }
-      .file-viewer-diff .d2h-ins ins,
-      .file-viewer-diff ins {
-        background-color: #C4DCC4 !important;  /* slightly stronger sage */
-        text-decoration: none;
-        color: var(--text-primary) !important;
-      }
-      /* Ensure all text is dark */
-      .file-viewer-diff * {
-        color: var(--text-primary);
-      }
-      .file-viewer-diff .d2h-code-line-prefix {
-        color: var(--text-muted) !important;
-        user-select: none;
-      }
-      /* Side-by-side specific */
-      .file-viewer-diff .d2h-file-side-diff {
-        background: var(--bg-elevated);
-      }
-      .file-viewer-diff .d2h-diff-tbody tr {
-        background: var(--bg-elevated);
-      }
-
       /* Image preview */
       .file-viewer-image {
         display: flex;
@@ -2170,6 +2358,29 @@
 
       .annotations-toggle:hover {
         color: var(--text-primary);
+      }
+
+      .annotations-header-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .annotations-clear-all {
+        background: none;
+        border: 1px solid var(--text-muted);
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 2px 8px;
+        font-size: 10px;
+        border-radius: 3px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      .annotations-clear-all:hover {
+        color: var(--text-primary);
+        border-color: var(--text-primary);
       }
 
       .annotations-list {

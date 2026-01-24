@@ -10,6 +10,21 @@ export interface CartesianCoord {
   z: number
 }
 
+// Recent file (mtime-based)
+export interface RecentFile {
+  path: string        // Relative path from city root
+  fullPath: string    // Full path for opening
+  mtime: number       // Modification time (epoch ms)
+}
+
+// Worker activity event
+export interface Activity {
+  tool: string
+  summary?: string
+  fullPath?: string   // Full file path for Read/Write/Edit
+  timestamp: number
+}
+
 // Git status for a repository
 export interface GitStatus {
   branch: string
@@ -37,6 +52,7 @@ export interface ServerCity {
   hasClaims?: boolean  // Has claims directory (workflow/config or results/claims)
   isDormant?: boolean  // No active sessions (persisted city with no workers)
   gitStatus?: GitStatus  // Git repository status
+  recentFiles?: RecentFile[]  // Recently modified files
   originId: string  // 'local' | 'remote-{hostname}'
 }
 
@@ -74,6 +90,7 @@ export interface City {
   hasClaims: boolean
   isDormant: boolean
   gitStatus?: GitStatus
+  recentFiles?: RecentFile[]
   originId: string
 }
 
@@ -98,6 +115,7 @@ export function normalizeCity(city: ServerCity): City {
     hasClaims: city.hasClaims ?? false,
     isDormant: city.isDormant ?? false,
     gitStatus: city.gitStatus,
+    recentFiles: city.recentFiles,
     originId: city.originId,
   }
 }

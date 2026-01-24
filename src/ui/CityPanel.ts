@@ -1,14 +1,7 @@
 // CityPanel.ts - DOM overlay for city details and fibers
+// Unified search + Files/Fibers tabs
 
-import { marked } from 'marked'
-import katex from 'katex'
-import type { City, GitStatus } from '../state/types'
-
-// Configure marked for safe rendering
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-})
+import type { City, GitStatus, RecentFile } from '../state/types'
 
 export interface Fiber {
   id: string
@@ -35,6 +28,11 @@ export interface RecentAnnotatedFile {
   mostRecentAt: number
 }
 
+// Unified search result types
+type UnifiedResult =
+  | { type: 'file'; data: SearchResult }
+  | { type: 'fiber'; data: Fiber }
+
 interface FibersResponse {
   type: 'fibers'
   cityId: string
@@ -43,6 +41,7 @@ interface FibersResponse {
 }
 
 type FibersCallback = (response: FibersResponse) => void
+type ActiveTab = 'files' | 'fibers'
 
 export class CityPanel {
   private panel: HTMLElement
@@ -53,10 +52,22 @@ export class CityPanel {
   private gitStatusEl: HTMLElement
   private newWorkerBtn: HTMLElement
   private viewClaimsBtn: HTMLElement
+  // Unified search
   private searchInput: HTMLInputElement
   private searchClear: HTMLElement
+  // Tab bar
+  private filesTab: HTMLElement
+  private fibersTab: HTMLElement
+  // Tab content containers
+  private tabContent: HTMLElement
+  private searchResultsContainer: HTMLElement
+  // Files tab content
+  private recentAnnotationsList: HTMLElement
+  private recentFilesList: HTMLElement
+  // Fibers tab content
   private openFibersList: HTMLElement
   private closedFibersList: HTMLElement
+
   private currentCity: City | null = null
   private ws: WebSocket | null = null
   private fibersCallback: FibersCallback | null = null
@@ -64,22 +75,18 @@ export class CityPanel {
   private isResizing = false
   private minWidth = 280
   private maxWidth = 600
-  // Store fibers for filtering
+
+  // State
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
-  // Callback for View Claims button
-  private onViewClaims: ((city: City) => void) | null = null
-  // File search
-  private fileSearchInput: HTMLInputElement
-  private fileSearchClear: HTMLElement
-  private fileSearchMode: HTMLSelectElement
-  private fileSearchResults: HTMLElement
-  private fileSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private searchQuery = ''
+  private searchResults: UnifiedResult[] = []
+  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private currentSearchId = 0
-  // Callback for opening files
+
+  // Callbacks
+  private onViewClaims: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string) => void) | null = null
-  // Recent annotations
-  private recentAnnotationsList: HTMLElement
 
   constructor() {
     this.panel = this.createPanel()
@@ -90,27 +97,28 @@ export class CityPanel {
     this.gitStatusEl = this.panel.querySelector('.git-status')!
     this.newWorkerBtn = this.panel.querySelector('.new-worker-btn')!
     this.viewClaimsBtn = this.panel.querySelector('.view-claims-btn')!
-    this.searchInput = this.panel.querySelector('.search-input')!
-    this.searchClear = this.panel.querySelector('.search-clear')!
+    this.searchInput = this.panel.querySelector('.unified-search-input')!
+    this.searchClear = this.panel.querySelector('.unified-search-clear')!
+    this.filesTab = this.panel.querySelector('.tab-files')!
+    this.fibersTab = this.panel.querySelector('.tab-fibers')!
+    this.tabContent = this.panel.querySelector('.tab-content')!
+    this.searchResultsContainer = this.panel.querySelector('.search-results-container')!
+    this.recentAnnotationsList = this.panel.querySelector('.recent-annotations-list')!
+    this.recentFilesList = this.panel.querySelector('.recent-files-list')!
     this.openFibersList = this.panel.querySelector('.open-fibers')!
     this.closedFibersList = this.panel.querySelector('.closed-fibers')!
-    this.fileSearchInput = this.panel.querySelector('.file-search-input')!
-    this.fileSearchClear = this.panel.querySelector('.file-search-clear')!
-    this.fileSearchMode = this.panel.querySelector('.file-search-mode')!
-    this.fileSearchResults = this.panel.querySelector('.file-search-results')!
-    this.recentAnnotationsList = this.panel.querySelector('.recent-annotations-list')!
 
     this.setupEventListeners()
     this.setupResizeHandling()
-    this.setupSearch()
-    this.setupFileSearch()
+    this.setupUnifiedSearch()
+    this.setupTabs()
     document.body.appendChild(this.panel)
   }
 
   private createPanel(): HTMLElement {
     const panel = document.createElement('div')
     panel.id = 'city-panel'
-    panel.className = 'panel dark-theme'  // Fireside Command: dark UI over warm map
+    panel.className = 'panel dark-theme'
     panel.innerHTML = `
       <div class="resize-handle"></div>
       <button class="close-btn">&times;</button>
@@ -119,49 +127,62 @@ export class CityPanel {
       <div class="git-status"></div>
       <button class="new-worker-btn">+ New Worker</button>
       <button class="view-claims-btn" style="display: none;">View Claims</button>
-      <section class="file-search">
-        <h3>Files</h3>
-        <div class="file-search-bar">
-          <input type="text" class="file-search-input" placeholder="Search files…" />
-          <select class="file-search-mode">
-            <option value="filename">Name</option>
-            <option value="content">Content</option>
-          </select>
-          <button class="file-search-clear" aria-label="Clear search">&times;</button>
-        </div>
-        <ul class="file-search-results"></ul>
-      </section>
-      <section class="recent-annotations">
-        <h3>Recent Annotations</h3>
-        <ul class="recent-annotations-list"></ul>
-      </section>
-      <div class="search-container">
-        <input type="text" class="search-input" placeholder="Filter fibers…" />
-        <button class="search-clear" aria-label="Clear search">&times;</button>
+
+      <!-- Unified Search -->
+      <div class="unified-search-container">
+        <input type="text" class="unified-search-input" placeholder="Search files & fibers…" />
+        <button class="unified-search-clear" aria-label="Clear search">&times;</button>
       </div>
-      <section class="fibers">
-        <h3>Open Fibers</h3>
-        <ul class="fiber-list open-fibers"></ul>
-      </section>
-      <section class="fibers">
-        <h3>Recently Closed</h3>
-        <ul class="fiber-list closed-fibers"></ul>
-      </section>
+
+      <!-- Tab Bar -->
+      <div class="tab-bar">
+        <button class="tab tab-files active">Files</button>
+        <button class="tab tab-fibers">Fibers</button>
+      </div>
+
+      <!-- Search Results (shown when searching) -->
+      <div class="search-results-container" style="display: none;">
+        <ul class="search-results-list"></ul>
+      </div>
+
+      <!-- Tab Content (shown when not searching) -->
+      <div class="tab-content">
+        <!-- Files Tab -->
+        <div class="files-tab-content tab-pane active">
+          <section class="recent-annotations">
+            <h3>Annotated</h3>
+            <ul class="recent-annotations-list"></ul>
+          </section>
+          <section class="recent-files">
+            <h3>Recently Edited</h3>
+            <ul class="recent-files-list"></ul>
+          </section>
+        </div>
+
+        <!-- Fibers Tab -->
+        <div class="fibers-tab-content tab-pane">
+          <section class="fibers open-fibers-section">
+            <h3>Open</h3>
+            <ul class="fiber-list open-fibers"></ul>
+          </section>
+          <section class="fibers closed-fibers-section">
+            <h3>Recently Closed</h3>
+            <ul class="fiber-list closed-fibers"></ul>
+          </section>
+        </div>
+      </div>
     `
     return panel
   }
 
   private setupEventListeners(): void {
-    // Close button
     this.closeBtn.addEventListener('click', () => this.hide())
 
-    // New worker button
     this.newWorkerBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       this.requestNewWorker()
     })
 
-    // View claims button
     this.viewClaimsBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       if (this.currentCity && this.onViewClaims) {
@@ -169,7 +190,6 @@ export class CityPanel {
       }
     })
 
-    // Click outside to close (use setTimeout to let current click propagate)
     document.addEventListener('click', (e) => {
       if (this.ignoreNextClick) {
         this.ignoreNextClick = false
@@ -183,7 +203,6 @@ export class CityPanel {
       }
     })
 
-    // Escape key to close
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.panel.classList.contains('visible')) {
         this.hide()
@@ -220,83 +239,114 @@ export class CityPanel {
     document.addEventListener('mouseup', onMouseUp)
   }
 
-  private setupSearch(): void {
+  private setupUnifiedSearch(): void {
     this.searchInput.addEventListener('input', () => {
-      this.filterFibers()
+      this.searchQuery = this.searchInput.value.trim()
       this.updateSearchClearVisibility()
+      this.debounceSearch()
     })
 
     this.searchClear.addEventListener('click', () => {
       this.searchInput.value = ''
-      this.filterFibers()
+      this.searchQuery = ''
+      this.searchResults = []
       this.updateSearchClearVisibility()
+      this.showTabContent()
       this.searchInput.focus()
     })
 
-    // Start with clear button hidden
     this.updateSearchClearVisibility()
   }
 
-  private setupFileSearch(): void {
-    this.fileSearchInput.addEventListener('input', () => {
-      this.updateFileSearchClearVisibility()
-      this.debounceFileSearch()
-    })
-
-    this.fileSearchMode.addEventListener('change', () => {
-      if (this.fileSearchInput.value.trim()) {
-        this.performFileSearch()
-      }
-    })
-
-    this.fileSearchClear.addEventListener('click', () => {
-      this.fileSearchInput.value = ''
-      this.fileSearchResults.innerHTML = ''
-      this.updateFileSearchClearVisibility()
-      this.fileSearchInput.focus()
-    })
-
-    this.updateFileSearchClearVisibility()
+  private setupTabs(): void {
+    this.filesTab.addEventListener('click', () => this.setActiveTab('files'))
+    this.fibersTab.addEventListener('click', () => this.setActiveTab('fibers'))
   }
 
-  private updateFileSearchClearVisibility(): void {
-    this.fileSearchClear.style.display = this.fileSearchInput.value ? 'block' : 'none'
+  private setActiveTab(tab: ActiveTab): void {
+    // Update tab button states
+    this.filesTab.classList.toggle('active', tab === 'files')
+    this.fibersTab.classList.toggle('active', tab === 'fibers')
+
+    // Update pane visibility
+    const filesPane = this.panel.querySelector('.files-tab-content')!
+    const fibersPane = this.panel.querySelector('.fibers-tab-content')!
+    filesPane.classList.toggle('active', tab === 'files')
+    fibersPane.classList.toggle('active', tab === 'fibers')
   }
 
-  private debounceFileSearch(): void {
-    if (this.fileSearchDebounceTimer) {
-      clearTimeout(this.fileSearchDebounceTimer)
+  private updateSearchClearVisibility(): void {
+    this.searchClear.style.display = this.searchInput.value ? 'block' : 'none'
+  }
+
+  private debounceSearch(): void {
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer)
     }
-    this.fileSearchDebounceTimer = setTimeout(() => {
-      this.performFileSearch()
+    this.searchDebounceTimer = setTimeout(() => {
+      this.performUnifiedSearch()
     }, 150)
   }
 
-  private performFileSearch(): void {
-    const query = this.fileSearchInput.value.trim()
+  private performUnifiedSearch(): void {
+    const query = this.searchQuery
+
     if (!query) {
-      this.fileSearchResults.innerHTML = ''
+      this.searchResults = []
+      this.showTabContent()
       return
     }
 
+    // Show search results view
+    this.showSearchResults()
+
+    // Search files (both name and content)
+    this.searchFilesUnified(query)
+
+    // Also filter fibers locally
+    const matchingFibers = this.filterFibersLocally(query)
+    this.renderUnifiedResults([], matchingFibers)
+  }
+
+  private searchFilesUnified(query: string): void {
     if (!this.currentCity || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.fileSearchResults.innerHTML = '<li class="empty">No connection</li>'
       return
     }
 
     const searchId = `${this.currentCity.id}-${++this.currentSearchId}`
-    const mode = this.fileSearchMode.value as 'filename' | 'content'
 
-    // Show loading state
-    this.fileSearchResults.innerHTML = '<li class="loading">Searching…</li>'
+    // Search both filename and content
+    // Send two searches - server will return results with searchId
+    this.ws.send(JSON.stringify({
+      type: 'searchFiles',
+      cityId: this.currentCity.id,
+      query,
+      searchId: `${searchId}-name`,
+      mode: 'filename',
+    }))
 
     this.ws.send(JSON.stringify({
       type: 'searchFiles',
       cityId: this.currentCity.id,
       query,
-      searchId,
-      mode,
+      searchId: `${searchId}-content`,
+      mode: 'content',
     }))
+  }
+
+  private filterFibersLocally(query: string): Fiber[] {
+    const q = query.toLowerCase()
+    const matchesFiber = (f: Fiber): boolean => {
+      return (
+        f.title.toLowerCase().includes(q) ||
+        f.kind.toLowerCase().includes(q) ||
+        f.id.toLowerCase().includes(q) ||
+        (f.body?.toLowerCase().includes(q) ?? false) ||
+        (f.reason?.toLowerCase().includes(q) ?? false)
+      )
+    }
+
+    return [...this.openFibers, ...this.closedFibers].filter(matchesFiber)
   }
 
   handleSearchResults(searchId: string, results: SearchResult[], error?: string): void {
@@ -306,27 +356,61 @@ export class CityPanel {
     }
 
     if (error) {
-      this.fileSearchResults.innerHTML = `<li class="empty error">${this.escapeHtml(error)}</li>`
+      console.error('Search error:', error)
       return
     }
 
-    if (results.length === 0) {
-      this.fileSearchResults.innerHTML = '<li class="empty">No matches</li>'
-      return
+    // Merge file results with current fiber results
+    const fileResults: UnifiedResult[] = results.map(r => ({ type: 'file' as const, data: r }))
+    const fiberResults = this.filterFibersLocally(this.searchQuery)
+
+    // Deduplicate file results by fullPath
+    const seenPaths = new Set<string>()
+    const existingFileResults = this.searchResults.filter(r => r.type === 'file')
+    for (const r of existingFileResults) {
+      if (r.type === 'file') seenPaths.add(r.data.fullPath)
     }
 
-    this.fileSearchResults.innerHTML = results.map(r => this.renderSearchResult(r)).join('')
-    this.attachFileResultListeners()
+    const newFileResults = fileResults.filter(r => {
+      if (r.type === 'file' && !seenPaths.has(r.data.fullPath)) {
+        seenPaths.add(r.data.fullPath)
+        return true
+      }
+      return false
+    })
+
+    // Combine and re-render
+    const allFileResults = [...existingFileResults, ...newFileResults]
+    this.renderUnifiedResults(
+      allFileResults.map(r => r.type === 'file' ? r.data : null).filter(Boolean) as SearchResult[],
+      fiberResults
+    )
   }
 
-  private renderSearchResult(result: SearchResult): string {
+  private renderUnifiedResults(files: SearchResult[], fibers: Fiber[]): void {
+    const resultsList = this.panel.querySelector('.search-results-list')!
+
+    if (files.length === 0 && fibers.length === 0) {
+      resultsList.innerHTML = '<li class="empty">No matches</li>'
+      return
+    }
+
+    // Render files first, then fibers
+    const fileHtml = files.slice(0, 20).map(r => this.renderFileResult(r)).join('')
+    const fiberHtml = fibers.slice(0, 10).map(f => this.renderFiberResult(f)).join('')
+
+    resultsList.innerHTML = fileHtml + fiberHtml
+    this.attachSearchResultListeners()
+  }
+
+  private renderFileResult(result: SearchResult): string {
     const fileName = result.path.split('/').pop() || result.path
     const dir = result.path.includes('/') ? result.path.slice(0, result.path.lastIndexOf('/')) : ''
 
     if (result.line !== undefined && result.match !== undefined) {
-      // Content search result
       return `
-        <li class="file-result" data-path="${this.escapeHtml(result.fullPath)}">
+        <li class="search-result file-result" data-type="file" data-path="${this.escapeHtml(result.fullPath)}">
+          <span class="result-icon">📄</span>
           <span class="file-name">${this.escapeHtml(fileName)}</span>
           <span class="file-line">:${result.line}</span>
           <span class="file-dir">${this.escapeHtml(dir)}</span>
@@ -334,9 +418,9 @@ export class CityPanel {
         </li>
       `
     } else {
-      // Filename search result
       return `
-        <li class="file-result" data-path="${this.escapeHtml(result.fullPath)}">
+        <li class="search-result file-result" data-type="file" data-path="${this.escapeHtml(result.fullPath)}">
+          <span class="result-icon">📄</span>
           <span class="file-name">${this.escapeHtml(fileName)}</span>
           <span class="file-dir">${this.escapeHtml(dir)}</span>
         </li>
@@ -344,30 +428,58 @@ export class CityPanel {
     }
   }
 
-  private attachFileResultListeners(): void {
-    this.fileSearchResults.querySelectorAll('.file-result').forEach(item => {
+  private renderFiberResult(fiber: Fiber): string {
+    const statusIcon = fiber.status === 'active' ? '◐' : fiber.status === 'closed' ? '●' : '○'
+    const kindClass = fiber.kind || 'task'
+
+    return `
+      <li class="search-result fiber-result ${kindClass}" data-type="fiber" data-fiber-id="${fiber.id}">
+        <span class="result-icon fiber-status">${statusIcon}</span>
+        <span class="fiber-title">${this.escapeHtml(fiber.title)}</span>
+        <span class="fiber-kind">${fiber.kind || 'task'}</span>
+      </li>
+    `
+  }
+
+  private attachSearchResultListeners(): void {
+    this.panel.querySelectorAll('.search-result').forEach(item => {
       item.addEventListener('click', () => {
-        const fullPath = (item as HTMLElement).dataset.path
-        if (fullPath && this.currentCity && this.onOpenFile) {
-          this.onOpenFile(fullPath, this.currentCity.originId)
+        const el = item as HTMLElement
+        const type = el.dataset.type
+
+        if (type === 'file') {
+          const fullPath = el.dataset.path
+          if (fullPath && this.currentCity && this.onOpenFile) {
+            this.onOpenFile(fullPath, this.currentCity.originId)
+          }
+        } else if (type === 'fiber') {
+          const fiberId = el.dataset.fiberId
+          if (fiberId && this.currentCity && this.onOpenFile) {
+            // Open the fiber's markdown file
+            const feltPath = `${this.currentCity.path}/.felt/${fiberId}.md`
+            this.onOpenFile(feltPath, this.currentCity.originId)
+          }
         }
       })
     })
   }
 
-  setOnOpenFile(callback: (fullPath: string, originId: string) => void): void {
-    this.onOpenFile = callback
+  private showSearchResults(): void {
+    this.searchResultsContainer.style.display = 'block'
+    this.tabContent.style.display = 'none'
   }
 
-  /**
-   * Fetch and render recently annotated files for this city
-   */
+  private showTabContent(): void {
+    this.searchResultsContainer.style.display = 'none'
+    this.tabContent.style.display = 'block'
+  }
+
   private async fetchRecentAnnotations(): Promise<void> {
     if (!this.currentCity) return
 
     try {
       const response = await fetch(
-        `http://${window.location.hostname}:4004/recent-annotations?originId=${encodeURIComponent(this.currentCity.originId)}&limit=5`
+        `http://${window.location.hostname}:4004/recent-annotations?originId=${encodeURIComponent(this.currentCity.originId)}&limit=3`
       )
       if (!response.ok) {
         this.recentAnnotationsList.innerHTML = '<li class="empty">Failed to load</li>'
@@ -436,61 +548,94 @@ export class CityPanel {
     })
   }
 
-  private updateSearchClearVisibility(): void {
-    this.searchClear.style.display = this.searchInput.value ? 'block' : 'none'
-  }
-
-  private filterFibers(): void {
-    const query = this.searchInput.value.toLowerCase().trim()
-
-    if (!query) {
-      // No filter — render all
-      this.renderFilteredFibers(this.openFibers, this.closedFibers)
+  private renderRecentFiles(files: RecentFile[]): void {
+    if (!files || files.length === 0) {
+      this.recentFilesList.innerHTML = '<li class="empty">No recent files</li>'
       return
     }
 
-    const matchesFiber = (f: Fiber): boolean => {
-      return (
-        f.title.toLowerCase().includes(query) ||
-        f.kind.toLowerCase().includes(query) ||
-        (f.body?.toLowerCase().includes(query) ?? false) ||
-        (f.reason?.toLowerCase().includes(query) ?? false)
-      )
-    }
-
-    const filteredOpen = this.openFibers.filter(matchesFiber)
-    const filteredClosed = this.closedFibers.filter(matchesFiber)
-    this.renderFilteredFibers(filteredOpen, filteredClosed)
+    // Show top 10
+    const top10 = files.slice(0, 10)
+    this.recentFilesList.innerHTML = top10.map(f => this.renderRecentFile(f)).join('')
+    this.attachRecentFilesListeners()
   }
 
-  private renderFilteredFibers(open: Fiber[], closed: Fiber[]): void {
+  private renderRecentFile(file: RecentFile): string {
+    const fileName = file.path.split('/').pop() || file.path
+    const dir = file.path.includes('/')
+      ? file.path.slice(0, file.path.lastIndexOf('/'))
+      : ''
+    const timeAgo = this.formatTimeAgo(file.mtime)
+
+    return `
+      <li class="recent-file-item" data-path="${this.escapeHtml(file.fullPath)}">
+        <span class="file-name">${this.escapeHtml(fileName)}</span>
+        <span class="file-dir">${this.escapeHtml(dir)}</span>
+        <span class="file-time">${timeAgo}</span>
+      </li>
+    `
+  }
+
+  private attachRecentFilesListeners(): void {
+    this.recentFilesList.querySelectorAll('.recent-file-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const fullPath = (item as HTMLElement).dataset.path
+        if (fullPath && this.currentCity && this.onOpenFile) {
+          this.onOpenFile(fullPath, this.currentCity.originId)
+        }
+      })
+    })
+  }
+
+  private renderFibers(open: Fiber[], closed: Fiber[]): void {
+    this.openFibers = open
+    this.closedFibers = closed
+
     // Render open fibers
     if (open.length === 0) {
-      const msg = this.searchInput.value ? 'No matches' : 'No open fibers'
-      this.openFibersList.innerHTML = `<li class="empty">${msg}</li>`
+      this.openFibersList.innerHTML = '<li class="empty">No open fibers</li>'
     } else {
       this.openFibersList.innerHTML = open.map(f => this.renderFiberItem(f)).join('')
     }
 
     // Render closed fibers
     if (closed.length === 0) {
-      const msg = this.searchInput.value ? 'No matches' : 'None recently'
-      this.closedFibersList.innerHTML = `<li class="empty">${msg}</li>`
+      this.closedFibersList.innerHTML = '<li class="empty">None recently</li>'
     } else {
       this.closedFibersList.innerHTML = closed.map(f => this.renderFiberItem(f, true)).join('')
     }
 
-    // Attach event listeners
-    this.attachExpandListeners()
+    this.attachFiberClickListeners()
     this.attachHandoffListeners()
   }
 
-  private attachExpandListeners(): void {
-    this.panel.querySelectorAll('.fiber-item.has-content').forEach(item => {
+  private renderFiberItem(fiber: Fiber, _closed = false): string {
+    const statusIcon = fiber.status === 'active' ? '◐' : fiber.status === 'closed' ? '●' : '○'
+    const kindClass = fiber.kind || 'task'
+
+    return `
+      <li class="fiber-item ${kindClass}" data-id="${fiber.id}">
+        <div class="fiber-header">
+          <span class="fiber-status">${statusIcon}</span>
+          <span class="fiber-title">${this.escapeHtml(fiber.title)}</span>
+          <span class="fiber-kind">${fiber.kind || 'task'}</span>
+          <button class="handoff-btn" data-fiber-id="${fiber.id}" title="Hand off to Claude">↗</button>
+        </div>
+      </li>
+    `
+  }
+
+  private attachFiberClickListeners(): void {
+    this.panel.querySelectorAll('.fiber-item').forEach(item => {
       item.addEventListener('click', (e) => {
-        // Don't expand if clicking on a link or button
-        if ((e.target as HTMLElement).closest('a, button')) return
-        item.classList.toggle('expanded')
+        // Don't open if clicking on handoff button
+        if ((e.target as HTMLElement).closest('.handoff-btn')) return
+
+        const fiberId = (item as HTMLElement).dataset.id
+        if (fiberId && this.currentCity && this.onOpenFile) {
+          const feltPath = `${this.currentCity.path}/.felt/${fiberId}.md`
+          this.onOpenFile(feltPath, this.currentCity.originId)
+        }
       })
     })
   }
@@ -538,6 +683,10 @@ export class CityPanel {
     this.onViewClaims = callback
   }
 
+  setOnOpenFile(callback: (fullPath: string, originId: string) => void): void {
+    this.onOpenFile = callback
+  }
+
   handleMessage(message: unknown): boolean {
     const msg = message as { type?: string }
     if (msg.type === 'fibers') {
@@ -564,21 +713,28 @@ export class CityPanel {
     // Render git status
     this.renderGitStatus(city.gitStatus)
 
-    // Show/hide View Claims button based on hasClaims
+    // Show/hide View Claims button
     this.viewClaimsBtn.style.display = city.hasClaims ? 'block' : 'none'
 
-    // Clear previous fibers
+    // Clear search
+    this.searchInput.value = ''
+    this.searchQuery = ''
+    this.searchResults = []
+    this.updateSearchClearVisibility()
+    this.showTabContent()
+
+    // Reset to files tab
+    this.setActiveTab('files')
+
+    // Load files tab content
+    this.recentAnnotationsList.innerHTML = '<li class="loading">Loading...</li>'
+    this.recentFilesList.innerHTML = '<li class="loading">Loading...</li>'
+    this.fetchRecentAnnotations()
+    this.renderRecentFiles(city.recentFiles || [])
+
+    // Load fibers tab content
     this.openFibersList.innerHTML = '<li class="loading">Loading fibers...</li>'
     this.closedFibersList.innerHTML = ''
-
-    // Clear file search
-    this.fileSearchInput.value = ''
-    this.fileSearchResults.innerHTML = ''
-    this.updateFileSearchClearVisibility()
-
-    // Fetch recent annotations
-    this.recentAnnotationsList.innerHTML = '<li class="loading">Loading...</li>'
-    this.fetchRecentAnnotations()
 
     // Ignore the click that triggered this show
     this.ignoreNextClick = true
@@ -590,9 +746,6 @@ export class CityPanel {
     this.requestFibers(city.id)
   }
 
-  /**
-   * Render git status section
-   */
   private renderGitStatus(status?: GitStatus): void {
     if (!status || !status.isRepo) {
       this.gitStatusEl.innerHTML = ''
@@ -602,13 +755,10 @@ export class CityPanel {
 
     this.gitStatusEl.style.display = 'block'
 
-    // Build status line
     const parts: string[] = []
 
-    // Branch name
     parts.push(`<span class="git-branch">${this.escapeHtml(status.branch)}</span>`)
 
-    // Ahead/behind
     if (status.ahead > 0 || status.behind > 0) {
       const syncParts: string[] = []
       if (status.ahead > 0) syncParts.push(`↑${status.ahead}`)
@@ -616,7 +766,6 @@ export class CityPanel {
       parts.push(`<span class="git-sync">${syncParts.join(' ')}</span>`)
     }
 
-    // Changes
     const changes: string[] = []
     if (status.staged.added > 0 || status.staged.modified > 0 || status.staged.deleted > 0) {
       const staged = status.staged.added + status.staged.modified + status.staged.deleted
@@ -633,7 +782,6 @@ export class CityPanel {
       parts.push(changes.join(' '))
     }
 
-    // Lines added/removed
     if (status.linesAdded > 0 || status.linesRemoved > 0) {
       const lineParts: string[] = []
       if (status.linesAdded > 0) lineParts.push(`<span class="git-add">+${status.linesAdded}</span>`)
@@ -659,101 +807,10 @@ export class CityPanel {
     this.ws.send(JSON.stringify({ type: 'getFibers', cityId }))
   }
 
-  private renderFibers(open: Fiber[], closed: Fiber[]): void {
-    // Store fibers for filtering
-    this.openFibers = open
-    this.closedFibers = closed
-
-    // Clear search when loading new fibers
-    this.searchInput.value = ''
-    this.updateSearchClearVisibility()
-
-    // Render using filter method (which handles empty state)
-    this.renderFilteredFibers(open, closed)
-  }
-
-  private renderFiberItem(fiber: Fiber, closed = false): string {
-    const statusIcon = fiber.status === 'active' ? '◐' : fiber.status === 'closed' ? '●' : '○'
-    const kindClass = fiber.kind || 'task'
-    const hasBody = !!fiber.body
-    const hasReason = closed && !!fiber.reason
-    const hasContent = hasBody || hasReason
-    const contentClass = hasContent ? 'has-content' : ''
-
-    // Full content (shown on expand)
-    const bodyHtml = hasBody ? `<div class="fiber-body">${this.renderMarkdown(fiber.body!)}</div>` : ''
-    const reasonHtml = hasReason ? `<div class="fiber-reason">${this.renderMarkdown(fiber.reason!)}</div>` : ''
-
-    return `
-      <li class="fiber-item ${kindClass} ${contentClass}" data-id="${fiber.id}">
-        <div class="fiber-header">
-          <span class="fiber-status">${statusIcon}</span>
-          <span class="fiber-title">${this.escapeHtml(fiber.title)}</span>
-          <span class="fiber-kind">${fiber.kind || 'task'}</span>
-          <button class="handoff-btn" data-fiber-id="${fiber.id}" title="Hand off to Claude">↗</button>
-        </div>
-        <div class="fiber-content">
-          ${bodyHtml}
-          ${reasonHtml}
-        </div>
-      </li>
-    `
-  }
-
   private escapeHtml(text: string): string {
     const div = document.createElement('div')
     div.textContent = text
     return div.innerHTML
-  }
-
-  /**
-   * Render markdown with math support (KaTeX)
-   * Supports $...$ for inline math and $$...$$ for display math
-   */
-  private renderMarkdown(text: string): string {
-    // First, extract and protect math blocks
-    const mathBlocks: { placeholder: string; rendered: string }[] = []
-    let counter = 0
-
-    // Handle display math ($$...$$)
-    let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => {
-      const placeholder = `%%MATH_DISPLAY_${counter++}%%`
-      try {
-        const rendered = katex.renderToString(math.trim(), {
-          displayMode: true,
-          throwOnError: false,
-        })
-        mathBlocks.push({ placeholder, rendered })
-      } catch {
-        mathBlocks.push({ placeholder, rendered: `<span class="math-error">$$${math}$$</span>` })
-      }
-      return placeholder
-    })
-
-    // Handle inline math ($...$)
-    processed = processed.replace(/\$([^$\n]+?)\$/g, (_, math) => {
-      const placeholder = `%%MATH_INLINE_${counter++}%%`
-      try {
-        const rendered = katex.renderToString(math.trim(), {
-          displayMode: false,
-          throwOnError: false,
-        })
-        mathBlocks.push({ placeholder, rendered })
-      } catch {
-        mathBlocks.push({ placeholder, rendered: `<span class="math-error">$${math}$</span>` })
-      }
-      return placeholder
-    })
-
-    // Render markdown
-    let html = marked.parse(processed) as string
-
-    // Restore math blocks
-    for (const block of mathBlocks) {
-      html = html.replace(block.placeholder, block.rendered)
-    }
-
-    return html
   }
 
   hide(): void {

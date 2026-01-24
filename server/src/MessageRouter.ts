@@ -40,7 +40,6 @@ export interface AgentActivityMessage {
     tool: string;
     summary?: string;
     fullPath?: string;                     // Full file path for Read/Write/Edit
-    toolInput?: Record<string, unknown>;   // Full tool parameters for file viewer
     timestamp: number;
   };
 }

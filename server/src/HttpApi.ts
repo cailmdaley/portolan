@@ -848,12 +848,22 @@ export class HttpApi {
   // Callback for creating new workers
   private onCreateNewWorker: ((cityPath: string, originId: string) => Promise<string>) | null = null;
 
+  // Callback for focusing a session in Kitty
+  private onFocusSession: ((sessionId: string) => void) | null = null;
+
   /**
    * Set callback for creating new workers
    * Returns the tmux session name of the created worker
    */
   setOnCreateNewWorker(fn: (cityPath: string, originId: string) => Promise<string>): void {
     this.onCreateNewWorker = fn;
+  }
+
+  /**
+   * Set callback for focusing a session in Kitty
+   */
+  setOnFocusSession(fn: (sessionId: string) => void): void {
+    this.onFocusSession = fn;
   }
 
   /**
@@ -976,6 +986,11 @@ export class HttpApi {
           `ssh ${sshHost} "tmux send-keys -t '${escapedSession}' '${escapedMessage}' Enter"`,
           { timeout: 10000 }
         );
+      }
+
+      // Focus the worker in Kitty (for existing workers only; new workers are already focused)
+      if (workerId && this.onFocusSession) {
+        this.onFocusSession(workerId);
       }
 
       res.writeHead(200, {
