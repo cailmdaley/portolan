@@ -50,7 +50,7 @@ export interface OriginPosition {
 // ============================================================================
 
 export class CityManager {
-  // In-memory: key → city (key = `${originId}:${path}`)
+  // In-memory: key → city (key = `${normalizedOrigin}:${path}`)
   private citiesByKey = new Map<string, City>();
 
   // Track which cities are pinned (won't be deleted when sessions leave)
@@ -62,9 +62,30 @@ export class CityManager {
   // Track origin positions: Map<originId, position>
   private originPositions = new Map<string, OriginPosition>();
 
+  // Track sshHost for each origin: Map<originId, sshHost>
+  // Used to normalize keys so different login nodes share cities
+  private originSshHosts = new Map<string, string>();
+
   constructor() {
     // Local origin is always at center
     this.originPositions.set('local', { q: 0, r: 0 });
+  }
+
+  /**
+   * Set the sshHost for an origin (used for key normalization)
+   * e.g., "remote-login05.leonardo.local" → "cineca-login05"
+   */
+  setOriginSshHost(originId: string, sshHost: string): void {
+    // Extract base sshHost (e.g., "cineca-login05" → "cineca")
+    const baseSshHost = sshHost.replace(/-login\d+$/, '');
+    this.originSshHosts.set(originId, baseSshHost);
+  }
+
+  /**
+   * Get the base sshHost for an origin (for key normalization)
+   */
+  private getBaseSshHost(originId: string): string | undefined {
+    return this.originSshHosts.get(originId);
   }
 
   /**
@@ -183,6 +204,19 @@ export class CityManager {
   }
 
   /**
+   * Move a city to a new position.
+   * Only pinned cities can be moved.
+   * Returns the city or null if not found.
+   */
+  moveCity(cityId: string, newPosition: { q: number; r: number }): City | null {
+    const city = this.getCityById(cityId);
+    if (!city) return null;
+
+    city.position = newPosition;
+    return city;
+  }
+
+  /**
    * Get city by ID
    */
   getCityById(cityId: string): City | null {
@@ -195,10 +229,23 @@ export class CityManager {
   }
 
   /**
-   * Make city key from originId and path
+   * Make city key from originId and path.
+   * For remote origins with a known sshHost, normalizes the key so different
+   * login nodes (e.g., login05, login07) share the same city.
    */
   private makeKey(originId: string, path: string): string {
-    return `${originId}:${resolve(path)}`;
+    const resolvedPath = resolve(path);
+
+    // For remote origins, use base sshHost if known (e.g., "cineca" instead of full hostname)
+    // This allows cities to be shared across login nodes on the same HPC system
+    if (originId !== 'local') {
+      const baseSshHost = this.getBaseSshHost(originId);
+      if (baseSshHost) {
+        return `remote-${baseSshHost}:${resolvedPath}`;
+      }
+    }
+
+    return `${originId}:${resolvedPath}`;
   }
 
   /**
@@ -232,10 +279,17 @@ export class CityManager {
       }
     }
 
-    // Add cities for new session cwds (skip if city already exists from persistence)
+    // Add cities for new session cwds, or update originId if accessing from different login node
     for (const session of sessions) {
       const key = this.makeKey(session.originId, session.cwd);
-      if (!this.citiesByKey.has(key)) {
+      const existing = this.citiesByKey.get(key);
+      if (existing) {
+        // Update originId if session is from a different login node (but same normalized key)
+        // This keeps the city associated with the currently active agent
+        if (existing.originId !== session.originId) {
+          existing.originId = session.originId;
+        }
+      } else {
         const originPos = this.getOriginPosition(session.originId);
         const city: City = {
           id: randomUUID(),

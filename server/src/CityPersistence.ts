@@ -197,6 +197,22 @@ export class CityPersistence {
   }
 
   /**
+   * Update position for a persisted city by ID
+   * Returns the updated city or null if not found
+   */
+  updatePosition(cityId: string, newPosition: HexCoord): PersistedCity | null {
+    for (const city of this.cities.values()) {
+      if (city.id === cityId) {
+        city.position = newPosition;
+        this.save();
+        console.log(`Moved city: ${city.name} to (${newPosition.q}, ${newPosition.r})`);
+        return city;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Check if a city is persisted by path and origin
    */
   isPinned(path: string, originId: string = 'local'): boolean {

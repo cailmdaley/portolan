@@ -8,15 +8,45 @@
 
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { exec } from 'child_process';
+import { exec, execSync, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+
+// Track active file searches for cancellation
+const activeSearches = new Map<string, ChildProcess>();
+
+// Check which search tools are available (cached)
+let hasFd: boolean | null = null;
+let hasRg: boolean | null = null;
+
+async function checkSearchTools(): Promise<void> {
+  if (hasFd === null) {
+    try {
+      await execAsync('which fd');
+      hasFd = true;
+    } catch {
+      hasFd = false;
+    }
+  }
+  if (hasRg === null) {
+    try {
+      await execAsync('which rg');
+      hasRg = true;
+    } catch {
+      hasRg = false;
+    }
+  }
+}
+
+// Initialize on startup
+checkSearchTools();
 
 import { SessionTracker, Session } from './SessionTracker.js';
 import { CityManager, City, SessionInfo } from './CityManager.js';
 import { OriginManager, Origin } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
+import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager, GitStatus } from './GitStatusManager.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import { EventWatcher, type ActivityEvent } from './EventWatcher.js';
@@ -32,6 +62,7 @@ interface StateUpdate {
   cities: City[];
   sessions: Session[];
   origins?: Origin[];
+  activities?: Record<string, ActivityEvent[]>;  // tmuxSession -> recent activities
 }
 
 // ============================================================================
@@ -47,6 +78,7 @@ const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 
 const cityManager = new CityManager();
 const cityPersistence = new CityPersistence();
+const annotationPersistence = new AnnotationPersistence();
 const sessionTracker = new SessionTracker();
 const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
@@ -54,7 +86,14 @@ const gitStatusManager = new GitStatusManager();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
+
+// Load persisted annotations
+annotationPersistence.load();
 for (const pc of persistedCities) {
+  // Set sshHost first so city keys are normalized correctly
+  if (pc.sshHost && pc.originId !== 'local') {
+    cityManager.setOriginSshHost(pc.originId, pc.sshHost);
+  }
   cityManager.addPinnedCity(pc.id, pc.path, pc.name, pc.position, pc.originId);
 }
 
@@ -63,6 +102,10 @@ const remoteSessions = new Map<string, Map<string, Session>>();
 
 // Track remote git statuses: Map<"originId:path", GitStatus>
 const remoteGitStatuses = new Map<string, GitStatus>();
+
+// Track remote activities: Map<tmuxSession, ActivityEvent[]>
+const remoteActivities = new Map<string, ActivityEvent[]>();
+const MAX_REMOTE_ACTIVITIES = 10;
 
 // Track connected browser clients
 const clients: Set<WebSocket> = new Set();
@@ -91,6 +134,10 @@ const sessionLookup = {
   findLocalSession(sessionId: string): Session | undefined {
     return sessionTracker.getSessions().find(s => s.id === sessionId);
   },
+  // Alias for HttpApi
+  getSessionById(sessionId: string): Session | undefined {
+    return this.findSession(sessionId);
+  },
 };
 
 const cityLookup = {
@@ -109,7 +156,70 @@ const cityLookup = {
 // ============================================================================
 
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
+httpApi.setAnnotationPersistence(annotationPersistence);
+httpApi.setSessionLookup(sessionLookup);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
+
+// Callback for creating new workers (used by send-annotations endpoint)
+httpApi.setOnCreateNewWorker(async (cityPath: string, originId: string) => {
+  const city = cityManager.getCities().find(c => c.path === cityPath || cityPath.startsWith(c.path + '/'));
+  const isRemote = originId !== 'local' && !!originId;
+
+  // Get SSH host for remote cities
+  let sshHost: string | undefined;
+  if (isRemote && city) {
+    sshHost = cityLookup.getSshHost(city);
+  }
+
+  // Generate session name
+  const baseName = cityPath.split('/').pop() || 'worker';
+  const timestamp = Date.now().toString(36).slice(-4);
+  const tmuxSession = `${baseName}-${timestamp}`;
+  const escapedSession = shellEscape(tmuxSession);
+  const escapedCwd = shellEscape(cityPath);
+
+  if (isRemote && sshHost) {
+    // Remote: create tmux session on remote via SSH
+    const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "claude --dangerously-skip-permissions"'`;
+    const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
+    console.log('[CreateWorker] Creating remote tmux session:', sshCmd);
+    execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
+
+    // Open kitty tab that SSH's to remote and attaches to tmux
+    const socket = kitty.getSocket();
+    const tabTitle = `${tmuxSession}@${city?.originId.replace('remote-', '') || 'remote'}`;
+    const sshAuthSock = process.env.SSH_AUTH_SOCK ? `--env SSH_AUTH_SOCK=${shellEscape(process.env.SSH_AUTH_SOCK)}` : '';
+    const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${sshAuthSock} --title=${shellEscape(tabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
+    console.log('[CreateWorker] Opening kitty tab with SSH:', kittyCmd);
+    execSync(kittyCmd, { stdio: 'pipe' });
+
+    // Focus the newly created tab
+    const exactTitleMatch = shellEscape(`^${tabTitle}$`);
+    execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
+
+    console.log(`[CreateWorker] Launched remote worker: ${tmuxSession} on ${sshHost}:${cityPath}`);
+  } else {
+    // Local: create tmux session locally
+    const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'zsh -l -c "claude --dangerously-skip-permissions"'`;
+    console.log('[CreateWorker] Creating local tmux session:', tmuxCmd);
+    execSync(tmuxCmd, { stdio: 'pipe' });
+
+    // Open kitty tab attached to the tmux session
+    const socket = kitty.getSocket();
+    const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`;
+    console.log('[CreateWorker] Opening kitty tab:', kittyCmd);
+    execSync(kittyCmd, { stdio: 'pipe' });
+
+    // Focus the newly created tab
+    const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
+    execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
+
+    console.log(`[CreateWorker] Launched local worker: ${tmuxSession} in ${cityPath}`);
+  }
+
+  kitty.activateKitty();
+  return tmuxSession;
+});
 
 // ============================================================================
 // State Management
@@ -172,10 +282,32 @@ async function buildState(): Promise<StateUpdate> {
     return session;
   });
 
+  // Collect recent activities for each session
+  const activities: Record<string, ActivityEvent[]> = {};
+  for (const session of sessions) {
+    const sessionActivities = eventWatcher.getRecentActivities(session.tmuxSession);
+    if (sessionActivities.length > 0) {
+      activities[session.tmuxSession] = sessionActivities;
+    }
+  }
+  // Also include remote activities
+  for (const [tmuxSession, acts] of remoteActivities) {
+    if (acts.length > 0) {
+      activities[tmuxSession] = acts;
+    }
+  }
+
+  // Debug: check if session cityIds match any city id
+  const hexarchyCity = citiesWithFibers.find(c => c.name === 'hexarchy-v2');
+  const localSessions = sessionsWithAbsoluteHex.filter(s => s.originId === 'local');
+  console.log('[buildState] hexarchy-v2 city id:', hexarchyCity?.id);
+  console.log('[buildState] local session cityIds:', localSessions.map(s => ({ name: s.name, cityId: s.cityId })));
+
   return {
     cities: citiesWithFibers,
     sessions: sessionsWithAbsoluteHex,
     origins: originManager.getOrigins(),
+    activities,
   };
 }
 
@@ -461,6 +593,229 @@ async function getRemoteFibers(
   }
 }
 
+// ============================================================================
+// File Search
+// ============================================================================
+
+interface SearchResult {
+  path: string;        // Relative path from city root
+  fullPath: string;    // Full path for opening
+  line?: number;       // Line number (for content search)
+  match?: string;      // Matching line content (for content search)
+}
+
+function handleSearchFiles(
+  ws: WebSocket,
+  cityId: string,
+  query: string,
+  searchId: string,
+  mode: 'filename' | 'content' = 'filename'
+): void {
+  // Cancel any previous search with the same searchId prefix (same city)
+  const citySearchPrefix = `${cityId}:`;
+  for (const [key, proc] of activeSearches) {
+    if (key.startsWith(citySearchPrefix)) {
+      proc.kill();
+      activeSearches.delete(key);
+    }
+  }
+
+  const city = cityManager.getCityById(cityId);
+  if (!city) {
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: 'City not found' }));
+    return;
+  }
+
+  if (!query.trim()) {
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [] }));
+    return;
+  }
+
+  const searchKey = `${cityId}:${searchId}`;
+
+  if (city.originId === 'local') {
+    searchLocal(ws, city.path, query, searchId, searchKey, mode);
+  } else {
+    const origin = originManager.getOrigin(city.originId);
+    const persistedCity = cityPersistence.getCityById(city.id);
+    const sshHost = origin?.sshHost || persistedCity?.sshHost;
+    if (!sshHost) {
+      ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: 'No SSH host for remote city' }));
+      return;
+    }
+    searchRemote(ws, sshHost, city.path, query, searchId, searchKey, mode);
+  }
+}
+
+function searchLocal(
+  ws: WebSocket,
+  cityPath: string,
+  query: string,
+  searchId: string,
+  searchKey: string,
+  mode: 'filename' | 'content'
+): void {
+  let proc: ChildProcess;
+  const results: SearchResult[] = [];
+
+  // Escape query for use in shell/regex (basic escaping)
+  const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  if (mode === 'filename') {
+    if (hasFd) {
+      // Use fd (fast, --no-ignore to include gitignored files like build/)
+      proc = spawn('fd', [
+        '--type', 'f',
+        '--hidden',
+        '--no-ignore',
+        '--exclude', '.git',
+        '--exclude', 'node_modules',
+        '--exclude', '__pycache__',
+        '--color', 'never',
+        query
+      ], { cwd: cityPath });
+    } else {
+      // Fallback: find + grep
+      const cmd = `find . -type f \\( -name '.git' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o -type f -print 2>/dev/null | grep -i '${safeQuery}' | head -50`;
+      proc = spawn('sh', ['-c', cmd], { cwd: cityPath });
+    }
+  } else {
+    if (hasRg) {
+      // Use rg (fast, --no-ignore to include gitignored files like build/)
+      proc = spawn('rg', [
+        '--line-number',
+        '--no-heading',
+        '--color', 'never',
+        '--max-count', '1',
+        '--no-ignore',
+        '--glob', '!.git',
+        '--glob', '!node_modules',
+        '--glob', '!__pycache__',
+        query
+      ], { cwd: cityPath });
+    } else {
+      // Fallback: grep -r
+      const cmd = `grep -rn --include='*' -I '${safeQuery}' . --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ 2>/dev/null | head -50`;
+      proc = spawn('sh', ['-c', cmd], { cwd: cityPath });
+    }
+  }
+
+  activeSearches.set(searchKey, proc);
+
+  let stdout = '';
+  proc.stdout?.on('data', (data) => {
+    stdout += data.toString();
+  });
+
+  proc.on('close', () => {
+    activeSearches.delete(searchKey);
+
+    // Parse results (limit to 50)
+    const lines = stdout.trim().split('\n').filter(Boolean).slice(0, 50);
+
+    for (const line of lines) {
+      if (mode === 'filename') {
+        // Remove leading ./ from find/fd output
+        const relativePath = line.startsWith('./') ? line.slice(2) : line;
+        results.push({
+          path: relativePath,
+          fullPath: `${cityPath}/${relativePath}`,
+        });
+      } else {
+        // rg/grep format: file:line:content or ./file:line:content
+        const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
+        if (match) {
+          results.push({
+            path: match[1],
+            fullPath: `${cityPath}/${match[1]}`,
+            line: parseInt(match[2], 10),
+            match: match[3].trim().slice(0, 100),
+          });
+        }
+      }
+    }
+
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
+  });
+
+  proc.on('error', (error) => {
+    activeSearches.delete(searchKey);
+    console.error('Search error:', error);
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
+  });
+}
+
+function searchRemote(
+  ws: WebSocket,
+  sshHost: string,
+  cityPath: string,
+  query: string,
+  searchId: string,
+  searchKey: string,
+  mode: 'filename' | 'content'
+): void {
+  const escapedPath = shellEscape(cityPath);
+  const escapedQuery = shellEscape(query);
+  // Escape for shell and regex (for fallback grep)
+  const safeQuery = query.replace(/[.*+?^${}()|[\]\\'"]/g, '\\$&');
+
+  // Try fd/rg first, fall back to find/grep
+  // Remote machines may or may not have fd/rg installed
+  // --no-ignore to include gitignored files (build/, dist/, etc.)
+  let remoteCmd: string;
+  if (mode === 'filename') {
+    // Try fd, fall back to find+grep
+    remoteCmd = `(fd --type f --hidden --no-ignore --exclude .git --exclude node_modules --exclude __pycache__ --color never ${escapedQuery} 2>/dev/null || find . -type f \\( -name '.git' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o -type f -print 2>/dev/null | grep -i '${safeQuery}') | head -50`;
+  } else {
+    // Try rg, fall back to grep
+    remoteCmd = `(rg --line-number --no-heading --color never --max-count 1 --no-ignore --glob '!.git' --glob '!node_modules' --glob '!__pycache__' ${escapedQuery} 2>/dev/null || grep -rn --include='*' -I '${safeQuery}' . --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ 2>/dev/null) | head -50`;
+  }
+
+  const cmd = `ssh ${shellEscape(sshHost)} "cd ${escapedPath} && ${remoteCmd}"`;
+
+  const proc = spawn('sh', ['-c', cmd]);
+  activeSearches.set(searchKey, proc);
+
+  let stdout = '';
+  proc.stdout?.on('data', (data) => {
+    stdout += data.toString();
+  });
+
+  proc.on('close', () => {
+    activeSearches.delete(searchKey);
+    const results: SearchResult[] = [];
+    const lines = stdout.trim().split('\n').filter(Boolean);
+
+    for (const line of lines) {
+      if (mode === 'filename') {
+        const relativePath = line.startsWith('./') ? line.slice(2) : line;
+        results.push({
+          path: relativePath,
+          fullPath: `${cityPath}/${relativePath}`,
+        });
+      } else {
+        // rg/grep format: file:line:content or ./file:line:content
+        const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
+        if (match) {
+          results.push({
+            path: match[1],
+            fullPath: `${cityPath}/${match[1]}`,
+            line: parseInt(match[2], 10),
+            match: match[3].trim().slice(0, 100),
+          });
+        }
+      }
+    }
+
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
+  });
+
+  proc.on('error', (error) => {
+    activeSearches.delete(searchKey);
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
+  });
+}
+
 function handlePinCity(
   ws: WebSocket,
   path: string,
@@ -523,6 +878,35 @@ function performUnpin(ws: WebSocket, cityId: string): void {
   ws.send(JSON.stringify({ type: 'cityUnpinned', cityId }));
 }
 
+function handleMoveCity(
+  ws: WebSocket,
+  cityId: string,
+  newPosition: { q: number; r: number }
+): void {
+  try {
+    const city = cityManager.getCityById(cityId);
+    if (!city) {
+      ws.send(JSON.stringify({ type: 'error', message: 'City not found' }));
+      return;
+    }
+
+    if (!cityManager.isPinned(cityId)) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Can only move pinned cities' }));
+      return;
+    }
+
+    cityManager.moveCity(cityId, newPosition);
+    cityPersistence.updatePosition(cityId, newPosition);
+    console.log(`City moved: ${city.name} to (${newPosition.q}, ${newPosition.r})`);
+
+    buildState().then(broadcast);
+    ws.send(JSON.stringify({ type: 'cityMoved', cityId, newPosition }));
+  } catch (error) {
+    console.error('Failed to move city:', error);
+    ws.send(JSON.stringify({ type: 'error', message: 'Failed to move city' }));
+  }
+}
+
 // ============================================================================
 // Message Router Setup
 // ============================================================================
@@ -536,6 +920,8 @@ const messageRouter = new MessageRouter({
   onUnpinCity: handleUnpinCity,
   onConfirmUnpin: performUnpin,
   onKillWorker: (sessionId) => kitty.killWorker(sessionId),
+  onSearchFiles: handleSearchFiles,
+  onMoveCity: handleMoveCity,
 });
 
 // ============================================================================
@@ -561,11 +947,17 @@ wss.on('connection', async (ws, req) => {
   const isAgent = url.searchParams.get('agent') === 'true';
   const originName = url.searchParams.get('origin');
   const sshHost = url.searchParams.get('sshHost') || undefined;
+  const plannotatorPortParam = url.searchParams.get('plannotatorPort');
+  const plannotatorPort = plannotatorPortParam ? parseInt(plannotatorPortParam, 10) : undefined;
 
   if (isAgent && originName) {
     // Agent connection
-    const origin = originManager.registerAgent(originName, ws, sshHost);
+    const origin = originManager.registerAgent(originName, ws, sshHost, plannotatorPort);
     cityManager.setOriginPosition(origin.id, origin.position);
+    // Track sshHost for city key normalization (so different login nodes share cities)
+    if (sshHost) {
+      cityManager.setOriginSshHost(origin.id, sshHost);
+    }
 
     ws.send(JSON.stringify({
       type: 'connected',
@@ -580,7 +972,18 @@ wss.on('connection', async (ws, req) => {
         if (message.type === 'agent_sessions_update') {
           handleAgentSessionsUpdate(origin.id, message.payload.sessions);
         } else if (message.type === 'agent_activity') {
-          broadcastActivity((message as AgentActivityMessage).activity);
+          const activity = (message as AgentActivityMessage).activity;
+          // Store remote activity
+          let activities = remoteActivities.get(activity.tmuxSession);
+          if (!activities) {
+            activities = [];
+            remoteActivities.set(activity.tmuxSession, activities);
+          }
+          activities.unshift(activity);
+          if (activities.length > MAX_REMOTE_ACTIVITIES) {
+            activities.pop();
+          }
+          broadcastActivity(activity);
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
@@ -617,6 +1020,13 @@ wss.on('connection', async (ws, req) => {
 // ============================================================================
 // Startup
 // ============================================================================
+
+// Set local plannotator port from environment
+const localPlannotatorPort = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLANNOTATOR_PORT, 10) : undefined;
+if (localPlannotatorPort) {
+  originManager.setLocalPlannotatorPort(localPlannotatorPort);
+  console.log(`Local plannotator port: ${localPlannotatorPort}`);
+}
 
 sessionTracker.start(2000);
 

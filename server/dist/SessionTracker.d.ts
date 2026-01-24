@@ -54,7 +54,7 @@ export declare class SessionTracker {
     private discoverSessions;
     /**
      * Truncate long session names for display
-     * ralph-global-views-map-plots-plans-3374f8fb → ralph-3374f8fb
+     * ralph-global-views-map-plots-plans-3374f8fb → ralph-glob…
      */
     private truncateName;
     /**

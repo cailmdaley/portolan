@@ -77,14 +77,14 @@ export class KittyIntegration {
   /**
    * Get the Kitty socket path
    */
-  private getSocket(): string {
+  getSocket(): string {
     return process.env.KITTY_LISTEN_ON || 'unix:/tmp/kitty-socket';
   }
 
   /**
    * Bring Kitty to front (macOS)
    */
-  private activateKitty(): void {
+  activateKitty(): void {
     try {
       execSync(`osascript -e 'tell app "kitty" to activate'`, { stdio: 'ignore' });
     } catch (error) {
@@ -141,7 +141,9 @@ export class KittyIntegration {
         return;
       }
 
+      // Agent provides specific node SSH host for multi-node HPC systems
       const sshHost = origin.sshHost;
+
       const tabTitle = `${tmuxSession}@${origin.name}`;
       const escapedTabTitle = shellEscape(tabTitle);
       const exactRemoteTitleMatch = shellEscape(`^${tabTitle}$`);
@@ -154,12 +156,14 @@ export class KittyIntegration {
         console.log(`Focused remote tab: ${tabTitle}`);
       } catch {
         // No tab exists - create one with SSH + tmux attach
+        // Use -tt to force TTY allocation even when launched from another program
         try {
-          const sshCommand = `ssh -t ${shellEscape(sshHost)} tmux attach -t ${escapedSession}`;
-          execSync(
-            `kitty @ --to ${socket} launch --type=tab --title=${escapedTabTitle} ${sshCommand}`,
-            { stdio: 'ignore' }
-          );
+          const sshCommand = `ssh -tt ${shellEscape(sshHost)} tmux attach -t ${escapedSession}`;
+          // Pass SSH_AUTH_SOCK so SSH agent works in Kitty tabs
+          const sshAuthSock = process.env.SSH_AUTH_SOCK ? `--env SSH_AUTH_SOCK=${shellEscape(process.env.SSH_AUTH_SOCK)}` : '';
+          const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${sshAuthSock} --title=${escapedTabTitle} ${sshCommand}`;
+          console.log(`[Focus] Running: ${kittyCmd}`);
+          execSync(kittyCmd, { stdio: 'ignore' });
           console.log(`Launched remote tab: ${tabTitle} via ${sshHost}`);
         } catch (error) {
           console.error(`Failed to launch remote tab for ${tmuxSession}:`, error);
@@ -181,7 +185,7 @@ export class KittyIntegration {
     const city = this.cityLookup.findCityByPath(cityPath);
     const isRemote = city && city.originId !== 'local';
 
-    // Get SSH host for remote cities
+    // Get SSH host for remote cities (agent provides specific node for HPC systems)
     let sshHost: string | undefined;
     if (isRemote && city) {
       sshHost = this.cityLookup.getSshHost(city);
@@ -201,7 +205,7 @@ export class KittyIntegration {
     if (customName) {
       try {
         const checkCmd = isRemote && sshHost
-          ? `ssh ${sshHost} 'tmux has-session -t ${escapedSession} 2>/dev/null'`
+          ? `ssh -T ${sshHost} 'tmux has-session -t ${escapedSession} 2>/dev/null'`
           : `tmux has-session -t ${escapedSession} 2>/dev/null`;
         execSync(checkCmd, { stdio: 'pipe' });
         // If we get here, session exists
@@ -219,14 +223,18 @@ export class KittyIntegration {
     try {
       if (isRemote && sshHost) {
         // Remote: create tmux session on remote via SSH
+        // Use -T to disable TTY for non-interactive command
         const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "claude --dangerously-skip-permissions"'`;
-        const sshCmd = `ssh ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
+        const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
         console.log('[NewWorker] Creating remote tmux session:', sshCmd);
         execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
 
         // Open kitty tab that SSH's to remote and attaches to tmux
+        // Use -tt to force TTY allocation for tmux attach
+        // Pass SSH_AUTH_SOCK so SSH agent works in Kitty tabs
         const tabTitle = `${tmuxSession}@${city?.originId.replace('remote-', '') || 'remote'}`;
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab --title=${shellEscape(tabTitle)} ssh -t ${sshHost} tmux attach -t ${escapedSession}`;
+        const sshAuthSock = process.env.SSH_AUTH_SOCK ? `--env SSH_AUTH_SOCK=${shellEscape(process.env.SSH_AUTH_SOCK)}` : '';
+        const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${sshAuthSock} --title=${shellEscape(tabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
         console.log('[NewWorker] Opening kitty tab with SSH:', kittyCmd);
         execSync(kittyCmd, { stdio: 'pipe' });
 
@@ -276,26 +284,69 @@ export class KittyIntegration {
 
   /**
    * Handle handoff request - launch Claude Code with fiber context
+   * Supports both local and remote cities
    */
   handoff(fiberId: string, cityPath: string): void {
+    console.log('[Handoff] Starting for fiber:', fiberId, 'path:', cityPath);
+
+    // Find the city to determine if it's local or remote
+    const city = this.cityLookup.findCityByPath(cityPath);
+    const isRemote = city && city.originId !== 'local';
+
+    // Get SSH host for remote cities
+    let sshHost: string | undefined;
+    if (isRemote && city) {
+      sshHost = this.cityLookup.getSshHost(city);
+      console.log(`[Handoff] Remote city detected, using SSH host: ${sshHost}`);
+    }
+
     const socket = this.getSocket();
     const escapedCwd = shellEscape(cityPath);
-    const escapedFiberId = shellEscape(fiberId);
-    const tabTitle = `handoff-${fiberId.slice(-8)}`;
-    const escapedTabTitle = shellEscape(tabTitle);
+    // Use fiber ID as tmux session name (unique per fiber)
+    const tmuxSession = fiberId;
+    const escapedSession = shellEscape(tmuxSession);
 
     try {
-      const command = `felt on ${escapedFiberId} && claude --dangerously-skip-permissions`;
-      execSync(
-        `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedTabTitle} bash -c ${shellEscape(command)}`,
-        { stdio: 'ignore' }
-      );
+      if (isRemote && sshHost) {
+        // Remote: create tmux session on remote via SSH
+        // Use double quotes for inner command (fiberId is alphanumeric+dash, safe for double quotes)
+        // || exec bash keeps shell open on failure for debugging
+        const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "felt on ${fiberId} && claude --dangerously-skip-permissions || exec bash"'`;
+        const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
+        console.log('[Handoff] Creating remote tmux session:', sshCmd);
+        execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
 
-      execSync(`kitty @ --to ${socket} focus-tab --match title:${escapedTabTitle}`, { stdio: 'ignore' });
+        // Open kitty tab that SSH's to remote and attaches to tmux
+        const kittyTabTitle = `${tmuxSession}@${city?.originId.replace('remote-', '') || 'remote'}`;
+        const sshAuthSock = process.env.SSH_AUTH_SOCK ? `--env SSH_AUTH_SOCK=${shellEscape(process.env.SSH_AUTH_SOCK)}` : '';
+        const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${sshAuthSock} --title=${shellEscape(kittyTabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
+        console.log('[Handoff] Opening kitty tab with SSH:', kittyCmd);
+        execSync(kittyCmd, { stdio: 'pipe' });
 
-      console.log(`Launched handoff tab for fiber: ${fiberId}`);
+        // Focus the newly created tab
+        const exactTitleMatch = shellEscape(`^${kittyTabTitle}$`);
+        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
+
+        console.log(`[Handoff] Launched remote handoff: ${tmuxSession} on ${sshHost}:${cityPath}`);
+      } else {
+        // Local: create tmux session (consistent with remote, keeps title stable)
+        const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'zsh -l -c "felt on ${fiberId} && claude --dangerously-skip-permissions || exec zsh"'`;
+        console.log('[Handoff] Creating local tmux session:', tmuxCmd);
+        execSync(tmuxCmd, { stdio: 'pipe' });
+
+        // Open kitty tab attached to the tmux session
+        const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`;
+        console.log('[Handoff] Opening kitty tab:', kittyCmd);
+        execSync(kittyCmd, { stdio: 'pipe' });
+
+        // Focus the newly created tab
+        const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
+        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
+
+        console.log(`[Handoff] Launched local handoff: ${tmuxSession} in ${cityPath}`);
+      }
     } catch (error) {
-      console.error(`Failed to launch handoff tab for ${fiberId}:`, error);
+      console.error(`[Handoff] Failed to launch handoff tab for ${fiberId}:`, error);
     }
 
     this.activateKitty();
@@ -303,9 +354,10 @@ export class KittyIntegration {
 
   /**
    * Handle killWorker request - kill tmux session
+   * Supports both local and remote sessions
    */
   killWorker(sessionId: string): void {
-    const session = this.sessionLookup.findLocalSession(sessionId);
+    const session = this.sessionLookup.findSession(sessionId);
 
     if (!session) {
       console.error(`[KillWorker] Session not found: ${sessionId}`);
@@ -315,8 +367,21 @@ export class KittyIntegration {
     const escapedSession = shellEscape(session.tmuxSession);
 
     try {
-      execSync(`tmux kill-session -t ${escapedSession}`, { stdio: 'pipe' });
-      console.log(`[KillWorker] Killed session: ${session.tmuxSession}`);
+      if (session.originId === 'local') {
+        execSync(`tmux kill-session -t ${escapedSession}`, { stdio: 'pipe' });
+        console.log(`[KillWorker] Killed local session: ${session.tmuxSession}`);
+      } else {
+        // Remote session - kill via SSH
+        const origin = this.originLookup.getOrigin(session.originId);
+        if (!origin || !origin.sshHost) {
+          console.error(`[KillWorker] Cannot kill remote session: no sshHost for origin ${session.originId}`);
+          return;
+        }
+
+        const sshCmd = `ssh ${origin.sshHost} tmux kill-session -t ${escapedSession}`;
+        execSync(sshCmd, { stdio: 'pipe', timeout: 10000 });
+        console.log(`[KillWorker] Killed remote session: ${session.tmuxSession} on ${origin.sshHost}`);
+      }
     } catch (error: unknown) {
       const err = error as { message?: string };
       console.error(`[KillWorker] Failed to kill session ${session.tmuxSession}:`, err.message);

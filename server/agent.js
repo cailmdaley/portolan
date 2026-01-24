@@ -38,6 +38,7 @@ const RECONNECT_INTERVAL = 5000;
 const POLL_INTERVAL = 5000;  // Session discovery interval
 const EVENTS_FILE = join(homedir(), '.hexarchy', 'data', 'events.jsonl');
 const DEBUG = process.env.HEXARCHY_DEBUG === 'true';
+const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLANNOTATOR_PORT, 10) : null;
 
 // ============================================================================
 // State
@@ -288,6 +289,9 @@ async function pollSessions() {
 
 /**
  * Extract short summary from tool input
+ *
+ * NOTE: Keep in sync with server/src/activityUtils.ts (source of truth).
+ * This is duplicated here because agent.js runs standalone on remote machines.
  */
 function extractSummary(tool, input) {
     if (!input) return undefined;
@@ -310,6 +314,36 @@ function extractSummary(tool, input) {
         default:
             return undefined;
     }
+}
+
+/**
+ * Extract detailed activity information including full paths
+ *
+ * NOTE: Keep in sync with server/src/activityUtils.ts (source of truth).
+ */
+function extractActivityDetails(tool, input) {
+    if (!input) return undefined;
+
+    const summary = extractSummary(tool, input);
+    if (!summary) return undefined;
+
+    const details = { summary };
+
+    // Include full path for file operations
+    switch (tool) {
+        case 'Read':
+        case 'Write':
+        case 'Edit':
+            if (input.file_path) {
+                details.fullPath = String(input.file_path);
+            }
+            break;
+    }
+
+    // Include toolInput for file viewer support
+    details.toolInput = input;
+
+    return details;
 }
 
 /**
@@ -373,10 +407,13 @@ function processEvent(event) {
 
     // Only send activity for pre_tool_use events (has tool info)
     if (event.type === 'pre_tool_use' && event.tool) {
+        const details = extractActivityDetails(event.tool, event.toolInput);
         const activity = {
             tmuxSession: event.tmuxSession,
             tool: event.tool,
-            summary: extractSummary(event.tool, event.toolInput),
+            summary: details?.summary,
+            fullPath: details?.fullPath,
+            toolInput: details?.toolInput,
             timestamp: event.timestamp,
         };
 
@@ -396,6 +433,22 @@ function processEvent(event) {
 // ============================================================================
 
 /**
+ * Build specific node SSH alias from base sshHost and hostname.
+ * e.g., sshHost="cineca", hostname="login05.leonardo.local" → "cineca-login05"
+ */
+function buildSpecificSshHost(baseSshHost) {
+    if (!baseSshHost) return null;
+
+    const nodeMatch = ORIGIN_NAME.match(/^(login\d+)\./);
+    if (nodeMatch) {
+        const specificHost = `${baseSshHost}-${nodeMatch[1]}`;
+        log(`Using specific node SSH host: ${specificHost} (from ${ORIGIN_NAME})`);
+        return specificHost;
+    }
+    return baseSshHost;
+}
+
+/**
  * Connect to hexarchy server
  */
 function connect(serverUrl, sshHost) {
@@ -403,10 +456,16 @@ function connect(serverUrl, sshHost) {
         ws.close();
     }
 
+    // Build specific node SSH alias for multi-node HPC systems
+    const specificSshHost = buildSpecificSshHost(sshHost);
+
     // Build URL with query params
     let url = `ws://${serverUrl}?agent=true&origin=${encodeURIComponent(ORIGIN_NAME)}`;
-    if (sshHost) {
-        url += `&sshHost=${encodeURIComponent(sshHost)}`;
+    if (specificSshHost) {
+        url += `&sshHost=${encodeURIComponent(specificSshHost)}`;
+    }
+    if (PLANNOTATOR_PORT) {
+        url += `&plannotatorPort=${PLANNOTATOR_PORT}`;
     }
 
     log(`Connecting to ${url}...`);

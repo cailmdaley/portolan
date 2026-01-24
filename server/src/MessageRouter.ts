@@ -39,6 +39,8 @@ export interface AgentActivityMessage {
     tmuxSession: string;
     tool: string;
     summary?: string;
+    fullPath?: string;                     // Full file path for Read/Write/Edit
+    toolInput?: Record<string, unknown>;   // Full tool parameters for file viewer
     timestamp: number;
   };
 }
@@ -82,6 +84,20 @@ export interface KillWorkerMessage {
   sessionId: string;
 }
 
+export interface SearchFilesMessage {
+  type: 'searchFiles';
+  cityId: string;
+  query: string;
+  searchId: string;  // For cancellation
+  mode?: 'filename' | 'content';  // Default: filename
+}
+
+export interface MoveCityMessage {
+  type: 'moveCity';
+  cityId: string;
+  newPosition: { q: number; r: number };
+}
+
 export type ClientMessage =
   | FocusMessage
   | AgentSessionsUpdateMessage
@@ -91,7 +107,9 @@ export type ClientMessage =
   | PinCityMessage
   | UnpinCityMessage
   | ConfirmUnpinMessage
-  | KillWorkerMessage;
+  | KillWorkerMessage
+  | SearchFilesMessage
+  | MoveCityMessage;
 
 // ============================================================================
 // Handler Interface
@@ -106,6 +124,8 @@ export interface MessageHandlers {
   onUnpinCity(ws: WebSocket, cityId: string): void;
   onConfirmUnpin(ws: WebSocket, cityId: string): void;
   onKillWorker(sessionId: string): void;
+  onSearchFiles(ws: WebSocket, cityId: string, query: string, searchId: string, mode?: 'filename' | 'content'): void;
+  onMoveCity(ws: WebSocket, cityId: string, newPosition: { q: number; r: number }): void;
 }
 
 // ============================================================================
@@ -158,6 +178,14 @@ export class MessageRouter {
 
         case 'killWorker':
           this.handlers.onKillWorker(message.sessionId);
+          break;
+
+        case 'searchFiles':
+          this.handlers.onSearchFiles(ws, message.cityId, message.query, message.searchId, message.mode);
+          break;
+
+        case 'moveCity':
+          this.handlers.onMoveCity(ws, message.cityId, message.newPosition);
           break;
 
         default:

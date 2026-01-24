@@ -21,6 +21,20 @@ export interface Fiber {
   reason?: string
 }
 
+export interface SearchResult {
+  path: string
+  fullPath: string
+  line?: number
+  match?: string
+}
+
+export interface RecentAnnotatedFile {
+  filePath: string
+  originId: string
+  annotationCount: number
+  mostRecentAt: number
+}
+
 interface FibersResponse {
   type: 'fibers'
   cityId: string
@@ -55,6 +69,17 @@ export class CityPanel {
   private closedFibers: Fiber[] = []
   // Callback for View Claims button
   private onViewClaims: ((city: City) => void) | null = null
+  // File search
+  private fileSearchInput: HTMLInputElement
+  private fileSearchClear: HTMLElement
+  private fileSearchMode: HTMLSelectElement
+  private fileSearchResults: HTMLElement
+  private fileSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private currentSearchId = 0
+  // Callback for opening files
+  private onOpenFile: ((fullPath: string, originId: string) => void) | null = null
+  // Recent annotations
+  private recentAnnotationsList: HTMLElement
 
   constructor() {
     this.panel = this.createPanel()
@@ -69,10 +94,16 @@ export class CityPanel {
     this.searchClear = this.panel.querySelector('.search-clear')!
     this.openFibersList = this.panel.querySelector('.open-fibers')!
     this.closedFibersList = this.panel.querySelector('.closed-fibers')!
+    this.fileSearchInput = this.panel.querySelector('.file-search-input')!
+    this.fileSearchClear = this.panel.querySelector('.file-search-clear')!
+    this.fileSearchMode = this.panel.querySelector('.file-search-mode')!
+    this.fileSearchResults = this.panel.querySelector('.file-search-results')!
+    this.recentAnnotationsList = this.panel.querySelector('.recent-annotations-list')!
 
     this.setupEventListeners()
     this.setupResizeHandling()
     this.setupSearch()
+    this.setupFileSearch()
     document.body.appendChild(this.panel)
   }
 
@@ -88,6 +119,22 @@ export class CityPanel {
       <div class="git-status"></div>
       <button class="new-worker-btn">+ New Worker</button>
       <button class="view-claims-btn" style="display: none;">View Claims</button>
+      <section class="file-search">
+        <h3>Files</h3>
+        <div class="file-search-bar">
+          <input type="text" class="file-search-input" placeholder="Search files…" />
+          <select class="file-search-mode">
+            <option value="filename">Name</option>
+            <option value="content">Content</option>
+          </select>
+          <button class="file-search-clear" aria-label="Clear search">&times;</button>
+        </div>
+        <ul class="file-search-results"></ul>
+      </section>
+      <section class="recent-annotations">
+        <h3>Recent Annotations</h3>
+        <ul class="recent-annotations-list"></ul>
+      </section>
       <div class="search-container">
         <input type="text" class="search-input" placeholder="Filter fibers…" />
         <button class="search-clear" aria-label="Clear search">&times;</button>
@@ -190,6 +237,205 @@ export class CityPanel {
     this.updateSearchClearVisibility()
   }
 
+  private setupFileSearch(): void {
+    this.fileSearchInput.addEventListener('input', () => {
+      this.updateFileSearchClearVisibility()
+      this.debounceFileSearch()
+    })
+
+    this.fileSearchMode.addEventListener('change', () => {
+      if (this.fileSearchInput.value.trim()) {
+        this.performFileSearch()
+      }
+    })
+
+    this.fileSearchClear.addEventListener('click', () => {
+      this.fileSearchInput.value = ''
+      this.fileSearchResults.innerHTML = ''
+      this.updateFileSearchClearVisibility()
+      this.fileSearchInput.focus()
+    })
+
+    this.updateFileSearchClearVisibility()
+  }
+
+  private updateFileSearchClearVisibility(): void {
+    this.fileSearchClear.style.display = this.fileSearchInput.value ? 'block' : 'none'
+  }
+
+  private debounceFileSearch(): void {
+    if (this.fileSearchDebounceTimer) {
+      clearTimeout(this.fileSearchDebounceTimer)
+    }
+    this.fileSearchDebounceTimer = setTimeout(() => {
+      this.performFileSearch()
+    }, 150)
+  }
+
+  private performFileSearch(): void {
+    const query = this.fileSearchInput.value.trim()
+    if (!query) {
+      this.fileSearchResults.innerHTML = ''
+      return
+    }
+
+    if (!this.currentCity || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.fileSearchResults.innerHTML = '<li class="empty">No connection</li>'
+      return
+    }
+
+    const searchId = `${this.currentCity.id}-${++this.currentSearchId}`
+    const mode = this.fileSearchMode.value as 'filename' | 'content'
+
+    // Show loading state
+    this.fileSearchResults.innerHTML = '<li class="loading">Searching…</li>'
+
+    this.ws.send(JSON.stringify({
+      type: 'searchFiles',
+      cityId: this.currentCity.id,
+      query,
+      searchId,
+      mode,
+    }))
+  }
+
+  handleSearchResults(searchId: string, results: SearchResult[], error?: string): void {
+    // Ignore stale results
+    if (!searchId.startsWith(this.currentCity?.id || '')) {
+      return
+    }
+
+    if (error) {
+      this.fileSearchResults.innerHTML = `<li class="empty error">${this.escapeHtml(error)}</li>`
+      return
+    }
+
+    if (results.length === 0) {
+      this.fileSearchResults.innerHTML = '<li class="empty">No matches</li>'
+      return
+    }
+
+    this.fileSearchResults.innerHTML = results.map(r => this.renderSearchResult(r)).join('')
+    this.attachFileResultListeners()
+  }
+
+  private renderSearchResult(result: SearchResult): string {
+    const fileName = result.path.split('/').pop() || result.path
+    const dir = result.path.includes('/') ? result.path.slice(0, result.path.lastIndexOf('/')) : ''
+
+    if (result.line !== undefined && result.match !== undefined) {
+      // Content search result
+      return `
+        <li class="file-result" data-path="${this.escapeHtml(result.fullPath)}">
+          <span class="file-name">${this.escapeHtml(fileName)}</span>
+          <span class="file-line">:${result.line}</span>
+          <span class="file-dir">${this.escapeHtml(dir)}</span>
+          <span class="file-match">${this.escapeHtml(result.match)}</span>
+        </li>
+      `
+    } else {
+      // Filename search result
+      return `
+        <li class="file-result" data-path="${this.escapeHtml(result.fullPath)}">
+          <span class="file-name">${this.escapeHtml(fileName)}</span>
+          <span class="file-dir">${this.escapeHtml(dir)}</span>
+        </li>
+      `
+    }
+  }
+
+  private attachFileResultListeners(): void {
+    this.fileSearchResults.querySelectorAll('.file-result').forEach(item => {
+      item.addEventListener('click', () => {
+        const fullPath = (item as HTMLElement).dataset.path
+        if (fullPath && this.currentCity && this.onOpenFile) {
+          this.onOpenFile(fullPath, this.currentCity.originId)
+        }
+      })
+    })
+  }
+
+  setOnOpenFile(callback: (fullPath: string, originId: string) => void): void {
+    this.onOpenFile = callback
+  }
+
+  /**
+   * Fetch and render recently annotated files for this city
+   */
+  private async fetchRecentAnnotations(): Promise<void> {
+    if (!this.currentCity) return
+
+    try {
+      const response = await fetch(
+        `http://${window.location.hostname}:4004/recent-annotations?originId=${encodeURIComponent(this.currentCity.originId)}&limit=5`
+      )
+      if (!response.ok) {
+        this.recentAnnotationsList.innerHTML = '<li class="empty">Failed to load</li>'
+        return
+      }
+
+      const data = await response.json()
+      const files: RecentAnnotatedFile[] = data.files || []
+
+      if (files.length === 0) {
+        this.recentAnnotationsList.innerHTML = '<li class="empty">No annotated files</li>'
+        return
+      }
+
+      this.recentAnnotationsList.innerHTML = files.map(f => this.renderRecentAnnotation(f)).join('')
+      this.attachRecentAnnotationListeners()
+    } catch (error) {
+      console.error('Failed to fetch recent annotations:', error)
+      this.recentAnnotationsList.innerHTML = '<li class="empty">Failed to load</li>'
+    }
+  }
+
+  private renderRecentAnnotation(file: RecentAnnotatedFile): string {
+    const fileName = file.filePath.split('/').pop() || file.filePath
+    const dir = file.filePath.includes('/')
+      ? file.filePath.slice(0, file.filePath.lastIndexOf('/'))
+      : ''
+    const timeAgo = this.formatTimeAgo(file.mostRecentAt)
+
+    return `
+      <li class="recent-annotation-item" data-path="${this.escapeHtml(file.filePath)}" data-origin="${this.escapeHtml(file.originId)}">
+        <span class="file-name">${this.escapeHtml(fileName)}</span>
+        <span class="annotation-count">${file.annotationCount}</span>
+        <span class="file-dir">${this.escapeHtml(dir)}</span>
+        <span class="annotation-time">${timeAgo}</span>
+      </li>
+    `
+  }
+
+  private formatTimeAgo(timestamp: number): string {
+    const now = Date.now()
+    const diffMs = now - timestamp
+    const diffMins = Math.floor(diffMs / 60000)
+
+    if (diffMins < 1) return 'just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return `${diffHours}h ago`
+
+    const diffDays = Math.floor(diffHours / 24)
+    if (diffDays < 7) return `${diffDays}d ago`
+
+    return new Date(timestamp).toLocaleDateString()
+  }
+
+  private attachRecentAnnotationListeners(): void {
+    this.recentAnnotationsList.querySelectorAll('.recent-annotation-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const fullPath = (item as HTMLElement).dataset.path
+        const originId = (item as HTMLElement).dataset.origin
+        if (fullPath && originId && this.onOpenFile) {
+          this.onOpenFile(fullPath, originId)
+        }
+      })
+    })
+  }
+
   private updateSearchClearVisibility(): void {
     this.searchClear.style.display = this.searchInput.value ? 'block' : 'none'
   }
@@ -278,8 +524,10 @@ export class CityPanel {
       console.error('No connection for new worker')
       return
     }
-    console.log('Requesting new worker for:', this.currentCity.path)
-    this.ws.send(JSON.stringify({ type: 'newWorker', cityPath: this.currentCity.path }))
+    const name = window.prompt(`Name for new worker in ${this.currentCity.name}:`, '')
+    if (!name) return
+    console.log('Requesting new worker for:', this.currentCity.path, 'name:', name)
+    this.ws.send(JSON.stringify({ type: 'newWorker', cityPath: this.currentCity.path, name }))
   }
 
   setWebSocket(ws: WebSocket): void {
@@ -300,6 +548,11 @@ export class CityPanel {
       }
       return true
     }
+    if (msg.type === 'searchResults') {
+      const response = message as { searchId: string; results: SearchResult[]; error?: string }
+      this.handleSearchResults(response.searchId, response.results, response.error)
+      return true
+    }
     return false
   }
 
@@ -317,6 +570,15 @@ export class CityPanel {
     // Clear previous fibers
     this.openFibersList.innerHTML = '<li class="loading">Loading fibers...</li>'
     this.closedFibersList.innerHTML = ''
+
+    // Clear file search
+    this.fileSearchInput.value = ''
+    this.fileSearchResults.innerHTML = ''
+    this.updateFileSearchClearVisibility()
+
+    // Fetch recent annotations
+    this.recentAnnotationsList.innerHTML = '<li class="loading">Loading...</li>'
+    this.fetchRecentAnnotations()
 
     // Ignore the click that triggered this show
     this.ignoreNextClick = true

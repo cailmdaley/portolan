@@ -17,6 +17,7 @@ import {
   Vector3,
   Sprite,
   SpriteMaterial,
+  TextureLoader,
 } from 'three'
 import { HexGrid } from './HexGrid'
 import type { City, Session, HexCoord } from '../state/types'
@@ -37,7 +38,8 @@ interface HexMeshData {
   mesh?: Mesh  // For animation (worker breathing pulse)
   status?: 'idle' | 'working'  // Worker status for animation
   activityMesh?: Mesh  // Activity ground decal
-  labelSprite?: Sprite  // For screen-space scaling
+  labelSprite?: Sprite  // For screen-space scaling (cities only)
+  labelMesh?: Mesh  // For flat labels (workers)
   baseScale?: number  // Base scale for label
 }
 
@@ -52,10 +54,11 @@ export class ZoneRenderer {
   private readonly hexHeight = 0.15
   private readonly workerScale = 0.6
 
-  // Banner images for labels (loaded async)
-  // City banner: parchment scroll, Worker banner: leather patch
+  // Banner image for city labels (loaded async)
   private cityBannerImage: HTMLImageElement | null = null
-  private workerBannerImage: HTMLImageElement | null = null
+
+  // Camera rotation (45° = π/4) - must match Camera.ts
+  private readonly cameraRotation = Math.PI / 4
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
@@ -65,6 +68,37 @@ export class ZoneRenderer {
     this.createBackgroundHexes()
   }
 
+  /**
+   * Convert screen-relative offset to world XZ coordinates.
+   * Screen coordinates: +X = right, +Y = up (toward back of scene)
+   * Accounts for 45° camera rotation.
+   */
+  private screenToWorld(screenX: number, screenY: number): { x: number; z: number } {
+    const cos = Math.cos(this.cameraRotation)
+    const sin = Math.sin(this.cameraRotation)
+    // Screen-right in world = (cos, 0, -sin) = (0.707, 0, -0.707)
+    // Screen-up in world = (-sin, 0, -cos) = (-0.707, 0, -0.707)
+    return {
+      x: screenX * cos - screenY * sin,
+      z: -screenX * sin - screenY * cos,
+    }
+  }
+
+  /**
+   * Convert hex-aligned offset to world XZ coordinates.
+   * For elements rotated 60° to match hex orientation.
+   * +X = right along hex axis, +Y = up along hex axis
+   */
+  private hexToWorld(hexX: number, hexY: number): { x: number; z: number } {
+    const angle = this.cameraRotation + Math.PI / 3  // 45° + 60° = 105°
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    return {
+      x: hexX * cos - hexY * sin,
+      z: -hexX * sin - hexY * cos,
+    }
+  }
+
   private loadBannerImage(): void {
     // Load city banner (parchment)
     const cityImg = new Image()
@@ -72,28 +106,33 @@ export class ZoneRenderer {
       this.cityBannerImage = cityImg
     }
     cityImg.src = '/banner.png'
-
-    // Load worker banner (leather)
-    const workerImg = new Image()
-    workerImg.onload = () => {
-      this.workerBannerImage = workerImg
-    }
-    workerImg.src = '/worker-banner.png'
   }
 
   private createGroundPlane(): void {
-    // Paper/parchment texture plane
-    const geometry = new PlaneGeometry(500, 500)
+    // Terrain texture plane - photorealistic aerial view
+    // Size to roughly match hex grid (radius 30 hexes, hexRadius 1.0)
+    // Hex spacing is ~1.73 (sqrt(3)), so radius 30 ≈ 52 units
+    // Image is square (1:1 aspect ratio)
+    const planeSize = 50  // World units
+
+    const geometry = new PlaneGeometry(planeSize, planeSize)
     const material = new MeshStandardMaterial({
-      color: PALETTE.bgPrimary,
+      color: 0xffffff,  // White to show texture true colors
       roughness: 0.9,
       metalness: 0,
       side: DoubleSide,
     })
 
+    // Load terrain texture
+    const textureLoader = new TextureLoader()
+    textureLoader.load('/terrain.png', (texture) => {
+      material.map = texture
+      material.needsUpdate = true
+    })
+
     this.groundPlane = new Mesh(geometry, material)
     this.groundPlane.rotation.x = -Math.PI / 2
-    this.groundPlane.position.y = -0.1
+    this.groundPlane.position.y = -0.05  // Just below hex level
     this.groundPlane.receiveShadow = true
     this.scene.add(this.groundPlane)
   }
@@ -170,9 +209,9 @@ export class ZoneRenderer {
 
     const geometry = new BufferGeometry().setFromPoints(points)
     const material = new LineBasicMaterial({
-      color: PALETTE.border,
+      color: 0x000000,  // Black lines
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.12,    // Very subtle
     })
 
     return new LineLoop(geometry, material)
@@ -185,17 +224,9 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(hex)
 
-    // Random subtle elevation for terrain feel
-    const elevation = Math.random() * 0.04
-
-    // Subtle hex for background grid
-    const hexMesh = this.createHexMesh(PALETTE.emptyHex, 0.98, 0.02)
-    hexMesh.position.y = 0.01 + elevation
-    group.add(hexMesh)
-
-    // Edge line for definition
+    // Just edge line - no filled hex, so terrain shows through
     const edge = this.createHexEdge(0.98)
-    edge.position.y = 0.03 + elevation
+    edge.position.y = 0.01
     group.add(edge)
 
     group.position.set(pos.x, 0, pos.z)
@@ -295,6 +326,71 @@ export class ZoneRenderer {
     }
   }
 
+  /**
+   * Create flat text label (no banner) for workers
+   * Returns a Mesh that lies flat on the hex surface
+   * Font size is constant; mesh width scales with text length
+   */
+  private createFlatLabel(
+    text: string,
+    fontSize = 32,
+    _color: string = '#3D2817'  // Reserved for future use
+  ): Mesh {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')!
+
+    // Measure text
+    ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
+    const metrics = ctx.measureText(text)
+    const textWidth = metrics.width
+
+    const padding = fontSize * 0.3
+    const width = textWidth + padding * 2
+    const height = fontSize + padding
+
+    // High-res canvas
+    const scale = 2
+    canvas.width = width * scale
+    canvas.height = height * scale
+    ctx.scale(scale, scale)
+
+    // Transparent background
+    ctx.clearRect(0, 0, width, height)
+
+    // Draw text with subtle shadow for legibility
+    ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+
+    const cx = width / 2
+    const cy = height / 2
+
+    // Dark shadow for contrast
+    ctx.fillStyle = 'rgba(30, 25, 20, 0.8)'
+    ctx.fillText(text, cx + 1.5, cy + 1.5)
+
+    // Main text - cream/off-white for visibility
+    ctx.fillStyle = '#F5F0E8'
+    ctx.fillText(text, cx, cy)
+
+    const texture = new CanvasTexture(canvas)
+    // Scale world size based on font size
+    const worldHeight = fontSize * 0.004  // Scale with font size
+    const aspectRatio = width / height
+    const geometry = new PlaneGeometry(worldHeight * aspectRatio, worldHeight)
+    const material = new MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      side: DoubleSide,
+      depthWrite: false,
+    })
+
+    const mesh = new Mesh(geometry, material)
+    mesh.rotation.x = -Math.PI / 2  // Lie flat
+    mesh.rotation.z = Math.PI / 3   // 60° rotation (match activity)
+    return mesh
+  }
+
   renderCity(city: City): void {
     const key = this.hexGrid.hexKey(city.hex)
 
@@ -367,27 +463,24 @@ export class ZoneRenderer {
     const workerMesh = this.createHexMesh(color, this.workerScale)
     group.add(workerMesh)
 
-    // Worker label - billboard sprite, floats above hex (lower than cities)
-    const label = this.createLabel(session.name, 160, '#3D2817', this.workerBannerImage, 150)
-    const labelMaterial = new SpriteMaterial({
-      map: label.texture,
-      transparent: true,
-      rotation: 0,  // Keep horizontal
-    })
-    const labelSprite = new Sprite(labelMaterial)
-    const aspectRatio = label.width / label.height
-    const baseScale = 0.8  // Base height in world units for workers
-    labelSprite.scale.set(baseScale * aspectRatio, baseScale, 1)
-    labelSprite.position.y = this.hexHeight + 0.4
-    group.add(labelSprite)
+    // Worker label - on hex face (screen-relative: +X=right, +Y=up)
+    const labelMesh = this.createFlatLabel(session.name, 200, '#3D2817')
+    labelMesh.position.y = this.hexHeight + 0.03  // Just above hex surface
+    const labelOffset = this.screenToWorld(-0.15, 0.5)
+    labelMesh.position.x = labelOffset.x
+    labelMesh.position.z = labelOffset.z
+    group.add(labelMesh)
+
+    // Activity decal - on hex face (hex-aligned: +X=right, +Y=up along 60° axis)
+    const activityMesh = this.createActivityDecal([])
+    activityMesh.position.y = this.hexHeight + 0.08  // Just above hex surface
+    const activityOffset = this.hexToWorld(-0.023, -0.03)
+    activityMesh.position.x = activityOffset.x
+    activityMesh.position.z = activityOffset.z
+    group.add(activityMesh)
 
     group.position.set(pos.x, 0, pos.z)
     this.scene.add(group)
-
-    // Create empty activity decal (will be populated by updateWorkerActivity)
-    const activityMesh = this.createActivityDecal([])
-    activityMesh.position.y = 0.2
-    group.add(activityMesh)
 
     this.hexMeshes.set(key, {
       group,
@@ -398,8 +491,7 @@ export class ZoneRenderer {
       mesh: workerMesh,
       status: session.status,
       activityMesh,
-      labelSprite,
-      baseScale,
+      labelMesh,
     })
   }
 
@@ -533,19 +625,19 @@ export class ZoneRenderer {
   }
 
   /**
-   * Animate worker hexes and scale labels for screen-space sizing
-   * Call this from the render loop with camera distance
+   * Animate worker hexes and scale city labels for screen-space sizing
+   * Worker labels are flat and scale naturally with zoom
    */
   animate(cameraDistance?: number): void {
     const now = Date.now()
     const period = 2500 // 2.5 second breathing cycle
 
-    // Scale factor for labels - keeps them constant screen size
+    // Scale factor for city labels - keeps them constant screen size
     // At distance 10, scale = 1.0; at distance 20, scale = 2.0, etc.
     const labelScaleFactor = cameraDistance ? cameraDistance / 10 : 1
 
     for (const [, data] of this.hexMeshes) {
-      // Scale labels to maintain screen size
+      // Scale city labels to maintain screen size (workers use flat labels)
       if (data.labelSprite && data.baseScale) {
         const aspectRatio = data.labelSprite.scale.x / data.labelSprite.scale.y
         const scaledHeight = data.baseScale * labelScaleFactor * 0.5  // 0.5 = smaller labels
@@ -575,8 +667,8 @@ export class ZoneRenderer {
     const ctx = canvas.getContext('2d')!
 
     const width = 256
-    const height = 64
-    const fontSize = 14
+    const height = 144  // 1.8x taller to fill hex
+    const fontSize = 13
 
     canvas.width = width * 2
     canvas.height = height * 2
@@ -588,36 +680,36 @@ export class ZoneRenderer {
     ctx.fill()
 
     if (activities.length > 0) {
-      const displayActivities = activities.slice(0, 2)
-      const lineHeight = 28
-      const startY = 22
+      const displayActivities = activities.slice(0, 3)  // Show 3 activities
+      const lineHeight = 24
+      const startY = 18
+      const centerX = width / 2
 
       displayActivities.forEach((activity, i) => {
         const y = startY + i * lineHeight
-        const opacity = 1 - i * 0.3
+        const opacity = 1 - i * 0.25  // Fade older entries
 
-        // Tool name in gold
-        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`
-        ctx.fillStyle = `rgba(201, 162, 39, ${opacity})`
-        ctx.textAlign = 'left'
-        ctx.fillText(activity.tool, 8, y)
-
-        // Summary
+        // Build full text line
+        let text = activity.tool
         if (activity.summary) {
-          const toolWidth = ctx.measureText(activity.tool).width
-          ctx.font = `${fontSize}px 'JetBrains Mono', monospace`
-          ctx.fillStyle = `rgba(232, 228, 223, ${opacity * 0.7})`
           const summaryText = activity.summary.length > 18
             ? activity.summary.slice(0, 15) + '...'
             : activity.summary
-          ctx.fillText(` ${summaryText}`, 8 + toolWidth, y)
+          text += ` ${summaryText}`
         }
+
+        // Draw centered
+        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`
+        ctx.textAlign = 'center'
+        ctx.fillStyle = `rgba(201, 162, 39, ${opacity})`
+        ctx.fillText(text, centerX, y)
       })
     }
 
     const texture = new CanvasTexture(canvas)
     const worldWidth = 1.0
-    const geometry = new PlaneGeometry(worldWidth, worldWidth / 4)
+    const worldHeight = worldWidth * (height / width)  // Maintain aspect ratio
+    const geometry = new PlaneGeometry(worldWidth, worldHeight)
     const material = new MeshBasicMaterial({
       map: texture,
       transparent: true,
@@ -646,7 +738,10 @@ export class ZoneRenderer {
 
         // Create new decal with updated activities
         const newMesh = this.createActivityDecal(activities)
-        newMesh.position.y = 0.2  // Float just above hex and label
+        newMesh.position.y = this.hexHeight + 0.08  // Just above hex surface
+        const activityOffset = this.hexToWorld(-0.023, -0.03)
+        newMesh.position.x = activityOffset.x
+        newMesh.position.z = activityOffset.z
         data.group.add(newMesh)
         data.activityMesh = newMesh
         break

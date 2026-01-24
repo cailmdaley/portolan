@@ -19,28 +19,26 @@ describe('SessionTracker', () => {
 
   describe('session discovery', () => {
     it('should parse tmux output and discover sessions running claude', async () => {
-      // Mock tmux list-panes output
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // The implementation now does:
+      // 1. tmux list-panes
+      // 2. For each pane: ps -o comm= to check if pane IS claude
+      // 3. If not, pgrep to check children
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, {
             stdout: 'session1\t/home/user/project1\t12345\nsession2\t/home/user/project2\t12346\n',
             stderr: '',
           });
-        }
-        return {} as any;
-      });
-
-      // Mock pgrep for session1 (has claude)
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep') && cmd.includes('12345')) {
-          callback(null, { stdout: '12350\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      // Mock pgrep for session2 (no claude)
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep') && cmd.includes('12346')) {
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('12345')) {
+          // session1: pane process is claude
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('12346')) {
+          // session2: pane process is NOT claude
+          callback(null, { stdout: 'zsh\n', stderr: '' });
+        } else if (cmd.includes('pgrep') && cmd.includes('12346')) {
+          // session2: no claude children
+          callback(null, { stdout: '', stderr: '' });
+        } else {
           callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
@@ -56,7 +54,7 @@ describe('SessionTracker', () => {
     });
 
     it('should return empty array when tmux is not running', async () => {
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         callback(new Error('tmux not running'), { stdout: '', stderr: 'error' });
         return {} as any;
       });
@@ -104,8 +102,10 @@ describe('SessionTracker', () => {
       tracker.onSessionsChange(changeCallback);
 
       // Initial state: no sessions
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
+          callback(null, { stdout: '', stderr: '' });
+        } else {
           callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
@@ -114,17 +114,14 @@ describe('SessionTracker', () => {
       await tracker['refresh']();
       expect(changeCallback).not.toHaveBeenCalled();
 
-      // Add a session
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // Add a session - pane process IS claude
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, { stdout: 'newsession\t/tmp\t99999\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep')) {
-          callback(null, { stdout: '99990\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('99999')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
@@ -138,17 +135,14 @@ describe('SessionTracker', () => {
     });
 
     it('should detect when sessions are removed', async () => {
-      // Start with one session
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // Start with one session - pane process IS claude
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, { stdout: 'session1\t/tmp\t12345\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep')) {
-          callback(null, { stdout: '12350\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('12345')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
@@ -159,8 +153,10 @@ describe('SessionTracker', () => {
       tracker.onSessionsChange(changeCallback);
 
       // Session disappears
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
+          callback(null, { stdout: '', stderr: '' });
+        } else {
           callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
@@ -174,17 +170,14 @@ describe('SessionTracker', () => {
     });
 
     it('should detect when session cwd changes', async () => {
-      // Initial session
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // Initial session - pane process IS claude
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, { stdout: 'session1\t/old/path\t12345\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep')) {
-          callback(null, { stdout: '12350\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('12345')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
@@ -195,16 +188,13 @@ describe('SessionTracker', () => {
       tracker.onSessionsChange(changeCallback);
 
       // Same session, different cwd
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, { stdout: 'session1\t/new/path\t12345\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep')) {
-          callback(null, { stdout: '12350\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('12345')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
@@ -218,17 +208,14 @@ describe('SessionTracker', () => {
     });
 
     it('should not trigger change callback when nothing changes', async () => {
-      // Initial session
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // Initial session - pane process IS claude
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, { stdout: 'session1\t/tmp\t12345\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep')) {
-          callback(null, { stdout: '12350\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('12345')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
@@ -238,21 +225,7 @@ describe('SessionTracker', () => {
       const changeCallback = vi.fn();
       tracker.onSessionsChange(changeCallback);
 
-      // Same session, same data
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('list-panes')) {
-          callback(null, { stdout: 'session1\t/tmp\t12345\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('pgrep')) {
-          callback(null, { stdout: '12350\n', stderr: '' });
-        }
-        return {} as any;
-      });
-
+      // Same session, same data (mock unchanged)
       await tracker['refresh']();
       expect(changeCallback).not.toHaveBeenCalled();
     });
@@ -265,37 +238,39 @@ describe('SessionTracker', () => {
         changes.push(sessions.length);
       });
 
-      // Session appears
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // Session s1 appears - pane process IS claude
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
           callback(null, { stdout: 's1\t/tmp\t1\n', stderr: '' });
-        }
-        return {} as any;
-      });
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        callback(null, { stdout: '10\n', stderr: '' });
-        return {} as any;
-      });
-      await tracker['refresh']();
-
-      // Session disappears
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        if (cmd.includes('list-panes')) {
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('1')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
           callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
       await tracker['refresh']();
 
-      // Different session appears
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
+      // Session disappears
+      mockExec.mockImplementation((cmd: string, callback: any) => {
         if (cmd.includes('list-panes')) {
-          callback(null, { stdout: 's2\t/tmp\t2\n', stderr: '' });
+          callback(null, { stdout: '', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
         }
         return {} as any;
       });
-      mockExec.mockImplementationOnce((cmd, callback: any) => {
-        callback(null, { stdout: '20\n', stderr: '' });
+      await tracker['refresh']();
+
+      // Different session s2 appears - pane process IS claude
+      mockExec.mockImplementation((cmd: string, callback: any) => {
+        if (cmd.includes('list-panes')) {
+          callback(null, { stdout: 's2\t/tmp\t2\n', stderr: '' });
+        } else if (cmd.includes('ps -o comm=') && cmd.includes('2')) {
+          callback(null, { stdout: 'claude\n', stderr: '' });
+        } else {
+          callback(null, { stdout: '', stderr: '' });
+        }
         return {} as any;
       });
       await tracker['refresh']();

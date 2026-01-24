@@ -26,7 +26,17 @@ export declare class CityManager {
     private pinnedCityIds;
     private occupiedWorkerHexes;
     private originPositions;
+    private originSshHosts;
     constructor();
+    /**
+     * Set the sshHost for an origin (used for key normalization)
+     * e.g., "remote-login05.leonardo.local" → "cineca-login05"
+     */
+    setOriginSshHost(originId: string, sshHost: string): void;
+    /**
+     * Get the base sshHost for an origin (for key normalization)
+     */
+    private getBaseSshHost;
     /**
      * Set the position for an origin (for remote origins)
      */
@@ -64,11 +74,22 @@ export declare class CityManager {
      */
     isPinned(cityId: string): boolean;
     /**
+     * Move a city to a new position.
+     * Only pinned cities can be moved.
+     * Returns the city or null if not found.
+     */
+    moveCity(cityId: string, newPosition: {
+        q: number;
+        r: number;
+    }): City | null;
+    /**
      * Get city by ID
      */
     getCityById(cityId: string): City | null;
     /**
-     * Make city key from originId and path
+     * Make city key from originId and path.
+     * For remote origins with a known sshHost, normalizes the key so different
+     * login nodes (e.g., login05, login07) share the same city.
      */
     private makeKey;
     /**

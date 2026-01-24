@@ -17,6 +17,7 @@ export interface Origin {
   name: string;                  // hostname
   type: 'local' | 'remote';
   sshHost?: string;              // SSH config host (for remote focus)
+  plannotatorPort?: number;      // Port for plannotator on this origin
   position: { q: number; r: number };  // hex offset for this origin's cities
   connectedAt: number;
   lastSeen: number;
@@ -49,7 +50,7 @@ export class OriginManager {
    * Register or reconnect an origin when an agent connects.
    * Returns the origin object.
    */
-  registerAgent(originName: string, ws: WebSocket, sshHost?: string): Origin {
+  registerAgent(originName: string, ws: WebSocket, sshHost?: string, plannotatorPort?: number): Origin {
     const originId = `remote-${originName}`;
     let origin = this.origins.get(originId);
 
@@ -61,18 +62,22 @@ export class OriginManager {
         name: originName,
         type: 'remote',
         sshHost: sshHost || originName,
+        plannotatorPort,
         position: this.getCompassPosition(this.nextPositionIndex),
         connectedAt: Date.now(),
         lastSeen: Date.now(),
         agentSockets: new Set(),
       };
       this.origins.set(originId, origin);
-      console.log(`New origin connected: ${originName} at position (${origin.position.q}, ${origin.position.r})`);
+      console.log(`New origin connected: ${originName} at position (${origin.position.q}, ${origin.position.r})${plannotatorPort ? ` plannotator:${plannotatorPort}` : ''}`);
     } else {
       // Existing origin - update lastSeen
       origin.lastSeen = Date.now();
       if (sshHost) {
         origin.sshHost = sshHost;
+      }
+      if (plannotatorPort) {
+        origin.plannotatorPort = plannotatorPort;
       }
       console.log(`Origin reconnected: ${originName}`);
     }
@@ -145,6 +150,16 @@ export class OriginManager {
     if (!origin) return false;
     if (origin.type === 'local') return true;
     return origin.agentSockets.size > 0;
+  }
+
+  /**
+   * Set plannotator port for local origin
+   */
+  setLocalPlannotatorPort(port: number): void {
+    const local = this.origins.get('local');
+    if (local) {
+      local.plannotatorPort = port;
+    }
   }
 
   /**

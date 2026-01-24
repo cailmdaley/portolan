@@ -21,7 +21,7 @@ import { existsSync } from 'fs';
 // CityManager
 // ============================================================================
 export class CityManager {
-    // In-memory: key → city (key = `${originId}:${path}`)
+    // In-memory: key → city (key = `${normalizedOrigin}:${path}`)
     citiesByKey = new Map();
     // Track which cities are pinned (won't be deleted when sessions leave)
     pinnedCityIds = new Set();
@@ -29,9 +29,27 @@ export class CityManager {
     occupiedWorkerHexes = new Map();
     // Track origin positions: Map<originId, position>
     originPositions = new Map();
+    // Track sshHost for each origin: Map<originId, sshHost>
+    // Used to normalize keys so different login nodes share cities
+    originSshHosts = new Map();
     constructor() {
         // Local origin is always at center
         this.originPositions.set('local', { q: 0, r: 0 });
+    }
+    /**
+     * Set the sshHost for an origin (used for key normalization)
+     * e.g., "remote-login05.leonardo.local" → "cineca-login05"
+     */
+    setOriginSshHost(originId, sshHost) {
+        // Extract base sshHost (e.g., "cineca-login05" → "cineca")
+        const baseSshHost = sshHost.replace(/-login\d+$/, '');
+        this.originSshHosts.set(originId, baseSshHost);
+    }
+    /**
+     * Get the base sshHost for an origin (for key normalization)
+     */
+    getBaseSshHost(originId) {
+        return this.originSshHosts.get(originId);
     }
     /**
      * Set the position for an origin (for remote origins)
@@ -125,6 +143,18 @@ export class CityManager {
         return this.pinnedCityIds.has(cityId);
     }
     /**
+     * Move a city to a new position.
+     * Only pinned cities can be moved.
+     * Returns the city or null if not found.
+     */
+    moveCity(cityId, newPosition) {
+        const city = this.getCityById(cityId);
+        if (!city)
+            return null;
+        city.position = newPosition;
+        return city;
+    }
+    /**
      * Get city by ID
      */
     getCityById(cityId) {
@@ -136,10 +166,21 @@ export class CityManager {
         return null;
     }
     /**
-     * Make city key from originId and path
+     * Make city key from originId and path.
+     * For remote origins with a known sshHost, normalizes the key so different
+     * login nodes (e.g., login05, login07) share the same city.
      */
     makeKey(originId, path) {
-        return `${originId}:${resolve(path)}`;
+        const resolvedPath = resolve(path);
+        // For remote origins, use base sshHost if known (e.g., "cineca" instead of full hostname)
+        // This allows cities to be shared across login nodes on the same HPC system
+        if (originId !== 'local') {
+            const baseSshHost = this.getBaseSshHost(originId);
+            if (baseSshHost) {
+                return `remote-${baseSshHost}:${resolvedPath}`;
+            }
+        }
+        return `${originId}:${resolvedPath}`;
     }
     /**
      * Derive cities from a list of sessions.
@@ -170,10 +211,18 @@ export class CityManager {
                 this.occupiedWorkerHexes.delete(city.id);
             }
         }
-        // Add cities for new session cwds (skip if city already exists from persistence)
+        // Add cities for new session cwds, or update originId if accessing from different login node
         for (const session of sessions) {
             const key = this.makeKey(session.originId, session.cwd);
-            if (!this.citiesByKey.has(key)) {
+            const existing = this.citiesByKey.get(key);
+            if (existing) {
+                // Update originId if session is from a different login node (but same normalized key)
+                // This keeps the city associated with the currently active agent
+                if (existing.originId !== session.originId) {
+                    existing.originId = session.originId;
+                }
+            }
+            else {
                 const originPos = this.getOriginPosition(session.originId);
                 const city = {
                     id: randomUUID(),

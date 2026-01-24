@@ -10,6 +10,7 @@ export interface Origin {
     name: string;
     type: 'local' | 'remote';
     sshHost?: string;
+    plannotatorPort?: number;
     position: {
         q: number;
         r: number;
@@ -27,7 +28,7 @@ export declare class OriginManager {
      * Register or reconnect an origin when an agent connects.
      * Returns the origin object.
      */
-    registerAgent(originName: string, ws: WebSocket, sshHost?: string): Origin;
+    registerAgent(originName: string, ws: WebSocket, sshHost?: string, plannotatorPort?: number): Origin;
     /**
      * Handle agent disconnection
      */
@@ -52,6 +53,10 @@ export declare class OriginManager {
      * Check if origin is connected (has at least one agent socket)
      */
     isOriginConnected(originId: string): boolean;
+    /**
+     * Set plannotator port for local origin
+     */
+    setLocalPlannotatorPort(port: number): void;
     /**
      * Get compass position for an origin index.
      * Origins placed at cardinal/intercardinal directions.

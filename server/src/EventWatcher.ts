@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, statSync, existsSync, watch } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { SessionTracker } from './SessionTracker.js';
+import { extractActivityDetails } from './activityUtils.js';
 
 interface HexarchyEvent {
   id: string;
@@ -27,6 +28,8 @@ export interface ActivityEvent {
   tmuxSession: string;
   tool: string;
   summary?: string;
+  fullPath?: string;                     // Full file path for Read/Write/Edit
+  toolInput?: Record<string, unknown>;   // Full tool parameters
   timestamp: number;
 }
 
@@ -276,10 +279,13 @@ export class EventWatcher {
 
     // Emit activity event for pre_tool_use (has tool info, fires immediately)
     if (event.type === 'pre_tool_use' && event.tool) {
+      const details = extractActivityDetails(event.tool, event.toolInput);
       const activity: ActivityEvent = {
         tmuxSession: event.tmuxSession,
         tool: event.tool,
-        summary: this.extractSummary(event.tool, event.toolInput),
+        summary: details?.summary,
+        fullPath: details?.fullPath,
+        toolInput: details?.toolInput,
         timestamp: event.timestamp,
       };
 
@@ -305,37 +311,6 @@ export class EventWatcher {
     activities.unshift(activity); // Add to front
     if (activities.length > this.maxActivitiesPerSession) {
       activities.pop(); // Remove oldest
-    }
-  }
-
-  /**
-   * Extract a short summary from tool input
-   */
-  private extractSummary(tool: string, input?: Record<string, unknown>): string | undefined {
-    if (!input) return undefined;
-
-    switch (tool) {
-      case 'Read':
-        return input.file_path ? String(input.file_path).split('/').pop() : undefined;
-      case 'Write':
-        return input.file_path ? String(input.file_path).split('/').pop() : undefined;
-      case 'Edit':
-        return input.file_path ? String(input.file_path).split('/').pop() : undefined;
-      case 'Bash':
-        // First 40 chars of command
-        if (input.command) {
-          const cmd = String(input.command);
-          return cmd.length > 40 ? cmd.slice(0, 40) + '...' : cmd;
-        }
-        return undefined;
-      case 'Glob':
-        return input.pattern ? String(input.pattern) : undefined;
-      case 'Grep':
-        return input.pattern ? String(input.pattern) : undefined;
-      case 'Task':
-        return input.description ? String(input.description) : undefined;
-      default:
-        return undefined;
     }
   }
 

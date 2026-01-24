@@ -211,20 +211,14 @@ export class SessionTracker {
 
   /**
    * Truncate long session names for display
-   * ralph-global-views-map-plots-plans-3374f8fb → ralph-3374f8fb
+   * ralph-global-views-map-plots-plans-3374f8fb → ralph-glob…
    */
   private truncateName(tmuxSession: string): string {
-    const MAX_LENGTH = 20;
+    const MAX_LENGTH = 10;
     if (tmuxSession.length <= MAX_LENGTH) {
       return tmuxSession;
     }
-    // For ralph sessions: keep prefix + hash
-    if (tmuxSession.startsWith('ralph-')) {
-      const hash = tmuxSession.slice(-8);
-      return `ralph-${hash}`;
-    }
-    // Generic: first 8 chars + … + last 8 chars
-    return `${tmuxSession.slice(0, 8)}…${tmuxSession.slice(-8)}`;
+    return `${tmuxSession.slice(0, MAX_LENGTH)}…`;
   }
 
   /**

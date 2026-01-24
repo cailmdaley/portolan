@@ -219,6 +219,34 @@ Reference: [Red Blob Games hex guide](https://www.redblobgames.com/grids/hexagon
 
 **Agent excludes itself.** The hexarchy-agent skips sessions named "hexarchy-agent" to avoid appearing as a worker on the map.
 
+**Multi-node HPC systems.** For HPC clusters with multiple login nodes (like cineca Leonardo):
+- Agent constructs specific SSH alias: `cineca` + `login05` → `cineca-login05`
+- SSH config maps aliases to specific nodes: `cineca-login05` → `login05-ext.leonardo.cineca.it`
+- Cities are keyed by base sshHost (`remote-cineca:/path`) so different nodes share cities
+- `CityManager.setOriginSshHost()` normalizes keys; city `originId` updates when accessed from different node
+
+**Kitty tabs need SSH_AUTH_SOCK.** Kitty tabs don't inherit SSH agent. Pass explicitly:
+```typescript
+const sshAuthSock = process.env.SSH_AUTH_SOCK ? `--env SSH_AUTH_SOCK=${shellEscape(process.env.SSH_AUTH_SOCK)}` : '';
+kitty @ launch --type=tab ${sshAuthSock} ...
+```
+Without this, SSH fails with "Permission denied" even with valid agent keys/certificates.
+
+**Shell escaping for SSH+tmux+bash chains.** Avoid nesting `shellEscape()` calls — creates quote soup. Use double quotes for inner command:
+```typescript
+// WRONG — nested escaping breaks
+const cmd = `felt on ${shellEscape(fiberId)} && claude`;
+const tmux = `tmux new-session ... 'bash -l -c ${shellEscape(cmd)}'`;
+
+// RIGHT — double quotes for inner, single shellEscape on outer
+const tmux = `tmux new-session ... 'bash -l -c "felt on ${fiberId} && claude"'`;
+const ssh = `ssh -T host ${shellEscape(tmux)}`;
+```
+
+**Local kitty tabs lose title with bash -c.** The `--title` flag only sets initial title; running process overwrites it. Use tmux even locally for title stability — matches remote pattern, focus-tab works reliably.
+
+**Binary files need base64 data URL.** PDFs, images can't be read as UTF-8 text. HttpApi checks extension, fetches as buffer (local) or via `ssh base64` (remote), returns `{ type, url: 'data:mime;base64,...' }`. FileViewerModal displays in `<iframe>` (PDF) or `<img>`.
+
 ## Running
 
 ```bash
@@ -246,13 +274,47 @@ cd server && npm test       # ~100 tests
 - **Right-click city**: Context menu (New Worker, Remove City)
 - **Right-click empty**: Add City Here (or New Worker if near existing city)
 
+## File Search
+
+CityPanel includes filesystem search per city:
+
+- **Name mode**: Search filenames (uses `fd`, falls back to `find | grep`)
+- **Content mode**: Search file contents (uses `rg`, falls back to `grep -r`)
+- 150ms debounce, cancels stale searches, max 50 results
+- Click result → opens FileViewerModal
+- Works on remote cities via SSH
+
+**Requires:** `brew install fd ripgrep` (optional but faster)
+
 ## Remote Agent
 
 The hexarchy-agent runs on remote machines and sends session data via SSH tunnel.
 
+### Installation
+
 ```bash
-# On remote (candide), in tmux:
-tmux new-session -d -s hexarchy-agent "~/.nvm/versions/node/v20.19.6/bin/node ~/bin/hexarchy-agent.js connect --ssh-host=candide"
+# Install agent + hooks on remote machine
+./scripts/install-remote.sh candide
+
+# Or install and start immediately
+./scripts/install-remote.sh candide --start
+```
+
+The install script:
+1. Copies `hexarchy-hook.sh` to `~/.hexarchy/hooks/`
+2. Copies `agent.js` to `~/bin/hexarchy-agent.js`
+3. Installs `ws` npm package
+4. Patches `~/.claude/settings.json` to add hooks
+5. Optionally starts the agent
+
+**Prerequisites on remote:** Node.js, jq, tmux, Claude Code
+
+### Manual Management
+
+```bash
+# Start agent manually on remote:
+ssh candide
+tmux new-session -d -s hexarchy-agent "node ~/bin/hexarchy-agent.js connect --ssh-host=candide"
 
 # Check status
 tmux capture-pane -t hexarchy-agent -p
@@ -261,9 +323,15 @@ tmux capture-pane -t hexarchy-agent -p
 scp server/agent.js candide:~/bin/hexarchy-agent.js
 ```
 
+### SSH Tunnel
+
 **Requires:** SSH tunnel with `RemoteForward 4004 127.0.0.1:4004` in local `~/.ssh/config`.
 
+### Code Sync Notes
+
 **Detection logic:** Both `SessionTracker.ts` and `agent.js` check if pane process IS claude (via `ps -o comm=`) before checking children. Keep in sync — see comments in each file.
+
+**Activity summary:** `extractSummary()` in `activityUtils.ts` is source of truth. Copy in `agent.js` must stay in sync (agent runs standalone, can't import).
 
 **Session name truncation:** Long tmux names (e.g., `ralph-global-views-map-plots-plans-3374f8fb`) are truncated for UI display via `SessionTracker.truncateName()`. Ralph sessions become `ralph-{hash}`, others become `first8…last8`. Full `tmuxSession` preserved for routing.
 
@@ -307,9 +375,35 @@ The math: pixels that look identical on white and black are opaque; pixels that 
 | `banner.png` | City labels | Parchment, cartographic, torn edges |
 | `worker-banner.png` | Worker labels | Leather patch, tool icons, guild/craftsman |
 
-### Future: Tile Sprites
+### Terrain Background Map
 
-For hex tiles, same workflow applies:
+8K terrain map on ground plane, LOD pyramid for performance.
+
+**Current assets:**
+- `terrain.png` — 2K default (7.8MB)
+- `terrain_1k.png` through `terrain_8k.png` — LOD pyramid
+- `terrain_full.png` — 8K source (104MB) in nanobanana-output/
+
+**Generation pipeline (outpaint + optimal blend):**
+1. Generate center tile at 4K via Gemini 3 Pro API
+2. Outpaint N/S/E/W: give Gemini half of center, ask to extend
+3. Find optimal overlap via MSE minimization (~2048px, search 2040-2060)
+4. 2D search: also vary vertical offset (±20px) for 30-40% better alignment
+5. Gradient blend: `output = A*(1-gradient) + B*gradient` over overlap
+6. Fill corners: show Gemini narrow-band context (two adjacent edges), not full region
+
+**Key patterns:**
+- **Optimal overlap**: MSE between edge strips, minimum = best alignment
+- **Narrow-band context**: 512px strips work better than 2048px halves for Gemini
+- **Corner infill**: show just the two edges that need connecting
+
+**Style:** Civ 6/7 aesthetic — photorealistic aerial but painterly, "wow that could exist." Top-down nadir view, hot air balloon altitude. Southwest lighting.
+
+**Scripts:** `scripts/generate_terrain_4k.py` — API-based terrain generation with tile prompts.
+
+### Per-Hex Tile Sprites (Alternative)
+
+For individual hex terrain types, same transparency workflow applies:
 1. Generate tile set on white (grass, forest, mountain, water, etc.)
 2. Edit each to black
 3. Extract alpha
