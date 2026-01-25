@@ -940,27 +940,24 @@ export class HttpApi {
     const formattedMessage = this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
-      // Escape for tmux send-keys
-      const escapedMessage = formattedMessage.replace(/'/g, "'\\''");
       const escapedSession = tmuxSession.replace(/'/g, "'\\''");
 
       if (!isRemote) {
-        // Local: send directly via tmux
-        execSync(`tmux send-keys -t '${escapedSession}' '${escapedMessage}' Enter`, {
-          timeout: 5000,
-        });
+        // Local: use tmux load-buffer via stdin to avoid escaping issues
+        // Don't send Enter - let user add more feedback from other files first
+        execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
+        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
       } else {
-        // Remote: send via SSH
+        // Remote: send via SSH with tmux load-buffer
+        // Don't send Enter - let user add more feedback from other files first
         if (!sshHost) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Origin not found' }));
           return;
         }
 
-        execSync(
-          `ssh ${sshHost} "tmux send-keys -t '${escapedSession}' '${escapedMessage}' Enter"`,
-          { timeout: 10000 }
-        );
+        execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: formattedMessage, timeout: 10000 });
+        execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
       }
 
       // Focus the worker in Kitty (for existing workers only; new workers are already focused)

@@ -10,6 +10,9 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
 const execAsync = promisify(exec);
 
@@ -108,6 +111,47 @@ const remoteGitStatuses = new Map<string, GitStatus>();
 // Track remote activities: Map<tmuxSession, ActivityEvent[]>
 const remoteActivities = new Map<string, ActivityEvent[]>();
 const MAX_REMOTE_ACTIVITIES = 50;
+
+// Activity persistence
+const activityPersistencePath = join(homedir(), '.hexarchy', 'remote-activities.json');
+
+function loadActivityPersistence(): void {
+  if (!existsSync(activityPersistencePath)) return;
+  try {
+    const content = readFileSync(activityPersistencePath, 'utf-8');
+    const data = JSON.parse(content) as { version: 1; activities: Record<string, ActivityEvent[]> };
+    if (data.version === 1 && data.activities) {
+      for (const [tmuxSession, acts] of Object.entries(data.activities)) {
+        remoteActivities.set(tmuxSession, acts);
+      }
+      console.log(`[Activity] Loaded ${remoteActivities.size} remote session activities`);
+    }
+  } catch (error) {
+    console.error('[Activity] Failed to load persistence:', error);
+  }
+}
+
+function saveActivityPersistence(): void {
+  const dataDir = join(homedir(), '.hexarchy');
+  if (!existsSync(dataDir)) {
+    mkdirSync(dataDir, { recursive: true });
+  }
+  const activities: Record<string, ActivityEvent[]> = {};
+  for (const [tmuxSession, acts] of remoteActivities.entries()) {
+    activities[tmuxSession] = acts;
+  }
+  const data = { version: 1 as const, activities };
+  const tmpPath = activityPersistencePath + '.tmp';
+  try {
+    writeFileSync(tmpPath, JSON.stringify(data), 'utf-8');
+    renameSync(tmpPath, activityPersistencePath);
+  } catch (error) {
+    console.error('[Activity] Failed to save persistence:', error);
+  }
+}
+
+// Load activity on startup
+loadActivityPersistence();
 
 // Track connected browser clients
 const clients: Set<WebSocket> = new Set();
@@ -927,6 +971,7 @@ wss.on('connection', async (ws, req) => {
           if (activities.length > MAX_REMOTE_ACTIVITIES) {
             activities.pop();
           }
+          saveActivityPersistence();
 
           // Track Edit/Write operations as recently edited files
           if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {

@@ -417,20 +417,22 @@ export class KittyIntegration {
 
     // Build the message to send with full fiber context
     const message = `This session was opened to work on this fiber:\n\n\`\`\`\n${fiberContent}\n\`\`\``;
-    const escapedMessage = message.replace(/'/g, "'\\''");
 
     try {
       if (sshHost) {
-        // Remote: send via SSH
-        execSync(
-          `ssh ${sshHost} "tmux send-keys -t '${escapedSession}' '${escapedMessage}' Enter"`,
-          { timeout: 10000 }
-        );
+        // Remote: use tmux load-buffer via stdin to avoid escaping issues
+        const loadCmd = `ssh ${sshHost} "tmux load-buffer -"`;
+        const pasteCmd = `ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`;
+        const enterCmd = `ssh ${sshHost} "tmux send-keys -t '${escapedSession}' Enter"`;
+
+        execSync(loadCmd, { input: message, timeout: 10000 });
+        execSync(pasteCmd, { timeout: 10000 });
+        execSync(enterCmd, { timeout: 10000 });
       } else {
-        // Local: send directly via tmux
-        execSync(`tmux send-keys -t '${escapedSession}' '${escapedMessage}' Enter`, {
-          timeout: 5000,
-        });
+        // Local: use tmux load-buffer via stdin to avoid escaping issues
+        execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
+        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
+        execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
       }
       console.log(`[Handoff] Sent fiber context for ${fiberId}`);
     } catch (error) {
