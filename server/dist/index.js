@@ -7,7 +7,7 @@
  */
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { exec, execSync, spawn } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 const execAsync = promisify(exec);
 // Track active file searches for cancellation
@@ -43,6 +43,7 @@ import { OriginManager } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager } from './GitStatusManager.js';
+import { RecentFilesManager } from './RecentFilesManager.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import { EventWatcher } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
@@ -63,6 +64,7 @@ const sessionTracker = new SessionTracker();
 const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
+const recentFilesManager = new RecentFilesManager();
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
 // Load persisted annotations
@@ -80,7 +82,7 @@ const remoteSessions = new Map();
 const remoteGitStatuses = new Map();
 // Track remote activities: Map<tmuxSession, ActivityEvent[]>
 const remoteActivities = new Map();
-const MAX_REMOTE_ACTIVITIES = 10;
+const MAX_REMOTE_ACTIVITIES = 50;
 // Track connected browser clients
 const clients = new Set();
 // Track last broadcast state for fiber count comparison
@@ -103,13 +105,6 @@ const sessionLookup = {
         }
         return undefined;
     },
-    findLocalSession(sessionId) {
-        return sessionTracker.getSessions().find(s => s.id === sessionId);
-    },
-    // Alias for HttpApi
-    getSessionById(sessionId) {
-        return this.findSession(sessionId);
-    },
 };
 const cityLookup = {
     findCityByPath(path) {
@@ -127,57 +122,21 @@ const cityLookup = {
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
+httpApi.setRecentFilesManager(recentFilesManager);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 // Callback for creating new workers (used by send-annotations endpoint)
 httpApi.setOnCreateNewWorker(async (cityPath, originId) => {
     const city = cityManager.getCities().find(c => c.path === cityPath || cityPath.startsWith(c.path + '/'));
     const isRemote = originId !== 'local' && !!originId;
-    // Get SSH host for remote cities
-    let sshHost;
-    if (isRemote && city) {
-        sshHost = cityLookup.getSshHost(city);
-    }
-    // Generate session name
-    const baseName = cityPath.split('/').pop() || 'worker';
-    const timestamp = Date.now().toString(36).slice(-4);
-    const tmuxSession = `${baseName}-${timestamp}`;
-    const escapedSession = shellEscape(tmuxSession);
-    const escapedCwd = shellEscape(cityPath);
-    if (isRemote && sshHost) {
-        // Remote: create tmux session on remote via SSH
-        const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "claude --dangerously-skip-permissions"'`;
-        const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
-        console.log('[CreateWorker] Creating remote tmux session:', sshCmd);
-        execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
-        // Open kitty tab that SSH's to remote and attaches to tmux
-        const socket = kitty.getSocket();
-        const tabTitle = `${tmuxSession}@${city?.originId.replace('remote-', '') || 'remote'}`;
-        const sshAuthSock = process.env.SSH_AUTH_SOCK ? `--env SSH_AUTH_SOCK=${shellEscape(process.env.SSH_AUTH_SOCK)}` : '';
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${sshAuthSock} --title=${shellEscape(tabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
-        console.log('[CreateWorker] Opening kitty tab with SSH:', kittyCmd);
-        execSync(kittyCmd, { stdio: 'pipe' });
-        // Focus the newly created tab
-        const exactTitleMatch = shellEscape(`^${tabTitle}$`);
-        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
-        console.log(`[CreateWorker] Launched remote worker: ${tmuxSession} on ${sshHost}:${cityPath}`);
-    }
-    else {
-        // Local: create tmux session locally
-        const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'zsh -l -c "claude --dangerously-skip-permissions"'`;
-        console.log('[CreateWorker] Creating local tmux session:', tmuxCmd);
-        execSync(tmuxCmd, { stdio: 'pipe' });
-        // Open kitty tab attached to the tmux session
-        const socket = kitty.getSocket();
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`;
-        console.log('[CreateWorker] Opening kitty tab:', kittyCmd);
-        execSync(kittyCmd, { stdio: 'pipe' });
-        // Focus the newly created tab
-        const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
-        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
-        console.log(`[CreateWorker] Launched local worker: ${tmuxSession} in ${cityPath}`);
-    }
+    // Get SSH host and display name for remote cities
+    const sshHost = isRemote && city ? cityLookup.getSshHost(city) : undefined;
+    const originDisplayName = city?.originId.replace('remote-', '');
+    return kitty.createWorker(cityPath, { sshHost, originDisplayName });
+});
+// Callback for focusing sessions in Kitty (used by send-annotations endpoint)
+httpApi.setOnFocusSession((sessionId) => {
+    kitty.focusSession(sessionId);
     kitty.activateKitty();
-    return tmuxSession;
 });
 // ============================================================================
 // State Management
@@ -192,6 +151,23 @@ function getAllSessions() {
     }
     return [...local, ...remote];
 }
+/**
+ * Assign a session to a city, handling hex allocation and cleanup.
+ * Releases previous hex if session is moving between cities.
+ */
+function assignSessionToCity(session, city) {
+    const previousCityId = session.cityId;
+    if (previousCityId !== city.id) {
+        if (previousCityId && session.workerHex) {
+            cityManager.releaseWorkerHex(previousCityId, session.workerHex);
+        }
+        session.cityId = city.id;
+        session.workerHex = cityManager.assignWorkerHex(city.id);
+    }
+    else if (!session.workerHex) {
+        session.workerHex = cityManager.assignWorkerHex(city.id);
+    }
+}
 async function buildState() {
     const sessions = getAllSessions();
     const cities = cityManager.getCities();
@@ -199,12 +175,16 @@ async function buildState() {
     const activeCityIds = new Set(sessions.filter(s => s.cityId).map(s => s.cityId));
     const citiesWithFibers = await Promise.all(cities.map(async (city) => {
         let gitStatus;
+        let recentFiles = [];
         if (city.originId === 'local') {
             gitStatus = gitStatusManager.getStatus(city.path) ?? undefined;
+            recentFiles = recentFilesManager.getFiles(city.path);
         }
         else {
             const remoteKey = `${city.originId}:${city.path}`;
             gitStatus = remoteGitStatuses.get(remoteKey);
+            // Load persisted remote files from history
+            recentFiles = recentFilesManager.getRemoteFiles(city.originId);
         }
         return {
             ...city,
@@ -212,6 +192,7 @@ async function buildState() {
             hasClaims: city.hasClaims ?? false,
             isDormant: !activeCityIds.has(city.id),
             gitStatus,
+            recentFiles,
         };
     }));
     const cityMap = new Map(cities.map((c) => [c.id, c]));
@@ -244,11 +225,6 @@ async function buildState() {
             activities[tmuxSession] = acts;
         }
     }
-    // Debug: check if session cityIds match any city id
-    const hexarchyCity = citiesWithFibers.find(c => c.name === 'hexarchy-v2');
-    const localSessions = sessionsWithAbsoluteHex.filter(s => s.originId === 'local');
-    console.log('[buildState] hexarchy-v2 city id:', hexarchyCity?.id);
-    console.log('[buildState] local session cityIds:', localSessions.map(s => ({ name: s.name, cityId: s.cityId })));
     return {
         cities: citiesWithFibers,
         sessions: sessionsWithAbsoluteHex,
@@ -315,6 +291,7 @@ function rebuildCities() {
         }
         if (city.originId === 'local') {
             gitStatusManager.track(city.path);
+            recentFilesManager.track(city.path);
         }
     }
 }
@@ -342,17 +319,7 @@ sessionTracker.onSessionsChange((localSessions) => {
         const city = cityManager.findCityForPath(session.cwd, session.originId);
         if (!city)
             continue;
-        const previousCityId = session.cityId;
-        if (previousCityId !== city.id) {
-            if (previousCityId && session.workerHex) {
-                cityManager.releaseWorkerHex(previousCityId, session.workerHex);
-            }
-            session.cityId = city.id;
-            session.workerHex = cityManager.assignWorkerHex(city.id);
-        }
-        else if (!session.workerHex) {
-            session.workerHex = cityManager.assignWorkerHex(city.id);
-        }
+        assignSessionToCity(session, city);
     }
     for (const session of localSessions) {
         previousSessions.set(session.id, session);
@@ -423,17 +390,7 @@ function handleAgentSessionsUpdate(originId, agentSessions) {
         if (hasClaims !== undefined) {
             city.hasClaims = hasClaims;
         }
-        const previousCityId = session.cityId;
-        if (previousCityId !== city.id) {
-            if (previousCityId && session.workerHex) {
-                cityManager.releaseWorkerHex(previousCityId, session.workerHex);
-            }
-            session.cityId = city.id;
-            session.workerHex = cityManager.assignWorkerHex(city.id);
-        }
-        else if (!session.workerHex) {
-            session.workerHex = cityManager.assignWorkerHex(city.id);
-        }
+        assignSessionToCity(session, city);
         previousSessions.set(session.id, session);
     }
     buildState().then(broadcast);
@@ -510,11 +467,45 @@ async function getRemoteFibers(sshHost, cityPath, status) {
         return [];
     }
 }
+/**
+ * Parse search output lines into SearchResult array.
+ * Used by both searchLocal and searchRemote.
+ */
+function parseSearchResults(stdout, cityPath, mode) {
+    const results = [];
+    const lines = stdout.trim().split('\n').filter(Boolean).slice(0, 50);
+    for (const line of lines) {
+        if (mode === 'filename') {
+            const relativePath = line.startsWith('./') ? line.slice(2) : line;
+            results.push({
+                path: relativePath,
+                fullPath: `${cityPath}/${relativePath}`,
+            });
+        }
+        else {
+            // rg/grep format: file:line:content or ./file:line:content
+            const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
+            if (match) {
+                results.push({
+                    path: match[1],
+                    fullPath: `${cityPath}/${match[1]}`,
+                    line: parseInt(match[2], 10),
+                    match: match[3].trim().slice(0, 100),
+                });
+            }
+        }
+    }
+    return results;
+}
 function handleSearchFiles(ws, cityId, query, searchId, mode = 'filename') {
-    // Cancel any previous search with the same searchId prefix (same city)
-    const citySearchPrefix = `${cityId}:`;
+    // Cancel any previous search with the same searchId base (same search session)
+    // searchId format: "cityId-counter-name" or "cityId-counter-content"
+    // Extract base: everything before the last hyphen (name/content suffix)
+    const searchBase = searchId.replace(/-(?:name|content)$/, '');
+    const searchKeyPrefix = `${cityId}:${searchBase}`;
     for (const [key, proc] of activeSearches) {
-        if (key.startsWith(citySearchPrefix)) {
+        // Only cancel searches from a previous search session, not parallel name/content searches
+        if (key.startsWith(`${cityId}:`) && !key.startsWith(searchKeyPrefix)) {
             proc.kill();
             activeSearches.delete(key);
         }
@@ -545,7 +536,6 @@ function handleSearchFiles(ws, cityId, query, searchId, mode = 'filename') {
 }
 function searchLocal(ws, cityPath, query, searchId, searchKey, mode) {
     let proc;
-    const results = [];
     // Escape query for use in shell/regex (basic escaping)
     const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     if (mode === 'filename') {
@@ -596,30 +586,7 @@ function searchLocal(ws, cityPath, query, searchId, searchKey, mode) {
     });
     proc.on('close', () => {
         activeSearches.delete(searchKey);
-        // Parse results (limit to 50)
-        const lines = stdout.trim().split('\n').filter(Boolean).slice(0, 50);
-        for (const line of lines) {
-            if (mode === 'filename') {
-                // Remove leading ./ from find/fd output
-                const relativePath = line.startsWith('./') ? line.slice(2) : line;
-                results.push({
-                    path: relativePath,
-                    fullPath: `${cityPath}/${relativePath}`,
-                });
-            }
-            else {
-                // rg/grep format: file:line:content or ./file:line:content
-                const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
-                if (match) {
-                    results.push({
-                        path: match[1],
-                        fullPath: `${cityPath}/${match[1]}`,
-                        line: parseInt(match[2], 10),
-                        match: match[3].trim().slice(0, 100),
-                    });
-                }
-            }
-        }
+        const results = parseSearchResults(stdout, cityPath, mode);
         ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
     });
     proc.on('error', (error) => {
@@ -654,29 +621,7 @@ function searchRemote(ws, sshHost, cityPath, query, searchId, searchKey, mode) {
     });
     proc.on('close', () => {
         activeSearches.delete(searchKey);
-        const results = [];
-        const lines = stdout.trim().split('\n').filter(Boolean);
-        for (const line of lines) {
-            if (mode === 'filename') {
-                const relativePath = line.startsWith('./') ? line.slice(2) : line;
-                results.push({
-                    path: relativePath,
-                    fullPath: `${cityPath}/${relativePath}`,
-                });
-            }
-            else {
-                // rg/grep format: file:line:content or ./file:line:content
-                const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
-                if (match) {
-                    results.push({
-                        path: match[1],
-                        fullPath: `${cityPath}/${match[1]}`,
-                        line: parseInt(match[2], 10),
-                        match: match[3].trim().slice(0, 100),
-                    });
-                }
-            }
-        }
+        const results = parseSearchResults(stdout, cityPath, mode);
         ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
     });
     proc.on('error', (error) => {
@@ -763,7 +708,7 @@ const messageRouter = new MessageRouter({
     onFocus: (sessionId) => kitty.focusSession(sessionId),
     onGetFibers: handleGetFibers,
     onHandoff: (fiberId, cityPath) => kitty.handoff(fiberId, cityPath),
-    onNewWorker: (ws, cityPath, name) => kitty.newWorker(ws, cityPath, name),
+    onNewWorker: (ws, cityPath, name, chrome) => kitty.newWorker(ws, cityPath, name, chrome),
     onPinCity: handlePinCity,
     onUnpinCity: handleUnpinCity,
     onConfirmUnpin: performUnpin,
@@ -823,6 +768,18 @@ wss.on('connection', async (ws, req) => {
                     if (activities.length > MAX_REMOTE_ACTIVITIES) {
                         activities.pop();
                     }
+                    // Track Edit/Write operations as recently edited files
+                    if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
+                        // Find the city for this session's cwd
+                        const sessionMap = remoteSessions.get(origin.id);
+                        const session = sessionMap?.get(activity.tmuxSession);
+                        if (session?.cwd) {
+                            const city = cityManager.findCityForPath(session.cwd, origin.id);
+                            if (city) {
+                                recentFilesManager.recordActivityEdit(activity.fullPath, city.path, origin.id);
+                            }
+                        }
+                    }
                     broadcastActivity(activity);
                 }
             }
@@ -867,6 +824,16 @@ sessionTracker.start(2000);
 eventWatcher.setSessionTracker(sessionTracker);
 eventWatcher.onActivity((activity) => {
     console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
+    // Track Edit/Write operations as recently edited files for local sessions
+    if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
+        const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
+        if (session?.cwd) {
+            const city = cityManager.findCityForPath(session.cwd, 'local');
+            if (city) {
+                recentFilesManager.recordActivityEdit(activity.fullPath, city.path, 'local');
+            }
+        }
+    }
     broadcastActivity(activity);
 });
 eventWatcher.start();
@@ -875,6 +842,11 @@ gitStatusManager.setUpdateHandler(({ path, status }) => {
     buildState().then(broadcast);
 });
 gitStatusManager.start();
+recentFilesManager.setUpdateHandler(({ path, files }) => {
+    console.log(`[Files] ${path}: ${files.length} recent files`);
+    buildState().then(broadcast);
+});
+recentFilesManager.start();
 setInterval(refreshFiberCounts, FIBER_REFRESH_INTERVAL);
 server.listen(PORT, () => {
     console.log(`Hexarchy server running on port ${PORT}`);
@@ -884,6 +856,7 @@ process.on('SIGINT', () => {
     console.log('\nShutting down...');
     sessionTracker.stop();
     gitStatusManager.stop();
+    recentFilesManager.stop();
     server.close();
     process.exit(0);
 });

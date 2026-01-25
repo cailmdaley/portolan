@@ -17,6 +17,7 @@ import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
+import type { RecentFilesManager } from './RecentFilesManager.js';
 
 const execAsync = promisify(exec);
 
@@ -24,20 +25,20 @@ const execAsync = promisify(exec);
 // Types
 // ============================================================================
 
-export interface CityLookup {
+interface CityLookup {
   getCityById(cityId: string): City | null;
 }
 
-export interface OriginLookup {
+interface OriginLookup {
   getOrigin(originId: string): Origin | null | undefined;
 }
 
-export interface PersistenceLookup {
+interface PersistenceLookup {
   getCityById(cityId: string): { sshHost?: string } | null;
 }
 
-export interface SessionLookup {
-  getSessionById(sessionId: string): Session | undefined;
+interface SessionLookup {
+  findSession(sessionId: string): Session | undefined;
 }
 
 // ============================================================================
@@ -50,6 +51,7 @@ export class HttpApi {
   private persistenceLookup: PersistenceLookup;
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
+  private recentFilesManager: RecentFilesManager | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -73,6 +75,13 @@ export class HttpApi {
    */
   setSessionLookup(lookup: SessionLookup): void {
     this.sessionLookup = lookup;
+  }
+
+  /**
+   * Set recent files manager for tracking remote file access
+   */
+  setRecentFilesManager(manager: RecentFilesManager): void {
+    this.recentFilesManager = manager;
   }
 
   /**
@@ -148,6 +157,11 @@ export class HttpApi {
 
     if (url.pathname === '/send-annotations' && req.method === 'POST') {
       await this.handleSendAnnotations(req, res);
+      return true;
+    }
+
+    if (url.pathname === '/file-as-fiber' && req.method === 'POST') {
+      await this.handleFileAsFiber(req, res);
       return true;
     }
 
@@ -313,15 +327,9 @@ export class HttpApi {
 
     const ext = extname(filePath).toLowerCase().slice(1);
 
-    // Handle image files
-    if (binary && this.isImageExtension(ext)) {
-      await this.handleImageContent(filePath, originId, ext, res);
-      return;
-    }
-
-    // Handle PDF files
-    if (binary && this.isPdfExtension(ext)) {
-      await this.handlePdfContent(filePath, originId, res);
+    // Handle binary files (images, PDFs)
+    if (binary && this.isBinaryExtension(ext)) {
+      await this.handleBinaryContent(filePath, originId, ext, res);
       return;
     }
 
@@ -350,6 +358,13 @@ export class HttpApi {
       // Detect language from extension
       const language = this.extToLanguage(ext);
 
+      // Record remote file access for persistence
+      if (originId && originId !== 'local' && this.recentFilesManager) {
+        // Extract relative path from full path for display
+        const relativePath = filePath.split('/').slice(-2).join('/'); // last 2 segments
+        this.recentFilesManager.recordRemoteFileAccess(originId, relativePath, filePath);
+      }
+
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
@@ -364,47 +379,47 @@ export class HttpApi {
   }
 
   /**
-   * Check if extension is an image type
+   * Binary MIME types by extension
    */
-  private isImageExtension(ext: string): boolean {
-    return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(ext);
+  private readonly binaryMimeTypes: Record<string, string> = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+    'svg': 'image/svg+xml',
+    'webp': 'image/webp',
+    'ico': 'image/x-icon',
+    'pdf': 'application/pdf',
+  };
+
+  /**
+   * Check if extension is a binary type (image or PDF)
+   */
+  private isBinaryExtension(ext: string): boolean {
+    return ext in this.binaryMimeTypes;
   }
 
   /**
-   * Check if extension is a PDF
+   * Handle binary file content (images, PDFs) - returns base64 data URL
    */
-  private isPdfExtension(ext: string): boolean {
-    return ext === 'pdf';
-  }
-
-  /**
-   * Handle image file content - returns base64 data URL
-   */
-  private async handleImageContent(
+  private async handleBinaryContent(
     filePath: string,
     originId: string | null,
     ext: string,
     res: ServerResponse
   ): Promise<void> {
-    const mimeTypes: Record<string, string> = {
-      'png': 'image/png',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'gif': 'image/gif',
-      'svg': 'image/svg+xml',
-      'webp': 'image/webp',
-      'ico': 'image/x-icon',
-    };
-    const mimeType = mimeTypes[ext] || 'application/octet-stream';
+    const mimeType = this.binaryMimeTypes[ext] || 'application/octet-stream';
+    const fileType = ext === 'pdf' ? 'pdf' : 'image';
+    // PDFs need larger buffer/timeout
+    const maxBuffer = ext === 'pdf' ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
+    const timeout = ext === 'pdf' ? 60000 : 30000;
 
     try {
       let data: Buffer;
 
       if (!originId || originId === 'local') {
-        // Local file: read as buffer
         data = await readFile(filePath);
       } else {
-        // Remote file: fetch via SSH with base64 encoding
         const origin = this.originLookup.getOrigin(originId);
         if (!origin?.sshHost) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -414,72 +429,31 @@ export class HttpApi {
 
         const { stdout } = await execAsync(
           `ssh ${origin.sshHost} 'base64 "${filePath}"'`,
-          { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
+          { maxBuffer, timeout }
         );
-        // Remote returns base64 string, convert to buffer
         data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
       }
 
-      const base64 = data.toString('base64');
-      const dataUrl = `data:${mimeType};base64,${base64}`;
+      const dataUrl = `data:${mimeType};base64,${data.toString('base64')}`;
+
+      // Record remote file access for persistence
+      if (originId && originId !== 'local' && this.recentFilesManager) {
+        const relativePath = filePath.split('/').slice(-2).join('/');
+        this.recentFilesManager.recordRemoteFileAccess(originId, relativePath, filePath);
+      }
 
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(JSON.stringify({ type: 'image', url: dataUrl, path: filePath }));
+      res.end(JSON.stringify({ type: fileType, url: dataUrl, path: filePath }));
     } catch (error: any) {
-      console.error('Failed to fetch image content:', error.message);
+      console.error(`Failed to fetch ${fileType} content:`, error.message);
       const statusCode = error.code === 'ENOENT' ? 404 : 500;
       res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.code === 'ENOENT' ? 'Image not found' : 'Failed to read image' }));
-    }
-  }
-
-  /**
-   * Handle PDF file content - returns base64 data URL
-   */
-  private async handlePdfContent(
-    filePath: string,
-    originId: string | null,
-    res: ServerResponse
-  ): Promise<void> {
-    try {
-      let data: Buffer;
-
-      if (!originId || originId === 'local') {
-        // Local file: read as buffer
-        data = await readFile(filePath);
-      } else {
-        // Remote file: fetch via SSH with base64 encoding
-        const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Origin not found or not connected' }));
-          return;
-        }
-
-        const { stdout } = await execAsync(
-          `ssh ${origin.sshHost} 'base64 "${filePath}"'`,
-          { maxBuffer: 50 * 1024 * 1024, timeout: 60000 }  // Larger buffer for PDFs
-        );
-        // Remote returns base64 string, convert to buffer
-        data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
-      }
-
-      const base64 = data.toString('base64');
-      const dataUrl = `data:application/pdf;base64,${base64}`;
-
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ type: 'pdf', url: dataUrl, path: filePath }));
-    } catch (error: any) {
-      console.error('Failed to fetch PDF content:', error.message);
-      const statusCode = error.code === 'ENOENT' ? 404 : 500;
-      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.code === 'ENOENT' ? 'PDF not found' : 'Failed to read PDF' }));
+      res.end(JSON.stringify({
+        error: error.code === 'ENOENT' ? `${fileType} not found` : `Failed to read ${fileType}`
+      }));
     }
   }
 
@@ -901,9 +875,10 @@ export class HttpApi {
 
     const { workerId, createNewWorker, filePath, originId, annotations, globalComment } = data;
 
-    if (!annotations || annotations.length === 0) {
+    const hasContent = (annotations && annotations.length > 0) || (globalComment && globalComment.trim().length > 0);
+    if (!hasContent) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No annotations to send' }));
+      res.end(JSON.stringify({ error: 'No content to send' }));
       return;
     }
 
@@ -931,8 +906,8 @@ export class HttpApi {
         tmuxSession = await this.onCreateNewWorker(cityPath, originId);
         console.log(`[SendAnnotations] Created new worker: ${tmuxSession}`);
 
-        // Wait a moment for Claude to start up
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait for Claude to start up (4s for remote systems)
+        await new Promise(resolve => setTimeout(resolve, 4000));
       } catch (error: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to create worker: ' + error.message }));
@@ -946,7 +921,7 @@ export class HttpApi {
       }
     } else {
       // Use existing worker
-      const session = this.sessionLookup.getSessionById(workerId!);
+      const session = this.sessionLookup.findSession(workerId!);
       if (!session) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Worker not found' }));
@@ -1011,6 +986,7 @@ export class HttpApi {
    */
   private formatAnnotationsForClaude(filePath: string, annotations: Annotation[], globalComment?: string): string {
     const lines = [
+      '',  // Start with newline for clean separation
       `# Feedback on ${filePath}`,
       '',
     ];
@@ -1020,22 +996,120 @@ export class HttpApi {
       lines.push('');
     }
 
-    lines.push(`I've reviewed this file and have ${annotations.length} piece${annotations.length === 1 ? '' : 's'} of feedback:`);
-    lines.push('');
-
-    annotations.forEach((ann, i) => {
-      // Truncate long selections with indicator
-      const truncatedText = ann.originalText.length > 60
-        ? ann.originalText.slice(0, 57) + '...'
-        : ann.originalText;
-      // Format header with optional line number
-      const lineRef = ann.line ? ` (L${ann.line})` : '';
-      lines.push(`## ${i + 1}.${lineRef} Feedback on: "${truncatedText.replace(/\n/g, ' ')}"`);
-      lines.push(`> ${ann.comment}`);
+    if (annotations && annotations.length > 0) {
+      lines.push(`I've reviewed this file and have ${annotations.length} piece${annotations.length === 1 ? '' : 's'} of feedback:`);
       lines.push('');
-    });
+
+      annotations.forEach((ann, i) => {
+        if (ann.isImageAnnotation) {
+          // Image annotation - show position
+          const posRef = ann.x !== undefined && ann.y !== undefined
+            ? ` at position (${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
+            : '';
+          lines.push(`## ${i + 1}. Image annotation${posRef}`);
+          lines.push(`> ${ann.comment}`);
+          lines.push('');
+        } else {
+          // Text annotation - show selected text
+          const truncatedText = ann.originalText.length > 60
+            ? ann.originalText.slice(0, 57) + '...'
+            : ann.originalText;
+          // Format header with optional line number
+          const lineRef = ann.line ? ` (L${ann.line})` : '';
+          lines.push(`## ${i + 1}.${lineRef} Feedback on: "${truncatedText.replace(/\n/g, ' ')}"`);
+          lines.push(`> ${ann.comment}`);
+          lines.push('');
+        }
+      });
+    }
 
     lines.push('---');
     return lines.join('\n');
+  }
+
+  // ============================================================================
+  // File as Fiber Endpoint
+  // ============================================================================
+
+  /**
+   * File annotations as a felt fiber
+   * POST /file-as-fiber
+   * Body: { filePath, originId, title, body, kind }
+   */
+  private async handleFileAsFiber(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let bodyStr = '';
+    for await (const chunk of req) {
+      bodyStr += chunk;
+    }
+
+    let data: {
+      filePath: string;
+      originId: string;
+      title: string;
+      body: string;
+      kind?: string;
+    };
+    try {
+      data = JSON.parse(bodyStr);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { filePath, originId, title, body, kind = 'task' } = data;
+
+    if (!filePath || !title || !body) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required fields' }));
+      return;
+    }
+
+    // Get the city path (directory containing the file)
+    const cityPath = filePath.substring(0, filePath.lastIndexOf('/'));
+    const isRemote = originId !== 'local' && !!originId;
+
+    try {
+      let fiberId: string;
+
+      // Escape body for shell - use a temp file approach to avoid shell escaping issues
+      const escapedTitle = title.replace(/'/g, "'\\''");
+      const escapedBody = body.replace(/'/g, "'\\''");
+
+      if (!isRemote) {
+        // Local: run felt add directly
+        // felt add returns just the fiber ID on stdout
+        const { stdout } = await execAsync(
+          `cd '${cityPath}' && felt add '${escapedTitle}' -k ${kind} -b '${escapedBody}'`,
+          { timeout: 10000, maxBuffer: 1024 * 1024 }
+        );
+        fiberId = stdout.trim();
+      } else {
+        // Remote: run via SSH
+        const origin = this.originLookup.getOrigin(originId);
+        if (!origin?.sshHost) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Origin not found or not connected' }));
+          return;
+        }
+
+        // For remote, need to escape for both local and remote shells
+        const { stdout } = await execAsync(
+          `ssh ${origin.sshHost} "cd '${cityPath}' && felt add '${escapedTitle}' -k ${kind} -b '${escapedBody}'"`,
+          { timeout: 30000, maxBuffer: 1024 * 1024 }
+        );
+        fiberId = stdout.trim();
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ success: true, fiberId }));
+    } catch (error: any) {
+      console.error('Failed to file as fiber:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to file as fiber: ' + error.message }));
+    }
   }
 }

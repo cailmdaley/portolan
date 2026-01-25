@@ -5,9 +5,14 @@
  * "Recently Edited" files in the CityPanel.
  *
  * Tracks by path (not session) since cities represent directories.
+ *
+ * For remote cities, persists file access history since `find` doesn't work over SSH.
  */
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
 const execAsync = promisify(exec);
 
@@ -21,7 +26,7 @@ export interface RecentFile {
   mtime: number;       // Modification time (epoch ms)
 }
 
-export interface RecentFilesUpdate {
+interface RecentFilesUpdate {
   path: string;
   files: RecentFile[];
 }
@@ -38,10 +43,21 @@ export class RecentFilesManager {
   private pollInterval: NodeJS.Timeout | null = null;
   private onUpdate: UpdateHandler | null = null;
 
+  // Persistence for remote cities (key = originId, value = recent files)
+  private readonly dataDir: string;
+  private readonly persistencePath: string;
+  private remoteFilesHistory = new Map<string, RecentFile[]>();
+
   // Configuration
   private readonly POLL_INTERVAL_MS = 10000; // Poll every 10 seconds
   private readonly EXEC_TIMEOUT_MS = 10000;  // Timeout for find commands
   private readonly MAX_FILES = 20;           // Cache top N files per path
+
+  constructor() {
+    this.dataDir = join(homedir(), '.hexarchy');
+    this.persistencePath = join(this.dataDir, 'recent-files.json');
+    this.loadPersistence();
+  }
 
   // Directories to exclude from search
   private readonly EXCLUDE_DIRS = [
@@ -101,13 +117,6 @@ export class RecentFilesManager {
    */
   getFiles(path: string): RecentFile[] {
     return this.filesCache.get(path) ?? [];
-  }
-
-  /**
-   * Get all cached files
-   */
-  getAllFiles(): Map<string, RecentFile[]> {
-    return new Map(this.filesCache);
   }
 
   /**
@@ -232,49 +241,130 @@ export class RecentFilesManager {
     }
   }
 
+  // ============================================================================
+  // Persistence for remote cities
+  // ============================================================================
+
   /**
-   * Get recent files from a remote host via SSH
+   * Load persisted recent files from disk
    */
-  async getRemoteFiles(sshHost: string, directory: string): Promise<RecentFile[]> {
+  private loadPersistence(): void {
+    if (!existsSync(this.persistencePath)) {
+      return;
+    }
+
     try {
-      // Build exclusion args for find
-      const excludeDirArgs = this.EXCLUDE_DIRS
-        .map(dir => `-name '${dir}' -prune -o`)
-        .join(' ');
+      const content = readFileSync(this.persistencePath, 'utf-8');
+      const data = JSON.parse(content) as { version: 1; origins: Record<string, RecentFile[]> };
 
-      const excludePatternArgs = this.EXCLUDE_PATTERNS
-        .map(pat => `-not -name '${pat}'`)
-        .join(' ');
-
-      // Remote find with stat - use Linux stat format
-      // Linux stat uses -c '%Y %n' instead of macOS -f '%m|%N'
-      const remoteCmd = `cd '${directory}' && find . \\( ${excludeDirArgs} -type f ${excludePatternArgs} -print \\) 2>/dev/null | head -500 | while read f; do stat --format='%Y|%n' "\$f" 2>/dev/null; done | sort -t'|' -k1 -rn | head -${this.MAX_FILES}`;
-
-      const { stdout } = await execAsync(`ssh ${sshHost} "${remoteCmd}"`, {
-        timeout: this.EXEC_TIMEOUT_MS * 2, // Longer timeout for SSH
-      });
-
-      const files: RecentFile[] = [];
-      const lines = stdout.trim().split('\n').filter(Boolean);
-
-      for (const line of lines) {
-        const [mtimeStr, ...pathParts] = line.split('|');
-        const relativePath = pathParts.join('|').replace(/^\.\//, '');
-        const mtime = parseInt(mtimeStr, 10) * 1000; // Convert to ms
-
-        if (relativePath && !isNaN(mtime)) {
-          files.push({
-            path: relativePath,
-            fullPath: `${directory}/${relativePath}`,
-            mtime,
-          });
+      if (data.version === 1 && data.origins) {
+        for (const [originId, files] of Object.entries(data.origins)) {
+          this.remoteFilesHistory.set(originId, files);
         }
+        console.log(`[RecentFilesManager] Loaded ${this.remoteFilesHistory.size} remote origins`);
       }
-
-      return files;
     } catch (error) {
-      console.error(`[RecentFilesManager] Failed to get remote files from ${sshHost}:${directory}:`, error);
-      return [];
+      console.error('[RecentFilesManager] Failed to load persistence:', error);
     }
   }
+
+  /**
+   * Save persisted recent files to disk
+   */
+  private savePersistence(): void {
+    if (!existsSync(this.dataDir)) {
+      mkdirSync(this.dataDir, { recursive: true });
+    }
+
+    const origins: Record<string, RecentFile[]> = {};
+    for (const [originId, files] of this.remoteFilesHistory.entries()) {
+      origins[originId] = files;
+    }
+
+    const data = { version: 1 as const, origins };
+    const tmpPath = this.persistencePath + '.tmp';
+
+    try {
+      writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+      renameSync(tmpPath, this.persistencePath);
+    } catch (error) {
+      console.error('[RecentFilesManager] Failed to save persistence:', error);
+    }
+  }
+
+  /**
+   * Record a file access for a remote origin (called when files are opened)
+   */
+  recordRemoteFileAccess(originId: string, filePath: string, fullPath: string): void {
+    if (originId === 'local') return; // Don't persist local files - use polling
+
+    const files = this.remoteFilesHistory.get(originId) ?? [];
+    const now = Date.now();
+
+    // Remove existing entry for this file
+    const filtered = files.filter(f => f.fullPath !== fullPath);
+
+    // Add at the front with current timestamp
+    const newEntry: RecentFile = {
+      path: filePath,
+      fullPath,
+      mtime: now,
+    };
+
+    const updated = [newEntry, ...filtered].slice(0, this.MAX_FILES);
+    this.remoteFilesHistory.set(originId, updated);
+    this.savePersistence();
+  }
+
+  /**
+   * Get persisted recent files for a remote origin
+   */
+  getRemoteFiles(originId: string): RecentFile[] {
+    return this.remoteFilesHistory.get(originId) ?? [];
+  }
+
+  /**
+   * Record a file edit from worker activity (Edit/Write tool usage).
+   * Works for both local and remote cities.
+   *
+   * @param fullPath - Full path of the edited file
+   * @param cityPath - Path of the city the file belongs to
+   * @param originId - Origin ID ('local' or remote origin)
+   */
+  recordActivityEdit(fullPath: string, cityPath: string, originId: string): void {
+    // Extract relative path from city root
+    let relativePath = fullPath;
+    if (fullPath.startsWith(cityPath + '/')) {
+      relativePath = fullPath.slice(cityPath.length + 1);
+    } else if (fullPath.startsWith(cityPath)) {
+      relativePath = fullPath.slice(cityPath.length);
+      if (relativePath.startsWith('/')) {
+        relativePath = relativePath.slice(1);
+      }
+    }
+
+    const now = Date.now();
+    const entry: RecentFile = {
+      path: relativePath,
+      fullPath,
+      mtime: now,
+    };
+
+    if (originId === 'local') {
+      // For local cities, update the cache directly (polling will also catch it)
+      const files = this.filesCache.get(cityPath) ?? [];
+      const filtered = files.filter(f => f.fullPath !== fullPath);
+      const updated = [entry, ...filtered].slice(0, this.MAX_FILES);
+      this.filesCache.set(cityPath, updated);
+
+      // Notify update handler
+      if (this.onUpdate) {
+        this.onUpdate({ path: cityPath, files: updated });
+      }
+    } else {
+      // For remote cities, persist to history
+      this.recordRemoteFileAccess(originId, relativePath, fullPath);
+    }
+  }
+
 }

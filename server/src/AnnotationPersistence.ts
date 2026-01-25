@@ -19,7 +19,7 @@ export interface Annotation {
   filePath: string;        // Full file path
   originId: string;        // 'local' or 'remote-{hostname}'
 
-  // Selection anchor
+  // Selection anchor (for text annotations)
   from: number;            // char offset at creation
   to: number;
   line?: number;           // line number at 'from' (1-indexed)
@@ -30,11 +30,22 @@ export interface Annotation {
   // The feedback
   comment: string;
   createdAt: number;
+
+  // Image annotation fields (optional)
+  x?: number;              // percentage 0-100
+  y?: number;              // percentage 0-100
+  isImageAnnotation?: boolean;
 }
 
 interface PersistenceFile {
   version: 1;
   annotations: Annotation[];
+  // History: track files that were annotated (even if annotations later deleted)
+  annotationHistory?: Array<{
+    filePath: string;
+    originId: string;
+    lastAnnotatedAt: number;
+  }>;
 }
 
 // ============================================================================
@@ -45,6 +56,8 @@ export class AnnotationPersistence {
   private readonly dataDir: string;
   private readonly filePath: string;
   private annotations: Map<string, Annotation> = new Map(); // key = annotation.id
+  // Track files that were annotated (persists even if annotations deleted)
+  private annotationHistory: Map<string, { filePath: string; originId: string; lastAnnotatedAt: number }> = new Map();
 
   constructor() {
     this.dataDir = join(homedir(), '.hexarchy');
@@ -63,6 +76,7 @@ export class AnnotationPersistence {
    */
   load(): Annotation[] {
     this.annotations.clear();
+    this.annotationHistory.clear();
 
     if (!existsSync(this.filePath)) {
       return [];
@@ -81,7 +95,15 @@ export class AnnotationPersistence {
         this.annotations.set(annotation.id, annotation);
       }
 
-      console.log(`Loaded ${this.annotations.size} annotations`);
+      // Load annotation history
+      if (data.annotationHistory) {
+        for (const entry of data.annotationHistory) {
+          const key = this.makeFileKey(entry.originId, entry.filePath);
+          this.annotationHistory.set(key, entry);
+        }
+      }
+
+      console.log(`Loaded ${this.annotations.size} annotations, ${this.annotationHistory.size} history entries`);
       return this.getAll();
     } catch (error) {
       console.error('Failed to load annotations:', error);
@@ -101,6 +123,7 @@ export class AnnotationPersistence {
     const data: PersistenceFile = {
       version: 1,
       annotations: this.getAll(),
+      annotationHistory: [...this.annotationHistory.values()],
     };
 
     const tmpPath = this.filePath + '.tmp';
@@ -145,6 +168,15 @@ export class AnnotationPersistence {
     };
 
     this.annotations.set(newAnnotation.id, newAnnotation);
+
+    // Update annotation history (track that this file was annotated)
+    const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath);
+    this.annotationHistory.set(historyKey, {
+      filePath: newAnnotation.filePath,
+      originId: newAnnotation.originId,
+      lastAnnotatedAt: newAnnotation.createdAt,
+    });
+
     this.save();
     console.log(
       `Added annotation to ${newAnnotation.filePath} at ${newAnnotation.from}-${newAnnotation.to}`
@@ -186,6 +218,9 @@ export class AnnotationPersistence {
   /**
    * Get recently annotated files, grouped by file with most recent annotation time
    * Optionally filter by originId to show only files for a specific city
+   *
+   * Shows files with current annotations first, then fills remaining slots
+   * with historically annotated files (those whose annotations were deleted)
    */
   getRecentFiles(originId?: string, limit: number = 10): Array<{
     filePath: string;
@@ -193,7 +228,7 @@ export class AnnotationPersistence {
     annotationCount: number;
     mostRecentAt: number;
   }> {
-    // Group annotations by file
+    // Group current annotations by file
     const fileMap = new Map<string, {
       filePath: string;
       originId: string;
@@ -223,8 +258,8 @@ export class AnnotationPersistence {
       }
     }
 
-    // Sort by most recent and take limit
-    return [...fileMap.values()]
+    // Get files with current annotations
+    const filesWithAnnotations = [...fileMap.values()]
       .sort((a, b) => b.mostRecentAt - a.mostRecentAt)
       .slice(0, limit)
       .map(f => ({
@@ -233,5 +268,30 @@ export class AnnotationPersistence {
         annotationCount: f.count,
         mostRecentAt: f.mostRecentAt,
       }));
+
+    // If we have fewer than limit, fill with history (files whose annotations were deleted)
+    if (filesWithAnnotations.length < limit) {
+      const seenKeys = new Set(filesWithAnnotations.map(f => this.makeFileKey(f.originId, f.filePath)));
+
+      // Get historical entries not in current annotations
+      const historyEntries = [...this.annotationHistory.values()]
+        .filter(h => {
+          if (originId && h.originId !== originId) return false;
+          const key = this.makeFileKey(h.originId, h.filePath);
+          return !seenKeys.has(key);
+        })
+        .sort((a, b) => b.lastAnnotatedAt - a.lastAnnotatedAt)
+        .slice(0, limit - filesWithAnnotations.length)
+        .map(h => ({
+          filePath: h.filePath,
+          originId: h.originId,
+          annotationCount: 0, // annotations were deleted
+          mostRecentAt: h.lastAnnotatedAt,
+        }));
+
+      return [...filesWithAnnotations, ...historyEntries];
+    }
+
+    return filesWithAnnotations;
   }
 }

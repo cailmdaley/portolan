@@ -134,51 +134,14 @@ export function normalizeSession(session: ServerSession): Session {
   }
 }
 
-// Porch Morning palette
+// Porch Morning palette (hex colors used in Three.js)
 export const PALETTE = {
-  // Backgrounds
-  bgPrimary: 0xc8b8a8,     // Main background, ground plane
-  bgCard: 0xede8e0,        // Panels
-  bgElevated: 0xfdfcfa,    // Elevated elements
-
-  // Text
-  textPrimary: 0x2e2a26,
-  textSecondary: 0x4a4540,
-  textMuted: 0x7a7368,
-
-  // Borders
-  border: 0xa89888,
-  borderLight: 0xc8bba8,
-
-  // Semantic
-  accent: 0x5a7b7b,        // Teal — working state
-  gold: 0x9a7b35,          // City hexes
-  goldLight: 0xc4a86a,     // City highlights
-  green: 0x6b8b6b,         // Success states
-  red: 0xa87070,           // Attention state
-
-  // Hex-specific
-  cityHex: 0x9a7b35,       // Gold — cities
-  cityDormant: 0x8a8070,   // Muted gold — dormant cities (no workers)
-  workerIdle: 0x7a7368,    // Muted — dormant workers
+  bgPrimary: 0xc8b8a8,     // Ground plane
+  border: 0xa89888,        // Hex borders
+  cityHex: 0x9a7b35,       // Gold — active cities
+  cityDormant: 0x8a8070,   // Muted — dormant cities
+  workerIdle: 0x7a7368,    // Muted — idle workers
   workerActive: 0x5a7b7b,  // Teal — working
-  // workerAttention removed - attention status was speculative
-  emptyHex: 0xc8b8a8,      // Background terrain
   selection: 0xc4a86a,     // Gold highlight ring
 } as const
 
-export const PALETTE_CSS = {
-  bgPrimary: '#C8B8A8',
-  bgCard: '#EDE8E0',
-  bgElevated: '#FDFCFA',
-  textPrimary: '#2E2A26',
-  textSecondary: '#4A4540',
-  textMuted: '#7A7368',
-  border: '#A89888',
-  borderLight: '#C8BBA8',
-  accent: '#5A7B7B',
-  gold: '#9A7B35',
-  goldLight: '#C4A86A',
-  green: '#6B8B6B',
-  red: '#A87070',
-} as const

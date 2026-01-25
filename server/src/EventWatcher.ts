@@ -262,12 +262,10 @@ export class EventWatcher {
       }
 
       const newContent = content.slice(this.lastCharPosition);
-      console.log(`EventWatcher: New data (${newContent.length} chars)`);
       this.lastCharPosition = content.length;
       this.lastFileSize = stats.size;
 
       const lines = newContent.trim().split('\n');
-      console.log(`EventWatcher: Got ${lines.length} lines, first: ${lines[0]?.substring(0, 80)}...`);
       for (const line of lines) {
         if (!line) continue;
         try {
@@ -292,7 +290,6 @@ export class EventWatcher {
    * Process a single event
    */
   private processEvent(event: HexarchyEvent): void {
-    console.log(`EventWatcher: Processing ${event.type} tool=${event.tool || 'none'} tmux=${event.tmuxSession || 'none'}`);
     if (!event.tmuxSession) return;
 
     const status = this.eventToStatus(event.type);

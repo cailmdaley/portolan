@@ -16,6 +16,7 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
+import { escapeHtml, formatTimeAgo, showToast } from './utils'
 
 // Configure marked for GFM (tables, task lists, etc.)
 marked.setOptions({
@@ -50,6 +51,10 @@ export interface Annotation {
   contextAfter: string
   comment: string
   createdAt: number
+  // Image annotation fields (optional)
+  x?: number  // percentage 0-100
+  y?: number  // percentage 0-100
+  isImageAnnotation?: boolean
 }
 
 // Worker info for send-to-worker
@@ -174,6 +179,7 @@ export class FileViewerModal {
   private copyBtn: HTMLElement
   private saveBtn: HTMLElement
   private sendBtn: HTMLElement
+  private fiberBtn: HTMLElement
   private closeBtn: HTMLElement
   // @ts-expect-error Stored for potential future layout changes
   private contentWrapper: HTMLElement
@@ -182,6 +188,7 @@ export class FileViewerModal {
   private modeLineEl: HTMLElement
   private selectionToolbar: HTMLElement | null = null
   private currentContent: FileContent | null = null
+  private currentPath: string = ''
   private currentOriginId: string = 'local'
   private editorView: EditorView | null = null
   private isDirty: boolean = false
@@ -203,6 +210,7 @@ export class FileViewerModal {
     this.copyBtn = this.modal.querySelector('.file-viewer-copy')!
     this.saveBtn = this.modal.querySelector('.file-viewer-save')!
     this.sendBtn = this.modal.querySelector('.file-viewer-send')!
+    this.fiberBtn = this.modal.querySelector('.file-viewer-fiber')!
     this.closeBtn = this.modal.querySelector('.file-viewer-close')!
     this.contentWrapper = this.modal.querySelector('.file-viewer-content-wrapper')!
     this.contentEl = this.modal.querySelector('.file-viewer-content')!
@@ -230,6 +238,7 @@ export class FileViewerModal {
         <div class="file-viewer-actions">
           <span class="file-viewer-lang"></span>
           <button class="file-viewer-btn file-viewer-save" style="display: none;">Save</button>
+          <button class="file-viewer-btn file-viewer-fiber" style="display: none;">File as Fiber</button>
           <button class="file-viewer-btn file-viewer-send" style="display: none;">Send to Worker</button>
           <button class="file-viewer-btn file-viewer-refresh" title="Refresh file">↻</button>
           <button class="file-viewer-btn file-viewer-copy">Copy</button>
@@ -277,6 +286,9 @@ export class FileViewerModal {
     // Send to worker button
     this.sendBtn.addEventListener('click', () => this.showWorkerPicker())
 
+    // File as fiber button
+    this.fiberBtn.addEventListener('click', () => this.fileAsFiber())
+
     // Annotations panel toggle
     const toggleBtn = this.annotationsPanel.querySelector('.annotations-toggle')
     toggleBtn?.addEventListener('click', () => {
@@ -296,6 +308,7 @@ export class FileViewerModal {
     const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
     globalCommentTextarea?.addEventListener('input', () => {
       this.globalComment = globalCommentTextarea.value
+      this.updateSendButton()
     })
 
     // Escape key to close (only if not in vim insert mode)
@@ -359,8 +372,10 @@ export class FileViewerModal {
     this.modeLineEl.textContent = ''
     this.saveBtn.style.display = 'none'
     this.sendBtn.style.display = 'none'
+    this.fiberBtn.style.display = 'none'
     this.isDirty = false
     this.originalContent = ''
+    this.currentPath = filePath
     this.currentOriginId = originId
     this.sourceWorkerId = sourceWorkerId || null
     this.annotations = []
@@ -449,28 +464,51 @@ export class FileViewerModal {
 
   private async showImage(filePath: string, originId: string): Promise<void> {
     this.langEl.textContent = 'image'
-    this.modeLineEl.textContent = ''
+    this.modeLineEl.textContent = 'Click to annotate'
     this.saveBtn.style.display = 'none'
     this.currentContent = null  // Can't copy image to clipboard as text
 
     try {
-      const response = await fetch(
-        `http://${window.location.hostname}:4004/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
-      )
+      // Fetch image and annotations in parallel
+      const [imageResponse, annotationsResponse] = await Promise.all([
+        fetch(
+          `http://${window.location.hostname}:4004/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
+        ),
+        fetch(
+          `http://${window.location.hostname}:4004/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
+        ),
+      ])
 
-      if (!response.ok) {
-        const error = await response.json()
+      if (!imageResponse.ok) {
+        const error = await imageResponse.json()
         throw new Error(error.error || 'Failed to load image')
       }
 
-      const data = await response.json()
+      const data = await imageResponse.json()
+
+      // Load annotations
+      if (annotationsResponse.ok) {
+        const annotationsData = await annotationsResponse.json()
+        this.annotations = annotationsData.annotations || []
+      }
 
       if (data.type === 'image' && data.url) {
         const container = document.createElement('div')
         container.className = 'file-viewer-image'
-        container.innerHTML = `<img src="${data.url}" alt="${this.escapeHtml(filePath)}" />`
+        container.innerHTML = `<img src="${data.url}" alt="${escapeHtml(filePath)}" />`
         this.contentEl.innerHTML = ''
         this.contentEl.appendChild(container)
+
+        // Set up click-to-annotate
+        const img = container.querySelector('img')!
+        this.setupImageAnnotation(container, img)
+
+        // Render existing annotation markers
+        this.renderImageAnnotationMarkers(container)
+
+        // Show send/fiber buttons if we have annotations
+        this.updateSendButton()
+        this.renderAnnotationsPanel()
       } else {
         throw new Error('Invalid image response')
       }
@@ -478,6 +516,182 @@ export class FileViewerModal {
       this.langEl.textContent = 'error'
       this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
     }
+  }
+
+  private setupImageAnnotation(container: HTMLElement, img: HTMLImageElement): void {
+    // Click handler for creating annotations
+    img.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      // Calculate position as percentage of image dimensions
+      const rect = img.getBoundingClientRect()
+      const x = ((e.clientX - rect.left) / rect.width) * 100
+      const y = ((e.clientY - rect.top) / rect.height) * 100
+
+      // Show annotation input at click position
+      this.showImageAnnotationInput(container, x, y, e.clientX, e.clientY)
+    })
+
+    // Change cursor to indicate clickable
+    img.style.cursor = 'crosshair'
+  }
+
+  private showImageAnnotationInput(container: HTMLElement, x: number, y: number, screenX: number, screenY: number): void {
+    // Remove any existing input
+    const existing = container.querySelector('.image-annotation-input-wrapper')
+    if (existing) existing.remove()
+
+    // Create input wrapper
+    const wrapper = document.createElement('div')
+    wrapper.className = 'image-annotation-input-wrapper'
+    wrapper.style.position = 'fixed'
+    wrapper.style.left = `${screenX + 10}px`
+    wrapper.style.top = `${screenY + 10}px`
+    wrapper.style.zIndex = '10001'
+    wrapper.innerHTML = `
+      <div class="image-annotation-input">
+        <div class="image-annotation-marker-preview" style="background: var(--gold); width: 12px; height: 12px; border-radius: 50%; margin-bottom: 8px;"></div>
+        <textarea class="annotation-input" placeholder="Add annotation..." rows="2"></textarea>
+        <div class="annotation-input-actions">
+          <button class="annotation-save-btn">Save</button>
+          <button class="annotation-cancel-btn">Cancel</button>
+        </div>
+      </div>
+    `
+
+    document.body.appendChild(wrapper)
+
+    const textarea = wrapper.querySelector('.annotation-input') as HTMLTextAreaElement
+    const saveBtn = wrapper.querySelector('.annotation-save-btn')!
+    const cancelBtn = wrapper.querySelector('.annotation-cancel-btn')!
+
+    // Focus input
+    setTimeout(() => textarea.focus(), 0)
+
+    // Save handler
+    const save = async () => {
+      const comment = textarea.value.trim()
+      if (!comment) return
+
+      await this.saveImageAnnotation(x, y, comment)
+      wrapper.remove()
+      this.renderImageAnnotationMarkers(container)
+    }
+
+    // Cancel handler
+    const cancel = () => {
+      wrapper.remove()
+    }
+
+    saveBtn.addEventListener('click', save)
+    cancelBtn.addEventListener('click', cancel)
+
+    textarea.addEventListener('keydown', (e) => {
+      e.stopPropagation()
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        save()
+      } else if (e.key === 'Escape') {
+        cancel()
+      }
+    })
+
+    // Close if clicking outside
+    const closeOnClickOutside = (e: MouseEvent) => {
+      if (!wrapper.contains(e.target as Node)) {
+        wrapper.remove()
+        document.removeEventListener('click', closeOnClickOutside)
+      }
+    }
+    setTimeout(() => document.addEventListener('click', closeOnClickOutside), 0)
+  }
+
+  private async saveImageAnnotation(x: number, y: number, comment: string): Promise<void> {
+    if (!this.currentPath) return
+
+    try {
+      const response = await fetch(`http://${window.location.hostname}:4004/annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: this.currentPath,
+          originId: this.currentOriginId,
+          from: 0,
+          to: 0,
+          originalText: `[Image point at ${x.toFixed(1)}%, ${y.toFixed(1)}%]`,
+          contextBefore: '',
+          contextAfter: '',
+          comment,
+          x,
+          y,
+          isImageAnnotation: true,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to save annotation')
+      }
+
+      const data = await response.json()
+      this.annotations.push(data.annotation)
+
+      // Update panel and buttons
+      this.renderAnnotationsPanel()
+      this.updateSendButton()
+    } catch (error: any) {
+      console.error('Failed to save image annotation:', error)
+      alert(`Failed to save annotation: ${error.message}`)
+    }
+  }
+
+  private renderImageAnnotationMarkers(container: HTMLElement): void {
+    // Remove existing markers
+    container.querySelectorAll('.image-annotation-marker').forEach(m => m.remove())
+
+    const img = container.querySelector('img')
+    if (!img) return
+
+    // Add markers for each image annotation
+    this.annotations.forEach((ann, index) => {
+      if (ann.isImageAnnotation && ann.x !== undefined && ann.y !== undefined) {
+        const marker = document.createElement('div')
+        marker.className = 'image-annotation-marker'
+        marker.style.position = 'absolute'
+        marker.style.left = `${ann.x}%`
+        marker.style.top = `${ann.y}%`
+        marker.style.transform = 'translate(-50%, -50%)'
+        marker.style.width = '24px'
+        marker.style.height = '24px'
+        marker.style.borderRadius = '50%'
+        marker.style.backgroundColor = 'var(--gold)'
+        marker.style.border = '2px solid var(--bg-elevated)'
+        marker.style.cursor = 'pointer'
+        marker.style.display = 'flex'
+        marker.style.alignItems = 'center'
+        marker.style.justifyContent = 'center'
+        marker.style.fontSize = '12px'
+        marker.style.fontWeight = 'bold'
+        marker.style.color = 'var(--bg-card)'
+        marker.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)'
+        marker.textContent = String(index + 1)
+        marker.title = ann.comment
+
+        // Click to scroll to annotation in panel
+        marker.addEventListener('click', (e) => {
+          e.stopPropagation()
+          const annItem = this.annotationsPanel.querySelector(`[data-id="${ann.id}"]`)
+          if (annItem) {
+            annItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            annItem.classList.add('highlight')
+            setTimeout(() => annItem.classList.remove('highlight'), 1500)
+          }
+        })
+
+        container.appendChild(marker)
+      }
+    })
   }
 
   private async showPdf(filePath: string, originId: string): Promise<void> {
@@ -501,7 +715,7 @@ export class FileViewerModal {
       if (data.type === 'pdf' && data.url) {
         const container = document.createElement('div')
         container.className = 'file-viewer-pdf'
-        container.innerHTML = `<iframe src="${data.url}" title="${this.escapeHtml(filePath)}" />`
+        container.innerHTML = `<iframe src="${data.url}" title="${escapeHtml(filePath)}" />`
         this.contentEl.innerHTML = ''
         this.contentEl.appendChild(container)
       } else {
@@ -511,12 +725,6 @@ export class FileViewerModal {
       this.langEl.textContent = 'error'
       this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
     }
-  }
-
-  private escapeHtml(text: string): string {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
   }
 
   private createEditor(content: string, language: string): void {
@@ -966,24 +1174,41 @@ export class FileViewerModal {
     const list = this.annotationsPanel.querySelector('.annotations-list')!
 
     if (this.annotations.length === 0) {
-      list.innerHTML = '<div class="annotations-empty">No annotations yet. Select text to add one.</div>'
+      const isImage = this.langEl.textContent === 'image'
+      list.innerHTML = `<div class="annotations-empty">No annotations yet. ${isImage ? 'Click on image to add one.' : 'Select text to add one.'}</div>`
       return
     }
 
-    list.innerHTML = this.annotations.map(ann => `
-      <div class="annotation-item" data-id="${ann.id}">
-        <div class="annotation-text">${ann.line ? `<span class="annotation-line">L${ann.line}</span> ` : ''}"${this.escapeHtml(this.truncate(ann.originalText, 50))}"</div>
-        <div class="annotation-comment">${this.escapeHtml(ann.comment)}</div>
-        <div class="annotation-meta">
-          <span>${this.formatDate(ann.createdAt)}</span>
-          <div class="annotation-actions">
-            <button class="annotation-edit" title="Edit">✎</button>
-            <button class="annotation-goto" title="Go to">↗</button>
-            <button class="annotation-delete" title="Delete">×</button>
+    list.innerHTML = this.annotations.map((ann, index) => {
+      // Different display for image vs text annotations
+      let locationInfo: string
+      if (ann.isImageAnnotation) {
+        locationInfo = `<span class="annotation-line">#${index + 1}</span> `
+      } else if (ann.line) {
+        locationInfo = `<span class="annotation-line">L${ann.line}</span> `
+      } else {
+        locationInfo = ''
+      }
+
+      const textDisplay = ann.isImageAnnotation
+        ? '<em style="color: var(--text-muted);">[Image point]</em>'
+        : `"${escapeHtml(this.truncate(ann.originalText, 50))}"`
+
+      return `
+        <div class="annotation-item" data-id="${ann.id}">
+          <div class="annotation-text">${locationInfo}${textDisplay}</div>
+          <div class="annotation-comment">${escapeHtml(ann.comment)}</div>
+          <div class="annotation-meta">
+            <span>${formatTimeAgo(ann.createdAt)}</span>
+            <div class="annotation-actions">
+              <button class="annotation-edit" title="Edit">✎</button>
+              <button class="annotation-goto" title="Go to">↗</button>
+              <button class="annotation-delete" title="Delete">×</button>
+            </div>
           </div>
         </div>
-      </div>
-    `).join('')
+      `
+    }).join('')
 
     // Add event listeners
     list.querySelectorAll('.annotation-item').forEach(item => {
@@ -991,8 +1216,21 @@ export class FileViewerModal {
 
       item.querySelector('.annotation-goto')?.addEventListener('click', () => {
         const ann = this.annotations.find(a => a.id === id)
-        if (ann && this.editorView) {
-          // Scroll to annotation
+        if (!ann) return
+
+        if (ann.isImageAnnotation) {
+          // For image annotations, find and highlight the marker
+          const marker = this.contentEl.querySelector(`.image-annotation-marker[title="${ann.comment}"]`) as HTMLElement
+          if (marker) {
+            marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            // Pulse animation
+            marker.style.transform = 'translate(-50%, -50%) scale(1.5)'
+            setTimeout(() => {
+              marker.style.transform = 'translate(-50%, -50%) scale(1)'
+            }, 300)
+          }
+        } else if (this.editorView) {
+          // For text annotations, scroll to position
           this.editorView.dispatch({
             selection: { anchor: ann.from, head: ann.to },
             scrollIntoView: true,
@@ -1020,7 +1258,7 @@ export class FileViewerModal {
     // Replace comment with inline edit form
     const currentComment = ann.comment
     commentDiv.innerHTML = `
-      <textarea class="annotation-edit-input">${this.escapeHtml(currentComment)}</textarea>
+      <textarea class="annotation-edit-input">${escapeHtml(currentComment)}</textarea>
       <div class="annotation-edit-actions">
         <button class="annotation-edit-save">Save</button>
         <button class="annotation-edit-cancel">Cancel</button>
@@ -1142,31 +1380,20 @@ export class FileViewerModal {
     return text.slice(0, maxLength) + '...'
   }
 
-  private formatDate(timestamp: number): string {
-    const date = new Date(timestamp)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-
-    if (diffMins < 1) return 'just now'
-    if (diffMins < 60) return `${diffMins}m ago`
-
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-
-    return date.toLocaleDateString()
-  }
 
   // ============================================================================
   // Send to Worker
   // ============================================================================
 
   private updateSendButton(): void {
-    this.sendBtn.style.display = this.annotations.length > 0 ? 'inline-block' : 'none'
+    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
+    this.sendBtn.style.display = hasContent ? 'inline-block' : 'none'
+    this.fiberBtn.style.display = hasContent ? 'inline-block' : 'none'
   }
 
   private async showWorkerPicker(): Promise<void> {
-    if (this.annotations.length === 0) return
+    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
+    if (!hasContent) return
 
     // If we have a source worker, send directly (global comment is already tracked in state)
     if (this.sourceWorkerId) {
@@ -1175,12 +1402,12 @@ export class FileViewerModal {
     }
 
     // Otherwise, need to pick a worker
-    if (!this.currentContent) return
+    if (!this.currentPath) return
 
     // Fetch workers for this city
     if (this.onGetWorkers) {
       try {
-        this.cityWorkers = await this.onGetWorkers(this.currentOriginId, this.currentContent.path)
+        this.cityWorkers = await this.onGetWorkers(this.currentOriginId, this.currentPath)
       } catch (e) {
         console.error('Failed to get workers:', e)
         this.cityWorkers = []
@@ -1203,8 +1430,8 @@ export class FileViewerModal {
           </button>
           ${this.cityWorkers.map(w => `
             <button class="worker-picker-item" data-worker-id="${w.id}">
-              <span class="worker-name">${this.escapeHtml(w.name)}</span>
-              <span class="worker-session">${this.escapeHtml(w.tmuxSession)}</span>
+              <span class="worker-name">${escapeHtml(w.name)}</span>
+              <span class="worker-session">${escapeHtml(w.tmuxSession)}</span>
             </button>
           `).join('')}
         </div>
@@ -1239,7 +1466,8 @@ export class FileViewerModal {
   }
 
   private async sendToWorker(workerId: string): Promise<void> {
-    if (!this.currentContent || this.annotations.length === 0) return
+    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
+    if (!this.currentPath || !hasContent) return
 
     try {
       const response = await fetch(`http://${window.location.hostname}:4004/send-annotations`, {
@@ -1247,7 +1475,7 @@ export class FileViewerModal {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           workerId,
-          filePath: this.currentContent.path,
+          filePath: this.currentPath,
           originId: this.currentOriginId,
           annotations: this.annotations,
           globalComment: this.globalComment || undefined,
@@ -1258,6 +1486,12 @@ export class FileViewerModal {
         const error = await response.json()
         throw new Error(error.error || 'Failed to send annotations')
       }
+
+      // Clear feedback after successful send
+      this.globalComment = ''
+      const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
+      if (globalCommentTextarea) globalCommentTextarea.value = ''
+      this.updateSendButton()
 
       // Show success feedback
       const originalText = this.sendBtn.textContent
@@ -1272,7 +1506,7 @@ export class FileViewerModal {
   }
 
   private async sendToNewWorker(): Promise<void> {
-    if (!this.currentContent || this.annotations.length === 0) return
+    if (!this.currentPath || this.annotations.length === 0) return
 
     try {
       // Show loading state
@@ -1284,7 +1518,7 @@ export class FileViewerModal {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           createNewWorker: true,
-          filePath: this.currentContent.path,
+          filePath: this.currentPath,
           originId: this.currentOriginId,
           annotations: this.annotations,
           globalComment: this.globalComment || undefined,
@@ -1295,6 +1529,12 @@ export class FileViewerModal {
         const error = await response.json()
         throw new Error(error.error || 'Failed to send annotations')
       }
+
+      // Clear feedback after successful send
+      this.globalComment = ''
+      const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
+      if (globalCommentTextarea) globalCommentTextarea.value = ''
+      this.updateSendButton()
 
       // Show success feedback
       this.sendBtn.textContent = 'Sent!'
@@ -1307,6 +1547,91 @@ export class FileViewerModal {
       this.sendBtn.textContent = 'Send to Worker'
       this.sendBtn.removeAttribute('disabled')
       alert(`Failed to send annotations: ${error.message}`)
+    }
+  }
+
+  // ============================================================================
+  // File as Fiber
+  // ============================================================================
+
+  private async fileAsFiber(): Promise<void> {
+    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
+    if (!this.currentPath || !hasContent) return
+
+    // Get filename for title
+    const pathParts = this.currentPath.split('/')
+    const filename = pathParts[pathParts.length - 1]
+
+    // Format body
+    const bodyLines: string[] = []
+
+    if (this.globalComment) {
+      bodyLines.push(this.globalComment)
+      bodyLines.push('')
+    }
+
+    if (this.annotations.length > 0) {
+      bodyLines.push('## Annotations')
+      bodyLines.push('')
+
+      this.annotations.forEach((ann, i) => {
+        const lineRef = ann.line ? ` (L${ann.line})` : ''
+        const truncatedText = ann.originalText.length > 60
+          ? ann.originalText.slice(0, 57) + '...'
+          : ann.originalText
+        bodyLines.push(`${i + 1}.${lineRef} **"${truncatedText.replace(/\n/g, ' ')}"**`)
+        bodyLines.push(`   > ${ann.comment}`)
+        bodyLines.push('')
+      })
+    }
+
+    const body = bodyLines.join('\n')
+    const title = `Feedback on ${filename}`
+
+    try {
+      this.fiberBtn.textContent = 'Filing...'
+      this.fiberBtn.setAttribute('disabled', 'true')
+
+      const response = await fetch(`http://${window.location.hostname}:4004/file-as-fiber`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: this.currentPath,
+          originId: this.currentOriginId,
+          title,
+          body,
+          kind: 'task',
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to file as fiber')
+      }
+
+      const result = await response.json()
+
+      // Clear feedback after successful filing
+      this.globalComment = ''
+      const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
+      if (globalCommentTextarea) globalCommentTextarea.value = ''
+      this.updateSendButton()
+
+      // Show success feedback
+      this.fiberBtn.textContent = 'Filed!'
+      this.fiberBtn.removeAttribute('disabled')
+      setTimeout(() => {
+        this.fiberBtn.textContent = 'File as Fiber'
+      }, 2000)
+
+      // Show toast notification
+      showToast(`Filed as fiber: ${result.fiberId}`, 'success', 4000)
+      console.log('Filed as fiber:', result.fiberId)
+    } catch (error: any) {
+      console.error('Failed to file as fiber:', error)
+      this.fiberBtn.textContent = 'File as Fiber'
+      this.fiberBtn.removeAttribute('disabled')
+      alert(`Failed to file as fiber: ${error.message}`)
     }
   }
 }

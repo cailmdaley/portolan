@@ -34,6 +34,7 @@ interface HexMeshData {
   hex: HexCoord
   type: 'city' | 'worker' | 'empty'
   entityId?: string
+  entityName?: string  // Worker name for tooltip
   tmuxSession?: string  // For workers - to route activity events
   mesh?: Mesh  // For animation (worker breathing pulse)
   status?: 'idle' | 'working'  // Worker status for animation
@@ -330,18 +331,25 @@ export class ZoneRenderer {
    * Create flat text label (no banner) for workers
    * Returns a Mesh that lies flat on the hex surface
    * Font size is constant; mesh width scales with text length
+   * Long text is truncated with ellipsis to maxChars (default 20)
    */
   private createFlatLabel(
     text: string,
     fontSize = 32,
-    _color: string = '#3D2817'  // Reserved for future use
+    _color: string = '#3D2817',  // Reserved for future use
+    maxChars = 20
   ): Mesh {
+    // Truncate long labels (no ellipsis - just cut)
+    const displayText = text.length > maxChars
+      ? text.slice(0, maxChars)
+      : text
+
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d')!
 
     // Measure text
     ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
-    const metrics = ctx.measureText(text)
+    const metrics = ctx.measureText(displayText)
     const textWidth = metrics.width
 
     const padding = fontSize * 0.3
@@ -367,11 +375,11 @@ export class ZoneRenderer {
 
     // Dark shadow for contrast
     ctx.fillStyle = 'rgba(30, 25, 20, 0.8)'
-    ctx.fillText(text, cx + 1.5, cy + 1.5)
+    ctx.fillText(displayText, cx + 1.5, cy + 1.5)
 
     // Main text - cream/off-white for visibility
     ctx.fillStyle = '#F5F0E8'
-    ctx.fillText(text, cx, cy)
+    ctx.fillText(displayText, cx, cy)
 
     const texture = new CanvasTexture(canvas)
     // Scale world size based on font size
@@ -464,9 +472,15 @@ export class ZoneRenderer {
     group.add(workerMesh)
 
     // Worker label - on hex face (screen-relative: +X=right, +Y=up)
+    // Position based on name hash + hex position for unique offsets
     const labelMesh = this.createFlatLabel(session.name, 200, '#3D2817')
-    labelMesh.position.y = this.hexHeight + 0.03  // Just above hex surface
-    const labelOffset = this.screenToWorld(-0.15, 0.5)
+    const nameHash = session.name.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    // Combine name hash with hex position for better spread
+    const combined = nameHash + session.hex.q * 7 + session.hex.r * 13
+    const xVar = ((combined % 7) - 3) * 0.05  // -0.15 to +0.15
+    const yVar = ((combined % 4)) * 0.012     // 0 to 0.036
+    labelMesh.position.y = this.hexHeight + 0.025 + yVar
+    const labelOffset = this.screenToWorld(-0.12 + xVar, 0.5)
     labelMesh.position.x = labelOffset.x
     labelMesh.position.z = labelOffset.z
     group.add(labelMesh)
@@ -487,6 +501,7 @@ export class ZoneRenderer {
       hex: session.hex,
       type: 'worker',
       entityId: session.id,
+      entityName: session.name,  // Store name for tooltip
       tmuxSession: session.tmuxSession,
       mesh: workerMesh,
       status: session.status,
@@ -538,11 +553,11 @@ export class ZoneRenderer {
   /**
    * Find entity at a hex position
    */
-  getEntityAtHex(hex: HexCoord): { type: 'city' | 'worker' | 'empty'; entityId?: string } | null {
+  getEntityAtHex(hex: HexCoord): { type: 'city' | 'worker' | 'empty'; entityId?: string; entityName?: string } | null {
     const key = this.hexGrid.hexKey(hex)
     const data = this.hexMeshes.get(key)
     if (data) {
-      return { type: data.type, entityId: data.entityId }
+      return { type: data.type, entityId: data.entityId, entityName: data.entityName }
     }
     return null
   }
@@ -727,12 +742,8 @@ export class ZoneRenderer {
    * Update activity display for a worker by tmux session
    */
   updateWorkerActivity(tmuxSession: string, activities: Activity[]): void {
-    // Find the worker with this tmux session
-    const workers = [...this.hexMeshes.values()].filter(d => d.type === 'worker')
-    console.log(`[ZoneRenderer] Looking for tmux=${tmuxSession} among ${workers.length} workers:`, workers.map(w => w.tmuxSession))
     for (const [, data] of this.hexMeshes) {
       if (data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh) {
-        console.log(`[ZoneRenderer] Found match, updating decal`)
         // Remove old decal
         data.group.remove(data.activityMesh)
 

@@ -149,22 +149,6 @@ describe('OriginManager', () => {
     });
   });
 
-  describe('getOriginForSocket', () => {
-    it('should return origin for registered socket', () => {
-      const ws = mockWs();
-      originManager.registerAgent('server1', ws);
-
-      const origin = originManager.getOriginForSocket(ws);
-
-      expect(origin?.id).toBe('remote-server1');
-    });
-
-    it('should return null for unregistered socket', () => {
-      const ws = mockWs();
-      expect(originManager.getOriginForSocket(ws)).toBeNull();
-    });
-  });
-
   describe('getOrigins', () => {
     it('should return all origins', () => {
       const ws1 = mockWs();

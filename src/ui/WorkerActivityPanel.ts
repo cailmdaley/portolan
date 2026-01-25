@@ -1,6 +1,7 @@
 // WorkerActivityPanel.ts - Left-side panel showing worker activity history
 
 import type { Activity, Session } from '../state/types'
+import { escapeHtml, formatTimeAgo } from './utils'
 
 type FileClickCallback = (activity: Activity, originId: string, workerId: string) => void
 
@@ -142,7 +143,7 @@ export class WorkerActivityPanel {
   }
 
   private renderActivityItem(activity: Activity, index: number): string {
-    const timeAgo = this.formatTimeAgo(activity.timestamp)
+    const timeAgo = formatTimeAgo(activity.timestamp)
     const toolClass = this.getToolClass(activity.tool)
     const isClickable = activity.fullPath && ['Read', 'Write', 'Edit'].includes(activity.tool)
     const clickableClass = isClickable ? 'clickable' : ''
@@ -153,7 +154,7 @@ export class WorkerActivityPanel {
           <span class="activity-time">${timeAgo}</span>
           <span class="activity-tool ${toolClass}">${activity.tool}</span>
         </div>
-        <div class="activity-summary">${this.escapeHtml(activity.summary || '')}</div>
+        <div class="activity-summary">${escapeHtml(activity.summary || '')}</div>
       </li>
     `
   }
@@ -186,25 +187,6 @@ export class WorkerActivityPanel {
     return toolClasses[tool] || 'tool-other'
   }
 
-  private formatTimeAgo(timestamp: number): string {
-    const now = Date.now()
-    const diff = now - timestamp
-    const seconds = Math.floor(diff / 1000)
-    const minutes = Math.floor(seconds / 60)
-    const hours = Math.floor(minutes / 60)
-
-    if (seconds < 60) return 'just now'
-    if (minutes < 60) return `${minutes}m ago`
-    if (hours < 24) return `${hours}h ago`
-    return 'older'
-  }
-
-  private escapeHtml(text: string): string {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
-  }
-
   hide(): void {
     this.panel.classList.remove('visible')
     this.currentSession = null
@@ -212,9 +194,5 @@ export class WorkerActivityPanel {
 
   isVisible(): boolean {
     return this.panel.classList.contains('visible')
-  }
-
-  getCurrentSession(): Session | null {
-    return this.currentSession
   }
 }

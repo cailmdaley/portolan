@@ -31,7 +31,7 @@ export interface GitStatus {
   lastChecked: number;
 }
 
-export interface GitStatusUpdate {
+interface GitStatusUpdate {
   path: string;
   status: GitStatus;
 }
@@ -82,13 +82,6 @@ export class GitStatusManager {
    */
   getStatus(path: string): GitStatus | null {
     return this.statusCache.get(path) ?? null;
-  }
-
-  /**
-   * Get all cached statuses
-   */
-  getAllStatuses(): Map<string, GitStatus> {
-    return new Map(this.statusCache);
   }
 
   /**

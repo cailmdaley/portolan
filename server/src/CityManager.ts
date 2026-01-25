@@ -40,7 +40,7 @@ export interface SessionInfo {
   originId: string;
 }
 
-export interface OriginPosition {
+interface OriginPosition {
   q: number;
   r: number;
 }

@@ -120,22 +120,6 @@ export class OriginManager {
   }
 
   /**
-   * Get origin for a WebSocket
-   */
-  getOriginForSocket(ws: WebSocket): Origin | null {
-    const originId = this.socketToOrigin.get(ws);
-    if (!originId) return null;
-    return this.origins.get(originId) || null;
-  }
-
-  /**
-   * Get origin ID for a WebSocket
-   */
-  getOriginIdForSocket(ws: WebSocket): string | null {
-    return this.socketToOrigin.get(ws) || null;
-  }
-
-  /**
    * Get all origins
    */
   getOrigins(): Origin[] {

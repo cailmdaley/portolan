@@ -38,14 +38,6 @@ export declare class OriginManager {
      */
     getOrigin(originId: string): Origin | null;
     /**
-     * Get origin for a WebSocket
-     */
-    getOriginForSocket(ws: WebSocket): Origin | null;
-    /**
-     * Get origin ID for a WebSocket
-     */
-    getOriginIdForSocket(ws: WebSocket): string | null;
-    /**
      * Get all origins
      */
     getOrigins(): Origin[];

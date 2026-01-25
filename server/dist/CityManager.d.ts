@@ -17,7 +17,7 @@ export interface SessionInfo {
     cwd: string;
     originId: string;
 }
-export interface OriginPosition {
+interface OriginPosition {
     q: number;
     r: number;
 }
@@ -155,4 +155,5 @@ export declare class CityManager {
      */
     updateClaimsStatus(): void;
 }
+export {};
 //# sourceMappingURL=CityManager.d.ts.map

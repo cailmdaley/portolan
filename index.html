@@ -1509,6 +1509,16 @@
         color: var(--ui-dark);
       }
 
+      /* History entries (annotations cleared) - dimmed styling */
+      #city-panel.dark-theme .recent-annotation-item.history {
+        opacity: 0.6;
+      }
+
+      #city-panel.dark-theme .recent-annotation-item .annotation-count.history {
+        background: var(--ui-text-muted);
+        color: var(--ui-dark);
+      }
+
       #city-panel.dark-theme .recent-annotation-item .file-dir {
         color: var(--ui-text-muted);
       }
@@ -1569,22 +1579,22 @@
         color: var(--ui-text-muted);
       }
 
-      /* Kind badges (brighter on dark) */
+      /* Kind badges (brighter on dark) - more saturated for visual distinction */
       #city-panel.dark-theme .fiber-item.task .fiber-kind {
-        background: rgba(123, 163, 163, 0.2);
-        color: var(--ui-accent);
+        background: rgba(90, 140, 140, 0.35);
+        color: #8FC4C4;
       }
       #city-panel.dark-theme .fiber-item.decision .fiber-kind {
-        background: rgba(201, 162, 39, 0.2);
-        color: var(--ui-gold);
+        background: rgba(201, 162, 39, 0.35);
+        color: #E5C24D;
       }
       #city-panel.dark-theme .fiber-item.spec .fiber-kind {
-        background: rgba(155, 139, 171, 0.2);
-        color: var(--ui-purple);
+        background: rgba(160, 120, 180, 0.35);
+        color: #C4A0D8;
       }
       #city-panel.dark-theme .fiber-item.question .fiber-kind {
-        background: rgba(139, 173, 139, 0.2);
-        color: var(--ui-green);
+        background: rgba(100, 160, 100, 0.35);
+        color: #8FD88F;
       }
 
       #city-panel.dark-theme .handoff-btn {
@@ -2014,6 +2024,45 @@
         background: rgba(201, 162, 39, 0.1);
       }
 
+      /* Primary action: File as Fiber — gold/amber (fiber aesthetic) */
+      .file-viewer-btn.file-viewer-fiber {
+        background: linear-gradient(135deg, rgba(201, 162, 39, 0.2) 0%, rgba(201, 162, 39, 0.1) 100%);
+        border-color: var(--ui-gold-muted);
+        color: var(--ui-gold);
+        font-weight: 500;
+      }
+      .file-viewer-btn.file-viewer-fiber:hover {
+        background: linear-gradient(135deg, rgba(201, 162, 39, 0.35) 0%, rgba(201, 162, 39, 0.2) 100%);
+        border-color: var(--ui-gold);
+        color: #E5C24D;
+      }
+
+      /* Primary action: Send to Worker — teal (worker badges) */
+      .file-viewer-btn.file-viewer-send {
+        background: linear-gradient(135deg, rgba(90, 140, 140, 0.2) 0%, rgba(90, 140, 140, 0.1) 100%);
+        border-color: rgba(90, 140, 140, 0.5);
+        color: #8FC4C4;
+        font-weight: 500;
+      }
+      .file-viewer-btn.file-viewer-send:hover {
+        background: linear-gradient(135deg, rgba(90, 140, 140, 0.35) 0%, rgba(90, 140, 140, 0.2) 100%);
+        border-color: #8FC4C4;
+        color: #A8D8D8;
+      }
+
+      /* Save button — green (affirmative) */
+      .file-viewer-btn.file-viewer-save {
+        background: linear-gradient(135deg, rgba(100, 160, 100, 0.2) 0%, rgba(100, 160, 100, 0.1) 100%);
+        border-color: rgba(100, 160, 100, 0.5);
+        color: #8FD88F;
+        font-weight: 500;
+      }
+      .file-viewer-btn.file-viewer-save:hover {
+        background: linear-gradient(135deg, rgba(100, 160, 100, 0.35) 0%, rgba(100, 160, 100, 0.2) 100%);
+        border-color: #8FD88F;
+        color: #A8F0A8;
+      }
+
       .file-viewer-close {
         background: none;
         border: none;
@@ -2239,6 +2288,7 @@
         justify-content: center;
         padding: 1rem;
         min-height: 200px;
+        position: relative;
       }
 
       .file-viewer-image img {
@@ -2247,6 +2297,50 @@
         object-fit: contain;
         border-radius: 4px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      }
+
+      /* Image annotation markers */
+      .image-annotation-marker {
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+      .image-annotation-marker:hover {
+        transform: translate(-50%, -50%) scale(1.2);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+      }
+
+      /* Image annotation input */
+      .image-annotation-input-wrapper {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        min-width: 250px;
+      }
+      .image-annotation-input textarea {
+        width: 100%;
+        min-height: 60px;
+        padding: 8px;
+        border: 1px solid var(--border-light);
+        border-radius: 4px;
+        font-family: var(--font-main);
+        font-size: 14px;
+        resize: vertical;
+        background: var(--bg-card);
+        color: var(--text-primary);
+      }
+      .image-annotation-input textarea:focus {
+        outline: none;
+        border-color: var(--gold);
+      }
+
+      /* Annotation item highlight animation */
+      .annotation-item.highlight {
+        animation: highlight-pulse 1.5s ease;
+      }
+      @keyframes highlight-pulse {
+        0%, 100% { background: transparent; }
+        30% { background: rgba(154, 123, 53, 0.2); }
       }
 
       /* PDF preview */
@@ -2314,6 +2408,7 @@
       /* Annotations panel */
       .file-viewer-annotations {
         width: 280px;
+        flex-shrink: 0;
         border-left: 1px solid var(--ui-border);
         background: var(--bg-card);
         display: flex;
@@ -2331,6 +2426,19 @@
       }
 
       .file-viewer-annotations.collapsed .annotations-header span {
+        display: none;
+      }
+
+      .file-viewer-annotations.collapsed .annotations-header {
+        justify-content: center;
+        padding: 8px 4px;
+      }
+
+      .file-viewer-annotations.collapsed .annotations-header-actions {
+        flex-direction: column;
+      }
+
+      .file-viewer-annotations.collapsed .annotations-clear-all {
         display: none;
       }
 
@@ -2502,25 +2610,58 @@
 
       .annotation-actions {
         display: flex;
-        gap: 4px;
+        gap: 6px;
       }
 
       .annotation-actions button {
-        background: none;
-        border: none;
+        background: rgba(0, 0, 0, 0.15);
+        border: 1px solid transparent;
         color: var(--text-muted);
         cursor: pointer;
-        padding: 2px 6px;
-        border-radius: 3px;
+        padding: 4px 8px;
+        border-radius: 4px;
         font-size: 12px;
+        transition: all 150ms ease;
       }
 
       .annotation-actions button:hover {
-        background: rgba(0, 0, 0, 0.2);
+        background: rgba(0, 0, 0, 0.25);
         color: var(--text-primary);
       }
 
+      /* Send to worker — teal accent */
+      .annotation-send {
+        background: rgba(90, 140, 140, 0.15) !important;
+        border-color: rgba(90, 140, 140, 0.3) !important;
+        color: #8FC4C4 !important;
+      }
+      .annotation-send:hover {
+        background: rgba(90, 140, 140, 0.3) !important;
+        border-color: #8FC4C4 !important;
+        color: #A8D8D8 !important;
+      }
+
+      /* Edit — gold accent */
+      .annotation-edit {
+        background: rgba(201, 162, 39, 0.1) !important;
+        border-color: rgba(201, 162, 39, 0.25) !important;
+        color: var(--gold) !important;
+      }
+      .annotation-edit:hover {
+        background: rgba(201, 162, 39, 0.2) !important;
+        border-color: var(--gold) !important;
+        color: #E5C24D !important;
+      }
+
+      /* Delete — red accent */
+      .annotation-delete {
+        background: rgba(180, 80, 80, 0.1) !important;
+        border-color: rgba(180, 80, 80, 0.25) !important;
+        color: #C08080 !important;
+      }
       .annotation-delete:hover {
+        background: rgba(180, 80, 80, 0.25) !important;
+        border-color: var(--ui-red) !important;
         color: var(--ui-red) !important;
       }
 

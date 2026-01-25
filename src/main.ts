@@ -18,6 +18,7 @@ import { ViewSwitcher, type GlobalView } from './ui/ViewSwitcher'
 import { ViewOverlay } from './ui/ViewOverlay'
 import { TabbedPlansView } from './ui/TabbedPlansView'
 import { ClaimsDashboard } from './ui/ClaimsDashboard'
+import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
 import { PALETTE, normalizeCity, normalizeSession } from './state/types'
 
@@ -63,6 +64,25 @@ const camera = new Camera(canvas)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
+// Create hover tooltip for worker names
+const tooltip = document.createElement('div')
+tooltip.style.cssText = `
+  position: fixed;
+  background: rgba(30, 25, 20, 0.9);
+  color: #F5F0E8;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-family: 'EB Garamond', Garamond, serif;
+  font-size: 14px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 1000;
+  max-width: 300px;
+  word-break: break-word;
+`
+document.body.appendChild(tooltip)
+
 // Setup city panel
 const cityPanel = new CityPanel()
 
@@ -107,6 +127,12 @@ cityPanel.setOnOpenFile((fullPath, originId) => {
 
 // Setup context menu
 const contextMenu = new ContextMenu()
+
+// Setup new worker dialog
+const newWorkerDialog = new NewWorkerDialog()
+
+// Wire up new worker dialog to city panel
+cityPanel.setNewWorkerDialog(newWorkerDialog)
 
 // Setup view switching
 const viewOverlay = new ViewOverlay()
@@ -522,15 +548,16 @@ function findNearestCity(hex: HexCoord): City | null {
 }
 
 // Prompt for new worker name and create it
-function promptNewWorker(city: City): void {
-  const name = window.prompt(`Name for new worker in ${city.name}:`, '')
-  if (name === null) return  // Cancelled
+async function promptNewWorker(city: City): Promise<void> {
+  const result = await newWorkerDialog.show(city.name)
+  if (!result) return  // Cancelled
 
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       type: 'newWorker',
       cityPath: city.path,
-      name: name.trim() || undefined,  // undefined if empty (will auto-generate)
+      name: result.name || undefined,  // undefined if empty (will auto-generate)
+      chrome: result.chrome || undefined,  // only send if true
     }))
   }
 }
@@ -631,6 +658,41 @@ window.addEventListener('keydown', (e) => {
     movingCityId = null
     document.body.style.cursor = 'default'
   }
+})
+
+// Hover feedback - change cursor when over interactive elements, show tooltip for workers
+canvas.addEventListener('mousemove', (e) => {
+  // Skip if in move mode (already has crosshair cursor)
+  if (movingCityId) return
+  // Skip during drag operations
+  if (camera.dragging) return
+
+  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
+  const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
+  const entity = zoneRenderer.getEntityAtHex(hex)
+
+  // Set cursor based on what's under the mouse
+  if (entity?.type === 'worker' || entity?.type === 'city') {
+    canvas.style.cursor = 'pointer'
+
+    // Show tooltip for workers with long names (truncated on map)
+    if (entity.type === 'worker' && entity.entityName && entity.entityName.length > 20) {
+      tooltip.textContent = entity.entityName
+      tooltip.style.left = `${e.clientX + 12}px`
+      tooltip.style.top = `${e.clientY + 12}px`
+      tooltip.style.opacity = '1'
+    } else {
+      tooltip.style.opacity = '0'
+    }
+  } else {
+    canvas.style.cursor = 'default'
+    tooltip.style.opacity = '0'
+  }
+})
+
+// Hide tooltip when leaving canvas
+canvas.addEventListener('mouseleave', () => {
+  tooltip.style.opacity = '0'
 })
 
 // Window resize

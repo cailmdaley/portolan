@@ -2,6 +2,8 @@
 // Unified search + Files/Fibers tabs
 
 import type { City, GitStatus, RecentFile } from '../state/types'
+import { escapeHtml, formatTimeAgo } from './utils'
+import type { NewWorkerDialog } from './NewWorkerDialog'
 
 export interface Fiber {
   id: string
@@ -87,6 +89,7 @@ export class CityPanel {
   // Callbacks
   private onViewClaims: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string) => void) | null = null
+  private newWorkerDialog: NewWorkerDialog | null = null
 
   constructor() {
     this.panel = this.createPanel()
@@ -314,9 +317,9 @@ export class CityPanel {
     }
 
     const searchId = `${this.currentCity.id}-${++this.currentSearchId}`
+    const isRemote = this.currentCity.originId !== 'local'
 
-    // Search both filename and content
-    // Send two searches - server will return results with searchId
+    // Always search by filename
     this.ws.send(JSON.stringify({
       type: 'searchFiles',
       cityId: this.currentCity.id,
@@ -325,13 +328,16 @@ export class CityPanel {
       mode: 'filename',
     }))
 
-    this.ws.send(JSON.stringify({
-      type: 'searchFiles',
-      cityId: this.currentCity.id,
-      query,
-      searchId: `${searchId}-content`,
-      mode: 'content',
-    }))
+    // Only search content for local cities (remote content search is too slow over SSH)
+    if (!isRemote) {
+      this.ws.send(JSON.stringify({
+        type: 'searchFiles',
+        cityId: this.currentCity.id,
+        query,
+        searchId: `${searchId}-content`,
+        mode: 'content',
+      }))
+    }
   }
 
   private filterFibersLocally(query: string): Fiber[] {
@@ -409,20 +415,20 @@ export class CityPanel {
 
     if (result.line !== undefined && result.match !== undefined) {
       return `
-        <li class="search-result file-result" data-type="file" data-path="${this.escapeHtml(result.fullPath)}">
+        <li class="search-result file-result" data-type="file" data-path="${escapeHtml(result.fullPath)}">
           <span class="result-icon">📄</span>
-          <span class="file-name">${this.escapeHtml(fileName)}</span>
+          <span class="file-name">${escapeHtml(fileName)}</span>
           <span class="file-line">:${result.line}</span>
-          <span class="file-dir">${this.escapeHtml(dir)}</span>
-          <span class="file-match">${this.escapeHtml(result.match)}</span>
+          <span class="file-dir">${escapeHtml(dir)}</span>
+          <span class="file-match">${escapeHtml(result.match)}</span>
         </li>
       `
     } else {
       return `
-        <li class="search-result file-result" data-type="file" data-path="${this.escapeHtml(result.fullPath)}">
+        <li class="search-result file-result" data-type="file" data-path="${escapeHtml(result.fullPath)}">
           <span class="result-icon">📄</span>
-          <span class="file-name">${this.escapeHtml(fileName)}</span>
-          <span class="file-dir">${this.escapeHtml(dir)}</span>
+          <span class="file-name">${escapeHtml(fileName)}</span>
+          <span class="file-dir">${escapeHtml(dir)}</span>
         </li>
       `
     }
@@ -435,7 +441,7 @@ export class CityPanel {
     return `
       <li class="search-result fiber-result ${kindClass}" data-type="fiber" data-fiber-id="${fiber.id}">
         <span class="result-icon fiber-status">${statusIcon}</span>
-        <span class="fiber-title">${this.escapeHtml(fiber.title)}</span>
+        <span class="fiber-title">${escapeHtml(fiber.title)}</span>
         <span class="fiber-kind">${fiber.kind || 'task'}</span>
       </li>
     `
@@ -507,33 +513,20 @@ export class CityPanel {
     const dir = file.filePath.includes('/')
       ? file.filePath.slice(0, file.filePath.lastIndexOf('/'))
       : ''
-    const timeAgo = this.formatTimeAgo(file.mostRecentAt)
+    const timeAgo = formatTimeAgo(file.mostRecentAt)
+    // Show historical entries (annotations cleared) with dimmed styling
+    const isHistory = file.annotationCount === 0
+    const countClass = isHistory ? 'annotation-count history' : 'annotation-count'
+    const countDisplay = isHistory ? '—' : file.annotationCount.toString()
 
     return `
-      <li class="recent-annotation-item" data-path="${this.escapeHtml(file.filePath)}" data-origin="${this.escapeHtml(file.originId)}">
-        <span class="file-name">${this.escapeHtml(fileName)}</span>
-        <span class="annotation-count">${file.annotationCount}</span>
-        <span class="file-dir">${this.escapeHtml(dir)}</span>
+      <li class="recent-annotation-item${isHistory ? ' history' : ''}" data-path="${escapeHtml(file.filePath)}" data-origin="${escapeHtml(file.originId)}">
+        <span class="file-name">${escapeHtml(fileName)}</span>
+        <span class="${countClass}">${countDisplay}</span>
+        <span class="file-dir">${escapeHtml(dir)}</span>
         <span class="annotation-time">${timeAgo}</span>
       </li>
     `
-  }
-
-  private formatTimeAgo(timestamp: number): string {
-    const now = Date.now()
-    const diffMs = now - timestamp
-    const diffMins = Math.floor(diffMs / 60000)
-
-    if (diffMins < 1) return 'just now'
-    if (diffMins < 60) return `${diffMins}m ago`
-
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-
-    const diffDays = Math.floor(diffHours / 24)
-    if (diffDays < 7) return `${diffDays}d ago`
-
-    return new Date(timestamp).toLocaleDateString()
   }
 
   private attachRecentAnnotationListeners(): void {
@@ -565,12 +558,12 @@ export class CityPanel {
     const dir = file.path.includes('/')
       ? file.path.slice(0, file.path.lastIndexOf('/'))
       : ''
-    const timeAgo = this.formatTimeAgo(file.mtime)
+    const timeAgo = formatTimeAgo(file.mtime)
 
     return `
-      <li class="recent-file-item" data-path="${this.escapeHtml(file.fullPath)}">
-        <span class="file-name">${this.escapeHtml(fileName)}</span>
-        <span class="file-dir">${this.escapeHtml(dir)}</span>
+      <li class="recent-file-item" data-path="${escapeHtml(file.fullPath)}">
+        <span class="file-name">${escapeHtml(fileName)}</span>
+        <span class="file-dir">${escapeHtml(dir)}</span>
         <span class="file-time">${timeAgo}</span>
       </li>
     `
@@ -602,14 +595,14 @@ export class CityPanel {
     if (closed.length === 0) {
       this.closedFibersList.innerHTML = '<li class="empty">None recently</li>'
     } else {
-      this.closedFibersList.innerHTML = closed.map(f => this.renderFiberItem(f, true)).join('')
+      this.closedFibersList.innerHTML = closed.map(f => this.renderFiberItem(f)).join('')
     }
 
     this.attachFiberClickListeners()
     this.attachHandoffListeners()
   }
 
-  private renderFiberItem(fiber: Fiber, _closed = false): string {
+  private renderFiberItem(fiber: Fiber): string {
     const statusIcon = fiber.status === 'active' ? '◐' : fiber.status === 'closed' ? '●' : '○'
     const kindClass = fiber.kind || 'task'
 
@@ -617,7 +610,7 @@ export class CityPanel {
       <li class="fiber-item ${kindClass}" data-id="${fiber.id}">
         <div class="fiber-header">
           <span class="fiber-status">${statusIcon}</span>
-          <span class="fiber-title">${this.escapeHtml(fiber.title)}</span>
+          <span class="fiber-title">${escapeHtml(fiber.title)}</span>
           <span class="fiber-kind">${fiber.kind || 'task'}</span>
           <button class="handoff-btn" data-fiber-id="${fiber.id}" title="Hand off to Claude">↗</button>
         </div>
@@ -660,7 +653,7 @@ export class CityPanel {
     this.ws.send(JSON.stringify({ type: 'handoff', fiberId, cityPath }))
   }
 
-  private requestNewWorker(): void {
+  private async requestNewWorker(): Promise<void> {
     if (!this.currentCity) {
       console.error('No city selected')
       return
@@ -669,10 +662,19 @@ export class CityPanel {
       console.error('No connection for new worker')
       return
     }
-    const name = window.prompt(`Name for new worker in ${this.currentCity.name}:`, '')
-    if (!name) return
-    console.log('Requesting new worker for:', this.currentCity.path, 'name:', name)
-    this.ws.send(JSON.stringify({ type: 'newWorker', cityPath: this.currentCity.path, name }))
+    if (!this.newWorkerDialog) {
+      console.error('No new worker dialog set')
+      return
+    }
+    const result = await this.newWorkerDialog.show(this.currentCity.name)
+    if (!result) return
+    console.log('Requesting new worker for:', this.currentCity.path, 'name:', result.name, 'chrome:', result.chrome)
+    this.ws.send(JSON.stringify({
+      type: 'newWorker',
+      cityPath: this.currentCity.path,
+      name: result.name || undefined,
+      chrome: result.chrome || undefined,
+    }))
   }
 
   setWebSocket(ws: WebSocket): void {
@@ -685,6 +687,10 @@ export class CityPanel {
 
   setOnOpenFile(callback: (fullPath: string, originId: string) => void): void {
     this.onOpenFile = callback
+  }
+
+  setNewWorkerDialog(dialog: NewWorkerDialog): void {
+    this.newWorkerDialog = dialog
   }
 
   handleMessage(message: unknown): boolean {
@@ -757,7 +763,7 @@ export class CityPanel {
 
     const parts: string[] = []
 
-    parts.push(`<span class="git-branch">${this.escapeHtml(status.branch)}</span>`)
+    parts.push(`<span class="git-branch">${escapeHtml(status.branch)}</span>`)
 
     if (status.ahead > 0 || status.behind > 0) {
       const syncParts: string[] = []
@@ -805,12 +811,6 @@ export class CityPanel {
     }
 
     this.ws.send(JSON.stringify({ type: 'getFibers', cityId }))
-  }
-
-  private escapeHtml(text: string): string {
-    const div = document.createElement('div')
-    div.textContent = text
-    return div.innerHTML
   }
 
   hide(): void {

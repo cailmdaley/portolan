@@ -77,8 +77,4 @@ export class ViewSwitcher {
       }
     }
   }
-
-  getCurrentView(): GlobalView {
-    return this.currentView
-  }
 }

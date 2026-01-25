@@ -17,7 +17,7 @@ export interface ActivityDetails {
 /**
  * Extract a short summary from tool input for activity display
  */
-export function extractSummary(tool: string, input?: Record<string, unknown>): string | undefined {
+function extractSummary(tool: string, input?: Record<string, unknown>): string | undefined {
   if (!input) return undefined;
 
   switch (tool) {
