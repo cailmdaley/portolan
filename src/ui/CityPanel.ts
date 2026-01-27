@@ -193,6 +193,7 @@ export class CityPanel {
       }
     })
 
+    // Click outside to close (but not if clicking in file viewer)
     document.addEventListener('click', (e) => {
       if (this.ignoreNextClick) {
         this.ignoreNextClick = false
@@ -200,14 +201,23 @@ export class CityPanel {
       }
       if (this.panel.classList.contains('visible')) {
         const target = e.target as HTMLElement
+        // Don't close if file viewer modal is open and click is inside it
+        const fileViewer = document.querySelector('.file-viewer-modal.visible')
+        if (fileViewer?.contains(target)) return
+        const fileViewerBackdrop = document.querySelector('.file-viewer-backdrop.visible')
+        if (fileViewerBackdrop?.contains(target)) return
         if (!this.panel.contains(target)) {
           this.hide()
         }
       }
     })
 
+    // Escape key to close (but not if file viewer is open)
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.panel.classList.contains('visible')) {
+        // Don't close if file viewer modal is open - it handles its own Escape
+        const fileViewer = document.querySelector('.file-viewer-modal.visible')
+        if (fileViewer) return
         this.hide()
       }
     })
@@ -687,6 +697,22 @@ export class CityPanel {
 
   setOnOpenFile(callback: (fullPath: string, originId: string) => void): void {
     this.onOpenFile = callback
+  }
+
+  /**
+   * Get file paths from recent files for navigation
+   */
+  getRecentFilePaths(): string[] {
+    const files = this.currentCity?.recentFiles || []
+    return files.slice(0, 10).map(f => f.fullPath)
+  }
+
+  /**
+   * Get index of a file in the recent files list
+   */
+  getRecentFileIndex(fullPath: string): number {
+    const files = this.currentCity?.recentFiles || []
+    return files.slice(0, 10).findIndex(f => f.fullPath === fullPath)
   }
 
   setNewWorkerDialog(dialog: NewWorkerDialog): void {

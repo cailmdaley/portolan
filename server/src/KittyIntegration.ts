@@ -466,7 +466,8 @@ export class KittyIntegration {
           return;
         }
 
-        const sshCmd = `ssh ${origin.sshHost} tmux kill-session -t ${escapedSession}`;
+        const remoteTmuxCmd = `tmux kill-session -t ${escapedSession}`;
+        const sshCmd = `ssh ${origin.sshHost} ${shellEscape(remoteTmuxCmd)}`;
         execSync(sshCmd, { stdio: 'pipe', timeout: 10000 });
         console.log(`[KillWorker] Killed remote session: ${session.tmuxSession} on ${origin.sshHost}`);
       }

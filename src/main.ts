@@ -95,7 +95,9 @@ const fileViewerModal = new FileViewerModal()
 // Wire up file click from worker panel to file viewer
 workerActivityPanel.setOnFileClick((activity, originId, workerId) => {
   if (activity.fullPath) {
-    fileViewerModal.show(activity.fullPath, originId, workerId)
+    const files = workerActivityPanel.getFilePaths()
+    const index = workerActivityPanel.getFileIndex(activity.fullPath)
+    fileViewerModal.show(activity.fullPath, originId, workerId, { files, index })
   }
 })
 
@@ -122,7 +124,9 @@ fileViewerModal.setOnGetWorkers(async (originId: string, path: string) => {
 
 // Wire up file search click from city panel to file viewer
 cityPanel.setOnOpenFile((fullPath, originId) => {
-  fileViewerModal.show(fullPath, originId)
+  const files = cityPanel.getRecentFilePaths()
+  const index = cityPanel.getRecentFileIndex(fullPath)
+  fileViewerModal.show(fullPath, originId, undefined, { files, index })
 })
 
 // Setup context menu

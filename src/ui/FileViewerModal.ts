@@ -201,6 +201,10 @@ export class FileViewerModal {
   private cityWorkers: WorkerInfo[] = []
   private onGetWorkers: ((originId: string, path: string) => Promise<WorkerInfo[]>) | null = null
 
+  // Navigation state for cycling through files with Up/Down
+  private navigationFiles: string[] = []
+  private navigationIndex: number = -1
+
   constructor() {
     this.backdrop = this.createBackdrop()
     this.modal = this.createModal()
@@ -312,8 +316,12 @@ export class FileViewerModal {
     })
 
     // Escape key to close (only if not in vim insert mode)
+    // Stop propagation to prevent parent panels from closing
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.modal.classList.contains('visible')) {
+        // Prevent other Escape handlers (CityPanel, WorkerActivityPanel) from firing
+        e.stopImmediatePropagation()
+
         // Hide selection toolbar first
         if (this.selectionToolbar) {
           this.hideSelectionToolbar()
@@ -324,6 +332,52 @@ export class FileViewerModal {
           this.tryClose()
         }
       }
+    })
+
+    // Up/Down arrow keys to navigate between files (only when editor not focused)
+    document.addEventListener('keydown', (e) => {
+      if (!this.modal.classList.contains('visible')) return
+      if (this.navigationFiles.length === 0) return
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+
+      // Don't navigate if typing in a textarea/input
+      const target = e.target as HTMLElement
+      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
+
+      // Don't navigate if editor is focused - let CodeMirror handle cursor movement
+      if (this.editorView?.hasFocus) return
+
+      e.preventDefault()
+      e.stopImmediatePropagation()
+
+      const direction = e.key === 'ArrowUp' ? -1 : 1
+      const newIndex = this.navigationIndex + direction
+
+      // Wrap around
+      if (newIndex < 0) {
+        this.navigateToFile(this.navigationFiles.length - 1)
+      } else if (newIndex >= this.navigationFiles.length) {
+        this.navigateToFile(0)
+      } else {
+        this.navigateToFile(newIndex)
+      }
+    })
+  }
+
+  private navigateToFile(index: number): void {
+    if (index < 0 || index >= this.navigationFiles.length) return
+    if (this.isDirty) {
+      if (!confirm('You have unsaved changes. Discard them?')) {
+        return
+      }
+    }
+
+    this.navigationIndex = index
+    const filePath = this.navigationFiles[index]
+    // Show the new file, preserving navigation context
+    this.show(filePath, this.currentOriginId, this.sourceWorkerId || undefined, {
+      files: this.navigationFiles,
+      index: this.navigationIndex,
     })
   }
 
@@ -362,7 +416,8 @@ export class FileViewerModal {
   async show(
     filePath: string,
     originId: string,
-    sourceWorkerId?: string
+    sourceWorkerId?: string,
+    navigationContext?: { files: string[]; index: number }
   ): Promise<void> {
     // Show loading state
     this.pathEl.textContent = filePath
@@ -381,6 +436,15 @@ export class FileViewerModal {
     this.annotations = []
     this.globalComment = ''
     this.cityWorkers = []
+
+    // Set navigation context for Up/Down arrow navigation
+    if (navigationContext) {
+      this.navigationFiles = navigationContext.files
+      this.navigationIndex = navigationContext.index
+    } else {
+      this.navigationFiles = []
+      this.navigationIndex = -1
+    }
 
     // Reset global comment textarea
     const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement

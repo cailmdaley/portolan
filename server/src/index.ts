@@ -112,6 +112,11 @@ const remoteGitStatuses = new Map<string, GitStatus>();
 const remoteActivities = new Map<string, ActivityEvent[]>();
 const MAX_REMOTE_ACTIVITIES = 50;
 
+// Track remote session last activity for working status timeout
+// Key: "originId:tmuxSession", Value: timestamp
+const remoteLastActivity = new Map<string, number>();
+const REMOTE_WORKING_TIMEOUT = 30_000; // 30 seconds, same as EventWatcher
+
 // Activity persistence
 const activityPersistencePath = join(homedir(), '.hexarchy', 'remote-activities.json');
 
@@ -973,11 +978,24 @@ wss.on('connection', async (ws, req) => {
           }
           saveActivityPersistence();
 
+          // Update remote session status to 'working'
+          const sessionMap = remoteSessions.get(origin.id);
+          const session = sessionMap?.get(activity.tmuxSession);
+          if (session && session.status !== 'working') {
+            session.status = 'working';
+            session.lastActivity = Date.now();
+            remoteLastActivity.set(`${origin.id}:${activity.tmuxSession}`, Date.now());
+            // Trigger rebuild to broadcast the status change
+            sessionTracker['notifyChange']();
+          } else if (session) {
+            // Just update the timestamp
+            session.lastActivity = Date.now();
+            remoteLastActivity.set(`${origin.id}:${activity.tmuxSession}`, Date.now());
+          }
+
           // Track Edit/Write operations as recently edited files
           if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-            // Find the city for this session's cwd
-            const sessionMap = remoteSessions.get(origin.id);
-            const session = sessionMap?.get(activity.tmuxSession);
+            // session already looked up above
             if (session?.cwd) {
               const city = cityManager.findCityForPath(session.cwd, origin.id);
               if (city) {
@@ -1065,6 +1083,27 @@ recentFilesManager.setUpdateHandler(({ path, files }) => {
 recentFilesManager.start();
 
 setInterval(refreshFiberCounts, FIBER_REFRESH_INTERVAL);
+
+// Check for remote session working timeouts
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  for (const [key, lastActivity] of remoteLastActivity) {
+    if (now - lastActivity > REMOTE_WORKING_TIMEOUT) {
+      const [originId, tmuxSession] = key.split(':');
+      const sessionMap = remoteSessions.get(originId);
+      const session = sessionMap?.get(tmuxSession);
+      if (session && session.status === 'working') {
+        session.status = 'idle';
+        changed = true;
+      }
+      remoteLastActivity.delete(key);
+    }
+  }
+  if (changed) {
+    sessionTracker['notifyChange']();
+  }
+}, 5000);
 
 server.listen(PORT, () => {
   console.log(`Hexarchy server running on port ${PORT}`);

@@ -54,7 +54,7 @@ export class WorkerActivityPanel {
     // Close button
     this.closeBtn.addEventListener('click', () => this.hide())
 
-    // Click outside to close
+    // Click outside to close (but not if clicking in file viewer)
     document.addEventListener('click', (e) => {
       if (this.ignoreNextClick) {
         this.ignoreNextClick = false
@@ -62,15 +62,23 @@ export class WorkerActivityPanel {
       }
       if (this.panel.classList.contains('visible')) {
         const target = e.target as HTMLElement
+        // Don't close if file viewer modal is open and click is inside it
+        const fileViewer = document.querySelector('.file-viewer-modal.visible')
+        if (fileViewer?.contains(target)) return
+        const fileViewerBackdrop = document.querySelector('.file-viewer-backdrop.visible')
+        if (fileViewerBackdrop?.contains(target)) return
         if (!this.panel.contains(target)) {
           this.hide()
         }
       }
     })
 
-    // Escape key to close
+    // Escape key to close (but not if file viewer is open)
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.panel.classList.contains('visible')) {
+        // Don't close if file viewer modal is open - it handles its own Escape
+        const fileViewer = document.querySelector('.file-viewer-modal.visible')
+        if (fileViewer) return
         this.hide()
       }
     })
@@ -107,6 +115,22 @@ export class WorkerActivityPanel {
 
   setOnFileClick(callback: FileClickCallback): void {
     this.onFileClick = callback
+  }
+
+  /**
+   * Get file paths from current activities for navigation
+   */
+  getFilePaths(): string[] {
+    return this.currentActivities
+      .filter(a => a.fullPath)
+      .map(a => a.fullPath!)
+  }
+
+  /**
+   * Get index of a file in the current activities list
+   */
+  getFileIndex(fullPath: string): number {
+    return this.currentActivities.findIndex(a => a.fullPath === fullPath)
   }
 
   show(session: Session, activities: Activity[]): void {
