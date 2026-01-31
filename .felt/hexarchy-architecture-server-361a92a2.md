@@ -1,6 +1,6 @@
 ---
 title: 'Hexarchy Architecture: server/browser modules and data flow'
-status: open
+status: closed
 kind: spec
 tags:
     - '[docs]'
@@ -8,6 +8,8 @@ priority: 2
 depends-on:
     - hexarchy-overview-spatial-map-40356835
 created-at: 2026-01-25T15:26:41.280746+01:00
+closed-at: 2026-01-31T00:56:48.658783+01:00
+close-reason: Finalized documentation — referenced in CLAUDE.md Deep Dives.
 ---
 
 ## Data Flow

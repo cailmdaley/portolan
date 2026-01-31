@@ -1,4 +1,30 @@
 // Shared UI utilities
+import { marked } from 'marked'
+
+// Configure marked for safe rendering
+marked.setOptions({
+  gfm: true,        // GitHub Flavored Markdown
+  breaks: true,     // Convert \n to <br>
+})
+
+// Custom renderer for code blocks to integrate with Prism
+const renderer = new marked.Renderer()
+renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
+  const language = lang || 'plaintext'
+  // Prism will highlight after DOM insertion
+  const escapedCode = escapeHtml(text)
+  return `<pre class="md-code-block language-${language}"><code class="language-${language}">${escapedCode}</code></pre>`
+}
+
+renderer.codespan = ({ text }: { text: string }) => {
+  return `<code class="md-inline-code">${escapeHtml(text)}</code>`
+}
+
+renderer.link = ({ href, text }: { href: string; text: string }) => {
+  return `<a href="${escapeHtml(href)}" class="md-link" target="_blank" rel="noopener">${text}</a>`
+}
+
+marked.use({ renderer })
 
 /**
  * Escape HTML to prevent XSS
@@ -7,6 +33,30 @@ export function escapeHtml(text: string): string {
   const div = document.createElement('div')
   div.textContent = text
   return div.innerHTML
+}
+
+/**
+ * Render markdown to HTML with syntax highlighting
+ * Uses marked library with Prism.js for code blocks
+ */
+export function renderMarkdown(text: string): string {
+  try {
+    const html = marked.parse(text) as string
+    return html
+  } catch (e) {
+    console.error('Markdown render error:', e)
+    return escapeHtml(text)
+  }
+}
+
+/**
+ * Apply Prism syntax highlighting to code blocks in a container
+ * Call after inserting markdown HTML into the DOM
+ */
+export function highlightCodeBlocks(container: HTMLElement): void {
+  if (typeof window !== 'undefined' && (window as unknown as { Prism?: { highlightAllUnder: (el: HTMLElement) => void } }).Prism) {
+    (window as unknown as { Prism: { highlightAllUnder: (el: HTMLElement) => void } }).Prism.highlightAllUnder(container)
+  }
 }
 
 /**
@@ -33,22 +83,22 @@ export function formatTimeAgo(timestamp: number): string {
  */
 export function showToast(message: string, type: 'success' | 'error' = 'success', duration = 3000): void {
   // Remove existing toasts
-  const existing = document.querySelector('.hexarchy-toast')
+  const existing = document.querySelector('.portolan-toast')
   if (existing) existing.remove()
 
   const toast = document.createElement('div')
-  toast.className = 'hexarchy-toast'
+  toast.className = 'portolan-toast'
   toast.innerHTML = `
     <span class="toast-icon">${type === 'success' ? '✓' : '✕'}</span>
     <span class="toast-message">${escapeHtml(message)}</span>
   `
 
   // Inject styles if not present
-  if (!document.getElementById('hexarchy-toast-styles')) {
+  if (!document.getElementById('portolan-toast-styles')) {
     const style = document.createElement('style')
-    style.id = 'hexarchy-toast-styles'
+    style.id = 'portolan-toast-styles'
     style.textContent = `
-      .hexarchy-toast {
+      .portolan-toast {
         position: fixed;
         bottom: 24px;
         left: 50%;
@@ -67,15 +117,15 @@ export function showToast(message: string, type: 'success' | 'error' = 'success'
         opacity: 0;
         animation: toast-in 0.3s ease forwards;
       }
-      .hexarchy-toast.toast-out {
+      .portolan-toast.toast-out {
         animation: toast-out 0.3s ease forwards;
       }
-      .hexarchy-toast .toast-icon {
+      .portolan-toast .toast-icon {
         font-size: 16px;
         font-weight: bold;
       }
-      .hexarchy-toast.success .toast-icon { color: #c9a959; }
-      .hexarchy-toast.error .toast-icon { color: #d9534f; }
+      .portolan-toast.success .toast-icon { color: #c9a959; }
+      .portolan-toast.error .toast-icon { color: #d9534f; }
       @keyframes toast-in {
         from { opacity: 0; transform: translateX(-50%) translateY(100px); }
         to { opacity: 1; transform: translateX(-50%) translateY(0); }

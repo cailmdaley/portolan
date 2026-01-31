@@ -28,6 +28,7 @@ export interface AgentSessionsUpdateMessage {
       cwd: string;
       status?: 'idle' | 'working' | 'offline';
       hasClaims?: boolean;
+      hasPlaygrounds?: boolean;
       gitStatus?: GitStatus;
     }>;
   };
@@ -41,6 +42,22 @@ export interface AgentActivityMessage {
     summary?: string;
     fullPath?: string;                     // Full file path for Read/Write/Edit
     timestamp: number;
+  };
+}
+
+export interface AgentConversationMessage {
+  type: 'agent_conversation';
+  payload: {
+    tmuxSession: string;
+    cwd: string;
+    messages: Array<{
+      type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result';
+      content: string;
+      timestamp: string;
+      toolName?: string;
+      toolInput?: any;
+      preview?: string;
+    }>;
   };
 }
 
@@ -60,6 +77,7 @@ export interface NewWorkerMessage {
   cityPath: string;
   name?: string;
   chrome?: boolean;
+  continue?: boolean;
 }
 
 export interface PinCityMessage {
@@ -119,7 +137,7 @@ export interface MessageHandlers {
   onFocus(sessionId: string): void;
   onGetFibers(ws: WebSocket, cityId: string): Promise<void>;
   onHandoff(fiberId: string, cityPath: string): void | Promise<void>;
-  onNewWorker(ws: WebSocket, cityPath: string, name?: string, chrome?: boolean): void;
+  onNewWorker(ws: WebSocket, cityPath: string, name?: string, chrome?: boolean, continueSession?: boolean): void;
   onPinCity(ws: WebSocket, path: string, position: { q: number; r: number }, name?: string): void;
   onUnpinCity(ws: WebSocket, cityId: string): void;
   onConfirmUnpin(ws: WebSocket, cityId: string): void;
@@ -161,7 +179,7 @@ export class MessageRouter {
           break;
 
         case 'newWorker':
-          this.handlers.onNewWorker(ws, message.cityPath, message.name, message.chrome);
+          this.handlers.onNewWorker(ws, message.cityPath, message.name, message.chrome, message.continue);
           break;
 
         case 'pinCity':

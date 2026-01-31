@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Idea Weaver</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #1a1a1e;
+      --surface: #252529;
+      --border: #3a3a40;
+      --text: #e8e6e3;
+      --muted: #8a8880;
+      --accent: #9A7B35;
+      --teal: #5A7B7B;
+      --know: #4a7c59;
+      --fuzzy: #7c6b4a;
+      --unknown: #7c4a5a;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      grid-template-rows: 1fr auto;
+      height: 100vh;
+    }
+
+    /* Canvas area */
+    .canvas-area {
+      position: relative;
+      background: var(--bg);
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      cursor: crosshair;
+    }
+
+    .tooltip {
+      position: absolute;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      max-width: 250px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.15s;
+      z-index: 100;
+    }
+
+    .tooltip.visible { opacity: 1; }
+    .tooltip .label { font-weight: 600; margin-bottom: 4px; }
+    .tooltip .desc { color: var(--muted); font-size: 12px; }
+
+    /* Sidebar */
+    .sidebar {
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .section { }
+
+    .node-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .node-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: var(--bg);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .node-item:hover { background: var(--border); }
+
+    .knowledge-badge {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .knowledge-badge.know { background: var(--know); }
+    .knowledge-badge.fuzzy { background: var(--fuzzy); }
+    .knowledge-badge.unknown { background: var(--unknown); }
+
+    .node-item .label { flex: 1; }
+
+    .add-node {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .add-node input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 10px;
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .add-node input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .add-node button {
+      background: var(--accent);
+      border: none;
+      border-radius: 4px;
+      padding: 6px 12px;
+      color: var(--bg);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .edge-type-selector {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .edge-type {
+      padding: 4px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .edge-type.selected {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: var(--text);
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .action-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .action-btn:hover {
+      background: var(--border);
+    }
+
+    .legend {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* Prompt output */
+    .prompt-area {
+      grid-column: 1 / -1;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 16px;
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .prompt-output {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text);
+      min-height: 80px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+
+    .copy-btn {
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      padding: 12px 24px;
+      color: var(--bg);
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .copy-btn:hover { filter: brightness(1.1); }
+    .copy-btn.copied { background: var(--know); }
+
+    /* Instructions overlay */
+    .instructions {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 280px;
+    }
+
+    .instructions strong { color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="canvas-area">
+      <canvas id="canvas"></canvas>
+      <div class="tooltip" id="tooltip">
+        <div class="label"></div>
+        <div class="desc"></div>
+      </div>
+      <div class="instructions">
+        <strong>Drag</strong> nodes to arrange · <strong>Click</strong> two nodes to connect · <strong>Double-click</strong> to edit · <strong>Right-click</strong> to delete
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="section">
+        <h2>Ideas</h2>
+        <div class="node-list" id="nodeList"></div>
+        <div class="add-node">
+          <input type="text" id="newNodeInput" placeholder="Add idea..." />
+          <button id="addNodeBtn">+</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Connection Type</h2>
+        <div class="edge-type-selector" id="edgeTypes"></div>
+      </div>
+
+      <div class="section">
+        <h2>Legend</h2>
+        <div class="legend">
+          <div class="legend-item"><span class="knowledge-badge know"></span> Clear</div>
+          <div class="legend-item"><span class="knowledge-badge fuzzy"></span> Fuzzy</div>
+          <div class="legend-item"><span class="knowledge-badge unknown"></span> Uncertain</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Actions</h2>
+        <div class="actions">
+          <button class="action-btn" id="autoLayout">Auto-arrange</button>
+          <button class="action-btn" id="clearEdges">Clear connections</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="prompt-area">
+      <div class="prompt-output" id="promptOutput"></div>
+      <button class="copy-btn" id="copyBtn">Copy</button>
+    </div>
+  </div>
+
+  <script>
+    // State
+    const state = {
+      nodes: [],
+      edges: [],
+      selectedEdgeType: 'enables',
+      dragging: null,
+      connecting: null,
+      hovered: null
+    };
+
+    const edgeTypes = [
+      { id: 'enables', label: 'enables' },
+      { id: 'extends', label: 'extends' },
+      { id: 'contrasts', label: 'contrasts with' },
+      { id: 'requires', label: 'requires' },
+      { id: 'contains', label: 'contains' },
+      { id: 'becomes', label: 'becomes' }
+    ];
+
+    const knowledgeLevels = ['fuzzy', 'know', 'unknown'];
+
+    // Initial ideas from the conversation
+    const initialNodes = [
+      { id: 1, label: 'Playground Skill', desc: 'Generate arbitrary UIs on the fly', knowledge: 'fuzzy', x: 200, y: 150 },
+      { id: 2, label: 'File Viewer', desc: 'Conventional, well-tested file interaction', knowledge: 'know', x: 500, y: 100 },
+      { id: 3, label: 'Hexarchy', desc: 'Spatial map for Claude sessions', knowledge: 'know', x: 350, y: 250 },
+      { id: 4, label: 'Generated Interfaces', desc: 'Created to meet specific needs, not fixed', knowledge: 'fuzzy', x: 150, y: 350 },
+      { id: 5, label: 'Remote Tunneling', desc: 'Port forwarding through SSH for remote access', knowledge: 'know', x: 550, y: 300 },
+      { id: 6, label: 'Emergent Tools', desc: 'Not a fixed system, but responsive to context', knowledge: 'unknown', x: 350, y: 450 },
+      { id: 7, label: 'Annotations', desc: 'Feedback layer on viewed files', knowledge: 'know', x: 650, y: 200 },
+      { id: 8, label: 'Per-City Scoping', desc: 'Playgrounds belong to their project', knowledge: 'know', x: 200, y: 500 }
+    ];
+
+    const initialEdges = [
+      { from: 1, to: 4, type: 'enables' },
+      { from: 4, to: 6, type: 'becomes' },
+      { from: 2, to: 7, type: 'extends' },
+      { from: 3, to: 5, type: 'requires' },
+      { from: 1, to: 3, type: 'extends' },
+      { from: 8, to: 1, type: 'contains' }
+    ];
+
+    // Canvas setup
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const tooltip = document.getElementById('tooltip');
+
+    function resize() {
+      const area = canvas.parentElement;
+      canvas.width = area.clientWidth;
+      canvas.height = area.clientHeight;
+      draw();
+    }
+
+    window.addEventListener('resize', resize);
+
+    // Initialize
+    state.nodes = initialNodes.map(n => ({ ...n }));
+    state.edges = initialEdges.map(e => ({ ...e }));
+    let nextId = Math.max(...state.nodes.map(n => n.id)) + 1;
+
+    // Drawing
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw edges
+      state.edges.forEach(edge => {
+        const from = state.nodes.find(n => n.id === edge.from);
+        const to = state.nodes.find(n => n.id === edge.to);
+        if (!from || !to) return;
+
+        drawEdge(from, to, edge.type);
+      });
+
+      // Draw connecting line
+      if (state.connecting) {
+        const from = state.nodes.find(n => n.id === state.connecting);
+        if (from && state.mousePos) {
+          ctx.beginPath();
+          ctx.moveTo(from.x, from.y);
+          ctx.lineTo(state.mousePos.x, state.mousePos.y);
+          ctx.strokeStyle = '#5A7B7B88';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([5, 5]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      // Draw nodes
+      state.nodes.forEach(node => drawNode(node));
+    }
+
+    function drawNode(node) {
+      const radius = 40;
+      const isHovered = state.hovered === node.id;
+      const isConnecting = state.connecting === node.id;
+
+      // Glow for connecting source
+      if (isConnecting) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, radius + 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#5A7B7B44';
+        ctx.fill();
+      }
+
+      // Node circle
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+
+      const colors = {
+        know: '#4a7c59',
+        fuzzy: '#7c6b4a',
+        unknown: '#7c4a5a'
+      };
+      ctx.fillStyle = colors[node.knowledge] || colors.fuzzy;
+      ctx.fill();
+
+      if (isHovered) {
+        ctx.strokeStyle = '#e8e6e3';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Label
+      ctx.fillStyle = '#e8e6e3';
+      ctx.font = '12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const words = node.label.split(' ');
+      if (words.length > 1 && node.label.length > 12) {
+        const mid = Math.ceil(words.length / 2);
+        const line1 = words.slice(0, mid).join(' ');
+        const line2 = words.slice(mid).join(' ');
+        ctx.fillText(line1, node.x, node.y - 6);
+        ctx.fillText(line2, node.x, node.y + 8);
+      } else {
+        ctx.fillText(node.label, node.x, node.y);
+      }
+    }
+
+    function drawEdge(from, to, type) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const radius = 40;
+
+      // Shorten line to not overlap nodes
+      const startX = from.x + (dx / dist) * radius;
+      const startY = from.y + (dy / dist) * radius;
+      const endX = to.x - (dx / dist) * (radius + 10);
+      const endY = to.y - (dy / dist) * (radius + 10);
+
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = '#5A7B7B';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Arrowhead
+      const angle = Math.atan2(dy, dx);
+      const headLen = 12;
+      ctx.beginPath();
+      ctx.moveTo(endX, endY);
+      ctx.lineTo(endX - headLen * Math.cos(angle - 0.4), endY - headLen * Math.sin(angle - 0.4));
+      ctx.moveTo(endX, endY);
+      ctx.lineTo(endX - headLen * Math.cos(angle + 0.4), endY - headLen * Math.sin(angle + 0.4));
+      ctx.stroke();
+
+      // Edge label
+      const midX = (startX + endX) / 2;
+      const midY = (startY + endY) / 2;
+      ctx.fillStyle = '#8a8880';
+      ctx.font = '10px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(type, midX, midY - 8);
+    }
+
+    // Hit testing
+    function getNodeAt(x, y) {
+      for (let i = state.nodes.length - 1; i >= 0; i--) {
+        const node = state.nodes[i];
+        const dx = x - node.x;
+        const dy = y - node.y;
+        if (dx * dx + dy * dy < 40 * 40) return node;
+      }
+      return null;
+    }
+
+    // Mouse handlers
+    canvas.addEventListener('mousedown', e => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const node = getNodeAt(x, y);
+
+      if (e.button === 2 && node) {
+        // Right click - delete
+        e.preventDefault();
+        state.nodes = state.nodes.filter(n => n.id !== node.id);
+        state.edges = state.edges.filter(edge => edge.from !== node.id && edge.to !== node.id);
+        updateNodeList();
+        updatePrompt();
+        draw();
+        return;
+      }
+
+      if (node) {
+        if (state.connecting && state.connecting !== node.id) {
+          // Complete connection
+          const exists = state.edges.some(e =>
+            (e.from === state.connecting && e.to === node.id) ||
+            (e.from === node.id && e.to === state.connecting)
+          );
+          if (!exists) {
+            state.edges.push({
+              from: state.connecting,
+              to: node.id,
+              type: state.selectedEdgeType
+            });
+            updatePrompt();
+          }
+          state.connecting = null;
+        } else {
+          state.dragging = { node, offsetX: x - node.x, offsetY: y - node.y };
+        }
+      } else {
+        state.connecting = null;
+      }
+      draw();
+    });
+
+    canvas.addEventListener('mousemove', e => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      state.mousePos = { x, y };
+
+      if (state.dragging) {
+        state.dragging.node.x = x - state.dragging.offsetX;
+        state.dragging.node.y = y - state.dragging.offsetY;
+        draw();
+        return;
+      }
+
+      const node = getNodeAt(x, y);
+      if (node !== state.hovered) {
+        state.hovered = node ? node.id : null;
+        draw();
+      }
+
+      // Tooltip
+      if (node) {
+        tooltip.querySelector('.label').textContent = node.label;
+        tooltip.querySelector('.desc').textContent = node.desc || '';
+        tooltip.style.left = (e.clientX + 15) + 'px';
+        tooltip.style.top = (e.clientY + 15) + 'px';
+        tooltip.classList.add('visible');
+      } else {
+        tooltip.classList.remove('visible');
+      }
+
+      if (state.connecting) draw();
+    });
+
+    canvas.addEventListener('mouseup', e => {
+      if (state.dragging) {
+        // Short drag = start connecting
+        const dx = e.clientX - canvas.getBoundingClientRect().left - state.dragging.node.x;
+        const dy = e.clientY - canvas.getBoundingClientRect().top - state.dragging.node.y;
+        if (Math.abs(dx) < 5 && Math.abs(dy) < 5) {
+          state.connecting = state.dragging.node.id;
+        }
+      }
+      state.dragging = null;
+      draw();
+    });
+
+    canvas.addEventListener('dblclick', e => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const node = getNodeAt(x, y);
+
+      if (node) {
+        const newLabel = prompt('Edit idea:', node.label);
+        if (newLabel && newLabel.trim()) {
+          node.label = newLabel.trim();
+          updateNodeList();
+          updatePrompt();
+          draw();
+        }
+      }
+    });
+
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // Sidebar: Node list
+    function updateNodeList() {
+      const list = document.getElementById('nodeList');
+      list.innerHTML = state.nodes.map(node => `
+        <div class="node-item" data-id="${node.id}">
+          <span class="knowledge-badge ${node.knowledge}"></span>
+          <span class="label">${node.label}</span>
+        </div>
+      `).join('');
+
+      list.querySelectorAll('.node-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const id = parseInt(item.dataset.id);
+          const node = state.nodes.find(n => n.id === id);
+          if (node) {
+            // Cycle knowledge level
+            const idx = knowledgeLevels.indexOf(node.knowledge);
+            node.knowledge = knowledgeLevels[(idx + 1) % knowledgeLevels.length];
+            updateNodeList();
+            updatePrompt();
+            draw();
+          }
+        });
+      });
+    }
+
+    // Add node
+    document.getElementById('addNodeBtn').addEventListener('click', () => {
+      const input = document.getElementById('newNodeInput');
+      const label = input.value.trim();
+      if (label) {
+        state.nodes.push({
+          id: nextId++,
+          label,
+          desc: '',
+          knowledge: 'fuzzy',
+          x: 100 + Math.random() * 300,
+          y: 100 + Math.random() * 300
+        });
+        input.value = '';
+        updateNodeList();
+        updatePrompt();
+        draw();
+      }
+    });
+
+    document.getElementById('newNodeInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('addNodeBtn').click();
+    });
+
+    // Edge type selector
+    function updateEdgeTypes() {
+      const container = document.getElementById('edgeTypes');
+      container.innerHTML = edgeTypes.map(et => `
+        <div class="edge-type ${et.id === state.selectedEdgeType ? 'selected' : ''}" data-id="${et.id}">
+          ${et.label}
+        </div>
+      `).join('');
+
+      container.querySelectorAll('.edge-type').forEach(el => {
+        el.addEventListener('click', () => {
+          state.selectedEdgeType = el.dataset.id;
+          updateEdgeTypes();
+        });
+      });
+    }
+
+    // Actions
+    document.getElementById('autoLayout').addEventListener('click', () => {
+      // Force-directed layout
+      for (let iter = 0; iter < 150; iter++) {
+        const forces = state.nodes.map(() => ({ x: 0, y: 0 }));
+
+        // Repulsion between all pairs
+        for (let i = 0; i < state.nodes.length; i++) {
+          for (let j = i + 1; j < state.nodes.length; j++) {
+            const a = state.nodes[i], b = state.nodes[j];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+            const force = 5000 / (dist * dist);
+            forces[i].x -= (dx / dist) * force;
+            forces[i].y -= (dy / dist) * force;
+            forces[j].x += (dx / dist) * force;
+            forces[j].y += (dy / dist) * force;
+          }
+        }
+
+        // Attraction along edges
+        state.edges.forEach(edge => {
+          const ai = state.nodes.findIndex(n => n.id === edge.from);
+          const bi = state.nodes.findIndex(n => n.id === edge.to);
+          if (ai < 0 || bi < 0) return;
+          const a = state.nodes[ai], b = state.nodes[bi];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const force = (dist - 120) * 0.05;
+          forces[ai].x += (dx / dist) * force;
+          forces[ai].y += (dy / dist) * force;
+          forces[bi].x -= (dx / dist) * force;
+          forces[bi].y -= (dy / dist) * force;
+        });
+
+        // Center gravity
+        const cx = canvas.width / 2, cy = canvas.height / 2;
+        state.nodes.forEach((n, i) => {
+          forces[i].x += (cx - n.x) * 0.01;
+          forces[i].y += (cy - n.y) * 0.01;
+        });
+
+        // Apply with damping
+        const damping = 0.8;
+        state.nodes.forEach((n, i) => {
+          n.x += forces[i].x * damping;
+          n.y += forces[i].y * damping;
+          // Keep in bounds
+          n.x = Math.max(60, Math.min(canvas.width - 60, n.x));
+          n.y = Math.max(60, Math.min(canvas.height - 60, n.y));
+        });
+      }
+      draw();
+    });
+
+    document.getElementById('clearEdges').addEventListener('click', () => {
+      state.edges = [];
+      updatePrompt();
+      draw();
+    });
+
+    // Prompt output
+    function updatePrompt() {
+      const clear = state.nodes.filter(n => n.knowledge === 'know');
+      const fuzzy = state.nodes.filter(n => n.knowledge === 'fuzzy');
+      const uncertain = state.nodes.filter(n => n.knowledge === 'unknown');
+
+      const edgeDescriptions = state.edges.map(edge => {
+        const from = state.nodes.find(n => n.id === edge.from);
+        const to = state.nodes.find(n => n.id === edge.to);
+        if (!from || !to) return null;
+        return `${from.label} ${edge.type} ${to.label}`;
+      }).filter(Boolean);
+
+      let parts = [];
+
+      parts.push("I'm thinking through how these ideas connect:");
+
+      if (clear.length) {
+        parts.push(`\n\nWhat's clear: ${clear.map(n => n.label).join(', ')}.`);
+      }
+
+      if (fuzzy.length) {
+        parts.push(`\n\nStill fuzzy: ${fuzzy.map(n => n.label).join(', ')}.`);
+      }
+
+      if (uncertain.length) {
+        parts.push(`\n\nUncertain about: ${uncertain.map(n => n.label).join(', ')}.`);
+      }
+
+      if (edgeDescriptions.length) {
+        parts.push(`\n\nRelationships I'm seeing:\n${edgeDescriptions.map(d => '• ' + d).join('\n')}`);
+      }
+
+      if (fuzzy.length || uncertain.length) {
+        parts.push(`\n\nHelp me clarify the fuzzy and uncertain parts. Build on what's clear. What am I missing?`);
+      } else if (clear.length && edgeDescriptions.length) {
+        parts.push(`\n\nDoes this structure capture something real? What tensions or opportunities does it reveal?`);
+      }
+
+      document.getElementById('promptOutput').textContent = parts.join('');
+    }
+
+    // Copy
+    document.getElementById('copyBtn').addEventListener('click', () => {
+      const text = document.getElementById('promptOutput').textContent;
+      navigator.clipboard.writeText(text);
+      const btn = document.getElementById('copyBtn');
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.classList.remove('copied');
+      }, 1500);
+    });
+
+    // Init
+    resize();
+    updateNodeList();
+    updateEdgeTypes();
+    updatePrompt();
+  </script>
+</body>
+</html>

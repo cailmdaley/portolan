@@ -1,6 +1,6 @@
 ---
 title: 'Hexarchy Gotchas: critical bugs and non-obvious behaviors'
-status: open
+status: closed
 kind: spec
 tags:
     - '[docs]'
@@ -8,6 +8,8 @@ priority: 2
 depends-on:
     - hexarchy-overview-spatial-map-40356835
 created-at: 2026-01-25T15:26:43.748618+01:00
+closed-at: 2026-01-31T00:56:53.312613+01:00
+close-reason: Finalized documentation — referenced in CLAUDE.md Deep Dives.
 ---
 
 Critical issues that have caused bugs. Check here first when debugging.

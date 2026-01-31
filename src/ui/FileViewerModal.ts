@@ -45,7 +45,8 @@ export interface Annotation {
   originId: string
   from: number
   to: number
-  line?: number  // line number at 'from' (1-indexed)
+  line?: number    // line number at 'from' (1-indexed)
+  endLine?: number // line number at 'to' (1-indexed)
   originalText: string
   contextBefore: string
   contextAfter: string
@@ -204,6 +205,10 @@ export class FileViewerModal {
   // Navigation state for cycling through files with Up/Down
   private navigationFiles: string[] = []
   private navigationIndex: number = -1
+  private skipEditorFocus: boolean = false
+
+  // Double-Escape tracking for vim: first Escape → normal mode, second Escape → close
+  private lastEscapeTime: number = 0
 
   constructor() {
     this.backdrop = this.createBackdrop()
@@ -272,11 +277,17 @@ export class FileViewerModal {
   }
 
   private setupEventListeners(): void {
-    // Close on backdrop click
-    this.backdrop.addEventListener('click', () => this.tryClose())
+    // Close on backdrop click - stop propagation so parent panels don't close
+    this.backdrop.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.tryClose()
+    })
 
-    // Close button
-    this.closeBtn.addEventListener('click', () => this.tryClose())
+    // Close button - stop propagation so parent panels don't close
+    this.closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.tryClose()
+    })
 
     // Copy button
     this.copyBtn.addEventListener('click', () => this.copyToClipboard())
@@ -315,22 +326,37 @@ export class FileViewerModal {
       this.updateSendButton()
     })
 
-    // Escape key to close (only if not in vim insert mode)
-    // Stop propagation to prevent parent panels from closing
+    // Escape key to close the file viewer
+    // For vim: first Escape → normal mode, second Escape (within 1s) → close
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.modal.classList.contains('visible')) {
-        // Prevent other Escape handlers (CityPanel, WorkerActivityPanel) from firing
-        e.stopImmediatePropagation()
-
         // Hide selection toolbar first
         if (this.selectionToolbar) {
           this.hideSelectionToolbar()
+          e.stopPropagation()
           return
         }
-        // Don't close if we have an editor - vim handles escape
-        if (!this.editorView) {
-          this.tryClose()
+
+        const now = Date.now()
+
+        // If editor exists and has focus, use double-Escape
+        if (this.editorView?.hasFocus) {
+          // Second Escape within 1 second → close
+          if (now - this.lastEscapeTime < 1000) {
+            this.tryClose()
+            e.stopPropagation()
+            this.lastEscapeTime = 0
+          } else {
+            // First Escape → let vim handle it, record time
+            this.lastEscapeTime = now
+            // Don't stop propagation - let vim see it
+          }
+          return
         }
+
+        // No editor or not focused → close immediately
+        this.tryClose()
+        e.stopPropagation()
       }
     })
 
@@ -374,6 +400,8 @@ export class FileViewerModal {
 
     this.navigationIndex = index
     const filePath = this.navigationFiles[index]
+    // Skip editor focus when navigating via arrow keys (prevents vim mode activation)
+    this.skipEditorFocus = true
     // Show the new file, preserving navigation context
     this.show(filePath, this.currentOriginId, this.sourceWorkerId || undefined, {
       files: this.navigationFiles,
@@ -444,7 +472,11 @@ export class FileViewerModal {
     } else {
       this.navigationFiles = []
       this.navigationIndex = -1
+      this.skipEditorFocus = false // Reset when opening fresh (not navigating)
     }
+
+    // Reset double-Escape tracking
+    this.lastEscapeTime = 0
 
     // Reset global comment textarea
     const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
@@ -865,8 +897,11 @@ export class FileViewerModal {
     // Update mode line
     this.updateModeLine(state)
 
-    // Focus the editor
-    this.editorView.focus()
+    // Focus the editor (unless navigating via arrow keys)
+    if (!this.skipEditorFocus) {
+      this.editorView.focus()
+    }
+    this.skipEditorFocus = false // Reset flag
   }
 
   private getLanguageExtension(language: string): Extension | null {
@@ -1180,11 +1215,14 @@ export class FileViewerModal {
     const contextBefore = content.slice(Math.max(0, from - 20), from)
     const contextAfter = content.slice(to, Math.min(content.length, to + 20))
 
-    // Calculate line number (1-indexed)
+    // Calculate line numbers (1-indexed)
     let line: number | undefined
+    let endLine: number | undefined
     if (this.editorView) {
-      const lineInfo = this.editorView.state.doc.lineAt(from)
-      line = lineInfo.number
+      const startLineInfo = this.editorView.state.doc.lineAt(from)
+      const endLineInfo = this.editorView.state.doc.lineAt(to)
+      line = startLineInfo.number
+      endLine = endLineInfo.number
     }
 
     try {
@@ -1197,6 +1235,7 @@ export class FileViewerModal {
           from,
           to,
           line,
+          endLine,
           originalText: selectedText,
           contextBefore,
           contextAfter,
@@ -1249,7 +1288,11 @@ export class FileViewerModal {
       if (ann.isImageAnnotation) {
         locationInfo = `<span class="annotation-line">#${index + 1}</span> `
       } else if (ann.line) {
-        locationInfo = `<span class="annotation-line">L${ann.line}</span> `
+        // Show line range if multiline
+        const lineRange = ann.endLine && ann.endLine !== ann.line
+          ? `L${ann.line}-${ann.endLine}`
+          : `L${ann.line}`
+        locationInfo = `<span class="annotation-line">${lineRange}</span> `
       } else {
         locationInfo = ''
       }

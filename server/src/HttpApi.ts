@@ -18,6 +18,7 @@ import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
 import type { RecentFilesManager } from './RecentFilesManager.js';
+import type { TranscriptReader } from './TranscriptReader.js';
 
 const execAsync = promisify(exec);
 
@@ -45,6 +46,9 @@ interface SessionLookup {
 // HttpApi
 // ============================================================================
 
+// Remote conversation lookup callback
+export type RemoteConversationLookup = (sessionId: string) => any[] | undefined;
+
 export class HttpApi {
   private cityLookup: CityLookup;
   private originLookup: OriginLookup;
@@ -52,6 +56,8 @@ export class HttpApi {
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
   private recentFilesManager: RecentFilesManager | null = null;
+  private transcriptReader: TranscriptReader | null = null;
+  private remoteConversationLookup: RemoteConversationLookup | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -82,6 +88,20 @@ export class HttpApi {
    */
   setRecentFilesManager(manager: RecentFilesManager): void {
     this.recentFilesManager = manager;
+  }
+
+  /**
+   * Set transcript reader for conversation history
+   */
+  setTranscriptReader(reader: TranscriptReader): void {
+    this.transcriptReader = reader;
+  }
+
+  /**
+   * Set remote conversation lookup for remote worker transcripts
+   */
+  setRemoteConversationLookup(lookup: RemoteConversationLookup): void {
+    this.remoteConversationLookup = lookup;
   }
 
   /**
@@ -162,6 +182,21 @@ export class HttpApi {
 
     if (url.pathname === '/file-as-fiber' && req.method === 'POST') {
       await this.handleFileAsFiber(req, res);
+      return true;
+    }
+
+    if (url.pathname === '/playground-list') {
+      await this.handlePlaygroundList(url, res);
+      return true;
+    }
+
+    if (url.pathname === '/playground') {
+      await this.handlePlayground(url, res);
+      return true;
+    }
+
+    if (url.pathname === '/conversation') {
+      await this.handleConversation(url, res);
       return true;
     }
 
@@ -627,7 +662,7 @@ export class HttpApi {
       // Check if agent is already running on this host
       // Use -T to disable TTY allocation (avoids "Pseudo-terminal will not be allocated" warnings)
       const { stdout: checkOutput } = await execAsync(
-        `ssh -T ${sshHost} 'tmux has-session -t hexarchy-agent 2>/dev/null && echo running || echo stopped'`,
+        `ssh -T ${sshHost} 'tmux has-session -t portolan-agent 2>/dev/null && echo running || echo stopped'`,
         { timeout: 10000 }
       );
 
@@ -639,9 +674,9 @@ export class HttpApi {
 
       // Start the agent via SSH
       // Use -T to disable TTY allocation, bash -l to get login shell with nvm/node in PATH
-      console.log(`[Activate] Starting hexarchy-agent on ${sshHost}...`);
+      console.log(`[Activate] Starting portolan-agent on ${sshHost}...`);
       await execAsync(
-        `ssh -T ${sshHost} 'tmux new-session -d -s hexarchy-agent "bash -l -c \\"node ~/bin/hexarchy-agent.js connect --ssh-host=${sshHost}\\""'`,
+        `ssh -T ${sshHost} 'tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${sshHost}\\""'`,
         { timeout: 30000 }
       );
 
@@ -1007,13 +1042,35 @@ export class HttpApi {
           lines.push(`> ${ann.comment}`);
           lines.push('');
         } else {
-          // Text annotation - show selected text
-          const truncatedText = ann.originalText.length > 60
-            ? ann.originalText.slice(0, 57) + '...'
-            : ann.originalText;
-          // Format header with optional line number
-          const lineRef = ann.line ? ` (L${ann.line})` : '';
-          lines.push(`## ${i + 1}.${lineRef} Feedback on: "${truncatedText.replace(/\n/g, ' ')}"`);
+          // Text annotation - show selected text with start...end format for multiline
+          let contextText: string;
+          const text = ann.originalText;
+          const isMultiline = text.includes('\n');
+
+          if (isMultiline) {
+            // For multiline: show "start text...end text"
+            const lines_arr = text.split('\n');
+            const startText = lines_arr[0].slice(0, 30).trim();
+            const endText = lines_arr[lines_arr.length - 1].slice(-30).trim();
+            contextText = `${startText}...${endText}`;
+          } else if (text.length > 60) {
+            // Single line but long: truncate
+            contextText = text.slice(0, 57) + '...';
+          } else {
+            contextText = text;
+          }
+
+          // Format line reference: show range if multiline
+          let lineRef = '';
+          if (ann.line) {
+            if (ann.endLine && ann.endLine !== ann.line) {
+              lineRef = ` (L${ann.line}-${ann.endLine})`;
+            } else {
+              lineRef = ` (L${ann.line})`;
+            }
+          }
+
+          lines.push(`## ${i + 1}.${lineRef} Feedback on: "${contextText}"`);
           lines.push(`> ${ann.comment}`);
           lines.push('');
         }
@@ -1107,6 +1164,191 @@ export class HttpApi {
       console.error('Failed to file as fiber:', error.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to file as fiber: ' + error.message }));
+    }
+  }
+
+  // ============================================================================
+  // Playground Endpoints
+  // ============================================================================
+
+  /**
+   * List available playgrounds for a city
+   * GET /playground-list?cityId=xxx
+   */
+  private async handlePlaygroundList(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing cityId parameter' }));
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'City not found' }));
+      return;
+    }
+
+    const playgroundsDir = `${city.path}/.portolan/playgrounds`;
+
+    try {
+      let files: string[];
+      if (city.originId === 'local') {
+        const { readdirSync } = await import('fs');
+        files = readdirSync(playgroundsDir).filter(f => f.endsWith('.html'));
+      } else {
+        const sshHost = this.getSshHost(city);
+        const { stdout } = await execAsync(
+          `ssh ${sshHost} 'ls "${playgroundsDir}"/*.html 2>/dev/null || true'`,
+          { timeout: 10000 }
+        );
+        files = stdout.trim().split('\n')
+          .filter(Boolean)
+          .map(f => f.split('/').pop()!)
+          .filter(f => f.endsWith('.html'));
+      }
+
+      // Sort by name, most recently modified first would be nice but simpler to just sort alphabetically
+      files.sort();
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ playgrounds: files }));
+    } catch (error: any) {
+      console.error('Failed to list playgrounds:', error.message);
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ playgrounds: [] }));
+    }
+  }
+
+  /**
+   * Serve a playground HTML file
+   * GET /playground?cityId=xxx&name=playground.html
+   */
+  private async handlePlayground(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    const name = url.searchParams.get('name');
+
+    if (!cityId || !name) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing cityId or name parameter');
+      return;
+    }
+
+    // Security: prevent directory traversal
+    if (name.includes('/') || name.includes('..')) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Invalid playground name');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('City not found');
+      return;
+    }
+
+    const playgroundPath = `${city.path}/.portolan/playgrounds/${name}`;
+
+    try {
+      let html: string;
+      if (city.originId === 'local') {
+        const { readFileSync } = await import('fs');
+        html = readFileSync(playgroundPath, 'utf-8');
+      } else {
+        const sshHost = this.getSshHost(city);
+        const { stdout } = await execAsync(
+          `ssh ${sshHost} 'cat "${playgroundPath}"'`,
+          { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
+        );
+        html = stdout;
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(html);
+    } catch (error: any) {
+      console.error('Failed to fetch playground:', error.message);
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Playground not found');
+    }
+  }
+
+  /**
+   * Get conversation history for a session
+   * Query params: sessionId (tmux session name)
+   */
+  private async handleConversation(url: URL, res: ServerResponse): Promise<void> {
+    const sessionId = url.searchParams.get('sessionId');
+    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+
+    if (!sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing sessionId parameter' }));
+      return;
+    }
+
+    if (!this.transcriptReader) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Transcript reader not configured' }));
+      return;
+    }
+
+    // Find session to get its cwd
+    const session = this.sessionLookup?.findSession(sessionId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session not found' }));
+      return;
+    }
+
+    try {
+      let messages: any[];
+
+      // Check if this is a remote session (has originId that isn't 'local')
+      if (session.originId && session.originId !== 'local') {
+        // Remote session: check cached conversation from agent
+        const cached = this.remoteConversationLookup?.(sessionId);
+        messages = cached ? cached.slice(-limit) : [];
+      } else {
+        // Local session: read from transcript files
+        // Check if we have a mapped transcript for this session
+        let mappedTranscript = this.transcriptReader.getSessionTranscript(sessionId);
+
+        // If no mapping exists, try to detect the active transcript
+        if (!mappedTranscript) {
+          // If session is working, detect which transcript was just modified
+          if (session.status === 'working') {
+            const detected = this.transcriptReader.detectActiveTranscript(session.cwd, 10000);
+            if (detected) {
+              this.transcriptReader.setSessionTranscript(sessionId, detected);
+              mappedTranscript = detected;
+            }
+          }
+        }
+
+        // Get messages, using session-specific transcript if available
+        messages = await this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ messages }));
+    } catch (error: any) {
+      console.error('Failed to fetch conversation:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to fetch conversation' }));
     }
   }
 }

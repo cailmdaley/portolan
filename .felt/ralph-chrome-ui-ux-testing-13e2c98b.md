@@ -1,9 +1,11 @@
 ---
 title: 'Ralph: Chrome UI/UX testing — annotations, workers, fibers, discoverability'
-status: active
+status: closed
 kind: task
 priority: 2
 created-at: 2026-01-25T16:18:48.32368+01:00
+closed-at: 2026-01-31T00:56:45.307073+01:00
+close-reason: All bugs addressed. Toast notifications, click-to-annotate, label truncation, fiber badges, worker handoff, annotation history, remote persistence all working.
 ---
 
 # Ralph: Chrome UI/UX Testing
@@ -375,4 +377,3 @@ Survey only - all bugs addressed in previous iterations.
 
 ### Remaining Open Fibers
 All bug fibers from original list are now closed.
-

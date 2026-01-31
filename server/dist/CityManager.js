@@ -3,7 +3,7 @@
  *
  * Cities can be:
  * - Session-derived: exist while ≥1 session has that cwd
- * - Persisted (pinned): survive beyond sessions, stored in ~/.hexarchy/cities.json
+ * - Persisted (pinned): survive beyond sessions, stored in ~/.portolan/cities.json
  *
  * Persisted cities form the base layer. Session activity overlays
  * fiber counts and workers but doesn't change position or existence.
@@ -16,7 +16,7 @@
  */
 import { resolve, basename } from 'path';
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 // ============================================================================
 // CityManager
 // ============================================================================
@@ -386,6 +386,38 @@ export class CityManager {
                 city.hasClaims = this.detectClaims(city);
             }
             // Remote cities: hasClaims is set by handleAgentSessionsUpdate
+        }
+    }
+    /**
+     * Detect if a city has playgrounds (.portolan/playgrounds/ with .html files)
+     * Only works for local cities.
+     */
+    detectPlaygrounds(city) {
+        if (city.originId !== 'local') {
+            return false;
+        }
+        const playgroundsDir = resolve(city.path, '.portolan/playgrounds');
+        if (!existsSync(playgroundsDir)) {
+            return false;
+        }
+        try {
+            const files = readdirSync(playgroundsDir);
+            return files.some(f => f.endsWith('.html'));
+        }
+        catch {
+            return false;
+        }
+    }
+    /**
+     * Update hasPlaygrounds for local cities only.
+     * Remote cities get hasPlaygrounds from agent data.
+     */
+    updatePlaygroundsStatus() {
+        for (const city of this.citiesByKey.values()) {
+            if (city.originId === 'local') {
+                city.hasPlaygrounds = this.detectPlaygrounds(city);
+            }
+            // Remote cities: hasPlaygrounds is set by handleAgentSessionsUpdate
         }
     }
 }

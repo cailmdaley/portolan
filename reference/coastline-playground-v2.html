@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Portolan Coastline v2</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      grid-template-rows: 1fr auto;
+    }
+
+    .controls {
+      background: #242424;
+      padding: 20px;
+      overflow-y: auto;
+      border-right: 1px solid #333;
+    }
+
+    h1 {
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 20px;
+      line-height: 1.4;
+    }
+
+    .section {
+      margin-bottom: 24px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #666;
+      margin-bottom: 12px;
+    }
+
+    .control {
+      margin-bottom: 14px;
+    }
+
+    .control label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 6px;
+    }
+
+    .control label span.value {
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      color: #888;
+    }
+
+    .control .hint {
+      font-size: 10px;
+      color: #555;
+      margin-top: 4px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 4px;
+      -webkit-appearance: none;
+      background: #333;
+      border-radius: 2px;
+      outline: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      background: #8a7a5a;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    input[type="color"] {
+      width: 100%;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      background: #333;
+    }
+
+    .presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 20px;
+    }
+
+    .preset {
+      padding: 6px 10px;
+      font-size: 11px;
+      background: #333;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #aaa;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .preset:hover {
+      background: #3a3a3a;
+      border-color: #555;
+      color: #ddd;
+    }
+
+    .preset.active {
+      background: #3a352a;
+      border-color: #6a5a3a;
+      color: #d4c4a8;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 10px;
+      font-size: 12px;
+      background: #333;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #aaa;
+      cursor: pointer;
+      transition: all 0.15s;
+      margin-bottom: 8px;
+    }
+
+    .btn:hover {
+      background: #3a3a3a;
+      color: #ddd;
+    }
+
+    .preview {
+      background: #2a2622;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #canvas {
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    .prompt-output {
+      grid-column: 1 / -1;
+      background: #1e1e1e;
+      border-top: 1px solid #333;
+      padding: 16px 20px;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+
+    .prompt-text {
+      flex: 1;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #aaa;
+      white-space: pre-wrap;
+    }
+
+    .copy-btn {
+      padding: 8px 16px;
+      font-size: 12px;
+      background: #333;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #aaa;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .copy-btn:hover {
+      background: #3a3a3a;
+      color: #ddd;
+    }
+
+    .copy-btn.copied {
+      background: #2a3a2a;
+      border-color: #4a6a4a;
+      color: #8a8;
+    }
+
+    .seed-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .seed-btn {
+      flex: 1;
+      padding: 8px;
+      font-size: 11px;
+      background: #333;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #888;
+      cursor: pointer;
+    }
+
+    .seed-btn:hover {
+      background: #3a3a3a;
+      color: #aaa;
+    }
+
+    .seed-display {
+      font-family: 'SF Mono', monospace;
+      font-size: 12px;
+      color: #8a7a5a;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <h1>Portolan Coastline v2</h1>
+    <p class="subtitle">Spatially-varying coastline with noise-modulated features</p>
+
+    <div class="presets">
+      <button class="preset active" data-preset="portolan">Portolan</button>
+      <button class="preset" data-preset="mediterranean">Mediterranean</button>
+      <button class="preset" data-preset="nordic">Nordic</button>
+      <button class="preset" data-preset="archipelago">Archipelago</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Seed</div>
+      <div class="seed-display" id="seedDisplay">Seed: 42</div>
+      <div class="seed-row">
+        <button class="seed-btn" id="prevSeed">← Prev</button>
+        <button class="seed-btn" id="randomSeed">Random</button>
+        <button class="seed-btn" id="nextSeed">Next →</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Large Features</div>
+
+      <div class="control">
+        <label>Feature Scale <span class="value" id="featureScaleVal">2.5</span></label>
+        <input type="range" id="featureScale" min="1" max="6" step="0.1" value="2.5">
+        <div class="hint">Size of major bays and peninsulas</div>
+      </div>
+
+      <div class="control">
+        <label>Feature Amplitude <span class="value" id="featureAmpVal">0.12</span></label>
+        <input type="range" id="featureAmp" min="0" max="0.3" step="0.01" value="0.12">
+        <div class="hint">How far they extend</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Fractal Detail</div>
+
+      <div class="control">
+        <label>Iterations <span class="value" id="iterationsVal">6</span></label>
+        <input type="range" id="iterations" min="4" max="9" step="1" value="6">
+      </div>
+
+      <div class="control">
+        <label>Base Displacement <span class="value" id="displacementVal">0.35</span></label>
+        <input type="range" id="displacement" min="0.1" max="0.6" step="0.01" value="0.35">
+      </div>
+
+      <div class="control">
+        <label>Roughness <span class="value" id="roughnessVal">0.58</span></label>
+        <input type="range" id="roughness" min="0.4" max="0.75" step="0.01" value="0.58">
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Spatial Variation</div>
+
+      <div class="control">
+        <label>Variation Frequency <span class="value" id="varFreqVal">3.0</span></label>
+        <input type="range" id="varFreq" min="1" max="8" step="0.5" value="3.0">
+        <div class="hint">How often character changes</div>
+      </div>
+
+      <div class="control">
+        <label>Variation Amount <span class="value" id="varAmtVal">0.6</span></label>
+        <input type="range" id="varAmt" min="0" max="1" step="0.05" value="0.6">
+        <div class="hint">Smooth ↔ Jagged variation</div>
+      </div>
+
+      <div class="control">
+        <label>Bay Tendency <span class="value" id="biasVal">0.15</span></label>
+        <input type="range" id="bias" min="-0.3" max="0.4" step="0.01" value="0.15">
+        <div class="hint">Negative = peninsulas, Positive = bays</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Smoothing</div>
+
+      <div class="control">
+        <label>Chaikin Passes <span class="value" id="smoothingVal">2</span></label>
+        <input type="range" id="smoothing" min="0" max="4" step="1" value="2">
+        <div class="hint">Corner-cutting for hand-drawn feel</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Line Style</div>
+
+      <div class="control">
+        <label>Line Width <span class="value" id="lineWidthVal">1.8</span></label>
+        <input type="range" id="lineWidth" min="0.5" max="4" step="0.1" value="1.8">
+      </div>
+
+      <div class="control">
+        <label>Line Color</label>
+        <input type="color" id="lineColor" value="#2a2420">
+      </div>
+    </div>
+
+    <button class="btn" id="regenerate">Regenerate</button>
+  </div>
+
+  <div class="preview">
+    <canvas id="canvas" width="1200" height="800"></canvas>
+  </div>
+
+  <div class="prompt-output">
+    <div class="prompt-text" id="promptText">Coastline with default settings.</div>
+    <button class="copy-btn" id="copyBtn">Copy</button>
+  </div>
+
+  <script>
+    // Seeded random
+    function mulberry32(a) {
+      return function() {
+        var t = a += 0x6D2B79F5;
+        t = Math.imul(t ^ t >>> 15, t | 1);
+        t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      }
+    }
+
+    let rng = mulberry32(42);
+
+    // Simple 1D noise (seeded)
+    function noise1D(x, seed) {
+      const n = Math.sin(x * 12.9898 + seed * 78.233) * 43758.5453;
+      return n - Math.floor(n);
+    }
+
+    // Smooth noise with interpolation
+    function smoothNoise(x, freq, seed) {
+      const scaledX = x * freq;
+      const x0 = Math.floor(scaledX);
+      const x1 = x0 + 1;
+      const t = scaledX - x0;
+
+      // Smoothstep interpolation
+      const smooth = t * t * (3 - 2 * t);
+
+      const v0 = noise1D(x0, seed);
+      const v1 = noise1D(x1, seed);
+
+      return v0 + (v1 - v0) * smooth;
+    }
+
+    // Fractal noise (multiple octaves)
+    function fractalNoise(x, freq, octaves, seed) {
+      let value = 0;
+      let amp = 1;
+      let totalAmp = 0;
+
+      for (let i = 0; i < octaves; i++) {
+        value += smoothNoise(x, freq * Math.pow(2, i), seed + i * 100) * amp;
+        totalAmp += amp;
+        amp *= 0.5;
+      }
+
+      return value / totalAmp;
+    }
+
+    // Moving average smoothing - actually blurs high-frequency noise
+    function smoothPoints(points, windowSize) {
+      if (windowSize <= 1) return points;
+
+      const half = Math.floor(windowSize / 2);
+      const result = [];
+
+      for (let i = 0; i < points.length; i++) {
+        let sumX = 0, sumY = 0, sumT = 0, count = 0;
+
+        for (let j = -half; j <= half; j++) {
+          const idx = Math.max(0, Math.min(points.length - 1, i + j));
+          // Gaussian-ish weighting: center points matter more
+          const weight = 1 - Math.abs(j) / (half + 1);
+          sumX += points[idx].x * weight;
+          sumY += points[idx].y * weight;
+          sumT += points[idx].t * weight;
+          count += weight;
+        }
+
+        result.push({
+          x: sumX / count,
+          y: sumY / count,
+          t: sumT / count
+        });
+      }
+
+      return result;
+    }
+
+    // State
+    const DEFAULTS = {
+      seed: 42,
+      featureScale: 2.5,
+      featureAmp: 0.12,
+      iterations: 4,
+      displacement: 0.35,
+      roughness: 0.58,
+      varFreq: 3.0,
+      varAmt: 0.6,
+      bias: 0.15,
+      smoothing: 3,
+      lineWidth: 1.8,
+      lineColor: '#2a2420'
+    };
+
+    const PRESETS = {
+      portolan: { ...DEFAULTS },
+      mediterranean: {
+        ...DEFAULTS,
+        featureScale: 3.0,
+        featureAmp: 0.15,
+        iterations: 4,
+        displacement: 0.30,
+        roughness: 0.55,
+        varFreq: 4.0,
+        varAmt: 0.7,
+        bias: 0.20,
+        smoothing: 3
+      },
+      nordic: {
+        ...DEFAULTS,
+        featureScale: 4.0,
+        featureAmp: 0.20,
+        iterations: 5,
+        displacement: 0.45,
+        roughness: 0.65,
+        varFreq: 2.5,
+        varAmt: 0.5,
+        bias: -0.10,
+        smoothing: 2
+      },
+      archipelago: {
+        ...DEFAULTS,
+        featureScale: 5.0,
+        featureAmp: 0.08,
+        iterations: 4,
+        displacement: 0.25,
+        roughness: 0.50,
+        varFreq: 5.0,
+        varAmt: 0.8,
+        bias: 0.25,
+        smoothing: 4
+      }
+    };
+
+    const state = { ...DEFAULTS };
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Generate coastline with spatial variation
+    function generateCoastline() {
+      rng = mulberry32(state.seed);
+
+      const numInitialPoints = 100;
+      const points = [];
+
+      // Generate base coastline with large features
+      for (let i = 0; i <= numInitialPoints; i++) {
+        const t = i / numInitialPoints;
+        const x = t;
+
+        // Large-scale features (bays/peninsulas) using fractal noise
+        const largeFeature = fractalNoise(t, state.featureScale, 3, state.seed) - 0.5;
+
+        // Base Y with large features
+        const baseY = 0.45 + largeFeature * state.featureAmp * 2;
+
+        points.push({ x, y: baseY, t });
+      }
+
+      // Apply midpoint displacement with spatial variation
+      let current = points;
+
+      for (let iter = 0; iter < state.iterations; iter++) {
+        const next = [];
+        const iterDisplacement = state.displacement * Math.pow(state.roughness, iter);
+
+        for (let i = 0; i < current.length - 1; i++) {
+          const p1 = current[i];
+          const p2 = current[i + 1];
+
+          next.push(p1);
+
+          // Midpoint
+          const midX = (p1.x + p2.x) / 2;
+          const midY = (p1.y + p2.y) / 2;
+          const midT = (p1.t + p2.t) / 2;
+
+          // Segment vector
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+
+          // Perpendicular
+          const perpX = -dy / len;
+          const perpY = dx / len;
+
+          // Spatial variation: how "rough" is this part of the coast?
+          const localRoughness = 0.5 + (fractalNoise(midT, state.varFreq, 2, state.seed + 500) - 0.5) * state.varAmt;
+
+          // Random displacement with bias and local variation
+          const randBase = rng() - 0.5 + state.bias * 0.5;
+          const randDisp = randBase * iterDisplacement * localRoughness * len * 4;
+
+          next.push({
+            x: midX + perpX * randDisp,
+            y: midY + perpY * randDisp,
+            t: midT
+          });
+        }
+
+        next.push(current[current.length - 1]);
+        current = next;
+      }
+
+      // Apply moving average smoothing to remove high-frequency noise
+      // Window size scales with point count for consistent visual effect
+      // smoothing 1 = 1%, 2 = 2%, 3 = 4%, 4 = 8% of points
+      if (state.smoothing > 0) {
+        const windowSize = Math.max(3, Math.floor(current.length * 0.01 * Math.pow(2, state.smoothing - 1)));
+        current = smoothPoints(current, windowSize);
+      }
+
+      return current;
+    }
+
+    // Draw vellum background
+    function drawVellum() {
+      // Base color
+      ctx.fillStyle = '#f5eee1';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Radial gradient for subtle variation
+      const gradient = ctx.createRadialGradient(
+        canvas.width * 0.5, canvas.height * 0.4, 0,
+        canvas.width * 0.5, canvas.height * 0.5, canvas.width * 0.8
+      );
+      gradient.addColorStop(0, 'rgba(250, 245, 235, 0.4)');
+      gradient.addColorStop(0.5, 'rgba(240, 232, 218, 0.2)');
+      gradient.addColorStop(1, 'rgba(210, 195, 168, 0.35)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Edge darkening
+      const edgeGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      edgeGrad.addColorStop(0, 'rgba(180, 165, 140, 0.15)');
+      edgeGrad.addColorStop(0.15, 'rgba(180, 165, 140, 0)');
+      edgeGrad.addColorStop(0.85, 'rgba(180, 165, 140, 0)');
+      edgeGrad.addColorStop(1, 'rgba(180, 165, 140, 0.2)');
+      ctx.fillStyle = edgeGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Side edges
+      const leftGrad = ctx.createLinearGradient(0, 0, canvas.width * 0.1, 0);
+      leftGrad.addColorStop(0, 'rgba(180, 165, 140, 0.2)');
+      leftGrad.addColorStop(1, 'rgba(180, 165, 140, 0)');
+      ctx.fillStyle = leftGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const rightGrad = ctx.createLinearGradient(canvas.width, 0, canvas.width * 0.9, 0);
+      rightGrad.addColorStop(0, 'rgba(180, 165, 140, 0.2)');
+      rightGrad.addColorStop(1, 'rgba(180, 165, 140, 0)');
+      ctx.fillStyle = rightGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // Draw land fill
+    function drawLand(points) {
+      ctx.beginPath();
+      ctx.moveTo(-10, -10);
+      ctx.lineTo(points[0].x * canvas.width, points[0].y * canvas.height);
+
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x * canvas.width, points[i].y * canvas.height);
+      }
+
+      ctx.lineTo(canvas.width + 10, -10);
+      ctx.closePath();
+
+      // Subtle land tone
+      ctx.fillStyle = 'rgba(200, 185, 160, 0.12)';
+      ctx.fill();
+    }
+
+    // Draw coastline
+    function drawCoastline(points) {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x * canvas.width, points[0].y * canvas.height);
+
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x * canvas.width, points[i].y * canvas.height);
+      }
+
+      ctx.strokeStyle = state.lineColor;
+      ctx.lineWidth = state.lineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+
+    // Draw city markers (placeholder)
+    function drawCityMarkers(points) {
+      // Find some good spots for cities (relatively flat areas)
+      const citySpots = [0.15, 0.35, 0.55, 0.75, 0.90];
+
+      ctx.fillStyle = '#9a7b35';
+
+      citySpots.forEach(targetT => {
+        // Find point closest to this t
+        let closest = points[0];
+        let minDist = Math.abs(points[0].t - targetT);
+
+        for (const p of points) {
+          const dist = Math.abs(p.t - targetT);
+          if (dist < minDist) {
+            minDist = dist;
+            closest = p;
+          }
+        }
+
+        // Draw small marker on land side
+        const x = closest.x * canvas.width;
+        const y = closest.y * canvas.height - 15;
+
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Main render
+    function render() {
+      drawVellum();
+
+      const coastline = generateCoastline();
+
+      drawLand(coastline);
+      drawCoastline(coastline);
+      drawCityMarkers(coastline);
+    }
+
+    // Update prompt
+    function updatePrompt() {
+      const parts = [];
+
+      if (state.featureAmp > DEFAULTS.featureAmp + 0.02) {
+        parts.push('pronounced bays/peninsulas');
+      } else if (state.featureAmp < DEFAULTS.featureAmp - 0.02) {
+        parts.push('subtle large features');
+      }
+
+      if (state.displacement > DEFAULTS.displacement + 0.05) {
+        parts.push('more jagged');
+      } else if (state.displacement < DEFAULTS.displacement - 0.05) {
+        parts.push('smoother');
+      }
+
+      if (state.varAmt > DEFAULTS.varAmt + 0.1) {
+        parts.push('highly varied character');
+      }
+
+      if (state.bias > 0.1) {
+        parts.push('bay-heavy');
+      } else if (state.bias < -0.1) {
+        parts.push('peninsula-heavy');
+      }
+
+      let text = parts.length > 0
+        ? `Coastline: ${parts.join(', ')}.`
+        : 'Coastline with balanced portolan settings.';
+
+      text += `\n\nParameters: { featureScale: ${state.featureScale}, featureAmp: ${state.featureAmp}, iterations: ${state.iterations}, displacement: ${state.displacement}, roughness: ${state.roughness}, varFreq: ${state.varFreq}, varAmt: ${state.varAmt}, bias: ${state.bias}, smoothing: ${state.smoothing} }`;
+
+      document.getElementById('promptText').textContent = text;
+    }
+
+    // Update all
+    function updateAll() {
+      document.getElementById('seedDisplay').textContent = `Seed: ${state.seed}`;
+      document.getElementById('featureScaleVal').textContent = state.featureScale.toFixed(1);
+      document.getElementById('featureAmpVal').textContent = state.featureAmp.toFixed(2);
+      document.getElementById('iterationsVal').textContent = state.iterations;
+      document.getElementById('displacementVal').textContent = state.displacement.toFixed(2);
+      document.getElementById('roughnessVal').textContent = state.roughness.toFixed(2);
+      document.getElementById('varFreqVal').textContent = state.varFreq.toFixed(1);
+      document.getElementById('varAmtVal').textContent = state.varAmt.toFixed(2);
+      document.getElementById('biasVal').textContent = state.bias.toFixed(2);
+      document.getElementById('smoothingVal').textContent = state.smoothing;
+      document.getElementById('lineWidthVal').textContent = state.lineWidth.toFixed(1);
+
+      render();
+      updatePrompt();
+    }
+
+    // Bind controls
+    ['featureScale', 'featureAmp', 'iterations', 'displacement', 'roughness', 'varFreq', 'varAmt', 'bias', 'smoothing', 'lineWidth'].forEach(id => {
+      document.getElementById(id).addEventListener('input', e => {
+        state[id] = parseFloat(e.target.value);
+        updateAll();
+      });
+    });
+
+    document.getElementById('lineColor').addEventListener('input', e => {
+      state.lineColor = e.target.value;
+      updateAll();
+    });
+
+    // Seed controls
+    document.getElementById('prevSeed').addEventListener('click', () => {
+      state.seed = Math.max(1, state.seed - 1);
+      updateAll();
+    });
+
+    document.getElementById('nextSeed').addEventListener('click', () => {
+      state.seed++;
+      updateAll();
+    });
+
+    document.getElementById('randomSeed').addEventListener('click', () => {
+      state.seed = Math.floor(Math.random() * 100000);
+      updateAll();
+    });
+
+    document.getElementById('regenerate').addEventListener('click', () => {
+      state.seed = Math.floor(Math.random() * 100000);
+      updateAll();
+    });
+
+    // Presets
+    document.querySelectorAll('.preset').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const preset = PRESETS[btn.dataset.preset];
+        Object.assign(state, preset);
+
+        document.getElementById('featureScale').value = state.featureScale;
+        document.getElementById('featureAmp').value = state.featureAmp;
+        document.getElementById('iterations').value = state.iterations;
+        document.getElementById('displacement').value = state.displacement;
+        document.getElementById('roughness').value = state.roughness;
+        document.getElementById('varFreq').value = state.varFreq;
+        document.getElementById('varAmt').value = state.varAmt;
+        document.getElementById('bias').value = state.bias;
+        document.getElementById('smoothing').value = state.smoothing;
+        document.getElementById('lineWidth').value = state.lineWidth;
+        document.getElementById('lineColor').value = state.lineColor;
+
+        document.querySelectorAll('.preset').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        updateAll();
+      });
+    });
+
+    // Copy button
+    document.getElementById('copyBtn').addEventListener('click', () => {
+      const text = document.getElementById('promptText').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('copyBtn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1500);
+      });
+    });
+
+    // Initial render
+    updateAll();
+  </script>
+</body>
+</html>

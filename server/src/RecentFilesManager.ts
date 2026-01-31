@@ -50,11 +50,11 @@ export class RecentFilesManager {
 
   // Configuration
   private readonly POLL_INTERVAL_MS = 10000; // Poll every 10 seconds
-  private readonly EXEC_TIMEOUT_MS = 10000;  // Timeout for find commands
+  private readonly EXEC_TIMEOUT_MS = 5000;   // Timeout for find commands
   private readonly MAX_FILES = 20;           // Cache top N files per path
 
   constructor() {
-    this.dataDir = join(homedir(), '.hexarchy');
+    this.dataDir = join(homedir(), '.portolan');
     this.persistencePath = join(this.dataDir, 'recent-files.json');
     this.loadPersistence();
   }
@@ -208,9 +208,9 @@ export class RecentFilesManager {
         .map(pat => `-not -name '${pat}'`)
         .join(' ');
 
-      // find with stat format: mtime|path
-      // Using %Y for mtime (epoch seconds)
-      const cmd = `cd "${directory}" && find . \\( ${excludeDirArgs} -type f ${excludePatternArgs} -print \\) 2>/dev/null | head -500 | xargs -I {} stat -f '%m|%N' {} 2>/dev/null | sort -t'|' -k1 -rn | head -${this.MAX_FILES}`;
+      // find with -exec stat (batched with +) is much faster than xargs -I {}
+      // stat -f '%m %N' outputs: mtime_seconds path
+      const cmd = `cd "${directory}" && find . \\( ${excludeDirArgs} -type f ${excludePatternArgs} -exec stat -f '%m %N' {} + \\) 2>/dev/null | sort -rn | head -${this.MAX_FILES}`;
 
       const { stdout } = await execAsync(cmd, {
         timeout: this.EXEC_TIMEOUT_MS,
@@ -220,8 +220,11 @@ export class RecentFilesManager {
       const lines = stdout.trim().split('\n').filter(Boolean);
 
       for (const line of lines) {
-        const [mtimeStr, ...pathParts] = line.split('|');
-        const relativePath = pathParts.join('|').replace(/^\.\//, '');
+        // Format: "mtime_seconds ./relative/path" (space-separated, path may have spaces)
+        const spaceIdx = line.indexOf(' ');
+        if (spaceIdx === -1) continue;
+        const mtimeStr = line.slice(0, spaceIdx);
+        const relativePath = line.slice(spaceIdx + 1).replace(/^\.\//, '');
         const mtime = parseInt(mtimeStr, 10) * 1000; // Convert to ms
 
         if (relativePath && !isNaN(mtime)) {
@@ -235,7 +238,13 @@ export class RecentFilesManager {
 
       return files;
     } catch (error) {
-      // Log error but don't fail - return empty list
+      // On timeout or error, return cached files instead of empty
+      // This keeps UI populated while slow directories are scanned
+      const cached = this.filesCache.get(directory);
+      if (cached && cached.length > 0) {
+        console.warn(`[RecentFilesManager] Timeout for ${directory}, using cached files`);
+        return cached;
+      }
       console.error(`[RecentFilesManager] Failed to get files for ${directory}:`, error);
       return [];
     }

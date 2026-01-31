@@ -62,6 +62,8 @@ fi
     } + (
       if .tool_name then
         { tool: .tool_name, toolInput: (.tool_input // null) }
+      elif .prompt then
+        { prompt: .prompt }
       else {}
       end
     )

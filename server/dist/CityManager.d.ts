@@ -9,6 +9,7 @@ export interface City {
     };
     fiberCount?: number;
     hasClaims?: boolean;
+    hasPlaygrounds?: boolean;
     gitStatus?: GitStatus;
     createdAt?: number;
     originId: string;
@@ -154,6 +155,16 @@ export declare class CityManager {
      * Remote cities get hasClaims from agent data, so we don't overwrite.
      */
     updateClaimsStatus(): void;
+    /**
+     * Detect if a city has playgrounds (.portolan/playgrounds/ with .html files)
+     * Only works for local cities.
+     */
+    detectPlaygrounds(city: City): boolean;
+    /**
+     * Update hasPlaygrounds for local cities only.
+     * Remote cities get hasPlaygrounds from agent data.
+     */
+    updatePlaygroundsStatus(): void;
 }
 export {};
 //# sourceMappingURL=CityManager.d.ts.map

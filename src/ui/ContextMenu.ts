@@ -9,13 +9,11 @@ export interface MenuItem {
 
 export class ContextMenu {
   private menu: HTMLElement
+  private closeHandler: ((e: MouseEvent) => void) | null = null
 
   constructor() {
     this.menu = this.createMenu()
     document.body.appendChild(this.menu)
-
-    // Close on click outside
-    document.addEventListener('click', () => this.hide())
   }
 
   private createMenu(): HTMLElement {
@@ -93,9 +91,26 @@ export class ContextMenu {
 
     this.menu.style.left = `${posX}px`
     this.menu.style.top = `${posY}px`
+
+    // Add close handler (click outside to close)
+    this.removeCloseHandler()
+    this.closeHandler = (e: MouseEvent) => {
+      if (!this.menu.contains(e.target as Node)) {
+        this.hide()
+      }
+    }
+    document.addEventListener('click', this.closeHandler)
+  }
+
+  private removeCloseHandler(): void {
+    if (this.closeHandler) {
+      document.removeEventListener('click', this.closeHandler)
+      this.closeHandler = null
+    }
   }
 
   hide(): void {
     this.menu.style.display = 'none'
+    this.removeCloseHandler()
   }
 }

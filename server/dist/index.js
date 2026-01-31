@@ -1,5 +1,5 @@
 /**
- * Hexarchy Server
+ * Portolan Server
  *
  * Wires together all managers and serves state to browser via WebSocket.
  * HTTP endpoints handled by HttpApi, terminal commands by KittyIntegration,
@@ -9,6 +9,9 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 const execAsync = promisify(exec);
 // Track active file searches for cancellation
 const activeSearches = new Map();
@@ -44,6 +47,7 @@ import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager } from './GitStatusManager.js';
 import { RecentFilesManager } from './RecentFilesManager.js';
+import { TranscriptReader } from './TranscriptReader.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import { EventWatcher } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
@@ -65,6 +69,7 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFilesManager = new RecentFilesManager();
+const transcriptReader = new TranscriptReader();
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
 // Load persisted annotations
@@ -83,6 +88,51 @@ const remoteGitStatuses = new Map();
 // Track remote activities: Map<tmuxSession, ActivityEvent[]>
 const remoteActivities = new Map();
 const MAX_REMOTE_ACTIVITIES = 50;
+// Track remote session last activity for working status timeout
+// Key: "originId:tmuxSession", Value: timestamp
+const remoteLastActivity = new Map();
+const REMOTE_WORKING_TIMEOUT = 30_000; // 30 seconds, same as EventWatcher
+const remoteConversations = new Map();
+// Activity persistence
+const activityPersistencePath = join(homedir(), '.portolan', 'remote-activities.json');
+function loadActivityPersistence() {
+    if (!existsSync(activityPersistencePath))
+        return;
+    try {
+        const content = readFileSync(activityPersistencePath, 'utf-8');
+        const data = JSON.parse(content);
+        if (data.version === 1 && data.activities) {
+            for (const [tmuxSession, acts] of Object.entries(data.activities)) {
+                remoteActivities.set(tmuxSession, acts);
+            }
+            console.log(`[Activity] Loaded ${remoteActivities.size} remote session activities`);
+        }
+    }
+    catch (error) {
+        console.error('[Activity] Failed to load persistence:', error);
+    }
+}
+function saveActivityPersistence() {
+    const dataDir = join(homedir(), '.portolan');
+    if (!existsSync(dataDir)) {
+        mkdirSync(dataDir, { recursive: true });
+    }
+    const activities = {};
+    for (const [tmuxSession, acts] of remoteActivities.entries()) {
+        activities[tmuxSession] = acts;
+    }
+    const data = { version: 1, activities };
+    const tmpPath = activityPersistencePath + '.tmp';
+    try {
+        writeFileSync(tmpPath, JSON.stringify(data), 'utf-8');
+        renameSync(tmpPath, activityPersistencePath);
+    }
+    catch (error) {
+        console.error('[Activity] Failed to save persistence:', error);
+    }
+}
+// Load activity on startup
+loadActivityPersistence();
 // Track connected browser clients
 const clients = new Set();
 // Track last broadcast state for fiber count comparison
@@ -123,6 +173,8 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
 httpApi.setRecentFilesManager(recentFilesManager);
+httpApi.setRemoteConversationLookup((sessionId) => remoteConversations.get(sessionId));
+httpApi.setTranscriptReader(transcriptReader);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 // Callback for creating new workers (used by send-annotations endpoint)
 httpApi.setOnCreateNewWorker(async (cityPath, originId) => {
@@ -172,6 +224,7 @@ async function buildState() {
     const sessions = getAllSessions();
     const cities = cityManager.getCities();
     cityManager.updateClaimsStatus();
+    cityManager.updatePlaygroundsStatus();
     const activeCityIds = new Set(sessions.filter(s => s.cityId).map(s => s.cityId));
     const citiesWithFibers = await Promise.all(cities.map(async (city) => {
         let gitStatus;
@@ -190,6 +243,7 @@ async function buildState() {
             ...city,
             fiberCount: city.originId === 'local' ? await countOpenFibers(city.path) : 0,
             hasClaims: city.hasClaims ?? false,
+            hasPlaygrounds: city.hasPlaygrounds ?? false,
             isDormant: !activeCityIds.has(city.id),
             gitStatus,
             recentFiles,
@@ -369,9 +423,13 @@ function handleAgentSessionsUpdate(originId, agentSessions) {
     }
     rebuildCities();
     const claimsByCwd = new Map();
+    const playgroundsByCwd = new Map();
     for (const agentSession of agentSessions) {
         if (agentSession.hasClaims !== undefined) {
             claimsByCwd.set(agentSession.cwd, agentSession.hasClaims);
+        }
+        if (agentSession.hasPlaygrounds !== undefined) {
+            playgroundsByCwd.set(agentSession.cwd, agentSession.hasPlaygrounds);
         }
     }
     for (const agentSession of agentSessions) {
@@ -389,6 +447,10 @@ function handleAgentSessionsUpdate(originId, agentSessions) {
         const hasClaims = claimsByCwd.get(session.cwd);
         if (hasClaims !== undefined) {
             city.hasClaims = hasClaims;
+        }
+        const hasPlaygrounds = playgroundsByCwd.get(session.cwd);
+        if (hasPlaygrounds !== undefined) {
+            city.hasPlaygrounds = hasPlaygrounds;
         }
         assignSessionToCity(session, city);
         previousSessions.set(session.id, session);
@@ -708,7 +770,7 @@ const messageRouter = new MessageRouter({
     onFocus: (sessionId) => kitty.focusSession(sessionId),
     onGetFibers: handleGetFibers,
     onHandoff: (fiberId, cityPath) => kitty.handoff(fiberId, cityPath),
-    onNewWorker: (ws, cityPath, name, chrome) => kitty.newWorker(ws, cityPath, name, chrome),
+    onNewWorker: (ws, cityPath, name, chrome, continueSession) => kitty.newWorker(ws, cityPath, name, chrome, continueSession),
     onPinCity: handlePinCity,
     onUnpinCity: handleUnpinCity,
     onConfirmUnpin: performUnpin,
@@ -724,7 +786,7 @@ const server = createServer(async (req, res) => {
     if (handled)
         return;
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Hexarchy server running\n');
+    res.end('Portolan server running\n');
 });
 // ============================================================================
 // WebSocket Server
@@ -758,21 +820,47 @@ wss.on('connection', async (ws, req) => {
                 }
                 else if (message.type === 'agent_activity') {
                     const activity = message.activity;
-                    // Store remote activity
+                    // Only track file operations (Read, Write, Edit)
+                    if (!['Read', 'Write', 'Edit'].includes(activity.tool)) {
+                        return;
+                    }
+                    // Store remote activity with deduplication
                     let activities = remoteActivities.get(activity.tmuxSession);
                     if (!activities) {
                         activities = [];
                         remoteActivities.set(activity.tmuxSession, activities);
                     }
+                    // Deduplicate: skip if same tool+fullPath within last 2 seconds
+                    const recent = activities[0];
+                    if (recent &&
+                        recent.tool === activity.tool &&
+                        recent.fullPath === activity.fullPath &&
+                        Math.abs(recent.timestamp - activity.timestamp) < 2000) {
+                        return; // Skip duplicate
+                    }
                     activities.unshift(activity);
                     if (activities.length > MAX_REMOTE_ACTIVITIES) {
                         activities.pop();
                     }
+                    saveActivityPersistence();
+                    // Update remote session status to 'working'
+                    const sessionMap = remoteSessions.get(origin.id);
+                    const session = sessionMap?.get(activity.tmuxSession);
+                    if (session && session.status !== 'working') {
+                        session.status = 'working';
+                        session.lastActivity = Date.now();
+                        remoteLastActivity.set(`${origin.id}:${activity.tmuxSession}`, Date.now());
+                        // Trigger rebuild to broadcast the status change
+                        sessionTracker['notifyChange']();
+                    }
+                    else if (session) {
+                        // Just update the timestamp
+                        session.lastActivity = Date.now();
+                        remoteLastActivity.set(`${origin.id}:${activity.tmuxSession}`, Date.now());
+                    }
                     // Track Edit/Write operations as recently edited files
                     if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-                        // Find the city for this session's cwd
-                        const sessionMap = remoteSessions.get(origin.id);
-                        const session = sessionMap?.get(activity.tmuxSession);
+                        // session already looked up above
                         if (session?.cwd) {
                             const city = cityManager.findCityForPath(session.cwd, origin.id);
                             if (city) {
@@ -781,6 +869,17 @@ wss.on('connection', async (ws, req) => {
                         }
                     }
                     broadcastActivity(activity);
+                }
+                else if (message.type === 'agent_conversation') {
+                    const conv = message.payload;
+                    // Find the session ID for this tmux session
+                    const sessionMap = remoteSessions.get(origin.id);
+                    const session = sessionMap?.get(conv.tmuxSession);
+                    if (session) {
+                        // Store conversation messages keyed by session ID
+                        remoteConversations.set(session.id, conv.messages);
+                        console.log(`[Conversation] Cached ${conv.messages.length} messages for ${session.id}`);
+                    }
                 }
             }
             catch (error) {
@@ -824,13 +923,27 @@ sessionTracker.start(2000);
 eventWatcher.setSessionTracker(sessionTracker);
 eventWatcher.onActivity((activity) => {
     console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
+    // Find the session for this activity
+    const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
     // Track Edit/Write operations as recently edited files for local sessions
     if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-        const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
         if (session?.cwd) {
             const city = cityManager.findCityForPath(session.cwd, 'local');
             if (city) {
                 recentFilesManager.recordActivityEdit(activity.fullPath, city.path, 'local');
+            }
+        }
+    }
+    // Detect and track the transcript file for this session when activity is received
+    // This helps associate the correct transcript with each tmux session
+    if (session?.cwd && session.id) {
+        const existingTranscript = transcriptReader.getSessionTranscript(session.id);
+        if (!existingTranscript) {
+            // First activity for this session - detect the active transcript
+            const detected = transcriptReader.detectActiveTranscript(session.cwd, 10000);
+            if (detected) {
+                console.log(`[Transcript] Mapped session ${session.tmuxSession} to ${detected.split('/').pop()}`);
+                transcriptReader.setSessionTranscript(session.id, detected);
             }
         }
     }
@@ -848,8 +961,28 @@ recentFilesManager.setUpdateHandler(({ path, files }) => {
 });
 recentFilesManager.start();
 setInterval(refreshFiberCounts, FIBER_REFRESH_INTERVAL);
+// Check for remote session working timeouts
+setInterval(() => {
+    const now = Date.now();
+    let changed = false;
+    for (const [key, lastActivity] of remoteLastActivity) {
+        if (now - lastActivity > REMOTE_WORKING_TIMEOUT) {
+            const [originId, tmuxSession] = key.split(':');
+            const sessionMap = remoteSessions.get(originId);
+            const session = sessionMap?.get(tmuxSession);
+            if (session && session.status === 'working') {
+                session.status = 'idle';
+                changed = true;
+            }
+            remoteLastActivity.delete(key);
+        }
+    }
+    if (changed) {
+        sessionTracker['notifyChange']();
+    }
+}, 5000);
 server.listen(PORT, () => {
-    console.log(`Hexarchy server running on port ${PORT}`);
+    console.log(`Portolan server running on port ${PORT}`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
 });
 process.on('SIGINT', () => {

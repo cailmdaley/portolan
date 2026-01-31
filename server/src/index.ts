@@ -1,5 +1,5 @@
 /**
- * Hexarchy Server
+ * Portolan Server
  *
  * Wires together all managers and serves state to browser via WebSocket.
  * HTTP endpoints handled by HttpApi, terminal commands by KittyIntegration,
@@ -52,11 +52,12 @@ import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager, GitStatus } from './GitStatusManager.js';
 import { RecentFilesManager, RecentFile } from './RecentFilesManager.js';
+import { TranscriptReader } from './TranscriptReader.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import { EventWatcher, type ActivityEvent } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
 import { KittyIntegration, expandHome, shellEscape } from './KittyIntegration.js';
-import { MessageRouter, AgentSessionsUpdateMessage, AgentActivityMessage } from './MessageRouter.js';
+import { MessageRouter, AgentSessionsUpdateMessage, AgentActivityMessage, AgentConversationMessage } from './MessageRouter.js';
 
 // ============================================================================
 // Types
@@ -88,6 +89,7 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFilesManager = new RecentFilesManager();
+const transcriptReader = new TranscriptReader();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
@@ -117,8 +119,20 @@ const MAX_REMOTE_ACTIVITIES = 50;
 const remoteLastActivity = new Map<string, number>();
 const REMOTE_WORKING_TIMEOUT = 30_000; // 30 seconds, same as EventWatcher
 
+// Track remote conversations: Map<sessionId, ConversationMessage[]>
+// Used by /conversation endpoint for remote workers
+interface RemoteConversationMessage {
+  type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result';
+  content: string;
+  timestamp: string;
+  toolName?: string;
+  toolInput?: any;
+  preview?: string;
+}
+const remoteConversations = new Map<string, RemoteConversationMessage[]>();
+
 // Activity persistence
-const activityPersistencePath = join(homedir(), '.hexarchy', 'remote-activities.json');
+const activityPersistencePath = join(homedir(), '.portolan', 'remote-activities.json');
 
 function loadActivityPersistence(): void {
   if (!existsSync(activityPersistencePath)) return;
@@ -137,7 +151,7 @@ function loadActivityPersistence(): void {
 }
 
 function saveActivityPersistence(): void {
-  const dataDir = join(homedir(), '.hexarchy');
+  const dataDir = join(homedir(), '.portolan');
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
@@ -203,6 +217,8 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
 httpApi.setRecentFilesManager(recentFilesManager);
+httpApi.setRemoteConversationLookup((sessionId) => remoteConversations.get(sessionId));
+httpApi.setTranscriptReader(transcriptReader);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 
 // Callback for creating new workers (used by send-annotations endpoint)
@@ -260,6 +276,7 @@ async function buildState(): Promise<StateUpdate> {
   const cities = cityManager.getCities();
 
   cityManager.updateClaimsStatus();
+  cityManager.updatePlaygroundsStatus();
 
   const activeCityIds = new Set(sessions.filter(s => s.cityId).map(s => s.cityId));
 
@@ -282,6 +299,7 @@ async function buildState(): Promise<StateUpdate> {
         ...city,
         fiberCount: city.originId === 'local' ? await countOpenFibers(city.path) : 0,
         hasClaims: city.hasClaims ?? false,
+        hasPlaygrounds: city.hasPlaygrounds ?? false,
         isDormant: !activeCityIds.has(city.id),
         gitStatus,
         recentFiles,
@@ -482,9 +500,13 @@ function handleAgentSessionsUpdate(
   rebuildCities();
 
   const claimsByCwd = new Map<string, boolean>();
+  const playgroundsByCwd = new Map<string, boolean>();
   for (const agentSession of agentSessions) {
     if (agentSession.hasClaims !== undefined) {
       claimsByCwd.set(agentSession.cwd, agentSession.hasClaims);
+    }
+    if (agentSession.hasPlaygrounds !== undefined) {
+      playgroundsByCwd.set(agentSession.cwd, agentSession.hasPlaygrounds);
     }
   }
 
@@ -503,6 +525,11 @@ function handleAgentSessionsUpdate(
     const hasClaims = claimsByCwd.get(session.cwd);
     if (hasClaims !== undefined) {
       city.hasClaims = hasClaims;
+    }
+
+    const hasPlaygrounds = playgroundsByCwd.get(session.cwd);
+    if (hasPlaygrounds !== undefined) {
+      city.hasPlaygrounds = hasPlaygrounds;
     }
 
     assignSessionToCity(session, city);
@@ -908,7 +935,7 @@ const messageRouter = new MessageRouter({
   onFocus: (sessionId) => kitty.focusSession(sessionId),
   onGetFibers: handleGetFibers,
   onHandoff: (fiberId, cityPath) => kitty.handoff(fiberId, cityPath),
-  onNewWorker: (ws, cityPath, name, chrome) => kitty.newWorker(ws, cityPath, name, chrome),
+  onNewWorker: (ws, cityPath, name, chrome, continueSession) => kitty.newWorker(ws, cityPath, name, chrome, continueSession),
   onPinCity: handlePinCity,
   onUnpinCity: handleUnpinCity,
   onConfirmUnpin: performUnpin,
@@ -926,7 +953,7 @@ const server = createServer(async (req, res) => {
   if (handled) return;
 
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Hexarchy server running\n');
+  res.end('Portolan server running\n');
 });
 
 // ============================================================================
@@ -966,12 +993,28 @@ wss.on('connection', async (ws, req) => {
           handleAgentSessionsUpdate(origin.id, message.payload.sessions);
         } else if (message.type === 'agent_activity') {
           const activity = (message as AgentActivityMessage).activity;
-          // Store remote activity
+
+          // Only track file operations (Read, Write, Edit)
+          if (!['Read', 'Write', 'Edit'].includes(activity.tool)) {
+            return;
+          }
+
+          // Store remote activity with deduplication
           let activities = remoteActivities.get(activity.tmuxSession);
           if (!activities) {
             activities = [];
             remoteActivities.set(activity.tmuxSession, activities);
           }
+
+          // Deduplicate: skip if same tool+fullPath within last 2 seconds
+          const recent = activities[0];
+          if (recent &&
+              recent.tool === activity.tool &&
+              recent.fullPath === activity.fullPath &&
+              Math.abs(recent.timestamp - activity.timestamp) < 2000) {
+            return; // Skip duplicate
+          }
+
           activities.unshift(activity);
           if (activities.length > MAX_REMOTE_ACTIVITIES) {
             activities.pop();
@@ -1005,6 +1048,17 @@ wss.on('connection', async (ws, req) => {
           }
 
           broadcastActivity(activity);
+        } else if (message.type === 'agent_conversation') {
+          const conv = (message as AgentConversationMessage).payload;
+
+          // Find the session ID for this tmux session
+          const sessionMap = remoteSessions.get(origin.id);
+          const session = sessionMap?.get(conv.tmuxSession);
+          if (session) {
+            // Store conversation messages keyed by session ID
+            remoteConversations.set(session.id, conv.messages);
+            console.log(`[Conversation] Cached ${conv.messages.length} messages for ${session.id}`);
+          }
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
@@ -1055,13 +1109,29 @@ eventWatcher.setSessionTracker(sessionTracker);
 eventWatcher.onActivity((activity) => {
   console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
 
+  // Find the session for this activity
+  const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
+
   // Track Edit/Write operations as recently edited files for local sessions
   if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-    const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
     if (session?.cwd) {
       const city = cityManager.findCityForPath(session.cwd, 'local');
       if (city) {
         recentFilesManager.recordActivityEdit(activity.fullPath, city.path, 'local');
+      }
+    }
+  }
+
+  // Detect and track the transcript file for this session when activity is received
+  // This helps associate the correct transcript with each tmux session
+  if (session?.cwd && session.id) {
+    const existingTranscript = transcriptReader.getSessionTranscript(session.id);
+    if (!existingTranscript) {
+      // First activity for this session - detect the active transcript
+      const detected = transcriptReader.detectActiveTranscript(session.cwd, 10000);
+      if (detected) {
+        console.log(`[Transcript] Mapped session ${session.tmuxSession} to ${detected.split('/').pop()}`);
+        transcriptReader.setSessionTranscript(session.id, detected);
       }
     }
   }
@@ -1106,7 +1176,7 @@ setInterval(() => {
 }, 5000);
 
 server.listen(PORT, () => {
-  console.log(`Hexarchy server running on port ${PORT}`);
+  console.log(`Portolan server running on port ${PORT}`);
   console.log(`WebSocket: ws://localhost:${PORT}`);
 });
 

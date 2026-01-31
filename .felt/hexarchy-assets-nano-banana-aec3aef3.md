@@ -1,6 +1,6 @@
 ---
 title: 'Hexarchy Assets: Nano Banana generation, transparency workflow'
-status: open
+status: closed
 kind: spec
 tags:
     - '[docs]'
@@ -8,6 +8,8 @@ priority: 2
 depends-on:
     - hexarchy-overview-spatial-map-40356835
 created-at: 2026-01-25T15:26:43.1953+01:00
+closed-at: 2026-01-31T00:56:52.325286+01:00
+close-reason: Finalized documentation — referenced in CLAUDE.md Deep Dives.
 ---
 
 For visual assets that need hand-crafted look (scrolls, banners), use Nano Banana.

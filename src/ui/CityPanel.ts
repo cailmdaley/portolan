@@ -54,6 +54,7 @@ export class CityPanel {
   private gitStatusEl: HTMLElement
   private newWorkerBtn: HTMLElement
   private viewClaimsBtn: HTMLElement
+  private viewPlaygroundsBtn: HTMLElement
   // Unified search
   private searchInput: HTMLInputElement
   private searchClear: HTMLElement
@@ -88,6 +89,7 @@ export class CityPanel {
 
   // Callbacks
   private onViewClaims: ((city: City) => void) | null = null
+  private onViewPlaygrounds: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
@@ -100,6 +102,7 @@ export class CityPanel {
     this.gitStatusEl = this.panel.querySelector('.git-status')!
     this.newWorkerBtn = this.panel.querySelector('.new-worker-btn')!
     this.viewClaimsBtn = this.panel.querySelector('.view-claims-btn')!
+    this.viewPlaygroundsBtn = this.panel.querySelector('.view-playgrounds-btn')!
     this.searchInput = this.panel.querySelector('.unified-search-input')!
     this.searchClear = this.panel.querySelector('.unified-search-clear')!
     this.filesTab = this.panel.querySelector('.tab-files')!
@@ -121,7 +124,7 @@ export class CityPanel {
   private createPanel(): HTMLElement {
     const panel = document.createElement('div')
     panel.id = 'city-panel'
-    panel.className = 'panel dark-theme'
+    panel.className = 'panel'
     panel.innerHTML = `
       <div class="resize-handle"></div>
       <button class="close-btn">&times;</button>
@@ -130,6 +133,7 @@ export class CityPanel {
       <div class="git-status"></div>
       <button class="new-worker-btn">+ New Worker</button>
       <button class="view-claims-btn" style="display: none;">View Claims</button>
+      <button class="view-playgrounds-btn" style="display: none;">View Playgrounds</button>
 
       <!-- Unified Search -->
       <div class="unified-search-container">
@@ -190,6 +194,13 @@ export class CityPanel {
       e.stopPropagation()
       if (this.currentCity && this.onViewClaims) {
         this.onViewClaims(this.currentCity)
+      }
+    })
+
+    this.viewPlaygroundsBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.currentCity && this.onViewPlaygrounds) {
+        this.onViewPlaygrounds(this.currentCity)
       }
     })
 
@@ -678,12 +689,13 @@ export class CityPanel {
     }
     const result = await this.newWorkerDialog.show(this.currentCity.name)
     if (!result) return
-    console.log('Requesting new worker for:', this.currentCity.path, 'name:', result.name, 'chrome:', result.chrome)
+    console.log('Requesting new worker for:', this.currentCity.path, 'name:', result.name, 'chrome:', result.chrome, 'continue:', result.continue)
     this.ws.send(JSON.stringify({
       type: 'newWorker',
       cityPath: this.currentCity.path,
       name: result.name || undefined,
       chrome: result.chrome || undefined,
+      continue: result.continue || undefined,
     }))
   }
 
@@ -693,6 +705,10 @@ export class CityPanel {
 
   setOnViewClaims(callback: (city: City) => void): void {
     this.onViewClaims = callback
+  }
+
+  setOnViewPlaygrounds(callback: (city: City) => void): void {
+    this.onViewPlaygrounds = callback
   }
 
   setOnOpenFile(callback: (fullPath: string, originId: string) => void): void {
@@ -747,6 +763,9 @@ export class CityPanel {
 
     // Show/hide View Claims button
     this.viewClaimsBtn.style.display = city.hasClaims ? 'block' : 'none'
+
+    // Show/hide View Playgrounds button
+    this.viewPlaygroundsBtn.style.display = city.hasPlaygrounds ? 'block' : 'none'
 
     // Clear search
     this.searchInput.value = ''

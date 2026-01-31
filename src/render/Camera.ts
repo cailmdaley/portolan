@@ -3,15 +3,22 @@
 import { PerspectiveCamera, Vector3 } from 'three'
 import type { CartesianCoord } from '../state/types'
 
+// Safari-specific gesture event (pinch-to-zoom)
+interface GestureEvent extends Event {
+  scale: number
+  rotation: number
+}
+
 export class Camera {
   camera: PerspectiveCamera
   private canvas: HTMLCanvasElement
+  private eventTarget: HTMLElement  // May be overlay for Safari compatibility
 
   // Camera state - target point we're looking at
   private target = new Vector3(0, 0, 0)
   private distance = 15
   private angle = Math.PI / 4  // 45° from horizontal
-  private rotation = Math.PI / 4  // 45° around Y axis (diagonal view)
+  private rotation = 0  // 0° around Y axis (straight-on view)
 
   // Zoom limits
   private minDistance = 5
@@ -24,8 +31,9 @@ export class Camera {
   private dragAnchor: CartesianCoord | null = null // World point to keep under mouse
   private readonly dragThreshold = 5 // pixels
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, eventTarget?: HTMLElement) {
     this.canvas = canvas
+    this.eventTarget = eventTarget || canvas
 
     // Create perspective camera
     const aspect = canvas.clientWidth / canvas.clientHeight
@@ -37,7 +45,7 @@ export class Camera {
 
   private setupControls(): void {
     // Mouse drag for pan (sieve behavior)
-    this.canvas.addEventListener('mousedown', (e) => {
+    this.eventTarget.addEventListener('mousedown', (e) => {
       if (e.button === 0) { // Left click
         this.isDragging = true
         this.wasDrag = false
@@ -73,17 +81,41 @@ export class Camera {
     })
 
     // Reset wasDrag after click has had a chance to check it
-    this.canvas.addEventListener('click', () => {
+    this.eventTarget.addEventListener('click', () => {
       // Use setTimeout to reset after current click event fully processes
       setTimeout(() => { this.wasDrag = false }, 0)
     })
 
     // Scroll wheel for zoom
-    this.canvas.addEventListener('wheel', (e) => {
+    this.eventTarget.addEventListener('wheel', (e) => {
+      // Don't capture wheel events over panels - let them scroll
+      const target = e.target as HTMLElement
+      if (target.closest('#worker-panel') || target.closest('#city-panel')) {
+        return // Let panel handle scroll
+      }
       e.preventDefault()
+      e.stopPropagation()
       const delta = e.deltaY > 0 ? 1.1 : 0.9
       this.zoomBy(delta)
     }, { passive: false })
+
+    // Safari pinch-to-zoom (gesture events)
+    let lastScale = 1
+    this.eventTarget.addEventListener('gesturestart', (e) => {
+      e.preventDefault()
+      lastScale = 1
+    })
+    this.eventTarget.addEventListener('gesturechange', (e: Event) => {
+      e.preventDefault()
+      const ge = e as GestureEvent
+      const scaleDelta = ge.scale / lastScale
+      lastScale = ge.scale
+      // Invert: scale > 1 means pinch out = zoom in = smaller distance
+      this.zoomBy(1 / scaleDelta)
+    })
+    this.eventTarget.addEventListener('gestureend', (e) => {
+      e.preventDefault()
+    })
 
     // Arrow keys for navigation
     window.addEventListener('keydown', (e) => {
@@ -208,5 +240,12 @@ export class Camera {
    */
   get dragging(): boolean {
     return this.wasDrag
+  }
+
+  /**
+   * Get current camera distance for zoom-aware label scaling
+   */
+  get cameraDistance(): number {
+    return this.distance
   }
 }

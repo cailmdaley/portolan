@@ -1,5 +1,5 @@
 /**
- * Hexarchy Server
+ * Portolan Server
  *
  * Wires together all managers and serves state to browser via WebSocket.
  * HTTP endpoints handled by HttpApi, terminal commands by KittyIntegration,

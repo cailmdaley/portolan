@@ -1,7 +1,7 @@
 /**
  * AnnotationPersistence - Persist file annotations across sessions
  *
- * Annotations are stored in ~/.hexarchy/annotations.json
+ * Annotations are stored in ~/.portolan/annotations.json
  * Each annotation captures a text selection with context for re-anchoring.
  */
 
@@ -23,6 +23,7 @@ export interface Annotation {
   from: number;            // char offset at creation
   to: number;
   line?: number;           // line number at 'from' (1-indexed)
+  endLine?: number;        // line number at 'to' (1-indexed)
   originalText: string;    // the selected text
   contextBefore: string;   // ~20 chars for re-anchoring
   contextAfter: string;    // ~20 chars for re-anchoring
@@ -60,7 +61,7 @@ export class AnnotationPersistence {
   private annotationHistory: Map<string, { filePath: string; originId: string; lastAnnotatedAt: number }> = new Map();
 
   constructor() {
-    this.dataDir = join(homedir(), '.hexarchy');
+    this.dataDir = join(homedir(), '.portolan');
     this.filePath = join(this.dataDir, 'annotations.json');
   }
 

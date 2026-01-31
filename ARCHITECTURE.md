@@ -1,4 +1,4 @@
-# Hexarchy Architecture
+# Portolan Architecture
 
 > A spatial map for Claude sessions. Click to go there. That's it.
 
@@ -9,7 +9,7 @@
 3. Kitty focuses that session's tab
 4. Work happens in terminal
 
-Hexarchy is a **navigation layer**, not an interaction layer.
+Portolan is a **navigation layer**, not an interaction layer.
 
 ## What Falls Away
 
@@ -112,9 +112,9 @@ You said drop status indicators. But consider:
 
 1. **No indicator** — You remember, or you click around until you find it
 2. **Single status: attention** — Hexes are plain, except "needs you" gets vermillion border
-3. **External signal** — macOS notification when session needs attention, hexarchy stays purely spatial
+3. **External signal** — macOS notification when session needs attention, portolan stays purely spatial
 
-The first is pure. The second is minimal but useful. The third pushes attention out of hexarchy entirely.
+The first is pure. The second is minimal but useful. The third pushes attention out of portolan entirely.
 
 ## Data Flow
 

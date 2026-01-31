@@ -1,11 +1,13 @@
 ---
 title: 'Investigate: File as Fiber not working for remote images'
-status: open
+status: closed
 kind: question
 priority: 2
 depends-on:
     - feature-file-as-fiber-button-in-fccaddd6
 created-at: 2026-01-25T15:22:23.964679+01:00
+closed-at: 2026-01-31T00:56:46.246163+01:00
+close-reason: Fixed in Ralph iterations 5 and 12 — image annotations and Send to Worker both work for remote images now.
 ---
 
 User tried filing fiber from PNG on pure_eb (remote), didn't appear in fibers. API endpoint test shows it works - created fiber successfully via curl.

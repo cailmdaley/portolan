@@ -1,7 +1,7 @@
 /**
- * EventWatcher - Watches hexarchy events file to track session activity
+ * EventWatcher - Watches portolan events file to track session activity
  *
- * Reads from ~/.hexarchy/data/events.jsonl (written by hexarchy-hook.sh)
+ * Reads from ~/.portolan/data/events.jsonl (written by portolan-hook.sh)
  * and updates session status based on events like:
  *   - user_prompt_submit, pre_tool_use → 'working'
  *   - stop, session_end → 'idle'
@@ -13,7 +13,7 @@ import { join } from 'path';
 import type { SessionTracker } from './SessionTracker.js';
 import { extractActivityDetails } from './activityUtils.js';
 
-interface HexarchyEvent {
+interface PortolanEvent {
   id: string;
   timestamp: number;
   type: string;
@@ -22,6 +22,7 @@ interface HexarchyEvent {
   tmuxSession: string;
   tool?: string;
   toolInput?: Record<string, unknown>;  // Used to extract summary/fullPath
+  prompt?: string;                       // User prompt from UserPromptSubmit
 }
 
 export interface ActivityEvent {
@@ -30,6 +31,8 @@ export interface ActivityEvent {
   summary?: string;
   fullPath?: string;                     // Full file path for Read/Write/Edit
   timestamp: number;
+  eventType?: 'tool' | 'user_prompt';    // Distinguish tool calls from user prompts
+  prompt?: string;                       // User prompt text for user_prompt events
 }
 
 type StatusChangeCallback = (tmuxSession: string, status: 'idle' | 'working') => void;
@@ -55,7 +58,7 @@ export class EventWatcher {
   private maxActivitiesPerSession = 50;
 
   constructor(eventsFile?: string) {
-    this.eventsFile = eventsFile ?? join(homedir(), '.hexarchy', 'data', 'events.jsonl');
+    this.eventsFile = eventsFile ?? join(homedir(), '.portolan', 'data', 'events.jsonl');
   }
 
   /**
@@ -92,7 +95,7 @@ export class EventWatcher {
   start(): void {
     if (!existsSync(this.eventsFile)) {
       console.log(`EventWatcher: Events file not found: ${this.eventsFile}`);
-      console.log('EventWatcher: Status detection disabled. Install hexarchy-hook.sh to enable.');
+      console.log('EventWatcher: Status detection disabled. Install portolan-hook.sh to enable.');
       return;
     }
 
@@ -190,7 +193,7 @@ export class EventWatcher {
       for (const line of lines) {
         if (!line) continue;
         try {
-          const event = JSON.parse(line) as HexarchyEvent;
+          const event = JSON.parse(line) as PortolanEvent;
           if (!event.tmuxSession) continue;
 
           const status = this.eventToStatus(event.type);
@@ -207,6 +210,25 @@ export class EventWatcher {
               summary: details?.summary,
               fullPath: details?.fullPath,
               timestamp: event.timestamp,
+              eventType: 'tool',
+            };
+            let acts = activitiesBySession.get(event.tmuxSession);
+            if (!acts) {
+              acts = [];
+              activitiesBySession.set(event.tmuxSession, acts);
+            }
+            acts.push(activity);
+          }
+
+          // Collect user_prompt_submit events for conversation backfill
+          if (event.type === 'user_prompt_submit' && event.prompt) {
+            const activity: ActivityEvent = {
+              tmuxSession: event.tmuxSession,
+              tool: 'UserPrompt',  // Pseudo-tool for display
+              summary: event.prompt.length > 100 ? event.prompt.slice(0, 100) + '...' : event.prompt,
+              timestamp: event.timestamp,
+              eventType: 'user_prompt',
+              prompt: event.prompt,
             };
             let acts = activitiesBySession.get(event.tmuxSession);
             if (!acts) {
@@ -269,7 +291,7 @@ export class EventWatcher {
       for (const line of lines) {
         if (!line) continue;
         try {
-          const event = JSON.parse(line) as HexarchyEvent;
+          const event = JSON.parse(line) as PortolanEvent;
           this.processEvent(event);
         } catch (err) {
           console.log(`EventWatcher: Parse error on line: ${line.substring(0, 50)}... Error: ${err}`);
@@ -289,7 +311,7 @@ export class EventWatcher {
   /**
    * Process a single event
    */
-  private processEvent(event: HexarchyEvent): void {
+  private processEvent(event: PortolanEvent): void {
     if (!event.tmuxSession) return;
 
     const status = this.eventToStatus(event.type);
@@ -309,6 +331,27 @@ export class EventWatcher {
         summary: details?.summary,
         fullPath: details?.fullPath,
         timestamp: event.timestamp,
+        eventType: 'tool',
+      };
+
+      // Store in recent activities
+      this.storeActivity(event.tmuxSession, activity);
+
+      // Emit callback
+      if (this.activityCallback) {
+        this.activityCallback(activity);
+      }
+    }
+
+    // Emit activity event for user_prompt_submit (user message)
+    if (event.type === 'user_prompt_submit' && event.prompt) {
+      const activity: ActivityEvent = {
+        tmuxSession: event.tmuxSession,
+        tool: 'UserPrompt',
+        summary: event.prompt.length > 100 ? event.prompt.slice(0, 100) + '...' : event.prompt,
+        timestamp: event.timestamp,
+        eventType: 'user_prompt',
+        prompt: event.prompt,
       };
 
       // Store in recent activities
@@ -322,7 +365,7 @@ export class EventWatcher {
   }
 
   /**
-   * Store activity, keeping only recent ones
+   * Store activity, keeping only recent ones and preventing duplicates
    */
   private storeActivity(tmuxSession: string, activity: ActivityEvent): void {
     let activities = this.recentActivities.get(tmuxSession);
@@ -330,6 +373,16 @@ export class EventWatcher {
       activities = [];
       this.recentActivities.set(tmuxSession, activities);
     }
+
+    // Deduplicate: skip if same tool+fullPath within last 2 seconds
+    const recent = activities[0];
+    if (recent &&
+        recent.tool === activity.tool &&
+        recent.fullPath === activity.fullPath &&
+        Math.abs(recent.timestamp - activity.timestamp) < 2000) {
+      return; // Skip duplicate
+    }
+
     activities.unshift(activity); // Add to front
     if (activities.length > this.maxActivitiesPerSession) {
       activities.pop(); // Remove oldest

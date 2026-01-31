@@ -1,11 +1,13 @@
 ---
 title: 'Tile sprites: generate hex tile textures with transparency workflow'
-status: open
+status: closed
 kind: spec
 priority: 2
 depends-on:
     - banner-transparency-not-working-f482e3c3
 created-at: 2026-01-18T22:07:02.27197+01:00
+closed-at: 2026-01-31T00:59:39.767552+01:00
+close-reason: Consolidated into terrain-tiles-generate-sprites-7d1e0e55
 ---
 
 ## Context

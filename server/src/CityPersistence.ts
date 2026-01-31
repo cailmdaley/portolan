@@ -1,7 +1,7 @@
 /**
  * CityPersistence - Persist cities across sessions
  *
- * Cities are stored in ~/.hexarchy/cities.json
+ * Cities are stored in ~/.portolan/cities.json
  * Persisted cities survive session restarts and can be added/removed from frontend.
  */
 
@@ -44,7 +44,7 @@ export class CityPersistence {
   private cities: Map<string, PersistedCity> = new Map(); // key = `${originId}:${path}`
 
   constructor() {
-    this.dataDir = join(homedir(), '.hexarchy');
+    this.dataDir = join(homedir(), '.portolan');
     this.filePath = join(this.dataDir, 'cities.json');
   }
 

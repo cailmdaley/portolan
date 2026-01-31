@@ -3,6 +3,8 @@ title: 'Pattern: Event handler registration order matters for stopImmediatePropa
 status: closed
 kind: spec
 priority: 2
+depends-on:
+    - pattern-vite-hmr-stacks-f3ed5ac0
 created-at: 2026-01-27T03:07:18.113218+01:00
 closed-at: 2026-01-27T03:07:18.113222+01:00
 close-reason: |-

@@ -15,30 +15,31 @@ export interface ActivityDetails {
 }
 
 /**
+ * Tools to track in activity feed (file operations only, no Bash/Grep/Glob/Task)
+ */
+const TRACKED_TOOLS = new Set(['Read', 'Write', 'Edit']);
+
+/**
  * Extract a short summary from tool input for activity display
+ * Only tracks file operations (Read, Write, Edit)
  */
 function extractSummary(tool: string, input?: Record<string, unknown>): string | undefined {
   if (!input) return undefined;
 
-  switch (tool) {
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-      return input.file_path ? String(input.file_path).split('/').pop() : undefined;
-    case 'Bash':
-      if (input.command) {
-        const cmd = String(input.command);
-        return cmd.length > 40 ? cmd.slice(0, 40) + '...' : cmd;
-      }
-      return undefined;
-    case 'Glob':
-    case 'Grep':
-      return input.pattern ? String(input.pattern) : undefined;
-    case 'Task':
-      return input.description ? String(input.description) : undefined;
-    default:
-      return undefined;
+  // Only track file operations
+  if (!TRACKED_TOOLS.has(tool)) return undefined;
+
+  if (input.file_path) {
+    const parts = String(input.file_path).split('/');
+    const filename = parts.pop();
+    const parent = parts.pop();
+    if (parent && filename) {
+      const display = `${parent}/${filename}`;
+      return display.length > 35 ? `…${display.slice(-34)}` : display;
+    }
+    return filename;
   }
+  return undefined;
 }
 
 /**
@@ -52,15 +53,9 @@ export function extractActivityDetails(tool: string, input?: Record<string, unkn
 
   const details: ActivityDetails = { summary };
 
-  // Include full path for file operations
-  switch (tool) {
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-      if (input.file_path) {
-        details.fullPath = String(input.file_path);
-      }
-      break;
+  // Include full path (already filtered to file operations by extractSummary)
+  if (input.file_path) {
+    details.fullPath = String(input.file_path);
   }
 
   return details;

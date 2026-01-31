@@ -5,7 +5,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 // Use a test-specific directory
-const TEST_DIR = join(homedir(), '.hexarchy-test');
+const TEST_DIR = join(homedir(), '.portolan-test');
 const TEST_FILE = join(TEST_DIR, 'cities.json');
 
 describe('CityPersistence', () => {

@@ -1,6 +1,6 @@
 ---
 title: 'Hexarchy Visual Design: palette, typography, banners'
-status: open
+status: closed
 kind: spec
 tags:
     - '[docs]'
@@ -8,6 +8,8 @@ priority: 2
 depends-on:
     - hexarchy-overview-spatial-map-40356835
 created-at: 2026-01-25T15:26:41.708086+01:00
+closed-at: 2026-01-31T00:56:50.154869+01:00
+close-reason: Finalized documentation — referenced in CLAUDE.md Deep Dives.
 ---
 
 **Porch Morning** palette — warm, antiquarian, cartographic. Like an old map or field notes.

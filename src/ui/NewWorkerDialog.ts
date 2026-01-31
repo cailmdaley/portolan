@@ -3,6 +3,7 @@
 export interface NewWorkerOptions {
   name: string
   chrome: boolean
+  continue: boolean
 }
 
 export class NewWorkerDialog {
@@ -10,6 +11,7 @@ export class NewWorkerDialog {
   private dialog: HTMLElement
   private nameInput: HTMLInputElement
   private chromeCheckbox: HTMLInputElement
+  private continueCheckbox: HTMLInputElement
   private resolvePromise: ((result: NewWorkerOptions | null) => void) | null = null
 
   constructor() {
@@ -17,6 +19,7 @@ export class NewWorkerDialog {
     this.dialog = this.createDialog()
     this.nameInput = this.dialog.querySelector('.worker-name-input') as HTMLInputElement
     this.chromeCheckbox = this.dialog.querySelector('.chrome-checkbox') as HTMLInputElement
+    this.continueCheckbox = this.dialog.querySelector('.continue-checkbox') as HTMLInputElement
 
     this.overlay.appendChild(this.dialog)
     document.body.appendChild(this.overlay)
@@ -93,6 +96,42 @@ export class NewWorkerDialog {
         " />
       </div>
 
+      <div style="margin-bottom: 16px;">
+        <label style="
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          cursor: pointer;
+          font-size: 14px;
+          color: var(--text-primary, #2E2A26);
+        ">
+          <span class="checkbox-wrapper" style="
+            position: relative;
+            width: 20px;
+            height: 20px;
+          ">
+            <input type="checkbox" class="continue-checkbox" style="
+              position: absolute;
+              opacity: 0;
+              width: 100%;
+              height: 100%;
+              cursor: pointer;
+              margin: 0;
+            " />
+            <span class="continue-checkbox-visual" style="
+              display: block;
+              width: 20px;
+              height: 20px;
+              border: 2px solid var(--border, #8B7355);
+              border-radius: 4px;
+              background: var(--bg-elevated, #FAF8F5);
+              transition: all 0.15s;
+            "></span>
+          </span>
+          <span>Continue last conversation (-c)</span>
+        </label>
+      </div>
+
       <div style="margin-bottom: 24px;">
         <label style="
           display: flex;
@@ -115,7 +154,7 @@ export class NewWorkerDialog {
               cursor: pointer;
               margin: 0;
             " />
-            <span class="checkbox-visual" style="
+            <span class="chrome-checkbox-visual" style="
               display: block;
               width: 20px;
               height: 20px;
@@ -155,21 +194,24 @@ export class NewWorkerDialog {
       </div>
     `
 
-    // Style the checkbox when checked
-    const checkbox = dialog.querySelector('.chrome-checkbox') as HTMLInputElement
-    const checkboxVisual = dialog.querySelector('.checkbox-visual') as HTMLElement
-
-    checkbox.addEventListener('change', () => {
-      if (checkbox.checked) {
-        checkboxVisual.style.background = 'var(--gold, #9A7B35)'
-        checkboxVisual.style.borderColor = 'var(--gold, #9A7B35)'
-        checkboxVisual.innerHTML = `<svg viewBox="0 0 16 16" style="width: 16px; height: 16px; display: block;"><path fill="white" d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`
-      } else {
-        checkboxVisual.style.background = 'var(--bg-elevated, #FAF8F5)'
-        checkboxVisual.style.borderColor = 'var(--border, #8B7355)'
-        checkboxVisual.innerHTML = ''
-      }
-    })
+    // Style checkboxes when checked
+    const setupCheckbox = (checkboxClass: string, visualClass: string) => {
+      const checkbox = dialog.querySelector(`.${checkboxClass}`) as HTMLInputElement
+      const visual = dialog.querySelector(`.${visualClass}`) as HTMLElement
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) {
+          visual.style.background = 'var(--gold, #9A7B35)'
+          visual.style.borderColor = 'var(--gold, #9A7B35)'
+          visual.innerHTML = `<svg viewBox="0 0 16 16" style="width: 16px; height: 16px; display: block;"><path fill="white" d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`
+        } else {
+          visual.style.background = 'var(--bg-elevated, #FAF8F5)'
+          visual.style.borderColor = 'var(--border, #8B7355)'
+          visual.innerHTML = ''
+        }
+      })
+    }
+    setupCheckbox('continue-checkbox', 'continue-checkbox-visual')
+    setupCheckbox('chrome-checkbox', 'chrome-checkbox-visual')
 
     // Input focus styles
     const input = dialog.querySelector('.worker-name-input') as HTMLInputElement
@@ -219,11 +261,16 @@ export class NewWorkerDialog {
 
     // Reset form
     this.nameInput.value = ''
+    this.continueCheckbox.checked = false
     this.chromeCheckbox.checked = false
-    const checkboxVisual = this.dialog.querySelector('.checkbox-visual') as HTMLElement
-    checkboxVisual.style.background = 'var(--bg-elevated, #FAF8F5)'
-    checkboxVisual.style.borderColor = 'var(--border, #8B7355)'
-    checkboxVisual.innerHTML = ''
+    const resetCheckboxVisual = (className: string) => {
+      const visual = this.dialog.querySelector(`.${className}`) as HTMLElement
+      visual.style.background = 'var(--bg-elevated, #FAF8F5)'
+      visual.style.borderColor = 'var(--border, #8B7355)'
+      visual.innerHTML = ''
+    }
+    resetCheckboxVisual('continue-checkbox-visual')
+    resetCheckboxVisual('chrome-checkbox-visual')
 
     // Show dialog
     this.overlay.style.display = 'flex'
@@ -240,6 +287,7 @@ export class NewWorkerDialog {
     const result: NewWorkerOptions = {
       name: this.nameInput.value.trim(),
       chrome: this.chromeCheckbox.checked,
+      continue: this.continueCheckbox.checked,
     }
     this.hide()
     this.resolvePromise?.(result)

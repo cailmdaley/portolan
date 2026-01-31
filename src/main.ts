@@ -14,16 +14,30 @@ import { CityPanel } from './ui/CityPanel'
 import { WorkerActivityPanel } from './ui/WorkerActivityPanel'
 import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
-import { ViewSwitcher, type GlobalView } from './ui/ViewSwitcher'
+// GlobalView type for potential future view switching
+type GlobalView = 'map' | 'plots' | 'plans'
 import { ViewOverlay } from './ui/ViewOverlay'
 import { TabbedPlansView } from './ui/TabbedPlansView'
 import { ClaimsDashboard } from './ui/ClaimsDashboard'
+import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
 import { PALETTE, normalizeCity, normalizeSession } from './state/types'
 
 // Get canvas
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
+
+// Context menu: double-click (universal) + right-click (Chrome/Firefox)
+// Safari doesn't reliably fire contextmenu on canvas elements
+document.addEventListener('contextmenu', (e) => {
+  if (e.target === canvas) {
+    e.preventDefault()
+    handleContextMenu(e.clientX, e.clientY)
+  }
+})
+
+// Alias for event handlers
+const canvasOverlay = canvas
 
 // Setup renderer
 const renderer = new WebGLRenderer({
@@ -58,30 +72,11 @@ scene.add(directionalLight)
 // Setup hex grid (size 50 = radius of 50 hexes, hexRadius 1.0)
 const hexGrid = new HexGrid(100, 1.0)
 
-// Setup camera
-const camera = new Camera(canvas)
+// Setup camera (use overlay for events - Safari compatibility)
+const camera = new Camera(canvas, canvasOverlay)
 
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
-
-// Create hover tooltip for worker names
-const tooltip = document.createElement('div')
-tooltip.style.cssText = `
-  position: fixed;
-  background: rgba(30, 25, 20, 0.9);
-  color: #F5F0E8;
-  padding: 6px 10px;
-  border-radius: 4px;
-  font-family: 'EB Garamond', Garamond, serif;
-  font-size: 14px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  z-index: 1000;
-  max-width: 300px;
-  word-break: break-word;
-`
-document.body.appendChild(tooltip)
 
 // Setup city panel
 const cityPanel = new CityPanel()
@@ -149,6 +144,7 @@ const PLOT_SERVER_URL = 'http://localhost:8873'  // Plot server gallery
 // @ts-expect-error Tracked for potential state persistence
 let currentView: GlobalView = 'map'
 
+// @ts-expect-error Kept for future view switching via keyboard/API
 function handleViewChange(view: GlobalView): void {
   currentView = view
 
@@ -170,17 +166,24 @@ function handleViewChange(view: GlobalView): void {
   }
 }
 
-// @ts-expect-error ViewSwitcher self-registers on DOM, ref retained to prevent GC
-const viewSwitcher = new ViewSwitcher(handleViewChange)
+// ViewSwitcher removed — view stays on 'map' for now
 
 // Setup claims dashboard
 const claimsDashboard = new ClaimsDashboard()
 
 // Wire up View Claims button
 cityPanel.setOnViewClaims((city) => {
-  // Proxy through hexarchy server to handle both local and remote cities
+  // Proxy through portolan server to handle both local and remote cities
   const dashboardUrl = `http://${window.location.hostname}:4004/claims-dashboard?cityId=${encodeURIComponent(city.id)}`
   claimsDashboard.show(city, dashboardUrl)
+})
+
+// Setup playground viewer
+const playgroundViewer = new PlaygroundViewer()
+
+// Wire up View Playgrounds button
+cityPanel.setOnViewPlaygrounds((city) => {
+  playgroundViewer.show(city)
 })
 
 
@@ -231,7 +234,7 @@ function connectWebSocket(): void {
   ws = new WebSocket(wsUrl)
 
   ws.onopen = () => {
-    console.log('Connected to hexarchy server')
+    console.log('Connected to portolan server')
     cityPanel.setWebSocket(ws!)
   }
 
@@ -377,13 +380,12 @@ function handleMessage(message: ServerMessage): void {
 }
 
 // Click handling
-canvas.addEventListener('click', (e) => {
+canvasOverlay.addEventListener('click', (e) => {
   // Ignore clicks that were drags
   if (camera.dragging) return
 
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-  const entity = zoneRenderer.getEntityAtHex(hex)
 
   // Handle move mode: clicking a hex moves the city there
   if (movingCityId) {
@@ -393,25 +395,30 @@ canvas.addEventListener('click', (e) => {
     return
   }
 
-  // Update selection visual
-  selectedHex = hex
-  zoneRenderer.setSelection(hex)
+  // Check for worker at world position (workers wander)
+  const workerEntity = zoneRenderer.getWorkerAtPosition(worldPos.x, worldPos.z)
 
-  if (entity?.type === 'worker' && entity.entityId) {
+  // Check for city at hex position
+  const hexEntity = zoneRenderer.getEntityAtHex(hex)
+
+  if (workerEntity) {
     // Click worker → show activity panel (double-click to focus terminal)
-    const session = sessions.find(s => s.id === entity.entityId)
+    // No selection ring for workers - they wander
+    selectedHex = null
+    zoneRenderer.setSelection(null)
+    const session = sessions.find(s => s.id === workerEntity.entityId)
     if (session) {
       const activities = activityBySession.get(session.tmuxSession) || []
       workerActivityPanel.show(session, activities)
       cityPanel.hide()
     }
-  } else if (entity?.type === 'city' && entity.entityId) {
+  } else if (hexEntity?.type === 'city' && hexEntity.entityId) {
+    // Update selection visual for entities only
+    selectedHex = hex
+    zoneRenderer.setSelection(hex)
     // Focus on city center
-    const city = cities.find(c => c.id === entity.entityId)
+    const city = cities.find(c => c.id === hexEntity.entityId)
     if (city) {
-      const pos = hexGrid.axialToCartesian(city.hex)
-      camera.focusOn(pos)
-
       // Hide worker panel when showing city
       workerActivityPanel.hide()
 
@@ -422,62 +429,94 @@ canvas.addEventListener('click', (e) => {
         cityPanel.show(city)
       }
     }
+  } else {
+    // Empty tile: clear selection
+    selectedHex = null
+    zoneRenderer.setSelection(null)
   }
 
-  console.log('Clicked hex:', hex, 'Entity:', entity)
+  console.log('Clicked hex:', hex, 'Worker:', workerEntity, 'Hex entity:', hexEntity)
 })
 
-// Double-click to focus terminal or create workers/cities
-canvas.addEventListener('dblclick', (e) => {
-  // Ignore if dragging
+// Double-click for primary actions (focus terminal / new worker)
+canvasOverlay.addEventListener('dblclick', (e) => {
   if (camera.dragging) return
 
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-  const entity = zoneRenderer.getEntityAtHex(hex)
 
-  if (entity?.type === 'worker' && entity.entityId) {
-    // Double-click worker → focus Kitty terminal
-    const session = sessions.find(s => s.id === entity.entityId)
-    if (session) {
-      focusKittyTab(session.id)
-    }
-  } else if (entity?.type === 'city' && entity.entityId) {
+  // Check for worker at world position (workers wander)
+  const workerEntity = zoneRenderer.getWorkerAtPosition(worldPos.x, worldPos.z)
+
+  // Check for city at hex position
+  const hexEntity = zoneRenderer.getEntityAtHex(hex)
+
+  if (workerEntity) {
+    // Double-click worker → focus terminal
+    focusKittyTab(workerEntity.entityId)
+  } else if (hexEntity?.type === 'city' && hexEntity.entityId) {
     // Double-click city → new worker
-    const city = cities.find(c => c.id === entity.entityId)
-    if (city) {
-      promptNewWorker(city)
-    }
-  } else if (entity?.type === 'empty' || !entity) {
-    // Check distance to nearest city
+    const city = cities.find(c => c.id === hexEntity.entityId)
+    if (city) promptNewWorker(city)
+  } else {
+    // Double-click empty tile → new worker if near city
     const nearestCity = findNearestCity(hex)
-
     if (nearestCity && hexGrid.distance(hex, nearestCity.hex) <= 3) {
-      // Within 3 tiles of a city → new worker
       promptNewWorker(nearestCity)
-    } else {
-      // Far from any city → add city
-      promptAddCity(hex)
     }
   }
 })
 
-// Right-click context menu
-canvas.addEventListener('contextmenu', (e) => {
-  e.preventDefault()
+// Force Touch (Mac trackpad) for context menu
+// Track mouse position for force touch (event doesn't include coordinates)
+let forceMouseX = 0
+let forceMouseY = 0
+let forceTouchFired = false
 
+canvasOverlay.addEventListener('mousemove', (e) => {
+  forceMouseX = e.clientX
+  forceMouseY = e.clientY
+})
+
+// Claim gesture to prevent system Quick Look
+canvasOverlay.addEventListener('webkitmouseforcewillbegin', (e) => {
+  e.preventDefault()
+})
+
+// Force click shows context menu
+canvasOverlay.addEventListener('webkitmouseforcedown', () => {
+  if (camera.dragging) return
+  forceTouchFired = true
+  handleContextMenu(forceMouseX, forceMouseY)
+})
+
+// Suppress click after force touch (force touch fires normal click on release)
+document.addEventListener('click', (e) => {
+  if (forceTouchFired) {
+    e.stopPropagation()
+    forceTouchFired = false
+  }
+}, true) // capture phase to intercept before other handlers
+
+// Right-click context menu handler
+function handleContextMenu(clientX: number, clientY: number) {
   // Ignore if dragging
   if (camera.dragging) return
 
-  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
+  const worldPos = camera.screenToWorld(clientX, clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-  const entity = zoneRenderer.getEntityAtHex(hex)
 
-  if (entity?.type === 'worker' && entity.entityId) {
+  // Check for worker at world position (workers wander)
+  const workerEntity = zoneRenderer.getWorkerAtPosition(worldPos.x, worldPos.z)
+
+  // Check for city at hex position
+  const hexEntity = zoneRenderer.getEntityAtHex(hex)
+
+  if (workerEntity) {
     // Worker right-click: show retire option
-    const session = sessions.find(s => s.id === entity.entityId)
+    const session = sessions.find(s => s.id === workerEntity.entityId)
     if (session) {
-      contextMenu.show(e.clientX, e.clientY, [
+      contextMenu.show(clientX, clientY, [
         {
           label: 'Focus Tab',
           action: () => focusKittyTab(session.id),
@@ -489,11 +528,11 @@ canvas.addEventListener('contextmenu', (e) => {
         },
       ])
     }
-  } else if (entity?.type === 'city' && entity.entityId) {
+  } else if (hexEntity?.type === 'city' && hexEntity.entityId) {
     // City right-click: show options
-    const city = cities.find(c => c.id === entity.entityId)
+    const city = cities.find(c => c.id === hexEntity.entityId)
     if (city) {
-      contextMenu.show(e.clientX, e.clientY, [
+      contextMenu.show(clientX, clientY, [
         {
           label: 'New Worker',
           action: () => promptNewWorker(city),
@@ -509,13 +548,13 @@ canvas.addEventListener('contextmenu', (e) => {
         },
       ])
     }
-  } else if (entity?.type === 'empty' || !entity) {
+  } else {
     // Check distance to nearest city
     const nearestCity = findNearestCity(hex)
 
     if (nearestCity && hexGrid.distance(hex, nearestCity.hex) <= 3) {
       // Within 3 tiles of a city: offer new worker
-      contextMenu.show(e.clientX, e.clientY, [
+      contextMenu.show(clientX, clientY, [
         {
           label: `New Worker (${nearestCity.name})`,
           action: () => promptNewWorker(nearestCity),
@@ -523,7 +562,7 @@ canvas.addEventListener('contextmenu', (e) => {
       ])
     } else {
       // Far from any city: offer new city
-      contextMenu.show(e.clientX, e.clientY, [
+      contextMenu.show(clientX, clientY, [
         {
           label: 'Add City Here',
           action: () => promptAddCity(hex),
@@ -531,7 +570,9 @@ canvas.addEventListener('contextmenu', (e) => {
       ])
     }
   }
-})
+}
+
+
 
 // Find nearest city to a hex
 function findNearestCity(hex: HexCoord): City | null {
@@ -562,6 +603,7 @@ async function promptNewWorker(city: City): Promise<void> {
       cityPath: city.path,
       name: result.name || undefined,  // undefined if empty (will auto-generate)
       chrome: result.chrome || undefined,  // only send if true
+      continue: result.continue || undefined,  // only send if true
     }))
   }
 }
@@ -664,53 +706,29 @@ window.addEventListener('keydown', (e) => {
   }
 })
 
-// Hover feedback - change cursor when over interactive elements, show tooltip for workers
-canvas.addEventListener('mousemove', (e) => {
-  // Skip if in move mode (already has crosshair cursor)
-  if (movingCityId) return
-  // Skip during drag operations
-  if (camera.dragging) return
-
-  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
-  const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-  const entity = zoneRenderer.getEntityAtHex(hex)
-
-  // Set cursor based on what's under the mouse
-  if (entity?.type === 'worker' || entity?.type === 'city') {
-    canvas.style.cursor = 'pointer'
-
-    // Show tooltip for workers with long names (truncated on map)
-    if (entity.type === 'worker' && entity.entityName && entity.entityName.length > 20) {
-      tooltip.textContent = entity.entityName
-      tooltip.style.left = `${e.clientX + 12}px`
-      tooltip.style.top = `${e.clientY + 12}px`
-      tooltip.style.opacity = '1'
-    } else {
-      tooltip.style.opacity = '0'
-    }
-  } else {
-    canvas.style.cursor = 'default'
-    tooltip.style.opacity = '0'
-  }
-})
-
-// Hide tooltip when leaving canvas
-canvas.addEventListener('mouseleave', () => {
-  tooltip.style.opacity = '0'
-})
-
 // Window resize
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
   camera.resize()
 })
 
-// Render loop
+// Render loop with delta time tracking
+let lastFrameTime = performance.now()
+
 function animate(): void {
   requestAnimationFrame(animate)
-  // Pass camera distance for screen-space label scaling
-  const cameraDistance = camera.camera.position.length()
-  zoneRenderer.animate(cameraDistance)
+
+  // Calculate delta time in seconds
+  const now = performance.now()
+  const deltaTime = (now - lastFrameTime) / 1000  // ms to seconds
+  lastFrameTime = now
+
+  // Animate workers (force simulation + breathing)
+  zoneRenderer.animate(deltaTime)
+
+  // Update label scales for zoom-stable text
+  zoneRenderer.updateLabelScales(camera.cameraDistance)
+
   renderer.render(scene, camera.camera)
 }
 
@@ -723,9 +741,9 @@ setTimeout(() => {
   if (cities.length === 0) {
     console.log('No server data, adding mock cities for visualization')
     const mockCities: City[] = [
-      { id: '1', name: 'hexarchy-v2', path: '/projects/hexarchy-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, isDormant: false, originId: 'local' },
-      { id: '2', name: 'loom', path: '/projects/loom', hex: { q: 2, r: -1 }, fiberCount: 7, hasClaims: true, isDormant: false, originId: 'local' },
-      { id: '3', name: 'pure-eb', path: '/projects/pure-eb', hex: { q: -2, r: 1 }, fiberCount: 0, hasClaims: true, isDormant: true, originId: 'remote-candide' },
+      { id: '1', name: 'hexarchy-v2', path: '/projects/hexarchy-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, hasPlaygrounds: true, isDormant: false, originId: 'local' },
+      { id: '2', name: 'loom', path: '/projects/loom', hex: { q: 2, r: -1 }, fiberCount: 7, hasClaims: true, hasPlaygrounds: false, isDormant: false, originId: 'local' },
+      { id: '3', name: 'pure-eb', path: '/projects/pure-eb', hex: { q: -2, r: 1 }, fiberCount: 0, hasClaims: true, hasPlaygrounds: false, isDormant: true, originId: 'remote-candide' },
     ]
     const mockSessions: Session[] = [
       { id: 's1', name: 'claude-0', tmuxSession: 'mock-0', cityId: '1', hex: { q: 1, r: 0 }, status: 'working', originId: 'local' },

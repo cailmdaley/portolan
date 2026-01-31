@@ -1,4 +1,4 @@
-# hexarchy-v2
+# portolan-v2
 
 Spatial map for Claude sessions. Click to go there.
 
@@ -7,6 +7,7 @@ Spatial map for Claude sessions. Click to go there.
 - **Cities** = project directories (derived from active sessions, persist when dormant)
 - **Workers** = tmux sessions running Claude (clustered around their city hex)
 - **Fibers** = open concerns per city (from felt)
+- **Playgrounds** = interactive HTML tools per city (`.portolan/playgrounds/`)
 
 Click worker → Kitty focuses that tab. Work happens in terminal, not here.
 
@@ -66,17 +67,44 @@ const angle = (Math.PI / 3) * i - Math.PI / 2  // correct
 
 Reference: [Red Blob Games](https://www.redblobgames.com/grids/hexagons/)
 
-## Detailed Docs (Fibers)
+## Troubleshooting: Remote Workers Missing
 
+Remote workers require an SSH tunnel (`RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`).
+
+**Common failure:** SSH ControlMaster keeps a tunnel-less master alive. The tunnel is only established by the *master* connection — if it was created before the config had RemoteForward, or if the tunnel died, new SSH connections reuse the broken master.
+
+**Diagnose:**
 ```bash
-felt find hexarchy              # All docs
-felt show <fiber-id>            # Full content
+ssh -T remote-host "curl -s http://localhost:4004/"   # should print "Portolan server running"
 ```
 
-| Topic | Command |
-|-------|---------|
-| Architecture | `felt find hexarchy-architecture` |
-| Visual Design | `felt find hexarchy-visual` |
-| Remote Agent | `felt find hexarchy-remote` |
-| Asset Generation | `felt find hexarchy-assets` |
-| Gotchas | `felt find hexarchy-gotchas` |
+**Fix:**
+```bash
+ssh -O exit remote-host                               # kill stale master
+ssh remote-host                                       # fresh connection with tunnel
+ssh -T remote-host "tmux kill-session -t portolan-agent; tmux new-session -d -s portolan-agent 'node ~/bin/portolan-agent.js connect --ssh-host=remote-host'"
+```
+
+## Gotchas
+
+**Force Touch events are additive.** `webkitmouseforcedown` fires *in addition to* normal mouse events — the `click` still fires on release. Suppress with capture-phase listener + flag. See `main.ts:451-478`.
+
+**Vite HMR stacks constructor listeners.** Document-level listeners added in constructors accumulate across hot reloads. Add listeners dynamically (in show/hide) with stored references for cleanup.
+
+**Event handler order matters.** `stopImmediatePropagation` only blocks handlers registered *after* yours. Earlier handlers still fire. See fiber `pattern-event-handler-d26b6bae`.
+
+## Deep Dives
+
+Fibers in `.felt/` provide detail beyond this overview.
+
+| Topic | File |
+|-------|------|
+| Interactions | `.felt/portolan-interactions-gesture-245370ce.md` |
+| Persistence | `.felt/portolan-persistence-5335c979.md` |
+| Architecture | `.felt/portolan-architecture-server-361a92a2.md` |
+| Visual Design | `.felt/portolan-visual-design-palette-49cdf63d.md` |
+| Remote Agent | `.felt/portolan-remote-agent-setup-ssh-b7ce007f.md` |
+| Asset Generation | `.felt/portolan-assets-nano-banana-aec3aef3.md` |
+| Remote Proxying | `.felt/pattern-portolan-remote-content-8180cf9d.md` |
+
+Search patterns/gotchas: `felt find pattern` or `felt find gotcha`

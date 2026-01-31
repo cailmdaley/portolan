@@ -1,6 +1,6 @@
 ---
 title: 'Hexarchy Remote Agent: setup, SSH tunnel, multi-node'
-status: open
+status: closed
 kind: spec
 tags:
     - '[docs]'
@@ -8,6 +8,8 @@ priority: 2
 depends-on:
     - hexarchy-overview-spatial-map-40356835
 created-at: 2026-01-25T15:26:42.456897+01:00
+closed-at: 2026-01-31T00:56:51.421925+01:00
+close-reason: Finalized documentation — referenced in CLAUDE.md Deep Dives.
 ---
 
 The hexarchy-agent runs on remote machines and sends session data via SSH tunnel.

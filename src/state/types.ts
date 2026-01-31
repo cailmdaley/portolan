@@ -1,4 +1,4 @@
-// Types for hexarchy-v2
+// Types for portolan
 
 export interface HexCoord {
   q: number
@@ -23,6 +23,19 @@ export interface Activity {
   summary?: string
   fullPath?: string   // Full file path for Read/Write/Edit
   timestamp: number
+  eventType?: 'tool' | 'user_prompt'  // Distinguish tool calls from user prompts
+  prompt?: string     // Full prompt text for user_prompt events
+}
+
+// Conversation message from Claude transcript
+export interface ConversationMessage {
+  type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result'
+  content: string
+  timestamp: string
+  toolName?: string       // For tool_use
+  toolInput?: any         // For tool_use
+  toolUseId?: string      // For linking tool_use to tool_result
+  preview?: string        // For thinking blocks
 }
 
 // Git status for a repository
@@ -50,6 +63,7 @@ export interface ServerCity {
   position: HexCoord
   fiberCount?: number
   hasClaims?: boolean  // Has claims directory (workflow/config or results/claims)
+  hasPlaygrounds?: boolean  // Has .portolan/playgrounds/ with HTML files
   isDormant?: boolean  // No active sessions (persisted city with no workers)
   gitStatus?: GitStatus  // Git repository status
   recentFiles?: RecentFile[]  // Recently modified files
@@ -88,6 +102,7 @@ export interface City {
   hex: HexCoord
   fiberCount: number
   hasClaims: boolean
+  hasPlaygrounds: boolean
   isDormant: boolean
   gitStatus?: GitStatus
   recentFiles?: RecentFile[]
@@ -113,6 +128,7 @@ export function normalizeCity(city: ServerCity): City {
     hex: city.position,
     fiberCount: city.fiberCount ?? 0,
     hasClaims: city.hasClaims ?? false,
+    hasPlaygrounds: city.hasPlaygrounds ?? false,
     isDormant: city.isDormant ?? false,
     gitStatus: city.gitStatus,
     recentFiles: city.recentFiles,

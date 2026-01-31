@@ -185,9 +185,9 @@ export class KittyIntegration {
    */
   createWorker(
     cityPath: string,
-    options: { sshHost?: string; originDisplayName?: string; customName?: string; chrome?: boolean } = {}
+    options: { sshHost?: string; originDisplayName?: string; customName?: string; chrome?: boolean; continue?: boolean } = {}
   ): string {
-    const { sshHost, originDisplayName, customName, chrome } = options;
+    const { sshHost, originDisplayName, customName, chrome, continue: continueSession } = options;
     const isRemote = !!sshHost;
     const socket = this.getSocket();
     const escapedCwd = shellEscape(cityPath);
@@ -198,9 +198,10 @@ export class KittyIntegration {
     const tmuxSession = customName ? customName : `${baseName}-${timestamp}`;
     const escapedSession = shellEscape(tmuxSession);
 
-    // Build claude command with optional --chrome flag
+    // Build claude command with optional flags
+    const continueFlag = continueSession ? ' -c' : '';
     const chromeFlag = chrome ? ' --chrome' : '';
-    const claudeCmd = `claude --dangerously-skip-permissions${chromeFlag}`;
+    const claudeCmd = `claude --dangerously-skip-permissions${continueFlag}${chromeFlag}`;
 
     if (isRemote) {
       // Remote: create tmux session on remote via SSH
@@ -246,8 +247,8 @@ export class KittyIntegration {
    * Handle new worker request - launch Claude Code in city directory via tmux
    * Supports both local and remote cities
    */
-  newWorker(ws: WebSocket, cityPath: string, customName?: string, chrome?: boolean): void {
-    console.log('[NewWorker] Starting for path:', cityPath, customName ? `(name: ${customName})` : '', chrome ? '(chrome)' : '');
+  newWorker(ws: WebSocket, cityPath: string, customName?: string, chrome?: boolean, continueSession?: boolean): void {
+    console.log('[NewWorker] Starting for path:', cityPath, customName ? `(name: ${customName})` : '', chrome ? '(chrome)' : '', continueSession ? '(-c)' : '');
 
     // Find the city to determine if it's local or remote
     const city = this.cityLookup.findCityByPath(cityPath);
@@ -283,7 +284,7 @@ export class KittyIntegration {
     }
 
     try {
-      this.createWorker(cityPath, { sshHost, originDisplayName, customName, chrome });
+      this.createWorker(cityPath, { sshHost, originDisplayName, customName, chrome, continue: continueSession });
     } catch (error: unknown) {
       const err = error as { message?: string; stderr?: Buffer };
       const errMsg = err.stderr?.toString() || err.message || 'Unknown error';
