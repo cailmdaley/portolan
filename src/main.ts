@@ -89,6 +89,20 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
+// Wire up worker label click handlers (CSS2D labels need direct handlers)
+zoneRenderer.setWorkerClickHandler((workerId, tmuxSession) => {
+  const session = sessions.find(s => s.id === workerId)
+  if (session) {
+    const activities = activityBySession.get(tmuxSession) || []
+    workerActivityPanel.show(session, activities)
+    cityPanel.hide()
+  }
+})
+
+zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
+  focusKittyTab(workerId)
+})
+
 // Setup city panel
 const cityPanel = new CityPanel()
 

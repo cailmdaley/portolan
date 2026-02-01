@@ -55,12 +55,30 @@ export class ZoneRenderer {
   // Camera rotation (45° = π/4) - must match Camera.ts
   private readonly cameraRotation = Math.PI / 4
 
+  // Callback for worker label clicks (since CSS2D labels need direct handlers)
+  private onWorkerClick: ((workerId: string, tmuxSession: string) => void) | null = null
+  private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
+
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
     this.createGroundPlane()
     // No background hex grid - spec says "just the vellum surface"
+  }
+
+  /**
+   * Set callback for worker label clicks
+   */
+  setWorkerClickHandler(onClick: (workerId: string, tmuxSession: string) => void): void {
+    this.onWorkerClick = onClick
+  }
+
+  /**
+   * Set callback for worker label double-clicks
+   */
+  setWorkerDblClickHandler(onDblClick: (workerId: string, tmuxSession: string) => void): void {
+    this.onWorkerDblClick = onDblClick
   }
 
   /**
@@ -151,7 +169,8 @@ export class ZoneRenderer {
 
     if (texture) {
       // Use a flat plane mesh instead of billboard sprite
-      const spriteSize = 3.5  // World units diameter
+      // 3-hex radius ≈ 6 hexes across ≈ 6 * 1.73 (hex width) ≈ 10 world units
+      const spriteSize = 6.0  // World units diameter (covers ~3-hex radius)
       const geometry = new PlaneGeometry(spriteSize, spriteSize)
       const material = new MeshBasicMaterial({
         map: texture,
@@ -182,7 +201,7 @@ export class ZoneRenderer {
     const workerLabels: CSS2DObject[] = []
     const workerCount = workers.length
     if (workerCount > 0) {
-      const baseRadius = 0.8  // Distance from center
+      const baseRadius = 1.5  // Distance from center (scaled for larger sprite)
       const startAngle = Math.PI  // Start at bottom (opposite label)
       const angleSpread = Math.PI * 0.8  // Spread across ~140°
 
@@ -196,6 +215,21 @@ export class ZoneRenderer {
         workerDiv.textContent = worker.name
         workerDiv.dataset.workerId = worker.id
         workerDiv.dataset.tmuxSession = worker.tmuxSession
+
+        // Make clickable - CSS2D labels are HTML, need direct handlers
+        workerDiv.style.cursor = 'pointer'
+        workerDiv.addEventListener('click', (e) => {
+          e.stopPropagation()
+          if (this.onWorkerClick) {
+            this.onWorkerClick(worker.id, worker.tmuxSession)
+          }
+        })
+        workerDiv.addEventListener('dblclick', (e) => {
+          e.stopPropagation()
+          if (this.onWorkerDblClick) {
+            this.onWorkerDblClick(worker.id, worker.tmuxSession)
+          }
+        })
 
         const workerLabelObj = new CSS2DObject(workerDiv)
         // Position on the sprite plane (y = height, x/z from angle)
