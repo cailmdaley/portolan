@@ -12,20 +12,31 @@ import {
   DoubleSide,
   CanvasTexture,
 } from 'three'
-import { createVellumPlane } from './VellumShader'
-import { createRhumbLines, DEFAULT_RHUMB_PARAMS } from './RhumbRenderer'
-import { createCoastline, DEFAULT_COASTLINE_PARAMS, type CoastlinePoint, type CityPosition, type CityCoastlinePosition } from './CoastlineRenderer'
+import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './HexGrid'
-import { WorkerRenderer } from './WorkerRenderer'
-import type { City, Session, HexCoord, Activity } from '../state/types'
+import { createVellumPlane } from './VellumShader'
+import { CitySpritesManager } from './CitySpritesManager'
+import type { City, Session, HexCoord } from '../state/types'
 import { PALETTE } from '../state/types'
+
+interface Activity {
+  tool: string
+  summary?: string
+  timestamp: number
+}
 
 interface HexMeshData {
   group: Group
   hex: HexCoord
-  type: 'city' | 'empty'
+  type: 'city' | 'worker' | 'empty'
   entityId?: string
-  labelMesh?: Mesh  // For flat labels (cities)
+  entityName?: string  // Worker name for tooltip
+  tmuxSession?: string  // For workers - to route activity events
+  mesh?: Mesh  // For animation (worker breathing pulse)
+  status?: 'idle' | 'working'  // Worker status for animation
+  activityMesh?: Mesh  // Activity ground decal
+  labelObject?: CSS2DObject  // HTML label (CSS2D for OpenType features)
+  workerLabels?: CSS2DObject[]  // Worker labels clustered on city sprite
 }
 
 export class ZoneRenderer {
@@ -33,208 +44,232 @@ export class ZoneRenderer {
   private hexGrid: HexGrid
   private hexMeshes: Map<string, HexMeshData> = new Map()
   private groundPlane: Mesh | null = null
-  private rhumbGroup: Group | null = null
-  // Multiple coastlines - one per origin (island/continent)
-  private coastlineGroups: Map<string, Group> = new Map()  // originId -> Group
-  private coastlinePointsByOrigin: Map<string, CoastlinePoint[]> = new Map()  // originId -> points
-  private cityCoastlinePositions: Map<string, CityCoastlinePosition> = new Map()  // cityId -> computed position
-  private lastCityPositionHash: string = ''  // Track city positions for coastline regeneration
   private selectionRing: Group | null = null
 
-  // Worker rendering delegated to WorkerRenderer
-  private workerRenderer: WorkerRenderer
+  // Hex geometry settings
+  private readonly hexHeight = 0.15
+
+  // City sprites manager (nano-banana generated city plans)
+  private citySprites: CitySpritesManager
+
+  // Camera rotation (45° = π/4) - must match Camera.ts
+  private readonly cameraRotation = Math.PI / 4
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
-    this.workerRenderer = new WorkerRenderer(scene, hexGrid)
+    this.citySprites = new CitySpritesManager()
     this.createGroundPlane()
-    this.createRhumbLines()
-    // Coastlines created per-origin in updateState when cities are available
-    // Background hex grid removed — vellum + rhumb lines are the substrate now
+    // No background hex grid - spec says "just the vellum surface"
+  }
+
+  /**
+   * Convert hex-aligned offset to world XZ coordinates.
+   * For elements rotated 60° to match hex orientation.
+   * +X = right along hex axis, +Y = up along hex axis
+   */
+  private hexToWorld(hexX: number, hexY: number): { x: number; z: number } {
+    const angle = this.cameraRotation + Math.PI / 3  // 45° + 60° = 105°
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    return {
+      x: hexX * cos - hexY * sin,
+      z: -hexX * sin - hexY * cos,
+    }
   }
 
   private createGroundPlane(): void {
-    // Portolan-style vellum ground plane with procedural shader
-    // Large size for "infinite" feeling map - extends well beyond visible area
-    const planeSize = 500  // World units - 10x larger for infinite feel
+    // Vellum background - aged parchment with procedural shader
+    // Size to roughly match hex grid (radius 30 hexes, hexRadius 1.0)
+    // Hex spacing is ~1.73 (sqrt(3)), so radius 30 ≈ 52 units
+    const planeSize = 60  // World units (slightly larger for edge effects)
 
-    // Create vellum plane with shader-based texture
-    // Warm cream base with organic variation, edge darkening, corner wear
     this.groundPlane = createVellumPlane(planeSize, planeSize)
     this.groundPlane.position.y = -0.05  // Just below hex level
     this.scene.add(this.groundPlane)
   }
 
-  private createRhumbLines(center?: { x: number; z: number }, clusterRadius?: number): void {
-    // Remove existing rhumb group if present
-    if (this.rhumbGroup) {
-      this.scene.remove(this.rhumbGroup)
-    }
+  private createHexShape(scale = 1): Shape {
+    const r = this.hexGrid.hexRadius * scale
+    const shape = new Shape()
 
-    // Portolan-style rhumb lines radiating from compass roses
-    // Balanced density - visible but not overwhelming
-    this.rhumbGroup = createRhumbLines({
-      ...DEFAULT_RHUMB_PARAMS,
-      mapRadius: 250,
-      primaryRoses: 1,           // Single primary rose
-      secondaryRoses: 4,         // Few secondary roses (was 10)
-      primaryDirections: 8,      // Fewer directions (was 16)
-      secondaryDirections: 8,
-      primaryOpacity: 0.25,      // Softer (was 0.32)
-      secondaryOpacity: 0.15,    // Softer (was 0.18)
-      center,
-      clusterRadius: clusterRadius || 20,
-    })
-    this.rhumbGroup.position.y = -0.04  // Just above vellum, below hexes
-    this.scene.add(this.rhumbGroup)
-  }
-
-  private createCoastlineForOrigin(originId: string, cityPositions: CityPosition[], seed: number): void {
-    // Remove existing coastline for this origin if present
-    const existingGroup = this.coastlineGroups.get(originId)
-    if (existingGroup) {
-      this.scene.remove(existingGroup)
-    }
-
-    // Need at least 3 cities to form a closed coastline
-    if (cityPositions.length < 3) {
-      this.coastlineGroups.delete(originId)
-      this.coastlinePointsByOrigin.delete(originId)
-      return
-    }
-
-    // Portolan-style coastline with hatching (comb teeth)
-    // Each origin forms its own island/continent
-    const result = createCoastline({
-      ...DEFAULT_COASTLINE_PARAMS,
-      seed,  // Different seed per origin for variety
-      mapRadius: 250,  // Large radius for infinite map feel
-      hatchDensity: Math.max(20, cityPositions.length * 8),  // Less frequent
-      hatchLength: 0.35,          // Shorter hatches
-      hatchOpacity: 0.65,         // Visible but not overwhelming
-      hatchWidth: 1.5,            // Thinner hatching strokes
-      coastlineOpacity: 0.9,      // Strong coastline stroke
-      coastlineWidth: 2.5,        // Thicker coastline
-      cityPositions,
-    })
-    if (result && result.group) {
-      this.coastlineGroups.set(originId, result.group)
-      this.coastlinePointsByOrigin.set(originId, result.points)
-      result.group.position.y = -0.02  // Above rhumb lines, below hexes
-      this.scene.add(result.group)
-
-      // Store computed city positions for use in renderCity
-      for (const cityPos of result.cityPositions) {
-        this.cityCoastlinePositions.set(cityPos.id, cityPos)
+    // Pointy-top hexagon (matches axialToCartesian spacing)
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 2
+      const x = r * Math.cos(angle)
+      const y = r * Math.sin(angle)
+      if (i === 0) {
+        shape.moveTo(x, y)
+      } else {
+        shape.lineTo(x, y)
       }
     }
+    shape.closePath()
+
+    return shape
   }
 
-  private clearAllCoastlines(): void {
-    for (const group of this.coastlineGroups.values()) {
-      this.scene.remove(group)
-    }
-    this.coastlineGroups.clear()
-    this.coastlinePointsByOrigin.clear()
+  private createHexMesh(
+    color: number,
+    scale = 1,
+    height = this.hexHeight
+  ): Mesh {
+    const shape = this.createHexShape(scale)
+    const geometry = new ExtrudeGeometry(shape, {
+      depth: height,
+      bevelEnabled: true,
+      bevelThickness: 0.02,
+      bevelSize: 0.02,
+      bevelSegments: 2,
+    })
+
+    const material = new MeshStandardMaterial({
+      color,
+      roughness: 0.8,
+      metalness: 0.1,
+    })
+
+    const mesh = new Mesh(geometry, material)
+    mesh.rotation.x = -Math.PI / 2
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+
+    return mesh
   }
 
-  /**
-   * Create port-style label for cities (perpendicular to coastline)
-   * Simple text on transparent background, manuscript red
-   */
-  private createPortLabel(
-    text: string,
-    fontSize = 36,
-    color: string = '#A0171B'  // Bright manuscript red
-  ): { texture: CanvasTexture; width: number; height: number } {
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d')!
-
-    // Measure text
-    ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
-    const metrics = ctx.measureText(text)
-    const textWidth = metrics.width
-
-    const padding = fontSize * 0.3
-    const width = textWidth + padding * 2
-    const height = fontSize * 1.4
-
-    // High-res canvas
-    const scale = 2
-    canvas.width = width * scale
-    canvas.height = height * scale
-    ctx.scale(scale, scale)
-
-    // Transparent background
-    ctx.clearRect(0, 0, width, height)
-
-    // Draw text centered
-    ctx.font = `600 ${fontSize}px 'EB Garamond', Garamond, serif`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-
-    const cx = width / 2
-    const cy = height / 2
-
-    // Subtle shadow for legibility on vellum
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
-    ctx.fillText(text, cx + 1, cy + 1)
-
-    // Main text - bright manuscript red
-    ctx.fillStyle = color
-    ctx.fillText(text, cx, cy)
-
-    return {
-      texture: new CanvasTexture(canvas),
-      width,
-      height,
-    }
-  }
-
-
-  renderCity(city: City): void {
+  renderCity(city: City, workers: Session[] = []): void {
     const key = this.hexGrid.hexKey(city.hex)
 
     // Remove existing mesh at this position
     this.removeHex(key)
 
     const group = new Group()
+    const pos = this.hexGrid.axialToCartesian(city.hex)
 
-    // Use coastline-computed position if available, otherwise fall back to hex position
-    const coastlinePos = this.cityCoastlinePositions.get(city.id)
-    const pos = coastlinePos
-      ? { x: coastlinePos.x, z: coastlinePos.z }
-      : this.hexGrid.axialToCartesian(city.hex)
+    // City sprite - nano-banana generated city plan, lying flat on vellum
+    const texture = this.citySprites.getSprite(city)
 
-    // The label IS the city - no separate marker, no offset
-    const label = this.createPortLabel(city.name, 42, '#A0171B')  // Bright manuscript red
-    const labelMesh = new Mesh(
-      new PlaneGeometry(label.width * 0.014, label.height * 0.014),
-      new MeshBasicMaterial({
-        map: label.texture,
+    if (texture) {
+      // Use a flat plane mesh instead of billboard sprite
+      const spriteSize = 3.5  // World units diameter
+      const geometry = new PlaneGeometry(spriteSize, spriteSize)
+      const material = new MeshBasicMaterial({
+        map: texture,
         transparent: true,
         side: DoubleSide,
-        depthWrite: false,
+        depthWrite: false,  // Prevent z-fighting with vellum
       })
-    )
-    labelMesh.rotation.x = -Math.PI / 2  // Lie flat on ground
-    labelMesh.position.y = 0.03
-
-    // Apply rotation to point inland (perpendicular to coastline)
-    if (coastlinePos) {
-      // tangentAngle is already the inland-pointing perpendicular angle
-      labelMesh.rotation.z = coastlinePos.tangentAngle
+      const cityMesh = new Mesh(geometry, material)
+      cityMesh.rotation.x = -Math.PI / 2  // Lie flat on XZ plane
+      cityMesh.position.y = 0.02  // Just above vellum
+      group.add(cityMesh)
+    } else {
+      // Fallback: small marker while sprites load
+      const fallbackMesh = this.createHexMesh(PALETTE.cityHex, 0.3, 0.05)
+      group.add(fallbackMesh)
     }
 
-    group.add(labelMesh)
+    // City label - CSS2D HTML element for proper small caps
+    const labelDiv = document.createElement('div')
+    labelDiv.className = 'city-label'
+    labelDiv.textContent = city.name
+    const labelObject = new CSS2DObject(labelDiv)
+    labelObject.position.y = 2.0  // Above the sprite
+    group.add(labelObject)
+
+    // Worker labels - clustered on the city sprite
+    // Position workers in a ring around center, angled toward city label
+    const workerLabels: CSS2DObject[] = []
+    const workerCount = workers.length
+    if (workerCount > 0) {
+      const baseRadius = 0.8  // Distance from center
+      const startAngle = Math.PI  // Start at bottom (opposite label)
+      const angleSpread = Math.PI * 0.8  // Spread across ~140°
+
+      workers.forEach((worker, i) => {
+        const angle = workerCount === 1
+          ? startAngle  // Single worker at bottom
+          : startAngle - angleSpread/2 + (angleSpread * i / (workerCount - 1))
+
+        const workerDiv = document.createElement('div')
+        workerDiv.className = worker.status === 'working' ? 'worker-label working' : 'worker-label'
+        workerDiv.textContent = worker.name
+        workerDiv.dataset.workerId = worker.id
+        workerDiv.dataset.tmuxSession = worker.tmuxSession
+
+        const workerLabelObj = new CSS2DObject(workerDiv)
+        // Position on the sprite plane (y = height, x/z from angle)
+        workerLabelObj.position.set(
+          Math.cos(angle) * baseRadius,
+          0.5,  // Just above sprite surface
+          Math.sin(angle) * baseRadius
+        )
+        group.add(workerLabelObj)
+        workerLabels.push(workerLabelObj)
+      })
+    }
 
     group.position.set(pos.x, 0, pos.z)
     this.scene.add(group)
 
     this.hexMeshes.set(key, {
       group, hex: city.hex, type: 'city', entityId: city.id,
-      labelMesh,
+      labelObject, workerLabels
+    })
+  }
+
+  /**
+   * Render an orphan worker (no city) as a small marker
+   * These are workers that exist but aren't associated with any city
+   */
+  renderOrphanWorker(session: Session): void {
+    if (!session.hex) return
+
+    const key = this.hexGrid.hexKey(session.hex)
+
+    // Check if worker already exists - just update status
+    const existing = this.hexMeshes.get(key)
+    if (existing && existing.type === 'worker' && existing.entityId === session.id) {
+      if (existing.status !== session.status && existing.mesh) {
+        const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
+        ;(existing.mesh.material as MeshStandardMaterial).color.setHex(color)
+        existing.status = session.status
+      }
+      return
+    }
+
+    // Remove existing mesh at this position
+    this.removeHex(key)
+
+    const group = new Group()
+    const pos = this.hexGrid.axialToCartesian(session.hex)
+
+    // Small marker for orphan workers
+    const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
+    const markerMesh = this.createHexMesh(color, 0.3, 0.05)
+    group.add(markerMesh)
+
+    // Worker label
+    const labelDiv = document.createElement('div')
+    labelDiv.className = session.status === 'working' ? 'worker-label working' : 'worker-label'
+    labelDiv.textContent = session.name
+    const labelObject = new CSS2DObject(labelDiv)
+    labelObject.position.y = 0.5
+    group.add(labelObject)
+
+    group.position.set(pos.x, 0, pos.z)
+    this.scene.add(group)
+
+    this.hexMeshes.set(key, {
+      group,
+      hex: session.hex,
+      type: 'worker',
+      entityId: session.id,
+      entityName: session.name,
+      tmuxSession: session.tmuxSession,
+      mesh: markerMesh,
+      status: session.status,
+      labelObject,
     })
   }
 
@@ -250,80 +285,37 @@ export class ZoneRenderer {
     // Track what should exist
     const expectedKeys = new Set<string>()
 
-    // Group cities by origin for separate coastlines (islands/continents)
-    const citiesByOrigin = new Map<string, City[]>()
-    for (const city of cities) {
-      const originCities = citiesByOrigin.get(city.originId) || []
-      originCities.push(city)
-      citiesByOrigin.set(city.originId, originCities)
-    }
+    // Group workers by city
+    const workersByCity = new Map<string, Session[]>()
+    const orphanWorkers: Session[] = []
 
-    // Create position hash including origin grouping
-    const positionHash = cities.map(c => {
-      const pos = this.hexGrid.axialToCartesian(c.hex)
-      return `${c.originId}:${c.id}:${pos.x.toFixed(2)}:${pos.z.toFixed(2)}`
-    }).sort().join('|')
-
-    // Regenerate coastlines and rhumb lines if cities changed
-    if (positionHash !== this.lastCityPositionHash) {
-      this.lastCityPositionHash = positionHash
-      this.clearAllCoastlines()
-
-      // Calculate city cluster centroid and extent for rhumb line positioning
-      if (cities.length > 0) {
-        let sumX = 0, sumZ = 0
-        let minX = Infinity, maxX = -Infinity
-        let minZ = Infinity, maxZ = -Infinity
-
-        for (const city of cities) {
-          const pos = this.hexGrid.axialToCartesian(city.hex)
-          sumX += pos.x
-          sumZ += pos.z
-          minX = Math.min(minX, pos.x)
-          maxX = Math.max(maxX, pos.x)
-          minZ = Math.min(minZ, pos.z)
-          maxZ = Math.max(maxZ, pos.z)
-        }
-
-        const center = { x: sumX / cities.length, z: sumZ / cities.length }
-        // Cluster radius based on city spread, with minimum for small clusters
-        const extentX = maxX - minX
-        const extentZ = maxZ - minZ
-        const clusterRadius = Math.max(15, Math.max(extentX, extentZ) * 0.8)
-
-        // Regenerate rhumb lines centered on city cluster
-        this.createRhumbLines(center, clusterRadius)
-      }
-
-      // Create one coastline per origin (each origin is an island/continent)
-      let seedOffset = 0
-      for (const [originId, originCities] of citiesByOrigin) {
-        const cityPositions: CityPosition[] = originCities.map(city => {
-          const pos = this.hexGrid.axialToCartesian(city.hex)
-          return { id: city.id, name: city.name, x: pos.x, z: pos.z }
-        })
-        // Different seed per origin for visual variety
-        this.createCoastlineForOrigin(originId, cityPositions, 42 + seedOffset * 1000)
-        seedOffset++
+    for (const session of sessions) {
+      if (session.cityId) {
+        const existing = workersByCity.get(session.cityId) || []
+        existing.push(session)
+        workersByCity.set(session.cityId, existing)
+      } else if (session.hex) {
+        // Worker without a city - render as standalone marker
+        orphanWorkers.push(session)
       }
     }
 
-    // Render cities
+    // Render cities with their workers
     for (const city of cities) {
       const key = this.hexGrid.hexKey(city.hex)
       expectedKeys.add(key)
-      this.renderCity(city)
+      const cityWorkers = workersByCity.get(city.id) || []
+      this.renderCity(city, cityWorkers)
     }
 
-    // Pass coastline city positions to WorkerRenderer
-    const workerCityPositions = new Map<string, { x: number; z: number }>()
-    for (const [cityId, pos] of this.cityCoastlinePositions) {
-      workerCityPositions.set(cityId, { x: pos.x, z: pos.z })
+    // Render orphan workers (no city) as small markers
+    for (const session of orphanWorkers) {
+      if (session.hex) {
+        const key = this.hexGrid.hexKey(session.hex)
+        expectedKeys.add(key)
+        this.renderOrphanWorker(session)
+      }
     }
-    this.workerRenderer.setCityCoastlinePositions(workerCityPositions)
-
-    // Delegate worker rendering to WorkerRenderer
-    this.workerRenderer.updateWorkers(sessions, cities)
 
     // Remove hexes that no longer exist (except empty background hexes)
     for (const [key, data] of this.hexMeshes) {
@@ -338,24 +330,13 @@ export class ZoneRenderer {
   }
 
   /**
-   * Find entity at a hex position (cities only, workers now use getWorkerAtPosition)
+   * Find entity at a hex position
    */
-  getEntityAtHex(hex: HexCoord): { type: 'city' | 'empty'; entityId?: string } | null {
+  getEntityAtHex(hex: HexCoord): { type: 'city' | 'worker' | 'empty'; entityId?: string; entityName?: string } | null {
     const key = this.hexGrid.hexKey(hex)
     const data = this.hexMeshes.get(key)
     if (data) {
-      return { type: data.type, entityId: data.entityId }
-    }
-    return null
-  }
-
-  /**
-   * Find worker at world position (workers wander, so use world coords not hex)
-   */
-  getWorkerAtPosition(x: number, z: number): { type: 'worker'; entityId: string; entityName: string } | null {
-    const worker = this.workerRenderer.getWorkerAtPosition(x, z)
-    if (worker) {
-      return { type: 'worker', entityId: worker.id, entityName: worker.name }
+      return { type: data.type, entityId: data.entityId, entityName: data.entityName }
     }
     return null
   }
@@ -438,48 +419,112 @@ export class ZoneRenderer {
   }
 
   /**
-   * Animate workers (force simulation + footprint fading)
-   * Call every frame with delta time
+   * Animate worker hexes (breathing pulse)
+   * CSS2D labels maintain constant screen size automatically
    */
-  animate(deltaTime: number): void {
-    // Worker simulation and animation delegated to WorkerRenderer
-    this.workerRenderer.simulate(deltaTime)
-    this.workerRenderer.animate(deltaTime)
+  animate(_cameraDistance?: number): void {
+    const now = Date.now()
+    const period = 2500 // 2.5 second breathing cycle
+
+    for (const [, data] of this.hexMeshes) {
+      if (data.type === 'worker' && data.mesh) {
+        if (data.status === 'working') {
+          // Breathing pulse: scale oscillates 1.0 → 1.03 → 1.0
+          const t = (now % period) / period
+          const scale = 1.0 + 0.03 * Math.sin(t * Math.PI * 2)
+          data.mesh.scale.setScalar(scale)
+        } else {
+          // Ensure idle workers are at base scale
+          data.mesh.scale.setScalar(1.0)
+        }
+      }
+    }
+  }
+
+  /**
+   * Create activity ground decal showing recent tool calls
+   * Returns a flat Mesh that lies on the hex surface
+   */
+  private createActivityDecal(activities: Activity[]): Mesh {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')!
+
+    const width = 256
+    const height = 144  // 1.8x taller to fill hex
+    const fontSize = 13
+
+    canvas.width = width * 2
+    canvas.height = height * 2
+    ctx.scale(2, 2)
+
+    // Semi-transparent dark background
+    ctx.fillStyle = 'rgba(26, 24, 22, 0.7)'
+    ctx.roundRect(0, 0, width, height, 4)
+    ctx.fill()
+
+    if (activities.length > 0) {
+      const displayActivities = activities.slice(0, 3)  // Show 3 activities
+      const lineHeight = 24
+      const startY = 18
+      const centerX = width / 2
+
+      displayActivities.forEach((activity, i) => {
+        const y = startY + i * lineHeight
+        const opacity = 1 - i * 0.25  // Fade older entries
+
+        // Build full text line
+        let text = activity.tool
+        if (activity.summary) {
+          const summaryText = activity.summary.length > 18
+            ? activity.summary.slice(0, 15) + '...'
+            : activity.summary
+          text += ` ${summaryText}`
+        }
+
+        // Draw centered
+        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`
+        ctx.textAlign = 'center'
+        ctx.fillStyle = `rgba(201, 162, 39, ${opacity})`
+        ctx.fillText(text, centerX, y)
+      })
+    }
+
+    const texture = new CanvasTexture(canvas)
+    const worldWidth = 1.0
+    const worldHeight = worldWidth * (height / width)  // Maintain aspect ratio
+    const geometry = new PlaneGeometry(worldWidth, worldHeight)
+    const material = new MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      side: DoubleSide,
+      depthWrite: false,
+    })
+
+    const mesh = new Mesh(geometry, material)
+    mesh.rotation.x = -Math.PI / 2  // Lie flat
+    mesh.rotation.z = Math.PI / 3   // 60° rotation
+    return mesh
   }
 
   /**
    * Update activity display for a worker by tmux session
    */
   updateWorkerActivity(tmuxSession: string, activities: Activity[]): void {
-    this.workerRenderer.updateActivity(tmuxSession, activities)
-  }
+    for (const [, data] of this.hexMeshes) {
+      if (data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh) {
+        // Remove old decal
+        data.group.remove(data.activityMesh)
 
-  /**
-   * Update label scales based on camera distance for zoom-stable text
-   * Labels stay readable at all zoom levels (within min/max bounds)
-   * @param cameraDistance - Distance from camera to ground plane
-   */
-  updateLabelScales(cameraDistance: number): void {
-    // Reference distance where labels are at "natural" size (base scale = 1.0)
-    const referenceDistance = 20
-    const minScale = 0.6  // Minimum scale (when zoomed in very close)
-    const maxScale = 3.0  // Maximum scale (when zoomed far out)
-
-    // Scale PROPORTIONALLY with camera distance to compensate for perspective
-    // When zoomed out (larger distance), labels need to be bigger
-    let scale = cameraDistance / referenceDistance
-
-    // Clamp to min/max bounds
-    scale = Math.max(minScale, Math.min(maxScale, scale))
-
-    // Update city labels
-    for (const data of this.hexMeshes.values()) {
-      if (data.labelMesh) {
-        data.labelMesh.scale.setScalar(scale)
+        // Create new decal with updated activities
+        const newMesh = this.createActivityDecal(activities)
+        newMesh.position.y = this.hexHeight + 0.08  // Just above hex surface
+        const activityOffset = this.hexToWorld(-0.023, -0.03)
+        newMesh.position.x = activityOffset.x
+        newMesh.position.z = activityOffset.z
+        data.group.add(newMesh)
+        data.activityMesh = newMesh
+        break
       }
     }
-
-    // Update worker labels
-    this.workerRenderer.updateLabelScales(cameraDistance, minScale, maxScale)
   }
 }

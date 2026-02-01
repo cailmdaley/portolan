@@ -110,7 +110,7 @@ export function showToast(message: string, type: 'success' | 'error' = 'success'
         display: flex;
         align-items: center;
         gap: 10px;
-        font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+        font-family: 'EB Garamond', Garamond, serif;
         font-size: 14px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         z-index: 10000;

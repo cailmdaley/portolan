@@ -105,6 +105,7 @@ Fibers in `.felt/` provide detail beyond this overview.
 | Visual Design | `.felt/portolan-visual-design-palette-49cdf63d.md` |
 | Remote Agent | `.felt/portolan-remote-agent-setup-ssh-b7ce007f.md` |
 | Asset Generation | `.felt/portolan-assets-nano-banana-aec3aef3.md` |
+| City Sprites | `.felt/document-nano-banana-prompting-15652206.md` |
 | Remote Proxying | `.felt/pattern-portolan-remote-content-8180cf9d.md` |
 
 Search patterns/gotchas: `felt find pattern` or `felt find gotcha`

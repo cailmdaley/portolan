@@ -7,6 +7,7 @@ import {
   DirectionalLight,
   Color,
 } from 'three'
+import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
@@ -48,6 +49,16 @@ renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 renderer.setClearColor(new Color(PALETTE.bgPrimary))
 renderer.shadowMap.enabled = true
+
+// CSS2D renderer for HTML labels (small caps, petite caps)
+const labelRenderer = new CSS2DRenderer()
+labelRenderer.setSize(window.innerWidth, window.innerHeight)
+labelRenderer.domElement.style.position = 'absolute'
+labelRenderer.domElement.style.top = '0'
+labelRenderer.domElement.style.left = '0'
+labelRenderer.domElement.style.pointerEvents = 'none'
+labelRenderer.domElement.classList.add('label-container')
+document.body.appendChild(labelRenderer.domElement)
 
 // Setup scene
 const scene = new Scene()
@@ -395,29 +406,25 @@ canvasOverlay.addEventListener('click', (e) => {
     return
   }
 
-  // Check for worker at world position (workers wander)
-  const workerEntity = zoneRenderer.getWorkerAtPosition(worldPos.x, worldPos.z)
+  // Check for entity at hex position
+  const entity = zoneRenderer.getEntityAtHex(hex)
 
-  // Check for city at hex position
-  const hexEntity = zoneRenderer.getEntityAtHex(hex)
+  // Update selection visual
+  selectedHex = hex
+  zoneRenderer.setSelection(hex)
 
-  if (workerEntity) {
+  if (entity?.type === 'worker' && entity.entityId) {
     // Click worker → show activity panel (double-click to focus terminal)
-    // No selection ring for workers - they wander
-    selectedHex = null
-    zoneRenderer.setSelection(null)
-    const session = sessions.find(s => s.id === workerEntity.entityId)
+    const session = sessions.find(s => s.id === entity.entityId)
     if (session) {
       const activities = activityBySession.get(session.tmuxSession) || []
       workerActivityPanel.show(session, activities)
       cityPanel.hide()
     }
-  } else if (hexEntity?.type === 'city' && hexEntity.entityId) {
+  } else if (entity?.type === 'city' && entity.entityId) {
     // Update selection visual for entities only
-    selectedHex = hex
-    zoneRenderer.setSelection(hex)
     // Focus on city center
-    const city = cities.find(c => c.id === hexEntity.entityId)
+    const city = cities.find(c => c.id === entity.entityId)
     if (city) {
       // Hide worker panel when showing city
       workerActivityPanel.hide()
@@ -435,7 +442,7 @@ canvasOverlay.addEventListener('click', (e) => {
     zoneRenderer.setSelection(null)
   }
 
-  console.log('Clicked hex:', hex, 'Worker:', workerEntity, 'Hex entity:', hexEntity)
+  console.log('Clicked hex:', hex, 'Entity:', entity)
 })
 
 // Double-click for primary actions (focus terminal / new worker)
@@ -445,18 +452,15 @@ canvasOverlay.addEventListener('dblclick', (e) => {
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
 
-  // Check for worker at world position (workers wander)
-  const workerEntity = zoneRenderer.getWorkerAtPosition(worldPos.x, worldPos.z)
+  // Check for entity at hex position
+  const entity = zoneRenderer.getEntityAtHex(hex)
 
-  // Check for city at hex position
-  const hexEntity = zoneRenderer.getEntityAtHex(hex)
-
-  if (workerEntity) {
+  if (entity?.type === 'worker' && entity.entityId) {
     // Double-click worker → focus terminal
-    focusKittyTab(workerEntity.entityId)
-  } else if (hexEntity?.type === 'city' && hexEntity.entityId) {
+    focusKittyTab(entity.entityId)
+  } else if (entity?.type === 'city' && entity.entityId) {
     // Double-click city → new worker
-    const city = cities.find(c => c.id === hexEntity.entityId)
+    const city = cities.find(c => c.id === entity.entityId)
     if (city) promptNewWorker(city)
   } else {
     // Double-click empty tile → new worker if near city
@@ -506,15 +510,12 @@ function handleContextMenu(clientX: number, clientY: number) {
   const worldPos = camera.screenToWorld(clientX, clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
 
-  // Check for worker at world position (workers wander)
-  const workerEntity = zoneRenderer.getWorkerAtPosition(worldPos.x, worldPos.z)
+  // Check for entity at hex position
+  const entity = zoneRenderer.getEntityAtHex(hex)
 
-  // Check for city at hex position
-  const hexEntity = zoneRenderer.getEntityAtHex(hex)
-
-  if (workerEntity) {
+  if (entity?.type === 'worker' && entity.entityId) {
     // Worker right-click: show retire option
-    const session = sessions.find(s => s.id === workerEntity.entityId)
+    const session = sessions.find(s => s.id === entity.entityId)
     if (session) {
       contextMenu.show(clientX, clientY, [
         {
@@ -528,9 +529,9 @@ function handleContextMenu(clientX: number, clientY: number) {
         },
       ])
     }
-  } else if (hexEntity?.type === 'city' && hexEntity.entityId) {
+  } else if (entity?.type === 'city' && entity.entityId) {
     // City right-click: show options
-    const city = cities.find(c => c.id === hexEntity.entityId)
+    const city = cities.find(c => c.id === entity.entityId)
     if (city) {
       contextMenu.show(clientX, clientY, [
         {
@@ -709,27 +710,20 @@ window.addEventListener('keydown', (e) => {
 // Window resize
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
+  labelRenderer.setSize(window.innerWidth, window.innerHeight)
   camera.resize()
 })
 
 // Render loop with delta time tracking
-let lastFrameTime = performance.now()
 
 function animate(): void {
   requestAnimationFrame(animate)
 
-  // Calculate delta time in seconds
-  const now = performance.now()
-  const deltaTime = (now - lastFrameTime) / 1000  // ms to seconds
-  lastFrameTime = now
-
-  // Animate workers (force simulation + breathing)
-  zoneRenderer.animate(deltaTime)
-
-  // Update label scales for zoom-stable text
-  zoneRenderer.updateLabelScales(camera.cameraDistance)
+  // Animate (breathing pulse, label scaling)
+  zoneRenderer.animate(camera.cameraDistance)
 
   renderer.render(scene, camera.camera)
+  labelRenderer.render(scene, camera.camera)
 }
 
 // Start
