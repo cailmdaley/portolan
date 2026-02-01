@@ -144,28 +144,43 @@
       .city-label {
         font-family: 'EB Garamond', Garamond, serif;
         font-weight: 600;
-        font-size: 18px;
+        font-size: 22px;
         color: #6B1818;
         font-feature-settings: 'smcp' 1;  /* Small caps */
         text-shadow: 0 1px 2px rgba(30, 20, 15, 0.2);
         white-space: nowrap;
         transform: translateX(-50%);  /* Center horizontally */
+        z-index: 1;
       }
 
       .worker-label {
         font-family: 'EB Garamond', Garamond, serif;
         font-weight: 500;
-        font-size: 15px;
-        color: #4A6B6B;  /* Verdigris ink (idle) */
+        font-size: 14px;
+        color: #2E2A26;  /* Black ink */
         font-feature-settings: 'pcap' 1;  /* Petite caps */
-        text-shadow: 0 1px 2px rgba(30, 20, 15, 0.15);
         white-space: nowrap;
         transform: translateX(-50%);  /* Center horizontally */
+        pointer-events: auto;  /* Clickable (overrides container's none) */
+        cursor: pointer;
+        z-index: 10;  /* Always above city labels */
+        /* Parchment pill background */
+        background: linear-gradient(135deg, #F5EDE0 0%, #E8DFD0 100%);
+        padding: 2px 8px;
+        border-radius: 3px;
+        border: 1px solid rgba(160, 140, 110, 0.4);
+        box-shadow: 0 1px 3px rgba(30, 20, 10, 0.15);
+      }
+
+      .worker-label:hover {
+        background: linear-gradient(135deg, #FFF8EE 0%, #F0E6D6 100%);
+        border-color: rgba(140, 120, 90, 0.6);
       }
 
       .worker-label.working {
         font-weight: 600;
-        color: #8B4A3C;  /* Rust/red ink (working) */
+        background: linear-gradient(135deg, #F8F0E0 0%, #F0E4D0 100%);
+        border-color: rgba(139, 74, 60, 0.4);
       }
 
       /* ═══════════════════════════════════════════════════════════

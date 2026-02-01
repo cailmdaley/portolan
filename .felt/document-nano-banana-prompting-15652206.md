@@ -23,15 +23,19 @@ background will become transparent through difference matting, so the ink lines
 will appear drawn directly on the parchment.
 
 Generate a [CITY TYPE] - [BRIEF DESCRIPTION]:
-- Bird's eye view with slight isometric depth
+- Oblique projection at ~45° from horizontal (cavalier style)
+- Viewed from due south (rotation 0°), looking north
+- Show both rooftops AND south-facing walls in equal proportion
 - [SPECIFIC FEATURES FOR THIS CITY TYPE]
 - Hand-inked linework: sepia, red ochre, and verdigris/teal inks
 
 IMPORTANT for compositing:
 - Pure solid white #FFFFFF background (will become transparent)
 - NO paper texture - the vellum layer provides that
-- Edges should be incomplete and organic - [roads/water/terrain] trailing off, fading at margins
 - NOT a circular frame or ornamental border
+- No compass roses (we draw our own)
+
+CRITICAL for edges: The penwork must fade away organically BEFORE reaching the edge of the image. Roads trail off into nothing, buildings become sketchy and incomplete at the margins, ink lines thin and disappear. NO hard edges or square boundaries — the illustration should float in white space with soft, trailing, incomplete edges all around. Like a vignette drawn by hand.
 
 512x512 pixels. No text labels.
 ```
@@ -99,13 +103,49 @@ Cities without custom sprites get a deterministic default based on city ID hash.
 
 ## Generating for a Specific City
 
-To generate a sprite for a city based on its project:
+**Best approach:** Let Gemini decide the visual metaphor. Describe the project richly, then ask for a city that evokes it.
 
-1. Read the city's README.md, CLAUDE.md, package.json
-2. Synthesize what the project is about (data science? game? API?)
-3. Choose a city type that evokes the project's character
-4. Add project-specific details to the prompt (grid-like for structured code, winding for organic projects)
-5. Run the transparency workflow
-6. Save to `public/sprites/cities/<city-id>.png`
+### Project-Specific Prompt Template
 
-The browser will load custom sprites automatically on next refresh.
+```
+This city represents "[PROJECT NAME]" — [ONE-LINE DESCRIPTION].
+
+[2-4 PARAGRAPHS DESCRIBING THE PROJECT]:
+- What it does, what problem it solves
+- Key concepts, metaphors, or themes
+- The "feel" of working with it (structured? organic? contemplative? efficient?)
+- Any visual metaphors that come naturally (rivers of data, woven threads, etc.)
+
+Create a portolan-style city that evokes this project. You decide the visual metaphor — what kind of city captures its essence?
+
+---
+
+Technical: oblique ~45° projection, viewed from south. Sepia/red ochre/verdigris ink on pure white #FFFFFF background.
+
+CRITICAL for edges: The penwork must fade with CLEAN LINE THINNING — roads trail off as thinner and thinner lines, buildings become sketchy outlines that simply stop. NOT watercolor washes or soft gradients (those cause transparency artifacts). Sharp ink lines that thin out and end cleanly. The illustration should float in white space with organic but crisp trailing edges.
+
+No circular frame, no compass roses. 512x512, no text labels.
+```
+
+### Workflow
+
+1. Read the city's README.md and CLAUDE.md
+2. Write a rich description (let Gemini see the project's character)
+3. Generate with `/nano-banana` using the template above
+4. Edit to black background: `Change white background to solid pure black #000000. Keep EVERYTHING else exactly unchanged.`
+5. Extract alpha: `python scripts/extract_alpha.py white.png black.png public/sprites/cities/<name>.png`
+6. Refresh browser — CitySpritesManager loads by city name automatically
+
+### Examples from This Session
+
+| City | Description Given | Result |
+|------|------------------|--------|
+| felt | DAG-native task tracker, fibers interlock like felt fabric | Abstract woven textile structure |
+| life | Personal life in Palaiseau, France | Warm village with church, Polytechnique |
+| loom | Master tapestry where fibers and infrastructure live | Weaving workshop with braided threads |
+| wedding | Marseille wedding, love for the city | Marseille + countryside mill |
+| email | "Inbox is a garden, not battlefield" | Postal sorting house with letter streams |
+| portolan | This map app itself, meta/recursive | Cartographer's workshop drawing maps |
+| euclid-github | Euclid space telescope consortium | Observatory + scriptorium, data flowing |
+
+The key insight: **describe the project's soul, not just its function**. Let Gemini find the visual metaphor.

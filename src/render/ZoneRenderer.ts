@@ -15,6 +15,7 @@ import {
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './HexGrid'
 import { createVellumPlane } from './VellumShader'
+import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
 import type { City, Session, HexCoord } from '../state/types'
 import { PALETTE } from '../state/types'
@@ -44,10 +45,12 @@ export class ZoneRenderer {
   private hexGrid: HexGrid
   private hexMeshes: Map<string, HexMeshData> = new Map()
   private groundPlane: Mesh | null = null
+  private rhumbLinesGroup: Group | null = null
   private selectionRing: Group | null = null
 
   // Hex geometry settings
   private readonly hexHeight = 0.15
+  private readonly planeSize = 60  // World units
 
   // City sprites manager (nano-banana generated city plans)
   private citySprites: CitySpritesManager
@@ -58,6 +61,9 @@ export class ZoneRenderer {
   // Callback for worker label clicks (since CSS2D labels need direct handlers)
   private onWorkerClick: ((workerId: string, tmuxSession: string) => void) | null = null
   private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
+
+  // Track city positions for rhumb line avoidance
+  private lastCityPositions: string = ''
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
@@ -98,13 +104,31 @@ export class ZoneRenderer {
 
   private createGroundPlane(): void {
     // Vellum background - aged parchment with procedural shader
-    // Size to roughly match hex grid (radius 30 hexes, hexRadius 1.0)
-    // Hex spacing is ~1.73 (sqrt(3)), so radius 30 ≈ 52 units
-    const planeSize = 60  // World units (slightly larger for edge effects)
-
-    this.groundPlane = createVellumPlane(planeSize, planeSize)
+    this.groundPlane = createVellumPlane(this.planeSize, this.planeSize)
     this.groundPlane.position.y = -0.05  // Just below hex level
     this.scene.add(this.groundPlane)
+
+    // Initial rhumb lines (will be regenerated when cities are known)
+    this.updateRhumbLines([])
+  }
+
+  private updateRhumbLines(cityPositions: { x: number; z: number }[]): void {
+    // Remove existing rhumb lines
+    if (this.rhumbLinesGroup) {
+      this.scene.remove(this.rhumbLinesGroup)
+    }
+
+    // Create new rhumb lines avoiding city positions
+    this.rhumbLinesGroup = createRhumbLines({
+      seed: 42,
+      primaryRoses: 3,
+      primaryDirections: 16,
+      primaryOpacity: 0.20,
+      mapRadius: this.planeSize,
+      clusterRadius: 25,
+      avoidPositions: cityPositions,
+    })
+    this.scene.add(this.rhumbLinesGroup)
   }
 
   private createHexShape(scale = 1): Shape {
@@ -310,6 +334,15 @@ export class ZoneRenderer {
   private removeHex(key: string): void {
     const data = this.hexMeshes.get(key)
     if (data) {
+      // Clean up CSS2D label DOM elements
+      if (data.labelObject) {
+        data.labelObject.element.remove()
+      }
+      if (data.workerLabels) {
+        for (const label of data.workerLabels) {
+          label.element.remove()
+        }
+      }
       this.scene.remove(data.group)
       this.hexMeshes.delete(key)
     }
@@ -332,6 +365,17 @@ export class ZoneRenderer {
         // Worker without a city - render as standalone marker
         orphanWorkers.push(session)
       }
+    }
+
+    // Check if city positions changed - regenerate rhumb lines if so
+    const cityPositions = cities.map(c => {
+      const pos = this.hexGrid.axialToCartesian(c.hex)
+      return { x: pos.x, z: pos.z }
+    })
+    const positionsKey = JSON.stringify(cityPositions.map(p => `${p.x.toFixed(1)},${p.z.toFixed(1)}`))
+    if (positionsKey !== this.lastCityPositions) {
+      this.lastCityPositions = positionsKey
+      this.updateRhumbLines(cityPositions)
     }
 
     // Render cities with their workers

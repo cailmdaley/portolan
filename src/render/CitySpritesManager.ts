@@ -12,6 +12,8 @@ export class CitySpritesManager {
   private spriteCache: Map<string, Texture> = new Map()
   private defaultSprites: Map<number, Texture> = new Map()
   private pendingGenerations: Set<string> = new Set()
+  private pendingLoads: Set<string> = new Set()  // Track in-flight loads
+  private failedLoads: Set<string> = new Set()   // Track failed loads (use default)
   private defaultSpritesLoaded = false
 
   constructor() {
@@ -56,7 +58,7 @@ export class CitySpritesManager {
 
   /**
    * Get sprite texture for a city
-   * Returns cached texture, or fallback to default based on city ID hash
+   * Tries to load custom sprite by city name, falls back to default
    */
   getSprite(city: City): Texture | null {
     // Check for city-specific cached sprite
@@ -65,8 +67,40 @@ export class CitySpritesManager {
       return cached
     }
 
-    // Fall back to deterministic default sprite
+    // If we already tried and failed to load this city's sprite, use default
+    if (this.failedLoads.has(city.id)) {
+      return this.getDefaultSprite(city.id)
+    }
+
+    // Try to load custom sprite by city name (if not already loading)
+    if (!this.pendingLoads.has(city.id)) {
+      this.loadCitySprite(city)
+    }
+
+    // While loading, return default
     return this.getDefaultSprite(city.id)
+  }
+
+  /**
+   * Try to load a custom sprite for a city by name
+   */
+  private loadCitySprite(city: City): void {
+    this.pendingLoads.add(city.id)
+    const path = `/sprites/cities/${city.name}.png`
+
+    this.textureLoader.load(
+      path,
+      (texture) => {
+        this.spriteCache.set(city.id, texture)
+        this.pendingLoads.delete(city.id)
+      },
+      undefined,
+      () => {
+        // Failed to load - mark so we don't retry
+        this.failedLoads.add(city.id)
+        this.pendingLoads.delete(city.id)
+      }
+    )
   }
 
   /**

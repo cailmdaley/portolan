@@ -1,6 +1,6 @@
-// Camera.ts - Perspective camera with pan/zoom controls
+// Camera.ts - Orthographic camera with pan/zoom controls (isometric-style)
 
-import { PerspectiveCamera, Vector3 } from 'three'
+import { OrthographicCamera, Vector3 } from 'three'
 import type { CartesianCoord } from '../state/types'
 
 // Safari-specific gesture event (pinch-to-zoom)
@@ -10,19 +10,19 @@ interface GestureEvent extends Event {
 }
 
 export class Camera {
-  camera: PerspectiveCamera
+  camera: OrthographicCamera
   private canvas: HTMLCanvasElement
   private eventTarget: HTMLElement  // May be overlay for Safari compatibility
 
   // Camera state - target point we're looking at
   private target = new Vector3(0, 0, 0)
-  private distance = 15
-  private angle = Math.PI / 4  // 45° from horizontal
+  private zoom = 30  // View half-width in world units (smaller = more zoomed in)
+  private angle = Math.PI / 4  // 45° from horizontal (matches sprite perspective)
   private rotation = 0  // 0° around Y axis (straight-on view)
 
   // Zoom limits
-  private minDistance = 5
-  private maxDistance = 100
+  private minZoom = 5
+  private maxZoom = 100
 
   // Pan state
   private isDragging = false
@@ -35,9 +35,13 @@ export class Camera {
     this.canvas = canvas
     this.eventTarget = eventTarget || canvas
 
-    // Create perspective camera
+    // Create orthographic camera (isometric-style, no perspective distortion)
     const aspect = canvas.clientWidth / canvas.clientHeight
-    this.camera = new PerspectiveCamera(50, aspect, 0.1, 1000)
+    this.camera = new OrthographicCamera(
+      -this.zoom * aspect, this.zoom * aspect,  // left, right
+      this.zoom, -this.zoom,                     // top, bottom
+      0.1, 1000                                  // near, far
+    )
 
     this.setupControls()
     this.updateCamera()
@@ -95,7 +99,7 @@ export class Camera {
       }
       e.preventDefault()
       e.stopPropagation()
-      const delta = e.deltaY > 0 ? 1.1 : 0.9
+      const delta = e.deltaY > 0 ? 1.05 : 0.95  // Slower zoom
       this.zoomBy(delta)
     }, { passive: false })
 
@@ -173,7 +177,7 @@ export class Camera {
   }
 
   zoomBy(factor: number): void {
-    this.distance = Math.max(this.minDistance, Math.min(this.maxDistance, this.distance * factor))
+    this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoom * factor))
     this.updateCamera()
   }
 
@@ -184,9 +188,18 @@ export class Camera {
   }
 
   private updateCamera(): void {
-    // Position camera at distance from target, at angle
-    const y = this.distance * Math.sin(this.angle)
-    const horizontal = this.distance * Math.cos(this.angle)
+    // Update orthographic bounds based on zoom
+    const aspect = this.canvas.clientWidth / this.canvas.clientHeight
+    this.camera.left = -this.zoom * aspect
+    this.camera.right = this.zoom * aspect
+    this.camera.top = this.zoom
+    this.camera.bottom = -this.zoom
+
+    // Position camera looking at target from angle
+    // Distance is arbitrary for ortho, just needs to be far enough
+    const distance = 100
+    const y = distance * Math.sin(this.angle)
+    const horizontal = distance * Math.cos(this.angle)
     const x = this.target.x + horizontal * Math.sin(this.rotation)
     const z = this.target.z + horizontal * Math.cos(this.rotation)
 
@@ -198,30 +211,40 @@ export class Camera {
 
   /**
    * Convert screen coordinates to world coordinates (on Y=0 plane)
+   * For orthographic camera, this is a simple linear mapping
    */
   screenToWorld(screenX: number, screenY: number): CartesianCoord {
     const rect = this.canvas.getBoundingClientRect()
+    const aspect = rect.width / rect.height
 
     // Normalize to -1 to 1
     const nx = ((screenX - rect.left) / rect.width) * 2 - 1
     const ny = -((screenY - rect.top) / rect.height) * 2 + 1
 
-    // Create ray from camera through screen point
-    const rayOrigin = this.camera.position.clone()
-    const rayDir = new Vector3(nx, ny, 0.5)
-      .unproject(this.camera)
-      .sub(rayOrigin)
-      .normalize()
+    // For orthographic: screen coords map directly to camera-relative world coords
+    // nx maps to camera right direction, ny maps to camera up direction
+    const camRight = this.zoom * aspect * nx
+    const camUp = this.zoom * ny
 
-    // Intersect with Y=0 plane
-    if (Math.abs(rayDir.y) < 0.0001) {
-      // Ray parallel to ground, return target
-      return { x: this.target.x, z: this.target.z }
-    }
+    // Convert camera-relative to world coords
+    // Camera looks from south at angle, so:
+    // - camera right = world X (roughly, depends on rotation)
+    // - camera up = mix of world Y and Z (depends on angle)
+    const cosAngle = Math.cos(this.angle)
+    const sinAngle = Math.sin(this.angle)
+    const cosRot = Math.cos(this.rotation)
+    const sinRot = Math.sin(this.rotation)
 
-    const t = -rayOrigin.y / rayDir.y
-    const x = rayOrigin.x + rayDir.x * t
-    const z = rayOrigin.z + rayDir.z * t
+    // Camera right vector (in XZ plane)
+    const rightX = cosRot
+    const rightZ = -sinRot
+
+    // Camera forward vector projected onto XZ plane (screen up moves you "forward")
+    const forwardX = -sinRot * cosAngle
+    const forwardZ = -cosRot * cosAngle
+
+    const x = this.target.x + camRight * rightX + camUp * forwardX
+    const z = this.target.z + camRight * rightZ + camUp * forwardZ
 
     return { x, z }
   }
@@ -230,9 +253,7 @@ export class Camera {
    * Handle window resize
    */
   resize(): void {
-    const aspect = this.canvas.clientWidth / this.canvas.clientHeight
-    this.camera.aspect = aspect
-    this.updateCamera()
+    this.updateCamera()  // Ortho bounds updated in updateCamera
   }
 
   /**
@@ -243,9 +264,9 @@ export class Camera {
   }
 
   /**
-   * Get current camera distance for zoom-aware label scaling
+   * Get current zoom level for zoom-aware label scaling
    */
   get cameraDistance(): number {
-    return this.distance
+    return this.zoom  // Higher = more zoomed out
   }
 }
