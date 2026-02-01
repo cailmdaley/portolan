@@ -50,7 +50,7 @@ export class ZoneRenderer {
 
   // Hex geometry settings
   private readonly hexHeight = 0.15
-  private readonly planeSize = 60  // World units
+  private readonly planeSize = 500  // World units (large for ~infinite appearance)
 
   // City sprites manager (nano-banana generated city plans)
   private citySprites: CitySpritesManager
@@ -121,7 +121,7 @@ export class ZoneRenderer {
     // Create new rhumb lines avoiding city positions
     this.rhumbLinesGroup = createRhumbLines({
       seed: 42,
-      primaryRoses: 3,
+      primaryRoses: 4,
       primaryDirections: 16,
       primaryOpacity: 0.20,
       mapRadius: this.planeSize,
