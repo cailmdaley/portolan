@@ -1244,6 +1244,7 @@ function shutdown() {
   sessionTracker.stop();
   gitStatusManager.stop();
   recentFilesManager.stop();
+  eventWatcher.stop();
   conversationCache.stop();
   server.close();
   process.exit(0);
