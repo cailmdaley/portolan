@@ -67,6 +67,14 @@ const angle = (Math.PI / 3) * i - Math.PI / 2  // correct
 
 Reference: [Red Blob Games](https://www.redblobgames.com/grids/hexagons/)
 
+## Debugging
+
+```bash
+curl http://localhost:4004/debug-transcripts   # session→transcript mappings
+```
+
+Session-transcript correlation uses `lsof` to detect which transcript file each Claude process has open (via `~/.claude/tasks/{uuid}/`). Mappings persist to `~/.portolan/transcript-mappings.json`.
+
 ## Troubleshooting: Remote Workers Missing
 
 Remote workers require an SSH tunnel (`RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`).
@@ -92,6 +100,8 @@ ssh -T remote-host "tmux kill-session -t portolan-agent; tmux new-session -d -s 
 **Vite HMR stacks constructor listeners.** Document-level listeners added in constructors accumulate across hot reloads. Add listeners dynamically (in show/hide) with stored references for cleanup.
 
 **Event handler order matters.** `stopImmediatePropagation` only blocks handlers registered *after* yours. Earlier handlers still fire. See fiber `pattern-event-handler-d26b6bae`.
+
+**`kill $PPID` doesn't trigger Claude Code Stop hook.** Ralph loops exit via SIGTERM, which bypasses the Stop hook entirely. The conversation hook works around this by scanning recent transcripts on UserPromptSubmit to capture any missed assistant content.
 
 ## Deep Dives
 
