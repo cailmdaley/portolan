@@ -19,8 +19,9 @@ export class WorkerActivityPanel {
   private currentConversation: ConversationMessage[] = []
   private ignoreNextClick = false
   private isResizing = false
-  private minWidth = 400
-  private maxWidth = 900
+  private readonly minWidth = 400
+  private readonly maxWidth = 900
+  private readonly clickableTools = ['Read', 'Write', 'Edit']
   private onFileClick: FileClickCallback | null = null
   private expandedMessages: Set<string> = new Set()  // Uses timestamp as stable key
   private isInitialRender = true
@@ -415,7 +416,7 @@ export class WorkerActivityPanel {
 
       if (msg.type === 'user' || msg.type === 'assistant') {
         // Flush any pending tool group
-        if (currentToolGroup && currentToolGroup.type === 'tool_group') {
+        if (currentToolGroup) {
           groups.push(currentToolGroup)
           currentToolGroup = null
         }
@@ -425,16 +426,14 @@ export class WorkerActivityPanel {
         if (!currentToolGroup) {
           currentToolGroup = { type: 'tool_group', messages: [], startIndex: i }
         }
-        if (currentToolGroup.type === 'tool_group') {
-          const result = msg.type === 'tool_use' && msg.toolUseId
-            ? toolResultMap.get(msg.toolUseId)
-            : undefined
-          currentToolGroup.messages.push({ msg, index: i, result })
-        }
+        const result = msg.type === 'tool_use' && msg.toolUseId
+          ? toolResultMap.get(msg.toolUseId)
+          : undefined
+        currentToolGroup.messages.push({ msg, index: i, result })
       }
     }
     // Flush final tool group
-    if (currentToolGroup && currentToolGroup.type === 'tool_group') {
+    if (currentToolGroup) {
       groups.push(currentToolGroup)
     }
 
@@ -659,13 +658,11 @@ export class WorkerActivityPanel {
   }
 
   private isClickableTool(msg: ConversationMessage): boolean {
-    const clickableTools = ['Read', 'Write', 'Edit']
-    return Boolean(msg.toolName && clickableTools.includes(msg.toolName) && this.getToolFilePath(msg))
+    return Boolean(msg.toolName && this.clickableTools.includes(msg.toolName) && this.getToolFilePath(msg))
   }
 
   private getToolFilePath(msg: ConversationMessage): string | null {
-    const input = msg.toolInput
-    return input?.file_path || input?.path || null
+    return msg.toolInput?.file_path ?? msg.toolInput?.path ?? null
   }
 
   private truncateText(text: string, maxLen: number): string {
