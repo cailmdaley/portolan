@@ -464,6 +464,18 @@ export class ZoneRenderer {
     data.labelObject?.element.remove()
     data.workerLabels?.forEach(label => label.element.remove())
 
+    // Remove swarms from group before disposing (they may be reused)
+    // Swarm groups have userData.workerId set
+    const swarmsToPreserve: Group[] = []
+    data.group.traverse((child) => {
+      if (child.userData?.workerId && child.parent === data.group) {
+        swarmsToPreserve.push(child as Group)
+      }
+    })
+    for (const swarmGroup of swarmsToPreserve) {
+      data.group.remove(swarmGroup)
+    }
+
     // Dispose Three.js resources before removing from scene
     this.disposeObject(data.group)
     this.scene.remove(data.group)
