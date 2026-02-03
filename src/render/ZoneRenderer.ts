@@ -15,6 +15,9 @@ import {
   BufferGeometry,
   LineBasicMaterial,
   Vector3,
+  Object3D,
+  Material,
+  Line,
 } from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './HexGrid'
@@ -75,6 +78,9 @@ export class ZoneRenderer {
   // Track city positions for rhumb line avoidance
   private lastCityPositions: string = ''
 
+  // Track city/worker state signatures for diffing (avoid unnecessary re-renders)
+  private lastCitySignatures: Map<string, string> = new Map()
+
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
@@ -113,6 +119,31 @@ export class ZoneRenderer {
     }
   }
 
+  /**
+   * Dispose all Three.js resources in an object tree.
+   * Prevents memory leaks by releasing GPU resources.
+   */
+  private disposeObject(obj: Object3D): void {
+    obj.traverse((child) => {
+      if (child instanceof Mesh) {
+        child.geometry?.dispose()
+        if (child.material instanceof Material) {
+          child.material.dispose()
+          if ('map' in child.material) (child.material as MeshBasicMaterial).map?.dispose()
+        } else if (Array.isArray(child.material)) {
+          child.material.forEach(m => {
+            m.dispose()
+            if ('map' in m) (m as MeshBasicMaterial).map?.dispose()
+          })
+        }
+      }
+      if (child instanceof LineLoop || child instanceof Line) {
+        child.geometry?.dispose()
+        ;(child.material as Material)?.dispose()
+      }
+    })
+  }
+
   private createGroundPlane(): void {
     // Vellum background - aged parchment with procedural shader
     this.groundPlane = createVellumPlane(this.planeSize, this.planeSize)
@@ -124,8 +155,9 @@ export class ZoneRenderer {
   }
 
   private updateRhumbLines(cityPositions: { x: number; z: number }[]): void {
-    // Remove existing rhumb lines
+    // Remove and dispose existing rhumb lines
     if (this.rhumbLinesGroup) {
+      this.disposeObject(this.rhumbLinesGroup)
       this.scene.remove(this.rhumbLinesGroup)
     }
 
@@ -431,14 +463,29 @@ export class ZoneRenderer {
           label.element.remove()
         }
       }
+      // Dispose Three.js resources before removing from scene
+      this.disposeObject(data.group)
       this.scene.remove(data.group)
       this.hexMeshes.delete(key)
     }
   }
 
+  /**
+   * Build a signature string for a city+workers state.
+   * Used for diffing to avoid unnecessary re-renders.
+   */
+  private buildCitySignature(city: City, workers: Session[]): string {
+    const workerSigs = workers
+      .map(w => `${w.id}:${w.status}:${w.name}`)
+      .sort()
+      .join(',')
+    return `${city.name}|${city.hex.q},${city.hex.r}|${city.fiberCount}|${workerSigs}`
+  }
+
   updateState(cities: City[], sessions: Session[]): void {
     // Track what should exist
     const expectedKeys = new Set<string>()
+    const newSignatures = new Map<string, string>()
 
     // Group workers by city
     const workersByCity = new Map<string, Session[]>()
@@ -466,15 +513,23 @@ export class ZoneRenderer {
       this.updateRhumbLines(cityPositions)
     }
 
-    // Render cities with their workers
+    // Render cities with their workers (only if changed)
     for (const city of cities) {
       const key = this.hexGrid.hexKey(city.hex)
       expectedKeys.add(key)
       const cityWorkers = workersByCity.get(city.id) || []
-      this.renderCity(city, cityWorkers)
+
+      // Build signature and check if re-render needed
+      const signature = this.buildCitySignature(city, cityWorkers)
+      newSignatures.set(key, signature)
+
+      if (this.lastCitySignatures.get(key) !== signature) {
+        this.renderCity(city, cityWorkers)
+      }
     }
 
     // Render orphan workers (no city) as small markers
+    // (renderOrphanWorker already has internal diffing)
     for (const session of orphanWorkers) {
       if (session.hex) {
         const key = this.hexGrid.hexKey(session.hex)
@@ -489,6 +544,9 @@ export class ZoneRenderer {
         this.removeHex(key)
       }
     }
+
+    // Update signature cache (removes old, adds new)
+    this.lastCitySignatures = newSignatures
   }
 
   getHexAtPosition(x: number, z: number): HexCoord {
@@ -755,7 +813,8 @@ export class ZoneRenderer {
   updateWorkerActivity(tmuxSession: string, activities: Activity[]): void {
     for (const [, data] of this.hexMeshes) {
       if (data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh) {
-        // Remove old decal
+        // Dispose old decal resources before removing
+        this.disposeObject(data.activityMesh)
         data.group.remove(data.activityMesh)
 
         // Create new decal with updated activities
