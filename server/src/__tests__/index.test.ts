@@ -68,7 +68,7 @@ const mockExec = childProcess.exec as unknown as ReturnType<typeof vi.fn>;
 await import('../index.js');
 
 describe('WebSocket Server Integration', () => {
-  const serverPort = 4004;
+  const serverPort = 4099;
   let ws: WebSocket | null = null;
 
   beforeAll(async () => {

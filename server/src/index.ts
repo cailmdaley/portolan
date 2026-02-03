@@ -75,7 +75,7 @@ interface StateUpdate {
 // Constants
 // ============================================================================
 
-const PORT = 4004;
+const PORT = process.env.VITEST ? 4099 : 4004;
 const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 
 // ============================================================================
@@ -1233,6 +1233,14 @@ setInterval(() => {
     sessionTracker['notifyChange']();
   }
 }, 5000);
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`Port ${PORT} already in use - another instance is running`);
+  } else {
+    throw err;
+  }
+});
 
 server.listen(PORT, () => {
   console.log(`Portolan server running on port ${PORT}`);
