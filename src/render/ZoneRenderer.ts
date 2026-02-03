@@ -81,6 +81,11 @@ export class ZoneRenderer {
   // Track city/worker state signatures for diffing (avoid unnecessary re-renders)
   private lastCitySignatures: Map<string, string> = new Map()
 
+  // Animation optimization: cache last values to skip redundant work
+  private lastCameraDistance: number = -1
+  private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
+  private workingWorkerIds: Set<string> = new Set()  // Only workers that need breathing animation
+
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
@@ -491,11 +496,19 @@ export class ZoneRenderer {
     const expectedKeys = new Set<string>()
     const newSignatures = new Map<string, string>()
 
+    // Rebuild working workers set for animation optimization
+    this.workingWorkerIds.clear()
+
     // Group workers by city
     const workersByCity = new Map<string, Session[]>()
     const orphanWorkers: Session[] = []
 
     for (const session of sessions) {
+      // Track working orphan workers for breathing animation (city workers don't have meshes)
+      if (session.status === 'working' && session.hex && !session.cityId) {
+        this.workingWorkerIds.add(this.hexGrid.hexKey(session.hex))
+      }
+
       if (session.cityId) {
         const existing = workersByCity.get(session.cityId) || []
         existing.push(session)
@@ -704,10 +717,13 @@ export class ZoneRenderer {
 
   /**
    * Animate and update zoom-based label visibility
+   * Optimized: skips work when camera hasn't changed and no workers are animating
    */
   animate(cameraDistance?: number, _cameraCenter?: { x: number; z: number }): void {
-    // Scale labels: fixed size when close, then scale with map when zoomed out
-    if (cameraDistance !== undefined) {
+    // Scale labels: only update when camera distance actually changed
+    if (cameraDistance !== undefined && cameraDistance !== this.lastCameraDistance) {
+      this.lastCameraDistance = cameraDistance
+
       const scaleThreshold = 7  // Below this: fixed size. Above: scale with map.
       const scale = cameraDistance <= scaleThreshold
         ? 1.0
@@ -716,33 +732,38 @@ export class ZoneRenderer {
       const cityFontSize = Math.round(28 * scale)   // City base: 28px
       const workerFontSize = Math.round(18 * scale) // Worker base: 18px
 
-      for (const [, data] of this.hexMeshes) {
-        if (data.type === 'city') {
-          if (data.labelObject) {
-            const label = data.labelObject.element as HTMLElement
-            label.style.fontSize = `${cityFontSize}px`
+      // Only update DOM if font sizes actually changed
+      if (cityFontSize !== this.lastFontSizes.city || workerFontSize !== this.lastFontSizes.worker) {
+        this.lastFontSizes = { city: cityFontSize, worker: workerFontSize }
+
+        for (const [, data] of this.hexMeshes) {
+          if (data.type === 'city') {
+            if (data.labelObject) {
+              const label = data.labelObject.element as HTMLElement
+              label.style.fontSize = `${cityFontSize}px`
+            }
+            data.workerLabels?.forEach(w => {
+              const el = w.element as HTMLElement
+              el.style.fontSize = `${workerFontSize}px`
+            })
           }
-          data.workerLabels?.forEach(w => {
-            const el = w.element as HTMLElement
-            el.style.fontSize = `${workerFontSize}px`
-          })
         }
       }
     }
 
-    // Worker breathing animation
+    // Worker breathing animation: only iterate if there are working workers
+    if (this.workingWorkerIds.size === 0) return
+
     const now = Date.now()
     const period = 2500
+    const t = (now % period) / period
+    const breathScale = 1.0 + 0.03 * Math.sin(t * Math.PI * 2)
 
-    for (const [, data] of this.hexMeshes) {
-      if (data.type === 'worker' && data.mesh) {
-        if (data.status === 'working') {
-          const t = (now % period) / period
-          const scale = 1.0 + 0.03 * Math.sin(t * Math.PI * 2)
-          data.mesh.scale.setScalar(scale)
-        } else {
-          data.mesh.scale.setScalar(1.0)
-        }
+    // Only animate workers that are actually working
+    for (const workerId of this.workingWorkerIds) {
+      const data = this.hexMeshes.get(workerId)
+      if (data?.mesh) {
+        data.mesh.scale.setScalar(breathScale)
       }
     }
   }
