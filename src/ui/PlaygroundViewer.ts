@@ -153,4 +153,9 @@ export class PlaygroundViewer {
   isVisible(): boolean {
     return this.panel.classList.contains('visible')
   }
+
+  dispose(): void {
+    this.hide()
+    this.panel.remove()
+  }
 }

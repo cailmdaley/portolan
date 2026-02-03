@@ -313,4 +313,9 @@ export class NewWorkerDialog {
       document.removeEventListener('keydown', this.escapeHandler)
     }
   }
+
+  dispose(): void {
+    this.hide()
+    this.overlay.remove()
+  }
 }

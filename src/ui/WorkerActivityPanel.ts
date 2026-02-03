@@ -773,4 +773,12 @@ export class WorkerActivityPanel {
   isVisible(): boolean {
     return this.panel.classList.contains('visible')
   }
+
+  /**
+   * Dispose panel (call during HMR to prevent leaks)
+   */
+  dispose(): void {
+    this.hide()
+    this.panel.remove()
+  }
 }

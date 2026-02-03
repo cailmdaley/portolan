@@ -56,4 +56,9 @@ export class ViewOverlay {
   isVisible(): boolean {
     return this.overlay.classList.contains('visible')
   }
+
+  dispose(): void {
+    this.hide()
+    this.overlay.remove()
+  }
 }

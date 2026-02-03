@@ -113,4 +113,9 @@ export class ContextMenu {
     this.menu.style.display = 'none'
     this.removeCloseHandler()
   }
+
+  dispose(): void {
+    this.hide()
+    this.menu.remove()
+  }
 }

@@ -1105,6 +1105,12 @@ export class FileViewerModal {
     return this.modal.classList.contains('visible')
   }
 
+  dispose(): void {
+    this.hide()
+    this.backdrop.remove()
+    this.modal.remove()
+  }
+
   // ============================================================================
   // Selection Toolbar
   // ============================================================================

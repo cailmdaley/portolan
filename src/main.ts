@@ -827,6 +827,17 @@ if (import.meta.hot) {
     window.removeEventListener('keydown', escapeKeyHandler)
     window.removeEventListener('resize', resizeHandler)
 
+    // Dispose UI panels (removes DOM and detaches document listeners)
+    cityPanel.dispose()
+    workerActivityPanel.dispose()
+    fileViewerModal.dispose()
+    contextMenu.dispose()
+    newWorkerDialog.dispose()
+    viewOverlay.dispose()
+    tabbedPlansView.dispose()
+    claimsDashboard.dispose()
+    playgroundViewer.dispose()
+
     // Dispose renderer components in reverse initialization order
     camera.dispose()
     zoneRenderer.dispose()
