@@ -53,6 +53,7 @@ import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager, GitStatus } from './GitStatusManager.js';
 import { RecentFilesManager, RecentFile } from './RecentFilesManager.js';
 import { TranscriptReader } from './TranscriptReader.js';
+import { ConversationCache } from './ConversationCache.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import { EventWatcher, type ActivityEvent } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
@@ -90,6 +91,7 @@ const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFilesManager = new RecentFilesManager();
 const transcriptReader = new TranscriptReader();
+const conversationCache = new ConversationCache();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
@@ -196,6 +198,13 @@ const sessionLookup = {
     }
     return undefined;
   },
+  getAllSessions(): Session[] {
+    const all: Session[] = [...sessionTracker.getSessions()];
+    for (const originSessions of remoteSessions.values()) {
+      all.push(...originSessions.values());
+    }
+    return all;
+  },
 };
 
 const cityLookup = {
@@ -219,6 +228,7 @@ httpApi.setSessionLookup(sessionLookup);
 httpApi.setRecentFilesManager(recentFilesManager);
 httpApi.setRemoteConversationLookup((sessionId) => remoteConversations.get(sessionId));
 httpApi.setTranscriptReader(transcriptReader);
+httpApi.setConversationCache(conversationCache);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 
 // Callback for creating new workers (used by send-annotations endpoint)
@@ -1106,7 +1116,7 @@ if (localPlannotatorPort) {
 sessionTracker.start(2000);
 
 eventWatcher.setSessionTracker(sessionTracker);
-eventWatcher.onActivity((activity) => {
+eventWatcher.onActivity(async (activity) => {
   console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
 
   // Find the session for this activity
@@ -1122,16 +1132,21 @@ eventWatcher.onActivity((activity) => {
     }
   }
 
-  // Detect and track the transcript file for this session when activity is received
-  // This helps associate the correct transcript with each tmux session
-  if (session?.cwd && session.id) {
+  // Track the transcript file for this session using the sessionId from the activity event
+  // The activity's sessionId is the Claude transcript UUID (e.g., "83bbd926-...")
+  // Only for local sessions - remote sessions send their own conversation data
+  if (session?.cwd && session.id && session.originId === 'local' && activity.sessionId) {
+    const claudeSessionId = activity.sessionId;
+    const escapedPath = session.cwd.replace(/\//g, '-');
+    const transcriptPath = `${process.env.HOME}/.claude/projects/${escapedPath}/${claudeSessionId}.jsonl`;
+
     const existingTranscript = transcriptReader.getSessionTranscript(session.id);
-    if (!existingTranscript) {
-      // First activity for this session - detect the active transcript
-      const detected = transcriptReader.detectActiveTranscript(session.cwd, 10000);
-      if (detected) {
-        console.log(`[Transcript] Mapped session ${session.tmuxSession} to ${detected.split('/').pop()}`);
-        transcriptReader.setSessionTranscript(session.id, detected);
+    if (existingTranscript !== transcriptPath) {
+      // Activity is from a different transcript than we have mapped - update the mapping
+      const fs = await import('fs');
+      if (fs.existsSync(transcriptPath)) {
+        console.log(`[Transcript] Activity-based mapping: ${session.tmuxSession} → ${claudeSessionId}.jsonl`);
+        transcriptReader.setSessionTranscript(session.id, transcriptPath);
       }
     }
   }
@@ -1151,6 +1166,21 @@ recentFilesManager.setUpdateHandler(({ path, files }) => {
   buildState().then(broadcast);
 });
 recentFilesManager.start();
+
+// Conversation cache: broadcast new messages via WebSocket
+conversationCache.onMessage((sessionId, messages) => {
+  const message = JSON.stringify({
+    type: 'conversation',
+    sessionId,
+    messages,
+  });
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  }
+});
+conversationCache.start();
 
 setInterval(refreshFiberCounts, FIBER_REFRESH_INTERVAL);
 
@@ -1185,6 +1215,7 @@ process.on('SIGINT', () => {
   sessionTracker.stop();
   gitStatusManager.stop();
   recentFilesManager.stop();
+  conversationCache.stop();
   server.close();
   process.exit(0);
 });

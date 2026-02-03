@@ -19,6 +19,7 @@ import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.
 import type { Session } from './SessionTracker.js';
 import type { RecentFilesManager } from './RecentFilesManager.js';
 import type { TranscriptReader } from './TranscriptReader.js';
+import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 
 const execAsync = promisify(exec);
 
@@ -40,6 +41,7 @@ interface PersistenceLookup {
 
 interface SessionLookup {
   findSession(sessionId: string): Session | undefined;
+  getAllSessions(): Session[];
 }
 
 // ============================================================================
@@ -58,6 +60,7 @@ export class HttpApi {
   private recentFilesManager: RecentFilesManager | null = null;
   private transcriptReader: TranscriptReader | null = null;
   private remoteConversationLookup: RemoteConversationLookup | null = null;
+  private conversationCache: ConversationCache | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -102,6 +105,13 @@ export class HttpApi {
    */
   setRemoteConversationLookup(lookup: RemoteConversationLookup): void {
     this.remoteConversationLookup = lookup;
+  }
+
+  /**
+   * Set conversation cache for hook-based conversation updates
+   */
+  setConversationCache(cache: ConversationCache): void {
+    this.conversationCache = cache;
   }
 
   /**
@@ -180,6 +190,11 @@ export class HttpApi {
       return true;
     }
 
+    if (url.pathname === '/send-message' && req.method === 'POST') {
+      await this.handleSendMessage(req, res);
+      return true;
+    }
+
     if (url.pathname === '/file-as-fiber' && req.method === 'POST') {
       await this.handleFileAsFiber(req, res);
       return true;
@@ -197,6 +212,22 @@ export class HttpApi {
 
     if (url.pathname === '/conversation') {
       await this.handleConversation(url, res);
+      return true;
+    }
+
+    if (url.pathname === '/debug-transcripts') {
+      await this.handleDebugTranscripts(res);
+      return true;
+    }
+
+    // Hook endpoints for conversation capture
+    if (req.method === 'POST' && url.pathname === '/hook/message') {
+      await this.handleHookMessage(req, res);
+      return true;
+    }
+
+    if (url.pathname === '/hook/health') {
+      await this.handleHookHealth(res);
       return true;
     }
 
@@ -1013,6 +1044,87 @@ export class HttpApi {
   }
 
   /**
+   * POST /send-message
+   * Send a chat message to a worker's tmux session
+   */
+  private async handleSendMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.sessionLookup) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session lookup not initialized' }));
+      return;
+    }
+
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+    }
+
+    let data: { sessionId: string; message: string };
+    try {
+      data = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { sessionId, message } = data;
+
+    if (!sessionId || !message?.trim()) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'sessionId and message are required' }));
+      return;
+    }
+
+    const session = this.sessionLookup.findSession(sessionId);
+    if (!session) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session not found' }));
+      return;
+    }
+
+    const tmuxSession = session.tmuxSession;
+    const isRemote = session.originId !== 'local';
+    let sshHost: string | undefined;
+
+    if (isRemote) {
+      const origin = this.originLookup.getOrigin(session.originId);
+      sshHost = origin?.sshHost;
+      if (!sshHost) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Origin not found for remote session' }));
+        return;
+      }
+    }
+
+    try {
+      const escapedSession = tmuxSession.replace(/'/g, "'\\''");
+
+      if (!isRemote) {
+        // Local: load message to buffer, paste, then send Enter to execute
+        execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
+        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
+        execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
+      } else {
+        // Remote: same via SSH
+        execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: message, timeout: 10000 });
+        execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
+        execSync(`ssh ${sshHost} "tmux send-keys -t '${escapedSession}' Enter"`, { timeout: 10000 });
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ success: true }));
+    } catch (error: any) {
+      console.error('Failed to send message:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to send message: ' + error.message }));
+    }
+  }
+
+  /**
    * Format annotations as markdown for Claude
    * Includes full file path and optional global comment
    */
@@ -1099,6 +1211,7 @@ export class HttpApi {
     let data: {
       filePath: string;
       originId: string;
+      cityPath?: string;
       title: string;
       body: string;
       kind?: string;
@@ -1119,8 +1232,8 @@ export class HttpApi {
       return;
     }
 
-    // Get the city path (directory containing the file)
-    const cityPath = filePath.substring(0, filePath.lastIndexOf('/'));
+    // Use provided cityPath, or fall back to file's parent directory
+    const cityPath = data.cityPath || filePath.substring(0, filePath.lastIndexOf('/'));
     const isRemote = originId !== 'local' && !!originId;
 
     try {
@@ -1320,24 +1433,31 @@ export class HttpApi {
         const cached = this.remoteConversationLookup?.(sessionId);
         messages = cached ? cached.slice(-limit) : [];
       } else {
-        // Local session: read from transcript files
-        // Check if we have a mapped transcript for this session
-        let mappedTranscript = this.transcriptReader.getSessionTranscript(sessionId);
-
-        // If no mapping exists, try to detect the active transcript
-        if (!mappedTranscript) {
-          // If session is working, detect which transcript was just modified
-          if (session.status === 'working') {
-            const detected = this.transcriptReader.detectActiveTranscript(session.cwd, 10000);
-            if (detected) {
-              this.transcriptReader.setSessionTranscript(sessionId, detected);
-              mappedTranscript = detected;
-            }
+        // Local session: prefer ConversationCache (hook-based), fall back to TranscriptReader
+        if (this.conversationCache) {
+          messages = this.conversationCache.getMessages(sessionId, limit);
+          // If no messages in cache, try by tmux session name
+          if (messages.length === 0 && session.tmuxSession) {
+            messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
           }
+        } else {
+          messages = [];
         }
 
-        // Get messages, using session-specific transcript if available
-        messages = await this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
+        // Fall back to transcript reader if cache is empty
+        if (messages.length === 0 && this.transcriptReader) {
+          const currentMapping = this.transcriptReader.getSessionTranscript(sessionId);
+
+          // Try lsof detection when Claude is actively running in this tmux session
+          if (session.tmuxSession) {
+            const detected = await this.transcriptReader.detectTranscriptFromTmux(session.tmuxSession, session.cwd);
+            if (detected && detected !== currentMapping) {
+              this.transcriptReader.setSessionTranscript(sessionId, detected);
+            }
+          }
+
+          messages = await this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
+        }
       }
 
       res.writeHead(200, {
@@ -1350,5 +1470,109 @@ export class HttpApi {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to fetch conversation' }));
     }
+  }
+
+  private async handleDebugTranscripts(res: ServerResponse): Promise<void> {
+    const mappings = this.transcriptReader?.getAllSessionMappings() || new Map();
+    const sessions = this.sessionLookup?.getAllSessions() || [];
+
+    const debug = {
+      mappings: Object.fromEntries(
+        [...mappings.entries()].map(([id, path]) => [id, path.split('/').pop()])
+      ),
+      sessions: sessions.map(s => ({
+        id: s.id,
+        name: s.name,
+        tmuxSession: s.tmuxSession,
+        cwd: s.cwd,
+        status: s.status,
+        mappedTranscript: mappings.get(s.id)?.split('/').pop() || null
+      }))
+    };
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(debug, null, 2));
+  }
+
+  // ============================================================================
+  // Hook Endpoints for Conversation Capture
+  // ============================================================================
+
+  /**
+   * POST /hook/message
+   * Receive conversation messages from Claude Code hooks
+   * Body: { sessionId, tmuxSession, cwd, messages: [{ type, content, timestamp }] }
+   */
+  private async handleHookMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.conversationCache) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Conversation cache not configured' }));
+      return;
+    }
+
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+    }
+
+    let data: {
+      sessionId: string;
+      tmuxSession: string;
+      cwd: string;
+      messages: CachedMessage[];
+    };
+
+    try {
+      data = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const { sessionId, tmuxSession, cwd, messages } = data;
+
+    if (!sessionId || !tmuxSession || !messages || !Array.isArray(messages)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required fields: sessionId, tmuxSession, messages' }));
+      return;
+    }
+
+    try {
+      this.conversationCache.addMessages(sessionId, tmuxSession, cwd || '', messages);
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ success: true, count: messages.length }));
+    } catch (error: any) {
+      console.error('[Hook] Failed to add messages:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to add messages' }));
+    }
+  }
+
+  /**
+   * GET /hook/health
+   * Debug endpoint showing last event time per session
+   */
+  private async handleHookHealth(res: ServerResponse): Promise<void> {
+    if (!this.conversationCache) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Conversation cache not configured' }));
+      return;
+    }
+
+    const health = this.conversationCache.getHealthInfo();
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(health, null, 2));
   }
 }
