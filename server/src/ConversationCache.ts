@@ -39,7 +39,7 @@ interface PersistedData {
   sessions: Record<string, SessionCache>;
 }
 
-type MessageCallback = (sessionId: string, messages: CachedMessage[]) => void;
+type MessageCallback = (sessionId: string, tmuxSession: string, messages: CachedMessage[]) => void;
 
 export class ConversationCache {
   private sessions: Map<string, SessionCache> = new Map();
@@ -133,7 +133,7 @@ export class ConversationCache {
 
     // Notify callback
     if (this.messageCallback) {
-      this.messageCallback(sessionId, newMessages);
+      this.messageCallback(sessionId, tmuxSession, newMessages);
     }
 
     console.log(`[ConversationCache] ${sessionId}: +${newMessages.length} messages (${cache.messages.length} total)`);

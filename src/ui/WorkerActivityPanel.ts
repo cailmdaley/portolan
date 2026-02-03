@@ -277,15 +277,15 @@ export class WorkerActivityPanel {
    * Handle WebSocket message - returns true if handled
    */
   handleMessage(message: unknown): boolean {
-    const msg = message as { type?: string; sessionId?: string; messages?: ConversationMessage[] }
-    if (msg.type === 'conversation' && msg.sessionId && msg.messages) {
-      // Only process if this is the currently displayed session
-      if (this.panel.classList.contains('visible') && this.currentSession?.id === msg.sessionId) {
-        this.appendMessages(msg.messages)
-      }
-      return true
+    const msg = message as { type?: string; tmuxSession?: string; messages?: ConversationMessage[] }
+    if (msg.type !== 'conversation' || !msg.messages) return false
+
+    // Match by tmuxSession (stable) since Claude's sessionId changes each restart
+    if (this.panel.classList.contains('visible') &&
+        this.currentSession?.tmuxSession === msg.tmuxSession) {
+      this.appendMessages(msg.messages)
     }
-    return false
+    return true
   }
 
   /**

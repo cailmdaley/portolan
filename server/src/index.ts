@@ -1168,10 +1168,11 @@ recentFilesManager.setUpdateHandler(({ path, files }) => {
 recentFilesManager.start();
 
 // Conversation cache: broadcast new messages via WebSocket
-conversationCache.onMessage((sessionId, messages) => {
+conversationCache.onMessage((sessionId, tmuxSession, messages) => {
   const message = JSON.stringify({
     type: 'conversation',
     sessionId,
+    tmuxSession,
     messages,
   });
   for (const client of clients) {
