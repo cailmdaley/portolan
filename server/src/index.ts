@@ -1080,6 +1080,12 @@ wss.on('connection', async (ws, req) => {
         } else if (message.type === 'agent_conversation') {
           const conv = (message as AgentConversationMessage).payload;
 
+          // Validate sessionId - skip if undefined/invalid (old agent versions may send this)
+          if (!conv.sessionId || conv.sessionId === 'undefined') {
+            console.warn(`[Conversation] Skipping invalid sessionId from ${origin.id}/${conv.tmuxSession}`);
+            return;
+          }
+
           // Route through ConversationCache for persistence and deduplication
           // Prefix tmux session with origin for uniqueness across machines
           const remoteTmux = `${origin.id}/${conv.tmuxSession}`;

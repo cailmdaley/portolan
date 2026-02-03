@@ -100,6 +100,12 @@ export class ConversationCache {
   ): void {
     if (messages.length === 0) return;
 
+    // Skip invalid sessionIds
+    if (!sessionId || sessionId === 'undefined') {
+      console.warn(`[ConversationCache] Skipping invalid sessionId for ${tmuxSession}`);
+      return;
+    }
+
     let cache = this.sessions.get(sessionId);
     if (!cache) {
       cache = {
@@ -297,6 +303,9 @@ export class ConversationCache {
       if (data.version !== 1) return;
 
       for (const [sessionId, cache] of Object.entries(data.sessions)) {
+        // Skip invalid sessionIds from old data
+        if (!sessionId || sessionId === 'undefined') continue;
+
         this.sessions.set(sessionId, cache);
         this.lastEventBySession.set(sessionId, cache.lastUpdate);
       }
