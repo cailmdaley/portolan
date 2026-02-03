@@ -1,9 +1,11 @@
 ---
 title: Map-pinned conversation cards
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-03T20:51:41.692455+01:00
+closed-at: 2026-02-03T22:01:29.867872+01:00
+close-reason: 'Complete. Replaced WorkerActivityPanel sidebar with map-pinned CSS2D conversation cards. Implementation: ConversationCard.ts (854 lines), ZoneRenderer card management, main.ts wiring, comprehensive CSS. Features: cards anchor to worker positions, move with pan/zoom (scale 0.72-1.2), multiple cards open simultaneously, last 3 exchanges visible, single-item groups expand directly, 5s timeout with retry, draggable/resizable, z-index stacking, chat input (Enter/Shift+Enter), server-side state persistence, Escape closes cards. Removed 1889 lines (WorkerActivityPanel). All 8 acceptance criteria met. Tests: 113/113 passing.'
 ---
 
 # Spec
@@ -134,4 +136,11 @@ None required.
 ## Comments
 **2026-02-03 21:02** — Iteration 1: Core implementation complete. ConversationCard.ts (CSS2DObject), ZoneRenderer card management, main.ts wiring, CSS styles. All 8 acceptance criteria met: card anchoring, zoom scaling (0.72-1.2), multiple cards, recent exchanges, single-item groups, loading timeout, error+retry, tests pass. Code simplified by code-simplifier agent.
 **2026-02-03 21:13** — Iteration 2: Removed deprecated WorkerActivityPanel (1889 lines). Fixed double-click terminal focus regression (was passing tmuxSession instead of workerId). Enhanced cards: bigger default (320x420), draggable via header, resizable via corner handle, z-index stacking (click to front), smart positioning (offset from city based on worker location), localStorage persistence of position/size.
-
+**2026-02-03 21:18** — Iteration 3: Fixed transform conflict (scale/drag competed for transform property). Restored saved size persistence. Code-simplifier refinements: switch-based state handling, SCALE_THRESHOLD constant, consolidated localStorage.
+**2026-02-03 21:28** — Iteration 4: Edge resizing (all 8 handles), fixed header drag (wrapper element pattern for CSS2D compatibility), minimize on empty click (tracks most recent focused card). Tests pass.
+**2026-02-03 21:32** — Iteration 5: Added chat input (textarea + send button), Enter to send, Shift+Enter for newline, auto-growing textarea. Fixed z-index so conversation cards render above city labels. Tests pass.
+**2026-02-03 21:38** — Iteration 6: Server-side card state persistence (~/.portolan/card-states.json). Auto-scroll conversation to bottom on open. Tests pass.
+**2026-02-03 21:46** — Iteration 7: Fixed undefined CSS variable (--gold-accent → --sepia-accent). Added Escape key support to close cards. User feedback: changed from minimize to full close behavior. Tests pass.
+**2026-02-03 21:52** — Iteration 8: Survey confirmed all 8 acceptance criteria met. Code-simplifier refinements: consolidated minimize/restore methods, clarified toggleExpanded, unified closeMostRecentCard, nullish coalescing in loadCardState. Tests pass (113/113). Feature complete - consider closing fiber.
+**2026-02-03 21:57** — Iteration 9: Fixed CSS hover state bug (send button had no visual feedback). Fixed TypeScript error (escapeKeyHandler undefined in HMR cleanup). Code-simplifier running.
+**2026-02-03 21:59** — Iteration 9 complete: Fixed CSS hover state (send button), fixed TypeScript error (escapeKeyHandler), code-simplifier refined resizeHandler and comments. Tests pass (113/113). Feature complete.

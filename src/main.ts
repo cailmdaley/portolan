@@ -426,7 +426,7 @@ canvasOverlay.addEventListener('click', (e) => {
     return
   }
 
-  // First check for worker ship at world position
+  // First check for worker swarm at world position
   const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
   if (workerHit) {
     const session = sessions.find(s => s.id === workerHit.workerId)
@@ -484,7 +484,7 @@ canvasOverlay.addEventListener('dblclick', (e) => {
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
 
-  // First check for worker ship (double-click focuses terminal)
+  // First check for worker swarm (double-click focuses terminal)
   const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
   if (workerHit) {
     focusKittyTab(workerHit.workerId)

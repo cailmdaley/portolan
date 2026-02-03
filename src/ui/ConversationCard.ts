@@ -65,7 +65,7 @@ export class ConversationCard {
     this.chatInputEl = card.querySelector('.chat-input')
 
     this.object = new CSS2DObject(wrapper)
-    // Position slightly to the right and below the ship
+    // Position slightly to the right and below the swarm
     this.object.position.set(0.5, 0.3, 0)
 
     this.setupEventListeners()

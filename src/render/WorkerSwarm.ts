@@ -203,7 +203,7 @@ export class WorkerSwarm {
 
   private points: Points
   private positions: Float32Array
-  private velocities: Float32Array  // Store velocity for smoother motion
+  private velocities: Float32Array
   private material: PointsMaterial
   private shadow: Mesh
   private particleCount: number
@@ -282,11 +282,7 @@ export class WorkerSwarm {
       this.positions[i * 3] = x
       this.positions[i * 3 + 1] = y
       this.positions[i * 3 + 2] = z
-
-      // Initial velocities from noise
-      this.velocities[i * 3] = 0
-      this.velocities[i * 3 + 1] = 0
-      this.velocities[i * 3 + 2] = 0
+      // velocities start at 0 (Float32Array is zero-initialized)
     }
   }
 

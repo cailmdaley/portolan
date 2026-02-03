@@ -44,9 +44,9 @@ import { SessionTracker } from './SessionTracker.js';
 import { CityManager } from './CityManager.js';
 import { OriginManager } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
+import { CardStatePersistence } from './CardStatePersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager } from './GitStatusManager.js';
-import { RecentFilesManager } from './RecentFilesManager.js';
 import { TranscriptReader } from './TranscriptReader.js';
 import { ConversationCache } from './ConversationCache.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
@@ -57,7 +57,7 @@ import { MessageRouter } from './MessageRouter.js';
 // ============================================================================
 // Constants
 // ============================================================================
-const PORT = 4004;
+const PORT = process.env.VITEST ? 4099 : 4004;
 const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 // ============================================================================
 // Initialization
@@ -69,9 +69,9 @@ const sessionTracker = new SessionTracker();
 const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
-const recentFilesManager = new RecentFilesManager();
 const transcriptReader = new TranscriptReader();
 const conversationCache = new ConversationCache();
+const cardStatePersistence = new CardStatePersistence();
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
 // Load persisted annotations
@@ -181,10 +181,11 @@ const cityLookup = {
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
-httpApi.setRecentFilesManager(recentFilesManager);
 httpApi.setRemoteConversationLookup((sessionId) => remoteConversations.get(sessionId));
 httpApi.setTranscriptReader(transcriptReader);
 httpApi.setConversationCache(conversationCache);
+httpApi.setCardStatePersistence(cardStatePersistence);
+cardStatePersistence.load(); // Load saved card states
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 // Callback for creating new workers (used by send-annotations endpoint)
 httpApi.setOnCreateNewWorker(async (cityPath, originId) => {
@@ -238,16 +239,12 @@ async function buildState() {
     const activeCityIds = new Set(sessions.filter(s => s.cityId).map(s => s.cityId));
     const citiesWithFibers = await Promise.all(cities.map(async (city) => {
         let gitStatus;
-        let recentFiles = [];
         if (city.originId === 'local') {
             gitStatus = gitStatusManager.getStatus(city.path) ?? undefined;
-            recentFiles = recentFilesManager.getFiles(city.path);
         }
         else {
             const remoteKey = `${city.originId}:${city.path}`;
             gitStatus = remoteGitStatuses.get(remoteKey);
-            // Load persisted remote files from history
-            recentFiles = recentFilesManager.getRemoteFiles(city.originId);
         }
         return {
             ...city,
@@ -256,7 +253,6 @@ async function buildState() {
             hasPlaygrounds: city.hasPlaygrounds ?? false,
             isDormant: !activeCityIds.has(city.id),
             gitStatus,
-            recentFiles,
         };
     }));
     const cityMap = new Map(cities.map((c) => [c.id, c]));
@@ -355,7 +351,6 @@ function rebuildCities() {
         }
         if (city.originId === 'local') {
             gitStatusManager.track(city.path);
-            recentFilesManager.track(city.path);
         }
     }
 }
@@ -486,6 +481,7 @@ function handleAgentDisconnect(originId) {
         // Clean up activities by tmux session
         for (const tmuxSession of tmuxSessionsToClean) {
             remoteActivities.delete(tmuxSession);
+            remoteLastActivity.delete(`${originId}:${tmuxSession}`);
         }
         // Clean up git statuses for this origin
         for (const [key] of remoteGitStatuses.entries()) {
@@ -668,15 +664,24 @@ function searchLocal(ws, cityPath, query, searchId, searchKey, mode) {
     }
     activeSearches.set(searchKey, proc);
     let stdout = '';
+    let timedOut = false;
     proc.stdout?.on('data', (data) => {
         stdout += data.toString();
     });
+    // Timeout: kill after 10 seconds and return partial results
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        proc.kill('SIGTERM');
+        console.log(`[Search] Timeout for ${searchKey}, returning partial results`);
+    }, 10000);
     proc.on('close', () => {
+        clearTimeout(timeout);
         activeSearches.delete(searchKey);
         const results = parseSearchResults(stdout, cityPath, mode);
-        ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
+        ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
     });
     proc.on('error', (error) => {
+        clearTimeout(timeout);
         activeSearches.delete(searchKey);
         console.error('Search error:', error);
         ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
@@ -703,15 +708,24 @@ function searchRemote(ws, sshHost, cityPath, query, searchId, searchKey, mode) {
     const proc = spawn('sh', ['-c', cmd]);
     activeSearches.set(searchKey, proc);
     let stdout = '';
+    let timedOut = false;
     proc.stdout?.on('data', (data) => {
         stdout += data.toString();
     });
+    // Timeout: kill after 15 seconds for remote (slower)
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        proc.kill('SIGTERM');
+        console.log(`[Search] Remote timeout for ${searchKey}, returning partial results`);
+    }, 15000);
     proc.on('close', () => {
+        clearTimeout(timeout);
         activeSearches.delete(searchKey);
         const results = parseSearchResults(stdout, cityPath, mode);
-        ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
+        ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
     });
     proc.on('error', (error) => {
+        clearTimeout(timeout);
         activeSearches.delete(searchKey);
         ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
     });
@@ -883,16 +897,6 @@ wss.on('connection', async (ws, req) => {
                         session.lastActivity = Date.now();
                         remoteLastActivity.set(`${origin.id}:${activity.tmuxSession}`, Date.now());
                     }
-                    // Track Edit/Write operations as recently edited files
-                    if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-                        // session already looked up above
-                        if (session?.cwd) {
-                            const city = cityManager.findCityForPath(session.cwd, origin.id);
-                            if (city) {
-                                recentFilesManager.recordActivityEdit(activity.fullPath, city.path, origin.id);
-                            }
-                        }
-                    }
                     broadcastActivity(activity);
                 }
                 else if (message.type === 'agent_conversation') {
@@ -952,15 +956,6 @@ eventWatcher.onActivity(async (activity) => {
     console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
     // Find the session for this activity
     const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
-    // Track Edit/Write operations as recently edited files for local sessions
-    if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-        if (session?.cwd) {
-            const city = cityManager.findCityForPath(session.cwd, 'local');
-            if (city) {
-                recentFilesManager.recordActivityEdit(activity.fullPath, city.path, 'local');
-            }
-        }
-    }
     // Track the transcript file for this session using the sessionId from the activity event
     // The activity's sessionId is the Claude transcript UUID (e.g., "83bbd926-...")
     // Only for local sessions - remote sessions send their own conversation data
@@ -986,11 +981,6 @@ gitStatusManager.setUpdateHandler(({ path, status }) => {
     buildState().then(broadcast);
 });
 gitStatusManager.start();
-recentFilesManager.setUpdateHandler(({ path, files }) => {
-    console.log(`[Files] ${path}: ${files.length} recent files`);
-    buildState().then(broadcast);
-});
-recentFilesManager.start();
 // Conversation cache: broadcast new messages via WebSocket
 conversationCache.onMessage((sessionId, tmuxSession, messages) => {
     const message = JSON.stringify({
@@ -1027,17 +1017,27 @@ setInterval(() => {
         sessionTracker['notifyChange']();
     }
 }, 5000);
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.log(`Port ${PORT} already in use - another instance is running`);
+    }
+    else {
+        throw err;
+    }
+});
 server.listen(PORT, () => {
     console.log(`Portolan server running on port ${PORT}`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
 });
-process.on('SIGINT', () => {
+function shutdown() {
     console.log('\nShutting down...');
     sessionTracker.stop();
     gitStatusManager.stop();
-    recentFilesManager.stop();
+    eventWatcher.stop();
     conversationCache.stop();
     server.close();
     process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 //# sourceMappingURL=index.js.map

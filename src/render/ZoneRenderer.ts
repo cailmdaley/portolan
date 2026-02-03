@@ -126,6 +126,13 @@ export class ZoneRenderer {
   }
 
   /**
+   * Get CSS class for worker label based on status
+   */
+  private workerLabelClass(status: 'idle' | 'working'): string {
+    return status === 'working' ? 'worker-label working' : 'worker-label'
+  }
+
+  /**
    * Convert hex-aligned offset to world XZ coordinates.
    * For elements rotated 60° to match hex orientation.
    * +X = right along hex axis, +Y = up along hex axis
@@ -360,7 +367,7 @@ export class ZoneRenderer {
 
       // Worker label below swarm
       const workerDiv = document.createElement('div')
-      workerDiv.className = worker.status === 'working' ? 'worker-label working' : 'worker-label'
+      workerDiv.className = this.workerLabelClass(worker.status)
       workerDiv.textContent = worker.name
       workerDiv.dataset.workerId = worker.id
       workerDiv.dataset.tmuxSession = worker.tmuxSession
@@ -406,9 +413,7 @@ export class ZoneRenderer {
       // Update swarm activity and label class for status change
       if (existing.status !== session.status) {
         if (existing.labelObject) {
-          existing.labelObject.element.className = session.status === 'working'
-            ? 'worker-label working'
-            : 'worker-label'
+          existing.labelObject.element.className = this.workerLabelClass(session.status)
         }
         // Update swarm activity
         const swarm = this.workerSwarms.get(session.id)
@@ -435,7 +440,7 @@ export class ZoneRenderer {
 
     // Worker label
     const labelDiv = document.createElement('div')
-    labelDiv.className = session.status === 'working' ? 'worker-label working' : 'worker-label'
+    labelDiv.className = this.workerLabelClass(session.status)
     labelDiv.textContent = session.name
     const labelObject = new CSS2DObject(labelDiv)
     labelObject.position.y = -0.3  // Below swarm
@@ -498,7 +503,6 @@ export class ZoneRenderer {
     // Track what should exist
     const expectedKeys = new Set<string>()
     const newSignatures = new Map<string, string>()
-
 
     // Group workers by city
     const workersByCity = new Map<string, Session[]>()
@@ -598,10 +602,8 @@ export class ZoneRenderer {
   getEntityAtHex(hex: HexCoord): { type: 'city' | 'worker' | 'empty'; entityId?: string; entityName?: string } | null {
     const key = this.hexGrid.hexKey(hex)
     const data = this.hexMeshes.get(key)
-    if (data) {
-      return { type: data.type, entityId: data.entityId, entityName: data.entityName }
-    }
-    return null
+    if (!data) return null
+    return { type: data.type, entityId: data.entityId, entityName: data.entityName }
   }
 
   /**
@@ -1097,13 +1099,12 @@ export class ZoneRenderer {
    * Get world position of a worker (checks both city-attached and orphan workers)
    */
   private getWorkerWorldPosition(session: Session): { x: number; z: number } | null {
-    // Check city workers
+    // Check city workers by finding their swarm group
     for (const [, data] of this.hexMeshes) {
       if (data.type === 'city' && data.group) {
-        // Search for ship mesh with this worker's ID
         let found: { x: number; z: number } | null = null
         data.group.traverse((child) => {
-          if (child instanceof Mesh && child.userData?.workerId === session.id) {
+          if (child.userData?.workerId === session.id) {
             const cityPos = this.hexGrid.axialToCartesian(data.hex)
             found = {
               x: cityPos.x + child.position.x,
