@@ -13,6 +13,7 @@ export class NewWorkerDialog {
   private chromeCheckbox: HTMLInputElement
   private continueCheckbox: HTMLInputElement
   private resolvePromise: ((result: NewWorkerOptions | null) => void) | null = null
+  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
 
   constructor() {
     this.overlay = this.createOverlay()
@@ -24,12 +25,12 @@ export class NewWorkerDialog {
     this.overlay.appendChild(this.dialog)
     document.body.appendChild(this.overlay)
 
-    // Handle escape key
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.overlay.style.display !== 'none') {
+    // Define escape handler (attached/detached dynamically to avoid HMR stacking)
+    this.escapeHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
         this.cancel()
       }
-    })
+    }
   }
 
   private createOverlay(): HTMLElement {
@@ -275,6 +276,11 @@ export class NewWorkerDialog {
     // Show dialog
     this.overlay.style.display = 'flex'
 
+    // Attach escape handler
+    if (this.escapeHandler) {
+      document.addEventListener('keydown', this.escapeHandler)
+    }
+
     // Focus input after a tick (for animation)
     setTimeout(() => this.nameInput.focus(), 50)
 
@@ -302,5 +308,9 @@ export class NewWorkerDialog {
 
   private hide(): void {
     this.overlay.style.display = 'none'
+    // Detach escape handler
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler)
+    }
   }
 }
