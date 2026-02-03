@@ -795,11 +795,17 @@ function startConversationPolling() {
         for (const session of sessions) {
             const transcript = await readTranscript(session.cwd, session.tmuxSession);
             if (transcript && transcript.messages.length > 0) {
+                // Extract sessionId from transcript path (format: .../{uuid}.jsonl)
+                const sessionId = transcript.transcriptPath
+                    .split('/').pop()  // get filename
+                    .replace('.jsonl', '');  // remove extension
+
                 // Send last 100 messages
                 const recentMessages = transcript.messages.slice(-100);
                 ws.send(JSON.stringify({
                     type: 'agent_conversation',
                     payload: {
+                        sessionId,
                         tmuxSession: session.tmuxSession,
                         cwd: session.cwd,
                         messages: recentMessages
