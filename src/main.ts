@@ -112,11 +112,11 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 }
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
-zoneRenderer.setWorkerClickHandler((workerId, tmuxSession) => {
+// Opens map-pinned conversation card instead of side panel
+zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
   const session = sessions.find(s => s.id === workerId)
   if (session) {
-    const activities = activityBySession.get(tmuxSession) || []
-    workerActivityPanel.show(session, activities)
+    zoneRenderer.openConversationCard(session)
   }
 })
 
@@ -133,7 +133,18 @@ const workerActivityPanel = new WorkerActivityPanel()
 // Setup file viewer modal
 const fileViewerModal = new FileViewerModal()
 
-// Wire up file click from worker panel to file viewer
+// Wire up file click from conversation cards to file viewer
+zoneRenderer.setCardFileClickHandler((fullPath, originId, workerId) => {
+  // Find the city with the longest matching path for this file
+  const matchingCities = cities.filter(c => c.originId === originId && fullPath.startsWith(c.path))
+  const city = matchingCities.reduce<City | null>((best, c) => {
+    if (!best || c.path.length > best.path.length) return c
+    return best
+  }, null)
+  fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path)
+})
+
+// Wire up file click from worker panel to file viewer (legacy panel)
 workerActivityPanel.setOnFileClick((activity, originId, workerId) => {
   if (activity.fullPath) {
     const files = workerActivityPanel.getFilePaths()
@@ -294,6 +305,12 @@ function connectWebSocket(): void {
       // Route to panels that handle specific message types
       if (cityPanel.handleMessage(message)) return
       if (workerActivityPanel.handleMessage(message)) return
+
+      // Route conversation updates to open cards
+      if (message.type === 'conversation' && message.tmuxSession && message.messages) {
+        zoneRenderer.handleConversationMessage(message.tmuxSession, message.messages)
+      }
+
       handleMessage(message)
     } catch (e) {
       console.error('Failed to parse message:', e)
@@ -453,8 +470,8 @@ canvasOverlay.addEventListener('click', (e) => {
     const session = sessions.find(s => s.id === workerHit.workerId)
     if (session) {
       selectedHex = session.hex || hex
-      const activities = activityBySession.get(session.tmuxSession) || []
-      workerActivityPanel.show(session, activities)
+      // Open map-pinned conversation card
+      zoneRenderer.openConversationCard(session)
       return
     }
   }
@@ -486,8 +503,8 @@ canvasOverlay.addEventListener('click', (e) => {
     selectedHex = hex
     const session = sessions.find(s => s.id === entity.entityId)
     if (session) {
-      const activities = activityBySession.get(session.tmuxSession) || []
-      workerActivityPanel.show(session, activities)
+      // Open map-pinned conversation card
+      zoneRenderer.openConversationCard(session)
     }
   } else {
     // Empty tile: clear selection

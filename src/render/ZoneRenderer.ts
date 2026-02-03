@@ -24,8 +24,9 @@ import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
 import { ShipSpritesManager } from './ShipSpritesManager'
-import type { City, Session, HexCoord } from '../state/types'
+import type { City, Session, HexCoord, ConversationMessage } from '../state/types'
 import { PALETTE } from '../state/types'
+import { ConversationCard } from '../ui/ConversationCard'
 
 interface Activity {
   tool: string
@@ -88,6 +89,10 @@ export class ZoneRenderer {
   private lastCameraDistance: number = -1
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
   private workingWorkerIds: Set<string> = new Set()  // Only workers that need breathing animation
+
+  // Conversation cards - map-pinned worker conversations
+  private conversationCards: Map<string, ConversationCard> = new Map()  // workerId -> card
+  private onCardFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
@@ -731,7 +736,7 @@ export class ZoneRenderer {
    * Optimized: skips work when camera hasn't changed and no workers are animating
    */
   animate(cameraDistance?: number, _cameraCenter?: { x: number; z: number }): void {
-    // Scale labels: only update when camera distance actually changed
+    // Scale labels and cards: only update when camera distance actually changed
     if (cameraDistance !== undefined && cameraDistance !== this.lastCameraDistance) {
       this.lastCameraDistance = cameraDistance
 
@@ -759,6 +764,11 @@ export class ZoneRenderer {
             })
           }
         }
+      }
+
+      // Scale conversation cards with zoom
+      for (const card of this.conversationCards.values()) {
+        card.setScale(scale)
       }
     }
 
@@ -906,10 +916,147 @@ export class ZoneRenderer {
     return counts
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // CONVERSATION CARDS - Map-pinned worker conversations
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * Set callback for file clicks in conversation cards
+   */
+  setCardFileClickHandler(handler: (fullPath: string, originId: string, workerId: string) => void): void {
+    this.onCardFileClick = handler
+  }
+
+  /**
+   * Open a conversation card for a worker
+   * @param session The worker session to show conversation for
+   * @returns The created card, or existing card if already open
+   */
+  openConversationCard(session: Session): ConversationCard | null {
+    // Check if card already exists
+    const existing = this.conversationCards.get(session.id)
+    if (existing) return existing
+
+    // Find the worker's position in the scene
+    const workerPos = this.getWorkerWorldPosition(session)
+    if (!workerPos) {
+      console.warn(`Cannot find position for worker ${session.id}`)
+      return null
+    }
+
+    // Create card
+    const card = new ConversationCard(session, {
+      onClose: () => this.closeConversationCard(session.id),
+      onFileClick: this.onCardFileClick ?? undefined,
+      onDoubleClick: () => {
+        if (this.onWorkerDblClick) {
+          this.onWorkerDblClick(session.id, session.tmuxSession)
+        }
+      },
+    })
+
+    // Position the card at the worker's position (offset slightly to the right)
+    card.object.position.set(workerPos.x + 1.5, 0.5, workerPos.z)
+
+    this.scene.add(card.object)
+    this.conversationCards.set(session.id, card)
+
+    // Apply current scale
+    if (this.lastCameraDistance > 0) {
+      const scale = this.calculateCardScale(this.lastCameraDistance)
+      card.setScale(scale)
+    }
+
+    return card
+  }
+
+  /**
+   * Close a conversation card
+   */
+  closeConversationCard(workerId: string): void {
+    const card = this.conversationCards.get(workerId)
+    if (!card) return
+
+    this.scene.remove(card.object)
+    card.dispose()
+    this.conversationCards.delete(workerId)
+  }
+
+  /**
+   * Close all conversation cards
+   */
+  closeAllConversationCards(): void {
+    for (const workerId of this.conversationCards.keys()) {
+      this.closeConversationCard(workerId)
+    }
+  }
+
+  /**
+   * Check if a conversation card is open for a worker
+   */
+  hasConversationCard(workerId: string): boolean {
+    return this.conversationCards.has(workerId)
+  }
+
+  /**
+   * Handle WebSocket conversation update for cards
+   */
+  handleConversationMessage(tmuxSession: string, messages: ConversationMessage[]): void {
+    for (const card of this.conversationCards.values()) {
+      if (card.tmuxSession === tmuxSession) {
+        card.handleMessage(tmuxSession, messages)
+      }
+    }
+  }
+
+  /**
+   * Get world position of a worker (checks both city-attached and orphan workers)
+   */
+  private getWorkerWorldPosition(session: Session): { x: number; z: number } | null {
+    // Check city workers
+    for (const [, data] of this.hexMeshes) {
+      if (data.type === 'city' && data.group) {
+        // Search for ship mesh with this worker's ID
+        let found: { x: number; z: number } | null = null
+        data.group.traverse((child) => {
+          if (child instanceof Mesh && child.userData?.workerId === session.id) {
+            const cityPos = this.hexGrid.axialToCartesian(data.hex)
+            found = {
+              x: cityPos.x + child.position.x,
+              z: cityPos.z + child.position.z,
+            }
+          }
+        })
+        if (found) return found
+      }
+    }
+
+    // Check orphan workers (have their own hex position)
+    if (session.hex) {
+      const pos = this.hexGrid.axialToCartesian(session.hex)
+      return { x: pos.x, z: pos.z }
+    }
+
+    return null
+  }
+
+  /**
+   * Calculate card scale based on camera distance
+   */
+  private calculateCardScale(cameraDistance: number): number {
+    const scaleThreshold = 7
+    return cameraDistance <= scaleThreshold
+      ? 1.0
+      : scaleThreshold / cameraDistance
+  }
+
   /**
    * Dispose all resources (call before recreating during HMR)
    */
   dispose(): void {
+    // Close all conversation cards
+    this.closeAllConversationCards()
+
     // Remove and dispose all hex meshes
     for (const key of this.hexMeshes.keys()) {
       this.removeHex(key)
