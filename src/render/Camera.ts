@@ -39,6 +39,13 @@ export class Camera {
   private mouseMoveHandler: ((e: MouseEvent) => void) | null = null
   private mouseUpHandler: (() => void) | null = null
   private keyDownHandler: ((e: KeyboardEvent) => void) | null = null
+  // EventTarget (canvas) listeners
+  private mouseDownHandler: ((e: MouseEvent) => void) | null = null
+  private clickHandler: (() => void) | null = null
+  private wheelHandler: ((e: WheelEvent) => void) | null = null
+  private gestureStartHandler: ((e: Event) => void) | null = null
+  private gestureChangeHandler: ((e: Event) => void) | null = null
+  private gestureEndHandler: ((e: Event) => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, eventTarget?: HTMLElement) {
     this.canvas = canvas
@@ -58,7 +65,7 @@ export class Camera {
 
   private setupControls(): void {
     // Mouse drag for pan (sieve behavior)
-    this.eventTarget.addEventListener('mousedown', (e) => {
+    this.mouseDownHandler = (e: MouseEvent) => {
       if (e.button === 0) { // Left click
         this.isDragging = true
         this.wasDrag = false
@@ -66,7 +73,8 @@ export class Camera {
         // Store the world point under the mouse — this stays fixed during drag
         this.dragAnchor = this.screenToWorld(e.clientX, e.clientY)
       }
-    })
+    }
+    this.eventTarget.addEventListener('mousedown', this.mouseDownHandler)
 
     this.mouseMoveHandler = (e: MouseEvent) => {
       if (!this.isDragging || !this.dragAnchor) return
@@ -96,13 +104,14 @@ export class Camera {
     window.addEventListener('mouseup', this.mouseUpHandler)
 
     // Reset wasDrag after click has had a chance to check it
-    this.eventTarget.addEventListener('click', () => {
+    this.clickHandler = () => {
       // Use setTimeout to reset after current click event fully processes
       setTimeout(() => { this.wasDrag = false }, 0)
-    })
+    }
+    this.eventTarget.addEventListener('click', this.clickHandler)
 
     // Scroll wheel for zoom
-    this.eventTarget.addEventListener('wheel', (e) => {
+    this.wheelHandler = (e: WheelEvent) => {
       // Don't capture wheel events over panels - let them scroll
       const target = e.target as HTMLElement
       if (target.closest('#worker-panel') || target.closest('#city-panel')) {
@@ -112,25 +121,31 @@ export class Camera {
       e.stopPropagation()
       const delta = e.deltaY > 0 ? 1.05 : 0.95  // Slower zoom
       this.zoomBy(delta)
-    }, { passive: false })
+    }
+    this.eventTarget.addEventListener('wheel', this.wheelHandler, { passive: false })
 
     // Safari pinch-to-zoom (gesture events)
     let lastScale = 1
-    this.eventTarget.addEventListener('gesturestart', (e) => {
+    this.gestureStartHandler = (e: Event) => {
       e.preventDefault()
       lastScale = 1
-    })
-    this.eventTarget.addEventListener('gesturechange', (e: Event) => {
+    }
+    this.eventTarget.addEventListener('gesturestart', this.gestureStartHandler)
+
+    this.gestureChangeHandler = (e: Event) => {
       e.preventDefault()
       const ge = e as GestureEvent
       const scaleDelta = ge.scale / lastScale
       lastScale = ge.scale
       // Invert: scale > 1 means pinch out = zoom in = smaller distance
       this.zoomBy(1 / scaleDelta)
-    })
-    this.eventTarget.addEventListener('gestureend', (e) => {
+    }
+    this.eventTarget.addEventListener('gesturechange', this.gestureChangeHandler)
+
+    this.gestureEndHandler = (e: Event) => {
       e.preventDefault()
-    })
+    }
+    this.eventTarget.addEventListener('gestureend', this.gestureEndHandler)
 
     // Arrow keys for navigation
     this.keyDownHandler = (e: KeyboardEvent) => {
@@ -161,6 +176,7 @@ export class Camera {
    * Clean up event listeners (call before recreating Camera during HMR)
    */
   dispose(): void {
+    // Window listeners
     if (this.mouseMoveHandler) {
       window.removeEventListener('mousemove', this.mouseMoveHandler)
     }
@@ -169,6 +185,25 @@ export class Camera {
     }
     if (this.keyDownHandler) {
       window.removeEventListener('keydown', this.keyDownHandler)
+    }
+    // EventTarget (canvas) listeners
+    if (this.mouseDownHandler) {
+      this.eventTarget.removeEventListener('mousedown', this.mouseDownHandler)
+    }
+    if (this.clickHandler) {
+      this.eventTarget.removeEventListener('click', this.clickHandler)
+    }
+    if (this.wheelHandler) {
+      this.eventTarget.removeEventListener('wheel', this.wheelHandler)
+    }
+    if (this.gestureStartHandler) {
+      this.eventTarget.removeEventListener('gesturestart', this.gestureStartHandler)
+    }
+    if (this.gestureChangeHandler) {
+      this.eventTarget.removeEventListener('gesturechange', this.gestureChangeHandler)
+    }
+    if (this.gestureEndHandler) {
+      this.eventTarget.removeEventListener('gestureend', this.gestureEndHandler)
     }
   }
 
