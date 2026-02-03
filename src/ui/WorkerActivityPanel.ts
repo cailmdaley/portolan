@@ -46,19 +46,7 @@ export class WorkerActivityPanel {
     this.setupEventListeners()
     this.setupChatInput()
     this.setupResizeHandling()
-    this.setupScrollHandling()
     document.body.appendChild(this.panel)
-  }
-
-  private setupScrollHandling(): void {
-    // Safari fix: ensure wheel events are passive to allow smooth scrolling
-    const section = this.panel.querySelector('.conversation-section')
-    if (section) {
-      // Passive wheel listener helps Safari not block scroll
-      section.addEventListener('wheel', () => {}, { passive: true })
-      // Also handle touchmove for trackpad gestures
-      section.addEventListener('touchmove', () => {}, { passive: true })
-    }
   }
 
   private createPanel(): HTMLElement {
