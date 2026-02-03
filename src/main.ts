@@ -757,12 +757,19 @@ async function activateRemoteCity(city: City): Promise<void> {
   }
 }
 
-// Escape key cancels move mode
+// Escape key: cancel move mode or minimize most recent card
 const escapeKeyHandler = (e: KeyboardEvent) => {
-  if (e.key === 'Escape' && movingCityId) {
+  if (e.key !== 'Escape') return
+
+  // Cancel move mode first
+  if (movingCityId) {
     movingCityId = null
     document.body.style.cursor = 'default'
+    return
   }
+
+  // Otherwise minimize most recently focused conversation card
+  zoneRenderer.minimizeMostRecentCard()
 }
 window.addEventListener('keydown', escapeKeyHandler)
 
