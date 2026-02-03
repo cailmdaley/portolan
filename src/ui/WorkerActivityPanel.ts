@@ -287,12 +287,16 @@ export class WorkerActivityPanel {
     this.panel.classList.add('visible')
 
     // Fetch initial conversation (once, then rely on WebSocket updates)
-    this.fetchConversation(session.id)
+    this.fetchConversation(session.id, session.tmuxSession)
   }
 
-  private async fetchConversation(sessionId: string): Promise<void> {
+  private async fetchConversation(sessionId: string, tmuxSession?: string): Promise<void> {
     try {
-      const response = await fetch(`http://localhost:4004/conversation?sessionId=${encodeURIComponent(sessionId)}&limit=100`)
+      let url = `http://localhost:4004/conversation?sessionId=${encodeURIComponent(sessionId)}&limit=100`
+      if (tmuxSession) {
+        url += `&tmuxSession=${encodeURIComponent(tmuxSession)}`
+      }
+      const response = await fetch(url)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
