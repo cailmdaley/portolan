@@ -824,7 +824,7 @@ if (import.meta.hot) {
     // Remove all event listeners (named handlers for clean unsubscribe)
     document.removeEventListener('contextmenu', contextMenuHandler)
     document.removeEventListener('click', forceClickCaptureHandler, true)
-    window.removeEventListener('keydown', escapeKeyHandler)
+    window.removeEventListener('keydown', handleEscapeKey)
     window.removeEventListener('resize', resizeHandler)
 
     // Dispose UI panels (removes DOM and detaches document listeners)
