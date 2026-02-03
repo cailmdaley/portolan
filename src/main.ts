@@ -95,8 +95,21 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
-// Expose for debugging: window.zoneRenderer.debugResourceCounts()
+// Expose for debugging:
+//   window.zoneRenderer.debugResourceCounts() - scene traversal counts
+//   window.debugWebGL() - WebGL resource counts from renderer.info
 ;(window as unknown as { zoneRenderer: typeof zoneRenderer }).zoneRenderer = zoneRenderer
+;(window as unknown as { debugWebGL: () => void }).debugWebGL = () => {
+  const info = renderer.info
+  console.table({
+    'Geometries (GPU)': info.memory.geometries,
+    'Textures (GPU)': info.memory.textures,
+    'Draw calls': info.render.calls,
+    'Triangles': info.render.triangles,
+    'Points': info.render.points,
+    'Lines': info.render.lines,
+  })
+}
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, tmuxSession) => {
