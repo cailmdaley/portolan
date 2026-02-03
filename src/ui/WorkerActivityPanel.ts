@@ -26,6 +26,12 @@ export class WorkerActivityPanel {
   private isInitialRender = true
   private isSending = false
 
+  // Stored listener refs for HMR-safe cleanup
+  private clickOutsideHandler: ((e: MouseEvent) => void) | null = null
+  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+  private resizeMoveHandler: ((e: MouseEvent) => void) | null = null
+  private resizeUpHandler: (() => void) | null = null
+
   constructor() {
     this.panel = this.createPanel()
     this.closeBtn = this.panel.querySelector('.close-btn')!
@@ -79,8 +85,8 @@ export class WorkerActivityPanel {
     // Close button
     this.closeBtn.addEventListener('click', () => this.hide())
 
-    // Click outside to close (but not if clicking in file viewer)
-    document.addEventListener('click', (e) => {
+    // Define handlers (attached/detached dynamically to avoid HMR stacking)
+    this.clickOutsideHandler = (e: MouseEvent) => {
       if (this.ignoreNextClick) {
         this.ignoreNextClick = false
         return
@@ -96,33 +102,52 @@ export class WorkerActivityPanel {
           this.hide()
         }
       }
-    })
+    }
 
-    // Escape key to close (but not if file viewer is open)
-    document.addEventListener('keydown', (e) => {
+    this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.panel.classList.contains('visible')) {
         // Don't close if file viewer modal is open - it handles its own Escape
         const fileViewer = document.querySelector('.file-viewer-modal.visible')
         if (fileViewer) return
         this.hide()
       }
-    })
+    }
+  }
+
+  private attachDocumentListeners(): void {
+    if (this.clickOutsideHandler) {
+      document.addEventListener('click', this.clickOutsideHandler)
+    }
+    if (this.escapeHandler) {
+      document.addEventListener('keydown', this.escapeHandler)
+    }
+  }
+
+  private detachDocumentListeners(): void {
+    if (this.clickOutsideHandler) {
+      document.removeEventListener('click', this.clickOutsideHandler)
+    }
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler)
+    }
   }
 
   private setupResizeHandling(): void {
-    const onMouseMove = (e: MouseEvent) => {
+    // Store handlers for cleanup
+    this.resizeMoveHandler = (e: MouseEvent) => {
       if (!this.isResizing) return
       const newWidth = e.clientX
       const clampedWidth = Math.min(this.maxWidth, Math.max(this.minWidth, newWidth))
       this.panel.style.width = `${clampedWidth}px`
     }
 
-    const onMouseUp = () => {
+    this.resizeUpHandler = () => {
       if (this.isResizing) {
         this.isResizing = false
         this.resizeHandle.classList.remove('dragging')
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
+        this.detachResizeListeners()
       }
     }
 
@@ -132,10 +157,26 @@ export class WorkerActivityPanel {
       this.resizeHandle.classList.add('dragging')
       document.body.style.cursor = 'ew-resize'
       document.body.style.userSelect = 'none'
+      this.attachResizeListeners()
     })
+  }
 
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
+  private attachResizeListeners(): void {
+    if (this.resizeMoveHandler) {
+      document.addEventListener('mousemove', this.resizeMoveHandler)
+    }
+    if (this.resizeUpHandler) {
+      document.addEventListener('mouseup', this.resizeUpHandler)
+    }
+  }
+
+  private detachResizeListeners(): void {
+    if (this.resizeMoveHandler) {
+      document.removeEventListener('mousemove', this.resizeMoveHandler)
+    }
+    if (this.resizeUpHandler) {
+      document.removeEventListener('mouseup', this.resizeUpHandler)
+    }
   }
 
   private setupChatInput(): void {
@@ -238,6 +279,10 @@ export class WorkerActivityPanel {
     // Show panel immediately with loading state
     this.conversationList.innerHTML = '<div class="conv-loading">Loading conversation...</div>'
     this.ignoreNextClick = true
+
+    // Attach document listeners (dynamically to avoid HMR stacking)
+    this.attachDocumentListeners()
+
     this.panel.classList.add('visible')
 
     // Fetch initial conversation (once, then rely on WebSocket updates)
@@ -743,6 +788,8 @@ export class WorkerActivityPanel {
   hide(): void {
     this.panel.classList.remove('visible')
     this.currentSession = null
+    this.detachDocumentListeners()
+    this.detachResizeListeners()
   }
 
   isVisible(): boolean {

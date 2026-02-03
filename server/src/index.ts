@@ -555,12 +555,31 @@ function handleAgentDisconnect(originId: string): void {
   if (!originSessionsMap) return;
 
   if (!originManager.isOriginConnected(originId)) {
+    // Collect tmux sessions for cleanup
+    const tmuxSessionsToClean = new Set<string>();
+
     for (const session of originSessionsMap.values()) {
+      tmuxSessionsToClean.add(session.tmuxSession);
+      // Clean up conversation cache for this session
+      remoteConversations.delete(session.id);
       if (session.cityId && session.workerHex) {
         cityManager.releaseWorkerHex(session.cityId, session.workerHex);
       }
       previousSessions.delete(session.id);
     }
+
+    // Clean up activities by tmux session
+    for (const tmuxSession of tmuxSessionsToClean) {
+      remoteActivities.delete(tmuxSession);
+    }
+
+    // Clean up git statuses for this origin
+    for (const [key] of remoteGitStatuses.entries()) {
+      if (key.startsWith(`${originId}:`)) {
+        remoteGitStatuses.delete(key);
+      }
+    }
+
     remoteSessions.delete(originId);
     rebuildCities();
     buildState().then(broadcast);
