@@ -238,18 +238,19 @@ export class ConversationCache {
     }
 
     // If still over limit, remove oldest sessions
+    let excessRemoved = 0;
     if (this.sessions.size > this.maxSessions) {
       const sortedByAge = [...this.sessions.entries()]
         .sort((a, b) => a[1].lastUpdate - b[1].lastUpdate);
 
-      const excess = this.sessions.size - this.maxSessions;
-      for (let i = 0; i < excess; i++) {
+      excessRemoved = this.sessions.size - this.maxSessions;
+      for (let i = 0; i < excessRemoved; i++) {
         this.deleteSession(sortedByAge[i][0]);
       }
     }
 
-    if (expiredIds.length > 0) {
-      console.log(`[ConversationCache] Cleanup: removed ${expiredIds.length} expired sessions, ${this.sessions.size} remain`);
+    if (expiredIds.length > 0 || excessRemoved > 0) {
+      console.log(`[ConversationCache] Cleanup: removed ${expiredIds.length} expired + ${excessRemoved} excess sessions, ${this.sessions.size} remain`);
     }
   }
 
