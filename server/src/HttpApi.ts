@@ -1408,6 +1408,7 @@ export class HttpApi {
    */
   private async handleConversation(url: URL, res: ServerResponse): Promise<void> {
     const sessionId = url.searchParams.get('sessionId');
+    const tmuxSession = url.searchParams.get('tmuxSession');
     const limit = parseInt(url.searchParams.get('limit') || '50', 10);
 
     if (!sessionId) {
@@ -1417,7 +1418,7 @@ export class HttpApi {
     }
 
     try {
-      const messages = await this.resolveConversationMessages(sessionId, limit);
+      const messages = await this.resolveConversationMessages(sessionId, limit, tmuxSession ?? undefined);
 
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -1438,13 +1439,14 @@ export class HttpApi {
    * Tmux aggregation is preferred because Claude restarts get new sessionIds,
    * but messages from all sessions in the same tmux should be aggregated.
    */
-  private async resolveConversationMessages(sessionId: string, limit: number): Promise<any[]> {
+  private async resolveConversationMessages(sessionId: string, limit: number, tmuxSessionParam?: string): Promise<any[]> {
     // Find session to get tmuxSession for aggregation
     const session = this.sessionLookup?.findSession(sessionId);
+    const tmuxSession = tmuxSessionParam ?? session?.tmuxSession;
 
     // 1. ConversationCache by tmuxSession (aggregates all Claude sessions in tmux)
-    if (this.conversationCache && session?.tmuxSession) {
-      const messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
+    if (this.conversationCache && tmuxSession) {
+      const messages = this.conversationCache.getMessagesByTmux(tmuxSession, limit);
       if (messages.length > 0) return messages;
     }
 
