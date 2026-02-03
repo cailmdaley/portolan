@@ -115,32 +115,25 @@ export class ConversationCard {
       }
 
       const data = await response.json()
+      this.clearFetchTimeout()
 
-      if (this.fetchTimeout) {
-        clearTimeout(this.fetchTimeout)
-        this.fetchTimeout = null
-      }
-
-      if (data.messages && Array.isArray(data.messages)) {
-        this.conversation = data.messages
-        this.loadingState = 'loaded'
-      } else {
-        this.conversation = []
-        this.loadingState = 'loaded'
-      }
-
+      this.conversation = Array.isArray(data.messages) ? data.messages : []
+      this.loadingState = 'loaded'
       this.renderContent()
     } catch (error) {
       if (this.disposed) return
-
-      if (this.fetchTimeout) {
-        clearTimeout(this.fetchTimeout)
-        this.fetchTimeout = null
-      }
+      this.clearFetchTimeout()
 
       this.loadingState = 'error'
       this.errorMessage = error instanceof Error ? error.message : 'Unknown error'
       this.renderContent()
+    }
+  }
+
+  private clearFetchTimeout(): void {
+    if (this.fetchTimeout) {
+      clearTimeout(this.fetchTimeout)
+      this.fetchTimeout = null
     }
   }
 
@@ -267,41 +260,28 @@ export class ConversationCard {
   }
 
   private renderGroup(group: MessageGroup): string {
-    if (group.type === 'message') {
-      return this.renderMessage(group.msg)
-    } else {
-      return this.renderToolGroup(group)
-    }
+    return group.type === 'message'
+      ? this.renderMessage(group.msg)
+      : this.renderToolGroup(group)
   }
 
   private renderMessage(msg: ConversationMessage): string {
+    if (msg.type !== 'user' && msg.type !== 'assistant') return ''
+
     const timeAgo = formatTimeAgo(new Date(msg.timestamp).getTime())
+    const content = renderMarkdown(msg.content)
+    const msgClass = msg.type === 'user' ? 'user-msg' : 'assistant-msg'
 
-    if (msg.type === 'user') {
-      const content = renderMarkdown(msg.content)
-      return `
-        <div class="card-msg user-msg">
-          <div class="msg-content markdown-content">${content}</div>
-          <span class="msg-time">${timeAgo}</span>
-        </div>
-      `
-    }
-
-    if (msg.type === 'assistant') {
-      const content = renderMarkdown(msg.content)
-      return `
-        <div class="card-msg assistant-msg">
-          <div class="msg-content markdown-content">${content}</div>
-          <span class="msg-time">${timeAgo}</span>
-        </div>
-      `
-    }
-
-    return ''
+    return `
+      <div class="card-msg ${msgClass}">
+        <div class="msg-content markdown-content">${content}</div>
+        <span class="msg-time">${timeAgo}</span>
+      </div>
+    `
   }
 
   private renderToolGroup(group: ToolGroup): string {
-    const items = group.items
+    const { items } = group
 
     // Single-item groups expand directly (per spec)
     if (items.length === 1) {
@@ -310,6 +290,26 @@ export class ConversationCard {
     }
 
     // Multi-item groups get a collapsible header
+    const summary = this.buildGroupSummary(items)
+    const groupKey = `group-${items[0]?.msg.timestamp || group.startIndex}`
+    const isExpanded = this.expandedMessages.has(groupKey)
+
+    const itemsHtml = items.map(({ msg, result }) =>
+      this.renderToolItem(msg, result, msg.timestamp)
+    ).join('')
+
+    return `
+      <div class="card-tool-group ${isExpanded ? 'expanded' : ''}" data-group-key="${groupKey}">
+        <div class="tool-group-header">
+          <span class="expand-icon">▶</span>
+          <span class="tool-group-summary">${items.length} steps (${escapeHtml(summary)})</span>
+        </div>
+        <div class="tool-group-content">${itemsHtml}</div>
+      </div>
+    `
+  }
+
+  private buildGroupSummary(items: ToolGroup['items']): string {
     const toolCounts = new Map<string, number>()
     let thinkingCount = 0
 
@@ -327,24 +327,7 @@ export class ConversationCard {
     for (const [name, count] of toolCounts) {
       parts.push(`${count} ${name}`)
     }
-    const summary = parts.join(', ')
-
-    const groupKey = `group-${items[0]?.msg.timestamp || group.startIndex}`
-    const isExpanded = this.expandedMessages.has(groupKey)
-
-    const itemsHtml = items.map(({ msg, result }) =>
-      this.renderToolItem(msg, result, msg.timestamp)
-    ).join('')
-
-    return `
-      <div class="card-tool-group ${isExpanded ? 'expanded' : ''}" data-group-key="${groupKey}">
-        <div class="tool-group-header">
-          <span class="expand-icon">▶</span>
-          <span class="tool-group-summary">${items.length} steps (${escapeHtml(summary)})</span>
-        </div>
-        <div class="tool-group-content">${itemsHtml}</div>
-      </div>
-    `
+    return parts.join(', ')
   }
 
   private renderToolItem(msg: ConversationMessage, result?: ConversationMessage, key?: string): string {
@@ -521,10 +504,7 @@ export class ConversationCard {
 
   dispose(): void {
     this.disposed = true
-    if (this.fetchTimeout) {
-      clearTimeout(this.fetchTimeout)
-      this.fetchTimeout = null
-    }
+    this.clearFetchTimeout()
     this.element.remove()
   }
 }

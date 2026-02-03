@@ -135,49 +135,28 @@ const fileViewerModal = new FileViewerModal()
 
 // Wire up file click from conversation cards to file viewer
 zoneRenderer.setCardFileClickHandler((fullPath, originId, workerId) => {
-  // Find the city with the longest matching path for this file
-  const matchingCities = cities.filter(c => c.originId === originId && fullPath.startsWith(c.path))
-  const city = matchingCities.reduce<City | null>((best, c) => {
-    if (!best || c.path.length > best.path.length) return c
-    return best
-  }, null)
+  const city = findBestMatchingCity(originId, fullPath)
   fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path)
 })
 
 // Wire up file click from worker panel to file viewer (legacy panel)
 workerActivityPanel.setOnFileClick((activity, originId, workerId) => {
-  if (activity.fullPath) {
-    const files = workerActivityPanel.getFilePaths()
-    const index = workerActivityPanel.getFileIndex(activity.fullPath)
-    // Find the city with the longest matching path for this file
-    const matchingCities = cities.filter(c => c.originId === originId && activity.fullPath!.startsWith(c.path))
-    const city = matchingCities.reduce<City | null>((best, c) => {
-      if (!best || c.path.length > best.path.length) return c
-      return best
-    }, null)
-    fileViewerModal.show(activity.fullPath, originId, workerId, { files, index }, city?.path)
-  }
+  if (!activity.fullPath) return
+  const files = workerActivityPanel.getFilePaths()
+  const index = workerActivityPanel.getFileIndex(activity.fullPath)
+  const city = findBestMatchingCity(originId, activity.fullPath)
+  fileViewerModal.show(activity.fullPath, originId, workerId, { files, index }, city?.path)
 })
 
 // Wire up worker lookup for send-to-worker feature
 fileViewerModal.setOnGetWorkers(async (originId: string, path: string) => {
-  // Find the city with the longest matching path (most specific match)
-  // This prevents /Users/cd280747 from matching when /Users/cd280747/Documents/projects/hexarchy-v2 should
-  const matchingCities = cities.filter(c => c.originId === originId && path.startsWith(c.path))
-  const city = matchingCities.reduce<City | null>((best, c) => {
-    if (!best || c.path.length > best.path.length) return c
-    return best
-  }, null)
-
+  const city = findBestMatchingCity(originId, path)
   if (!city) return []
 
   // Return workers (sessions) assigned to this city
-  const matched = sessions.filter(s => s.cityId === city.id && s.originId === originId)
-  return matched.map(s => ({
-      id: s.id,
-      name: s.name,
-      tmuxSession: s.tmuxSession,
-    }))
+  return sessions
+    .filter(s => s.cityId === city.id && s.originId === originId)
+    .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
 })
 
 // Wire up file search click from city panel to file viewer
@@ -676,6 +655,19 @@ function findNearestCity(hex: HexCoord): City | null {
   }
 
   return nearest
+}
+
+// Find city with longest matching path for a file (most specific match)
+function findBestMatchingCity(originId: string, filePath: string): City | null {
+  let best: City | null = null
+  for (const city of cities) {
+    if (city.originId !== originId) continue
+    if (!filePath.startsWith(city.path)) continue
+    if (!best || city.path.length > best.path.length) {
+      best = city
+    }
+  }
+  return best
 }
 
 // Prompt for new worker name and create it
