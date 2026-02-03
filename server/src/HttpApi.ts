@@ -1433,32 +1433,35 @@ export class HttpApi {
 
   /**
    * Resolve conversation messages using multiple lookup strategies
+   *
+   * Priority: tmux aggregation > remote lookup > sessionId > TranscriptReader
+   * Tmux aggregation is preferred because Claude restarts get new sessionIds,
+   * but messages from all sessions in the same tmux should be aggregated.
    */
   private async resolveConversationMessages(sessionId: string, limit: number): Promise<any[]> {
-    // 1. ConversationCache by sessionId (works for ended sessions)
+    // Find session to get tmuxSession for aggregation
+    const session = this.sessionLookup?.findSession(sessionId);
+
+    // 1. ConversationCache by tmuxSession (aggregates all Claude sessions in tmux)
+    if (this.conversationCache && session?.tmuxSession) {
+      const messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
+      if (messages.length > 0) return messages;
+    }
+
+    // 2. Remote conversation lookup
+    if (session?.originId && session.originId !== 'local') {
+      const cached = this.remoteConversationLookup?.(sessionId);
+      if (cached && cached.length > 0) return cached.slice(-limit);
+    }
+
+    // 3. ConversationCache by sessionId (fallback for ended sessions or no tmux)
     if (this.conversationCache) {
       const messages = this.conversationCache.getMessages(sessionId, limit);
       if (messages.length > 0) return messages;
     }
 
-    // Find active session for fallback lookups
-    const session = this.sessionLookup?.findSession(sessionId);
-    if (!session) return [];
-
-    // 2. Remote conversation lookup
-    if (session.originId && session.originId !== 'local') {
-      const cached = this.remoteConversationLookup?.(sessionId);
-      if (cached && cached.length > 0) return cached.slice(-limit);
-    }
-
-    // 3. ConversationCache by tmuxSession (fallback)
-    if (this.conversationCache && session.tmuxSession) {
-      const messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
-      if (messages.length > 0) return messages;
-    }
-
     // 4. TranscriptReader (legacy fallback for local sessions)
-    if (this.transcriptReader && session.originId !== 'remote') {
+    if (this.transcriptReader && session && session.originId !== 'remote') {
       await this.updateTranscriptMapping(sessionId, session);
       return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
     }
