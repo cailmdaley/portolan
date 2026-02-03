@@ -119,7 +119,7 @@ export class Camera {
       }
       e.preventDefault()
       e.stopPropagation()
-      const delta = e.deltaY > 0 ? 1.05 : 0.95  // Slower zoom
+      const delta = e.deltaY > 0 ? 1.02 : 0.98  // Gentle zoom
       this.zoomBy(delta)
     }
     this.eventTarget.addEventListener('wheel', this.wheelHandler, { passive: false })

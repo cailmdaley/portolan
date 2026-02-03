@@ -93,6 +93,7 @@ export class ZoneRenderer {
   // Conversation cards - map-pinned worker conversations
   private conversationCards: Map<string, ConversationCard> = new Map()  // workerId -> card
   private onCardFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
+  private topZIndex = 100  // Track highest z-index for bringing cards to front
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
@@ -941,9 +942,12 @@ export class ZoneRenderer {
    * @returns The created card, or existing card if already open
    */
   openConversationCard(session: Session): ConversationCard | null {
-    // Check if card already exists
+    // Check if card already exists - bring to front if so
     const existing = this.conversationCards.get(session.id)
-    if (existing) return existing
+    if (existing) {
+      this.bringCardToFront(session.id)
+      return existing
+    }
 
     // Find the worker's position in the scene
     const workerPos = this.getWorkerWorldPosition(session)
@@ -952,7 +956,19 @@ export class ZoneRenderer {
       return null
     }
 
-    // Create card
+    // Calculate offset: position card above and slightly away from worker
+    // If worker is on the right side of the city, offset left (and vice versa)
+    const city = session.cityId ? this.currentCities.get(session.cityId) : null
+    let offsetX = 1.0  // Default: offset to the right
+    if (city) {
+      const cityPos = this.hexGrid.axialToCartesian(city.hex)
+      offsetX = workerPos.x > cityPos.x ? -1.5 : 1.5  // Offset away from city center
+    }
+
+    // Load saved position if available
+    const savedState = this.loadCardState(session.id)
+
+    // Create card with saved or calculated offset
     const card = new ConversationCard(session, {
       onClose: () => this.closeConversationCard(session.id),
       onFileClick: this.onCardFileClick ?? undefined,
@@ -961,13 +977,19 @@ export class ZoneRenderer {
           this.onWorkerDblClick(session.id, session.tmuxSession)
         }
       },
+      onBringToFront: () => this.bringCardToFront(session.id),
+      initialOffset: savedState?.offset,
     })
 
-    // Position the card at the worker's position (offset slightly to the right)
-    card.object.position.set(workerPos.x + 1.5, 0.5, workerPos.z)
+    // Position the card above the worker with calculated offset
+    card.object.position.set(workerPos.x + offsetX, 0.8, workerPos.z - 0.5)
 
     this.scene.add(card.object)
     this.conversationCards.set(session.id, card)
+
+    // Set initial z-index
+    this.topZIndex++
+    card.setZIndex(this.topZIndex)
 
     // Apply current scale
     if (this.lastCameraDistance > 0) {
@@ -979,11 +1001,25 @@ export class ZoneRenderer {
   }
 
   /**
+   * Bring a card to front (highest z-index)
+   */
+  private bringCardToFront(workerId: string): void {
+    const card = this.conversationCards.get(workerId)
+    if (!card) return
+
+    this.topZIndex++
+    card.setZIndex(this.topZIndex)
+  }
+
+  /**
    * Close a conversation card
    */
   closeConversationCard(workerId: string): void {
     const card = this.conversationCards.get(workerId)
     if (!card) return
+
+    // Save card state before closing
+    this.saveCardState(workerId, card)
 
     this.scene.remove(card.object)
     card.dispose()
@@ -1056,6 +1092,58 @@ export class ZoneRenderer {
     return cameraDistance <= scaleThreshold
       ? 1.0
       : scaleThreshold / cameraDistance
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CARD STATE PERSISTENCE
+  // ═══════════════════════════════════════════════════════════
+
+  private readonly CARD_STATE_KEY = 'portolan-card-states'
+
+  /**
+   * Save card position and size to localStorage
+   */
+  private saveCardState(workerId: string, card: ConversationCard): void {
+    try {
+      const states = this.loadAllCardStates()
+      states[workerId] = {
+        offset: card.getOffset(),
+        size: card.getSize(),
+        timestamp: Date.now(),
+      }
+
+      // Clean up old entries (keep last 20)
+      const entries = Object.entries(states)
+      if (entries.length > 20) {
+        entries.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0))
+        const trimmed = Object.fromEntries(entries.slice(0, 20))
+        localStorage.setItem(this.CARD_STATE_KEY, JSON.stringify(trimmed))
+      } else {
+        localStorage.setItem(this.CARD_STATE_KEY, JSON.stringify(states))
+      }
+    } catch {
+      // Ignore localStorage errors
+    }
+  }
+
+  /**
+   * Load saved card state
+   */
+  private loadCardState(workerId: string): { offset: { x: number; y: number }; size?: { width: number; height: number } } | null {
+    const states = this.loadAllCardStates()
+    return states[workerId] || null
+  }
+
+  /**
+   * Load all card states from localStorage
+   */
+  private loadAllCardStates(): Record<string, { offset: { x: number; y: number }; size?: { width: number; height: number }; timestamp?: number }> {
+    try {
+      const stored = localStorage.getItem(this.CARD_STATE_KEY)
+      return stored ? JSON.parse(stored) : {}
+    } catch {
+      return {}
+    }
   }
 
   /**

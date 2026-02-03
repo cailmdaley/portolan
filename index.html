@@ -203,8 +203,10 @@
          ═══════════════════════════════════════════════════════════ */
 
       .conversation-card {
-        width: 250px;
-        max-height: 320px;
+        width: 320px;
+        max-height: 420px;
+        min-width: 200px;
+        min-height: 150px;
         background: linear-gradient(135deg, #EDE8E0 0%, #E5DFD5 100%);
         border: 1px solid rgba(46, 42, 38, 0.3);
         border-radius: 4px;
@@ -215,6 +217,8 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
+        z-index: 100;  /* Above city/worker labels */
+        position: relative;
       }
 
       .conversation-card .card-header {
@@ -520,6 +524,24 @@
       .conversation-card .markdown-content pre code {
         background: none;
         padding: 0;
+      }
+
+      /* Resize handle */
+      .conversation-card .card-resize-handle {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        width: 16px;
+        height: 16px;
+        cursor: se-resize;
+        background: linear-gradient(135deg, transparent 50%, var(--parchment-edge) 50%);
+        border-radius: 0 0 4px 0;
+        opacity: 0.5;
+        transition: opacity 150ms ease;
+      }
+
+      .conversation-card .card-resize-handle:hover {
+        opacity: 0.8;
       }
 
       /* ═══════════════════════════════════════════════════════════

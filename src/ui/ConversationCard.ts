@@ -10,6 +10,8 @@ interface CardOptions {
   onClose: () => void
   onFileClick?: FileClickCallback
   onDoubleClick?: () => void  // For focusing terminal
+  onBringToFront?: () => void  // When card is clicked/focused
+  initialOffset?: { x: number; y: number }  // Offset from worker position
 }
 
 export class ConversationCard {
@@ -29,6 +31,15 @@ export class ConversationCard {
 
   // Clickable tools for file viewer
   private readonly clickableTools = ['Read', 'Write', 'Edit']
+
+  // Card positioning and interaction
+  private offset = { x: 0, y: 0 }  // Offset from worker position (in pixels)
+  private isDragging = false
+  private dragStart = { x: 0, y: 0 }
+
+  // Resize state
+  private isResizing = false
+  private resizeStart = { x: 0, y: 0, width: 0, height: 0 }
 
   constructor(session: Session, options: CardOptions) {
     this.session = session
@@ -55,7 +66,15 @@ export class ConversationCard {
       <div class="card-content">
         <div class="card-loading">Loading conversation...</div>
       </div>
+      <div class="card-resize-handle" title="Resize"></div>
     `
+
+    // Apply initial offset if provided
+    if (this.options.initialOffset) {
+      this.offset = { ...this.options.initialOffset }
+      card.style.transform = `translate(${this.offset.x}px, ${this.offset.y}px)`
+    }
+
     return card
   }
 
@@ -73,6 +92,11 @@ export class ConversationCard {
       this.options.onDoubleClick?.()
     })
 
+    // Bring to front on any click
+    this.element.addEventListener('mousedown', () => {
+      this.options.onBringToFront?.()
+    })
+
     // Stop click propagation to prevent map interaction
     this.element.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -82,6 +106,73 @@ export class ConversationCard {
     this.element.addEventListener('wheel', (e) => {
       e.stopPropagation()
     })
+
+    // Drag via header
+    const header = this.element.querySelector('.card-header') as HTMLElement
+    header.style.cursor = 'move'
+    header.addEventListener('mousedown', this.startDrag)
+
+    // Resize via corner handle
+    const resizeHandle = this.element.querySelector('.card-resize-handle') as HTMLElement
+    resizeHandle.addEventListener('mousedown', this.startResize)
+  }
+
+  private startDrag = (e: MouseEvent): void => {
+    // Don't drag if clicking close button
+    if ((e.target as HTMLElement).classList.contains('card-close')) return
+
+    e.preventDefault()
+    e.stopPropagation()
+    this.isDragging = true
+    this.dragStart = { x: e.clientX - this.offset.x, y: e.clientY - this.offset.y }
+
+    document.addEventListener('mousemove', this.onDrag)
+    document.addEventListener('mouseup', this.stopDrag)
+  }
+
+  private onDrag = (e: MouseEvent): void => {
+    if (!this.isDragging) return
+
+    this.offset.x = e.clientX - this.dragStart.x
+    this.offset.y = e.clientY - this.dragStart.y
+    this.element.style.transform = `translate(${this.offset.x}px, ${this.offset.y}px)`
+  }
+
+  private stopDrag = (): void => {
+    this.isDragging = false
+    document.removeEventListener('mousemove', this.onDrag)
+    document.removeEventListener('mouseup', this.stopDrag)
+  }
+
+  private startResize = (e: MouseEvent): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    this.isResizing = true
+    this.resizeStart = {
+      x: e.clientX,
+      y: e.clientY,
+      width: this.element.offsetWidth,
+      height: this.element.offsetHeight,
+    }
+
+    document.addEventListener('mousemove', this.onResize)
+    document.addEventListener('mouseup', this.stopResize)
+  }
+
+  private onResize = (e: MouseEvent): void => {
+    if (!this.isResizing) return
+
+    const newWidth = Math.max(200, this.resizeStart.width + (e.clientX - this.resizeStart.x))
+    const newHeight = Math.max(150, this.resizeStart.height + (e.clientY - this.resizeStart.y))
+
+    this.element.style.width = `${newWidth}px`
+    this.element.style.maxHeight = `${newHeight}px`
+  }
+
+  private stopResize = (): void => {
+    this.isResizing = false
+    document.removeEventListener('mousemove', this.onResize)
+    document.removeEventListener('mouseup', this.stopResize)
   }
 
   private async fetchConversation(): Promise<void> {
@@ -502,9 +593,38 @@ export class ConversationCard {
     return this.session.tmuxSession
   }
 
+  /**
+   * Set the card's z-index (for layering when overlapping)
+   */
+  setZIndex(zIndex: number): void {
+    this.element.style.zIndex = String(zIndex)
+  }
+
+  /**
+   * Get current offset from initial position
+   */
+  getOffset(): { x: number; y: number } {
+    return { ...this.offset }
+  }
+
+  /**
+   * Get current size
+   */
+  getSize(): { width: number; height: number } {
+    return {
+      width: this.element.offsetWidth,
+      height: this.element.offsetHeight,
+    }
+  }
+
   dispose(): void {
     this.disposed = true
     this.clearFetchTimeout()
+    // Clean up drag/resize listeners
+    document.removeEventListener('mousemove', this.onDrag)
+    document.removeEventListener('mouseup', this.stopDrag)
+    document.removeEventListener('mousemove', this.onResize)
+    document.removeEventListener('mouseup', this.stopResize)
     this.element.remove()
   }
 }
