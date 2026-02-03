@@ -1655,20 +1655,21 @@ export class HttpApi {
       return;
     }
 
-    try {
-      const body = await this.readJsonBody(req);
-      const { offset, size } = body as { offset?: { x: number; y: number }; size?: { width: number; height: number } };
+    const body = await this.parseJsonBody<{
+      offset?: { x: number; y: number };
+      size?: { width: number; height: number };
+    }>(req, res);
 
-      if (!offset || typeof offset.x !== 'number' || typeof offset.y !== 'number') {
-        this.sendJsonError(res, 400, 'Invalid offset: must have x and y numbers');
-        return;
-      }
+    if (!body) return;
 
-      const state = this.cardStatePersistence.set(workerId, offset, size);
-      this.sendJsonSuccess(res, { state });
-    } catch (error) {
-      this.sendJsonError(res, 400, `Invalid request: ${error}`);
+    const { offset, size } = body;
+    if (!offset || typeof offset.x !== 'number' || typeof offset.y !== 'number') {
+      this.sendJsonError(res, 400, 'Invalid offset: must have x and y numbers');
+      return;
     }
+
+    const state = this.cardStatePersistence.set(workerId, offset, size);
+    this.sendJsonSuccess(res, { state });
   }
 
   /**
