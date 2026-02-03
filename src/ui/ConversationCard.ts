@@ -41,6 +41,9 @@ export class ConversationCard {
   private isResizing = false
   private resizeStart = { x: 0, y: 0, width: 0, height: 0 }
 
+  // Scale state (for combining with drag transform)
+  private currentScale = 1
+
   constructor(session: Session, options: CardOptions) {
     this.session = session
     this.options = options
@@ -52,6 +55,7 @@ export class ConversationCard {
     this.object.position.set(0.5, 0.3, 0)
 
     this.setupEventListeners()
+    this.applyTransform()  // Apply initial offset transform
     this.fetchConversation()
   }
 
@@ -72,7 +76,6 @@ export class ConversationCard {
     // Apply initial offset if provided
     if (this.options.initialOffset) {
       this.offset = { ...this.options.initialOffset }
-      card.style.transform = `translate(${this.offset.x}px, ${this.offset.y}px)`
     }
 
     return card
@@ -135,7 +138,11 @@ export class ConversationCard {
 
     this.offset.x = e.clientX - this.dragStart.x
     this.offset.y = e.clientY - this.dragStart.y
-    this.element.style.transform = `translate(${this.offset.x}px, ${this.offset.y}px)`
+    this.applyTransform()
+  }
+
+  private applyTransform(): void {
+    this.element.style.transform = `translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
@@ -578,11 +585,11 @@ export class ConversationCard {
    * Update scale based on camera distance (for zoom clamping)
    */
   setScale(scale: number): void {
-    // Clamp scale for readability (card base width is 250px)
-    const minScale = 0.72  // 250 * 0.72 = 180px at far zoom
-    const maxScale = 1.2   // 250 * 1.2 = 300px at close zoom
-    const clampedScale = Math.max(minScale, Math.min(maxScale, scale))
-    this.element.style.transform = `scale(${clampedScale})`
+    // Clamp scale for readability (card base width is 320px)
+    const minScale = 0.72  // 320 * 0.72 = 230px at far zoom
+    const maxScale = 1.2   // 320 * 1.2 = 384px at close zoom
+    this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
+    this.applyTransform()
   }
 
   get workerId(): string {
