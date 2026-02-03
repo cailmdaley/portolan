@@ -242,4 +242,28 @@ describe('ConversationCache', () => {
       expect(cache.getHealthInfo()['session-1']).toBeUndefined();
     });
   });
+
+  describe('cleanup on persist', () => {
+    it('should limit total sessions to maxSessions (50) on persist', () => {
+      // Add 60 sessions
+      for (let i = 0; i < 60; i++) {
+        cache.addMessages(`session-${i}`, `tmux-${i}`, '/test/cwd', [
+          { type: 'user', content: `Message ${i}`, timestamp: `2024-01-01T00:00:${String(i).padStart(2, '0')}Z` }
+        ]);
+      }
+
+      // Persist triggers cleanup
+      cache.persist();
+
+      // Check health info - should have max 50 sessions
+      const health = cache.getHealthInfo();
+      const sessionCount = Object.keys(health).length;
+      expect(sessionCount).toBeLessThanOrEqual(50);
+
+      // The oldest sessions should be removed (session-0 through session-9)
+      expect(health['session-0']).toBeUndefined();
+      // The most recent sessions should remain
+      expect(health['session-59']).toBeDefined();
+    });
+  });
 });
