@@ -12,7 +12,6 @@ import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { CityPanel } from './ui/CityPanel'
-import { WorkerActivityPanel } from './ui/WorkerActivityPanel'
 import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
 // GlobalView type for potential future view switching
@@ -127,9 +126,6 @@ zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
 // Setup city panel
 const cityPanel = new CityPanel()
 
-// Setup worker activity panel
-const workerActivityPanel = new WorkerActivityPanel()
-
 // Setup file viewer modal
 const fileViewerModal = new FileViewerModal()
 
@@ -137,15 +133,6 @@ const fileViewerModal = new FileViewerModal()
 zoneRenderer.setCardFileClickHandler((fullPath, originId, workerId) => {
   const city = findBestMatchingCity(originId, fullPath)
   fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path)
-})
-
-// Wire up file click from worker panel to file viewer (legacy panel)
-workerActivityPanel.setOnFileClick((activity, originId, workerId) => {
-  if (!activity.fullPath) return
-  const files = workerActivityPanel.getFilePaths()
-  const index = workerActivityPanel.getFileIndex(activity.fullPath)
-  const city = findBestMatchingCity(originId, activity.fullPath)
-  fileViewerModal.show(activity.fullPath, originId, workerId, { files, index }, city?.path)
 })
 
 // Wire up worker lookup for send-to-worker feature
@@ -263,9 +250,6 @@ function handleActivityEvent(activity: { tmuxSession: string; tool: string; summ
 
   // Update ZoneRenderer worker marker activity
   zoneRenderer.updateWorkerActivity(activity.tmuxSession, activities)
-
-  // Update worker panel if it's showing this session
-  workerActivityPanel.updateActivities(activity.tmuxSession, activities)
 }
 
 // Connect to server
@@ -283,7 +267,6 @@ function connectWebSocket(): void {
       const message = JSON.parse(event.data)
       // Route to panels that handle specific message types
       if (cityPanel.handleMessage(message)) return
-      if (workerActivityPanel.handleMessage(message)) return
 
       // Route conversation updates to open cards
       if (message.type === 'conversation' && message.tmuxSession && message.messages) {
@@ -838,7 +821,6 @@ if (import.meta.hot) {
 
     // Dispose UI panels (removes DOM and detaches document listeners)
     cityPanel.dispose()
-    workerActivityPanel.dispose()
     fileViewerModal.dispose()
     contextMenu.dispose()
     newWorkerDialog.dispose()
