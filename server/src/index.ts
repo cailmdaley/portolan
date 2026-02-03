@@ -571,6 +571,7 @@ function handleAgentDisconnect(originId: string): void {
     // Clean up activities by tmux session
     for (const tmuxSession of tmuxSessionsToClean) {
       remoteActivities.delete(tmuxSession);
+      remoteLastActivity.delete(`${originId}:${tmuxSession}`);
     }
 
     // Clean up git statuses for this origin
