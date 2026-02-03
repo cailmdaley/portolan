@@ -98,6 +98,25 @@ ssh remote-host                                       # fresh connection with tu
 ssh -T remote-host "tmux kill-session -t portolan-agent; tmux new-session -d -s portolan-agent 'node ~/bin/portolan-agent.js connect --ssh-host=remote-host'"
 ```
 
+## Remote Conversation Hooks
+
+For real-time conversation updates on remote workers, install the hook script and configure it to POST to the agent's local hook server (port 4005).
+
+**Setup on remote machine:**
+1. Copy hook script: `scp ~/loom/hooks/portolan-conversation-hook.sh remote:~/bin/`
+2. Add to shell profile: `export PORTOLAN_URL=http://127.0.0.1:4005`
+3. Configure Claude Code hooks in `~/.claude/settings.json`:
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": ["~/bin/portolan-conversation-hook.sh"],
+    "Stop": ["~/bin/portolan-conversation-hook.sh"]
+  }
+}
+```
+
+The agent receives hook POSTs on port 4005 and forwards them via WebSocket to the portolan server. Without hooks, the agent falls back to polling transcripts.
+
 ## Gotchas
 
 **Force Touch events are additive.** `webkitmouseforcedown` fires *in addition to* normal mouse events — the `click` still fires on release. Suppress with capture-phase listener + flag. See `main.ts:451-478`.
