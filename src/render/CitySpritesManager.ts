@@ -30,6 +30,8 @@ export class CitySpritesManager {
       this.textureLoader.load(
         path,
         (texture) => {
+          // Mark as managed so disposeObject() won't dispose shared textures
+          texture.userData = { managed: true }
           this.defaultSprites.set(i, texture)
           if (this.defaultSprites.size === NUM_DEFAULT_SPRITES) {
             this.defaultSpritesLoaded = true
@@ -91,6 +93,8 @@ export class CitySpritesManager {
     this.textureLoader.load(
       path,
       (texture) => {
+        // Mark as managed so disposeObject() won't dispose cached textures
+        texture.userData = { managed: true }
         this.spriteCache.set(city.id, texture)
         this.pendingLoads.delete(city.id)
       },

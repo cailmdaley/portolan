@@ -19,6 +19,8 @@ export class ShipSpritesManager {
     this.textureLoader.load(
       '/sprites/ships/ship-1.png',
       (texture) => {
+        // Mark as managed so disposeObject() won't dispose shared texture
+        texture.userData = { managed: true }
         this.shipTexture = texture
         this.loaded = true
         this.loading = false

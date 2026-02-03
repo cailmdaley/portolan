@@ -122,6 +122,7 @@ export class ZoneRenderer {
   /**
    * Dispose all Three.js resources in an object tree.
    * Prevents memory leaks by releasing GPU resources.
+   * Skips textures marked as managed (owned by sprite managers).
    */
   private disposeObject(obj: Object3D): void {
     obj.traverse((child) => {
@@ -129,11 +130,14 @@ export class ZoneRenderer {
         child.geometry?.dispose()
         if (child.material instanceof Material) {
           child.material.dispose()
-          if ('map' in child.material) (child.material as MeshBasicMaterial).map?.dispose()
+          // Only dispose unmanaged textures (CanvasTexture from activity decals, etc.)
+          const mat = child.material as MeshBasicMaterial
+          if (mat.map && !mat.map.userData?.managed) mat.map.dispose()
         } else if (Array.isArray(child.material)) {
           child.material.forEach(m => {
             m.dispose()
-            if ('map' in m) (m as MeshBasicMaterial).map?.dispose()
+            const mat = m as MeshBasicMaterial
+            if (mat.map && !mat.map.userData?.managed) mat.map.dispose()
           })
         }
       }
