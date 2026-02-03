@@ -771,16 +771,15 @@ function handleEscapeKey(e: KeyboardEvent): void {
 }
 window.addEventListener('keydown', handleEscapeKey)
 
-// Window resize
-const resizeHandler = () => {
+// Window resize handler
+function resizeHandler(): void {
   renderer.setSize(window.innerWidth, window.innerHeight)
   labelRenderer.setSize(window.innerWidth, window.innerHeight)
   camera.resize()
 }
 window.addEventListener('resize', resizeHandler)
 
-// Render loop with delta time tracking
-
+// Render loop
 function animate(): void {
   requestAnimationFrame(animate)
 
