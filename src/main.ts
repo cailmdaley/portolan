@@ -831,5 +831,14 @@ if (import.meta.hot) {
 
     // Camera cleanup (removes its own listeners)
     camera.dispose()
+
+    // Zone renderer cleanup (disposes all hex meshes and sprite managers)
+    zoneRenderer.dispose()
+
+    // Renderer cleanup (releases WebGL resources)
+    renderer.dispose()
+
+    // Remove label renderer DOM element (recreated on reload)
+    labelRenderer.domElement.remove()
   })
 }
