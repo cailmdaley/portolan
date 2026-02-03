@@ -301,6 +301,13 @@ export class WorkerActivityPanel {
     if (toAdd.length === 0) return
 
     this.currentConversation.push(...toAdd)
+
+    // Keep last 100 messages to match backend limit and prevent unbounded growth
+    const maxMessages = 100
+    if (this.currentConversation.length > maxMessages) {
+      this.currentConversation = this.currentConversation.slice(-maxMessages)
+    }
+
     this.renderConversation()
   }
 
