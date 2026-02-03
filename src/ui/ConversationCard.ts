@@ -504,9 +504,9 @@ export class ConversationCard {
    * Update scale based on camera distance (for zoom clamping)
    */
   setScale(scale: number): void {
-    // Clamp scale for readability
-    const minScale = 0.6  // Readable at far zoom (~180px equivalent)
-    const maxScale = 1.2  // Doesn't overwhelm at close zoom (~300px equivalent)
+    // Clamp scale for readability (card base width is 250px)
+    const minScale = 0.72  // 250 * 0.72 = 180px at far zoom
+    const maxScale = 1.2   // 250 * 1.2 = 300px at close zoom
     const clampedScale = Math.max(minScale, Math.min(maxScale, scale))
     this.element.style.transform = `scale(${clampedScale})`
   }

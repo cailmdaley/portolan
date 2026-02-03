@@ -578,6 +578,14 @@ export class ZoneRenderer {
       }
     }
 
+    // Close conversation cards for workers that no longer exist
+    const currentWorkerIds = new Set(sessions.map(s => s.id))
+    for (const workerId of this.conversationCards.keys()) {
+      if (!currentWorkerIds.has(workerId)) {
+        this.closeConversationCard(workerId)
+      }
+    }
+
     // Update signature cache (removes old, adds new)
     this.lastCitySignatures = newSignatures
   }
