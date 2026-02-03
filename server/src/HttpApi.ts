@@ -955,7 +955,7 @@ export class HttpApi {
     }
 
     let tmuxSession: string;
-    let isRemote = originId !== 'local' && !!originId;
+    const isRemote = originId !== 'local' && !!originId;
     let sshHost: string | undefined;
 
     if (createNewWorker) {

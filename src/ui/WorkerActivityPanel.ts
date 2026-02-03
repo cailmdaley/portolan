@@ -648,13 +648,12 @@ export class WorkerActivityPanel {
   // Tool results are now rendered inline with tool_use, no separate rendering needed
 
   private getToolSummary(msg: ConversationMessage): string {
-    const input = msg.toolInput
-    if (!input) return msg.content
+    if (!msg.toolInput) return msg.content
 
     const filePath = this.getToolFilePath(msg)
     if (filePath) return filePath
-    if (input.command) return this.truncateText(String(input.command), 50)
-    if (input.pattern) return String(input.pattern)
+    if (msg.toolInput.command) return this.truncateText(String(msg.toolInput.command), 50)
+    if (msg.toolInput.pattern) return String(msg.toolInput.pattern)
 
     return msg.content || msg.toolName || 'tool'
   }
@@ -664,8 +663,7 @@ export class WorkerActivityPanel {
   }
 
   private getToolFilePath(msg: ConversationMessage): string | null {
-    const input = msg.toolInput
-    return input?.file_path ?? input?.path ?? null
+    return msg.toolInput?.file_path ?? msg.toolInput?.path ?? null
   }
 
   private truncateText(text: string, maxLen: number): string {
