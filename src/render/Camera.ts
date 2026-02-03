@@ -114,7 +114,7 @@ export class Camera {
     this.wheelHandler = (e: WheelEvent) => {
       // Don't capture wheel events over panels - let them scroll
       const target = e.target as HTMLElement
-      if (target.closest('#worker-panel') || target.closest('#city-panel')) {
+      if (target.closest('#city-panel')) {
         return // Let panel handle scroll
       }
       e.preventDefault()
