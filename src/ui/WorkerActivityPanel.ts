@@ -252,18 +252,27 @@ export class WorkerActivityPanel {
       }
       const data = await response.json()
       if (data.messages) {
-        // Skip re-render if conversation hasn't changed
-        const newMessages = data.messages
-        const oldLen = this.currentConversation.length
-        const newLen = newMessages.length
-        const oldLast = this.currentConversation[oldLen - 1]?.timestamp
-        const newLast = newMessages[newLen - 1]?.timestamp
+        const fetchedMessages: ConversationMessage[] = data.messages
 
-        if (oldLen === newLen && oldLast === newLast) {
-          return // No change, skip re-render
+        // Merge with any messages that arrived via WebSocket during fetch
+        // (prevents race condition where WebSocket message arrives before HTTP response)
+        const existingTimestamps = new Set(fetchedMessages.map(m => m.timestamp))
+        const wsOnlyMessages = this.currentConversation.filter(m => !existingTimestamps.has(m.timestamp))
+
+        // Combine: fetched messages + any WebSocket-only messages, then dedupe and sort
+        const merged = [...fetchedMessages, ...wsOnlyMessages]
+        merged.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+
+        // Skip re-render if nothing changed
+        const oldLen = this.currentConversation.length
+        const oldLast = this.currentConversation[oldLen - 1]?.timestamp
+        const newLast = merged[merged.length - 1]?.timestamp
+
+        if (oldLen === merged.length && oldLast === newLast) {
+          return
         }
 
-        this.currentConversation = newMessages
+        this.currentConversation = merged.slice(-100)
         this.renderConversation()
       }
     } catch (error) {
