@@ -17,7 +17,6 @@ import {
   Vector3,
   Object3D,
   Material,
-  Line,
 } from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './HexGrid'
@@ -143,24 +142,22 @@ export class ZoneRenderer {
    */
   private disposeObject(obj: Object3D): void {
     obj.traverse((child) => {
-      if (child instanceof Mesh) {
-        child.geometry?.dispose()
-        if (child.material instanceof Material) {
-          child.material.dispose()
-          // Only dispose unmanaged textures (CanvasTexture from activity decals, etc.)
-          const mat = child.material as MeshBasicMaterial
-          if (mat.map && !mat.map.userData?.managed) mat.map.dispose()
-        } else if (Array.isArray(child.material)) {
-          child.material.forEach(m => {
-            m.dispose()
-            const mat = m as MeshBasicMaterial
-            if (mat.map && !mat.map.userData?.managed) mat.map.dispose()
-          })
-        }
+      // Dispose geometry for any object that has it
+      if ('geometry' in child && child.geometry) {
+        (child.geometry as BufferGeometry).dispose()
       }
-      if (child instanceof LineLoop || child instanceof Line) {
-        child.geometry?.dispose()
-        ;(child.material as Material)?.dispose()
+
+      // Dispose materials
+      if ('material' in child && child.material) {
+        const materials = Array.isArray(child.material) ? child.material : [child.material]
+        for (const mat of materials) {
+          mat.dispose()
+          // Only dispose unmanaged textures (CanvasTexture from activity decals, etc.)
+          const basicMat = mat as MeshBasicMaterial
+          if (basicMat.map && !basicMat.map.userData?.managed) {
+            basicMat.map.dispose()
+          }
+        }
       }
     })
   }
@@ -474,21 +471,16 @@ export class ZoneRenderer {
 
   private removeHex(key: string): void {
     const data = this.hexMeshes.get(key)
-    if (data) {
-      // Clean up CSS2D label DOM elements
-      if (data.labelObject) {
-        data.labelObject.element.remove()
-      }
-      if (data.workerLabels) {
-        for (const label of data.workerLabels) {
-          label.element.remove()
-        }
-      }
-      // Dispose Three.js resources before removing from scene
-      this.disposeObject(data.group)
-      this.scene.remove(data.group)
-      this.hexMeshes.delete(key)
-    }
+    if (!data) return
+
+    // Clean up CSS2D label DOM elements
+    data.labelObject?.element.remove()
+    data.workerLabels?.forEach(label => label.element.remove())
+
+    // Dispose Three.js resources before removing from scene
+    this.disposeObject(data.group)
+    this.scene.remove(data.group)
+    this.hexMeshes.delete(key)
   }
 
   /**
@@ -856,23 +848,23 @@ export class ZoneRenderer {
    * Update activity display for a worker by tmux session
    */
   updateWorkerActivity(tmuxSession: string, activities: Activity[]): void {
-    for (const [, data] of this.hexMeshes) {
-      if (data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh) {
-        // Dispose old decal resources before removing
-        this.disposeObject(data.activityMesh)
-        data.group.remove(data.activityMesh)
+    const workerData = Array.from(this.hexMeshes.values()).find(
+      data => data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh
+    )
+    if (!workerData) return
 
-        // Create new decal with updated activities
-        const newMesh = this.createActivityDecal(activities)
-        newMesh.position.y = this.hexHeight + 0.08  // Just above hex surface
-        const activityOffset = this.hexToWorld(-0.023, -0.03)
-        newMesh.position.x = activityOffset.x
-        newMesh.position.z = activityOffset.z
-        data.group.add(newMesh)
-        data.activityMesh = newMesh
-        break
-      }
-    }
+    // Dispose old decal resources before removing
+    this.disposeObject(workerData.activityMesh!)
+    workerData.group.remove(workerData.activityMesh!)
+
+    // Create new decal with updated activities
+    const newMesh = this.createActivityDecal(activities)
+    newMesh.position.y = this.hexHeight + 0.08  // Just above hex surface
+    const activityOffset = this.hexToWorld(-0.023, -0.03)
+    newMesh.position.x = activityOffset.x
+    newMesh.position.z = activityOffset.z
+    workerData.group.add(newMesh)
+    workerData.activityMesh = newMesh
   }
 
   /**
@@ -923,25 +915,18 @@ export class ZoneRenderer {
       this.removeHex(key)
     }
 
-    // Remove and dispose ground plane
-    if (this.groundPlane) {
-      this.disposeObject(this.groundPlane)
-      this.scene.remove(this.groundPlane)
-      this.groundPlane = null
-    }
-
-    // Remove and dispose rhumb lines
-    if (this.rhumbLinesGroup) {
-      this.disposeObject(this.rhumbLinesGroup)
-      this.scene.remove(this.rhumbLinesGroup)
-      this.rhumbLinesGroup = null
-    }
-
-    // Remove and dispose selection ring
-    if (this.selectionRing) {
-      this.disposeObject(this.selectionRing)
-      this.scene.remove(this.selectionRing)
-      this.selectionRing = null
+    // Dispose scene objects
+    const sceneObjects: Array<{ ref: Mesh | Group | null; clear: () => void }> = [
+      { ref: this.groundPlane, clear: () => { this.groundPlane = null } },
+      { ref: this.rhumbLinesGroup, clear: () => { this.rhumbLinesGroup = null } },
+      { ref: this.selectionRing, clear: () => { this.selectionRing = null } },
+    ]
+    for (const { ref, clear } of sceneObjects) {
+      if (ref) {
+        this.disposeObject(ref)
+        this.scene.remove(ref)
+        clear()
+      }
     }
 
     // Dispose sprite managers
