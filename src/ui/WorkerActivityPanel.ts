@@ -597,29 +597,12 @@ export class WorkerActivityPanel {
   private renderToolUse(msg: ConversationMessage, key: string, timeAgo: string, result?: ConversationMessage): string {
     const toolName = msg.toolName || 'Tool'
     const summary = this.getToolSummary(msg)
-    const isExpanded = this.expandedMessages.has(key)
-    const expandedClass = isExpanded ? 'expanded' : ''
-    const isFileTool = this.isClickableTool(msg)
-
-    // Format full input for expanded view
-    let fullInput = ''
-    if (msg.toolInput) {
-      if (typeof msg.toolInput === 'string') {
-        fullInput = msg.toolInput
-      } else {
-        // Format object input nicely
-        fullInput = Object.entries(msg.toolInput)
-          .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-          .join('\n')
-      }
-    }
-
-    // Format result output
-    const resultOutput = result?.content || ''
+    const expandedClass = this.expandedMessages.has(key) ? 'expanded' : ''
+    const fullInput = this.formatToolInput(msg.toolInput)
+    const resultOutput = result?.content ?? ''
     const hasDetails = fullInput || resultOutput
 
-    // File tools get an "open" button
-    const openButton = isFileTool
+    const openButton = this.isClickableTool(msg)
       ? `<button class="tool-open-btn" data-tool-file-key="${key}" title="Open in viewer">Open</button>`
       : ''
 
@@ -645,25 +628,35 @@ export class WorkerActivityPanel {
     `
   }
 
+  private formatToolInput(input: ConversationMessage['toolInput']): string {
+    if (!input) return ''
+    if (typeof input === 'string') return input
+    return Object.entries(input)
+      .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join('\n')
+  }
+
   // Tool results are now rendered inline with tool_use, no separate rendering needed
 
   private getToolSummary(msg: ConversationMessage): string {
-    if (!msg.toolInput) return msg.content
+    const input = msg.toolInput
+    if (!input) return msg.content
 
     const filePath = this.getToolFilePath(msg)
     if (filePath) return filePath
-    if (msg.toolInput.command) return this.truncateText(String(msg.toolInput.command), 50)
-    if (msg.toolInput.pattern) return String(msg.toolInput.pattern)
+    if (input.command) return this.truncateText(String(input.command), 50)
+    if (input.pattern) return String(input.pattern)
 
     return msg.content || msg.toolName || 'tool'
   }
 
   private isClickableTool(msg: ConversationMessage): boolean {
-    return Boolean(msg.toolName && this.clickableTools.includes(msg.toolName) && this.getToolFilePath(msg))
+    if (!msg.toolName || !this.clickableTools.includes(msg.toolName)) return false
+    return !!this.getToolFilePath(msg)
   }
 
-  private getToolFilePath(msg: ConversationMessage): string | null {
-    return msg.toolInput?.file_path ?? msg.toolInput?.path ?? null
+  private getToolFilePath(msg: ConversationMessage): string | undefined {
+    return msg.toolInput?.file_path ?? msg.toolInput?.path
   }
 
   private truncateText(text: string, maxLen: number): string {

@@ -145,10 +145,7 @@ export class ConversationCache {
    * Get messages for a session
    */
   getMessages(sessionId: string, limit?: number): CachedMessage[] {
-    const cache = this.sessions.get(sessionId);
-    if (!cache) return [];
-
-    const messages = cache.messages;
+    const messages = this.sessions.get(sessionId)?.messages ?? [];
     return limit ? messages.slice(-limit) : messages;
   }
 
@@ -169,21 +166,14 @@ export class ConversationCache {
 
     // Sort and deduplicate by timestamp
     allMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    const deduped = this.deduplicateByTimestamp(allMessages);
-
-    return limit ? deduped.slice(-limit) : deduped;
-  }
-
-  /**
-   * Remove duplicate messages by timestamp
-   */
-  private deduplicateByTimestamp(messages: CachedMessage[]): CachedMessage[] {
     const seen = new Set<string>();
-    return messages.filter(m => {
+    const deduped = allMessages.filter(m => {
       if (seen.has(m.timestamp)) return false;
       seen.add(m.timestamp);
       return true;
     });
+
+    return limit ? deduped.slice(-limit) : deduped;
   }
 
   /**
@@ -191,9 +181,7 @@ export class ConversationCache {
    */
   findSessionByTmux(tmuxSession: string): string | undefined {
     for (const [sessionId, cache] of this.sessions) {
-      if (cache.tmuxSession === tmuxSession) {
-        return sessionId;
-      }
+      if (cache.tmuxSession === tmuxSession) return sessionId;
     }
     return undefined;
   }
@@ -221,40 +209,41 @@ export class ConversationCache {
   }
 
   /**
+   * Delete a session from both maps
+   */
+  private deleteSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    this.lastEventBySession.delete(sessionId);
+  }
+
+  /**
    * Clean up old/excess sessions to prevent unbounded memory growth
    */
   private cleanup(): void {
     const now = Date.now();
-    const toDelete: string[] = [];
 
-    // Find sessions older than max age
-    for (const [sessionId, cache] of this.sessions) {
-      if (now - cache.lastUpdate > this.sessionMaxAge) {
-        toDelete.push(sessionId);
-      }
-    }
+    // Delete sessions older than max age
+    const expiredIds = [...this.sessions.entries()]
+      .filter(([_, cache]) => now - cache.lastUpdate > this.sessionMaxAge)
+      .map(([sessionId]) => sessionId);
 
-    // Delete old sessions
-    for (const sessionId of toDelete) {
-      this.sessions.delete(sessionId);
-      this.lastEventBySession.delete(sessionId);
+    for (const sessionId of expiredIds) {
+      this.deleteSession(sessionId);
     }
 
     // If still over limit, remove oldest sessions
     if (this.sessions.size > this.maxSessions) {
-      const sorted = [...this.sessions.entries()]
+      const sortedByAge = [...this.sessions.entries()]
         .sort((a, b) => a[1].lastUpdate - b[1].lastUpdate);
 
       const excess = this.sessions.size - this.maxSessions;
       for (let i = 0; i < excess; i++) {
-        const [sessionId] = sorted[i];
-        this.sessions.delete(sessionId);
-        this.lastEventBySession.delete(sessionId);
+        this.deleteSession(sortedByAge[i][0]);
       }
     }
 
-    if (toDelete.length > 0) {
-      console.log(`[ConversationCache] Cleanup: removed ${toDelete.length} old sessions, ${this.sessions.size} remain`);
+    if (expiredIds.length > 0) {
+      console.log(`[ConversationCache] Cleanup: removed ${expiredIds.length} expired sessions, ${this.sessions.size} remain`);
     }
   }
 
@@ -320,7 +309,6 @@ export class ConversationCache {
    * Clear cache for a session (e.g., when session ends)
    */
   clearSession(sessionId: string): void {
-    this.sessions.delete(sessionId);
-    this.lastEventBySession.delete(sessionId);
+    this.deleteSession(sessionId);
   }
 }
