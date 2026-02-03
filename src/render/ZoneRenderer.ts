@@ -749,11 +749,7 @@ export class ZoneRenderer {
     if (cameraDistance !== undefined && cameraDistance !== this.lastCameraDistance) {
       this.lastCameraDistance = cameraDistance
 
-      const scaleThreshold = 7  // Below this: fixed size. Above: scale with map.
-      const scale = cameraDistance <= scaleThreshold
-        ? 1.0
-        : scaleThreshold / cameraDistance  // Shrinks proportionally with zoom
-
+      const scale = this.calculateCardScale(cameraDistance)
       const cityFontSize = Math.round(28 * scale)   // City base: 28px
       const workerFontSize = Math.round(18 * scale) // Worker base: 18px
 
@@ -1085,14 +1081,12 @@ export class ZoneRenderer {
     return null
   }
 
-  /**
-   * Calculate card scale based on camera distance
-   */
+  /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */
+  private readonly SCALE_THRESHOLD = 7
+
   private calculateCardScale(cameraDistance: number): number {
-    const scaleThreshold = 7
-    return cameraDistance <= scaleThreshold
-      ? 1.0
-      : scaleThreshold / cameraDistance
+    if (cameraDistance <= this.SCALE_THRESHOLD) return 1.0
+    return this.SCALE_THRESHOLD / cameraDistance
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1115,13 +1109,10 @@ export class ZoneRenderer {
 
       // Clean up old entries (keep last 20)
       const entries = Object.entries(states)
-      if (entries.length > 20) {
-        entries.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0))
-        const trimmed = Object.fromEntries(entries.slice(0, 20))
-        localStorage.setItem(this.CARD_STATE_KEY, JSON.stringify(trimmed))
-      } else {
-        localStorage.setItem(this.CARD_STATE_KEY, JSON.stringify(states))
-      }
+      const toSave = entries.length > 20
+        ? Object.fromEntries(entries.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0)).slice(0, 20))
+        : states
+      localStorage.setItem(this.CARD_STATE_KEY, JSON.stringify(toSave))
     } catch {
       // Ignore localStorage errors
     }

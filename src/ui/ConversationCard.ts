@@ -268,23 +268,26 @@ export class ConversationCard {
   private renderContent(): void {
     if (this.disposed) return
 
-    if (this.loadingState === 'loading') {
-      this.contentEl.innerHTML = '<div class="card-loading">Loading conversation...</div>'
-      return
-    }
+    switch (this.loadingState) {
+      case 'loading':
+        this.contentEl.innerHTML = '<div class="card-loading">Loading conversation...</div>'
+        return
 
-    if (this.loadingState === 'error') {
-      this.contentEl.innerHTML = `
-        <div class="card-error">
-          <span>${escapeHtml(this.errorMessage)}</span>
-          <button class="retry-btn">Retry</button>
-        </div>
-      `
-      this.contentEl.querySelector('.retry-btn')?.addEventListener('click', (e) => {
-        e.stopPropagation()
-        this.fetchConversation()
-      })
-      return
+      case 'error':
+        this.contentEl.innerHTML = `
+          <div class="card-error">
+            <span>${escapeHtml(this.errorMessage)}</span>
+            <button class="retry-btn">Retry</button>
+          </div>
+        `
+        this.contentEl.querySelector('.retry-btn')?.addEventListener('click', (e) => {
+          e.stopPropagation()
+          this.fetchConversation()
+        })
+        return
+
+      case 'loaded':
+        break
     }
 
     if (this.conversation.length === 0) {
@@ -294,8 +297,6 @@ export class ConversationCard {
 
     // Show last few exchanges (user + assistant pairs)
     const recentMessages = this.getRecentExchanges(3)
-
-    // Build groups for tool calls
     const groups = this.buildMessageGroups(recentMessages)
     const html = groups.map(group => this.renderGroup(group)).join('')
 
@@ -366,9 +367,10 @@ export class ConversationCard {
   }
 
   private renderGroup(group: MessageGroup): string {
-    return group.type === 'message'
-      ? this.renderMessage(group.msg)
-      : this.renderToolGroup(group)
+    if (group.type === 'message') {
+      return this.renderMessage(group.msg)
+    }
+    return this.renderToolGroup(group)
   }
 
   private renderMessage(msg: ConversationMessage): string {
@@ -547,11 +549,8 @@ export class ConversationCard {
   }
 
   private toggleExpanded(key: string): void {
-    if (this.expandedMessages.has(key)) {
-      this.expandedMessages.delete(key)
-    } else {
-      this.expandedMessages.add(key)
-    }
+    const expanded = this.expandedMessages
+    expanded.has(key) ? expanded.delete(key) : expanded.add(key)
     this.renderContent()
   }
 
