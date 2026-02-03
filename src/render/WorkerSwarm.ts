@@ -7,9 +7,6 @@ import {
   BufferGeometry,
   Float32BufferAttribute,
   Vector3,
-  Mesh,
-  CircleGeometry,
-  MeshBasicMaterial,
   CanvasTexture,
   Group,
   NormalBlending,
@@ -136,11 +133,12 @@ function noise3D(x: number, y: number, z: number): number {
   return 32 * (n0 + n1 + n2 + n3)
 }
 
-// Colors from spec
-const INK_IDLE = { r: 0x2e / 255, g: 0x2a / 255, b: 0x26 / 255 }       // #2E2A26
-const INK_WORKING = { r: 0x8a / 255, g: 0x6b / 255, b: 0x2a / 255 }    // #8A6B2A
+// Color gradient: dormant → active
+const INK_DORMANT = { r: 0x1a / 255, g: 0x18 / 255, b: 0x16 / 255 }    // #1A1816 deep black
+const INK_WARM = { r: 0x6a / 255, g: 0x5a / 255, b: 0x3a / 255 }       // #6A5A3A warm sepia
+const INK_FIREFLY = { r: 0xd4 / 255, g: 0xa5 / 255, b: 0x20 / 255 }    // #D4A520 firefly gold
 
-// Create soft circular droplet texture
+// Create sharp point texture with glow
 function createDropletTexture(): CanvasTexture {
   const size = 64
   const canvas = document.createElement('canvas')
@@ -148,14 +146,17 @@ function createDropletTexture(): CanvasTexture {
   canvas.height = size
   const ctx = canvas.getContext('2d')!
 
-  // Radial gradient for soft falloff
+  // Sharp core with subtle glow halo
   const gradient = ctx.createRadialGradient(
     size / 2, size / 2, 0,
     size / 2, size / 2, size / 2
   )
+  // Bright sharp core
   gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-  gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.8)')
-  gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.3)')
+  gradient.addColorStop(0.15, 'rgba(255, 255, 255, 0.9)')
+  gradient.addColorStop(0.25, 'rgba(255, 255, 255, 0.4)')
+  // Subtle glow halo
+  gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)')
   gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
 
   ctx.fillStyle = gradient
@@ -187,12 +188,12 @@ export interface SwarmConfig {
 }
 
 const DEFAULT_CONFIG: Required<SwarmConfig> = {
-  particleCount: 60,
+  particleCount: 45,
   baseRadius: 0.4,
-  workingRadiusMultiplier: 1.4,
-  baseSpeed: 0.25,
-  workingSpeedMultiplier: 2.0,
-  particleSize: 10,  // Pixels (sizeAttenuation: false)
+  workingRadiusMultiplier: 1.5,
+  baseSpeed: 0.15,  // Slow time evolution for smooth noise
+  workingSpeedMultiplier: 3.0,
+  particleSize: 12,  // Pixels (sizeAttenuation: false)
   heightOffset: 0.5,
 }
 
@@ -205,7 +206,6 @@ export class WorkerSwarm {
   private positions: Float32Array
   private velocities: Float32Array
   private material: PointsMaterial
-  private shadow: Mesh
   private particleCount: number
   private config: Required<SwarmConfig>
 
@@ -245,26 +245,13 @@ export class WorkerSwarm {
       depthTest: true,
       blending: NormalBlending,
       vertexColors: false,
-      sizeAttenuation: false,  // Constant screen size regardless of camera distance
+      sizeAttenuation: false,  // Manual scaling via setCameraDistance()
     })
-    this.setColor(0)  // Start with idle color
+    this.setColor(0, 0)  // Start with dormant color, no pulse
 
     this.points = new Points(geometry, this.material)
     this.points.position.y = this.config.heightOffset
     this.group.add(this.points)
-
-    // Create shadow (soft blob on vellum)
-    const shadowGeometry = new CircleGeometry(this.config.baseRadius * 1.2, 32)
-    const shadowMaterial = new MeshBasicMaterial({
-      color: 0x2e2a26,
-      transparent: true,
-      opacity: 0.15,
-      depthWrite: false,
-    })
-    this.shadow = new Mesh(shadowGeometry, shadowMaterial)
-    this.shadow.rotation.x = -Math.PI / 2  // Lie flat
-    this.shadow.position.y = 0.01  // Just above vellum
-    this.group.add(this.shadow)
 
     // Store worker info for hit detection
     this.group.userData = { workerId, tmuxSession }
@@ -292,11 +279,39 @@ export class WorkerSwarm {
     this.targetActivity = Math.max(0, Math.min(1, level))
   }
 
-  private setColor(activity: number): void {
-    // Interpolate between idle and working colors
-    const r = INK_IDLE.r + (INK_WORKING.r - INK_IDLE.r) * activity
-    const g = INK_IDLE.g + (INK_WORKING.g - INK_IDLE.g) * activity
-    const b = INK_IDLE.b + (INK_WORKING.b - INK_IDLE.b) * activity
+  /** Scale particles based on camera distance - smaller when zoomed out */
+  setCameraDistance(distance: number): void {
+    // At distance 5: full size (12px), at distance 20: half size (6px)
+    const scale = Math.max(0.4, Math.min(1.2, 7 / distance))
+    this.cameraScale = scale
+  }
+
+  private cameraScale = 1
+
+  private setColor(activity: number, pulse: number): void {
+    // 3-stop gradient: dormant (0) → warm (0.3) → firefly (1.0)
+    let r: number, g: number, b: number
+
+    if (activity < 0.3) {
+      // Dormant to warm
+      const t = activity / 0.3
+      r = INK_DORMANT.r + (INK_WARM.r - INK_DORMANT.r) * t
+      g = INK_DORMANT.g + (INK_WARM.g - INK_DORMANT.g) * t
+      b = INK_DORMANT.b + (INK_WARM.b - INK_DORMANT.b) * t
+    } else {
+      // Warm to firefly
+      const t = (activity - 0.3) / 0.7
+      r = INK_WARM.r + (INK_FIREFLY.r - INK_WARM.r) * t
+      g = INK_WARM.g + (INK_FIREFLY.g - INK_WARM.g) * t
+      b = INK_WARM.b + (INK_FIREFLY.b - INK_WARM.b) * t
+    }
+
+    // Pulse brightness for active workers (adds glow)
+    const brighten = pulse * activity * 0.3
+    r = Math.min(1, r + brighten)
+    g = Math.min(1, g + brighten)
+    b = Math.min(1, b + brighten)
+
     this.material.color.setRGB(r, g, b)
   }
 
@@ -309,8 +324,16 @@ export class WorkerSwarm {
       this.activity = Math.max(this.targetActivity, this.activity - activityRate)
     }
 
-    // Update color based on activity
-    this.setColor(this.activity)
+    // Pulsation for active workers (0-1 sine wave)
+    const pulse = (Math.sin(this.time * 3) + 1) / 2
+
+    // Update color with pulse
+    this.setColor(this.activity, pulse)
+
+    // Scale by camera distance, pulsate for active workers
+    const baseSize = this.config.particleSize * this.cameraScale
+    const sizeVariation = baseSize * 0.3 * this.activity * pulse
+    this.material.size = baseSize + sizeVariation
 
     // Calculate current parameters
     const speed = this.config.baseSpeed * (1 + (this.config.workingSpeedMultiplier - 1) * this.activity)
@@ -345,8 +368,8 @@ export class WorkerSwarm {
       this.velocities[i3 + 1] += (vy - this.velocities[i3 + 1]) * smoothing
       this.velocities[i3 + 2] += (vz - this.velocities[i3 + 2]) * smoothing
 
-      // Move particle (higher multiplier = more visible movement)
-      const moveSpeed = 2.5
+      // Move particle - dormant: slow drift, active: lively undulation
+      const moveSpeed = 0.3 + this.activity * 2.7  // 0.3 dormant → 3.0 active
       let newX = x + this.velocities[i3] * deltaTime * moveSpeed
       let newY = y + this.velocities[i3 + 1] * deltaTime * moveSpeed
       let newZ = z + this.velocities[i3 + 2] * deltaTime * moveSpeed
@@ -378,10 +401,6 @@ export class WorkerSwarm {
     const posAttr = this.points.geometry.getAttribute('position') as Float32BufferAttribute
     posAttr.array.set(this.positions)
     posAttr.needsUpdate = true
-
-    // Update shadow size to match swarm expansion
-    const shadowScale = radius / this.config.baseRadius
-    this.shadow.scale.setScalar(shadowScale)
   }
 
   /**
@@ -397,8 +416,6 @@ export class WorkerSwarm {
   dispose(): void {
     this.points.geometry.dispose()
     this.material.dispose()
-    ;(this.shadow.geometry as CircleGeometry).dispose()
-    ;(this.shadow.material as MeshBasicMaterial).dispose()
     // Note: don't dispose shared droplet texture
   }
 }

@@ -18,9 +18,12 @@ Fresh eyes. Survey the system as it actually is. Broad authority to advance the 
 
 1. **Survey** — Explore agents, `felt downstream`, git log, tests. You decide what to check.
 2. **Contribute** — Substantial, coherent work. Keep working until context is ~50% full. Multiple commits per iteration is expected. Swarm subagents if parallelism helps.
-3. **Simplify** — Run code-simplifier on modified files: spawn Task with `subagent_type: "code-simplifier"` targeting recently changed code.
-4. **Felt** — Before exiting: `/felt`, update CLAUDE.md if warranted
-5. **Exit** — `kill $PPID`
+3. **Visual check** — Open `http://localhost:5173` in Chrome and visually verify the swarm rendering. Take screenshots if useful. Check: particles visible? motion smooth? colors correct? shadows rendering?
+4. **Simplify** — Run code-simplifier on modified files: spawn Task with `subagent_type: "code-simplifier"` targeting recently changed code.
+5. **Felt** — Before exiting: `/felt`, update CLAUDE.md if warranted
+6. **Exit** — `kill $PPID`
+
+**Visual feedback is primary.** This is a visual feature — use the Chrome browser to see what you've built. Don't just check if code compiles; check if it *looks right*.
 
 **Ambition:** Each iteration should maximize its context window. Don't exit after one small fix — survey what else needs doing and keep contributing until you've used ~50% of available context. Fresh perspective comes from the next iteration, not from premature exits.
 

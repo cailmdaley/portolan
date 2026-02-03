@@ -782,6 +782,9 @@ export class ZoneRenderer {
 
     // Update all worker swarms (they handle their own animation)
     for (const swarm of this.workerSwarms.values()) {
+      if (cameraDistance !== undefined) {
+        swarm.setCameraDistance(cameraDistance)
+      }
       swarm.update(deltaTime)
     }
   }
