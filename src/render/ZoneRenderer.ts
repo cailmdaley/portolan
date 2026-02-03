@@ -918,27 +918,30 @@ export class ZoneRenderer {
    * Dispose all resources (call before recreating during HMR)
    */
   dispose(): void {
-    // Dispose all hex meshes
+    // Remove and dispose all hex meshes
     for (const key of this.hexMeshes.keys()) {
       this.removeHex(key)
     }
 
-    // Dispose ground plane
+    // Remove and dispose ground plane
     if (this.groundPlane) {
       this.disposeObject(this.groundPlane)
       this.scene.remove(this.groundPlane)
+      this.groundPlane = null
     }
 
-    // Dispose rhumb lines
+    // Remove and dispose rhumb lines
     if (this.rhumbLinesGroup) {
       this.disposeObject(this.rhumbLinesGroup)
       this.scene.remove(this.rhumbLinesGroup)
+      this.rhumbLinesGroup = null
     }
 
-    // Dispose selection ring
+    // Remove and dispose selection ring
     if (this.selectionRing) {
       this.disposeObject(this.selectionRing)
       this.scene.remove(this.selectionRing)
+      this.selectionRing = null
     }
 
     // Dispose sprite managers

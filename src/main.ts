@@ -817,28 +817,22 @@ setTimeout(() => {
 // HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    // Prevent WebSocket reconnection
+    // Close WebSocket and prevent reconnection attempts
     wsCleanedUp = true
     ws?.close()
 
-    // Remove document event listeners
+    // Remove all event listeners (named handlers for clean unsubscribe)
     document.removeEventListener('contextmenu', contextMenuHandler)
     document.removeEventListener('click', forceClickCaptureHandler, true)
-
-    // Remove window event listeners
     window.removeEventListener('keydown', escapeKeyHandler)
     window.removeEventListener('resize', resizeHandler)
 
-    // Camera cleanup (removes its own listeners)
+    // Dispose renderer components in reverse initialization order
     camera.dispose()
-
-    // Zone renderer cleanup (disposes all hex meshes and sprite managers)
     zoneRenderer.dispose()
-
-    // Renderer cleanup (releases WebGL resources)
     renderer.dispose()
 
-    // Remove label renderer DOM element (recreated on reload)
+    // Clean up DOM elements
     labelRenderer.domElement.remove()
   })
 }
