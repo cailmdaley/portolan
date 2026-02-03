@@ -1442,21 +1442,24 @@ export class HttpApi {
       if (messages.length > 0) return messages;
     }
 
-    // 2. Remote conversation lookup (requires sessionId)
+    // Remaining lookups require sessionId
+    if (!sessionId) return [];
+
+    // 2. Remote conversation lookup
     const isRemote = session?.originId && session.originId !== 'local';
-    if (isRemote && sessionId) {
+    if (isRemote) {
       const cached = this.remoteConversationLookup?.(sessionId);
       if (cached && cached.length > 0) return cached.slice(-limit);
     }
 
     // 3. ConversationCache by sessionId (fallback for ended sessions or no tmux)
-    if (this.conversationCache && sessionId) {
+    if (this.conversationCache) {
       const messages = this.conversationCache.getMessages(sessionId, limit);
       if (messages.length > 0) return messages;
     }
 
-    // 4. TranscriptReader (legacy fallback for local sessions, requires sessionId)
-    if (this.transcriptReader && session && sessionId && !isRemote) {
+    // 4. TranscriptReader (legacy fallback for local sessions)
+    if (this.transcriptReader && session && !isRemote) {
       await this.updateTranscriptMapping(sessionId, session);
       return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
     }
