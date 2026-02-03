@@ -1,9 +1,11 @@
 ---
 title: 'Portolan visual redesign: bottom-up aesthetic rebuild'
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-01-31T17:45:24.661053+01:00
+closed-at: 2026-02-03T01:15:10.300225+01:00
+close-reason: Design direction established. Vellum substrate, coastline aesthetic, city sprites, worker ships. Philosophy captured in vellum-design-philosophy fiber. Implementation is hybrid hex+coastline, not pure bottom-up rebuild.
 ---
 
 # Portolan Visual Redesign

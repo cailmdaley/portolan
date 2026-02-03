@@ -11,12 +11,17 @@ import {
   PlaneGeometry,
   DoubleSide,
   CanvasTexture,
+  LineLoop,
+  BufferGeometry,
+  LineBasicMaterial,
+  Vector3,
 } from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './HexGrid'
 import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
+import { ShipSpritesManager } from './ShipSpritesManager'
 import type { City, Session, HexCoord } from '../state/types'
 import { PALETTE } from '../state/types'
 
@@ -38,6 +43,8 @@ interface HexMeshData {
   activityMesh?: Mesh  // Activity ground decal
   labelObject?: CSS2DObject  // HTML label (CSS2D for OpenType features)
   workerLabels?: CSS2DObject[]  // Worker labels clustered on city sprite
+  cityName?: string  // For toggling label text
+  workerCount?: number  // For toggling label text
 }
 
 export class ZoneRenderer {
@@ -55,6 +62,9 @@ export class ZoneRenderer {
   // City sprites manager (nano-banana generated city plans)
   private citySprites: CitySpritesManager
 
+  // Ship sprites manager (worker ships)
+  private shipSprites: ShipSpritesManager
+
   // Camera rotation (45° = π/4) - must match Camera.ts
   private readonly cameraRotation = Math.PI / 4
 
@@ -69,6 +79,7 @@ export class ZoneRenderer {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
+    this.shipSprites = new ShipSpritesManager()
     this.createGroundPlane()
     // No background hex grid - spec says "just the vellum surface"
   }
@@ -179,6 +190,46 @@ export class ZoneRenderer {
     return mesh
   }
 
+  /**
+   * Create a hex edge outline (just the border, no fill)
+   */
+  private createHexEdge(scale = 1, opacity = 0.15): LineLoop {
+    const r = this.hexGrid.hexRadius * scale
+    const points: Vector3[] = []
+
+    // Pointy-top hexagon
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 2
+      points.push(new Vector3(r * Math.cos(angle), 0, r * Math.sin(angle)))
+    }
+
+    const geometry = new BufferGeometry().setFromPoints(points)
+    const material = new LineBasicMaterial({
+      color: 0x6B5B4B,  // Warm brown
+      transparent: true,
+      opacity,
+    })
+
+    return new LineLoop(geometry, material)
+  }
+
+  /**
+   * Add hex grid overlay around a city (3-hex radius)
+   */
+  private addCityHexGrid(group: Group, centerHex: HexCoord): void {
+    const radius = 4  // 4-hex radius around city
+    const hexes = this.hexGrid.getHexesInRadius(centerHex, radius)
+
+    for (const hex of hexes) {
+      const relPos = this.hexGrid.axialToCartesian(hex)
+      const centerPos = this.hexGrid.axialToCartesian(centerHex)
+
+      const edge = this.createHexEdge(0.98, 0.10)
+      edge.position.set(relPos.x - centerPos.x, 0.05, relPos.z - centerPos.z)  // Above sprite
+      group.add(edge)
+    }
+  }
+
   renderCity(city: City, workers: Session[] = []): void {
     const key = this.hexGrid.hexKey(city.hex)
 
@@ -188,13 +239,16 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(city.hex)
 
+    // Light hex grid around city for spatial reference
+    this.addCityHexGrid(group, city.hex)
+
     // City sprite - nano-banana generated city plan, lying flat on vellum
     const texture = this.citySprites.getSprite(city)
 
     if (texture) {
       // Use a flat plane mesh instead of billboard sprite
-      // 3-hex radius ≈ 6 hexes across ≈ 6 * 1.73 (hex width) ≈ 10 world units
-      const spriteSize = 6.0  // World units diameter (covers ~3-hex radius)
+      // With 1 hex = 1 world unit, sprite covers 3 hex radius (7 hexes across)
+      const spriteSize = 6.5  // World units diameter (3 hex radius)
       const geometry = new PlaneGeometry(spriteSize, spriteSize)
       const material = new MeshBasicMaterial({
         map: texture,
@@ -212,72 +266,85 @@ export class ZoneRenderer {
       group.add(fallbackMesh)
     }
 
-    // City label - CSS2D HTML element for proper small caps
+    // City label - above the sprite
     const labelDiv = document.createElement('div')
     labelDiv.className = 'city-label'
     labelDiv.textContent = city.name
     const labelObject = new CSS2DObject(labelDiv)
-    labelObject.position.y = 2.0  // Above the sprite
+    labelObject.position.set(0, 1.5, 0)  // Above center
     group.add(labelObject)
 
-    // Worker labels - clustered on the city sprite
-    // Position workers in a ring around center, angled toward city label
+    // Workers as ships positioned around the southern arc of the city
+    // Camera is at +Z looking toward -Z, so "south" (below on screen) is +Z direction
     const workerLabels: CSS2DObject[] = []
-    const workerCount = workers.length
-    if (workerCount > 0) {
-      const baseRadius = 1.5  // Distance from center (scaled for larger sprite)
-      const startAngle = Math.PI  // Start at bottom (opposite label)
-      const angleSpread = Math.PI * 0.8  // Spread across ~140°
+    const shipTexture = this.shipSprites.getShipTexture()
+    const shipSize = 2.0  // World units
+    const shipRadius = 3.0  // Distance from city center
+    const arcStart = Math.PI * 0.25  // Start at 45° (right-front)
+    const arcEnd = Math.PI * 0.75    // End at 135° (left-front)
 
-      workers.forEach((worker, i) => {
-        const angle = workerCount === 1
-          ? startAngle  // Single worker at bottom
-          : startAngle - angleSpread/2 + (angleSpread * i / (workerCount - 1))
+    workers.forEach((worker, i) => {
+      // Distribute ships along the southern arc
+      const arcSpan = arcEnd - arcStart
+      const angle = workers.length === 1
+        ? Math.PI * 0.5  // Single worker at center-front (directly towards camera)
+        : arcStart + (arcSpan * i / (workers.length - 1))
 
-        const workerDiv = document.createElement('div')
-        workerDiv.className = worker.status === 'working' ? 'worker-label working' : 'worker-label'
-        workerDiv.textContent = worker.name
-        workerDiv.dataset.workerId = worker.id
-        workerDiv.dataset.tmuxSession = worker.tmuxSession
+      const shipX = Math.cos(angle) * shipRadius
+      const shipZ = Math.sin(angle) * shipRadius
 
-        // Make clickable - CSS2D labels are HTML, need direct handlers
-        workerDiv.style.cursor = 'pointer'
-        workerDiv.addEventListener('click', (e) => {
-          e.stopPropagation()
-          if (this.onWorkerClick) {
-            this.onWorkerClick(worker.id, worker.tmuxSession)
-          }
+      // Ship sprite mesh
+      if (shipTexture) {
+        const shipGeometry = new PlaneGeometry(shipSize, shipSize)
+        const shipMaterial = new MeshBasicMaterial({
+          map: shipTexture,
+          transparent: true,
+          side: DoubleSide,
+          depthWrite: false,
         })
-        workerDiv.addEventListener('dblclick', (e) => {
-          e.stopPropagation()
-          if (this.onWorkerDblClick) {
-            this.onWorkerDblClick(worker.id, worker.tmuxSession)
-          }
-        })
+        const shipMesh = new Mesh(shipGeometry, shipMaterial)
+        shipMesh.rotation.x = -Math.PI / 2  // Lie flat on XZ plane
+        shipMesh.position.set(shipX, 0.03, shipZ)  // Just above vellum
+        // Store worker info for click detection
+        shipMesh.userData = { workerId: worker.id, tmuxSession: worker.tmuxSession }
+        group.add(shipMesh)
+      }
 
-        const workerLabelObj = new CSS2DObject(workerDiv)
-        // Position on the sprite plane (y = height, x/z from angle)
-        workerLabelObj.position.set(
-          Math.cos(angle) * baseRadius,
-          0.5,  // Just above sprite surface
-          Math.sin(angle) * baseRadius
-        )
-        group.add(workerLabelObj)
-        workerLabels.push(workerLabelObj)
+      // Worker label attached to ship
+      const workerDiv = document.createElement('div')
+      workerDiv.className = worker.status === 'working' ? 'worker-label working' : 'worker-label'
+      workerDiv.textContent = worker.name
+      workerDiv.dataset.workerId = worker.id
+      workerDiv.dataset.tmuxSession = worker.tmuxSession
+
+      // Clickable
+      workerDiv.addEventListener('click', (e) => {
+        e.stopPropagation()
+        if (this.onWorkerClick) this.onWorkerClick(worker.id, worker.tmuxSession)
       })
-    }
+      workerDiv.addEventListener('dblclick', (e) => {
+        e.stopPropagation()
+        if (this.onWorkerDblClick) this.onWorkerDblClick(worker.id, worker.tmuxSession)
+      })
+
+      const workerLabelObj = new CSS2DObject(workerDiv)
+      workerLabelObj.position.set(shipX, -0.8, shipZ)  // Below ship
+      group.add(workerLabelObj)
+      workerLabels.push(workerLabelObj)
+    })
 
     group.position.set(pos.x, 0, pos.z)
     this.scene.add(group)
 
     this.hexMeshes.set(key, {
       group, hex: city.hex, type: 'city', entityId: city.id,
-      labelObject, workerLabels
+      labelObject, workerLabels,
+      cityName: city.name, workerCount: workers.length
     })
   }
 
   /**
-   * Render an orphan worker (no city) as a small marker
+   * Render an orphan worker (no city) as a ship
    * These are workers that exist but aren't associated with any city
    */
   renderOrphanWorker(session: Session): void {
@@ -288,9 +355,11 @@ export class ZoneRenderer {
     // Check if worker already exists - just update status
     const existing = this.hexMeshes.get(key)
     if (existing && existing.type === 'worker' && existing.entityId === session.id) {
-      if (existing.status !== session.status && existing.mesh) {
-        const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
-        ;(existing.mesh.material as MeshStandardMaterial).color.setHex(color)
+      // Update label class for status change
+      if (existing.status !== session.status && existing.labelObject) {
+        existing.labelObject.element.className = session.status === 'working'
+          ? 'worker-label working'
+          : 'worker-label'
         existing.status = session.status
       }
       return
@@ -302,10 +371,29 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(session.hex)
 
-    // Small marker for orphan workers
-    const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
-    const markerMesh = this.createHexMesh(color, 0.3, 0.05)
-    group.add(markerMesh)
+    // Ship sprite for orphan worker
+    const shipTexture = this.shipSprites.getShipTexture()
+    let shipMesh: Mesh | undefined
+
+    if (shipTexture) {
+      const shipSize = 1.2
+      const shipGeometry = new PlaneGeometry(shipSize, shipSize)
+      const shipMaterial = new MeshBasicMaterial({
+        map: shipTexture,
+        transparent: true,
+        side: DoubleSide,
+        depthWrite: false,
+      })
+      shipMesh = new Mesh(shipGeometry, shipMaterial)
+      shipMesh.rotation.x = -Math.PI / 2  // Lie flat
+      shipMesh.position.y = 0.03
+      group.add(shipMesh)
+    } else {
+      // Fallback: small hex marker
+      const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
+      shipMesh = this.createHexMesh(color, 0.3, 0.05)
+      group.add(shipMesh)
+    }
 
     // Worker label
     const labelDiv = document.createElement('div')
@@ -325,7 +413,7 @@ export class ZoneRenderer {
       entityId: session.id,
       entityName: session.name,
       tmuxSession: session.tmuxSession,
-      mesh: markerMesh,
+      mesh: shipMesh,
       status: session.status,
       labelObject,
     })
@@ -420,6 +508,61 @@ export class ZoneRenderer {
   }
 
   /**
+   * Find nearest city within sprite radius of a world position
+   * City sprites are ~6 world units, so use radius of 3
+   */
+  getCityAtWorldPos(worldX: number, worldZ: number): { entityId: string } | null {
+    const spriteRadius = 3.25  // 3 hex radius (matches sprite)
+    let nearest: { entityId: string; dist: number } | null = null
+
+    for (const [, data] of this.hexMeshes) {
+      if (data.type === 'city' && data.entityId) {
+        const pos = this.hexGrid.axialToCartesian(data.hex)
+        const dist = Math.sqrt((pos.x - worldX) ** 2 + (pos.z - worldZ) ** 2)
+        if (dist <= spriteRadius && (!nearest || dist < nearest.dist)) {
+          nearest = { entityId: data.entityId, dist }
+        }
+      }
+    }
+
+    return nearest ? { entityId: nearest.entityId } : null
+  }
+
+  /**
+   * Find worker ship at world position
+   * Checks ship meshes that have userData with worker info
+   */
+  getWorkerAtWorldPos(worldX: number, worldZ: number): { workerId: string; tmuxSession: string } | null {
+    const hitRadius = 1.2  // Ship click radius
+    let nearestDist = Infinity
+    let nearestWorker: { workerId: string; tmuxSession: string } | null = null
+
+    for (const [, data] of this.hexMeshes) {
+      if (data.type === 'city') {
+        const cityPos = this.hexGrid.axialToCartesian(data.hex)
+        // Check all children of the city group for ship meshes
+        data.group.traverse((child) => {
+          if (child instanceof Mesh && child.userData?.workerId) {
+            // Ship position in world space
+            const shipWorldX = cityPos.x + child.position.x
+            const shipWorldZ = cityPos.z + child.position.z
+            const dist = Math.sqrt((shipWorldX - worldX) ** 2 + (shipWorldZ - worldZ) ** 2)
+            if (dist <= hitRadius && dist < nearestDist) {
+              nearestDist = dist
+              nearestWorker = {
+                workerId: child.userData.workerId as string,
+                tmuxSession: child.userData.tmuxSession as string,
+              }
+            }
+          }
+        })
+      }
+    }
+
+    return nearestWorker
+  }
+
+  /**
    * Create a ring shape (hex with hex hole)
    */
   private createRingShape(outerScale: number, innerScale: number): Shape {
@@ -497,22 +640,44 @@ export class ZoneRenderer {
   }
 
   /**
-   * Animate worker hexes (breathing pulse)
-   * CSS2D labels maintain constant screen size automatically
+   * Animate and update zoom-based label visibility
    */
-  animate(_cameraDistance?: number): void {
+  animate(cameraDistance?: number, _cameraCenter?: { x: number; z: number }): void {
+    // Scale labels: fixed size when close, then scale with map when zoomed out
+    if (cameraDistance !== undefined) {
+      const scaleThreshold = 7  // Below this: fixed size. Above: scale with map.
+      const scale = cameraDistance <= scaleThreshold
+        ? 1.0
+        : scaleThreshold / cameraDistance  // Shrinks proportionally with zoom
+
+      const cityFontSize = Math.round(28 * scale)   // City base: 28px
+      const workerFontSize = Math.round(18 * scale) // Worker base: 18px
+
+      for (const [, data] of this.hexMeshes) {
+        if (data.type === 'city') {
+          if (data.labelObject) {
+            const label = data.labelObject.element as HTMLElement
+            label.style.fontSize = `${cityFontSize}px`
+          }
+          data.workerLabels?.forEach(w => {
+            const el = w.element as HTMLElement
+            el.style.fontSize = `${workerFontSize}px`
+          })
+        }
+      }
+    }
+
+    // Worker breathing animation
     const now = Date.now()
-    const period = 2500 // 2.5 second breathing cycle
+    const period = 2500
 
     for (const [, data] of this.hexMeshes) {
       if (data.type === 'worker' && data.mesh) {
         if (data.status === 'working') {
-          // Breathing pulse: scale oscillates 1.0 → 1.03 → 1.0
           const t = (now % period) / period
           const scale = 1.0 + 0.03 * Math.sin(t * Math.PI * 2)
           data.mesh.scale.setScalar(scale)
         } else {
-          // Ensure idle workers are at base scale
           data.mesh.scale.setScalar(1.0)
         }
       }

@@ -1,11 +1,13 @@
 ---
 title: Portolan iteration log
-status: open
+status: closed
 kind: doc
 priority: 2
 depends-on:
     - ralph-loop-autonomous-portolan-84bd75bf
 created-at: 2026-01-31T18:32:19.108908+01:00
+closed-at: 2026-02-03T00:19:37.81931+01:00
+close-reason: Cumulative log through iteration 26. Key findings preserved in individual iteration fibers and CLAUDE.md. Coastline architecture, worker force simulation, per-origin landmasses all documented.
 ---
 
 # Portolan Visual Iteration Log
@@ -966,4 +968,3 @@ Window size scales with point count: `floor(pointCount * 0.01 * 2^(smoothing-1))
 
 ## Comments
 **2026-01-31 21:19** — Iteration 20: Worker force simulation + wandering. Created WorkerRenderer.ts that moves workers using physics: attract to home city, repel from other workers, random wander. Workers spawn 1-2.5 units away, can drift up to 3.5 units. Click detection now uses world position. Removed hex selection ring for workers.
-

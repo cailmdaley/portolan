@@ -14,9 +14,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 export interface ConversationMessage {
-  type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result';
+  type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'system';
   content: string;
   timestamp: string;
   // For tool_use
@@ -25,6 +29,8 @@ export interface ConversationMessage {
   toolUseId?: string;  // For linking tool_use to tool_result
   // For thinking
   preview?: string;
+  // For system messages (skill content, reminders)
+  systemType?: 'skill' | 'reminder';
 }
 
 export interface TranscriptInfo {
@@ -41,9 +47,48 @@ export class TranscriptReader {
   private cacheTimeout = 2000; // Refresh every 2 seconds
   // Track which transcript file each session is using: sessionId -> transcriptPath
   private sessionTranscriptMap: Map<string, string> = new Map();
+  private mappingsFile: string;
 
   constructor() {
     this.claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+    this.mappingsFile = path.join(os.homedir(), '.portolan', 'transcript-mappings.json');
+    this.loadMappings();
+  }
+
+  /**
+   * Load persisted session→transcript mappings from disk
+   */
+  private loadMappings(): void {
+    try {
+      if (fs.existsSync(this.mappingsFile)) {
+        const data = JSON.parse(fs.readFileSync(this.mappingsFile, 'utf-8'));
+        // Filter out mappings for transcript files that no longer exist
+        for (const [sessionId, transcriptPath] of Object.entries(data)) {
+          if (typeof transcriptPath === 'string' && fs.existsSync(transcriptPath)) {
+            this.sessionTranscriptMap.set(sessionId, transcriptPath);
+          }
+        }
+        console.log(`[Transcript] Loaded ${this.sessionTranscriptMap.size} session mappings`);
+      }
+    } catch (err) {
+      console.log('[Transcript] No existing mappings file or failed to load');
+    }
+  }
+
+  /**
+   * Save session→transcript mappings to disk
+   */
+  private saveMappings(): void {
+    try {
+      const dir = path.dirname(this.mappingsFile);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const data = Object.fromEntries(this.sessionTranscriptMap);
+      fs.writeFileSync(this.mappingsFile, JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error('[Transcript] Failed to save mappings:', err);
+    }
   }
 
   /**
@@ -51,6 +96,7 @@ export class TranscriptReader {
    */
   setSessionTranscript(sessionId: string, transcriptPath: string): void {
     this.sessionTranscriptMap.set(sessionId, transcriptPath);
+    this.saveMappings();
   }
 
   /**
@@ -58,6 +104,85 @@ export class TranscriptReader {
    */
   getSessionTranscript(sessionId: string): string | undefined {
     return this.sessionTranscriptMap.get(sessionId);
+  }
+
+  /**
+   * Check if a transcript file is stale (not modified within threshold)
+   */
+  isTranscriptStale(transcriptPath: string, thresholdMs: number): boolean {
+    try {
+      const stats = fs.statSync(transcriptPath);
+      return Date.now() - stats.mtimeMs > thresholdMs;
+    } catch {
+      return true; // If we can't stat it, consider it stale
+    }
+  }
+
+  /**
+   * Get all session-to-transcript mappings (for debugging)
+   */
+  getAllSessionMappings(): Map<string, string> {
+    return new Map(this.sessionTranscriptMap);
+  }
+
+  /**
+   * Detect the transcript for a tmux session by checking the Claude process's open files
+   * Claude keeps the task directory open, which contains the session UUID
+   */
+  async detectTranscriptFromTmux(tmuxSession: string, cwd: string): Promise<string | null> {
+    try {
+      // Get the pane PID for this tmux session
+      const { stdout: paneInfo } = await execAsync(
+        `tmux list-panes -t "${tmuxSession}" -F "#{pane_pid}" 2>/dev/null`
+      );
+      const panePid = paneInfo.trim().split('\n')[0];
+      if (!panePid) return null;
+
+      // Find the Claude process PID (either the pane process or a child)
+      let claudePid: string | null = null;
+
+      // Check if pane process is claude
+      const { stdout: paneComm } = await execAsync(
+        `ps -o comm= -p ${panePid} 2>/dev/null || true`
+      );
+      if (paneComm.trim().includes('claude')) {
+        claudePid = panePid;
+      } else {
+        // Check children (use -x for exact process name match)
+        const { stdout: pgrepOut } = await execAsync(
+          `pgrep -P ${panePid} -x claude 2>/dev/null || true`
+        );
+        claudePid = pgrepOut.trim().split('\n')[0] || null;
+      }
+
+      if (!claudePid) return null;
+
+      // Use lsof to find which task directory Claude has open
+      const { stdout: lsofOut } = await execAsync(
+        `lsof -p ${claudePid} 2>/dev/null | grep '/.claude/tasks/' || true`
+      );
+
+      // Extract the UUID from the task directory path
+      const match = lsofOut.match(/\.claude\/tasks\/([a-f0-9-]{36})/);
+      if (!match) return null;
+
+      const sessionUuid = match[1];
+
+      // Find the corresponding transcript file
+      const escapedPath = this.escapePathForClaude(cwd);
+      const projectDir = path.join(this.claudeProjectsDir, escapedPath);
+      const transcriptPath = path.join(projectDir, `${sessionUuid}.jsonl`);
+
+      if (fs.existsSync(transcriptPath)) {
+        console.log(`[Transcript] Detected transcript for ${tmuxSession} via lsof: ${sessionUuid}`);
+        return transcriptPath;
+      }
+
+      return null;
+    } catch (err) {
+      // lsof or tmux command failed
+      return null;
+    }
   }
 
   /**
@@ -109,7 +234,8 @@ export class TranscriptReader {
    * e.g., /Users/foo/bar → -Users-foo-bar
    */
   private escapePathForClaude(cwd: string): string {
-    return cwd.replace(/\//g, '-');
+    // Claude Code escapes both / and _ to - in project directory names
+    return cwd.replace(/[/_]/g, '-');
   }
 
   /**
@@ -169,6 +295,28 @@ export class TranscriptReader {
   private parseEvent(event: any): ConversationMessage[] {
     const messages: ConversationMessage[] = [];
     const timestamp = event.timestamp || new Date().toISOString();
+
+    // Handle meta messages (skill content, system reminders) as system type
+    if (event.isMeta && event.type === 'user') {
+      const messageContent = event.message?.content;
+      if (Array.isArray(messageContent)) {
+        for (const block of messageContent) {
+          if (block.type === 'text' && block.text) {
+            // Detect skill content vs other meta content
+            const isSkill = block.text.startsWith('Base directory for this skill:') ||
+                            block.text.includes('# /') && block.text.includes('---');
+            messages.push({
+              type: 'system',
+              content: block.text,
+              timestamp,
+              systemType: isSkill ? 'skill' : 'reminder',
+              preview: block.text.slice(0, 80),
+            });
+          }
+        }
+      }
+      return messages;
+    }
 
     if (event.type === 'user') {
       // User message - may contain text and/or tool_result blocks

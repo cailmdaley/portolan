@@ -1,9 +1,11 @@
 ---
 title: 'Ralph loop: autonomous portolan visual iteration'
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-01-31T18:26:33.353367+01:00
+closed-at: 2026-02-03T00:19:35.211123+01:00
+close-reason: '26 iterations of autonomous visual refinement. Established: vellum shader, coastline rendering, rhumb lines, city sprites, worker ships. Design evolved from pure coastline-first toward hybrid with hex positioning. Ralph pattern validated for visual iteration work.'
 ---
 
 # Spec

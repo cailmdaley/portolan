@@ -1,11 +1,13 @@
 ---
 title: 'Design: coastline-first architecture + Marauder''s Map workers'
-status: open
+status: closed
 kind: spec
 priority: 2
 depends-on:
     - ralph-loop-autonomous-portolan-84bd75bf
 created-at: 2026-01-31T20:40:49.621274+01:00
+closed-at: 2026-02-03T00:19:39.943201+01:00
+close-reason: 'Partially implemented. Coastline renders through city positions, workers use force simulation. But retreated from pure coastline-first — current design is hybrid: hex positioning + coastline aesthetic + architect''s studio feel. HexGrid.ts still exists.'
 ---
 
 # Coastline-First Architecture + Marauder's Map Workers

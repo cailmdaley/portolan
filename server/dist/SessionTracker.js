@@ -150,7 +150,8 @@ export class SessionTracker {
                         continue;
                     }
                     // Also check children (for cases where shell doesn't exec)
-                    const { stdout: pgrepOut } = await execAsync(`pgrep -P ${panePid} -f claude 2>/dev/null || true`);
+                    // Use -x for exact process name match (not -f which matches full command line)
+                    const { stdout: pgrepOut } = await execAsync(`pgrep -P ${panePid} -x claude 2>/dev/null || true`);
                     if (pgrepOut.trim()) {
                         claudeSessions.push({ tmuxSession, cwd });
                     }

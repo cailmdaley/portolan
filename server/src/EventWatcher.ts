@@ -33,6 +33,7 @@ export interface ActivityEvent {
   timestamp: number;
   eventType?: 'tool' | 'user_prompt';    // Distinguish tool calls from user prompts
   prompt?: string;                       // User prompt text for user_prompt events
+  sessionId?: string;                    // Claude transcript session UUID
 }
 
 type StatusChangeCallback = (tmuxSession: string, status: 'idle' | 'working') => void;
@@ -211,6 +212,7 @@ export class EventWatcher {
               fullPath: details?.fullPath,
               timestamp: event.timestamp,
               eventType: 'tool',
+              sessionId: event.sessionId,
             };
             let acts = activitiesBySession.get(event.tmuxSession);
             if (!acts) {
@@ -229,6 +231,7 @@ export class EventWatcher {
               timestamp: event.timestamp,
               eventType: 'user_prompt',
               prompt: event.prompt,
+              sessionId: event.sessionId,
             };
             let acts = activitiesBySession.get(event.tmuxSession);
             if (!acts) {
@@ -332,6 +335,7 @@ export class EventWatcher {
         fullPath: details?.fullPath,
         timestamp: event.timestamp,
         eventType: 'tool',
+        sessionId: event.sessionId,
       };
 
       // Store in recent activities
@@ -352,6 +356,7 @@ export class EventWatcher {
         timestamp: event.timestamp,
         eventType: 'user_prompt',
         prompt: event.prompt,
+        sessionId: event.sessionId,
       };
 
       // Store in recent activities

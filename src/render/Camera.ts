@@ -1,6 +1,6 @@
 // Camera.ts - Orthographic camera with pan/zoom controls (isometric-style)
 
-import { OrthographicCamera, Vector3 } from 'three'
+import { OrthographicCamera, Vector3, Raycaster, Plane, Vector2 } from 'three'
 import type { CartesianCoord } from '../state/types'
 
 // Safari-specific gesture event (pinch-to-zoom)
@@ -20,9 +20,9 @@ export class Camera {
   private angle = Math.PI / 4  // 45° from horizontal (matches sprite perspective)
   private rotation = 0  // 0° around Y axis (straight-on view)
 
-  // Zoom limits
-  private minZoom = 5
-  private maxZoom = 100
+  // Zoom limits (smaller = more zoomed in)
+  private minZoom = 2
+  private maxZoom = 15
 
   // Pan state
   private isDragging = false
@@ -30,6 +30,15 @@ export class Camera {
   private dragStart = { x: 0, y: 0 }
   private dragAnchor: CartesianCoord | null = null // World point to keep under mouse
   private readonly dragThreshold = 5 // pixels
+
+  // Raycasting for accurate screen-to-world conversion
+  private raycaster = new Raycaster()
+  private groundPlane = new Plane(new Vector3(0, 1, 0), 0) // Y=0 plane
+
+  // Stored listeners for cleanup (HMR)
+  private mouseMoveHandler: ((e: MouseEvent) => void) | null = null
+  private mouseUpHandler: (() => void) | null = null
+  private keyDownHandler: ((e: KeyboardEvent) => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, eventTarget?: HTMLElement) {
     this.canvas = canvas
@@ -59,7 +68,7 @@ export class Camera {
       }
     })
 
-    window.addEventListener('mousemove', (e) => {
+    this.mouseMoveHandler = (e: MouseEvent) => {
       if (!this.isDragging || !this.dragAnchor) return
 
       // Check if we've moved enough from start to count as a drag
@@ -76,13 +85,15 @@ export class Camera {
       this.target.x += this.dragAnchor.x - currentWorld.x
       this.target.z += this.dragAnchor.z - currentWorld.z
       this.updateCamera()
-    })
+    }
+    window.addEventListener('mousemove', this.mouseMoveHandler)
 
-    window.addEventListener('mouseup', () => {
+    this.mouseUpHandler = () => {
       this.isDragging = false
       this.dragAnchor = null
       // wasDrag is kept until click handler checks it
-    })
+    }
+    window.addEventListener('mouseup', this.mouseUpHandler)
 
     // Reset wasDrag after click has had a chance to check it
     this.eventTarget.addEventListener('click', () => {
@@ -122,7 +133,7 @@ export class Camera {
     })
 
     // Arrow keys for navigation
-    window.addEventListener('keydown', (e) => {
+    this.keyDownHandler = (e: KeyboardEvent) => {
       const step = 1.5
       switch (e.key) {
         case 'ArrowUp':
@@ -142,7 +153,23 @@ export class Camera {
           e.preventDefault()
           break
       }
-    })
+    }
+    window.addEventListener('keydown', this.keyDownHandler)
+  }
+
+  /**
+   * Clean up event listeners (call before recreating Camera during HMR)
+   */
+  dispose(): void {
+    if (this.mouseMoveHandler) {
+      window.removeEventListener('mousemove', this.mouseMoveHandler)
+    }
+    if (this.mouseUpHandler) {
+      window.removeEventListener('mouseup', this.mouseUpHandler)
+    }
+    if (this.keyDownHandler) {
+      window.removeEventListener('keydown', this.keyDownHandler)
+    }
   }
 
   pan(screenDx: number, screenDy: number): void {
@@ -187,6 +214,24 @@ export class Camera {
     this.updateCamera()
   }
 
+  /**
+   * Set zoom to a specific level (clamped to min/max)
+   */
+  setZoom(zoom: number): void {
+    this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, zoom))
+    this.updateCamera()
+  }
+
+  /**
+   * Focus on position and zoom to a specific level
+   */
+  focusAndZoom(pos: CartesianCoord, zoom: number): void {
+    this.target.x = pos.x
+    this.target.z = pos.z
+    this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, zoom))
+    this.updateCamera()
+  }
+
   private updateCamera(): void {
     // Update orthographic bounds based on zoom
     const aspect = this.canvas.clientWidth / this.canvas.clientHeight
@@ -215,38 +260,19 @@ export class Camera {
    */
   screenToWorld(screenX: number, screenY: number): CartesianCoord {
     const rect = this.canvas.getBoundingClientRect()
-    const aspect = rect.width / rect.height
 
-    // Normalize to -1 to 1
-    const nx = ((screenX - rect.left) / rect.width) * 2 - 1
-    const ny = -((screenY - rect.top) / rect.height) * 2 + 1
+    // Normalize to -1 to 1 (NDC)
+    const ndc = new Vector2(
+      ((screenX - rect.left) / rect.width) * 2 - 1,
+      -((screenY - rect.top) / rect.height) * 2 + 1
+    )
 
-    // For orthographic: screen coords map directly to camera-relative world coords
-    // nx maps to camera right direction, ny maps to camera up direction
-    const camRight = this.zoom * aspect * nx
-    const camUp = this.zoom * ny
+    // Use raycaster to find intersection with ground plane (Y=0)
+    this.raycaster.setFromCamera(ndc, this.camera)
+    const intersection = new Vector3()
+    this.raycaster.ray.intersectPlane(this.groundPlane, intersection)
 
-    // Convert camera-relative to world coords
-    // Camera looks from south at angle, so:
-    // - camera right = world X (roughly, depends on rotation)
-    // - camera up = mix of world Y and Z (depends on angle)
-    const cosAngle = Math.cos(this.angle)
-    const sinAngle = Math.sin(this.angle)
-    const cosRot = Math.cos(this.rotation)
-    const sinRot = Math.sin(this.rotation)
-
-    // Camera right vector (in XZ plane)
-    const rightX = cosRot
-    const rightZ = -sinRot
-
-    // Camera forward vector projected onto XZ plane (screen up moves you "forward")
-    const forwardX = -sinRot * cosAngle
-    const forwardZ = -cosRot * cosAngle
-
-    const x = this.target.x + camRight * rightX + camUp * forwardX
-    const z = this.target.z + camRight * rightZ + camUp * forwardZ
-
-    return { x, z }
+    return { x: intersection.x, z: intersection.z }
   }
 
   /**
@@ -268,5 +294,12 @@ export class Camera {
    */
   get cameraDistance(): number {
     return this.zoom  // Higher = more zoomed out
+  }
+
+  /**
+   * Get camera target (center of view) for distance-based label fading
+   */
+  get cameraCenter(): { x: number; z: number } {
+    return { x: this.target.x, z: this.target.z }
   }
 }

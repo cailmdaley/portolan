@@ -797,3 +797,10 @@ setTimeout(() => {
     zoneRenderer.updateState(cities, sessions)
   }
 }, 1000)
+
+// HMR cleanup
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    camera.dispose()
+  })
+}

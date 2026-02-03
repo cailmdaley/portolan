@@ -1,9 +1,22 @@
 ---
 title: 'City sprites: nano-banana generated city plans'
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-01T01:26:17.199502+01:00
+closed-at: 2026-02-01T05:46:25.452154+01:00
+close-reason: |-
+    Spec complete. All 7 criteria verified:
+
+    1. Vellum background - procedural shader with organic texture, portolan palette
+    2. 5 default sprites - generated via nano-banana diff-mat workflow
+    3. City sprites - custom sprites by name, deterministic fallback to defaults
+    4. City labels - flat red text (CSS2D), EB Garamond small caps
+    5. Worker labels - flat text ring on sprite, clickable, working status styling
+    6. Group-based movement - sprite + labels move atomically
+    7. Portolan aesthetic - 4 compass roses, 16-direction rhumb lines, 500-unit vellum
+
+    Manual sprite generation via /nano-banana documented. 7 custom city sprites created (felt, life, loom, wedding, email, portolan, euclid-github).
 ---
 
 # City sprites: nano-banana generated city plans
@@ -204,4 +217,3 @@ Spec progress:
 ✓ New cities use fallbacks (manual generation documented)
 ✓ Moving city moves sprite+labels (group-based)
 ~ Visual polish remaining (map looks like portolan chart)
-

@@ -29,13 +29,14 @@ export interface Activity {
 
 // Conversation message from Claude transcript
 export interface ConversationMessage {
-  type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result'
+  type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'system'
   content: string
   timestamp: string
   toolName?: string       // For tool_use
   toolInput?: any         // For tool_use
   toolUseId?: string      // For linking tool_use to tool_result
   preview?: string        // For thinking blocks
+  systemType?: 'skill' | 'reminder'  // For system messages
 }
 
 // Git status for a repository

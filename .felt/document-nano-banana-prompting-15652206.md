@@ -129,12 +129,16 @@ No circular frame, no compass roses. 512x512, no text labels.
 
 ### Workflow
 
-1. Read the city's README.md and CLAUDE.md
+1. **Read deeply** — CLAUDE.md is a start, but read further: README, actual paper source (.tex), key documentation. The abstract and introduction often reveal the project's soul better than technical setup notes.
 2. Write a rich description (let Gemini see the project's character)
-3. Generate with `/nano-banana` using the template above
-4. Edit to black background: `Change white background to solid pure black #000000. Keep EVERYTHING else exactly unchanged.`
-5. Extract alpha: `python scripts/extract_alpha.py white.png black.png public/sprites/cities/<name>.png`
-6. Refresh browser — CitySpritesManager loads by city name automatically
+3. Generate from `/tmp` to avoid Gemini CLI's `.claude` folder conflicts:
+   ```bash
+   cd /tmp && gemini --yolo "/generate '...'"
+   ```
+4. If the result doesn't capture the essence, iterate with `--resume latest -p` describing *what's missing* in terms of meaning, not visual prescriptions
+5. Edit to black background: `--resume latest -p "/edit <path> 'Change white background to solid pure black #000000. Keep EVERYTHING else exactly unchanged.'"`
+6. Extract alpha: `python scripts/extract_alpha.py white.png black.png public/sprites/cities/<name>.png`
+7. Refresh browser — CitySpritesManager loads by city name automatically
 
 ### Examples from This Session
 
@@ -147,5 +151,33 @@ No circular frame, no compass roses. 512x512, no text labels.
 | email | "Inbox is a garden, not battlefield" | Postal sorting house with letter streams |
 | portolan | This map app itself, meta/recursive | Cartographer's workshop drawing maps |
 | euclid-github | Euclid space telescope consortium | Observatory + scriptorium, data flowing |
+| pure_eb | E/B mode separation, distilling pure signal from noise, alchemical | Filtering towers, dual streams, crystalline purity |
+| sp_validation | Validation toolkit, the forge where instruments are made | Industrial-scientific workshops, calibration scales |
+| KineLens | Mirror reflection symmetry, velocity fields, spinning galaxies | Bilateral city, gyroscopes, reflective axis |
+| cmbx | CMB × Euclid cross-correlations, epochs in dialogue | Two districts (ancient/modern) bridged, messengers |
+| 2024-12_edfs_lensing | Deep field CMB lensing, archaeological excavation of ancient light | Terraced dig, radio dishes, spiraling vortex |
 
 The key insight: **describe the project's soul, not just its function**. Let Gemini find the visual metaphor.
+
+## Trust Gemini
+
+Two patterns to internalize:
+
+### Trust the visual thinking
+
+Gemini has a circuit between text and visuals that is unparalleled. Don't over-specify the visual design — describe the *project* richly and let Gemini find the metaphor.
+
+**Wrong:** "Draw an observatory with an armillary sphere, radial cloisters in a mandala pattern, a canal bisecting the complex..."
+
+**Right:** "This project is about separating truth from artifact. The pure E/B decomposition separates cosmological signal from noise. The work is methodical, precise, almost monastic..."
+
+The first approach substitutes your visual imagination for Gemini's. The second gives Gemini the *meaning* and lets it find imagery you wouldn't have thought of.
+
+### Trust the /edit step
+
+The black-background edit almost always works correctly. What looks like "visual noise" or "artifacts" in the extracted transparency is usually:
+- Trailing roads and paths (good — organic edges)
+- Spoke patterns extending outward (good — visual interest)
+- Incomplete building outlines (good — vignette effect)
+
+Don't second-guess the result and regenerate. The diff-mat math is sound; trust it.
