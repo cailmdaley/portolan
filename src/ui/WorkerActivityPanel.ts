@@ -402,10 +402,9 @@ export class WorkerActivityPanel {
     type MessageGroup = {
       type: 'message'
       msg: ConversationMessage
-      index: number
     } | {
       type: 'tool_group'
-      messages: Array<{ msg: ConversationMessage; index: number; result?: ConversationMessage }>
+      messages: Array<{ msg: ConversationMessage; result?: ConversationMessage }>
       startIndex: number
     }
 
@@ -423,7 +422,7 @@ export class WorkerActivityPanel {
           groups.push(currentToolGroup)
           currentToolGroup = null
         }
-        groups.push({ type: 'message', msg, index: i })
+        groups.push({ type: 'message', msg })
       } else {
         // thinking, tool_use, or system - add to current group
         if (!currentToolGroup) {
@@ -432,7 +431,7 @@ export class WorkerActivityPanel {
         const result = msg.type === 'tool_use' && msg.toolUseId
           ? toolResultMap.get(msg.toolUseId)
           : undefined
-        currentToolGroup.messages.push({ msg, index: i, result })
+        currentToolGroup.messages.push({ msg, result })
       }
     }
     // Flush final tool group
@@ -443,7 +442,7 @@ export class WorkerActivityPanel {
     // Render groups
     const html = groups.map(group => {
       if (group.type === 'message') {
-        return this.renderConversationItem(group.msg, group.index)
+        return this.renderConversationItem(group.msg)
       } else {
         return this.renderToolGroup(group.messages, group.startIndex)
       }
@@ -467,7 +466,7 @@ export class WorkerActivityPanel {
   }
 
   private renderToolGroup(
-    messages: Array<{ msg: ConversationMessage; index: number; result?: ConversationMessage }>,
+    messages: Array<{ msg: ConversationMessage; result?: ConversationMessage }>,
     groupIndex: number
   ): string {
     // Count tool types
@@ -527,7 +526,7 @@ export class WorkerActivityPanel {
     `
   }
 
-  private renderConversationItem(msg: ConversationMessage, _index: number): string {
+  private renderConversationItem(msg: ConversationMessage): string {
     const timeAgo = formatTimeAgo(new Date(msg.timestamp).getTime())
     const isExpanded = this.expandedMessages.has(msg.timestamp)
     const key = msg.timestamp
