@@ -109,6 +109,7 @@ export interface Session {
   hex: HexCoord | null
   status: 'idle' | 'working'
   originId: string  // 'local' | 'remote-{hostname}'
+  lastActivity: number
 }
 
 // Transform server city to frontend city
@@ -138,6 +139,7 @@ export function normalizeSession(session: ServerSession): Session {
     // Map 'offline' to 'idle' for rendering (offline sessions shouldn't appear anyway)
     status: session.status === 'offline' ? 'idle' : session.status,
     originId: session.originId,
+    lastActivity: session.lastActivity,
   }
 }
 

@@ -187,12 +187,12 @@ export interface SwarmConfig {
 }
 
 const DEFAULT_CONFIG: Required<SwarmConfig> = {
-  particleCount: 75,
+  particleCount: 60,
   baseRadius: 0.4,
-  workingRadiusMultiplier: 1.5,
-  baseSpeed: 0.3,
-  workingSpeedMultiplier: 2.5,
-  particleSize: 0.08,
+  workingRadiusMultiplier: 1.4,
+  baseSpeed: 0.25,
+  workingSpeedMultiplier: 2.0,
+  particleSize: 10,  // Pixels (sizeAttenuation: false)
   heightOffset: 0.5,
 }
 
@@ -240,10 +240,12 @@ export class WorkerSwarm {
       size: this.config.particleSize,
       map: getDropletTexture(),
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.9,
       depthWrite: false,
+      depthTest: true,
       blending: NormalBlending,
       vertexColors: false,
+      sizeAttenuation: false,  // Constant screen size regardless of camera distance
     })
     this.setColor(0)  // Start with idle color
 
@@ -327,7 +329,9 @@ export class WorkerSwarm {
       const z = this.positions[i3 + 2]
 
       // Sample noise for velocity
-      const noiseX = x * noiseScale + this.noiseOffset
+      // Per-particle offset prevents convergence when particles get close
+      const particleOffset = i * 7.3  // Prime-ish spacing in noise space
+      const noiseX = x * noiseScale + this.noiseOffset + particleOffset
       const noiseY = y * noiseScale + this.noiseOffset
       const noiseZ = z * noiseScale + this.time
 
@@ -341,10 +345,11 @@ export class WorkerSwarm {
       this.velocities[i3 + 1] += (vy - this.velocities[i3 + 1]) * smoothing
       this.velocities[i3 + 2] += (vz - this.velocities[i3 + 2]) * smoothing
 
-      // Move particle
-      let newX = x + this.velocities[i3] * deltaTime * 0.8
-      let newY = y + this.velocities[i3 + 1] * deltaTime * 0.8
-      let newZ = z + this.velocities[i3 + 2] * deltaTime * 0.8
+      // Move particle (higher multiplier = more visible movement)
+      const moveSpeed = 2.5
+      let newX = x + this.velocities[i3] * deltaTime * moveSpeed
+      let newY = y + this.velocities[i3 + 1] * deltaTime * moveSpeed
+      let newZ = z + this.velocities[i3 + 2] * deltaTime * moveSpeed
 
       // Return force toward center (keeps swarm cohesive)
       const dist = Math.sqrt(newX * newX + newY * newY + newZ * newZ)
@@ -369,8 +374,9 @@ export class WorkerSwarm {
       this.positions[i3 + 2] = newZ
     }
 
-    // Update geometry
+    // Update geometry - copy positions to attribute array (they're separate arrays)
     const posAttr = this.points.geometry.getAttribute('position') as Float32BufferAttribute
+    posAttr.array.set(this.positions)
     posAttr.needsUpdate = true
 
     // Update shadow size to match swarm expansion

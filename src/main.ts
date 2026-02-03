@@ -220,6 +220,7 @@ let sessions: Session[] = []
 let origins: ServerOrigin[] = []
 let ws: WebSocket | null = null
 let wsCleanedUp = false  // Prevent reconnect on HMR cleanup
+let hasReceivedInitialState = false  // Track first state for initial camera focus
 // @ts-expect-error Tracked for potential state persistence
 let selectedHex: { q: number; r: number } | null = null
 
@@ -407,6 +408,32 @@ function handleMessage(message: ServerMessage): void {
       }
     }
     zoneRenderer.updateState(cities, sessions)
+
+    // On first state, focus camera on most recently active city
+    if (!hasReceivedInitialState && cities.length > 0) {
+      hasReceivedInitialState = true
+
+      // Find city with most recent session activity
+      let mostRecentCity: City | null = null
+      let mostRecentTime = 0
+
+      for (const session of sessions) {
+        if (session.cityId && session.lastActivity > mostRecentTime) {
+          const city = cities.find(c => c.id === session.cityId)
+          if (city) {
+            mostRecentCity = city
+            mostRecentTime = session.lastActivity
+          }
+        }
+      }
+
+      // Fall back to first city if no sessions
+      const targetCity = mostRecentCity || cities[0]
+      console.log('[InitialFocus]', mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
+        sessions.length, 'sessions,', sessions.filter(s => s.cityId).length, 'with cityId')
+      const pos = hexGrid.axialToCartesian(targetCity.hex)
+      camera.focusAndZoom(pos, 6)  // Zoom level 6 shows workers
+    }
   }
 }
 
