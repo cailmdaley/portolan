@@ -94,6 +94,7 @@ export class ZoneRenderer {
   private conversationCards: Map<string, ConversationCard> = new Map()  // workerId -> card
   private onCardFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
   private topZIndex = 100  // Track highest z-index for bringing cards to front
+  private lastFocusedCardId: string | null = null  // Most recently focused card
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
@@ -984,9 +985,10 @@ export class ZoneRenderer {
     this.scene.add(card.object)
     this.conversationCards.set(session.id, card)
 
-    // Set initial z-index
+    // Set initial z-index and track as most recent
     this.topZIndex++
     card.setZIndex(this.topZIndex)
+    this.lastFocusedCardId = session.id
 
     // Apply current scale
     if (this.lastCameraDistance > 0) {
@@ -1006,6 +1008,32 @@ export class ZoneRenderer {
 
     this.topZIndex++
     card.setZIndex(this.topZIndex)
+    this.lastFocusedCardId = workerId
+  }
+
+  /**
+   * Minimize the most recently focused card
+   * @returns true if a card was minimized, false if no cards are open
+   */
+  minimizeMostRecentCard(): boolean {
+    // Try last focused first
+    if (this.lastFocusedCardId) {
+      const card = this.conversationCards.get(this.lastFocusedCardId)
+      if (card && !card.minimized) {
+        card.minimize()
+        return true
+      }
+    }
+
+    // Otherwise minimize any non-minimized card
+    for (const card of this.conversationCards.values()) {
+      if (!card.minimized) {
+        card.minimize()
+        return true
+      }
+    }
+
+    return false
   }
 
   /**

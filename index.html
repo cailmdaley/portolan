@@ -202,6 +202,11 @@
          CONVERSATION CARD — Map-Pinned Worker Conversations
          ═══════════════════════════════════════════════════════════ */
 
+      /* Wrapper - CSS2DRenderer controls this element's transform */
+      .conversation-card-wrapper {
+        pointer-events: none;  /* Pass through to card */
+      }
+
       .conversation-card {
         width: 320px;
         max-height: 420px;
@@ -217,7 +222,6 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        z-index: 100;  /* Above city/worker labels */
         position: relative;
       }
 
@@ -526,22 +530,92 @@
         padding: 0;
       }
 
-      /* Resize handle */
-      .conversation-card .card-resize-handle {
+      /* Edge resize handles - invisible but hoverable */
+      .conversation-card .resize-edge,
+      .conversation-card .resize-corner {
         position: absolute;
-        bottom: 0;
-        right: 0;
-        width: 16px;
-        height: 16px;
-        cursor: se-resize;
-        background: linear-gradient(135deg, transparent 50%, var(--parchment-edge) 50%);
-        border-radius: 0 0 4px 0;
-        opacity: 0.5;
-        transition: opacity 150ms ease;
+        z-index: 10;
       }
 
-      .conversation-card .card-resize-handle:hover {
-        opacity: 0.8;
+      .conversation-card .resize-n {
+        top: -3px;
+        left: 8px;
+        right: 8px;
+        height: 6px;
+        cursor: n-resize;
+      }
+
+      .conversation-card .resize-s {
+        bottom: -3px;
+        left: 8px;
+        right: 8px;
+        height: 6px;
+        cursor: s-resize;
+      }
+
+      .conversation-card .resize-e {
+        right: -3px;
+        top: 8px;
+        bottom: 8px;
+        width: 6px;
+        cursor: e-resize;
+      }
+
+      .conversation-card .resize-w {
+        left: -3px;
+        top: 8px;
+        bottom: 8px;
+        width: 6px;
+        cursor: w-resize;
+      }
+
+      .conversation-card .resize-ne {
+        top: -3px;
+        right: -3px;
+        width: 12px;
+        height: 12px;
+        cursor: ne-resize;
+      }
+
+      .conversation-card .resize-nw {
+        top: -3px;
+        left: -3px;
+        width: 12px;
+        height: 12px;
+        cursor: nw-resize;
+      }
+
+      .conversation-card .resize-se {
+        bottom: -3px;
+        right: -3px;
+        width: 12px;
+        height: 12px;
+        cursor: se-resize;
+      }
+
+      .conversation-card .resize-sw {
+        bottom: -3px;
+        left: -3px;
+        width: 12px;
+        height: 12px;
+        cursor: sw-resize;
+      }
+
+      /* Minimized state */
+      .conversation-card.minimized {
+        max-height: 36px !important;
+        min-height: 36px;
+        overflow: hidden;
+      }
+
+      .conversation-card.minimized .card-content,
+      .conversation-card.minimized .resize-edge,
+      .conversation-card.minimized .resize-corner {
+        display: none;
+      }
+
+      .conversation-card.minimized .card-header {
+        border-bottom: none;
       }
 
       /* ═══════════════════════════════════════════════════════════

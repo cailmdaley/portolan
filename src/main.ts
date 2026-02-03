@@ -469,8 +469,11 @@ canvasOverlay.addEventListener('click', (e) => {
       zoneRenderer.openConversationCard(session)
     }
   } else {
-    // Empty tile: clear selection
-    selectedHex = null
+    // Empty tile: minimize most recent card, or clear selection if none
+    const minimized = zoneRenderer.minimizeMostRecentCard()
+    if (!minimized) {
+      selectedHex = null
+    }
   }
 })
 

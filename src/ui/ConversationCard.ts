@@ -40,18 +40,26 @@ export class ConversationCard {
 
   // Resize state
   private isResizing = false
-  private resizeStart = { x: 0, y: 0, width: 0, height: 0 }
+  private resizeEdge: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null = null
+  private resizeStart = { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0 }
 
   // Scale state (for combining with drag transform)
   private currentScale = 1
 
+  // Minimize state
+  private isMinimized = false
+
   constructor(session: Session, options: CardOptions) {
     this.session = session
     this.options = options
-    this.element = this.createCardElement()
-    this.contentEl = this.element.querySelector('.card-content')!
 
-    this.object = new CSS2DObject(this.element)
+    // Create wrapper and card elements
+    // CSS2D controls the wrapper's transform, we control the card's transform separately
+    const { wrapper, card } = this.createCardElements()
+    this.element = card
+    this.contentEl = card.querySelector('.card-content')!
+
+    this.object = new CSS2DObject(wrapper)
     // Position slightly to the right and below the ship
     this.object.position.set(0.5, 0.3, 0)
 
@@ -60,7 +68,12 @@ export class ConversationCard {
     this.fetchConversation()
   }
 
-  private createCardElement(): HTMLElement {
+  private createCardElements(): { wrapper: HTMLElement; card: HTMLElement } {
+    // Wrapper is what CSS2DRenderer transforms - must not have our transforms
+    const wrapper = document.createElement('div')
+    wrapper.className = 'conversation-card-wrapper'
+
+    // Card element is what we transform for drag/scale
     const card = document.createElement('div')
     card.className = 'conversation-card'
     card.innerHTML = `
@@ -71,8 +84,18 @@ export class ConversationCard {
       <div class="card-content">
         <div class="card-loading">Loading conversation...</div>
       </div>
-      <div class="card-resize-handle" title="Resize"></div>
+      <!-- Edge resize handles -->
+      <div class="resize-edge resize-n" data-edge="n"></div>
+      <div class="resize-edge resize-s" data-edge="s"></div>
+      <div class="resize-edge resize-e" data-edge="e"></div>
+      <div class="resize-edge resize-w" data-edge="w"></div>
+      <div class="resize-corner resize-ne" data-edge="ne"></div>
+      <div class="resize-corner resize-nw" data-edge="nw"></div>
+      <div class="resize-corner resize-se" data-edge="se"></div>
+      <div class="resize-corner resize-sw" data-edge="sw"></div>
     `
+
+    wrapper.appendChild(card)
 
     // Apply initial offset if provided
     if (this.options.initialOffset) {
@@ -86,7 +109,7 @@ export class ConversationCard {
       card.style.maxHeight = `${height}px`
     }
 
-    return card
+    return { wrapper, card }
   }
 
   private setupEventListeners(): void {
@@ -123,14 +146,24 @@ export class ConversationCard {
     header.style.cursor = 'move'
     header.addEventListener('mousedown', this.startDrag)
 
-    // Resize via corner handle
-    const resizeHandle = this.element.querySelector('.card-resize-handle') as HTMLElement
-    resizeHandle.addEventListener('mousedown', this.startResize)
+    // Resize via edge/corner handles
+    this.element.querySelectorAll('[data-edge]').forEach(handle => {
+      handle.addEventListener('mousedown', (e) => {
+        const edge = (handle as HTMLElement).dataset.edge as typeof this.resizeEdge
+        this.startResize(e as MouseEvent, edge)
+      })
+    })
   }
 
   private startDrag = (e: MouseEvent): void => {
     // Don't drag if clicking close button
     if ((e.target as HTMLElement).classList.contains('card-close')) return
+
+    // If minimized, restore on click instead of drag
+    if (this.isMinimized) {
+      this.restore()
+      return
+    }
 
     e.preventDefault()
     e.stopPropagation()
@@ -159,15 +192,18 @@ export class ConversationCard {
     document.removeEventListener('mouseup', this.stopDrag)
   }
 
-  private startResize = (e: MouseEvent): void => {
+  private startResize = (e: MouseEvent, edge: typeof this.resizeEdge): void => {
     e.preventDefault()
     e.stopPropagation()
     this.isResizing = true
+    this.resizeEdge = edge
     this.resizeStart = {
       x: e.clientX,
       y: e.clientY,
       width: this.element.offsetWidth,
       height: this.element.offsetHeight,
+      left: this.offset.x,
+      top: this.offset.y,
     }
 
     document.addEventListener('mousemove', this.onResize)
@@ -175,17 +211,47 @@ export class ConversationCard {
   }
 
   private onResize = (e: MouseEvent): void => {
-    if (!this.isResizing) return
+    if (!this.isResizing || !this.resizeEdge) return
 
-    const newWidth = Math.max(200, this.resizeStart.width + (e.clientX - this.resizeStart.x))
-    const newHeight = Math.max(150, this.resizeStart.height + (e.clientY - this.resizeStart.y))
+    const dx = e.clientX - this.resizeStart.x
+    const dy = e.clientY - this.resizeStart.y
+    const edge = this.resizeEdge
+
+    let newWidth = this.resizeStart.width
+    let newHeight = this.resizeStart.height
+    let newOffsetX = this.resizeStart.left
+    let newOffsetY = this.resizeStart.top
+
+    // Handle horizontal edges
+    if (edge.includes('e')) {
+      newWidth = Math.max(200, this.resizeStart.width + dx)
+    }
+    if (edge.includes('w')) {
+      const widthDelta = Math.min(dx, this.resizeStart.width - 200)
+      newWidth = this.resizeStart.width - widthDelta
+      newOffsetX = this.resizeStart.left + widthDelta
+    }
+
+    // Handle vertical edges
+    if (edge.includes('s')) {
+      newHeight = Math.max(150, this.resizeStart.height + dy)
+    }
+    if (edge.includes('n')) {
+      const heightDelta = Math.min(dy, this.resizeStart.height - 150)
+      newHeight = this.resizeStart.height - heightDelta
+      newOffsetY = this.resizeStart.top + heightDelta
+    }
 
     this.element.style.width = `${newWidth}px`
     this.element.style.maxHeight = `${newHeight}px`
+    this.offset.x = newOffsetX
+    this.offset.y = newOffsetY
+    this.applyTransform()
   }
 
   private stopResize = (): void => {
     this.isResizing = false
+    this.resizeEdge = null
     document.removeEventListener('mousemove', this.onResize)
     document.removeEventListener('mouseup', this.stopResize)
   }
@@ -609,9 +675,13 @@ export class ConversationCard {
 
   /**
    * Set the card's z-index (for layering when overlapping)
+   * Sets on the wrapper element which CSS2D controls
    */
   setZIndex(zIndex: number): void {
-    this.element.style.zIndex = String(zIndex)
+    const wrapper = this.element.parentElement
+    if (wrapper) {
+      wrapper.style.zIndex = String(zIndex)
+    }
   }
 
   /**
@@ -631,6 +701,41 @@ export class ConversationCard {
     }
   }
 
+  /**
+   * Toggle minimized state (collapse to header only)
+   */
+  toggleMinimize(): void {
+    this.isMinimized = !this.isMinimized
+    this.element.classList.toggle('minimized', this.isMinimized)
+  }
+
+  /**
+   * Minimize the card
+   */
+  minimize(): void {
+    if (!this.isMinimized) {
+      this.isMinimized = true
+      this.element.classList.add('minimized')
+    }
+  }
+
+  /**
+   * Restore the card from minimized state
+   */
+  restore(): void {
+    if (this.isMinimized) {
+      this.isMinimized = false
+      this.element.classList.remove('minimized')
+    }
+  }
+
+  /**
+   * Check if card is minimized
+   */
+  get minimized(): boolean {
+    return this.isMinimized
+  }
+
   dispose(): void {
     this.disposed = true
     this.clearFetchTimeout()
@@ -639,7 +744,13 @@ export class ConversationCard {
     document.removeEventListener('mouseup', this.stopDrag)
     document.removeEventListener('mousemove', this.onResize)
     document.removeEventListener('mouseup', this.stopResize)
-    this.element.remove()
+    // Remove wrapper (parent of card element)
+    const wrapper = this.element.parentElement
+    if (wrapper) {
+      wrapper.remove()
+    } else {
+      this.element.remove()
+    }
   }
 }
 
