@@ -1015,27 +1015,41 @@ export class ZoneRenderer {
   }
 
   /**
-   * Minimize or close the most recently focused card.
-   * First Escape: minimize. Second Escape (if already minimized): close.
-   * @returns true if a card was affected, false if no cards are open
+   * Close the most recently focused card
+   * @returns true if a card was closed, false if no cards are open
    */
-  minimizeMostRecentCard(): boolean {
-    // Try last focused first
-    if (this.lastFocusedCardId) {
-      const card = this.conversationCards.get(this.lastFocusedCardId)
-      if (card) {
-        if (!card.minimized) {
-          card.minimize()
-          return true
-        } else {
-          // Already minimized - close it
-          this.closeConversationCard(this.lastFocusedCardId)
-          return true
-        }
-      }
+  closeMostRecentCard(): boolean {
+    if (this.lastFocusedCardId && this.conversationCards.has(this.lastFocusedCardId)) {
+      this.closeConversationCard(this.lastFocusedCardId)
+      return true
     }
 
-    // Otherwise minimize any non-minimized card
+    // Fall back to closing the first card found
+    const firstCardId = this.conversationCards.keys().next().value
+    if (firstCardId) {
+      this.closeConversationCard(firstCardId)
+      return true
+    }
+
+    return false
+  }
+
+  /**
+   * Minimize the most recently focused card
+   * @returns true if a card was minimized, false if no cards are open
+   */
+  minimizeMostRecentCard(): boolean {
+    // Try last focused card first
+    const focusedCard = this.lastFocusedCardId
+      ? this.conversationCards.get(this.lastFocusedCardId)
+      : null
+
+    if (focusedCard && !focusedCard.minimized) {
+      focusedCard.minimize()
+      return true
+    }
+
+    // Fall back to any non-minimized card
     for (const card of this.conversationCards.values()) {
       if (!card.minimized) {
         card.minimize()
