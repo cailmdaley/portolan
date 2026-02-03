@@ -23,7 +23,7 @@ import { HexGrid } from './HexGrid'
 import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
-import { ShipSpritesManager } from './ShipSpritesManager'
+import { WorkerSwarm } from './WorkerSwarm'
 import type { City, Session, HexCoord, ConversationMessage } from '../state/types'
 import { PALETTE } from '../state/types'
 import { ConversationCard } from '../ui/ConversationCard'
@@ -41,8 +41,7 @@ interface HexMeshData {
   entityId?: string
   entityName?: string  // Worker name for tooltip
   tmuxSession?: string  // For workers - to route activity events
-  mesh?: Mesh  // For animation (worker breathing pulse)
-  status?: 'idle' | 'working'  // Worker status for animation
+  status?: 'idle' | 'working'  // Worker status for swarm activity
   activityMesh?: Mesh  // Activity ground decal
   labelObject?: CSS2DObject  // HTML label (CSS2D for OpenType features)
   workerLabels?: CSS2DObject[]  // Worker labels clustered on city sprite
@@ -65,8 +64,8 @@ export class ZoneRenderer {
   // City sprites manager (nano-banana generated city plans)
   private citySprites: CitySpritesManager
 
-  // Ship sprites manager (worker ships)
-  private shipSprites: ShipSpritesManager
+  // Worker swarms (murmuration particles replacing ship sprites)
+  private workerSwarms: Map<string, WorkerSwarm> = new Map()  // workerId -> swarm
 
   // Camera rotation (45° = π/4) - must match Camera.ts
   private readonly cameraRotation = Math.PI / 4
@@ -88,7 +87,7 @@ export class ZoneRenderer {
   // Animation optimization: cache last values to skip redundant work
   private lastCameraDistance: number = -1
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
-  private workingWorkerIds: Set<string> = new Set()  // Only workers that need breathing animation
+  private lastAnimateTime: number = 0  // For delta time calculation
 
   // Conversation cards - map-pinned worker conversations
   private conversationCards: Map<string, ConversationCard> = new Map()  // workerId -> card
@@ -100,7 +99,6 @@ export class ZoneRenderer {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
-    this.shipSprites = new ShipSpritesManager()
     this.createGroundPlane()
 
     // Re-render city when its custom sprite finishes loading
@@ -331,43 +329,36 @@ export class ZoneRenderer {
     labelObject.position.set(0, 1.5, 0)  // Above center
     group.add(labelObject)
 
-    // Workers as ships positioned around the southern arc of the city
+    // Workers as particle swarms positioned around the southern arc of the city
     // Camera is at +Z looking toward -Z, so "south" (below on screen) is +Z direction
     const workerLabels: CSS2DObject[] = []
-    const shipTexture = this.shipSprites.getShipTexture()
-    const shipSize = 2.0  // World units
-    const shipRadius = 3.0  // Distance from city center
+    const swarmRadius = 3.0  // Distance from city center
     const arcStart = Math.PI * 0.25  // Start at 45° (right-front)
     const arcEnd = Math.PI * 0.75    // End at 135° (left-front)
 
     workers.forEach((worker, i) => {
-      // Distribute ships along the southern arc
+      // Distribute swarms along the southern arc
       const arcSpan = arcEnd - arcStart
       const angle = workers.length === 1
         ? Math.PI * 0.5  // Single worker at center-front (directly towards camera)
         : arcStart + (arcSpan * i / (workers.length - 1))
 
-      const shipX = Math.cos(angle) * shipRadius
-      const shipZ = Math.sin(angle) * shipRadius
+      const swarmX = Math.cos(angle) * swarmRadius
+      const swarmZ = Math.sin(angle) * swarmRadius
 
-      // Ship sprite mesh
-      if (shipTexture) {
-        const shipGeometry = new PlaneGeometry(shipSize, shipSize)
-        const shipMaterial = new MeshBasicMaterial({
-          map: shipTexture,
-          transparent: true,
-          side: DoubleSide,
-          depthWrite: false,
-        })
-        const shipMesh = new Mesh(shipGeometry, shipMaterial)
-        shipMesh.rotation.x = -Math.PI / 2  // Lie flat on XZ plane
-        shipMesh.position.set(shipX, 0.03, shipZ)  // Just above vellum
-        // Store worker info for click detection
-        shipMesh.userData = { workerId: worker.id, tmuxSession: worker.tmuxSession }
-        group.add(shipMesh)
+      // Create or reuse worker swarm
+      let swarm = this.workerSwarms.get(worker.id)
+      if (!swarm) {
+        swarm = new WorkerSwarm(worker.id, worker.tmuxSession)
+        this.workerSwarms.set(worker.id, swarm)
       }
 
-      // Worker label attached to ship
+      // Position swarm relative to city
+      swarm.group.position.set(swarmX, 0, swarmZ)
+      swarm.setActivity(worker.status === 'working' ? 1 : 0)
+      group.add(swarm.group)
+
+      // Worker label below swarm
       const workerDiv = document.createElement('div')
       workerDiv.className = worker.status === 'working' ? 'worker-label working' : 'worker-label'
       workerDiv.textContent = worker.name
@@ -385,7 +376,7 @@ export class ZoneRenderer {
       })
 
       const workerLabelObj = new CSS2DObject(workerDiv)
-      workerLabelObj.position.set(shipX, -0.8, shipZ)  // Below ship
+      workerLabelObj.position.set(swarmX, -0.3, swarmZ)  // Below swarm
       group.add(workerLabelObj)
       workerLabels.push(workerLabelObj)
     })
@@ -401,7 +392,7 @@ export class ZoneRenderer {
   }
 
   /**
-   * Render an orphan worker (no city) as a ship
+   * Render an orphan worker (no city) as a particle swarm
    * These are workers that exist but aren't associated with any city
    */
   renderOrphanWorker(session: Session): void {
@@ -412,11 +403,16 @@ export class ZoneRenderer {
     // Check if worker already exists - just update status
     const existing = this.hexMeshes.get(key)
     if (existing && existing.type === 'worker' && existing.entityId === session.id) {
-      // Update label class for status change
-      if (existing.status !== session.status && existing.labelObject) {
-        existing.labelObject.element.className = session.status === 'working'
-          ? 'worker-label working'
-          : 'worker-label'
+      // Update swarm activity and label class for status change
+      if (existing.status !== session.status) {
+        if (existing.labelObject) {
+          existing.labelObject.element.className = session.status === 'working'
+            ? 'worker-label working'
+            : 'worker-label'
+        }
+        // Update swarm activity
+        const swarm = this.workerSwarms.get(session.id)
+        swarm?.setActivity(session.status === 'working' ? 1 : 0)
         existing.status = session.status
       }
       return
@@ -428,36 +424,21 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(session.hex)
 
-    // Ship sprite for orphan worker
-    const shipTexture = this.shipSprites.getShipTexture()
-    let shipMesh: Mesh | undefined
-
-    if (shipTexture) {
-      const shipSize = 1.2
-      const shipGeometry = new PlaneGeometry(shipSize, shipSize)
-      const shipMaterial = new MeshBasicMaterial({
-        map: shipTexture,
-        transparent: true,
-        side: DoubleSide,
-        depthWrite: false,
-      })
-      shipMesh = new Mesh(shipGeometry, shipMaterial)
-      shipMesh.rotation.x = -Math.PI / 2  // Lie flat
-      shipMesh.position.y = 0.03
-      group.add(shipMesh)
-    } else {
-      // Fallback: small hex marker
-      const color = session.status === 'working' ? PALETTE.workerActive : PALETTE.workerIdle
-      shipMesh = this.createHexMesh(color, 0.3, 0.05)
-      group.add(shipMesh)
+    // Create or reuse worker swarm
+    let swarm = this.workerSwarms.get(session.id)
+    if (!swarm) {
+      swarm = new WorkerSwarm(session.id, session.tmuxSession)
+      this.workerSwarms.set(session.id, swarm)
     }
+    swarm.setActivity(session.status === 'working' ? 1 : 0)
+    group.add(swarm.group)
 
     // Worker label
     const labelDiv = document.createElement('div')
     labelDiv.className = session.status === 'working' ? 'worker-label working' : 'worker-label'
     labelDiv.textContent = session.name
     const labelObject = new CSS2DObject(labelDiv)
-    labelObject.position.y = 0.5
+    labelObject.position.y = -0.3  // Below swarm
     group.add(labelObject)
 
     group.position.set(pos.x, 0, pos.z)
@@ -470,7 +451,6 @@ export class ZoneRenderer {
       entityId: session.id,
       entityName: session.name,
       tmuxSession: session.tmuxSession,
-      mesh: shipMesh,
       status: session.status,
       labelObject,
     })
@@ -507,19 +487,12 @@ export class ZoneRenderer {
     const expectedKeys = new Set<string>()
     const newSignatures = new Map<string, string>()
 
-    // Rebuild working workers set for animation optimization
-    this.workingWorkerIds.clear()
 
     // Group workers by city
     const workersByCity = new Map<string, Session[]>()
     const orphanWorkers: Session[] = []
 
     for (const session of sessions) {
-      // Track working orphan workers for breathing animation (city workers don't have meshes)
-      if (session.status === 'working' && session.hex && !session.cityId) {
-        this.workingWorkerIds.add(this.hexGrid.hexKey(session.hex))
-      }
-
       if (session.cityId) {
         const existing = workersByCity.get(session.cityId) || []
         existing.push(session)
@@ -588,6 +561,17 @@ export class ZoneRenderer {
       }
     }
 
+    // Dispose swarms for workers that no longer exist
+    for (const workerId of this.workerSwarms.keys()) {
+      if (!currentWorkerIds.has(workerId)) {
+        const swarm = this.workerSwarms.get(workerId)
+        if (swarm) {
+          swarm.dispose()
+          this.workerSwarms.delete(workerId)
+        }
+      }
+    }
+
     // Update signature cache (removes old, adds new)
     this.lastCitySignatures = newSignatures
   }
@@ -630,24 +614,24 @@ export class ZoneRenderer {
   }
 
   /**
-   * Find worker ship at world position
-   * Checks ship meshes that have userData with worker info
+   * Find worker swarm at world position
+   * Uses swarm hit test for click detection
    */
   getWorkerAtWorldPos(worldX: number, worldZ: number): { workerId: string; tmuxSession: string } | null {
-    const hitRadius = 1.2  // Ship click radius
     let nearestDist = Infinity
     let nearestWorker: { workerId: string; tmuxSession: string } | null = null
 
     for (const [, data] of this.hexMeshes) {
       if (data.type === 'city') {
         const cityPos = this.hexGrid.axialToCartesian(data.hex)
-        // Check all children of the city group for ship meshes
+        // Check all swarm groups within the city
         data.group.traverse((child) => {
-          if (child instanceof Mesh && child.userData?.workerId) {
-            // Ship position in world space
-            const shipWorldX = cityPos.x + child.position.x
-            const shipWorldZ = cityPos.z + child.position.z
-            const dist = Math.sqrt((shipWorldX - worldX) ** 2 + (shipWorldZ - worldZ) ** 2)
+          if (child.userData?.workerId) {
+            // Swarm position in world space
+            const swarmWorldX = cityPos.x + child.position.x
+            const swarmWorldZ = cityPos.z + child.position.z
+            const dist = Math.sqrt((swarmWorldX - worldX) ** 2 + (swarmWorldZ - worldZ) ** 2)
+            const hitRadius = 0.8  // Swarm hit radius
             if (dist <= hitRadius && dist < nearestDist) {
               nearestDist = dist
               nearestWorker = {
@@ -743,9 +727,13 @@ export class ZoneRenderer {
 
   /**
    * Animate and update zoom-based label visibility
-   * Optimized: skips work when camera hasn't changed and no workers are animating
    */
   animate(cameraDistance?: number, _cameraCenter?: { x: number; z: number }): void {
+    // Calculate delta time for swarm animation
+    const now = performance.now()
+    const deltaTime = this.lastAnimateTime === 0 ? 1 / 60 : Math.min((now - this.lastAnimateTime) / 1000, 0.1)
+    this.lastAnimateTime = now
+
     // Scale labels and cards: only update when camera distance actually changed
     if (cameraDistance !== undefined && cameraDistance !== this.lastCameraDistance) {
       this.lastCameraDistance = cameraDistance
@@ -778,20 +766,9 @@ export class ZoneRenderer {
       }
     }
 
-    // Worker breathing animation: only iterate if there are working workers
-    if (this.workingWorkerIds.size === 0) return
-
-    const now = Date.now()
-    const period = 2500
-    const t = (now % period) / period
-    const breathScale = 1.0 + 0.03 * Math.sin(t * Math.PI * 2)
-
-    // Only animate workers that are actually working
-    for (const workerId of this.workingWorkerIds) {
-      const data = this.hexMeshes.get(workerId)
-      if (data?.mesh) {
-        data.mesh.scale.setScalar(breathScale)
-      }
+    // Update all worker swarms (they handle their own animation)
+    for (const swarm of this.workerSwarms.values()) {
+      swarm.update(deltaTime)
     }
   }
 
@@ -1228,8 +1205,11 @@ export class ZoneRenderer {
       }
     }
 
-    // Dispose sprite managers
+    // Dispose sprite managers and swarms
     this.citySprites.dispose()
-    this.shipSprites.dispose()
+    for (const swarm of this.workerSwarms.values()) {
+      swarm.dispose()
+    }
+    this.workerSwarms.clear()
   }
 }
