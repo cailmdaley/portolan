@@ -484,7 +484,7 @@ canvasOverlay.addEventListener('dblclick', (e) => {
   // First check for worker ship (double-click focuses terminal)
   const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
   if (workerHit) {
-    focusKittyTab(workerHit.tmuxSession)
+    focusKittyTab(workerHit.workerId)
     return
   }
 
