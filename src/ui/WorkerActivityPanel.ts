@@ -12,6 +12,8 @@ export class WorkerActivityPanel {
   private workerName: HTMLElement
   private workerInfo: HTMLElement
   private conversationList: HTMLElement
+  private chatInput: HTMLTextAreaElement
+  private sendBtn: HTMLElement
   private currentSession: Session | null = null
   private currentActivities: Activity[] = []
   private currentConversation: ConversationMessage[] = []
@@ -20,9 +22,9 @@ export class WorkerActivityPanel {
   private minWidth = 400
   private maxWidth = 900
   private onFileClick: FileClickCallback | null = null
-  private conversationPollInterval: ReturnType<typeof setInterval> | null = null
-  private expandedMessages: Set<number> = new Set()
+  private expandedMessages: Set<string> = new Set()  // Uses timestamp as stable key
   private isInitialRender = true
+  private isSending = false
 
   constructor() {
     this.panel = this.createPanel()
@@ -31,8 +33,11 @@ export class WorkerActivityPanel {
     this.workerName = this.panel.querySelector('.worker-name')!
     this.workerInfo = this.panel.querySelector('.worker-info')!
     this.conversationList = this.panel.querySelector('.conversation-list')!
+    this.chatInput = this.panel.querySelector('.chat-input')!
+    this.sendBtn = this.panel.querySelector('.chat-send-btn')!
 
     this.setupEventListeners()
+    this.setupChatInput()
     this.setupResizeHandling()
     this.setupScrollHandling()
     document.body.appendChild(this.panel)
@@ -62,6 +67,10 @@ export class WorkerActivityPanel {
         <h3>Conversation</h3>
         <div class="conversation-list"></div>
       </section>
+      <div class="chat-input-container">
+        <textarea class="chat-input" placeholder="Send a message..."></textarea>
+        <button class="chat-send-btn">Send</button>
+      </div>
     `
     return panel
   }
@@ -129,6 +138,75 @@ export class WorkerActivityPanel {
     document.addEventListener('mouseup', onMouseUp)
   }
 
+  private setupChatInput(): void {
+    // Send on button click
+    this.sendBtn.addEventListener('click', () => this.sendMessage())
+
+    // Send on Enter, newline on Shift+Enter
+    this.chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        this.sendMessage()
+      }
+    })
+
+    // Auto-grow textarea as content changes
+    this.chatInput.addEventListener('input', () => this.autoGrowTextarea())
+
+    // Prevent panel close when clicking in chat area
+    this.chatInput.addEventListener('click', (e) => e.stopPropagation())
+  }
+
+  private autoGrowTextarea(): void {
+    const textarea = this.chatInput
+    // Reset height to auto to get correct scrollHeight
+    textarea.style.height = 'auto'
+    // Set to scrollHeight, capped at max height (e.g., 200px)
+    const maxHeight = 200
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`
+    // Show scrollbar if content exceeds max
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }
+
+  private async sendMessage(): Promise<void> {
+    const message = this.chatInput.value.trim()
+    if (!message || !this.currentSession || this.isSending) return
+
+    this.isSending = true
+    this.sendBtn.textContent = 'Sending...'
+    this.chatInput.disabled = true
+
+    try {
+      const response = await fetch('http://localhost:4004/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: this.currentSession.id,
+          message,
+        }),
+      })
+
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || `HTTP ${response.status}`)
+      }
+
+      // Clear input on success and reset height
+      this.chatInput.value = ''
+      this.chatInput.style.height = 'auto'
+      // Immediately fetch updated conversation
+      await this.fetchConversation(this.currentSession.id)
+    } catch (error) {
+      console.error('Failed to send message:', error)
+      alert(`Failed to send: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      this.isSending = false
+      this.sendBtn.textContent = 'Send'
+      this.chatInput.disabled = false
+      this.chatInput.focus()
+    }
+  }
+
   setOnFileClick(callback: FileClickCallback): void {
     this.onFileClick = callback
   }
@@ -162,11 +240,8 @@ export class WorkerActivityPanel {
     this.ignoreNextClick = true
     this.panel.classList.add('visible')
 
-    // Fetch and render conversation
+    // Fetch initial conversation (once, then rely on WebSocket updates)
     this.fetchConversation(session.id)
-
-    // Start polling for updates
-    this.startConversationPolling(session.id)
   }
 
   private async fetchConversation(sessionId: string): Promise<void> {
@@ -177,7 +252,18 @@ export class WorkerActivityPanel {
       }
       const data = await response.json()
       if (data.messages) {
-        this.currentConversation = data.messages
+        // Skip re-render if conversation hasn't changed
+        const newMessages = data.messages
+        const oldLen = this.currentConversation.length
+        const newLen = newMessages.length
+        const oldLast = this.currentConversation[oldLen - 1]?.timestamp
+        const newLast = newMessages[newLen - 1]?.timestamp
+
+        if (oldLen === newLen && oldLast === newLast) {
+          return // No change, skip re-render
+        }
+
+        this.currentConversation = newMessages
         this.renderConversation()
       }
     } catch (error) {
@@ -187,21 +273,35 @@ export class WorkerActivityPanel {
     }
   }
 
-  private startConversationPolling(sessionId: string): void {
-    this.stopConversationPolling()
-    // Poll every 3 seconds for conversation updates
-    this.conversationPollInterval = setInterval(() => {
-      if (this.panel.classList.contains('visible') && this.currentSession?.id === sessionId) {
-        this.fetchConversation(sessionId)
+  /**
+   * Handle WebSocket message - returns true if handled
+   */
+  handleMessage(message: unknown): boolean {
+    const msg = message as { type?: string; sessionId?: string; messages?: ConversationMessage[] }
+    if (msg.type === 'conversation' && msg.sessionId && msg.messages) {
+      // Only process if this is the currently displayed session
+      if (this.panel.classList.contains('visible') && this.currentSession?.id === msg.sessionId) {
+        this.appendMessages(msg.messages)
       }
-    }, 3000)
+      return true
+    }
+    return false
   }
 
-  private stopConversationPolling(): void {
-    if (this.conversationPollInterval) {
-      clearInterval(this.conversationPollInterval)
-      this.conversationPollInterval = null
-    }
+  /**
+   * Append new messages from WebSocket update
+   */
+  private appendMessages(newMessages: ConversationMessage[]): void {
+    if (newMessages.length === 0) return
+
+    // Deduplicate by timestamp
+    const existingTimestamps = new Set(this.currentConversation.map(m => m.timestamp))
+    const toAdd = newMessages.filter(m => !existingTimestamps.has(m.timestamp))
+
+    if (toAdd.length === 0) return
+
+    this.currentConversation.push(...toAdd)
+    this.renderConversation()
   }
 
   updateActivities(tmuxSession: string, activities: Activity[]): void {
@@ -225,49 +325,151 @@ export class WorkerActivityPanel {
       }
     }
 
-    // Render, skipping tool_result (they'll be shown with their tool_use)
-    const html = this.currentConversation
-      .map((msg, i) => {
-        if (msg.type === 'tool_result') return '' // Skip, rendered with tool_use
-        if (msg.type === 'tool_use') {
-          const result = msg.toolUseId ? toolResultMap.get(msg.toolUseId) : undefined
-          return this.renderToolUse(msg, i, formatTimeAgo(new Date(msg.timestamp).getTime()), result)
+    // Group messages: user/assistant are standalone, thinking/tool_use get grouped
+    type MessageGroup = {
+      type: 'message'
+      msg: ConversationMessage
+      index: number
+    } | {
+      type: 'tool_group'
+      messages: Array<{ msg: ConversationMessage; index: number; result?: ConversationMessage }>
+      startIndex: number
+    }
+
+    const groups: MessageGroup[] = []
+    let currentToolGroup: Extract<MessageGroup, { type: 'tool_group' }> | null = null
+
+    for (let i = 0; i < this.currentConversation.length; i++) {
+      const msg = this.currentConversation[i]
+
+      if (msg.type === 'tool_result') continue // Skip, rendered with tool_use
+
+      if (msg.type === 'user' || msg.type === 'assistant') {
+        // Flush any pending tool group
+        if (currentToolGroup && currentToolGroup.type === 'tool_group') {
+          groups.push(currentToolGroup)
+          currentToolGroup = null
         }
-        return this.renderConversationItem(msg, i)
-      })
-      .join('')
+        groups.push({ type: 'message', msg, index: i })
+      } else {
+        // thinking, tool_use, or system - add to current group
+        if (!currentToolGroup) {
+          currentToolGroup = { type: 'tool_group', messages: [], startIndex: i }
+        }
+        if (currentToolGroup.type === 'tool_group') {
+          const result = msg.type === 'tool_use' && msg.toolUseId
+            ? toolResultMap.get(msg.toolUseId)
+            : undefined
+          currentToolGroup.messages.push({ msg, index: i, result })
+        }
+      }
+    }
+    // Flush final tool group
+    if (currentToolGroup && currentToolGroup.type === 'tool_group') {
+      groups.push(currentToolGroup)
+    }
+
+    // Render groups
+    const html = groups.map(group => {
+      if (group.type === 'message') {
+        return this.renderConversationItem(group.msg, group.index)
+      } else {
+        return this.renderToolGroup(group.messages, group.startIndex)
+      }
+    }).join('')
+
     this.conversationList.innerHTML = html
     this.attachConversationListeners()
 
     // Apply syntax highlighting to code blocks
     highlightCodeBlocks(this.conversationList)
 
-    // Auto-scroll to bottom on initial render, or if user is already near the bottom
-    // This prevents interrupting reading when polling updates the conversation
+    // Auto-scroll to bottom only on initial render or if user was already at bottom
     const section = this.conversationList.parentElement
     if (section) {
-      const isNearBottom = section.scrollHeight - section.scrollTop - section.clientHeight < 100
-      if (this.isInitialRender || isNearBottom) {
+      if (this.isInitialRender) {
         section.scrollTop = section.scrollHeight
         this.isInitialRender = false
       }
+      // Don't auto-scroll on updates - let user control their scroll position
     }
   }
 
-  private renderConversationItem(msg: ConversationMessage, index: number): string {
+  private renderToolGroup(
+    messages: Array<{ msg: ConversationMessage; index: number; result?: ConversationMessage }>,
+    groupIndex: number
+  ): string {
+    // Count tool types
+    const toolCounts = new Map<string, number>()
+    let thinkingCount = 0
+    let skillCount = 0
+    for (const { msg } of messages) {
+      if (msg.type === 'thinking') {
+        thinkingCount++
+      } else if (msg.type === 'tool_use') {
+        const name = msg.toolName || 'Tool'
+        toolCounts.set(name, (toolCounts.get(name) || 0) + 1)
+      } else if (msg.type === 'system' && msg.systemType === 'skill') {
+        skillCount++
+      }
+    }
+
+    // Build summary: "5 steps (2 Read, 1 Bash, 2 Edit)"
+    const parts: string[] = []
+    if (thinkingCount > 0) parts.push(`${thinkingCount} thinking`)
+    if (skillCount > 0) parts.push(`${skillCount} skill`)
+    for (const [name, count] of toolCounts) {
+      parts.push(`${count} ${name}`)
+    }
+    const summary = parts.join(', ')
+    const stepCount = messages.length
+
+    // Use first message timestamp as stable group key
+    const groupKey = `group-${messages[0]?.msg.timestamp || groupIndex}`
+    const isExpanded = this.expandedMessages.has(groupKey)
+    const expandedClass = isExpanded ? 'expanded' : ''
+
+    // Render individual items for expanded view
+    const itemsHtml = messages.map(({ msg, result }) => {
+      const timeAgo = formatTimeAgo(new Date(msg.timestamp).getTime())
+      if (msg.type === 'thinking') {
+        const isItemExpanded = this.expandedMessages.has(msg.timestamp)
+        return this.renderThinkingBlock(msg, msg.timestamp, timeAgo, isItemExpanded)
+      } else if (msg.type === 'system') {
+        const isItemExpanded = this.expandedMessages.has(msg.timestamp)
+        return this.renderSystemMessage(msg, msg.timestamp, timeAgo, isItemExpanded)
+      } else {
+        return this.renderToolUse(msg, msg.timestamp, timeAgo, result)
+      }
+    }).join('')
+
+    return `
+      <div class="tool-group ${expandedClass}" data-group-key="${groupKey}">
+        <div class="tool-group-header">
+          <span class="tool-group-icon">▶</span>
+          <span class="tool-group-summary">${stepCount} steps (${escapeHtml(summary)})</span>
+        </div>
+        <div class="tool-group-content">
+          ${itemsHtml}
+        </div>
+      </div>
+    `
+  }
+
+  private renderConversationItem(msg: ConversationMessage, _index: number): string {
     const timeAgo = formatTimeAgo(new Date(msg.timestamp).getTime())
-    const isExpanded = this.expandedMessages.has(index)
+    const isExpanded = this.expandedMessages.has(msg.timestamp)
 
     switch (msg.type) {
       case 'user':
-        return this.renderUserMessage(msg, index, timeAgo, isExpanded)
+        return this.renderUserMessage(msg, msg.timestamp, timeAgo, isExpanded)
       case 'assistant':
-        return this.renderAssistantMessage(msg, index, timeAgo, isExpanded)
+        return this.renderAssistantMessage(msg, msg.timestamp, timeAgo, isExpanded)
       case 'thinking':
-        return this.renderThinkingBlock(msg, index, timeAgo, isExpanded)
+        return this.renderThinkingBlock(msg, msg.timestamp, timeAgo, isExpanded)
       case 'tool_use':
         // Rendered in renderConversation with result
-        return this.renderToolUse(msg, index, timeAgo, undefined)
+        return this.renderToolUse(msg, msg.timestamp, timeAgo, undefined)
       case 'tool_result':
         // Rendered inline with tool_use, skip
         return ''
@@ -276,48 +478,40 @@ export class WorkerActivityPanel {
     }
   }
 
-  private renderUserMessage(msg: ConversationMessage, index: number, timeAgo: string, isExpanded: boolean): string {
-    const truncated = this.truncateText(msg.content, 200)
-    const needsTruncation = truncated.length < msg.content.length
-    // Use markdown for expanded, escaped for truncated (avoid broken markdown)
-    const displayText = isExpanded ? renderMarkdown(msg.content) : escapeHtml(truncated)
-    const wrapperClass = needsTruncation && !isExpanded ? 'msg-wrapper truncated' : 'msg-wrapper'
-    const expandAttr = needsTruncation ? `data-expand-idx="${index}"` : ''
+  private renderUserMessage(msg: ConversationMessage, _key: string, timeAgo: string, _isExpanded: boolean): string {
+    // Always show full content with markdown rendering
+    const displayText = renderMarkdown(msg.content)
 
     return `
       <div class="conv-item user-msg">
         <span class="timestamp">${timeAgo}</span>
-        <div class="${wrapperClass}" ${expandAttr}>
+        <div class="msg-wrapper">
           <div class="msg-content markdown-content">${displayText}</div>
         </div>
       </div>
     `
   }
 
-  private renderAssistantMessage(msg: ConversationMessage, index: number, timeAgo: string, isExpanded: boolean): string {
-    const truncated = this.truncateText(msg.content, 200)
-    const needsTruncation = truncated.length < msg.content.length
-    // Use markdown for expanded, escaped for truncated (avoid broken markdown)
-    const displayText = isExpanded ? renderMarkdown(msg.content) : escapeHtml(truncated)
-    const wrapperClass = needsTruncation && !isExpanded ? 'msg-wrapper truncated' : 'msg-wrapper'
-    const expandAttr = needsTruncation ? `data-expand-idx="${index}"` : ''
+  private renderAssistantMessage(msg: ConversationMessage, _key: string, timeAgo: string, _isExpanded: boolean): string {
+    // Always show full content with markdown rendering
+    const displayText = renderMarkdown(msg.content)
 
     return `
       <div class="conv-item assistant-msg">
         <span class="timestamp">${timeAgo}</span>
-        <div class="${wrapperClass}" ${expandAttr}>
+        <div class="msg-wrapper">
           <div class="msg-content markdown-content">${displayText}</div>
         </div>
       </div>
     `
   }
 
-  private renderThinkingBlock(msg: ConversationMessage, index: number, timeAgo: string, isExpanded: boolean): string {
+  private renderThinkingBlock(msg: ConversationMessage, key: string, timeAgo: string, isExpanded: boolean): string {
     const preview = msg.preview || this.truncateText(msg.content, 50)
     const expandedClass = isExpanded ? 'expanded' : ''
 
     return `
-      <div class="conv-item thinking-block ${expandedClass}" data-thinking-idx="${index}">
+      <div class="conv-item thinking-block ${expandedClass}" data-msg-key="${key}">
         <div class="thinking-header">
           <span class="thinking-icon">▶</span>
           <span class="thinking-preview">${escapeHtml(preview)}</span>
@@ -328,10 +522,28 @@ export class WorkerActivityPanel {
     `
   }
 
-  private renderToolUse(msg: ConversationMessage, index: number, timeAgo: string, result?: ConversationMessage): string {
+  private renderSystemMessage(msg: ConversationMessage, key: string, timeAgo: string, isExpanded: boolean): string {
+    const preview = msg.preview || this.truncateText(msg.content, 60)
+    const expandedClass = isExpanded ? 'expanded' : ''
+    const badge = msg.systemType === 'skill' ? 'Skill' : 'System'
+
+    return `
+      <div class="conv-item system-block ${expandedClass}" data-msg-key="${key}">
+        <div class="system-header">
+          <span class="system-icon">▶</span>
+          <span class="tool-badge">${badge}</span>
+          <span class="system-preview">${escapeHtml(preview)}</span>
+        </div>
+        <div class="system-content">${escapeHtml(msg.content)}</div>
+        <span class="timestamp">${timeAgo}</span>
+      </div>
+    `
+  }
+
+  private renderToolUse(msg: ConversationMessage, key: string, timeAgo: string, result?: ConversationMessage): string {
     const toolName = msg.toolName || 'Tool'
     const summary = this.getToolSummary(msg)
-    const isExpanded = this.expandedMessages.has(index)
+    const isExpanded = this.expandedMessages.has(key)
     const expandedClass = isExpanded ? 'expanded' : ''
     const isFileTool = this.isClickableTool(msg)
 
@@ -354,11 +566,11 @@ export class WorkerActivityPanel {
 
     // File tools get an "open" button
     const openButton = isFileTool
-      ? `<button class="tool-open-btn" data-tool-file-idx="${index}" title="Open in viewer">↗</button>`
+      ? `<button class="tool-open-btn" data-tool-file-key="${key}" title="Open in viewer">Open</button>`
       : ''
 
     return `
-      <div class="conv-item tool-item ${expandedClass}" data-tool-expand-idx="${index}">
+      <div class="conv-item tool-item ${expandedClass}" data-msg-key="${key}">
         <div class="tool-header">
           ${hasDetails ? '<span class="tool-expand-icon">▶</span>' : ''}
           <span class="tool-badge">${toolName}</span>
@@ -413,59 +625,46 @@ export class WorkerActivityPanel {
   }
 
   private attachConversationListeners(): void {
-    // Expandable messages (user/assistant)
-    this.conversationList.querySelectorAll('[data-expand-idx]').forEach(el => {
-      el.addEventListener('click', (e) => {
-        e.stopPropagation() // Prevent panel close during re-render
-        const idx = parseInt((el as HTMLElement).dataset.expandIdx!, 10)
-        if (this.expandedMessages.has(idx)) {
-          this.expandedMessages.delete(idx)
-        } else {
-          this.expandedMessages.add(idx)
-        }
-        this.renderConversation()
-      })
+    // Tool group expand/collapse (uses data-group-key)
+    this.conversationList.querySelectorAll('[data-group-key]').forEach(el => {
+      const header = el.querySelector('.tool-group-header')
+      if (header) {
+        header.addEventListener('click', (e) => {
+          e.stopPropagation()
+          const groupKey = (el as HTMLElement).dataset.groupKey!
+          if (this.expandedMessages.has(groupKey)) {
+            this.expandedMessages.delete(groupKey)
+          } else {
+            this.expandedMessages.add(groupKey)
+          }
+          this.renderConversation()
+        })
+      }
     })
 
-    // Thinking block toggle
-    this.conversationList.querySelectorAll('[data-thinking-idx]').forEach(el => {
-      el.addEventListener('click', (e) => {
-        e.stopPropagation() // Prevent panel close during re-render
-        const idx = parseInt((el as HTMLElement).dataset.thinkingIdx!, 10)
-        if (this.expandedMessages.has(idx)) {
-          this.expandedMessages.delete(idx)
-        } else {
-          this.expandedMessages.add(idx)
-        }
-        this.renderConversation()
-      })
-    })
-
-    // Tool item expand/collapse
-    this.conversationList.querySelectorAll('[data-tool-expand-idx]').forEach(el => {
+    // All expandable items use data-msg-key (thinking, system, tool)
+    this.conversationList.querySelectorAll('[data-msg-key]').forEach(el => {
       el.addEventListener('click', (e) => {
         // Don't expand if clicking the open button
         if ((e.target as HTMLElement).classList.contains('tool-open-btn')) return
 
-        e.stopPropagation() // Prevent panel close during re-render
-        const idx = parseInt((el as HTMLElement).dataset.toolExpandIdx!, 10)
-
-        // Single click always expands/collapses
-        if (this.expandedMessages.has(idx)) {
-          this.expandedMessages.delete(idx)
+        e.stopPropagation()
+        const key = (el as HTMLElement).dataset.msgKey!
+        if (this.expandedMessages.has(key)) {
+          this.expandedMessages.delete(key)
         } else {
-          this.expandedMessages.add(idx)
+          this.expandedMessages.add(key)
         }
         this.renderConversation()
       })
     })
 
-    // File tool open buttons
-    this.conversationList.querySelectorAll('[data-tool-file-idx]').forEach(btn => {
+    // File tool open buttons (uses data-tool-file-key which is timestamp)
+    this.conversationList.querySelectorAll('[data-tool-file-key]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation()
-        const idx = parseInt((btn as HTMLElement).dataset.toolFileIdx!, 10)
-        const msg = this.currentConversation[idx]
+        const key = (btn as HTMLElement).dataset.toolFileKey!
+        const msg = this.currentConversation.find(m => m.timestamp === key)
         if (msg && this.onFileClick && this.currentSession) {
           const filePath = this.getToolFilePath(msg)
           if (filePath) {
@@ -540,7 +739,6 @@ export class WorkerActivityPanel {
   }
 
   hide(): void {
-    this.stopConversationPolling()
     this.panel.classList.remove('visible')
     this.currentSession = null
   }
