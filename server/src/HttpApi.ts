@@ -1399,6 +1399,12 @@ export class HttpApi {
   /**
    * Get conversation history for a session
    * Query params: sessionId (tmux session name)
+   *
+   * Lookup priority:
+   * 1. ConversationCache by sessionId (works for ended sessions)
+   * 2. Remote conversation lookup (for remote sessions)
+   * 3. ConversationCache by tmuxSession (fallback)
+   * 4. TranscriptReader (legacy fallback for local sessions)
    */
   private async handleConversation(url: URL, res: ServerResponse): Promise<void> {
     const sessionId = url.searchParams.get('sessionId');
@@ -1411,40 +1417,7 @@ export class HttpApi {
     }
 
     try {
-      let messages: any[] = [];
-
-      // Check ConversationCache first (works even for ended sessions)
-      if (this.conversationCache) {
-        messages = this.conversationCache.getMessages(sessionId, limit);
-      }
-
-      // If cache empty, try active session lookups
-      if (messages.length === 0) {
-        const session = this.sessionLookup?.findSession(sessionId);
-
-        if (session) {
-          // Check if remote session
-          if (session.originId && session.originId !== 'local') {
-            const cached = this.remoteConversationLookup?.(sessionId);
-            messages = cached ? cached.slice(-limit) : [];
-          } else if (this.conversationCache && session.tmuxSession) {
-            // Try cache by tmux session name
-            messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
-          }
-
-          // Fall back to transcript reader for active local sessions
-          if (messages.length === 0 && this.transcriptReader && session.originId !== 'remote') {
-            const currentMapping = this.transcriptReader.getSessionTranscript(sessionId);
-            if (session.tmuxSession) {
-              const detected = await this.transcriptReader.detectTranscriptFromTmux(session.tmuxSession, session.cwd);
-              if (detected && detected !== currentMapping) {
-                this.transcriptReader.setSessionTranscript(sessionId, detected);
-              }
-            }
-            messages = await this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
-          }
-        }
-      }
+      const messages = await this.resolveConversationMessages(sessionId, limit);
 
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -1455,6 +1428,55 @@ export class HttpApi {
       console.error('Failed to fetch conversation:', error.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to fetch conversation' }));
+    }
+  }
+
+  /**
+   * Resolve conversation messages using multiple lookup strategies
+   */
+  private async resolveConversationMessages(sessionId: string, limit: number): Promise<any[]> {
+    // 1. ConversationCache by sessionId (works for ended sessions)
+    if (this.conversationCache) {
+      const messages = this.conversationCache.getMessages(sessionId, limit);
+      if (messages.length > 0) return messages;
+    }
+
+    // Find active session for fallback lookups
+    const session = this.sessionLookup?.findSession(sessionId);
+    if (!session) return [];
+
+    // 2. Remote conversation lookup
+    if (session.originId && session.originId !== 'local') {
+      const cached = this.remoteConversationLookup?.(sessionId);
+      if (cached && cached.length > 0) return cached.slice(-limit);
+    }
+
+    // 3. ConversationCache by tmuxSession (fallback)
+    if (this.conversationCache && session.tmuxSession) {
+      const messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
+      if (messages.length > 0) return messages;
+    }
+
+    // 4. TranscriptReader (legacy fallback for local sessions)
+    if (this.transcriptReader && session.originId !== 'remote') {
+      await this.updateTranscriptMapping(sessionId, session);
+      return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
+    }
+
+    return [];
+  }
+
+  /**
+   * Update transcript mapping if a new transcript is detected
+   */
+  private async updateTranscriptMapping(sessionId: string, session: Session): Promise<void> {
+    if (!this.transcriptReader || !session.tmuxSession) return;
+
+    const currentMapping = this.transcriptReader.getSessionTranscript(sessionId);
+    const detected = await this.transcriptReader.detectTranscriptFromTmux(session.tmuxSession, session.cwd);
+
+    if (detected && detected !== currentMapping) {
+      this.transcriptReader.setSessionTranscript(sessionId, detected);
     }
   }
 
@@ -1494,52 +1516,69 @@ export class HttpApi {
    */
   private async handleHookMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.conversationCache) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Conversation cache not configured' }));
+      this.sendJsonError(res, 500, 'Conversation cache not configured');
       return;
     }
 
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-    }
-
-    let data: {
+    const parseResult = await this.parseJsonBody<{
       sessionId: string;
       tmuxSession: string;
       cwd: string;
       messages: CachedMessage[];
-    };
+    }>(req, res);
 
-    try {
-      data = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+    if (!parseResult) return;
 
-    const { sessionId, tmuxSession, cwd, messages } = data;
+    const { sessionId, tmuxSession, cwd, messages } = parseResult;
 
     if (!sessionId || !tmuxSession || !messages || !Array.isArray(messages)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required fields: sessionId, tmuxSession, messages' }));
+      this.sendJsonError(res, 400, 'Missing required fields: sessionId, tmuxSession, messages');
       return;
     }
 
     try {
       this.conversationCache.addMessages(sessionId, tmuxSession, cwd || '', messages);
-
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ success: true, count: messages.length }));
+      this.sendJsonSuccess(res, { success: true, count: messages.length });
     } catch (error: any) {
       console.error('[Hook] Failed to add messages:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to add messages' }));
+      this.sendJsonError(res, 500, 'Failed to add messages');
     }
+  }
+
+  /**
+   * Parse JSON body from request, sending error response if invalid
+   */
+  private async parseJsonBody<T>(req: IncomingMessage, res: ServerResponse): Promise<T | null> {
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+    }
+
+    try {
+      return JSON.parse(body) as T;
+    } catch {
+      this.sendJsonError(res, 400, 'Invalid JSON body');
+      return null;
+    }
+  }
+
+  /**
+   * Send JSON error response
+   */
+  private sendJsonError(res: ServerResponse, status: number, error: string): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error }));
+  }
+
+  /**
+   * Send JSON success response
+   */
+  private sendJsonSuccess(res: ServerResponse, data: Record<string, unknown>): void {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(data));
   }
 
   /**
@@ -1548,17 +1587,11 @@ export class HttpApi {
    */
   private async handleHookHealth(res: ServerResponse): Promise<void> {
     if (!this.conversationCache) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Conversation cache not configured' }));
+      this.sendJsonError(res, 500, 'Conversation cache not configured');
       return;
     }
 
     const health = this.conversationCache.getHealthInfo();
-
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(JSON.stringify(health, null, 2));
+    this.sendJsonSuccess(res, health as Record<string, unknown>);
   }
 }

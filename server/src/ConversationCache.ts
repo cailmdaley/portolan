@@ -152,15 +152,36 @@ export class ConversationCache {
 
   /**
    * Get messages for a session by tmux session name (fallback for lookup)
+   * Aggregates messages from ALL Claude sessions in this tmux session
    */
   getMessagesByTmux(tmuxSession: string, limit?: number): CachedMessage[] {
+    // Collect messages from all sessions with this tmux session
+    const allMessages: CachedMessage[] = [];
     for (const cache of this.sessions.values()) {
       if (cache.tmuxSession === tmuxSession) {
-        const messages = cache.messages;
-        return limit ? messages.slice(-limit) : messages;
+        allMessages.push(...cache.messages);
       }
     }
-    return [];
+
+    if (allMessages.length === 0) return [];
+
+    // Sort and deduplicate by timestamp
+    allMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const deduped = this.deduplicateByTimestamp(allMessages);
+
+    return limit ? deduped.slice(-limit) : deduped;
+  }
+
+  /**
+   * Remove duplicate messages by timestamp
+   */
+  private deduplicateByTimestamp(messages: CachedMessage[]): CachedMessage[] {
+    const seen = new Set<string>();
+    return messages.filter(m => {
+      if (seen.has(m.timestamp)) return false;
+      seen.add(m.timestamp);
+      return true;
+    });
   }
 
   /**

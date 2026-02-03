@@ -250,36 +250,42 @@ export class WorkerActivityPanel {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
+
       const data = await response.json()
-      if (data.messages) {
-        const fetchedMessages: ConversationMessage[] = data.messages
+      if (!data.messages) return
 
-        // Merge with any messages that arrived via WebSocket during fetch
-        // (prevents race condition where WebSocket message arrives before HTTP response)
-        const existingTimestamps = new Set(fetchedMessages.map(m => m.timestamp))
-        const wsOnlyMessages = this.currentConversation.filter(m => !existingTimestamps.has(m.timestamp))
+      const merged = this.mergeMessages(data.messages, this.currentConversation)
 
-        // Combine: fetched messages + any WebSocket-only messages, then dedupe and sort
-        const merged = [...fetchedMessages, ...wsOnlyMessages]
-        merged.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+      // Skip re-render if nothing changed
+      if (this.messagesUnchanged(this.currentConversation, merged)) return
 
-        // Skip re-render if nothing changed
-        const oldLen = this.currentConversation.length
-        const oldLast = this.currentConversation[oldLen - 1]?.timestamp
-        const newLast = merged[merged.length - 1]?.timestamp
-
-        if (oldLen === merged.length && oldLast === newLast) {
-          return
-        }
-
-        this.currentConversation = merged.slice(-100)
-        this.renderConversation()
-      }
+      this.currentConversation = merged.slice(-100)
+      this.renderConversation()
     } catch (error) {
       console.error('Failed to fetch conversation:', error)
-      // Fall back to activity view if conversation unavailable
       this.renderActivitiesFallback()
     }
+  }
+
+  /**
+   * Merge fetched messages with existing WebSocket messages
+   */
+  private mergeMessages(fetched: ConversationMessage[], existing: ConversationMessage[]): ConversationMessage[] {
+    const fetchedTimestamps = new Set(fetched.map(m => m.timestamp))
+    const wsOnlyMessages = existing.filter(m => !fetchedTimestamps.has(m.timestamp))
+    const merged = [...fetched, ...wsOnlyMessages]
+    merged.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    return merged
+  }
+
+  /**
+   * Check if message arrays are effectively the same (same length and last timestamp)
+   */
+  private messagesUnchanged(oldMessages: ConversationMessage[], newMessages: ConversationMessage[]): boolean {
+    if (oldMessages.length !== newMessages.length) return false
+    const oldLast = oldMessages[oldMessages.length - 1]?.timestamp
+    const newLast = newMessages[newMessages.length - 1]?.timestamp
+    return oldLast === newLast
   }
 
   /**
@@ -475,45 +481,29 @@ export class WorkerActivityPanel {
   private renderConversationItem(msg: ConversationMessage, _index: number): string {
     const timeAgo = formatTimeAgo(new Date(msg.timestamp).getTime())
     const isExpanded = this.expandedMessages.has(msg.timestamp)
+    const key = msg.timestamp
 
-    switch (msg.type) {
-      case 'user':
-        return this.renderUserMessage(msg, msg.timestamp, timeAgo, isExpanded)
-      case 'assistant':
-        return this.renderAssistantMessage(msg, msg.timestamp, timeAgo, isExpanded)
-      case 'thinking':
-        return this.renderThinkingBlock(msg, msg.timestamp, timeAgo, isExpanded)
-      case 'tool_use':
-        // Rendered in renderConversation with result
-        return this.renderToolUse(msg, msg.timestamp, timeAgo, undefined)
-      case 'tool_result':
-        // Rendered inline with tool_use, skip
-        return ''
-      default:
-        return ''
-    }
+    if (msg.type === 'user') return this.renderUserMessage(msg, timeAgo)
+    if (msg.type === 'assistant') return this.renderAssistantMessage(msg, timeAgo)
+    if (msg.type === 'thinking') return this.renderThinkingBlock(msg, key, timeAgo, isExpanded)
+    if (msg.type === 'tool_use') return this.renderToolUse(msg, key, timeAgo, undefined)
+
+    // tool_result rendered inline with tool_use, other types skipped
+    return ''
   }
 
-  private renderUserMessage(msg: ConversationMessage, _key: string, timeAgo: string, _isExpanded: boolean): string {
-    // Always show full content with markdown rendering
-    const displayText = renderMarkdown(msg.content)
-
-    return `
-      <div class="conv-item user-msg">
-        <span class="timestamp">${timeAgo}</span>
-        <div class="msg-wrapper">
-          <div class="msg-content markdown-content">${displayText}</div>
-        </div>
-      </div>
-    `
+  private renderUserMessage(msg: ConversationMessage, timeAgo: string): string {
+    return this.renderChatMessage(msg, timeAgo, 'user-msg')
   }
 
-  private renderAssistantMessage(msg: ConversationMessage, _key: string, timeAgo: string, _isExpanded: boolean): string {
-    // Always show full content with markdown rendering
-    const displayText = renderMarkdown(msg.content)
+  private renderAssistantMessage(msg: ConversationMessage, timeAgo: string): string {
+    return this.renderChatMessage(msg, timeAgo, 'assistant-msg')
+  }
 
+  private renderChatMessage(msg: ConversationMessage, timeAgo: string, className: string): string {
+    const displayText = renderMarkdown(msg.content)
     return `
-      <div class="conv-item assistant-msg">
+      <div class="conv-item ${className}">
         <span class="timestamp">${timeAgo}</span>
         <div class="msg-wrapper">
           <div class="msg-content markdown-content">${displayText}</div>
@@ -612,10 +602,9 @@ export class WorkerActivityPanel {
   private getToolSummary(msg: ConversationMessage): string {
     if (!msg.toolInput) return msg.content
 
-    // Extract file path from common tools
     const input = msg.toolInput
-    if (input.file_path) return input.file_path
-    if (input.path) return input.path
+    const filePath = this.getToolFilePath(msg)
+    if (filePath) return filePath
     if (input.command) return this.truncateText(input.command, 50)
     if (input.pattern) return input.pattern
 
@@ -624,15 +613,12 @@ export class WorkerActivityPanel {
 
   private isClickableTool(msg: ConversationMessage): boolean {
     const clickableTools = ['Read', 'Write', 'Edit']
-    if (!msg.toolName || !clickableTools.includes(msg.toolName)) return false
-    const input = msg.toolInput
-    return input && (input.file_path || input.path)
+    return Boolean(msg.toolName && clickableTools.includes(msg.toolName) && this.getToolFilePath(msg))
   }
 
   private getToolFilePath(msg: ConversationMessage): string | null {
     const input = msg.toolInput
-    if (!input) return null
-    return input.file_path || input.path || null
+    return input?.file_path || input?.path || null
   }
 
   private truncateText(text: string, maxLen: number): string {
