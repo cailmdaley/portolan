@@ -1769,7 +1769,6 @@ export class FileViewerModal {
 
       // Show toast notification
       showToast(`Filed as fiber: ${result.fiberId}`, 'success', 4000)
-      console.log('Filed as fiber:', result.fiberId)
     } catch (error: any) {
       console.error('Failed to file as fiber:', error)
       this.fiberBtn.textContent = 'File as Fiber'

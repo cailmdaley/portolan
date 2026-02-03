@@ -730,7 +730,6 @@ export class CityPanel {
     }
     const result = await this.newWorkerDialog.show(this.currentCity.name)
     if (!result) return
-    console.log('Requesting new worker for:', this.currentCity.path, 'name:', result.name, 'chrome:', result.chrome, 'continue:', result.continue)
     this.ws.send(JSON.stringify({
       type: 'newWorker',
       cityPath: this.currentCity.path,

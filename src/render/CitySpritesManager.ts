@@ -148,7 +148,6 @@ export class CitySpritesManager {
       // Load the generated texture...
 
       // For now, just use default (generation not implemented yet)
-      console.log(`Would generate sprite for city: ${city.name} (${city.id})`)
     } catch (error) {
       console.error(`Failed to generate sprite for ${city.id}:`, error)
     } finally {

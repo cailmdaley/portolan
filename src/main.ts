@@ -726,7 +726,6 @@ function focusKittyTab(sessionId: string): void {
 
 // Activate dormant remote city (SSH + start agent)
 async function activateRemoteCity(city: City): Promise<void> {
-  console.log(`[Activate] Starting agent for remote city: ${city.name} (${city.originId})`)
 
   try {
     const response = await fetch(`http://localhost:4004/activate-city?cityId=${city.id}`, {
@@ -736,7 +735,6 @@ async function activateRemoteCity(city: City): Promise<void> {
     const result = await response.json()
 
     if (response.ok) {
-      console.log(`[Activate] ${result.message}`)
       // Agent will connect and sessions will appear via WebSocket
       // Show panel while waiting
       cityPanel.show(city)
@@ -786,7 +784,6 @@ animate()
 // Add some mock data for testing when server is not available
 setTimeout(() => {
   if (cities.length === 0) {
-    console.log('No server data, adding mock cities for visualization')
     const mockCities: City[] = [
       { id: '1', name: 'hexarchy-v2', path: '/projects/hexarchy-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, hasPlaygrounds: true, isDormant: false, originId: 'local' },
       { id: '2', name: 'loom', path: '/projects/loom', hex: { q: 2, r: -1 }, fiberCount: 7, hasClaims: true, hasPlaygrounds: false, isDormant: false, originId: 'local' },
