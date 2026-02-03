@@ -49,6 +49,10 @@ export class ConversationCard {
   // Minimize state
   private isMinimized = false
 
+  // Chat input state
+  private chatInputEl: HTMLTextAreaElement | null = null
+  private isSending = false
+
   constructor(session: Session, options: CardOptions) {
     this.session = session
     this.options = options
@@ -58,6 +62,7 @@ export class ConversationCard {
     const { wrapper, card } = this.createCardElements()
     this.element = card
     this.contentEl = card.querySelector('.card-content')!
+    this.chatInputEl = card.querySelector('.chat-input')
 
     this.object = new CSS2DObject(wrapper)
     // Position slightly to the right and below the ship
@@ -83,6 +88,10 @@ export class ConversationCard {
       </div>
       <div class="card-content">
         <div class="card-loading">Loading conversation...</div>
+      </div>
+      <div class="chat-input-container">
+        <textarea class="chat-input" placeholder="Send a message..." rows="1"></textarea>
+        <button class="chat-send-btn" title="Send (Enter)">↩</button>
       </div>
       <!-- Edge resize handles -->
       <div class="resize-edge resize-n" data-edge="n"></div>
@@ -153,6 +162,30 @@ export class ConversationCard {
         this.startResize(e as MouseEvent, edge)
       })
     })
+
+    // Chat input
+    if (this.chatInputEl) {
+      const sendBtn = this.element.querySelector('.chat-send-btn')!
+      sendBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this.sendMessage()
+      })
+
+      // Enter sends, Shift+Enter for newline
+      this.chatInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          this.sendMessage()
+        }
+      })
+
+      // Auto-grow textarea
+      this.chatInputEl.addEventListener('input', () => this.autoGrowTextarea())
+
+      // Prevent card close when clicking in chat area
+      this.chatInputEl.addEventListener('click', (e) => e.stopPropagation())
+      this.chatInputEl.addEventListener('dblclick', (e) => e.stopPropagation())
+    }
   }
 
   private startDrag = (e: MouseEvent): void => {
@@ -254,6 +287,68 @@ export class ConversationCard {
     this.resizeEdge = null
     document.removeEventListener('mousemove', this.onResize)
     document.removeEventListener('mouseup', this.stopResize)
+  }
+
+  private autoGrowTextarea(): void {
+    if (!this.chatInputEl) return
+    // Reset height to auto to get correct scrollHeight
+    this.chatInputEl.style.height = 'auto'
+    // Set to scrollHeight, capped at 80px
+    const maxHeight = 80
+    this.chatInputEl.style.height = `${Math.min(this.chatInputEl.scrollHeight, maxHeight)}px`
+    // Show scrollbar if content exceeds max
+    this.chatInputEl.style.overflowY = this.chatInputEl.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }
+
+  private async sendMessage(): Promise<void> {
+    if (!this.chatInputEl || this.isSending) return
+
+    const message = this.chatInputEl.value.trim()
+    if (!message) return
+
+    this.isSending = true
+    const sendBtn = this.element.querySelector('.chat-send-btn') as HTMLButtonElement
+    sendBtn.textContent = '...'
+    this.chatInputEl.disabled = true
+
+    try {
+      const response = await fetch('http://localhost:4004/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: this.session.id,
+          message,
+        }),
+      })
+
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || `HTTP ${response.status}`)
+      }
+
+      // Clear input on success and reset height
+      this.chatInputEl.value = ''
+      this.chatInputEl.style.height = 'auto'
+      // Re-fetch conversation to show the new message
+      await this.fetchConversation()
+    } catch (error) {
+      console.error('Failed to send message:', error)
+      // Show error briefly in input placeholder
+      const originalPlaceholder = this.chatInputEl.placeholder
+      this.chatInputEl.placeholder = `Error: ${error instanceof Error ? error.message : 'Failed to send'}`
+      setTimeout(() => {
+        if (this.chatInputEl) {
+          this.chatInputEl.placeholder = originalPlaceholder
+        }
+      }, 3000)
+    } finally {
+      this.isSending = false
+      sendBtn.textContent = '↩'
+      if (this.chatInputEl) {
+        this.chatInputEl.disabled = false
+        this.chatInputEl.focus()
+      }
+    }
   }
 
   private async fetchConversation(): Promise<void> {

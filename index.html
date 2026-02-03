@@ -205,6 +205,7 @@
       /* Wrapper - CSS2DRenderer controls this element's transform */
       .conversation-card-wrapper {
         pointer-events: none;  /* Pass through to card */
+        z-index: 50;  /* Above city labels (z-index: 1) and worker labels (z-index: 10) */
       }
 
       .conversation-card {
@@ -601,6 +602,63 @@
         cursor: sw-resize;
       }
 
+      /* Chat input */
+      .conversation-card .chat-input-container {
+        display: flex;
+        gap: 6px;
+        padding: 6px 10px 8px;
+        border-top: 1px solid var(--parchment-edge);
+        background: rgba(255, 255, 255, 0.3);
+        flex-shrink: 0;
+      }
+
+      .conversation-card .chat-input {
+        flex: 1;
+        min-height: 24px;
+        max-height: 80px;
+        padding: 4px 8px;
+        border: 1px solid var(--parchment-edge);
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.6);
+        font-family: var(--font-main);
+        font-size: 12px;
+        color: var(--ink-body);
+        resize: none;
+        overflow-y: hidden;
+      }
+
+      .conversation-card .chat-input:focus {
+        outline: none;
+        border-color: var(--sepia-accent);
+        background: rgba(255, 255, 255, 0.9);
+      }
+
+      .conversation-card .chat-input::placeholder {
+        color: var(--ink-faded);
+        font-style: italic;
+      }
+
+      .conversation-card .chat-send-btn {
+        padding: 4px 10px;
+        background: var(--gold-accent);
+        color: white;
+        border: none;
+        border-radius: 3px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 150ms ease;
+        flex-shrink: 0;
+      }
+
+      .conversation-card .chat-send-btn:hover {
+        background: var(--sepia-accent);
+      }
+
+      .conversation-card .chat-send-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
       /* Minimized state */
       .conversation-card.minimized {
         max-height: 36px !important;
@@ -609,6 +667,7 @@
       }
 
       .conversation-card.minimized .card-content,
+      .conversation-card.minimized .chat-input-container,
       .conversation-card.minimized .resize-edge,
       .conversation-card.minimized .resize-corner {
         display: none;
