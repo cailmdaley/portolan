@@ -89,7 +89,6 @@ export class CityPanel {
   private closedFibers: Fiber[] = []
   private searchQuery = ''
   private searchResults: UnifiedResult[] = []
-  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private currentSearchId = 0
 
   // Callbacks
@@ -141,7 +140,7 @@ export class CityPanel {
 
       <!-- Unified Search -->
       <div class="unified-search-container">
-        <input type="text" class="unified-search-input" placeholder="Search files & fibers…" />
+        <input type="text" class="unified-search-input" placeholder="Search files & fibers… (Enter)" />
         <button class="unified-search-clear" aria-label="Clear search">&times;</button>
       </div>
 
@@ -299,10 +298,22 @@ export class CityPanel {
   }
 
   private setupUnifiedSearch(): void {
+    // Update query as user types (for clear button visibility)
     this.searchInput.addEventListener('input', () => {
       this.searchQuery = this.searchInput.value.trim()
       this.updateSearchClearVisibility()
-      this.debounceSearch()
+      // Clear results when input is empty
+      if (!this.searchQuery) {
+        this.searchResults = []
+        this.showTabContent()
+      }
+    })
+
+    // Search only on Enter - avoids spawning fd processes on every keystroke
+    this.searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && this.searchQuery) {
+        this.performUnifiedSearch()
+      }
     })
 
     this.searchClear.addEventListener('click', () => {
@@ -336,15 +347,6 @@ export class CityPanel {
 
   private updateSearchClearVisibility(): void {
     this.searchClear.style.display = this.searchInput.value ? 'block' : 'none'
-  }
-
-  private debounceSearch(): void {
-    if (this.searchDebounceTimer) {
-      clearTimeout(this.searchDebounceTimer)
-    }
-    this.searchDebounceTimer = setTimeout(() => {
-      this.performUnifiedSearch()
-    }, 150)
   }
 
   private performUnifiedSearch(): void {

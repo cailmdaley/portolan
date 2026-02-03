@@ -791,17 +791,27 @@ function searchLocal(
   activeSearches.set(searchKey, proc);
 
   let stdout = '';
+  let timedOut = false;
   proc.stdout?.on('data', (data) => {
     stdout += data.toString();
   });
 
+  // Timeout: kill after 10 seconds and return partial results
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    proc.kill('SIGTERM');
+    console.log(`[Search] Timeout for ${searchKey}, returning partial results`);
+  }, 10000);
+
   proc.on('close', () => {
+    clearTimeout(timeout);
     activeSearches.delete(searchKey);
     const results = parseSearchResults(stdout, cityPath, mode);
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
   });
 
   proc.on('error', (error) => {
+    clearTimeout(timeout);
     activeSearches.delete(searchKey);
     console.error('Search error:', error);
     ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
@@ -840,17 +850,27 @@ function searchRemote(
   activeSearches.set(searchKey, proc);
 
   let stdout = '';
+  let timedOut = false;
   proc.stdout?.on('data', (data) => {
     stdout += data.toString();
   });
 
+  // Timeout: kill after 15 seconds for remote (slower)
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    proc.kill('SIGTERM');
+    console.log(`[Search] Remote timeout for ${searchKey}, returning partial results`);
+  }, 15000);
+
   proc.on('close', () => {
+    clearTimeout(timeout);
     activeSearches.delete(searchKey);
     const results = parseSearchResults(stdout, cityPath, mode);
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results }));
+    ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
   });
 
   proc.on('error', (error) => {
+    clearTimeout(timeout);
     activeSearches.delete(searchKey);
     ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
   });
