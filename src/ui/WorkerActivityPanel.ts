@@ -346,9 +346,8 @@ export class WorkerActivityPanel {
     if (msg.type !== 'conversation' || !msg.messages) return false
 
     // Match by tmuxSession (stable) since Claude's sessionId changes each restart
-    const isVisible = this.panel.classList.contains('visible')
-    const matchesTmux = this.currentSession?.tmuxSession === msg.tmuxSession
-    if (isVisible && matchesTmux) {
+    const shouldUpdate = this.isVisible() && this.currentSession?.tmuxSession === msg.tmuxSession
+    if (shouldUpdate) {
       this.appendMessages(msg.messages)
     }
     return true
@@ -379,9 +378,9 @@ export class WorkerActivityPanel {
   }
 
   updateActivities(tmuxSession: string, activities: Activity[]): void {
-    if (this.currentSession?.tmuxSession === tmuxSession && this.panel.classList.contains('visible')) {
+    const shouldUpdate = this.isVisible() && this.currentSession?.tmuxSession === tmuxSession
+    if (shouldUpdate) {
       this.currentActivities = activities
-      // Activities are now secondary - conversation is primary
     }
   }
 
@@ -650,13 +649,13 @@ export class WorkerActivityPanel {
   // Tool results are now rendered inline with tool_use, no separate rendering needed
 
   private getToolSummary(msg: ConversationMessage): string {
-    if (!msg.toolInput) return msg.content
-
     const input = msg.toolInput
+    if (!input) return msg.content
+
     const filePath = this.getToolFilePath(msg)
     if (filePath) return filePath
-    if (input.command) return this.truncateText(input.command, 50)
-    if (input.pattern) return input.pattern
+    if (input.command) return this.truncateText(String(input.command), 50)
+    if (input.pattern) return String(input.pattern)
 
     return msg.content || msg.toolName || 'tool'
   }
@@ -666,12 +665,22 @@ export class WorkerActivityPanel {
   }
 
   private getToolFilePath(msg: ConversationMessage): string | null {
-    return msg.toolInput?.file_path ?? msg.toolInput?.path ?? null
+    const input = msg.toolInput
+    return input?.file_path ?? input?.path ?? null
   }
 
   private truncateText(text: string, maxLen: number): string {
     if (text.length <= maxLen) return text
     return text.slice(0, maxLen) + '...'
+  }
+
+  private toggleExpanded(key: string): void {
+    if (this.expandedMessages.has(key)) {
+      this.expandedMessages.delete(key)
+    } else {
+      this.expandedMessages.add(key)
+    }
+    this.renderConversation()
   }
 
   private attachConversationListeners(): void {
@@ -682,12 +691,7 @@ export class WorkerActivityPanel {
         header.addEventListener('click', (e) => {
           e.stopPropagation()
           const groupKey = (el as HTMLElement).dataset.groupKey!
-          if (this.expandedMessages.has(groupKey)) {
-            this.expandedMessages.delete(groupKey)
-          } else {
-            this.expandedMessages.add(groupKey)
-          }
-          this.renderConversation()
+          this.toggleExpanded(groupKey)
         })
       }
     })
@@ -700,12 +704,7 @@ export class WorkerActivityPanel {
 
         e.stopPropagation()
         const key = (el as HTMLElement).dataset.msgKey!
-        if (this.expandedMessages.has(key)) {
-          this.expandedMessages.delete(key)
-        } else {
-          this.expandedMessages.add(key)
-        }
-        this.renderConversation()
+        this.toggleExpanded(key)
       })
     })
 

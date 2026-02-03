@@ -1401,34 +1401,27 @@ export class HttpApi {
    * Query params: sessionId (tmux session name)
    *
    * Lookup priority:
-   * 1. ConversationCache by sessionId (works for ended sessions)
+   * 1. ConversationCache by tmuxSession (aggregates all Claude sessions)
    * 2. Remote conversation lookup (for remote sessions)
-   * 3. ConversationCache by tmuxSession (fallback)
+   * 3. ConversationCache by sessionId (fallback for ended sessions)
    * 4. TranscriptReader (legacy fallback for local sessions)
    */
   private async handleConversation(url: URL, res: ServerResponse): Promise<void> {
     const sessionId = url.searchParams.get('sessionId');
-    const tmuxSession = url.searchParams.get('tmuxSession');
+    const tmuxSession = url.searchParams.get('tmuxSession') ?? undefined;
     const limit = parseInt(url.searchParams.get('limit') || '50', 10);
 
     if (!sessionId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing sessionId parameter' }));
+      this.sendJsonError(res, 400, 'Missing sessionId parameter');
       return;
     }
 
     try {
-      const messages = await this.resolveConversationMessages(sessionId, limit, tmuxSession ?? undefined);
-
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ messages }));
+      const messages = await this.resolveConversationMessages(sessionId, limit, tmuxSession);
+      this.sendJsonSuccess(res, { messages });
     } catch (error: any) {
       console.error('Failed to fetch conversation:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to fetch conversation' }));
+      this.sendJsonError(res, 500, 'Failed to fetch conversation');
     }
   }
 
@@ -1440,7 +1433,6 @@ export class HttpApi {
    * but messages from all sessions in the same tmux should be aggregated.
    */
   private async resolveConversationMessages(sessionId: string, limit: number, tmuxSessionParam?: string): Promise<any[]> {
-    // Find session to get tmuxSession for aggregation
     const session = this.sessionLookup?.findSession(sessionId);
     const tmuxSession = tmuxSessionParam ?? session?.tmuxSession;
 
@@ -1451,7 +1443,8 @@ export class HttpApi {
     }
 
     // 2. Remote conversation lookup
-    if (session?.originId && session.originId !== 'local') {
+    const isRemote = session?.originId && session.originId !== 'local';
+    if (isRemote) {
       const cached = this.remoteConversationLookup?.(sessionId);
       if (cached && cached.length > 0) return cached.slice(-limit);
     }
@@ -1463,7 +1456,7 @@ export class HttpApi {
     }
 
     // 4. TranscriptReader (legacy fallback for local sessions)
-    if (this.transcriptReader && session && session.originId === 'local') {
+    if (this.transcriptReader && session && !isRemote) {
       await this.updateTranscriptMapping(sessionId, session);
       return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
     }
