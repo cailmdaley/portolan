@@ -191,6 +191,7 @@ export class FileViewerModal {
   private currentContent: FileContent | null = null
   private currentPath: string = ''
   private currentOriginId: string = 'local'
+  private currentCityPath: string = ''
   private editorView: EditorView | null = null
   private isDirty: boolean = false
   private originalContent: string = ''
@@ -209,6 +210,10 @@ export class FileViewerModal {
 
   // Double-Escape tracking for vim: first Escape → normal mode, second Escape → close
   private lastEscapeTime: number = 0
+
+  // Handler refs for HMR cleanup
+  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+  private arrowHandler: ((e: KeyboardEvent) => void) | null = null
 
   constructor() {
     this.backdrop = this.createBackdrop()
@@ -326,42 +331,50 @@ export class FileViewerModal {
       this.updateSendButton()
     })
 
+    // Document-level handlers are attached in show(), detached in hide()
+    // This prevents HMR stacking where old listeners accumulate across hot reloads
+  }
+
+  private attachDocumentHandlers(): void {
+    // Only attach if not already attached
+    if (this.escapeHandler) return
+
     // Escape key to close the file viewer
     // For vim: first Escape → normal mode, second Escape (within 1s) → close
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.modal.classList.contains('visible')) {
-        // Hide selection toolbar first
-        if (this.selectionToolbar) {
-          this.hideSelectionToolbar()
-          e.stopPropagation()
-          return
-        }
+    this.escapeHandler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !this.modal.classList.contains('visible')) return
 
-        const now = Date.now()
-
-        // If editor exists and has focus, use double-Escape
-        if (this.editorView?.hasFocus) {
-          // Second Escape within 1 second → close
-          if (now - this.lastEscapeTime < 1000) {
-            this.tryClose()
-            e.stopPropagation()
-            this.lastEscapeTime = 0
-          } else {
-            // First Escape → let vim handle it, record time
-            this.lastEscapeTime = now
-            // Don't stop propagation - let vim see it
-          }
-          return
-        }
-
-        // No editor or not focused → close immediately
-        this.tryClose()
+      // Hide selection toolbar first
+      if (this.selectionToolbar) {
+        this.hideSelectionToolbar()
         e.stopPropagation()
+        return
       }
-    })
+
+      const now = Date.now()
+
+      // If editor exists and has focus, use double-Escape
+      if (this.editorView?.hasFocus) {
+        // Second Escape within 1 second → close
+        if (now - this.lastEscapeTime < 1000) {
+          this.tryClose()
+          e.stopPropagation()
+          this.lastEscapeTime = 0
+        } else {
+          // First Escape → let vim handle it, record time
+          this.lastEscapeTime = now
+          // Don't stop propagation - let vim see it
+        }
+        return
+      }
+
+      // No editor or not focused → close immediately
+      this.tryClose()
+      e.stopPropagation()
+    }
 
     // Up/Down arrow keys to navigate between files (only when editor not focused)
-    document.addEventListener('keydown', (e) => {
+    this.arrowHandler = (e: KeyboardEvent) => {
       if (!this.modal.classList.contains('visible')) return
       if (this.navigationFiles.length === 0) return
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
@@ -387,7 +400,21 @@ export class FileViewerModal {
       } else {
         this.navigateToFile(newIndex)
       }
-    })
+    }
+
+    document.addEventListener('keydown', this.escapeHandler)
+    document.addEventListener('keydown', this.arrowHandler)
+  }
+
+  private detachDocumentHandlers(): void {
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler)
+      this.escapeHandler = null
+    }
+    if (this.arrowHandler) {
+      document.removeEventListener('keydown', this.arrowHandler)
+      this.arrowHandler = null
+    }
   }
 
   private navigateToFile(index: number): void {
@@ -445,7 +472,8 @@ export class FileViewerModal {
     filePath: string,
     originId: string,
     sourceWorkerId?: string,
-    navigationContext?: { files: string[]; index: number }
+    navigationContext?: { files: string[]; index: number },
+    cityPath?: string
   ): Promise<void> {
     // Show loading state
     this.pathEl.textContent = filePath
@@ -460,6 +488,7 @@ export class FileViewerModal {
     this.originalContent = ''
     this.currentPath = filePath
     this.currentOriginId = originId
+    this.currentCityPath = cityPath || ''
     this.sourceWorkerId = sourceWorkerId || null
     this.annotations = []
     this.globalComment = ''
@@ -494,6 +523,9 @@ export class FileViewerModal {
     // Show modal
     this.backdrop.classList.add('visible')
     this.modal.classList.add('visible')
+
+    // Attach document-level handlers (detached in hide() to prevent HMR stacking)
+    this.attachDocumentHandlers()
 
     // Check if this is an image file
     const ext = this.getExtension(filePath)
@@ -1058,6 +1090,9 @@ export class FileViewerModal {
     this.annotations = []
     this.sourceWorkerId = null
     this.hideSelectionToolbar()
+
+    // Detach document-level handlers to prevent HMR stacking
+    this.detachDocumentHandlers()
 
     // Destroy editor
     if (this.editorView) {
@@ -1705,6 +1740,7 @@ export class FileViewerModal {
         body: JSON.stringify({
           filePath: this.currentPath,
           originId: this.currentOriginId,
+          cityPath: this.currentCityPath,
           title,
           body,
           kind: 'task',
