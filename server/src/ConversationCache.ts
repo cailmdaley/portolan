@@ -46,6 +46,8 @@ export class ConversationCache {
   private persistPath: string;
   private persistInterval: ReturnType<typeof setInterval> | null = null;
   private maxMessagesPerSession = 100;  // Keep last 100 messages per session
+  private maxSessions = 50;  // Cap total sessions to prevent unbounded growth
+  private sessionMaxAge = 7 * 24 * 60 * 60 * 1000;  // 7 days in ms
   private messageCallback: MessageCallback | null = null;
   private lastEventBySession: Map<string, number> = new Map();
 
@@ -219,9 +221,50 @@ export class ConversationCache {
   }
 
   /**
+   * Clean up old/excess sessions to prevent unbounded memory growth
+   */
+  private cleanup(): void {
+    const now = Date.now();
+    const toDelete: string[] = [];
+
+    // Find sessions older than max age
+    for (const [sessionId, cache] of this.sessions) {
+      if (now - cache.lastUpdate > this.sessionMaxAge) {
+        toDelete.push(sessionId);
+      }
+    }
+
+    // Delete old sessions
+    for (const sessionId of toDelete) {
+      this.sessions.delete(sessionId);
+      this.lastEventBySession.delete(sessionId);
+    }
+
+    // If still over limit, remove oldest sessions
+    if (this.sessions.size > this.maxSessions) {
+      const sorted = [...this.sessions.entries()]
+        .sort((a, b) => a[1].lastUpdate - b[1].lastUpdate);
+
+      const excess = this.sessions.size - this.maxSessions;
+      for (let i = 0; i < excess; i++) {
+        const [sessionId] = sorted[i];
+        this.sessions.delete(sessionId);
+        this.lastEventBySession.delete(sessionId);
+      }
+    }
+
+    if (toDelete.length > 0 || this.sessions.size > this.maxSessions) {
+      console.log(`[ConversationCache] Cleanup: removed ${toDelete.length} old sessions, ${this.sessions.size} remain`);
+    }
+  }
+
+  /**
    * Persist to disk
    */
   persist(): void {
+    // Clean up before persisting
+    this.cleanup();
+
     const dir = dirname(this.persistPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
