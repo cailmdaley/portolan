@@ -1080,14 +1080,16 @@ wss.on('connection', async (ws, req) => {
         } else if (message.type === 'agent_conversation') {
           const conv = (message as AgentConversationMessage).payload;
 
-          // Find the session ID for this tmux session
-          const sessionMap = remoteSessions.get(origin.id);
-          const session = sessionMap?.get(conv.tmuxSession);
-          if (session) {
-            // Store conversation messages keyed by session ID
-            remoteConversations.set(session.id, conv.messages);
-            console.log(`[Conversation] Cached ${conv.messages.length} messages for ${session.id}`);
-          }
+          // Route through ConversationCache for persistence and deduplication
+          // Prefix tmux session with origin for uniqueness across machines
+          const remoteTmux = `${origin.id}/${conv.tmuxSession}`;
+          conversationCache.addMessages(
+            conv.sessionId,
+            remoteTmux,
+            conv.cwd,
+            conv.messages
+          );
+          console.log(`[Conversation] Remote hook: ${conv.messages.length} messages for ${remoteTmux}`);
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);

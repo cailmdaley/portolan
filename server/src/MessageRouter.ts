@@ -48,6 +48,7 @@ export interface AgentActivityMessage {
 export interface AgentConversationMessage {
   type: 'agent_conversation';
   payload: {
+    sessionId: string;
     tmuxSession: string;
     cwd: string;
     messages: Array<{
