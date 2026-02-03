@@ -413,6 +413,13 @@ function handleMessage(message: ServerMessage): void {
         zoneRenderer.updateWorkerActivity(tmuxSession, acts)
       }
     }
+    // Clean up activities for sessions that no longer exist
+    const currentTmuxSessions = new Set(sessions.map(s => s.tmuxSession))
+    for (const tmuxSession of activityBySession.keys()) {
+      if (!currentTmuxSessions.has(tmuxSession)) {
+        activityBySession.delete(tmuxSession)
+      }
+    }
     zoneRenderer.updateState(cities, sessions)
   }
 }
