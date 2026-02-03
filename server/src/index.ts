@@ -1239,7 +1239,7 @@ server.listen(PORT, () => {
   console.log(`WebSocket: ws://localhost:${PORT}`);
 });
 
-process.on('SIGINT', () => {
+function shutdown() {
   console.log('\nShutting down...');
   sessionTracker.stop();
   gitStatusManager.stop();
@@ -1247,4 +1247,7 @@ process.on('SIGINT', () => {
   conversationCache.stop();
   server.close();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
