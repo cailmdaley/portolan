@@ -557,14 +557,13 @@ function findLatestTranscript(projectDir) {
     try {
         const files = readdirSync(projectDir)
             .filter(f => f.endsWith('.jsonl'))
-            .map(f => ({
-                name: f,
-                path: join(projectDir, f),
-                mtime: statSync(join(projectDir, f)).mtimeMs
-            }))
+            .map(f => {
+                const path = join(projectDir, f);
+                return { name: f, path, mtime: statSync(path).mtimeMs };
+            })
             .sort((a, b) => b.mtime - a.mtime);
 
-        return files.length > 0 ? files[0] : null;
+        return files[0] ?? null;
     } catch {
         return null;
     }
