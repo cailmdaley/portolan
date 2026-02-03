@@ -290,35 +290,32 @@ export class ConversationCard {
   }
 
   private autoGrowTextarea(): void {
-    if (!this.chatInputEl) return
-    // Reset height to auto to get correct scrollHeight
-    this.chatInputEl.style.height = 'auto'
-    // Set to scrollHeight, capped at 80px
+    const input = this.chatInputEl
+    if (!input) return
+
     const maxHeight = 80
-    this.chatInputEl.style.height = `${Math.min(this.chatInputEl.scrollHeight, maxHeight)}px`
-    // Show scrollbar if content exceeds max
-    this.chatInputEl.style.overflowY = this.chatInputEl.scrollHeight > maxHeight ? 'auto' : 'hidden'
+    input.style.height = 'auto'
+    input.style.height = `${Math.min(input.scrollHeight, maxHeight)}px`
+    input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden'
   }
 
   private async sendMessage(): Promise<void> {
-    if (!this.chatInputEl || this.isSending) return
+    const input = this.chatInputEl
+    if (!input || this.isSending) return
 
-    const message = this.chatInputEl.value.trim()
+    const message = input.value.trim()
     if (!message) return
 
-    this.isSending = true
     const sendBtn = this.element.querySelector('.chat-send-btn') as HTMLButtonElement
+    this.isSending = true
     sendBtn.textContent = '...'
-    this.chatInputEl.disabled = true
+    input.disabled = true
 
     try {
       const response = await fetch('http://localhost:4004/send-message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: this.session.id,
-          message,
-        }),
+        body: JSON.stringify({ sessionId: this.session.id, message }),
       })
 
       if (!response.ok) {
@@ -326,28 +323,19 @@ export class ConversationCard {
         throw new Error(data.error || `HTTP ${response.status}`)
       }
 
-      // Clear input on success and reset height
-      this.chatInputEl.value = ''
-      this.chatInputEl.style.height = 'auto'
-      // Re-fetch conversation to show the new message
+      input.value = ''
+      input.style.height = 'auto'
       await this.fetchConversation()
     } catch (error) {
       console.error('Failed to send message:', error)
-      // Show error briefly in input placeholder
-      const originalPlaceholder = this.chatInputEl.placeholder
-      this.chatInputEl.placeholder = `Error: ${error instanceof Error ? error.message : 'Failed to send'}`
-      setTimeout(() => {
-        if (this.chatInputEl) {
-          this.chatInputEl.placeholder = originalPlaceholder
-        }
-      }, 3000)
+      const originalPlaceholder = input.placeholder
+      input.placeholder = `Error: ${error instanceof Error ? error.message : 'Failed to send'}`
+      setTimeout(() => { input.placeholder = originalPlaceholder }, 3000)
     } finally {
       this.isSending = false
       sendBtn.textContent = '↩'
-      if (this.chatInputEl) {
-        this.chatInputEl.disabled = false
-        this.chatInputEl.focus()
-      }
+      input.disabled = false
+      input.focus()
     }
   }
 
