@@ -12,6 +12,7 @@ interface CardOptions {
   onDoubleClick?: () => void  // For focusing terminal
   onBringToFront?: () => void  // When card is clicked/focused
   initialOffset?: { x: number; y: number }  // Offset from worker position
+  initialSize?: { width: number; height: number }  // Saved card size
 }
 
 export class ConversationCard {
@@ -76,6 +77,13 @@ export class ConversationCard {
     // Apply initial offset if provided
     if (this.options.initialOffset) {
       this.offset = { ...this.options.initialOffset }
+    }
+
+    // Apply initial size if provided (from localStorage persistence)
+    if (this.options.initialSize) {
+      const { width, height } = this.options.initialSize
+      card.style.width = `${width}px`
+      card.style.maxHeight = `${height}px`
     }
 
     return card

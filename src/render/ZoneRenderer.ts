@@ -979,6 +979,7 @@ export class ZoneRenderer {
       },
       onBringToFront: () => this.bringCardToFront(session.id),
       initialOffset: savedState?.offset,
+      initialSize: savedState?.size,
     })
 
     // Position the card above the worker with calculated offset
