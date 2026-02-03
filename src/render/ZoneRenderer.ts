@@ -383,7 +383,7 @@ export class ZoneRenderer {
       })
 
       const workerLabelObj = new CSS2DObject(workerDiv)
-      workerLabelObj.position.set(swarmX, -0.3, swarmZ)  // Below swarm
+      workerLabelObj.position.set(swarmX, 0.6, swarmZ)  // Above swarm
       group.add(workerLabelObj)
       workerLabels.push(workerLabelObj)
     })
@@ -443,7 +443,7 @@ export class ZoneRenderer {
     labelDiv.className = this.workerLabelClass(session.status)
     labelDiv.textContent = session.name
     const labelObject = new CSS2DObject(labelDiv)
-    labelObject.position.y = -0.3  // Below swarm
+    labelObject.position.y = 0.6  // Above swarm
     group.add(labelObject)
 
     group.position.set(pos.x, 0, pos.z)

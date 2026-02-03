@@ -149,3 +149,27 @@ With ~5 workers × 75 particles = 375 points total, performance should be fine. 
 ## Skills
 
 Activate `/frontend-design` if design questions arise about the visual treatment.
+
+## Comments
+**2026-02-04 00:46** — Session progress:
+
+**Done:**
+- Particle swarms rendering (Three.js Points with noise-based animation)
+- Sharp point texture with glow halo (not blurry blobs)
+- Camera-distance scaling (particles finer when zoomed out)
+- Per-particle noise offset prevents convergence bug
+- Buffer sync fix (positions now update GPU correctly)
+- 3-stop color gradient: dormant black → warm sepia → firefly gold
+- Pulsating brightness/size for active workers
+- Activity-based movement speed (slow drift → lively undulation)
+- Shadow removed (cleaner look)
+- Label repositioned above swarm (swarm now below)
+
+**Remaining:**
+- Worker status not reflecting correctly (all show idle, even active sessions)
+- Draggable swarm+label as unit (user wants to drag murmuration to move both)
+- Animation movement still subtle/slow — may need further tuning
+- Test with actual working sessions to verify gold/pulsation effects
+
+**Key bug found:** Float32BufferAttribute copies array, doesn't reference it. Must call `posAttr.array.set(positions)` after updates.
+

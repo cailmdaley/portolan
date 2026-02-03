@@ -194,7 +194,7 @@ const DEFAULT_CONFIG: Required<SwarmConfig> = {
   baseSpeed: 0.15,  // Slow time evolution for smooth noise
   workingSpeedMultiplier: 3.0,
   particleSize: 12,  // Pixels (sizeAttenuation: false)
-  heightOffset: 0.5,
+  heightOffset: 0.15,  // Just above vellum, below label
 }
 
 export class WorkerSwarm {
@@ -214,6 +214,7 @@ export class WorkerSwarm {
   private targetActivity = 0
   private noiseOffset: number  // Unique offset per swarm
   private time = 0
+  private frameCount = 0  // For throttling idle animation
 
   // Center position (set by ZoneRenderer)
   center = new Vector3()
