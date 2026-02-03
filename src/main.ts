@@ -95,6 +95,9 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
+// Expose for debugging: window.zoneRenderer.debugResourceCounts()
+;(window as unknown as { zoneRenderer: typeof zoneRenderer }).zoneRenderer = zoneRenderer
+
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, tmuxSession) => {
   const session = sessions.find(s => s.id === workerId)

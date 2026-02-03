@@ -829,4 +829,43 @@ export class ZoneRenderer {
       }
     }
   }
+
+  /**
+   * Debug utility: count scene objects for memory verification
+   * Call from browser console: window.zoneRenderer?.debugResourceCounts()
+   */
+  debugResourceCounts(): { meshes: number; geometries: number; materials: number; textures: number; hexes: number } {
+    let meshes = 0
+    let geometries = 0
+    let materials = 0
+    const textureSet = new Set<number>()
+
+    this.scene.traverse((obj) => {
+      if (obj instanceof Mesh) {
+        meshes++
+        if (obj.geometry) geometries++
+        if (obj.material instanceof Material) {
+          materials++
+          const mat = obj.material as MeshBasicMaterial
+          if (mat.map) textureSet.add(mat.map.id)
+        } else if (Array.isArray(obj.material)) {
+          materials += obj.material.length
+          obj.material.forEach(m => {
+            const mat = m as MeshBasicMaterial
+            if (mat.map) textureSet.add(mat.map.id)
+          })
+        }
+      }
+    })
+
+    const counts = {
+      meshes,
+      geometries,
+      materials,
+      textures: textureSet.size,
+      hexes: this.hexMeshes.size
+    }
+    console.table(counts)
+    return counts
+  }
 }
