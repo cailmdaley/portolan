@@ -9,6 +9,9 @@ export class ClaimsDashboard {
   private title: HTMLElement
   private loadingIndicator: HTMLElement
 
+  // Stored listener ref for HMR-safe cleanup
+  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+
   constructor() {
     this.panel = this.createPanel()
     this.iframe = this.panel.querySelector('iframe')!
@@ -37,12 +40,12 @@ export class ClaimsDashboard {
   private setupEventListeners(): void {
     this.closeBtn.addEventListener('click', () => this.hide())
 
-    // Escape key to close
-    document.addEventListener('keydown', (e) => {
+    // Define escape handler (attached/detached dynamically to avoid HMR stacking)
+    this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.isVisible()) {
         this.hide()
       }
-    })
+    }
   }
 
   show(city: City, dashboardUrl: string): void {
@@ -62,12 +65,20 @@ export class ClaimsDashboard {
       this.iframe.style.opacity = '1'
     }
 
-    // Show panel
+    // Attach escape listener and show panel
+    if (this.escapeHandler) {
+      document.addEventListener('keydown', this.escapeHandler)
+    }
     this.panel.classList.add('visible')
   }
 
   hide(): void {
     this.panel.classList.remove('visible')
+
+    // Detach escape listener
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler)
+    }
 
     // Clear iframe after animation
     setTimeout(() => {
