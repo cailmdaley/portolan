@@ -360,12 +360,16 @@ export class ZoneRenderer {
         this.workerSwarms.set(worker.id, swarm)
       }
 
-      // Position swarm relative to city
-      swarm.group.position.set(swarmX, 0, swarmZ)
+      // Position swarm relative to city (including any user offset)
+      swarm.group.position.set(
+        swarmX + swarm.userOffset.x,
+        0,
+        swarmZ + swarm.userOffset.z
+      )
       swarm.setActivity(worker.status === 'working' ? 1 : 0)
       group.add(swarm.group)
 
-      // Worker label below swarm
+      // Worker label attached to swarm (moves with swarm)
       const workerDiv = document.createElement('div')
       workerDiv.className = this.workerLabelClass(worker.status)
       workerDiv.textContent = worker.name
@@ -383,8 +387,8 @@ export class ZoneRenderer {
       })
 
       const workerLabelObj = new CSS2DObject(workerDiv)
-      workerLabelObj.position.set(swarmX, 0.6, swarmZ)  // Above swarm
-      group.add(workerLabelObj)
+      // Attach label to swarm (positioned relative to swarm, at y=0.45 above particles)
+      swarm.setLabel(workerLabelObj)
       workerLabels.push(workerLabelObj)
     })
 
@@ -940,24 +944,15 @@ export class ZoneRenderer {
       return existing
     }
 
-    // Ensure card states are loaded from server (cached after first call)
-    await this.ensureCardStatesLoaded()
-
-    // Find the worker's position in the scene
-    const workerPos = this.getWorkerWorldPosition(session)
-    if (!workerPos) {
-      console.warn(`Cannot find position for worker ${session.id}`)
+    // Find the worker's swarm - card attaches to it
+    const swarm = this.workerSwarms.get(session.id)
+    if (!swarm) {
+      console.warn(`Cannot find swarm for worker ${session.id}`)
       return null
     }
 
-    // Calculate offset: position card above and slightly away from worker
-    // If worker is on the right side of the city, offset left (and vice versa)
-    const city = session.cityId ? this.currentCities.get(session.cityId) : null
-    let offsetX = 1.0  // Default: offset to the right
-    if (city) {
-      const cityPos = this.hexGrid.axialToCartesian(city.hex)
-      offsetX = workerPos.x > cityPos.x ? -1.5 : 1.5  // Offset away from city center
-    }
+    // Ensure card states are loaded from server (cached after first call)
+    await this.ensureCardStatesLoaded()
 
     // Load saved position if available
     const savedState = this.loadCardState(session.id)
@@ -972,14 +967,17 @@ export class ZoneRenderer {
         }
       },
       onBringToFront: () => this.bringCardToFront(session.id),
+      onSwarmDrag: (dx: number, dz: number) => this.moveSwarm(session.id, dx, dz),
       initialOffset: savedState?.offset,
       initialSize: savedState?.size,
     })
 
-    // Position the card above the worker with calculated offset
-    card.object.position.set(workerPos.x + offsetX, 0.8, workerPos.z - 0.5)
+    // Position card relative to swarm (above and to the side)
+    // Initial position: slightly above label, offset to the right
+    card.object.position.set(1.0, 0.8, 0)
 
-    this.scene.add(card.object)
+    // Add to swarm group so it moves with swarm
+    swarm.addChild(card.object)
     this.conversationCards.set(session.id, card)
 
     // Set initial z-index and track as most recent
@@ -994,6 +992,22 @@ export class ZoneRenderer {
     }
 
     return card
+  }
+
+  /**
+   * Move a worker's swarm (and everything attached: label, card) by offset
+   */
+  private moveSwarm(workerId: string, dx: number, dz: number): void {
+    const swarm = this.workerSwarms.get(workerId)
+    if (!swarm) return
+
+    // Update user offset (persisted between renders)
+    swarm.userOffset.x += dx
+    swarm.userOffset.z += dz
+
+    // Update swarm group position
+    swarm.group.position.x += dx
+    swarm.group.position.z += dz
   }
 
   /**
@@ -1061,7 +1075,15 @@ export class ZoneRenderer {
     // Save card state before closing
     this.saveCardState(workerId, card)
 
-    this.scene.remove(card.object)
+    // Remove from swarm group (card is child of swarm, not scene)
+    const swarm = this.workerSwarms.get(workerId)
+    if (swarm) {
+      swarm.removeChild(card.object)
+    } else {
+      // Fallback: remove from scene if swarm not found
+      this.scene.remove(card.object)
+    }
+
     card.dispose()
     this.conversationCards.delete(workerId)
 
@@ -1096,36 +1118,6 @@ export class ZoneRenderer {
         card.handleMessage(tmuxSession, messages)
       }
     }
-  }
-
-  /**
-   * Get world position of a worker (checks both city-attached and orphan workers)
-   */
-  private getWorkerWorldPosition(session: Session): { x: number; z: number } | null {
-    // Check city workers by finding their swarm group
-    for (const [, data] of this.hexMeshes) {
-      if (data.type === 'city' && data.group) {
-        let found: { x: number; z: number } | null = null
-        data.group.traverse((child) => {
-          if (child.userData?.workerId === session.id) {
-            const cityPos = this.hexGrid.axialToCartesian(data.hex)
-            found = {
-              x: cityPos.x + child.position.x,
-              z: cityPos.z + child.position.z,
-            }
-          }
-        })
-        if (found) return found
-      }
-    }
-
-    // Check orphan workers (have their own hex position)
-    if (session.hex) {
-      const pos = this.hexGrid.axialToCartesian(session.hex)
-      return { x: pos.x, z: pos.z }
-    }
-
-    return null
   }
 
   /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */

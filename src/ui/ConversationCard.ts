@@ -11,6 +11,7 @@ interface CardOptions {
   onFileClick?: FileClickCallback
   onDoubleClick?: () => void  // For focusing terminal
   onBringToFront?: () => void  // When card is clicked/focused
+  onSwarmDrag?: (dx: number, dz: number) => void  // Move swarm in world space (Cmd+drag)
   initialOffset?: { x: number; y: number }  // Offset from worker position
   initialSize?: { width: number; height: number }  // Saved card size
 }
@@ -37,6 +38,7 @@ export class ConversationCard {
   private offset = { x: 0, y: 0 }  // Offset from worker position (in pixels)
   private isDragging = false
   private dragStart = { x: 0, y: 0 }
+  private isSwarmDrag = false  // Cmd+drag moves swarm instead of card
 
   // Resize state
   private isResizing = false
@@ -201,6 +203,9 @@ export class ConversationCard {
     e.preventDefault()
     e.stopPropagation()
     this.isDragging = true
+    // Regular drag moves the swarm (and card with it)
+    // Cmd/Ctrl+drag moves just the card offset
+    this.isSwarmDrag = !(e.metaKey || e.ctrlKey)
     this.dragStart = { x: e.clientX - this.offset.x, y: e.clientY - this.offset.y }
 
     document.addEventListener('mousemove', this.onDrag)
@@ -210,9 +215,20 @@ export class ConversationCard {
   private onDrag = (e: MouseEvent): void => {
     if (!this.isDragging) return
 
-    this.offset.x = e.clientX - this.dragStart.x
-    this.offset.y = e.clientY - this.dragStart.y
-    this.applyTransform()
+    if (this.isSwarmDrag && this.options.onSwarmDrag) {
+      // Move swarm in world space (convert pixels to world units roughly)
+      // Approximate: 100 pixels ≈ 1 world unit at default zoom
+      const scale = 0.01
+      const dx = (e.clientX - this.dragStart.x - this.offset.x) * scale
+      const dz = (e.clientY - this.dragStart.y - this.offset.y) * scale
+      this.dragStart = { x: e.clientX - this.offset.x, y: e.clientY - this.offset.y }
+      this.options.onSwarmDrag(dx, dz)
+    } else {
+      // Cmd/Ctrl+drag: card offset only (pixels)
+      this.offset.x = e.clientX - this.dragStart.x
+      this.offset.y = e.clientY - this.dragStart.y
+      this.applyTransform()
+    }
   }
 
   private applyTransform(): void {
@@ -221,6 +237,7 @@ export class ConversationCard {
 
   private stopDrag = (): void => {
     this.isDragging = false
+    this.isSwarmDrag = false
     document.removeEventListener('mousemove', this.onDrag)
     document.removeEventListener('mouseup', this.stopDrag)
   }

@@ -189,11 +189,11 @@ export interface SwarmConfig {
 
 const DEFAULT_CONFIG: Required<SwarmConfig> = {
   particleCount: 45,
-  baseRadius: 0.4,
+  baseRadius: 0.6,  // 1.5x bigger swarm spread
   workingRadiusMultiplier: 1.5,
   baseSpeed: 0.15,  // Slow time evolution for smooth noise
   workingSpeedMultiplier: 3.0,
-  particleSize: 12,  // Pixels (sizeAttenuation: false)
+  particleSize: 9,  // Smaller dots
   heightOffset: 0.15,  // Just above vellum, below label
 }
 
@@ -218,6 +218,12 @@ export class WorkerSwarm {
 
   // Center position (set by ZoneRenderer)
   center = new Vector3()
+
+  // User-adjustable offset from default position (persisted, for dragging)
+  userOffset = new Vector3()
+
+  // Label attached to this swarm (so they move together)
+  private labelObject: import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject | null = null
 
   constructor(workerId: string, tmuxSession: string, config?: SwarmConfig) {
     this.workerId = workerId
@@ -282,8 +288,9 @@ export class WorkerSwarm {
 
   /** Scale particles based on camera distance - smaller when zoomed out */
   setCameraDistance(distance: number): void {
-    // At distance 5: full size (12px), at distance 20: half size (6px)
-    const scale = Math.max(0.4, Math.min(1.2, 7 / distance))
+    // At distance 6: full size, scales down aggressively when zoomed out
+    // Min 0.25 at far zoom so particles become fine specks
+    const scale = Math.max(0.25, Math.min(1.0, 5 / distance))
     this.cameraScale = scale
   }
 
@@ -317,8 +324,18 @@ export class WorkerSwarm {
   }
 
   update(deltaTime: number): void {
+    this.frameCount++
+
+    // Throttle idle swarms: update every 3rd frame (~20fps instead of 60fps)
+    // Saves ~66% CPU for idle workers while keeping motion smooth
+    const isIdle = this.activity < 0.01 && this.targetActivity === 0
+    if (isIdle && this.frameCount % 3 !== 0) {
+      return
+    }
+
     // Smooth activity transition (~500ms)
-    const activityRate = deltaTime * 2
+    // Compensate for skipped frames when idle
+    const activityRate = deltaTime * (isIdle ? 3 : 1) * 2
     if (this.activity < this.targetActivity) {
       this.activity = Math.min(this.targetActivity, this.activity + activityRate)
     } else if (this.activity > this.targetActivity) {
@@ -340,7 +357,8 @@ export class WorkerSwarm {
     const speed = this.config.baseSpeed * (1 + (this.config.workingSpeedMultiplier - 1) * this.activity)
     const radius = this.config.baseRadius * (1 + (this.config.workingRadiusMultiplier - 1) * this.activity)
 
-    this.time += deltaTime * speed
+    // Compensate time for skipped frames when idle
+    this.time += deltaTime * speed * (isIdle ? 3 : 1)
 
     // Update each particle
     const noiseScale = 1.5
@@ -412,6 +430,41 @@ export class WorkerSwarm {
     const dz = worldZ - this.group.position.z
     const dist = Math.sqrt(dx * dx + dz * dz)
     return dist <= this.config.baseRadius * 2  // Generous hit area
+  }
+
+  /**
+   * Attach a label to this swarm (moves with swarm)
+   */
+  setLabel(labelObj: import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject): void {
+    // Remove old label if present
+    if (this.labelObject) {
+      this.group.remove(this.labelObject)
+    }
+    this.labelObject = labelObj
+    // Position label above swarm (swarm is at y=0.15, label at y=0.6)
+    labelObj.position.set(0, 0.45, 0)
+    this.group.add(labelObj)
+  }
+
+  /**
+   * Get the attached label
+   */
+  getLabel(): import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject | null {
+    return this.labelObject
+  }
+
+  /**
+   * Add an object to the swarm group (e.g., conversation card)
+   */
+  addChild(obj: import('three').Object3D): void {
+    this.group.add(obj)
+  }
+
+  /**
+   * Remove an object from the swarm group
+   */
+  removeChild(obj: import('three').Object3D): void {
+    this.group.remove(obj)
   }
 
   dispose(): void {
