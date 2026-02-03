@@ -226,6 +226,7 @@ let cities: City[] = []
 let sessions: Session[] = []
 let origins: ServerOrigin[] = []
 let ws: WebSocket | null = null
+let wsCleanedUp = false  // Prevent reconnect on HMR cleanup
 // @ts-expect-error Tracked for potential state persistence
 let selectedHex: { q: number; r: number } | null = null
 
@@ -285,6 +286,7 @@ function connectWebSocket(): void {
   }
 
   ws.onclose = () => {
+    if (wsCleanedUp) return  // Don't reconnect on HMR cleanup
     console.log('Disconnected from server, reconnecting...')
     setTimeout(connectWebSocket, 2000)
   }
@@ -748,19 +750,21 @@ async function activateRemoteCity(city: City): Promise<void> {
 }
 
 // Escape key cancels move mode
-window.addEventListener('keydown', (e) => {
+const escapeKeyHandler = (e: KeyboardEvent) => {
   if (e.key === 'Escape' && movingCityId) {
     movingCityId = null
     document.body.style.cursor = 'default'
   }
-})
+}
+window.addEventListener('keydown', escapeKeyHandler)
 
 // Window resize
-window.addEventListener('resize', () => {
+const resizeHandler = () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
   labelRenderer.setSize(window.innerWidth, window.innerHeight)
   camera.resize()
-})
+}
+window.addEventListener('resize', resizeHandler)
 
 // Render loop with delta time tracking
 
@@ -801,6 +805,15 @@ setTimeout(() => {
 // HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    // Prevent WebSocket reconnection
+    wsCleanedUp = true
+    ws?.close()
+
+    // Remove window event listeners
+    window.removeEventListener('keydown', escapeKeyHandler)
+    window.removeEventListener('resize', resizeHandler)
+
+    // Camera cleanup (removes its own listeners)
     camera.dispose()
   })
 }
