@@ -30,14 +30,16 @@ const canvas = document.getElementById('canvas') as HTMLCanvasElement
 
 // Context menu: double-click (universal) + right-click (Chrome/Firefox)
 // Safari doesn't reliably fire contextmenu on canvas elements
-document.addEventListener('contextmenu', (e) => {
+// Named handler for HMR cleanup
+const contextMenuHandler = (e: MouseEvent) => {
   const target = e.target as HTMLElement
   // Handle context menu on canvas or any label (city/worker)
   if (target === canvas || target.closest('.label-container')) {
     e.preventDefault()
     handleContextMenu(e.clientX, e.clientY)
   }
-})
+}
+document.addEventListener('contextmenu', contextMenuHandler)
 
 // Alias for event handlers
 const canvasOverlay = canvas
@@ -541,12 +543,14 @@ canvasOverlay.addEventListener('webkitmouseforcedown', () => {
 })
 
 // Suppress click after force touch (force touch fires normal click on release)
-document.addEventListener('click', (e) => {
+// Named handler for HMR cleanup
+const forceClickCaptureHandler = (e: MouseEvent) => {
   if (forceTouchFired) {
     e.stopPropagation()
     forceTouchFired = false
   }
-}, true) // capture phase to intercept before other handlers
+}
+document.addEventListener('click', forceClickCaptureHandler, true) // capture phase to intercept before other handlers
 
 // Right-click context menu handler
 function handleContextMenu(clientX: number, clientY: number) {
@@ -808,6 +812,10 @@ if (import.meta.hot) {
     // Prevent WebSocket reconnection
     wsCleanedUp = true
     ws?.close()
+
+    // Remove document event listeners
+    document.removeEventListener('contextmenu', contextMenuHandler)
+    document.removeEventListener('click', forceClickCaptureHandler, true)
 
     // Remove window event listeners
     window.removeEventListener('keydown', escapeKeyHandler)
