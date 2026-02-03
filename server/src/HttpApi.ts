@@ -1461,7 +1461,7 @@ export class HttpApi {
     }
 
     // 4. TranscriptReader (legacy fallback for local sessions)
-    if (this.transcriptReader && session && session.originId !== 'remote') {
+    if (this.transcriptReader && session && session.originId === 'local') {
       await this.updateTranscriptMapping(sessionId, session);
       return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
     }
