@@ -183,23 +183,6 @@ export class ConversationCache {
   }
 
   /**
-   * Get session ID by tmux session name
-   */
-  findSessionByTmux(tmuxSession: string): string | undefined {
-    for (const [sessionId, cache] of this.sessions) {
-      if (cache.tmuxSession === tmuxSession) return sessionId;
-    }
-    return undefined;
-  }
-
-  /**
-   * Get last event time for a session (for /hook/health)
-   */
-  getLastEventTime(sessionId: string): number | undefined {
-    return this.lastEventBySession.get(sessionId);
-  }
-
-  /**
    * Get all session IDs with their last event times (for /hook/health)
    */
   getHealthInfo(): Record<string, { lastEvent: number; messageCount: number; tmuxSession: string }> {

@@ -346,8 +346,7 @@ export class WorkerActivityPanel {
     if (msg.type !== 'conversation' || !msg.messages) return false
 
     // Match by tmuxSession (stable) since Claude's sessionId changes each restart
-    const shouldUpdate = this.isVisible() && this.currentSession?.tmuxSession === msg.tmuxSession
-    if (shouldUpdate) {
+    if (this.isVisible() && this.currentSession?.tmuxSession === msg.tmuxSession) {
       this.appendMessages(msg.messages)
     }
     return true
@@ -378,8 +377,7 @@ export class WorkerActivityPanel {
   }
 
   updateActivities(tmuxSession: string, activities: Activity[]): void {
-    const shouldUpdate = this.isVisible() && this.currentSession?.tmuxSession === tmuxSession
-    if (shouldUpdate) {
+    if (this.isVisible() && this.currentSession?.tmuxSession === tmuxSession) {
       this.currentActivities = activities
     }
   }
