@@ -21,7 +21,7 @@ export class CitySpritesManager {
   }
 
   /**
-   * Load the 5 default city sprites from .hexarchy/sprites/cities/
+   * Load the 5 default city sprites from public/sprites/cities/
    */
   private loadDefaultSprites(): void {
     for (let i = 1; i <= NUM_DEFAULT_SPRITES; i++) {
