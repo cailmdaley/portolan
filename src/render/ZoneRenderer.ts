@@ -938,13 +938,16 @@ export class ZoneRenderer {
    * @param session The worker session to show conversation for
    * @returns The created card, or existing card if already open
    */
-  openConversationCard(session: Session): ConversationCard | null {
+  async openConversationCard(session: Session): Promise<ConversationCard | null> {
     // Check if card already exists - bring to front if so
     const existing = this.conversationCards.get(session.id)
     if (existing) {
       this.bringCardToFront(session.id)
       return existing
     }
+
+    // Ensure card states are loaded from server (cached after first call)
+    await this.ensureCardStatesLoaded()
 
     // Find the worker's position in the scene
     const workerPos = this.getWorkerWorldPosition(session)
@@ -1118,52 +1121,63 @@ export class ZoneRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // CARD STATE PERSISTENCE
+  // CARD STATE PERSISTENCE (server-side via ~/.portolan/card-states.json)
   // ═══════════════════════════════════════════════════════════
 
-  private readonly CARD_STATE_KEY = 'portolan-card-states'
+  // Cache loaded states to avoid repeated fetches
+  private cardStateCache: Map<string, { offset: { x: number; y: number }; size?: { width: number; height: number } }> = new Map()
+  private cardStateCacheLoaded = false
 
   /**
-   * Save card position and size to localStorage
+   * Save card position and size to server
    */
   private saveCardState(workerId: string, card: ConversationCard): void {
-    try {
-      const states = this.loadAllCardStates()
-      states[workerId] = {
-        offset: card.getOffset(),
-        size: card.getSize(),
-        timestamp: Date.now(),
-      }
+    const offset = card.getOffset()
+    const size = card.getSize()
 
-      // Clean up old entries (keep last 20)
-      const entries = Object.entries(states)
-      const toSave = entries.length > 20
-        ? Object.fromEntries(entries.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0)).slice(0, 20))
-        : states
-      localStorage.setItem(this.CARD_STATE_KEY, JSON.stringify(toSave))
-    } catch {
-      // Ignore localStorage errors
-    }
+    // Update cache immediately
+    this.cardStateCache.set(workerId, { offset, size })
+
+    // Fire and forget - don't await
+    fetch(`http://localhost:4004/card-state/${encodeURIComponent(workerId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offset, size }),
+    }).catch(() => {
+      // Ignore save errors
+    })
   }
 
   /**
-   * Load saved card state
+   * Load saved card state (from cache or server)
    */
   private loadCardState(workerId: string): { offset: { x: number; y: number }; size?: { width: number; height: number } } | null {
-    const states = this.loadAllCardStates()
-    return states[workerId] || null
+    // Return from cache if available
+    return this.cardStateCache.get(workerId) || null
   }
 
   /**
-   * Load all card states from localStorage
+   * Preload all card states from server into cache.
+   * Called once on first card open.
    */
-  private loadAllCardStates(): Record<string, { offset: { x: number; y: number }; size?: { width: number; height: number }; timestamp?: number }> {
+  private async ensureCardStatesLoaded(): Promise<void> {
+    if (this.cardStateCacheLoaded) return
+
     try {
-      const stored = localStorage.getItem(this.CARD_STATE_KEY)
-      return stored ? JSON.parse(stored) : {}
+      const response = await fetch('http://localhost:4004/card-states')
+      if (response.ok) {
+        const data = await response.json()
+        for (const state of data.states || []) {
+          this.cardStateCache.set(state.workerId, {
+            offset: state.offset,
+            size: state.size,
+          })
+        }
+      }
     } catch {
-      return {}
+      // Ignore load errors - will use defaults
     }
+    this.cardStateCacheLoaded = true
   }
 
   /**

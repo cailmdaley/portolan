@@ -19,6 +19,7 @@ import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.
 import type { Session } from './SessionTracker.js';
 import type { TranscriptReader } from './TranscriptReader.js';
 import type { ConversationCache, CachedMessage } from './ConversationCache.js';
+import type { CardStatePersistence } from './CardStatePersistence.js';
 
 const execAsync = promisify(exec);
 
@@ -59,6 +60,7 @@ export class HttpApi {
   private transcriptReader: TranscriptReader | null = null;
   private remoteConversationLookup: RemoteConversationLookup | null = null;
   private conversationCache: ConversationCache | null = null;
+  private cardStatePersistence: CardStatePersistence | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -103,6 +105,13 @@ export class HttpApi {
    */
   setConversationCache(cache: ConversationCache): void {
     this.conversationCache = cache;
+  }
+
+  /**
+   * Set card state persistence for conversation card positions
+   */
+  setCardStatePersistence(persistence: CardStatePersistence): void {
+    this.cardStatePersistence = persistence;
   }
 
   /**
@@ -219,6 +228,30 @@ export class HttpApi {
 
     if (url.pathname === '/hook/health') {
       await this.handleHookHealth(res);
+      return true;
+    }
+
+    // Card state persistence endpoints
+    if (url.pathname === '/card-states' && req.method === 'GET') {
+      await this.handleGetCardStates(res);
+      return true;
+    }
+
+    if (url.pathname.match(/^\/card-state\/[^/]+$/) && req.method === 'GET') {
+      const workerId = decodeURIComponent(url.pathname.split('/')[2]);
+      await this.handleGetCardState(workerId, res);
+      return true;
+    }
+
+    if (url.pathname.match(/^\/card-state\/[^/]+$/) && req.method === 'PUT') {
+      const workerId = decodeURIComponent(url.pathname.split('/')[2]);
+      await this.handleSaveCardState(workerId, req, res);
+      return true;
+    }
+
+    if (url.pathname.match(/^\/card-state\/[^/]+$/) && req.method === 'DELETE') {
+      const workerId = decodeURIComponent(url.pathname.split('/')[2]);
+      await this.handleDeleteCardState(workerId, res);
       return true;
     }
 
@@ -1572,5 +1605,82 @@ export class HttpApi {
 
     const health = this.conversationCache.getHealthInfo();
     this.sendJsonSuccess(res, health as Record<string, unknown>);
+  }
+
+  // ============================================================================
+  // Card State Persistence
+  // ============================================================================
+
+  /**
+   * GET /card-states - Get all saved card states
+   */
+  private async handleGetCardStates(res: ServerResponse): Promise<void> {
+    if (!this.cardStatePersistence) {
+      this.sendJsonError(res, 500, 'Card state persistence not configured');
+      return;
+    }
+
+    const states = this.cardStatePersistence.getAll();
+    this.sendJsonSuccess(res, { states });
+  }
+
+  /**
+   * GET /card-state/:workerId - Get card state for a worker
+   */
+  private async handleGetCardState(workerId: string, res: ServerResponse): Promise<void> {
+    if (!this.cardStatePersistence) {
+      this.sendJsonError(res, 500, 'Card state persistence not configured');
+      return;
+    }
+
+    const state = this.cardStatePersistence.get(workerId);
+    if (!state) {
+      this.sendJsonError(res, 404, 'Card state not found');
+      return;
+    }
+
+    this.sendJsonSuccess(res, { state });
+  }
+
+  /**
+   * PUT /card-state/:workerId - Save card state for a worker
+   */
+  private async handleSaveCardState(
+    workerId: string,
+    req: IncomingMessage,
+    res: ServerResponse
+  ): Promise<void> {
+    if (!this.cardStatePersistence) {
+      this.sendJsonError(res, 500, 'Card state persistence not configured');
+      return;
+    }
+
+    try {
+      const body = await this.readJsonBody(req);
+      const { offset, size } = body as { offset?: { x: number; y: number }; size?: { width: number; height: number } };
+
+      if (!offset || typeof offset.x !== 'number' || typeof offset.y !== 'number') {
+        this.sendJsonError(res, 400, 'Invalid offset: must have x and y numbers');
+        return;
+      }
+
+      const state = this.cardStatePersistence.set(workerId, offset, size);
+      this.sendJsonSuccess(res, { state });
+    } catch (error) {
+      this.sendJsonError(res, 400, `Invalid request: ${error}`);
+    }
+  }
+
+  /**
+   * DELETE /card-state/:workerId - Delete card state for a worker
+   */
+  private async handleDeleteCardState(workerId: string, res: ServerResponse): Promise<void> {
+    if (!this.cardStatePersistence) {
+      this.sendJsonError(res, 500, 'Card state persistence not configured');
+      return;
+    }
+
+    const deleted = this.cardStatePersistence.delete(workerId);
+    this.sendJsonSuccess(res, { deleted });
   }
 }

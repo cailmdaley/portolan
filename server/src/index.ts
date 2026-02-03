@@ -49,6 +49,7 @@ import { SessionTracker, Session } from './SessionTracker.js';
 import { CityManager, City, SessionInfo } from './CityManager.js';
 import { OriginManager, Origin } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
+import { CardStatePersistence } from './CardStatePersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager, GitStatus } from './GitStatusManager.js';
 import { TranscriptReader } from './TranscriptReader.js';
@@ -90,6 +91,7 @@ const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const transcriptReader = new TranscriptReader();
 const conversationCache = new ConversationCache();
+const cardStatePersistence = new CardStatePersistence();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
@@ -226,6 +228,8 @@ httpApi.setSessionLookup(sessionLookup);
 httpApi.setRemoteConversationLookup((sessionId) => remoteConversations.get(sessionId));
 httpApi.setTranscriptReader(transcriptReader);
 httpApi.setConversationCache(conversationCache);
+httpApi.setCardStatePersistence(cardStatePersistence);
+cardStatePersistence.load();  // Load saved card states
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 
 // Callback for creating new workers (used by send-annotations endpoint)

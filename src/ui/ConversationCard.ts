@@ -452,6 +452,9 @@ export class ConversationCard {
     this.contentEl.innerHTML = html
     this.attachListeners()
     highlightCodeBlocks(this.contentEl)
+
+    // Auto-scroll to bottom to show most recent messages
+    this.contentEl.scrollTop = this.contentEl.scrollHeight
   }
 
   /**
