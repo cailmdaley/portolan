@@ -17,7 +17,6 @@ import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
-import type { RecentFilesManager } from './RecentFilesManager.js';
 import type { TranscriptReader } from './TranscriptReader.js';
 import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 
@@ -57,7 +56,6 @@ export class HttpApi {
   private persistenceLookup: PersistenceLookup;
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
-  private recentFilesManager: RecentFilesManager | null = null;
   private transcriptReader: TranscriptReader | null = null;
   private remoteConversationLookup: RemoteConversationLookup | null = null;
   private conversationCache: ConversationCache | null = null;
@@ -84,13 +82,6 @@ export class HttpApi {
    */
   setSessionLookup(lookup: SessionLookup): void {
     this.sessionLookup = lookup;
-  }
-
-  /**
-   * Set recent files manager for tracking remote file access
-   */
-  setRecentFilesManager(manager: RecentFilesManager): void {
-    this.recentFilesManager = manager;
   }
 
   /**
@@ -424,13 +415,6 @@ export class HttpApi {
       // Detect language from extension
       const language = this.extToLanguage(ext);
 
-      // Record remote file access for persistence
-      if (originId && originId !== 'local' && this.recentFilesManager) {
-        // Extract relative path from full path for display
-        const relativePath = filePath.split('/').slice(-2).join('/'); // last 2 segments
-        this.recentFilesManager.recordRemoteFileAccess(originId, relativePath, filePath);
-      }
-
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
@@ -501,12 +485,6 @@ export class HttpApi {
       }
 
       const dataUrl = `data:${mimeType};base64,${data.toString('base64')}`;
-
-      // Record remote file access for persistence
-      if (originId && originId !== 'local' && this.recentFilesManager) {
-        const relativePath = filePath.split('/').slice(-2).join('/');
-        this.recentFilesManager.recordRemoteFileAccess(originId, relativePath, filePath);
-      }
 
       res.writeHead(200, {
         'Content-Type': 'application/json',

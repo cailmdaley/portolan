@@ -171,9 +171,7 @@ fileViewerModal.setOnGetWorkers(async (originId: string, path: string) => {
 
 // Wire up file search click from city panel to file viewer
 cityPanel.setOnOpenFile((fullPath, originId, cityPath) => {
-  const files = cityPanel.getRecentFilePaths()
-  const index = cityPanel.getRecentFileIndex(fullPath)
-  fileViewerModal.show(fullPath, originId, undefined, { files, index }, cityPath)
+  fileViewerModal.show(fullPath, originId, undefined, undefined, cityPath)
 })
 
 // Setup context menu

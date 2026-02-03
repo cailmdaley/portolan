@@ -51,7 +51,6 @@ import { OriginManager, Origin } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager, GitStatus } from './GitStatusManager.js';
-import { RecentFilesManager, RecentFile } from './RecentFilesManager.js';
 import { TranscriptReader } from './TranscriptReader.js';
 import { ConversationCache } from './ConversationCache.js';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
@@ -89,7 +88,6 @@ const sessionTracker = new SessionTracker();
 const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
-const recentFilesManager = new RecentFilesManager();
 const transcriptReader = new TranscriptReader();
 const conversationCache = new ConversationCache();
 
@@ -225,7 +223,6 @@ const cityLookup = {
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
-httpApi.setRecentFilesManager(recentFilesManager);
 httpApi.setRemoteConversationLookup((sessionId) => remoteConversations.get(sessionId));
 httpApi.setTranscriptReader(transcriptReader);
 httpApi.setConversationCache(conversationCache);
@@ -293,16 +290,11 @@ async function buildState(): Promise<StateUpdate> {
   const citiesWithFibers = await Promise.all(
     cities.map(async (city) => {
       let gitStatus: GitStatus | undefined;
-      let recentFiles: RecentFile[] = [];
-
       if (city.originId === 'local') {
         gitStatus = gitStatusManager.getStatus(city.path) ?? undefined;
-        recentFiles = recentFilesManager.getFiles(city.path);
       } else {
         const remoteKey = `${city.originId}:${city.path}`;
         gitStatus = remoteGitStatuses.get(remoteKey);
-        // Load persisted remote files from history
-        recentFiles = recentFilesManager.getRemoteFiles(city.originId);
       }
 
       return {
@@ -312,7 +304,6 @@ async function buildState(): Promise<StateUpdate> {
         hasPlaygrounds: city.hasPlaygrounds ?? false,
         isDormant: !activeCityIds.has(city.id),
         gitStatus,
-        recentFiles,
       };
     })
   );
@@ -419,7 +410,6 @@ function rebuildCities(): void {
 
     if (city.originId === 'local') {
       gitStatusManager.track(city.path);
-      recentFilesManager.track(city.path);
     }
   }
 }
@@ -1066,17 +1056,6 @@ wss.on('connection', async (ws, req) => {
             remoteLastActivity.set(`${origin.id}:${activity.tmuxSession}`, Date.now());
           }
 
-          // Track Edit/Write operations as recently edited files
-          if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-            // session already looked up above
-            if (session?.cwd) {
-              const city = cityManager.findCityForPath(session.cwd, origin.id);
-              if (city) {
-                recentFilesManager.recordActivityEdit(activity.fullPath, city.path, origin.id);
-              }
-            }
-          }
-
           broadcastActivity(activity);
         } else if (message.type === 'agent_conversation') {
           const conv = (message as AgentConversationMessage).payload;
@@ -1150,16 +1129,6 @@ eventWatcher.onActivity(async (activity) => {
   // Find the session for this activity
   const session = sessionTracker.getSessions().find(s => s.tmuxSession === activity.tmuxSession);
 
-  // Track Edit/Write operations as recently edited files for local sessions
-  if ((activity.tool === 'Edit' || activity.tool === 'Write') && activity.fullPath) {
-    if (session?.cwd) {
-      const city = cityManager.findCityForPath(session.cwd, 'local');
-      if (city) {
-        recentFilesManager.recordActivityEdit(activity.fullPath, city.path, 'local');
-      }
-    }
-  }
-
   // Track the transcript file for this session using the sessionId from the activity event
   // The activity's sessionId is the Claude transcript UUID (e.g., "83bbd926-...")
   // Only for local sessions - remote sessions send their own conversation data
@@ -1188,12 +1157,6 @@ gitStatusManager.setUpdateHandler(({ path, status }) => {
   buildState().then(broadcast);
 });
 gitStatusManager.start();
-
-recentFilesManager.setUpdateHandler(({ path, files }) => {
-  console.log(`[Files] ${path}: ${files.length} recent files`);
-  buildState().then(broadcast);
-});
-recentFilesManager.start();
 
 // Conversation cache: broadcast new messages via WebSocket
 conversationCache.onMessage((sessionId, tmuxSession, messages) => {
@@ -1251,7 +1214,6 @@ function shutdown() {
   console.log('\nShutting down...');
   sessionTracker.stop();
   gitStatusManager.stop();
-  recentFilesManager.stop();
   eventWatcher.stop();
   conversationCache.stop();
   server.close();

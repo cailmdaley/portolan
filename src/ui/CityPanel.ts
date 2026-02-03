@@ -1,7 +1,7 @@
 // CityPanel.ts - DOM overlay for city details and fibers
 // Unified search + Files/Fibers tabs
 
-import type { City, GitStatus, RecentFile } from '../state/types'
+import type { City, GitStatus } from '../state/types'
 import { escapeHtml, formatTimeAgo } from './utils'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 
@@ -66,7 +66,6 @@ export class CityPanel {
   private searchResultsContainer: HTMLElement
   // Files tab content
   private recentAnnotationsList: HTMLElement
-  private recentFilesList: HTMLElement
   // Fibers tab content
   private openFibersList: HTMLElement
   private closedFibersList: HTMLElement
@@ -116,7 +115,6 @@ export class CityPanel {
     this.tabContent = this.panel.querySelector('.tab-content')!
     this.searchResultsContainer = this.panel.querySelector('.search-results-container')!
     this.recentAnnotationsList = this.panel.querySelector('.recent-annotations-list')!
-    this.recentFilesList = this.panel.querySelector('.recent-files-list')!
     this.openFibersList = this.panel.querySelector('.open-fibers')!
     this.closedFibersList = this.panel.querySelector('.closed-fibers')!
 
@@ -165,10 +163,6 @@ export class CityPanel {
           <section class="recent-annotations">
             <h3>Annotated</h3>
             <ul class="recent-annotations-list"></ul>
-          </section>
-          <section class="recent-files">
-            <h3>Recently Edited</h3>
-            <ul class="recent-files-list"></ul>
           </section>
         </div>
 
@@ -603,45 +597,6 @@ export class CityPanel {
     })
   }
 
-  private renderRecentFiles(files: RecentFile[]): void {
-    if (!files || files.length === 0) {
-      this.recentFilesList.innerHTML = '<li class="empty">No recent files</li>'
-      return
-    }
-
-    // Show top 10
-    const top10 = files.slice(0, 10)
-    this.recentFilesList.innerHTML = top10.map(f => this.renderRecentFile(f)).join('')
-    this.attachRecentFilesListeners()
-  }
-
-  private renderRecentFile(file: RecentFile): string {
-    const fileName = file.path.split('/').pop() || file.path
-    const dir = file.path.includes('/')
-      ? file.path.slice(0, file.path.lastIndexOf('/'))
-      : ''
-    const timeAgo = formatTimeAgo(file.mtime)
-
-    return `
-      <li class="recent-file-item" data-path="${escapeHtml(file.fullPath)}">
-        <span class="file-name">${escapeHtml(fileName)}</span>
-        <span class="file-dir">${escapeHtml(dir)}</span>
-        <span class="file-time">${timeAgo}</span>
-      </li>
-    `
-  }
-
-  private attachRecentFilesListeners(): void {
-    this.recentFilesList.querySelectorAll('.recent-file-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const fullPath = (item as HTMLElement).dataset.path
-        if (fullPath && this.currentCity && this.onOpenFile) {
-          this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path)
-        }
-      })
-    })
-  }
-
   private renderFibers(open: Fiber[], closed: Fiber[]): void {
     this.openFibers = open
     this.closedFibers = closed
@@ -755,22 +710,6 @@ export class CityPanel {
     this.onOpenFile = callback
   }
 
-  /**
-   * Get file paths from recent files for navigation
-   */
-  getRecentFilePaths(): string[] {
-    const files = this.currentCity?.recentFiles || []
-    return files.slice(0, 10).map(f => f.fullPath)
-  }
-
-  /**
-   * Get index of a file in the recent files list
-   */
-  getRecentFileIndex(fullPath: string): number {
-    const files = this.currentCity?.recentFiles || []
-    return files.slice(0, 10).findIndex(f => f.fullPath === fullPath)
-  }
-
   setNewWorkerDialog(dialog: NewWorkerDialog): void {
     this.newWorkerDialog = dialog
   }
@@ -819,9 +758,7 @@ export class CityPanel {
 
     // Load files tab content
     this.recentAnnotationsList.innerHTML = '<li class="loading">Loading...</li>'
-    this.recentFilesList.innerHTML = '<li class="loading">Loading...</li>'
     this.fetchRecentAnnotations()
-    this.renderRecentFiles(city.recentFiles || [])
 
     // Load fibers tab content
     this.openFibersList.innerHTML = '<li class="loading">Loading fibers...</li>'
