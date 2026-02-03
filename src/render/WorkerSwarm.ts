@@ -12,7 +12,7 @@ import {
   MeshBasicMaterial,
   CanvasTexture,
   Group,
-  AdditiveBlending,
+  NormalBlending,
 } from 'three'
 
 // Simplex noise implementation (3D)
@@ -242,7 +242,7 @@ export class WorkerSwarm {
       transparent: true,
       opacity: 0.85,
       depthWrite: false,
-      blending: AdditiveBlending,
+      blending: NormalBlending,
       vertexColors: false,
     })
     this.setColor(0)  // Start with idle color
@@ -377,8 +377,8 @@ export class WorkerSwarm {
     const posAttr = this.points.geometry.getAttribute('position') as Float32BufferAttribute
     posAttr.needsUpdate = true
 
-    // Update shadow size based on activity
-    const shadowScale = 1 + this.activity * 0.3
+    // Update shadow size to match swarm expansion
+    const shadowScale = radius / this.config.baseRadius
     this.shadow.scale.setScalar(shadowScale)
   }
 
