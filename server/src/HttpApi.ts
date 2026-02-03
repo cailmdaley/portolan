@@ -1410,53 +1410,39 @@ export class HttpApi {
       return;
     }
 
-    if (!this.transcriptReader) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Transcript reader not configured' }));
-      return;
-    }
-
-    // Find session to get its cwd
-    const session = this.sessionLookup?.findSession(sessionId);
-    if (!session) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found' }));
-      return;
-    }
-
     try {
-      let messages: any[];
+      let messages: any[] = [];
 
-      // Check if this is a remote session (has originId that isn't 'local')
-      if (session.originId && session.originId !== 'local') {
-        // Remote session: check cached conversation from agent
-        const cached = this.remoteConversationLookup?.(sessionId);
-        messages = cached ? cached.slice(-limit) : [];
-      } else {
-        // Local session: prefer ConversationCache (hook-based), fall back to TranscriptReader
-        if (this.conversationCache) {
-          messages = this.conversationCache.getMessages(sessionId, limit);
-          // If no messages in cache, try by tmux session name
-          if (messages.length === 0 && session.tmuxSession) {
+      // Check ConversationCache first (works even for ended sessions)
+      if (this.conversationCache) {
+        messages = this.conversationCache.getMessages(sessionId, limit);
+      }
+
+      // If cache empty, try active session lookups
+      if (messages.length === 0) {
+        const session = this.sessionLookup?.findSession(sessionId);
+
+        if (session) {
+          // Check if remote session
+          if (session.originId && session.originId !== 'local') {
+            const cached = this.remoteConversationLookup?.(sessionId);
+            messages = cached ? cached.slice(-limit) : [];
+          } else if (this.conversationCache && session.tmuxSession) {
+            // Try cache by tmux session name
             messages = this.conversationCache.getMessagesByTmux(session.tmuxSession, limit);
           }
-        } else {
-          messages = [];
-        }
 
-        // Fall back to transcript reader if cache is empty
-        if (messages.length === 0 && this.transcriptReader) {
-          const currentMapping = this.transcriptReader.getSessionTranscript(sessionId);
-
-          // Try lsof detection when Claude is actively running in this tmux session
-          if (session.tmuxSession) {
-            const detected = await this.transcriptReader.detectTranscriptFromTmux(session.tmuxSession, session.cwd);
-            if (detected && detected !== currentMapping) {
-              this.transcriptReader.setSessionTranscript(sessionId, detected);
+          // Fall back to transcript reader for active local sessions
+          if (messages.length === 0 && this.transcriptReader && session.originId !== 'remote') {
+            const currentMapping = this.transcriptReader.getSessionTranscript(sessionId);
+            if (session.tmuxSession) {
+              const detected = await this.transcriptReader.detectTranscriptFromTmux(session.tmuxSession, session.cwd);
+              if (detected && detected !== currentMapping) {
+                this.transcriptReader.setSessionTranscript(sessionId, detected);
+              }
             }
+            messages = await this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
           }
-
-          messages = await this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
         }
       }
 
