@@ -241,7 +241,6 @@ const MAX_ACTIVITIES_PER_SESSION = 10
 
 // Handle incoming activity event
 function handleActivityEvent(activity: { tmuxSession: string; tool: string; summary?: string; fullPath?: string; timestamp: number }): void {
-  console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '')
   // Store activity
   let activities = activityBySession.get(activity.tmuxSession)
   if (!activities) {
@@ -347,8 +346,6 @@ interface ActivityMessage {
 type ServerMessage = ServerState | ConfirmUnpinMessage | CityPinnedMessage | CityUnpinnedMessage | CityMovedMessage | ErrorMessage | ActivityMessage
 
 function handleMessage(message: ServerMessage): void {
-  console.log('[Frontend] Received message:', 'type' in message ? message.type : 'state update')
-
   // Handle persistence-related messages
   if ('type' in message) {
     if (message.type === 'confirmUnpin') {
@@ -366,18 +363,14 @@ function handleMessage(message: ServerMessage): void {
     }
 
     if (message.type === 'cityPinned') {
-      console.log('[Frontend] City pinned successfully:', (message as CityPinnedMessage).city)
       return
     }
 
     if (message.type === 'cityUnpinned') {
-      console.log('[Frontend] City unpinned:', (message as CityUnpinnedMessage).cityId)
       return
     }
 
     if (message.type === 'cityMoved') {
-      const msg = message as CityMovedMessage
-      console.log('[Frontend] City moved:', msg.cityId, 'to', msg.newPosition)
       return
     }
 
@@ -675,15 +668,12 @@ function promptAddCity(hex: HexCoord): void {
   const path = window.prompt('Enter the full path for the new city:')
   if (!path) return
 
-  console.log('Sending pinCity message:', { path: path.trim(), position: hex })
-
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       type: 'pinCity',
       path: path.trim(),
       position: { q: hex.q, r: hex.r },
     }))
-    console.log('pinCity message sent')
   } else {
     console.error('WebSocket not ready, readyState:', ws?.readyState)
   }
