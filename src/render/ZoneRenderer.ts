@@ -81,6 +81,10 @@ export class ZoneRenderer {
   // Track city/worker state signatures for diffing (avoid unnecessary re-renders)
   private lastCitySignatures: Map<string, string> = new Map()
 
+  // Store current state for sprite reload re-renders
+  private currentCities: Map<string, City> = new Map()
+  private currentWorkersByCity: Map<string, Session[]> = new Map()
+
   // Animation optimization: cache last values to skip redundant work
   private lastCameraDistance: number = -1
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
@@ -92,7 +96,15 @@ export class ZoneRenderer {
     this.citySprites = new CitySpritesManager()
     this.shipSprites = new ShipSpritesManager()
     this.createGroundPlane()
-    // No background hex grid - spec says "just the vellum surface"
+
+    // Re-render city when its custom sprite finishes loading
+    this.citySprites.onSpriteLoaded((cityId) => {
+      const city = this.currentCities.get(cityId)
+      if (city) {
+        const workers = this.currentWorkersByCity.get(cityId) || []
+        this.renderCity(city, workers)
+      }
+    })
   }
 
   /**
@@ -518,6 +530,13 @@ export class ZoneRenderer {
         orphanWorkers.push(session)
       }
     }
+
+    // Store current state for sprite reload re-renders
+    this.currentCities.clear()
+    for (const city of cities) {
+      this.currentCities.set(city.id, city)
+    }
+    this.currentWorkersByCity = workersByCity
 
     // Check if city positions changed - regenerate rhumb lines if so
     const cityPositions = cities.map(c => {

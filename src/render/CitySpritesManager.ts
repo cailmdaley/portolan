@@ -15,6 +15,7 @@ export class CitySpritesManager {
   private pendingLoads: Set<string> = new Set()  // Track in-flight loads
   private failedLoads: Set<string> = new Set()   // Track failed loads (use default)
   private defaultSpritesLoaded = false
+  private onSpriteLoadedCallback: ((cityId: string) => void) | null = null
 
   constructor() {
     this.loadDefaultSprites()
@@ -84,6 +85,13 @@ export class CitySpritesManager {
   }
 
   /**
+   * Set callback for when a sprite finishes loading
+   */
+  onSpriteLoaded(callback: (cityId: string) => void): void {
+    this.onSpriteLoadedCallback = callback
+  }
+
+  /**
    * Try to load a custom sprite for a city by name
    */
   private loadCitySprite(city: City): void {
@@ -97,6 +105,8 @@ export class CitySpritesManager {
         texture.userData = { managed: true }
         this.spriteCache.set(city.id, texture)
         this.pendingLoads.delete(city.id)
+        // Notify listener to re-render city with loaded sprite
+        this.onSpriteLoadedCallback?.(city.id)
       },
       undefined,
       () => {
