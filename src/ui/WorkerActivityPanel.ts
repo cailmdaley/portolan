@@ -341,12 +341,16 @@ export class WorkerActivityPanel {
     if (msg.type !== 'conversation' || !msg.messages) return false
 
     // Match by tmuxSession (stable) since Claude's sessionId changes each restart
-    if (this.panel.classList.contains('visible') &&
-        this.currentSession?.tmuxSession === msg.tmuxSession) {
+    const isVisible = this.panel.classList.contains('visible')
+    const matchesTmux = this.currentSession?.tmuxSession === msg.tmuxSession
+    if (isVisible && matchesTmux) {
       this.appendMessages(msg.messages)
     }
     return true
   }
+
+  // Max messages kept in memory (matches backend ConversationCache limit)
+  private readonly maxMessages = 100
 
   /**
    * Append new messages from WebSocket update
@@ -357,15 +361,13 @@ export class WorkerActivityPanel {
     // Deduplicate by timestamp
     const existingTimestamps = new Set(this.currentConversation.map(m => m.timestamp))
     const toAdd = newMessages.filter(m => !existingTimestamps.has(m.timestamp))
-
     if (toAdd.length === 0) return
 
     this.currentConversation.push(...toAdd)
 
-    // Keep last 100 messages to match backend limit and prevent unbounded growth
-    const maxMessages = 100
-    if (this.currentConversation.length > maxMessages) {
-      this.currentConversation = this.currentConversation.slice(-maxMessages)
+    // Trim to max to prevent unbounded growth
+    if (this.currentConversation.length > this.maxMessages) {
+      this.currentConversation = this.currentConversation.slice(-this.maxMessages)
     }
 
     this.renderConversation()

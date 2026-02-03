@@ -253,7 +253,7 @@ export class ConversationCache {
       }
     }
 
-    if (toDelete.length > 0 || this.sessions.size > this.maxSessions) {
+    if (toDelete.length > 0) {
       console.log(`[ConversationCache] Cleanup: removed ${toDelete.length} old sessions, ${this.sessions.size} remain`);
     }
   }
