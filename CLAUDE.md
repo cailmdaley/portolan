@@ -28,11 +28,12 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 ├── CityManager               ├── Camera (sieve drag)
 ├── OriginManager (remote)    ├── CityPanel (fibers, search)
 ├── FiberReader               ├── ContextMenu
-├── KittyIntegration          └── main.ts
+├── ConversationCache         └── main.ts
+├── KittyIntegration
 └── index.ts (state, WS)
 ```
 
-Server polls tmux → builds state → broadcasts. Browser renders → user clicks → routes to Kitty.
+Server polls tmux → builds state → broadcasts. Conversation flows via hooks (POST /hook/message → ConversationCache → WebSocket → UI). Browser renders → user clicks → routes to Kitty.
 
 ## Visual Language
 
@@ -71,9 +72,13 @@ Reference: [Red Blob Games](https://www.redblobgames.com/grids/hexagons/)
 
 ```bash
 curl http://localhost:4004/debug-transcripts   # session→transcript mappings
+curl http://localhost:4004/hook/health         # conversation hook status per session
+tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
 
 Session-transcript correlation uses `lsof` to detect which transcript file each Claude process has open (via `~/.claude/tasks/{uuid}/`). Mappings persist to `~/.portolan/transcript-mappings.json`.
+
+Conversation capture: hooks POST to `/hook/message`, ConversationCache stores by sessionId and aggregates by tmuxSession. Persistence to `~/.portolan/conversations.json` (50 sessions, 10 msgs each).
 
 ## Troubleshooting: Remote Workers Missing
 
