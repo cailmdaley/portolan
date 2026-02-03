@@ -663,8 +663,9 @@ export class ZoneRenderer {
    * Set selection highlight on a hex
    */
   setSelection(hex: HexCoord | null): void {
-    // Remove existing selection ring
+    // Remove and dispose existing selection ring
     if (this.selectionRing) {
+      this.disposeObject(this.selectionRing)
       this.scene.remove(this.selectionRing)
       this.selectionRing = null
     }
