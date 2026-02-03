@@ -1019,18 +1019,15 @@ export class ZoneRenderer {
    * @returns true if a card was closed, false if no cards are open
    */
   closeMostRecentCard(): boolean {
-    if (this.lastFocusedCardId && this.conversationCards.has(this.lastFocusedCardId)) {
-      this.closeConversationCard(this.lastFocusedCardId)
+    // Try focused card first, then fall back to any card
+    const cardId = this.lastFocusedCardId && this.conversationCards.has(this.lastFocusedCardId)
+      ? this.lastFocusedCardId
+      : this.conversationCards.keys().next().value
+
+    if (cardId) {
+      this.closeConversationCard(cardId)
       return true
     }
-
-    // Fall back to closing the first card found
-    const firstCardId = this.conversationCards.keys().next().value
-    if (firstCardId) {
-      this.closeConversationCard(firstCardId)
-      return true
-    }
-
     return false
   }
 
@@ -1175,11 +1172,10 @@ export class ZoneRenderer {
   }
 
   /**
-   * Load saved card state (from cache or server)
+   * Load saved card state from cache
    */
   private loadCardState(workerId: string): { offset: { x: number; y: number }; size?: { width: number; height: number } } | null {
-    // Return from cache if available
-    return this.cardStateCache.get(workerId) || null
+    return this.cardStateCache.get(workerId) ?? null
   }
 
   /**

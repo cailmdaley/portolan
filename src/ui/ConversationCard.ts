@@ -701,8 +701,11 @@ export class ConversationCard {
   }
 
   private toggleExpanded(key: string): void {
-    const expanded = this.expandedMessages
-    expanded.has(key) ? expanded.delete(key) : expanded.add(key)
+    if (this.expandedMessages.has(key)) {
+      this.expandedMessages.delete(key)
+    } else {
+      this.expandedMessages.add(key)
+    }
     this.renderContent()
   }
 
@@ -791,28 +794,26 @@ export class ConversationCard {
    * Toggle minimized state (collapse to header only)
    */
   toggleMinimize(): void {
-    this.isMinimized = !this.isMinimized
-    this.element.classList.toggle('minimized', this.isMinimized)
+    this.setMinimized(!this.isMinimized)
   }
 
   /**
    * Minimize the card
    */
   minimize(): void {
-    if (!this.isMinimized) {
-      this.isMinimized = true
-      this.element.classList.add('minimized')
-    }
+    this.setMinimized(true)
   }
 
   /**
    * Restore the card from minimized state
    */
   restore(): void {
-    if (this.isMinimized) {
-      this.isMinimized = false
-      this.element.classList.remove('minimized')
-    }
+    this.setMinimized(false)
+  }
+
+  private setMinimized(minimized: boolean): void {
+    this.isMinimized = minimized
+    this.element.classList.toggle('minimized', minimized)
   }
 
   /**
