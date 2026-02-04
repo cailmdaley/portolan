@@ -441,8 +441,8 @@ export class WorkerSwarm {
       this.group.remove(this.labelObject)
     }
     this.labelObject = labelObj
-    // Position label just above swarm particles (swarm at y=0.15)
-    labelObj.position.set(0, 0.45, 0)
+    // Position label clearly above swarm particles (swarm at y=0.15)
+    labelObj.position.set(0, 0.65, 0)
     this.group.add(labelObj)
   }
 

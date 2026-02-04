@@ -211,19 +211,19 @@
       @keyframes cardExpand {
         from {
           opacity: 0.8;
-          max-height: 36px;  /* Start as just the header */
+          max-height: 44px;  /* Start as just the header */
         }
         to {
           opacity: 1;
-          max-height: 600px;
+          max-height: 1800px;
         }
       }
 
       .conversation-card {
-        width: 320px;
-        max-height: 600px;  /* Taller card */
-        min-width: 200px;
-        min-height: 36px;  /* Allow collapse to header height */
+        width: 600px;  /* ~90 monospace characters at code font size */
+        max-height: 1800px;  /* 3× taller for more content */
+        min-width: 300px;
+        min-height: 44px;  /* Allow collapse to header height */
         background: linear-gradient(135deg, #EDE8E0 0%, #E5DFD5 100%);
         border: 1px solid rgba(46, 42, 38, 0.3);
         border-radius: 4px;
@@ -246,14 +246,14 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 10px;
+        padding: 10px 14px;
         border-bottom: 1px solid rgba(46, 42, 38, 0.15);
         background: rgba(255, 255, 255, 0.3);
         flex-shrink: 0;
       }
 
       .conversation-card .card-title {
-        font-size: 14px;
+        font-size: 16px;
         font-weight: 500;
         color: var(--ink-dark);
         font-variant: small-caps;
@@ -281,9 +281,9 @@
       .conversation-card .card-content {
         flex: 1;
         overflow-y: auto;
-        padding: 8px 10px;
-        font-size: 13px;
-        line-height: 1.5;
+        padding: 12px 14px;
+        font-size: 15px;
+        line-height: 1.55;
       }
 
       .conversation-card .card-content::-webkit-scrollbar {
@@ -621,8 +621,8 @@
       /* Chat input */
       .conversation-card .chat-input-container {
         display: flex;
-        gap: 6px;
-        padding: 6px 10px 8px;
+        gap: 8px;
+        padding: 8px 14px 10px;
         border-top: 1px solid var(--parchment-edge);
         background: rgba(255, 255, 255, 0.3);
         flex-shrink: 0;
@@ -630,14 +630,14 @@
 
       .conversation-card .chat-input {
         flex: 1;
-        min-height: 24px;
-        max-height: 80px;
-        padding: 4px 8px;
+        min-height: 28px;
+        max-height: 100px;
+        padding: 6px 10px;
         border: 1px solid var(--parchment-edge);
         border-radius: 3px;
         background: rgba(255, 255, 255, 0.6);
         font-family: var(--font-main);
-        font-size: 12px;
+        font-size: 14px;
         color: var(--ink-body);
         resize: none;
         overflow-y: hidden;
@@ -677,8 +677,8 @@
 
       /* Minimized state */
       .conversation-card.minimized {
-        max-height: 36px !important;
-        min-height: 36px;
+        max-height: 44px !important;
+        min-height: 44px;
         overflow: hidden;
       }
 

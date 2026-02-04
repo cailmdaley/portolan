@@ -114,10 +114,16 @@ export class ConversationCard {
     }
 
     // Apply initial size if provided (from localStorage persistence)
+    // Only apply saved sizes if user explicitly made the card larger than CSS defaults
+    // CSS defaults: 600px width, 1800px height - don't restore smaller sizes
     if (this.options.initialSize) {
       const { width, height } = this.options.initialSize
-      card.style.width = `${width}px`
-      card.style.maxHeight = `${height}px`
+      if (width > 600) {
+        card.style.width = `${width}px`
+      }
+      if (height > 1800) {
+        card.style.maxHeight = `${height}px`
+      }
     }
 
     return { wrapper, card }
@@ -276,20 +282,20 @@ export class ConversationCard {
 
     // Handle horizontal edges
     if (edge.includes('e')) {
-      newWidth = Math.max(200, this.resizeStart.width + dx)
+      newWidth = Math.max(300, this.resizeStart.width + dx)
     }
     if (edge.includes('w')) {
-      const widthDelta = Math.min(dx, this.resizeStart.width - 200)
+      const widthDelta = Math.min(dx, this.resizeStart.width - 300)
       newWidth = this.resizeStart.width - widthDelta
       newOffsetX = this.resizeStart.left + widthDelta
     }
 
     // Handle vertical edges
     if (edge.includes('s')) {
-      newHeight = Math.max(150, this.resizeStart.height + dy)
+      newHeight = Math.max(200, this.resizeStart.height + dy)
     }
     if (edge.includes('n')) {
-      const heightDelta = Math.min(dy, this.resizeStart.height - 150)
+      const heightDelta = Math.min(dy, this.resizeStart.height - 200)
       newHeight = this.resizeStart.height - heightDelta
       newOffsetY = this.resizeStart.top + heightDelta
     }
@@ -766,9 +772,9 @@ export class ConversationCard {
    * Update scale based on camera distance (for zoom clamping)
    */
   setScale(scale: number): void {
-    // Clamp scale for readability (card base width is 320px)
-    const minScale = 0.72  // 320 * 0.72 = 230px at far zoom
-    const maxScale = 1.2   // 320 * 1.2 = 384px at close zoom
+    // Clamp scale for readability (card base width is 600px)
+    const minScale = 0.5   // 600 * 0.5 = 300px at far zoom
+    const maxScale = 1.0   // 600 * 1.0 = 600px at close zoom
     this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
     this.applyTransform()
   }

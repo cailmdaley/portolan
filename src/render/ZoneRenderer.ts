@@ -972,9 +972,8 @@ export class ZoneRenderer {
       initialSize: savedState?.size,
     })
 
-    // Position card so its bottom is just above the swarm particles
-    // Card expands upward from there
-    card.object.position.set(0, 0.45, 0)
+    // Position card at same height as label - bottom anchored there, expands upward
+    card.object.position.set(0, 0.65, 0)
 
     // Hide label - card header takes its place
     swarm.hideLabel()
