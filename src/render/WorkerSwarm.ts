@@ -216,9 +216,6 @@ export class WorkerSwarm {
   private time = 0
   private frameCount = 0  // For throttling idle animation
 
-  // Center position (set by ZoneRenderer)
-  center = new Vector3()
-
   // User-adjustable offset from default position (persisted, for dragging)
   userOffset = new Vector3()
 
@@ -420,16 +417,6 @@ export class WorkerSwarm {
     const posAttr = this.points.geometry.getAttribute('position') as Float32BufferAttribute
     posAttr.array.set(this.positions)
     posAttr.needsUpdate = true
-  }
-
-  /**
-   * Check if a world position is within the swarm's hit area
-   */
-  hitTest(worldX: number, worldZ: number): boolean {
-    const dx = worldX - this.group.position.x
-    const dz = worldZ - this.group.position.z
-    const dist = Math.sqrt(dx * dx + dz * dz)
-    return dist <= this.config.baseRadius * 2  // Generous hit area
   }
 
   /**
