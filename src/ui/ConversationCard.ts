@@ -375,10 +375,11 @@ export class ConversationCard {
 
   /**
    * Handle WebSocket conversation update
+   * The tmuxSession from server is prefixed for remote sessions: "originId/tmuxSession"
    */
   handleMessage(tmuxSession: string, messages: ConversationMessage[]): void {
     if (this.disposed) return
-    if (this.session.tmuxSession !== tmuxSession) return
+    if (this.prefixedTmuxSession !== tmuxSession) return
 
     // Deduplicate by timestamp
     const existingTimestamps = new Set(this.conversation.map(m => m.timestamp))
@@ -801,6 +802,16 @@ export class ConversationCard {
 
   get tmuxSession(): string {
     return this.session.tmuxSession
+  }
+
+  /**
+   * Get the prefixed tmuxSession for matching WebSocket messages
+   * Remote sessions use "originId/tmuxSession" format in conversation cache
+   */
+  get prefixedTmuxSession(): string {
+    return this.session.originId === 'local'
+      ? this.session.tmuxSession
+      : `${this.session.originId}/${this.session.tmuxSession}`
   }
 
   /**

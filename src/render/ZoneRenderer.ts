@@ -1319,10 +1319,12 @@ export class ZoneRenderer {
 
   /**
    * Handle WebSocket conversation update for cards
+   * The tmuxSession from server is prefixed for remote sessions: "originId/tmuxSession"
    */
   handleConversationMessage(tmuxSession: string, messages: ConversationMessage[]): void {
     for (const card of this.conversationCards.values()) {
-      if (card.tmuxSession === tmuxSession) {
+      // Match against prefixed tmuxSession (handles both local and remote)
+      if (card.prefixedTmuxSession === tmuxSession) {
         card.handleMessage(tmuxSession, messages)
       }
     }
