@@ -172,4 +172,25 @@ Activate `/frontend-design` if design questions arise about the visual treatment
 - Test with actual working sessions to verify gold/pulsation effects
 
 **Key bug found:** Float32BufferAttribute copies array, doesn't reference it. Must call `posAttr.array.set(positions)` after updates.
+**2026-02-04 01:10** — Session progress (iteration 3):
+
+**Done:**
+- Swarm, label, card unified as draggable entity
+- Drag card header moves entire swarm unit
+- Cmd+drag moves card offset only (for repositioning card relative to swarm)
+- Label hides when card opens (card header replaces it)
+- Card expands upward with max-height animation
+- Card bottom anchored at label position via translateY(-100%)
+- Card height increased to 600px for better swarm proximity
+
+**Architecture:**
+- Label attached to swarm.group (moves with swarm)
+- Card attached to swarm.group (moves with swarm)  
+- WorkerSwarm has userOffset for persistent drag position
+- hideLabel()/showLabel() methods for card open/close
+
+**Remaining:**
+- Animation timing/easing refinement
+- Visual polish on expand feel
+- Worker activity status not yet reflecting (gold color for working)
 
