@@ -202,10 +202,15 @@
          CONVERSATION CARD — Map-Pinned Worker Conversations
          ═══════════════════════════════════════════════════════════ */
 
-      /* Wrapper - CSS2DRenderer controls this element's transform */
+      /* Wrapper - CSS2DRenderer controls this element's transform but we override z-index */
       .conversation-card-wrapper {
         pointer-events: none;  /* Pass through to card */
-        z-index: 50;  /* Above city labels (z-index: 1) and worker labels (z-index: 10) */
+        /* Note: z-index is set dynamically via JS with inline styles */
+      }
+
+      /* Card element handles its own stacking - recency-based z-index set via JS */
+      .conversation-card {
+        position: relative;  /* Create stacking context for z-index to work */
       }
 
       @keyframes cardExpand {

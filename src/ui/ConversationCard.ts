@@ -787,12 +787,15 @@ export class ConversationCard {
 
   /**
    * Set the card's z-index (for layering when overlapping)
-   * Sets on the wrapper element which CSS2D controls
+   * Stores in data attribute so it can be reapplied after CSS2DRenderer overwrites
    */
   setZIndex(zIndex: number): void {
     const wrapper = this.element.parentElement
     if (wrapper) {
-      wrapper.style.zIndex = String(zIndex)
+      // Store our z-index in data attribute (CSS2DRenderer won't touch this)
+      wrapper.dataset.portolanZIndex = String(zIndex)
+      // Apply immediately (will be overwritten by CSS2DRenderer, then reapplied)
+      wrapper.style.setProperty('z-index', String(zIndex), 'important')
     }
   }
 

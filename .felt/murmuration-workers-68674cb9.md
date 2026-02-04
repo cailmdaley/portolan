@@ -226,4 +226,5 @@ Activate `/frontend-design` if design questions arise about the visual treatment
 2. Verify swarm particles visible below card after positioning fix
 3. Test with multiple workers to ensure positioning is consistent
 4. May need to adjust CSS2D y position or transform calculation
+**2026-02-04 02:23** — Session 5: Fixed card-swarm positioning. Card anchor at y=0.7, transform-origin bottom center, translateY(-50%). Click-to-close replaces click-to-minimize. Cleared stale card-states.json. Removed unused center field and hitTest method from WorkerSwarm.
 

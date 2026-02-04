@@ -834,6 +834,9 @@ function animate(): void {
 
   renderer.render(scene, camera.camera)
   labelRenderer.render(scene, camera.camera)
+
+  // Reapply card z-indexes after CSS2DRenderer (which overwrites them based on depth)
+  zoneRenderer.reapplyCardZIndexes()
 }
 
 // Start

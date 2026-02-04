@@ -101,7 +101,7 @@ export class ZoneRenderer {
   // Conversation cards - map-pinned worker conversations
   private conversationCards: Map<string, ConversationCard> = new Map()  // workerId -> card
   private onCardFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
-  private topZIndex = 100  // Track highest z-index for bringing cards to front
+  private topZIndex = 1000  // Track highest z-index for bringing cards to front (must be >> CSS2DRenderer's depth values)
   private lastFocusedCardId: string | null = null  // Most recently focused card
 
   constructor(scene: Scene, hexGrid: HexGrid) {
@@ -1182,6 +1182,20 @@ export class ZoneRenderer {
     this.topZIndex++
     card.setZIndex(this.topZIndex)
     this.lastFocusedCardId = workerId
+  }
+
+  /**
+   * Reapply card z-indexes after CSS2DRenderer (which overwrites them on each render)
+   * Call this AFTER labelRenderer.render() in the animation loop
+   */
+  reapplyCardZIndexes(): void {
+    for (const card of this.conversationCards.values()) {
+      // Re-set the z-index on wrapper - CSS2DRenderer just overwrote it
+      const wrapper = (card as { object: { element: HTMLElement } }).object.element
+      if (wrapper) {
+        wrapper.style.setProperty('z-index', wrapper.dataset.portolanZIndex || '1000', 'important')
+      }
+    }
   }
 
   /**
