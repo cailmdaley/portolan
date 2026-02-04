@@ -61,8 +61,12 @@ export function highlightCodeBlocks(container: HTMLElement): void {
 
 /**
  * Format a timestamp as relative time (e.g., "5m ago", "2h ago")
+ * Returns empty string for invalid timestamps
  */
 export function formatTimeAgo(timestamp: number): string {
+  // Handle NaN/invalid timestamps (e.g., from malformed date strings)
+  if (!Number.isFinite(timestamp)) return ''
+
   const diffMs = Date.now() - timestamp
   const diffMins = Math.floor(diffMs / 60000)
 
