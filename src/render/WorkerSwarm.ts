@@ -10,7 +10,9 @@ import {
   CanvasTexture,
   Group,
   NormalBlending,
+  Object3D,
 } from 'three'
+import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 
 // Simplex noise implementation (3D)
 // Based on Stefan Gustavson's work, adapted for TypeScript
@@ -220,7 +222,7 @@ export class WorkerSwarm {
   userOffset = new Vector3()
 
   // Label attached to this swarm (so they move together)
-  private labelObject: import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject | null = null
+  private labelObject: CSS2DObject | null = null
 
   constructor(workerId: string, tmuxSession: string, config?: SwarmConfig) {
     this.workerId = workerId
@@ -422,7 +424,7 @@ export class WorkerSwarm {
   /**
    * Attach a label to this swarm (moves with swarm)
    */
-  setLabel(labelObj: import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject): void {
+  setLabel(labelObj: CSS2DObject): void {
     // Remove old label if present
     if (this.labelObject) {
       this.group.remove(this.labelObject)
@@ -436,7 +438,7 @@ export class WorkerSwarm {
   /**
    * Get the attached label
    */
-  getLabel(): import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject | null {
+  getLabel(): CSS2DObject | null {
     return this.labelObject
   }
 
@@ -463,14 +465,14 @@ export class WorkerSwarm {
   /**
    * Add an object to the swarm group (e.g., conversation card)
    */
-  addChild(obj: import('three').Object3D): void {
+  addChild(obj: Object3D): void {
     this.group.add(obj)
   }
 
   /**
    * Remove an object from the swarm group
    */
-  removeChild(obj: import('three').Object3D): void {
+  removeChild(obj: Object3D): void {
     this.group.remove(obj)
   }
 
