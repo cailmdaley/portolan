@@ -358,6 +358,9 @@ export class CityPanel {
       return
     }
 
+    // Clear previous results before starting new search
+    this.searchResults = []
+
     // Show search results view
     this.showSearchResults()
 
@@ -414,8 +417,9 @@ export class CityPanel {
   }
 
   handleSearchResults(searchId: string, results: SearchResult[], error?: string): void {
-    // Ignore stale results
-    if (!searchId.startsWith(this.currentCity?.id || '')) {
+    // Ignore stale results from different city or older search
+    const expectedPrefix = `${this.currentCity?.id || ''}-${this.currentSearchId}`
+    if (!searchId.startsWith(expectedPrefix)) {
       return
     }
 
@@ -425,31 +429,28 @@ export class CityPanel {
     }
 
     // Merge file results with current fiber results
-    const fileResults: UnifiedResult[] = results.map(r => ({ type: 'file' as const, data: r }))
     const fiberResults = this.filterFibersLocally(this.searchQuery)
 
     // Deduplicate file results by fullPath
     const seenPaths = new Set<string>()
-    const existingFileResults = this.searchResults.filter(r => r.type === 'file')
-    for (const r of existingFileResults) {
+    for (const r of this.searchResults) {
       if (r.type === 'file') seenPaths.add(r.data.fullPath)
     }
 
-    const newFileResults = fileResults.filter(r => {
-      if (r.type === 'file' && !seenPaths.has(r.data.fullPath)) {
-        seenPaths.add(r.data.fullPath)
-        return true
+    const newFileResults: UnifiedResult[] = []
+    for (const result of results) {
+      if (!seenPaths.has(result.fullPath)) {
+        seenPaths.add(result.fullPath)
+        newFileResults.push({ type: 'file', data: result })
       }
-      return false
-    })
+    }
 
     // Combine and store for future deduplication
-    const allFileResults = [...existingFileResults, ...newFileResults]
-    this.searchResults = allFileResults
-    this.renderUnifiedResults(
-      allFileResults.map(r => r.type === 'file' ? r.data : null).filter(Boolean) as SearchResult[],
-      fiberResults
-    )
+    this.searchResults = [...this.searchResults, ...newFileResults]
+    const allFiles = this.searchResults
+      .filter((r): r is { type: 'file'; data: SearchResult } => r.type === 'file')
+      .map(r => r.data)
+    this.renderUnifiedResults(allFiles, fiberResults)
   }
 
   private renderUnifiedResults(files: SearchResult[], fibers: Fiber[]): void {
