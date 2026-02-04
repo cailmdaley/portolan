@@ -589,7 +589,7 @@ canvasOverlay.addEventListener('mousemove', (e) => {
   // Check for city
   const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
   if (cityHit) {
-    canvas.style.cursor = 'var(--cursor-point)'
+    canvas.style.cursor = 'var(--cursor-bird)'
     return
   }
 

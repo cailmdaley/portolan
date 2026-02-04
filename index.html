@@ -116,10 +116,8 @@
         --ui-purple: #6A5868;
         --ui-teal: var(--verdigris);
 
-        /* Custom cursors */
+        /* Custom cursor - the bird for everything */
         --cursor-bird: url('/cursors/bird.png') 16 16, default;
-        --cursor-point: url('/cursors/hand-point.png') 26 4, pointer;
-        --cursor-grab: url('/cursors/hand-grab.png') 16 16, grabbing;
       }
       body {
         overflow: hidden;
@@ -235,10 +233,18 @@
         max-height: 1800px;
         min-width: 300px;
         min-height: 200px;
-        background: linear-gradient(135deg, #EDE8E0 0%, #E5DFD5 100%);
-        border: 1px solid rgba(46, 42, 38, 0.3);
-        border-radius: 4px;
-        box-shadow: 0 4px 16px rgba(30, 20, 10, 0.2);
+        /* Layered parchment: warm base with subtle vellum texture via gradients */
+        background:
+          linear-gradient(135deg, rgba(255,252,248,0.4) 0%, transparent 50%),
+          linear-gradient(180deg, #F0E8DC 0%, #E8E0D4 40%, #E5DDD0 100%);
+        /* Weathered edge: double border for depth, outer shadow for lift */
+        border: 1px solid rgba(140, 110, 80, 0.35);
+        box-shadow:
+          inset 0 0 0 1px rgba(255,255,255,0.5),
+          0 1px 2px rgba(100, 80, 60, 0.12),
+          0 4px 12px rgba(60, 45, 30, 0.15),
+          0 8px 24px rgba(40, 30, 20, 0.08);
+        border-radius: 6px;
         font-family: var(--font-main);
         pointer-events: auto;
         transform-origin: center bottom;
@@ -253,8 +259,9 @@
         justify-content: space-between;
         align-items: center;
         padding: 10px 14px;
-        border-bottom: 1px solid rgba(46, 42, 38, 0.15);
-        background: rgba(255, 255, 255, 0.3);
+        /* Subtle ruled line like a ledger page */
+        border-bottom: 1px solid rgba(140, 110, 80, 0.25);
+        background: linear-gradient(180deg, rgba(255,252,248,0.5) 0%, rgba(245,240,232,0.3) 100%);
         flex-shrink: 0;
       }
 
@@ -270,16 +277,18 @@
       .conversation-card .card-close {
         background: none;
         border: none;
-        font-size: 16px;
+        font-size: 18px;
         color: var(--ink-faded);
         cursor: pointer;
-        padding: 2px 6px;
+        padding: 2px 8px;
         line-height: 1;
-        border-radius: 2px;
-        transition: color 150ms ease, background 150ms ease;
+        border-radius: 3px;
+        transition: color 200ms ease, background 200ms ease;
+        opacity: 0.7;
       }
 
       .conversation-card .card-close:hover {
+        opacity: 1;
         color: var(--rust);
         background: rgba(138, 85, 72, 0.1);
       }
@@ -334,21 +343,22 @@
         background: rgba(201, 162, 39, 0.15);
       }
 
-      /* Card messages */
+      /* Card messages - subtle marginalia styling */
       .conversation-card .card-msg {
-        margin-bottom: 10px;
-        padding-left: 8px;
+        margin-bottom: 12px;
+        padding: 6px 10px 6px 12px;
         position: relative;
+        border-radius: 3px;
       }
 
       .conversation-card .user-msg {
         border-left: 2px solid var(--sepia-accent);
-        background: linear-gradient(90deg, rgba(138, 107, 42, 0.06) 0%, transparent 60%);
+        background: linear-gradient(90deg, rgba(138, 107, 42, 0.08) 0%, rgba(138, 107, 42, 0.02) 40%, transparent 80%);
       }
 
       .conversation-card .assistant-msg {
         border-left: 2px solid var(--verdigris);
-        background: linear-gradient(90deg, rgba(74, 98, 88, 0.05) 0%, transparent 60%);
+        background: linear-gradient(90deg, rgba(74, 98, 88, 0.07) 0%, rgba(74, 98, 88, 0.02) 40%, transparent 80%);
       }
 
       .conversation-card .msg-content {
@@ -624,13 +634,13 @@
         cursor: sw-resize;
       }
 
-      /* Chat input */
+      /* Chat input - inset like a writing desk */
       .conversation-card .chat-input-container {
         display: flex;
         gap: 8px;
-        padding: 8px 14px 10px;
-        border-top: 1px solid var(--parchment-edge);
-        background: rgba(255, 255, 255, 0.3);
+        padding: 10px 14px 12px;
+        border-top: 1px solid rgba(140, 110, 80, 0.2);
+        background: linear-gradient(180deg, rgba(235,228,218,0.6) 0%, rgba(240,235,225,0.4) 100%);
         flex-shrink: 0;
       }
 
@@ -638,21 +648,24 @@
         flex: 1;
         min-height: 28px;
         max-height: 100px;
-        padding: 6px 10px;
-        border: 1px solid var(--parchment-edge);
-        border-radius: 3px;
-        background: rgba(255, 255, 255, 0.6);
+        padding: 8px 12px;
+        border: 1px solid rgba(140, 110, 80, 0.3);
+        border-radius: 4px;
+        background: rgba(255, 252, 248, 0.8);
+        box-shadow: inset 0 1px 3px rgba(100, 80, 60, 0.08);
         font-family: var(--font-main);
         font-size: 14px;
         color: var(--ink-body);
         resize: none;
         overflow-y: hidden;
+        transition: border-color 200ms ease, box-shadow 200ms ease;
       }
 
       .conversation-card .chat-input:focus {
         outline: none;
         border-color: var(--sepia-accent);
-        background: rgba(255, 255, 255, 0.9);
+        background: rgba(255, 255, 255, 0.95);
+        box-shadow: inset 0 1px 2px rgba(100, 80, 60, 0.05), 0 0 0 2px rgba(138, 107, 42, 0.1);
       }
 
       .conversation-card .chat-input::placeholder {
@@ -661,19 +674,25 @@
       }
 
       .conversation-card .chat-send-btn {
-        padding: 4px 10px;
-        background: var(--sepia-accent);
-        color: white;
-        border: none;
-        border-radius: 3px;
+        padding: 6px 14px;
+        background: linear-gradient(180deg, #9A7B3A 0%, #8A6B2A 100%);
+        color: #FFF8EE;
+        border: 1px solid rgba(100, 70, 20, 0.3);
+        border-radius: 4px;
         font-size: 14px;
         cursor: pointer;
-        transition: background 150ms ease;
+        transition: background 150ms ease, transform 100ms ease;
         flex-shrink: 0;
+        box-shadow: 0 1px 2px rgba(60, 40, 20, 0.2);
       }
 
       .conversation-card .chat-send-btn:hover {
-        background: #7a6230;  /* Darker sepia on hover */
+        background: linear-gradient(180deg, #A88B4A 0%, #9A7B3A 100%);
+      }
+
+      .conversation-card .chat-send-btn:active {
+        transform: translateY(1px);
+        box-shadow: 0 0 1px rgba(60, 40, 20, 0.2);
       }
 
       .conversation-card .chat-send-btn:disabled {

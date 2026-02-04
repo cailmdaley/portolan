@@ -157,10 +157,10 @@ export class ZoneRenderer {
         labelEl,
       }
 
-      // Set custom grabbing cursor
-      const grabCursor = 'var(--cursor-grab)'
-      labelEl.style.cursor = grabCursor
-      document.body.style.cursor = grabCursor
+      // Set custom grabbing cursor (bird for everything)
+      const birdCursor = 'var(--cursor-bird)'
+      labelEl.style.cursor = birdCursor
+      document.body.style.cursor = birdCursor
 
       document.addEventListener('mousemove', this.onLabelDrag)
       document.addEventListener('mouseup', this.stopLabelDrag)
@@ -267,8 +267,9 @@ export class ZoneRenderer {
       labelEl: labelEl || document.createElement('div'),  // Dummy if no label
     }
 
-    document.body.style.cursor = 'grabbing'
-    if (labelEl) labelEl.style.cursor = 'grabbing'
+    const birdCursor = 'var(--cursor-bird)'
+    document.body.style.cursor = birdCursor
+    if (labelEl) labelEl.style.cursor = birdCursor
 
     document.addEventListener('mousemove', this.onLabelDrag)
     document.addEventListener('mouseup', this.stopLabelDrag)
