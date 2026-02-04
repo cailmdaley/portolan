@@ -123,8 +123,10 @@ export class ConversationCache {
     cache.lastUpdate = Date.now();
 
     // Deduplicate: skip messages with timestamps we've already seen
-    const existingTimestamps = new Set(cache.messages.map(m => m.timestamp));
-    const newMessages = messages.filter(m => !existingTimestamps.has(m.timestamp));
+    // Normalize to seconds (truncate milliseconds) since different sources have different precision
+    const normalizeTimestamp = (ts: string): string => ts.replace(/\.\d{3}Z$/, 'Z');
+    const existingTimestamps = new Set(cache.messages.map(m => normalizeTimestamp(m.timestamp)));
+    const newMessages = messages.filter(m => !existingTimestamps.has(normalizeTimestamp(m.timestamp)));
 
     if (newMessages.length === 0) return;
 
@@ -170,12 +172,14 @@ export class ConversationCache {
 
     if (allMessages.length === 0) return [];
 
-    // Sort and deduplicate by timestamp
+    // Sort and deduplicate by timestamp (normalize to seconds for consistency)
+    const normalizeTimestamp = (ts: string): string => ts.replace(/\.\d{3}Z$/, 'Z');
     allMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const seen = new Set<string>();
     const deduped = allMessages.filter(m => {
-      if (seen.has(m.timestamp)) return false;
-      seen.add(m.timestamp);
+      const normalized = normalizeTimestamp(m.timestamp);
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
       return true;
     });
 
