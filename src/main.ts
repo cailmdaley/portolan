@@ -573,6 +573,28 @@ let forceTouchFired = false
 canvasOverlay.addEventListener('mousemove', (e) => {
   forceMouseX = e.clientX
   forceMouseY = e.clientY
+
+  // Custom cursor based on what's under the mouse
+  if (camera.dragging || movingCityId) return  // Don't change cursor while dragging
+
+  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
+
+  // Check for worker swarm first (smaller hit area, more specific)
+  const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
+  if (workerHit) {
+    canvas.style.cursor = 'var(--cursor-bird)'
+    return
+  }
+
+  // Check for city
+  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
+  if (cityHit) {
+    canvas.style.cursor = 'var(--cursor-point)'
+    return
+  }
+
+  // Default cursor for map
+  canvas.style.cursor = 'default'
 })
 
 // Claim gesture to prevent system Quick Look
@@ -833,7 +855,7 @@ function animate(): void {
   requestAnimationFrame(animate)
 
   // Animate (breathing pulse, label visibility, distance fading)
-  zoneRenderer.animate(camera.cameraDistance, camera.cameraCenter)
+  zoneRenderer.animate(camera.cameraDistance)
 
   renderer.render(scene, camera.camera)
   labelRenderer.render(scene, camera.camera)

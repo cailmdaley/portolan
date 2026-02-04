@@ -157,12 +157,31 @@ export class ZoneRenderer {
         labelEl,
       }
 
-      // Set grabbing cursor
-      labelEl.style.cursor = 'grabbing'
-      document.body.style.cursor = 'grabbing'
+      // Set custom grabbing cursor
+      const grabCursor = 'var(--cursor-grab)'
+      labelEl.style.cursor = grabCursor
+      document.body.style.cursor = grabCursor
 
       document.addEventListener('mousemove', this.onLabelDrag)
       document.addEventListener('mouseup', this.stopLabelDrag)
+    })
+  }
+
+  /**
+   * Setup click handlers for a worker label (click opens card, dblclick focuses terminal)
+   */
+  private setupLabelClickHandlers(labelEl: HTMLElement, workerId: string, tmuxSession: string): void {
+    labelEl.addEventListener('click', (e) => {
+      e.stopPropagation()
+      // Don't trigger click if we just finished dragging
+      if (this.labelDrag?.workerId === workerId && this.labelDrag.moved) {
+        return
+      }
+      if (this.onWorkerClick) this.onWorkerClick(workerId, tmuxSession)
+    })
+    labelEl.addEventListener('dblclick', (e) => {
+      e.stopPropagation()
+      if (this.onWorkerDblClick) this.onWorkerDblClick(workerId, tmuxSession)
     })
   }
 
@@ -277,6 +296,25 @@ export class ZoneRenderer {
       x: hexX * cos - hexY * sin,
       z: -hexX * sin - hexY * cos,
     }
+  }
+
+  /**
+   * Get or create a worker swarm, loading saved offset if new
+   */
+  private getOrCreateSwarm(workerId: string, tmuxSession: string): WorkerSwarm {
+    const existing = this.workerSwarms.get(workerId)
+    if (existing) return existing
+
+    const swarm = new WorkerSwarm(workerId, tmuxSession)
+    this.workerSwarms.set(workerId, swarm)
+
+    const savedOffset = this.loadSwarmOffset(workerId)
+    if (savedOffset) {
+      swarm.userOffset.x = savedOffset.x
+      swarm.userOffset.z = savedOffset.z
+    }
+
+    return swarm
   }
 
   /**
@@ -485,19 +523,7 @@ export class ZoneRenderer {
       const swarmX = Math.cos(angle) * swarmRadius
       const swarmZ = Math.sin(angle) * swarmRadius
 
-      // Create or reuse worker swarm
-      let swarm = this.workerSwarms.get(worker.id)
-      if (!swarm) {
-        swarm = new WorkerSwarm(worker.id, worker.tmuxSession)
-        this.workerSwarms.set(worker.id, swarm)
-
-        // Load saved swarm offset
-        const savedOffset = this.loadSwarmOffset(worker.id)
-        if (savedOffset) {
-          swarm.userOffset.x = savedOffset.x
-          swarm.userOffset.z = savedOffset.z
-        }
-      }
+      const swarm = this.getOrCreateSwarm(worker.id, worker.tmuxSession)
 
       // Position swarm relative to city (including any user offset)
       swarm.group.position.set(
@@ -518,20 +544,7 @@ export class ZoneRenderer {
 
       // Drag to move swarm (via label)
       this.setupLabelDrag(workerDiv, worker.id)
-
-      // Click opens card (only if not dragging)
-      workerDiv.addEventListener('click', (e) => {
-        e.stopPropagation()
-        // Don't trigger click if we just finished dragging
-        if (this.labelDrag?.workerId === worker.id && this.labelDrag.moved) {
-          return
-        }
-        if (this.onWorkerClick) this.onWorkerClick(worker.id, worker.tmuxSession)
-      })
-      workerDiv.addEventListener('dblclick', (e) => {
-        e.stopPropagation()
-        if (this.onWorkerDblClick) this.onWorkerDblClick(worker.id, worker.tmuxSession)
-      })
+      this.setupLabelClickHandlers(workerDiv, worker.id, worker.tmuxSession)
 
       const workerLabelObj = new CSS2DObject(workerDiv)
       // Attach label to swarm (positioned relative to swarm, at y=0.45 above particles)
@@ -580,21 +593,9 @@ export class ZoneRenderer {
     const group = new Group()
     const pos = this.hexGrid.axialToCartesian(session.hex)
 
-    // Create or reuse worker swarm
-    let swarm = this.workerSwarms.get(session.id)
-    if (!swarm) {
-      swarm = new WorkerSwarm(session.id, session.tmuxSession)
-      this.workerSwarms.set(session.id, swarm)
-
-      // Load saved swarm offset
-      const savedOffset = this.loadSwarmOffset(session.id)
-      if (savedOffset) {
-        swarm.userOffset.x = savedOffset.x
-        swarm.userOffset.z = savedOffset.z
-        swarm.group.position.x = savedOffset.x
-        swarm.group.position.z = savedOffset.z
-      }
-    }
+    const swarm = this.getOrCreateSwarm(session.id, session.tmuxSession)
+    // Apply user offset to swarm position (orphan workers position relative to hex center)
+    swarm.group.position.set(swarm.userOffset.x, 0, swarm.userOffset.z)
     swarm.setActivity(session.status === 'working' ? 1 : 0)
     group.add(swarm.group)
 
@@ -608,19 +609,7 @@ export class ZoneRenderer {
 
     // Drag to move swarm
     this.setupLabelDrag(labelDiv, session.id)
-
-    // Click opens card (only if not dragging)
-    labelDiv.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (this.labelDrag?.workerId === session.id && this.labelDrag.moved) {
-        return
-      }
-      if (this.onWorkerClick) this.onWorkerClick(session.id, session.tmuxSession)
-    })
-    labelDiv.addEventListener('dblclick', (e) => {
-      e.stopPropagation()
-      if (this.onWorkerDblClick) this.onWorkerDblClick(session.id, session.tmuxSession)
-    })
+    this.setupLabelClickHandlers(labelDiv, session.id, session.tmuxSession)
 
     const labelObject = new CSS2DObject(labelDiv)
     labelObject.position.y = 0.6  // Above swarm
@@ -922,7 +911,7 @@ export class ZoneRenderer {
   /**
    * Animate and update zoom-based label visibility
    */
-  animate(cameraDistance?: number, _cameraCenter?: { x: number; z: number }): void {
+  animate(cameraDistance?: number): void {
     // Calculate delta time for swarm animation
     const now = performance.now()
     const deltaTime = this.lastAnimateTime === 0 ? 1 / 60 : Math.min((now - this.lastAnimateTime) / 1000, 0.1)
@@ -1128,7 +1117,7 @@ export class ZoneRenderer {
     }
 
     // Ensure card states are loaded from server (cached after first call)
-    await this.ensureCardStatesLoaded()
+    await this.ensureWorkerStatesLoaded()
 
     // Load saved position if available
     const savedState = this.loadCardState(session.id)
@@ -1405,11 +1394,6 @@ export class ZoneRenderer {
       // Ignore load errors - will use defaults
     }
     this.workerStateCacheLoaded = true
-  }
-
-  // Keep old name for backward compat
-  private async ensureCardStatesLoaded(): Promise<void> {
-    return this.ensureWorkerStatesLoaded()
   }
 
   /**
