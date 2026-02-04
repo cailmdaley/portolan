@@ -74,6 +74,15 @@ export class ZoneRenderer {
   private onWorkerClick: ((workerId: string, tmuxSession: string) => void) | null = null
   private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
 
+  // Label drag state (for dragging swarm via label when card is closed)
+  private labelDrag: {
+    workerId: string
+    startX: number
+    startY: number
+    moved: boolean  // Track if mouse moved (to distinguish click from drag)
+    labelEl: HTMLElement  // Store element for cursor reset
+  } | null = null
+
   // Track city positions for rhumb line avoidance
   private lastCityPositions: string = ''
 
@@ -130,6 +139,117 @@ export class ZoneRenderer {
    */
   private workerLabelClass(status: 'idle' | 'working'): string {
     return status === 'working' ? 'worker-label working' : 'worker-label'
+  }
+
+  /**
+   * Setup drag handlers for a worker label (allows dragging swarm when card is closed)
+   */
+  private setupLabelDrag(labelEl: HTMLElement, workerId: string): void {
+    labelEl.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      this.labelDrag = {
+        workerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+        labelEl,
+      }
+
+      // Set grabbing cursor
+      labelEl.style.cursor = 'grabbing'
+      document.body.style.cursor = 'grabbing'
+
+      document.addEventListener('mousemove', this.onLabelDrag)
+      document.addEventListener('mouseup', this.stopLabelDrag)
+    })
+  }
+
+  private onLabelDrag = (e: MouseEvent): void => {
+    if (!this.labelDrag) return
+
+    const dx = e.clientX - this.labelDrag.startX
+    const dy = e.clientY - this.labelDrag.startY
+
+    // Only count as "moved" if dragged more than a few pixels (prevents accidental drags)
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      this.labelDrag.moved = true
+    }
+
+    if (this.labelDrag.moved) {
+      // Convert pixels to world units (~100 pixels ≈ 1 world unit at default zoom)
+      const scale = 0.01
+      const worldDx = dx * scale
+      const worldDz = dy * scale
+
+      // Reset drag start to current position for incremental movement
+      this.labelDrag.startX = e.clientX
+      this.labelDrag.startY = e.clientY
+
+      // Move the swarm
+      const swarm = this.workerSwarms.get(this.labelDrag.workerId)
+      if (swarm) {
+        swarm.userOffset.x += worldDx
+        swarm.userOffset.z += worldDz
+        swarm.group.position.x += worldDx
+        swarm.group.position.z += worldDz
+      }
+    }
+  }
+
+  private stopLabelDrag = (): void => {
+    // Reset cursors
+    if (this.labelDrag?.labelEl) {
+      this.labelDrag.labelEl.style.cursor = 'grab'
+    }
+    document.body.style.cursor = ''
+
+    // Keep labelDrag briefly so click handler can check if we moved
+    const drag = this.labelDrag
+    setTimeout(() => {
+      if (this.labelDrag === drag) {
+        this.labelDrag = null
+      }
+    }, 10)
+
+    document.removeEventListener('mousemove', this.onLabelDrag)
+    document.removeEventListener('mouseup', this.stopLabelDrag)
+  }
+
+  /**
+   * Start dragging a swarm by workerId (called from main.ts on swarm mousedown)
+   * Returns true if swarm found and drag started
+   */
+  startSwarmDrag(workerId: string, screenX: number, screenY: number): boolean {
+    const swarm = this.workerSwarms.get(workerId)
+    if (!swarm) return false
+
+    // Find the label element to update its cursor
+    const labelEl = swarm.getLabel()?.element as HTMLElement | undefined
+
+    this.labelDrag = {
+      workerId,
+      startX: screenX,
+      startY: screenY,
+      moved: false,
+      labelEl: labelEl || document.createElement('div'),  // Dummy if no label
+    }
+
+    document.body.style.cursor = 'grabbing'
+    if (labelEl) labelEl.style.cursor = 'grabbing'
+
+    document.addEventListener('mousemove', this.onLabelDrag)
+    document.addEventListener('mouseup', this.stopLabelDrag)
+
+    return true
+  }
+
+  /**
+   * Check if currently dragging a swarm
+   */
+  get isDraggingSwarm(): boolean {
+    return this.labelDrag !== null && this.labelDrag.moved
   }
 
   /**
@@ -375,10 +495,18 @@ export class ZoneRenderer {
       workerDiv.textContent = worker.name
       workerDiv.dataset.workerId = worker.id
       workerDiv.dataset.tmuxSession = worker.tmuxSession
+      workerDiv.style.cursor = 'grab'
 
-      // Clickable
+      // Drag to move swarm (via label)
+      this.setupLabelDrag(workerDiv, worker.id)
+
+      // Click opens card (only if not dragging)
       workerDiv.addEventListener('click', (e) => {
         e.stopPropagation()
+        // Don't trigger click if we just finished dragging
+        if (this.labelDrag?.workerId === worker.id && this.labelDrag.moved) {
+          return
+        }
         if (this.onWorkerClick) this.onWorkerClick(worker.id, worker.tmuxSession)
       })
       workerDiv.addEventListener('dblclick', (e) => {
@@ -442,10 +570,30 @@ export class ZoneRenderer {
     swarm.setActivity(session.status === 'working' ? 1 : 0)
     group.add(swarm.group)
 
-    // Worker label
+    // Worker label with drag capability
     const labelDiv = document.createElement('div')
     labelDiv.className = this.workerLabelClass(session.status)
     labelDiv.textContent = session.name
+    labelDiv.dataset.workerId = session.id
+    labelDiv.dataset.tmuxSession = session.tmuxSession
+    labelDiv.style.cursor = 'move'
+
+    // Drag to move swarm
+    this.setupLabelDrag(labelDiv, session.id)
+
+    // Click opens card (only if not dragging)
+    labelDiv.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.labelDrag?.workerId === session.id && this.labelDrag.moved) {
+        return
+      }
+      if (this.onWorkerClick) this.onWorkerClick(session.id, session.tmuxSession)
+    })
+    labelDiv.addEventListener('dblclick', (e) => {
+      e.stopPropagation()
+      if (this.onWorkerDblClick) this.onWorkerDblClick(session.id, session.tmuxSession)
+    })
+
     const labelObject = new CSS2DObject(labelDiv)
     labelObject.position.y = 0.6  // Above swarm
     group.add(labelObject)

@@ -437,10 +437,26 @@ function handleMessage(message: ServerMessage): void {
   }
 }
 
+// Swarm drag handling (intercept mousedown on swarms before camera pan)
+canvasOverlay.addEventListener('mousedown', (e) => {
+  // Only handle left button
+  if (e.button !== 0) return
+
+  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
+  const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
+
+  if (workerHit) {
+    // Start swarm drag - this prevents camera from panning
+    if (zoneRenderer.startSwarmDrag(workerHit.workerId, e.clientX, e.clientY)) {
+      e.stopPropagation()  // Prevent camera from starting its pan
+    }
+  }
+}, true)  // Use capture phase to run before camera's handler
+
 // Click handling
 canvasOverlay.addEventListener('click', (e) => {
-  // Ignore clicks that were drags
-  if (camera.dragging) return
+  // Ignore clicks that were drags (including swarm drags)
+  if (camera.dragging || zoneRenderer.isDraggingSwarm) return
 
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
