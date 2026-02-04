@@ -576,6 +576,8 @@ export class FileViewerModal {
       this.pathEl.textContent = data.path
       this.langEl.textContent = data.language
       this.saveBtn.style.display = 'inline-block'
+      this.copyBtn.style.display = 'inline-block'
+      this.downloadBtn.style.display = 'inline-block'
 
       // Show send button if we have annotations
       this.updateSendButton()
@@ -600,6 +602,8 @@ export class FileViewerModal {
     this.langEl.textContent = 'image'
     this.modeLineEl.textContent = 'Click to annotate'
     this.saveBtn.style.display = 'none'
+    this.copyBtn.style.display = 'none'
+    this.downloadBtn.style.display = 'none'
     this.currentContent = null  // Can't copy image to clipboard as text
 
     try {
@@ -832,6 +836,8 @@ export class FileViewerModal {
     this.langEl.textContent = 'pdf'
     this.modeLineEl.textContent = ''
     this.saveBtn.style.display = 'none'
+    this.copyBtn.style.display = 'none'
+    this.downloadBtn.style.display = 'none'
     this.currentContent = null  // Can't copy PDF to clipboard as text
 
     try {
@@ -1026,15 +1032,19 @@ export class FileViewerModal {
     }
   }
 
-  private async copyToClipboard(): Promise<void> {
-    let content: string
+  private getTextContent(): string | null {
     if (this.editorView) {
-      content = this.editorView.state.doc.toString()
-    } else if (this.currentContent) {
-      content = this.currentContent.content
-    } else {
-      return
+      return this.editorView.state.doc.toString()
     }
+    if (this.currentContent) {
+      return this.currentContent.content
+    }
+    return null
+  }
+
+  private async copyToClipboard(): Promise<void> {
+    const content = this.getTextContent()
+    if (!content) return
 
     try {
       await navigator.clipboard.writeText(content)
@@ -1059,14 +1069,8 @@ export class FileViewerModal {
   }
 
   private downloadFile(): void {
-    let content: string
-    if (this.editorView) {
-      content = this.editorView.state.doc.toString()
-    } else if (this.currentContent) {
-      content = this.currentContent.content
-    } else {
-      return
-    }
+    const content = this.getTextContent()
+    if (!content) return
 
     // Get filename from path
     const filename = this.currentPath.split('/').pop() || 'download.txt'
