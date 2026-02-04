@@ -81,6 +81,7 @@ export class ConversationCard {
     card.innerHTML = `
       <div class="card-header">
         <span class="card-title">${escapeHtml(this.session.name)}</span>
+        <div class="card-recent-files"></div>
         <button class="card-close" title="Close">&times;</button>
       </div>
       <div class="card-content">
@@ -207,7 +208,26 @@ export class ConversationCard {
 
   private applyTransform(): void {
     // CSS2DRenderer centers wrapper at anchor point. Shift card up by 50% so bottom is at anchor.
-    this.element.style.transform = `translateY(-50%) scale(${this.currentScale})`
+    // But clamp to viewport top so header stays visible.
+    const wrapper = this.element.parentElement
+    if (!wrapper) {
+      this.element.style.transform = `translateY(-50%) scale(${this.currentScale})`
+      return
+    }
+
+    const wrapperRect = wrapper.getBoundingClientRect()
+    const cardHeight = this.element.offsetHeight * this.currentScale
+
+    // Default offset: shift up by 50% of card height (anchor at bottom)
+    let yOffset = -cardHeight / 2
+
+    // If top would be clipped, reduce the offset to keep header visible (with 10px margin)
+    const cardTop = wrapperRect.top + yOffset
+    if (cardTop < 10) {
+      yOffset = 10 - wrapperRect.top
+    }
+
+    this.element.style.transform = `translateY(${yOffset}px) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
@@ -413,6 +433,9 @@ export class ConversationCard {
     this.contentEl.innerHTML = html
     this.attachListeners()
     highlightCodeBlocks(this.contentEl)
+
+    // Update recent files in header
+    this.updateRecentFiles()
 
     // Auto-scroll to bottom to show most recent messages
     this.contentEl.scrollTop = this.contentEl.scrollHeight
@@ -705,6 +728,56 @@ export class ConversationCard {
   }
 
   /**
+   * Extract and render recent files from conversation tool calls.
+   * Shows up to 3 most recently accessed files in the header.
+   */
+  private updateRecentFiles(): void {
+    const container = this.element.querySelector('.card-recent-files')
+    if (!container) return
+
+    // Build path -> timestamp map directly (later timestamps overwrite earlier)
+    const pathTimestamps = new Map<string, string>()
+    for (const msg of this.conversation) {
+      if (msg.type !== 'tool_use') continue
+      if (!this.clickableTools.includes(msg.toolName || '')) continue
+
+      const filePath = this.getToolFilePath(msg)
+      if (filePath) {
+        pathTimestamps.set(filePath, msg.timestamp)
+      }
+    }
+
+    // Sort by timestamp descending, take top 3
+    const recentFiles = [...pathTimestamps.entries()]
+      .sort((a, b) => b[1].localeCompare(a[1]))
+      .slice(0, 3)
+      .map(([path]) => path)
+
+    if (recentFiles.length === 0) {
+      container.innerHTML = ''
+      return
+    }
+
+    // Render file chips
+    container.innerHTML = recentFiles.map(path => {
+      const filename = path.split('/').pop() || path
+      const truncated = filename.length > 15 ? filename.slice(0, 12) + '...' : filename
+      return `<span class="recent-file-chip" data-path="${escapeHtml(path)}" title="${escapeHtml(path)}">${escapeHtml(truncated)}</span>`
+    }).join('')
+
+    // Attach click handlers
+    container.querySelectorAll('.recent-file-chip').forEach(chip => {
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const path = (chip as HTMLElement).dataset.path
+        if (path && this.options.onFileClick) {
+          this.options.onFileClick(path, this.session.originId, this.session.id)
+        }
+      })
+    })
+  }
+
+  /**
    * Update scale based on camera distance (for zoom clamping)
    */
   setScale(scale: number): void {
@@ -712,6 +785,13 @@ export class ConversationCard {
     const minScale = 0.35  // 550 * 0.35 = 192px at far zoom
     const maxScale = 1.0   // 550 * 1.0 = 550px at close zoom
     this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
+    this.applyTransform()
+  }
+
+  /**
+   * Update viewport clamping (call every frame after CSS2DRenderer updates wrapper position)
+   */
+  updateViewportClamp(): void {
     this.applyTransform()
   }
 
@@ -748,29 +828,19 @@ export class ConversationCard {
   }
 
   /**
-   * Toggle minimized state (collapse to header only)
-   */
-  toggleMinimize(): void {
-    this.setMinimized(!this.isMinimized)
-  }
-
-  /**
    * Minimize the card
    */
   minimize(): void {
-    this.setMinimized(true)
+    this.isMinimized = true
+    this.element.classList.add('minimized')
   }
 
   /**
    * Restore the card from minimized state
    */
   restore(): void {
-    this.setMinimized(false)
-  }
-
-  private setMinimized(minimized: boolean): void {
-    this.isMinimized = minimized
-    this.element.classList.toggle('minimized', minimized)
+    this.isMinimized = false
+    this.element.classList.remove('minimized')
   }
 
   /**

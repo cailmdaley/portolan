@@ -178,6 +178,7 @@ export class FileViewerModal {
   private langEl: HTMLElement
   private refreshBtn: HTMLElement
   private copyBtn: HTMLElement
+  private downloadBtn: HTMLElement
   private saveBtn: HTMLElement
   private sendBtn: HTMLElement
   private fiberBtn: HTMLElement
@@ -222,6 +223,7 @@ export class FileViewerModal {
     this.langEl = this.modal.querySelector('.file-viewer-lang')!
     this.refreshBtn = this.modal.querySelector('.file-viewer-refresh')!
     this.copyBtn = this.modal.querySelector('.file-viewer-copy')!
+    this.downloadBtn = this.modal.querySelector('.file-viewer-download')!
     this.saveBtn = this.modal.querySelector('.file-viewer-save')!
     this.sendBtn = this.modal.querySelector('.file-viewer-send')!
     this.fiberBtn = this.modal.querySelector('.file-viewer-fiber')!
@@ -256,6 +258,7 @@ export class FileViewerModal {
           <button class="file-viewer-btn file-viewer-send" style="display: none;">Send to Worker</button>
           <button class="file-viewer-btn file-viewer-refresh" title="Refresh file">↻</button>
           <button class="file-viewer-btn file-viewer-copy">Copy</button>
+          <button class="file-viewer-btn file-viewer-download">Download</button>
           <button class="file-viewer-close">&times;</button>
         </div>
       </div>
@@ -296,6 +299,9 @@ export class FileViewerModal {
 
     // Copy button
     this.copyBtn.addEventListener('click', () => this.copyToClipboard())
+
+    // Download button
+    this.downloadBtn.addEventListener('click', () => this.downloadFile())
 
     // Refresh button
     this.refreshBtn.addEventListener('click', () => this.refresh())
@@ -1050,6 +1056,38 @@ export class FileViewerModal {
         this.copyBtn.textContent = 'Copy'
       }, 1500)
     }
+  }
+
+  private downloadFile(): void {
+    let content: string
+    if (this.editorView) {
+      content = this.editorView.state.doc.toString()
+    } else if (this.currentContent) {
+      content = this.currentContent.content
+    } else {
+      return
+    }
+
+    // Get filename from path
+    const filename = this.currentPath.split('/').pop() || 'download.txt'
+
+    // Create blob and download link
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+
+    // Show feedback
+    const originalText = this.downloadBtn.textContent
+    this.downloadBtn.textContent = 'Downloaded!'
+    setTimeout(() => {
+      this.downloadBtn.textContent = originalText
+    }, 1500)
   }
 
   private async refresh(): Promise<void> {

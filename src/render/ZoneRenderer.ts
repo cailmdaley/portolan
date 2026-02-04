@@ -950,6 +950,11 @@ export class ZoneRenderer {
       }
     }
 
+    // Update card viewport clamping every frame (wrapper position changes with panning)
+    for (const card of this.conversationCards.values()) {
+      card.updateViewportClamp()
+    }
+
     // Update all worker swarms (they handle their own animation)
     for (const swarm of this.workerSwarms.values()) {
       if (cameraDistance !== undefined) {
