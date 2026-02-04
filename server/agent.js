@@ -41,7 +41,7 @@ const EVENTS_FILE = join(homedir(), '.hexarchy', 'data', 'events.jsonl');
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 const DEBUG = process.env.HEXARCHY_DEBUG === 'true';
 const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLANNOTATOR_PORT, 10) : null;
-const CONVERSATION_POLL_INTERVAL = 5000;  // Poll transcripts every 5 seconds
+const CONVERSATION_POLL_INTERVAL = 30000;  // Fallback polling every 30s (hooks are primary)
 const HOOK_SERVER_PORT = 4005;  // HTTP server for receiving hook POSTs
 
 // ============================================================================
@@ -780,40 +780,50 @@ async function readTranscript(cwd, tmuxSession) {
 }
 
 /**
- * Start polling conversations for active sessions and send to server
+ * Poll conversations once and send to server
+ * Used for initial history sync and fallback
+ */
+async function pollConversationsOnce() {
+    if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+    }
+
+    const sessions = await discoverSessions();
+
+    for (const session of sessions) {
+        const transcript = await readTranscript(session.cwd, session.tmuxSession);
+        if (transcript && transcript.messages.length > 0) {
+            // Extract sessionId from transcript path (format: .../{uuid}.jsonl)
+            const sessionId = transcript.transcriptPath
+                .split('/').pop()  // get filename
+                .replace('.jsonl', '');  // remove extension
+
+            // Send last 100 messages
+            const recentMessages = transcript.messages.slice(-100);
+            ws.send(JSON.stringify({
+                type: 'agent_conversation',
+                payload: {
+                    sessionId,
+                    tmuxSession: session.tmuxSession,
+                    cwd: session.cwd,
+                    messages: recentMessages
+                }
+            }));
+            debug(`Sent ${recentMessages.length} conversation messages for ${session.tmuxSession}`);
+        }
+    }
+}
+
+/**
+ * Start conversation polling: once immediately for history, then every 30s as fallback
+ * Primary updates come via hooks → hook server → WebSocket
  */
 function startConversationPolling() {
-    conversationPollInterval = setInterval(async () => {
-        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
-            return;
-        }
+    // Poll once immediately to seed history
+    pollConversationsOnce();
 
-        // Get current sessions
-        const sessions = await discoverSessions();
-
-        for (const session of sessions) {
-            const transcript = await readTranscript(session.cwd, session.tmuxSession);
-            if (transcript && transcript.messages.length > 0) {
-                // Extract sessionId from transcript path (format: .../{uuid}.jsonl)
-                const sessionId = transcript.transcriptPath
-                    .split('/').pop()  // get filename
-                    .replace('.jsonl', '');  // remove extension
-
-                // Send last 100 messages
-                const recentMessages = transcript.messages.slice(-100);
-                ws.send(JSON.stringify({
-                    type: 'agent_conversation',
-                    payload: {
-                        sessionId,
-                        tmuxSession: session.tmuxSession,
-                        cwd: session.cwd,
-                        messages: recentMessages
-                    }
-                }));
-                debug(`Sent ${recentMessages.length} conversation messages for ${session.tmuxSession}`);
-            }
-        }
-    }, CONVERSATION_POLL_INTERVAL);
+    // Then poll every 30s as fallback (in case hooks aren't configured)
+    conversationPollInterval = setInterval(pollConversationsOnce, CONVERSATION_POLL_INTERVAL);
 }
 
 // ============================================================================

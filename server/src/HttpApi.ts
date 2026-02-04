@@ -1445,7 +1445,13 @@ export class HttpApi {
    */
   private async resolveConversationMessages(sessionId: string | undefined, limit: number, tmuxSessionParam?: string): Promise<any[]> {
     const session = sessionId ? this.sessionLookup?.findSession(sessionId) : undefined;
-    const tmuxSession = tmuxSessionParam ?? session?.tmuxSession;
+    const rawTmuxSession = tmuxSessionParam ?? session?.tmuxSession;
+
+    // For remote sessions, prefix tmuxSession with originId (matches how agent stores it)
+    const isRemote = session?.originId && session.originId !== 'local';
+    const tmuxSession = isRemote && rawTmuxSession
+      ? `${session.originId}/${rawTmuxSession}`
+      : rawTmuxSession;
 
     // 1. ConversationCache by tmuxSession (aggregates all Claude sessions in tmux)
     if (this.conversationCache && tmuxSession) {
@@ -1457,7 +1463,6 @@ export class HttpApi {
     if (!sessionId) return [];
 
     // 2. Remote conversation lookup
-    const isRemote = session?.originId && session.originId !== 'local';
     if (isRemote) {
       const cached = this.remoteConversationLookup?.(sessionId);
       if (cached && cached.length > 0) return cached.slice(-limit);
