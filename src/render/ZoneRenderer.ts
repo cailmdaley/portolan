@@ -177,11 +177,13 @@ export class ZoneRenderer {
       this.labelDrag.moved = true
     }
 
-    if (this.labelDrag.moved) {
-      // Convert pixels to world units (~100 pixels ≈ 1 world unit at default zoom)
-      const scale = 0.01
-      const worldDx = dx * scale
-      const worldDz = dy * scale
+    if (this.labelDrag.moved && this.screenToWorldConverter) {
+      // Convert screen positions to world positions for accurate movement
+      const worldStart = this.screenToWorldConverter(this.labelDrag.startX, this.labelDrag.startY)
+      const worldNow = this.screenToWorldConverter(e.clientX, e.clientY)
+
+      const worldDx = worldNow.x - worldStart.x
+      const worldDz = worldNow.z - worldStart.z
 
       // Reset drag start to current position for incremental movement
       this.labelDrag.startX = e.clientX
@@ -196,6 +198,16 @@ export class ZoneRenderer {
         swarm.group.position.z += worldDz
       }
     }
+  }
+
+  // Screen-to-world converter function (set from main.ts with camera access)
+  private screenToWorldConverter: ((x: number, y: number) => { x: number; z: number }) | null = null
+
+  /**
+   * Set the screen-to-world conversion function (from camera)
+   */
+  setScreenToWorldConverter(converter: (x: number, y: number) => { x: number; z: number }): void {
+    this.screenToWorldConverter = converter
   }
 
   private stopLabelDrag = (): void => {
@@ -456,18 +468,18 @@ export class ZoneRenderer {
     labelObject.position.set(0, 1.5, 0)  // Above center
     group.add(labelObject)
 
-    // Workers as particle swarms positioned around the southern arc of the city
-    // Camera is at +Z looking toward -Z, so "south" (below on screen) is +Z direction
+    // Workers as particle swarms positioned around the northern arc of the city
+    // Camera is at +Z looking toward -Z, so "north" (above on screen) is -Z direction
     const workerLabels: CSS2DObject[] = []
     const swarmRadius = 3.0  // Distance from city center
-    const arcStart = Math.PI * 0.25  // Start at 45° (right-front)
-    const arcEnd = Math.PI * 0.75    // End at 135° (left-front)
+    const arcStart = -Math.PI * 0.75  // Start at -135° (left-back)
+    const arcEnd = -Math.PI * 0.25    // End at -45° (right-back)
 
     workers.forEach((worker, i) => {
-      // Distribute swarms along the southern arc
+      // Distribute swarms along the northern arc (above city on screen)
       const arcSpan = arcEnd - arcStart
       const angle = workers.length === 1
-        ? Math.PI * 0.5  // Single worker at center-front (directly towards camera)
+        ? -Math.PI * 0.5  // Single worker at center-back (directly away from camera = top)
         : arcStart + (arcSpan * i / (workers.length - 1))
 
       const swarmX = Math.cos(angle) * swarmRadius

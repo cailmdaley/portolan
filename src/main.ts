@@ -123,6 +123,9 @@ zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
   focusKittyTab(workerId)
 })
 
+// Provide camera's screen-to-world conversion for accurate drag
+zoneRenderer.setScreenToWorldConverter((x, y) => camera.screenToWorld(x, y))
+
 // Setup city panel
 const cityPanel = new CityPanel()
 
