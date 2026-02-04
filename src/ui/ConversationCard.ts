@@ -115,14 +115,14 @@ export class ConversationCard {
 
     // Apply initial size if provided (from localStorage persistence)
     // Only apply saved sizes if user explicitly made the card larger than CSS defaults
-    // CSS defaults: 600px width, 1800px height - don't restore smaller sizes
+    // CSS defaults: 550px width, 600px height - don't restore smaller sizes
     if (this.options.initialSize) {
       const { width, height } = this.options.initialSize
-      if (width > 600) {
+      if (width > 550) {
         card.style.width = `${width}px`
       }
-      if (height > 1800) {
-        card.style.maxHeight = `${height}px`
+      if (height > 600) {
+        card.style.height = `${height}px`
       }
     }
 
@@ -238,9 +238,8 @@ export class ConversationCard {
   }
 
   private applyTransform(): void {
-    // translateY(-100%) anchors card bottom to the CSS2D position (label position)
-    // Then we apply user offset and scale
-    this.element.style.transform = `translateY(-100%) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
+    // CSS2DRenderer centers at -50%,-50%. Shift up 50% + gap so card is above swarm.
+    this.element.style.transform = `translateY(calc(-50% - 15px)) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
@@ -772,9 +771,9 @@ export class ConversationCard {
    * Update scale based on camera distance (for zoom clamping)
    */
   setScale(scale: number): void {
-    // Clamp scale for readability (card base width is 600px)
-    const minScale = 0.5   // 600 * 0.5 = 300px at far zoom
-    const maxScale = 1.0   // 600 * 1.0 = 600px at close zoom
+    // Clamp scale for readability (card base width is 550px)
+    const minScale = 0.55  // 550 * 0.55 = 302px at far zoom
+    const maxScale = 1.0   // 550 * 1.0 = 550px at close zoom
     this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
     this.applyTransform()
   }

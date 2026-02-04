@@ -972,8 +972,8 @@ export class ZoneRenderer {
       initialSize: savedState?.size,
     })
 
-    // Position card at same height as label - bottom anchored there, expands upward
-    card.object.position.set(0, 0.65, 0)
+    // Position card center at swarm level - half above, half below
+    card.object.position.set(0, 0.15, 0)
 
     // Hide label - card header takes its place
     swarm.hideLabel()
@@ -1125,7 +1125,7 @@ export class ZoneRenderer {
   }
 
   /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */
-  private readonly SCALE_THRESHOLD = 7
+  private readonly SCALE_THRESHOLD = 5  // Cards stop scaling at closer zoom
 
   private calculateCardScale(cameraDistance: number): number {
     if (cameraDistance <= this.SCALE_THRESHOLD) return 1.0
