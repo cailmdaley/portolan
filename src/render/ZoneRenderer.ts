@@ -972,8 +972,8 @@ export class ZoneRenderer {
       initialSize: savedState?.size,
     })
 
-    // Position card center at swarm level - half above, half below
-    card.object.position.set(0, 0.15, 0)
+    // Position card just above swarm - card bottom will be at this anchor point
+    card.object.position.set(0, 0.7, 0)
 
     // Hide label - card header takes its place
     swarm.hideLabel()

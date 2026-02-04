@@ -67,8 +67,7 @@ export class ConversationCard {
     this.chatInputEl = card.querySelector('.chat-input')
 
     this.object = new CSS2DObject(wrapper)
-    // Position slightly to the right and below the swarm
-    this.object.position.set(0.5, 0.3, 0)
+    // Position set by ZoneRenderer.openConversationCard()
 
     this.setupEventListeners()
     this.applyTransform()  // Apply initial offset transform
@@ -238,8 +237,8 @@ export class ConversationCard {
   }
 
   private applyTransform(): void {
-    // CSS2DRenderer centers wrapper at -50%,-50%. Shift card up so bottom is at anchor + gap.
-    this.element.style.transform = `translateY(calc(-50% - 10px)) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
+    // CSS2DRenderer centers wrapper at anchor point. Shift card up by 50% so bottom is at anchor.
+    this.element.style.transform = `translateY(-50%) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
