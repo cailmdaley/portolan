@@ -232,7 +232,9 @@ export class ConversationCard {
   }
 
   private applyTransform(): void {
-    this.element.style.transform = `translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
+    // translateY(-100%) anchors card bottom to the CSS2D position (label position)
+    // Then we apply user offset and scale
+    this.element.style.transform = `translateY(-100%) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {

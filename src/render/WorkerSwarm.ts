@@ -441,8 +441,8 @@ export class WorkerSwarm {
       this.group.remove(this.labelObject)
     }
     this.labelObject = labelObj
-    // Position label above swarm (swarm is at y=0.15, label at y=0.6)
-    labelObj.position.set(0, 0.45, 0)
+    // Position label well above swarm (swarm at y=0.15, label floats high)
+    labelObj.position.set(0, 0.85, 0)
     this.group.add(labelObj)
   }
 
@@ -451,6 +451,26 @@ export class WorkerSwarm {
    */
   getLabel(): import('three/examples/jsm/renderers/CSS2DRenderer.js').CSS2DObject | null {
     return this.labelObject
+  }
+
+  /**
+   * Hide the label (when card is open, label becomes card header)
+   */
+  hideLabel(): void {
+    if (this.labelObject) {
+      this.labelObject.element.style.opacity = '0'
+      this.labelObject.element.style.pointerEvents = 'none'
+    }
+  }
+
+  /**
+   * Show the label (when card closes)
+   */
+  showLabel(): void {
+    if (this.labelObject) {
+      this.labelObject.element.style.opacity = ''
+      this.labelObject.element.style.pointerEvents = ''
+    }
   }
 
   /**

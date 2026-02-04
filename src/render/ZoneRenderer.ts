@@ -972,9 +972,12 @@ export class ZoneRenderer {
       initialSize: savedState?.size,
     })
 
-    // Position card relative to swarm (above and to the side)
-    // Initial position: slightly above label, offset to the right
-    card.object.position.set(1.0, 0.8, 0)
+    // Position card so its bottom aligns with label position (y=0.85)
+    // Card expands upward from there
+    card.object.position.set(0, 0.85, 0)
+
+    // Hide label - card header takes its place
+    swarm.hideLabel()
 
     // Add to swarm group so it moves with swarm
     swarm.addChild(card.object)
@@ -1079,6 +1082,8 @@ export class ZoneRenderer {
     const swarm = this.workerSwarms.get(workerId)
     if (swarm) {
       swarm.removeChild(card.object)
+      // Show the label again
+      swarm.showLabel()
     } else {
       // Fallback: remove from scene if swarm not found
       this.scene.remove(card.object)

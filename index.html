@@ -208,20 +208,36 @@
         z-index: 50;  /* Above city labels (z-index: 1) and worker labels (z-index: 10) */
       }
 
+      @keyframes cardExpand {
+        from {
+          opacity: 0.8;
+          max-height: 36px;  /* Start as just the header */
+        }
+        to {
+          opacity: 1;
+          max-height: 420px;
+        }
+      }
+
       .conversation-card {
         width: 320px;
         max-height: 420px;
         min-width: 200px;
-        min-height: 150px;
+        min-height: 36px;  /* Allow collapse to header height */
         background: linear-gradient(135deg, #EDE8E0 0%, #E5DFD5 100%);
         border: 1px solid rgba(46, 42, 38, 0.3);
         border-radius: 4px;
         box-shadow: 0 4px 16px rgba(30, 20, 10, 0.2);
         font-family: var(--font-main);
         pointer-events: auto;
-        transform-origin: top left;
+        transform-origin: center bottom;  /* Expand upward from bottom */
         display: flex;
         flex-direction: column;
+        /* Position card so bottom aligns with anchor point, expands upward */
+        position: relative;
+        top: 0;
+        transform: translateY(-100%);  /* Shift up by own height */
+        animation: cardExpand 300ms ease-out;
         overflow: hidden;
         position: relative;
       }
