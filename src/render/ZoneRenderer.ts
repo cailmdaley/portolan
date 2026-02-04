@@ -74,6 +74,9 @@ export class ZoneRenderer {
   private onWorkerClick: ((workerId: string, tmuxSession: string) => void) | null = null
   private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
 
+  // Callback for city label clicks (needed for remote cities without sprites)
+  private onCityLabelClick: ((cityId: string) => void) | null = null
+
   // Label drag state (for dragging swarm via label when card is closed)
   private labelDrag: {
     workerId: string
@@ -132,6 +135,13 @@ export class ZoneRenderer {
    */
   setWorkerDblClickHandler(onDblClick: (workerId: string, tmuxSession: string) => void): void {
     this.onWorkerDblClick = onDblClick
+  }
+
+  /**
+   * Set callback for city label clicks (needed for remote cities without sprites)
+   */
+  setCityLabelClickHandler(onClick: (cityId: string) => void): void {
+    this.onCityLabelClick = onClick
   }
 
   /**
@@ -503,6 +513,15 @@ export class ZoneRenderer {
     const labelDiv = document.createElement('div')
     labelDiv.className = 'city-label'
     labelDiv.textContent = city.name
+    labelDiv.style.cursor = 'pointer'
+
+    // Click handler for city label (needed for remote cities without sprites)
+    const cityId = city.id
+    labelDiv.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.onCityLabelClick) this.onCityLabelClick(cityId)
+    })
+
     const labelObject = new CSS2DObject(labelDiv)
     labelObject.position.set(0, 1.5, 0)  // Above center
     group.add(labelObject)

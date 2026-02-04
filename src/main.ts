@@ -126,11 +126,33 @@ zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
   focusKittyTab(workerId)
 })
 
+// Wire up city label click handler (needed for remote cities without sprites)
+// Uses handleCityClick defined below (after cityPanel initialization)
+zoneRenderer.setCityLabelClickHandler((cityId) => {
+  const city = cities.find(c => c.id === cityId)
+  if (city) handleCityClick(city)
+})
+
 // Provide camera's screen-to-world conversion for accurate drag
 zoneRenderer.setScreenToWorldConverter((x, y) => camera.screenToWorld(x, y))
 
 // Setup city panel
 const cityPanel = new CityPanel()
+
+// Shared handler for city clicks (used by sprite click and label click)
+function handleCityClick(city: City): void {
+  selectedHex = city.hex
+
+  // Focus on city and zoom to detail level
+  const pos = hexGrid.axialToCartesian(city.hex)
+  camera.focusAndZoom(pos, 6)
+
+  if (city.isDormant && city.originId !== 'local') {
+    activateRemoteCity(city)
+  } else {
+    cityPanel.show(city)
+  }
+}
 
 // Setup file viewer modal
 const fileViewerModal = new FileViewerModal()
@@ -492,17 +514,7 @@ canvasOverlay.addEventListener('click', (e) => {
   if (cityHit) {
     const city = cities.find(c => c.id === cityHit.entityId)
     if (city) {
-      selectedHex = city.hex
-
-      // Focus on city and zoom to detail level (where workers are visible)
-      const pos = hexGrid.axialToCartesian(city.hex)
-      camera.focusAndZoom(pos, 6)  // Just under DETAIL_ZOOM_THRESHOLD
-
-      if (city.isDormant && city.originId !== 'local') {
-        activateRemoteCity(city)
-      } else {
-        cityPanel.show(city)
-      }
+      handleCityClick(city)
       return
     }
   }
