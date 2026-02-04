@@ -443,8 +443,9 @@ export class CityPanel {
       return false
     })
 
-    // Combine and re-render
+    // Combine and store for future deduplication
     const allFileResults = [...existingFileResults, ...newFileResults]
+    this.searchResults = allFileResults
     this.renderUnifiedResults(
       allFileResults.map(r => r.type === 'file' ? r.data : null).filter(Boolean) as SearchResult[],
       fiberResults
