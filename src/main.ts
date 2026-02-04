@@ -94,6 +94,9 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
+// Load worker states early so swarm positions are available when first rendering
+zoneRenderer.ensureWorkerStatesLoaded()
+
 // Expose for debugging:
 //   window.zoneRenderer.debugResourceCounts() - scene traversal counts
 //   window.debugWebGL() - WebGL resource counts from renderer.info
@@ -435,7 +438,7 @@ function handleMessage(message: ServerMessage): void {
       console.log('[InitialFocus]', mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
         sessions.length, 'sessions,', sessions.filter(s => s.cityId).length, 'with cityId')
       const pos = hexGrid.axialToCartesian(targetCity.hex)
-      camera.focusAndZoom(pos, 6)  // Zoom level 6 shows workers
+      camera.focusAndZoom(pos, 6, 0.7)  // City at bottom of screen (0.7 = 70% down)
     }
   }
 }

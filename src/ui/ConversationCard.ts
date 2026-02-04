@@ -11,8 +11,7 @@ interface CardOptions {
   onFileClick?: FileClickCallback
   onDoubleClick?: () => void  // For focusing terminal
   onBringToFront?: () => void  // When card is clicked/focused
-  onSwarmDrag?: (dx: number, dz: number) => void  // Move swarm in world space (Cmd+drag)
-  initialOffset?: { x: number; y: number }  // Offset from worker position
+  onSwarmDrag?: (dx: number, dz: number) => void  // Move swarm in world space
   initialSize?: { width: number; height: number }  // Saved card size
 }
 
@@ -34,16 +33,13 @@ export class ConversationCard {
   // Clickable tools for file viewer
   private readonly clickableTools = ['Read', 'Write', 'Edit']
 
-  // Card positioning and interaction
-  private offset = { x: 0, y: 0 }  // Offset from worker position (in pixels)
+  // Card interaction (dragging moves swarm, not card)
   private isDragging = false
   private dragStart = { x: 0, y: 0 }
-  private isSwarmDrag = false  // Cmd+drag moves swarm instead of card
 
-  // Resize state
+  // Resize state (only bottom-right resize supported)
   private isResizing = false
-  private resizeEdge: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null = null
-  private resizeStart = { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0 }
+  private resizeStart = { x: 0, y: 0, width: 0, height: 0 }
 
   // Scale state (for combining with drag transform)
   private currentScale = 1
@@ -94,23 +90,10 @@ export class ConversationCard {
         <textarea class="chat-input" placeholder="Send a message..." rows="1"></textarea>
         <button class="chat-send-btn" title="Send (Enter)">↩</button>
       </div>
-      <!-- Edge resize handles -->
-      <div class="resize-edge resize-n" data-edge="n"></div>
-      <div class="resize-edge resize-s" data-edge="s"></div>
-      <div class="resize-edge resize-e" data-edge="e"></div>
-      <div class="resize-edge resize-w" data-edge="w"></div>
-      <div class="resize-corner resize-ne" data-edge="ne"></div>
-      <div class="resize-corner resize-nw" data-edge="nw"></div>
-      <div class="resize-corner resize-se" data-edge="se"></div>
-      <div class="resize-corner resize-sw" data-edge="sw"></div>
+      <div class="resize-corner resize-se"></div>
     `
 
     wrapper.appendChild(card)
-
-    // Apply initial offset if provided
-    if (this.options.initialOffset) {
-      this.offset = { ...this.options.initialOffset }
-    }
 
     // Apply initial size if provided (from localStorage persistence)
     // Only apply saved sizes if user explicitly made the card larger than CSS defaults
@@ -162,13 +145,9 @@ export class ConversationCard {
     header.style.cursor = 'move'
     header.addEventListener('mousedown', this.startDrag)
 
-    // Resize via edge/corner handles
-    this.element.querySelectorAll('[data-edge]').forEach(handle => {
-      handle.addEventListener('mousedown', (e) => {
-        const edge = (handle as HTMLElement).dataset.edge as typeof this.resizeEdge
-        this.startResize(e as MouseEvent, edge)
-      })
-    })
+    // Resize via corner handle (bottom-right only)
+    const resizeHandle = this.element.querySelector('.resize-se')
+    resizeHandle?.addEventListener('mousedown', (e) => this.startResize(e as MouseEvent))
 
     // Chat input
     if (this.chatInputEl) {
@@ -208,58 +187,44 @@ export class ConversationCard {
     e.preventDefault()
     e.stopPropagation()
     this.isDragging = true
-    // Regular drag moves the swarm (and card with it)
-    // Cmd/Ctrl+drag moves just the card offset
-    this.isSwarmDrag = !(e.metaKey || e.ctrlKey)
-    this.dragStart = { x: e.clientX - this.offset.x, y: e.clientY - this.offset.y }
+    this.dragStart = { x: e.clientX, y: e.clientY }
 
     document.addEventListener('mousemove', this.onDrag)
     document.addEventListener('mouseup', this.stopDrag)
   }
 
   private onDrag = (e: MouseEvent): void => {
-    if (!this.isDragging) return
+    if (!this.isDragging || !this.options.onSwarmDrag) return
 
-    if (this.isSwarmDrag && this.options.onSwarmDrag) {
-      // Move swarm in world space (convert pixels to world units roughly)
-      // Approximate: 100 pixels ≈ 1 world unit at default zoom
-      const scale = 0.01
-      const dx = (e.clientX - this.dragStart.x - this.offset.x) * scale
-      const dz = (e.clientY - this.dragStart.y - this.offset.y) * scale
-      this.dragStart = { x: e.clientX - this.offset.x, y: e.clientY - this.offset.y }
-      this.options.onSwarmDrag(dx, dz)
-    } else {
-      // Cmd/Ctrl+drag: card offset only (pixels)
-      this.offset.x = e.clientX - this.dragStart.x
-      this.offset.y = e.clientY - this.dragStart.y
-      this.applyTransform()
-    }
+    // Move swarm in world space (convert pixels to world units roughly)
+    // Approximate: 100 pixels ≈ 1 world unit at default zoom
+    const scale = 0.01
+    const dx = (e.clientX - this.dragStart.x) * scale
+    const dz = (e.clientY - this.dragStart.y) * scale
+    this.dragStart = { x: e.clientX, y: e.clientY }
+    this.options.onSwarmDrag(dx, dz)
   }
 
   private applyTransform(): void {
     // CSS2DRenderer centers wrapper at anchor point. Shift card up by 50% so bottom is at anchor.
-    this.element.style.transform = `translateY(-50%) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
+    this.element.style.transform = `translateY(-50%) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
     this.isDragging = false
-    this.isSwarmDrag = false
     document.removeEventListener('mousemove', this.onDrag)
     document.removeEventListener('mouseup', this.stopDrag)
   }
 
-  private startResize = (e: MouseEvent, edge: typeof this.resizeEdge): void => {
+  private startResize = (e: MouseEvent): void => {
     e.preventDefault()
     e.stopPropagation()
     this.isResizing = true
-    this.resizeEdge = edge
     this.resizeStart = {
       x: e.clientX,
       y: e.clientY,
       width: this.element.offsetWidth,
       height: this.element.offsetHeight,
-      left: this.offset.x,
-      top: this.offset.y,
     }
 
     document.addEventListener('mousemove', this.onResize)
@@ -267,47 +232,20 @@ export class ConversationCard {
   }
 
   private onResize = (e: MouseEvent): void => {
-    if (!this.isResizing || !this.resizeEdge) return
+    if (!this.isResizing) return
 
     const dx = e.clientX - this.resizeStart.x
     const dy = e.clientY - this.resizeStart.y
-    const edge = this.resizeEdge
 
-    let newWidth = this.resizeStart.width
-    let newHeight = this.resizeStart.height
-    let newOffsetX = this.resizeStart.left
-    let newOffsetY = this.resizeStart.top
-
-    // Handle horizontal edges
-    if (edge.includes('e')) {
-      newWidth = Math.max(300, this.resizeStart.width + dx)
-    }
-    if (edge.includes('w')) {
-      const widthDelta = Math.min(dx, this.resizeStart.width - 300)
-      newWidth = this.resizeStart.width - widthDelta
-      newOffsetX = this.resizeStart.left + widthDelta
-    }
-
-    // Handle vertical edges
-    if (edge.includes('s')) {
-      newHeight = Math.max(200, this.resizeStart.height + dy)
-    }
-    if (edge.includes('n')) {
-      const heightDelta = Math.min(dy, this.resizeStart.height - 200)
-      newHeight = this.resizeStart.height - heightDelta
-      newOffsetY = this.resizeStart.top + heightDelta
-    }
+    const newWidth = Math.max(300, this.resizeStart.width + dx)
+    const newHeight = Math.max(200, this.resizeStart.height + dy)
 
     this.element.style.width = `${newWidth}px`
     this.element.style.maxHeight = `${newHeight}px`
-    this.offset.x = newOffsetX
-    this.offset.y = newOffsetY
-    this.applyTransform()
   }
 
   private stopResize = (): void => {
     this.isResizing = false
-    this.resizeEdge = null
     document.removeEventListener('mousemove', this.onResize)
     document.removeEventListener('mouseup', this.stopResize)
   }
@@ -771,7 +709,7 @@ export class ConversationCard {
    */
   setScale(scale: number): void {
     // Clamp scale for readability (card base width is 550px)
-    const minScale = 0.55  // 550 * 0.55 = 302px at far zoom
+    const minScale = 0.35  // 550 * 0.35 = 192px at far zoom
     const maxScale = 1.0   // 550 * 1.0 = 550px at close zoom
     this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
     this.applyTransform()
@@ -797,13 +735,6 @@ export class ConversationCard {
       // Apply immediately (will be overwritten by CSS2DRenderer, then reapplied)
       wrapper.style.setProperty('z-index', String(zIndex), 'important')
     }
-  }
-
-  /**
-   * Get current offset from initial position
-   */
-  getOffset(): { x: number; y: number } {
-    return { ...this.offset }
   }
 
   /**

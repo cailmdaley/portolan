@@ -1656,19 +1656,16 @@ export class HttpApi {
     }
 
     const body = await this.parseJsonBody<{
-      offset?: { x: number; y: number };
       size?: { width: number; height: number };
+      swarmOffset?: { x: number; z: number };
     }>(req, res);
 
     if (!body) return;
 
-    const { offset, size } = body;
-    if (!offset || typeof offset.x !== 'number' || typeof offset.y !== 'number') {
-      this.sendJsonError(res, 400, 'Invalid offset: must have x and y numbers');
-      return;
-    }
-
-    const state = this.cardStatePersistence.set(workerId, offset, size);
+    const state = this.cardStatePersistence.set(workerId, {
+      size: body.size,
+      swarmOffset: body.swarmOffset,
+    });
     this.sendJsonSuccess(res, { state });
   }
 

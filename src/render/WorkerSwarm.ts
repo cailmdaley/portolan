@@ -138,7 +138,7 @@ const INK_DORMANT = { r: 0x1a / 255, g: 0x18 / 255, b: 0x16 / 255 }    // #1A181
 const INK_WARM = { r: 0x6a / 255, g: 0x5a / 255, b: 0x3a / 255 }       // #6A5A3A warm sepia
 const INK_FIREFLY = { r: 0xd4 / 255, g: 0xa5 / 255, b: 0x20 / 255 }    // #D4A520 firefly gold
 
-// Create sharp point texture with glow
+// Create particle texture with dark border and bright interior
 function createDropletTexture(): CanvasTexture {
   const size = 64
   const canvas = document.createElement('canvas')
@@ -146,20 +146,26 @@ function createDropletTexture(): CanvasTexture {
   canvas.height = size
   const ctx = canvas.getContext('2d')!
 
-  // Sharp core with subtle glow halo
-  const gradient = ctx.createRadialGradient(
-    size / 2, size / 2, 0,
-    size / 2, size / 2, size / 2
-  )
-  // Bright sharp core
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-  gradient.addColorStop(0.15, 'rgba(255, 255, 255, 0.9)')
-  gradient.addColorStop(0.25, 'rgba(255, 255, 255, 0.4)')
-  // Subtle glow halo
-  gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)')
-  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  const cx = size / 2
+  const cy = size / 2
+  const outerRadius = size / 2
 
-  ctx.fillStyle = gradient
+  // Dark border ring (drawn first, underneath)
+  const borderGradient = ctx.createRadialGradient(cx, cy, outerRadius * 0.5, cx, cy, outerRadius)
+  borderGradient.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  borderGradient.addColorStop(0.6, 'rgba(30, 25, 20, 0.8)')
+  borderGradient.addColorStop(0.85, 'rgba(30, 25, 20, 0.9)')
+  borderGradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = borderGradient
+  ctx.fillRect(0, 0, size, size)
+
+  // Bright glowing core (drawn on top)
+  const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, outerRadius * 0.55)
+  coreGradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
+  coreGradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.95)')
+  coreGradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.5)')
+  coreGradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  ctx.fillStyle = coreGradient
   ctx.fillRect(0, 0, size, size)
 
   const texture = new CanvasTexture(canvas)

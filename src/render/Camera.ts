@@ -259,11 +259,17 @@ export class Camera {
 
   /**
    * Focus on position and zoom to a specific level
+   * @param screenOffsetY - Optional vertical offset (0-1, where 0.5 = center, 0 = top, 1 = bottom)
    */
-  focusAndZoom(pos: CartesianCoord, zoom: number): void {
-    this.target.x = pos.x
-    this.target.z = pos.z
+  focusAndZoom(pos: CartesianCoord, zoom: number, screenOffsetY = 0.5): void {
     this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, zoom))
+
+    // Calculate offset to position the city at the desired screen Y position
+    // For 45° isometric view, shifting target in -Z moves focus point down on screen
+    const verticalOffset = (screenOffsetY - 0.5) * this.zoom * 2
+
+    this.target.x = pos.x
+    this.target.z = pos.z - verticalOffset
     this.updateCamera()
   }
 

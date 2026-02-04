@@ -15,8 +15,9 @@ import { join } from 'path';
 
 export interface CardState {
   workerId: string;
-  offset: { x: number; y: number };
+  offset?: { x: number; y: number };  // Deprecated, kept for migration
   size?: { width: number; height: number };
+  swarmOffset?: { x: number; z: number };  // World-space offset from default position
   updatedAt: number;  // Timestamp for LRU cleanup
 }
 
@@ -129,11 +130,13 @@ export class CardStatePersistence {
   /**
    * Save or update card state
    */
-  set(workerId: string, offset: { x: number; y: number }, size?: { width: number; height: number }): CardState {
+  set(workerId: string, data: { size?: { width: number; height: number }; swarmOffset?: { x: number; z: number } }): CardState {
+    // Merge with existing state to preserve fields not being updated
+    const existing = this.cards.get(workerId);
     const state: CardState = {
       workerId,
-      offset,
-      size,
+      size: data.size ?? existing?.size,
+      swarmOffset: data.swarmOffset ?? existing?.swarmOffset,
       updatedAt: Date.now(),
     };
     this.cards.set(workerId, state);

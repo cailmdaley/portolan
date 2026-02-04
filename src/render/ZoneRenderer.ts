@@ -490,6 +490,13 @@ export class ZoneRenderer {
       if (!swarm) {
         swarm = new WorkerSwarm(worker.id, worker.tmuxSession)
         this.workerSwarms.set(worker.id, swarm)
+
+        // Load saved swarm offset
+        const savedOffset = this.loadSwarmOffset(worker.id)
+        if (savedOffset) {
+          swarm.userOffset.x = savedOffset.x
+          swarm.userOffset.z = savedOffset.z
+        }
       }
 
       // Position swarm relative to city (including any user offset)
@@ -578,6 +585,15 @@ export class ZoneRenderer {
     if (!swarm) {
       swarm = new WorkerSwarm(session.id, session.tmuxSession)
       this.workerSwarms.set(session.id, swarm)
+
+      // Load saved swarm offset
+      const savedOffset = this.loadSwarmOffset(session.id)
+      if (savedOffset) {
+        swarm.userOffset.x = savedOffset.x
+        swarm.userOffset.z = savedOffset.z
+        swarm.group.position.x = savedOffset.x
+        swarm.group.position.z = savedOffset.z
+      }
     }
     swarm.setActivity(session.status === 'working' ? 1 : 0)
     group.add(swarm.group)
@@ -1117,7 +1133,7 @@ export class ZoneRenderer {
     // Load saved position if available
     const savedState = this.loadCardState(session.id)
 
-    // Create card with saved or calculated offset
+    // Create card with saved size
     const card = new ConversationCard(session, {
       onClose: () => this.closeConversationCard(session.id),
       onFileClick: this.onCardFileClick ?? undefined,
@@ -1128,7 +1144,6 @@ export class ZoneRenderer {
       },
       onBringToFront: () => this.bringCardToFront(session.id),
       onSwarmDrag: (dx: number, dz: number) => this.moveSwarm(session.id, dx, dz),
-      initialOffset: savedState?.offset,
       initialSize: savedState?.size,
     })
 
@@ -1170,6 +1185,9 @@ export class ZoneRenderer {
     // Update swarm group position
     swarm.group.position.x += dx
     swarm.group.position.z += dz
+
+    // Persist the offset
+    this.saveSwarmOffset(workerId, { x: swarm.userOffset.x, z: swarm.userOffset.z })
   }
 
   /**
@@ -1190,11 +1208,9 @@ export class ZoneRenderer {
    */
   reapplyCardZIndexes(): void {
     for (const card of this.conversationCards.values()) {
-      // Re-set the z-index on wrapper - CSS2DRenderer just overwrote it
-      const wrapper = (card as { object: { element: HTMLElement } }).object.element
-      if (wrapper) {
-        wrapper.style.setProperty('z-index', wrapper.dataset.portolanZIndex || '1000', 'important')
-      }
+      const wrapper = card.object.element
+      const savedZIndex = wrapper.dataset.portolanZIndex || '1000'
+      wrapper.style.setProperty('z-index', savedZIndex, 'important')
     }
   }
 
@@ -1299,7 +1315,7 @@ export class ZoneRenderer {
   }
 
   /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */
-  private readonly SCALE_THRESHOLD = 5  // Cards stop scaling at closer zoom
+  private readonly SCALE_THRESHOLD = 3  // Cards stop scaling at closer zoom
 
   private calculateCardScale(cameraDistance: number): number {
     if (cameraDistance <= this.SCALE_THRESHOLD) return 1.0
@@ -1311,24 +1327,43 @@ export class ZoneRenderer {
   // ═══════════════════════════════════════════════════════════
 
   // Cache loaded states to avoid repeated fetches
-  private cardStateCache: Map<string, { offset: { x: number; y: number }; size?: { width: number; height: number } }> = new Map()
-  private cardStateCacheLoaded = false
+  private workerStateCache: Map<string, { size?: { width: number; height: number }; swarmOffset?: { x: number; z: number } }> = new Map()
+  private workerStateCacheLoaded = false
 
   /**
-   * Save card position and size to server
+   * Save card size to server
    */
   private saveCardState(workerId: string, card: ConversationCard): void {
-    const offset = card.getOffset()
     const size = card.getSize()
+    const existing = this.workerStateCache.get(workerId)
 
-    // Update cache immediately
-    this.cardStateCache.set(workerId, { offset, size })
+    // Update cache immediately (preserve swarmOffset)
+    this.workerStateCache.set(workerId, { ...existing, size })
 
     // Fire and forget - don't await
     fetch(`http://localhost:4004/card-state/${encodeURIComponent(workerId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ offset, size }),
+      body: JSON.stringify({ size }),
+    }).catch(() => {
+      // Ignore save errors
+    })
+  }
+
+  /**
+   * Save swarm position to server
+   */
+  private saveSwarmOffset(workerId: string, swarmOffset: { x: number; z: number }): void {
+    const existing = this.workerStateCache.get(workerId)
+
+    // Update cache immediately (preserve size)
+    this.workerStateCache.set(workerId, { ...existing, swarmOffset })
+
+    // Fire and forget - don't await
+    fetch(`http://localhost:4004/card-state/${encodeURIComponent(workerId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ swarmOffset }),
     }).catch(() => {
       // Ignore save errors
     })
@@ -1337,32 +1372,44 @@ export class ZoneRenderer {
   /**
    * Load saved card state from cache
    */
-  private loadCardState(workerId: string): { offset: { x: number; y: number }; size?: { width: number; height: number } } | null {
-    return this.cardStateCache.get(workerId) ?? null
+  private loadCardState(workerId: string): { size?: { width: number; height: number } } | null {
+    return this.workerStateCache.get(workerId) ?? null
   }
 
   /**
-   * Preload all card states from server into cache.
-   * Called once on first card open.
+   * Load saved swarm offset from cache
    */
-  private async ensureCardStatesLoaded(): Promise<void> {
-    if (this.cardStateCacheLoaded) return
+  private loadSwarmOffset(workerId: string): { x: number; z: number } | null {
+    return this.workerStateCache.get(workerId)?.swarmOffset ?? null
+  }
+
+  /**
+   * Preload all worker states from server into cache.
+   * Called early to have swarm positions ready when rendering.
+   */
+  async ensureWorkerStatesLoaded(): Promise<void> {
+    if (this.workerStateCacheLoaded) return
 
     try {
       const response = await fetch('http://localhost:4004/card-states')
       if (response.ok) {
         const data = await response.json()
         for (const state of data.states || []) {
-          this.cardStateCache.set(state.workerId, {
-            offset: state.offset,
+          this.workerStateCache.set(state.workerId, {
             size: state.size,
+            swarmOffset: state.swarmOffset,
           })
         }
       }
     } catch {
       // Ignore load errors - will use defaults
     }
-    this.cardStateCacheLoaded = true
+    this.workerStateCacheLoaded = true
+  }
+
+  // Keep old name for backward compat
+  private async ensureCardStatesLoaded(): Promise<void> {
+    return this.ensureWorkerStatesLoaded()
   }
 
   /**
