@@ -116,18 +116,20 @@
         --ui-purple: #6A5868;
         --ui-teal: var(--verdigris);
 
-        /* Custom cursor - the bird for everything */
-        --cursor-bird: url('/cursors/bird.png') 16 16, default;
+        /* Custom cursor - the swallow for the whole map, beak tip is hotspot */
+        --cursor-bird: url('/cursors/bird.png') 2 3, default;
       }
       body {
         overflow: hidden;
         background: var(--bg-primary);
         font-family: var(--font-main);
+        cursor: var(--cursor-bird);
       }
       #canvas {
         display: block;
         width: 100vw;
         height: 100vh;
+        cursor: var(--cursor-bird);
       }
 
       /* ═══════════════════════════════════════════════════════════
@@ -256,8 +258,8 @@
 
       .conversation-card .card-header {
         display: flex;
-        justify-content: space-between;
         align-items: center;
+        gap: 8px;
         padding: 10px 14px;
         /* Subtle ruled line like a ledger page */
         border-bottom: 1px solid rgba(140, 110, 80, 0.25);
@@ -274,6 +276,35 @@
         letter-spacing: 0.04em;
       }
 
+      .conversation-card .card-recent-files {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+        margin-right: 12px;
+        flex-shrink: 1;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .conversation-card .recent-file-chip {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-light);
+        background: rgba(180, 160, 130, 0.15);
+        padding: 2px 8px;
+        border-radius: 10px;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: all 150ms ease;
+        border: 1px solid rgba(140, 110, 80, 0.15);
+      }
+
+      .conversation-card .recent-file-chip:hover {
+        background: rgba(138, 107, 42, 0.2);
+        color: var(--ink-dark);
+        border-color: rgba(138, 107, 42, 0.3);
+      }
+
       .conversation-card .card-close {
         background: none;
         border: none;
@@ -285,6 +316,7 @@
         border-radius: 3px;
         transition: color 200ms ease, background 200ms ease;
         opacity: 0.7;
+        flex-shrink: 0;
       }
 
       .conversation-card .card-close:hover {

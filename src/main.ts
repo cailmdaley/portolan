@@ -471,7 +471,7 @@ canvasOverlay.addEventListener('click', (e) => {
   if (movingCityId) {
     moveCity(movingCityId, hex)
     movingCityId = null
-    document.body.style.cursor = 'default'
+    document.body.style.cursor = 'var(--cursor-bird)'
     return
   }
 
@@ -593,8 +593,8 @@ canvasOverlay.addEventListener('mousemove', (e) => {
     return
   }
 
-  // Default cursor for map
-  canvas.style.cursor = 'default'
+  // Swallow cursor everywhere on map
+  canvas.style.cursor = 'var(--cursor-bird)'
 })
 
 // Claim gesture to prevent system Quick Look
@@ -834,7 +834,7 @@ function handleEscapeKey(e: KeyboardEvent): void {
 
   if (movingCityId) {
     movingCityId = null
-    document.body.style.cursor = 'default'
+    document.body.style.cursor = 'var(--cursor-bird)'
     return
   }
 
