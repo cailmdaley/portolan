@@ -1,9 +1,11 @@
 ---
 title: Murmuration workers
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-03T23:50:35.237418+01:00
+closed-at: 2026-02-04T03:32:42.083852+01:00
+close-reason: Core implementation complete through 8 sessions. Particle swarms render with noise-based animation, 3-stop color gradient (dormant→sepia→gold), pulsating brightness for active workers, swarm/label/card unified as draggable entity, click-to-close behavior. Remaining polish (status reliability, cursors) moved to portolan-polish-reliability-7a523ad7.
 ---
 
 # Spec
@@ -227,4 +229,6 @@ Activate `/frontend-design` if design questions arise about the visual treatment
 3. Test with multiple workers to ensure positioning is consistent
 4. May need to adjust CSS2D y position or transform calculation
 **2026-02-04 02:23** — Session 5: Fixed card-swarm positioning. Card anchor at y=0.7, transform-origin bottom center, translateY(-50%). Click-to-close replaces click-to-minimize. Cleared stale card-states.json. Removed unused center field and hitTest method from WorkerSwarm.
-
+**2026-02-04 02:44** — Session 6: Label/swarm drag works when card closed, grab cursor, workers above cities, accurate drag distance via screenToWorld, z-index reapply after CSS2DRenderer. Created fibers for compass cursor and worker status bug.
+**2026-02-04 03:02** — Session 7: Simplified card/swarm architecture - removed card offset layer (only swarm.userOffset persists), cards scale smaller at far zoom, initial camera positions city at bottom, particle texture has dark border for visibility. Worker status now updates correctly (gold pulsing visible).
+**2026-02-04 03:20** — Session 8: Reverted particle texture from dark-border style back to sharp-core-with-glow. Code-simplifier consolidated inline type imports in WorkerSwarm.ts.

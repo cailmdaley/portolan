@@ -1,11 +1,13 @@
 ---
 title: Chat and search reliability testing
-status: open
+status: closed
 kind: spec
 priority: 2
 depends-on:
     - murmuration-workers-68674cb9
 created-at: 2026-02-03T23:51:38.103961+01:00
+closed-at: 2026-02-04T03:32:32.702395+01:00
+close-reason: Merged into portolan-polish-reliability-7a523ad7. Chat and search reliability is now part of the consolidated spec.
 ---
 
 # Spec

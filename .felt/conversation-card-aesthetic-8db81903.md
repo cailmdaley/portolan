@@ -1,11 +1,13 @@
 ---
 title: Conversation card aesthetic polish
-status: open
+status: closed
 kind: spec
 priority: 2
 depends-on:
     - murmuration-workers-68674cb9
 created-at: 2026-02-04T01:32:54.027446+01:00
+closed-at: 2026-02-04T03:32:43.75611+01:00
+close-reason: Deferred. Core card functionality works. Aesthetic polish can be a future iteration after reliability is solid.
 ---
 
 # Spec

@@ -1,11 +1,13 @@
 ---
 title: Remove HexGrid entirely
-status: open
+status: closed
 kind: task
 priority: 2
 depends-on:
     - iteration-26-coastline-a68d3d98
 created-at: 2026-01-31T23:55:05.06642+01:00
+closed-at: 2026-02-04T03:31:34.141941+01:00
+close-reason: Superseded by coastline architecture. HexGrid was already removed during coastline rework — cities and workers now positioned via coastlinePositions. No hex-based click detection or coordinate conversion remains.
 ---
 
 # Remove HexGrid Entirely
