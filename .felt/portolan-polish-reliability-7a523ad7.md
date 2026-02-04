@@ -1,9 +1,11 @@
 ---
 title: 'Portolan polish: reliability, status, cursors, aesthetics'
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-04T03:31:55.411457+01:00
+closed-at: 2026-02-04T06:11:40.700129+01:00
+close-reason: 'Completed across 10 iterations. (1) Chat/Search: Fixed file search persistence bug (iteration 5), timestamp parsing bug (iteration 6), city label click for remote cities (iteration 8). (2) Worker Status: Verified pipeline correct — EventWatcher→SessionTracker→WebSocket→ZoneRenderer→setActivity(); 30s idle timeout is by design. (3) Custom Cursors: Swallow cursor generated via nano-banana + diff-mat, applied as default cursor everywhere. (4) Recent Files: Implemented extraction from Read/Write/Edit tool calls, displayed as clickable chips in card header. (5) Aesthetics: Comprehensive card CSS — layered parchment, weathered edges, ledger-style headers, marginalia message borders, inset chat input. Also added viewport clamping for card headers, download button to FileViewerModal. Tests: 113 passing.'
 ---
 
 This is your spec for a Ralph loop, a meditative iteration toward a desired state.
@@ -194,4 +196,6 @@ Activate `/frontend-design` for this work.
 **2026-02-04 04:34** — Ralph iteration 4: Swallow cursor - solid black silhouette (27x27), transparent background via nano-banana + white→transparent. Applied as default cursor everywhere on map by fixing JS resets to 'default'. Hotspot at beak (2,3). Committed: 654cb55
 **2026-02-04 05:18** — Ralph iteration 5: Fixed file search bug - results weren't persisting between filename/content responses (this.searchResults not updated). Also improved stale result rejection and cleaned up code. Search now works reliably for local cities. Committed: 362cd4f, 82dc7f9
 **2026-02-04 05:29** — Ralph iteration 6: Fixed Invalid Date bug in conversation timestamps. The hook script was appending index suffixes (.0) to timestamps for deduplication, which broke Date parsing. Fixed both the hook script (~/loom/hooks/) and added defensive handling in formatTimeAgo(). Cache file cleaned. Tests pass. Committed: e576298
-
+**2026-02-04 05:41** — Ralph iteration 7: Viewport clamping for conversation cards - headers now stay visible when workers are near viewport top. Recent files chips in card header now functional and tested. Download button added to FileViewerModal (hidden for binary files). Code simplified per code-simplifier review. Commits: 622901e, fe29067
+**2026-02-04 05:59** — Ralph iteration 8: Fixed city label click - remote cities without sprites can now be clicked via their labels. Extracted shared handleCityClick() function to deduplicate logic. Verified remote file search works. Tests pass.
+**2026-02-04 06:04** — Ralph iteration 9: Full survey - all 5 acceptance criteria verified complete. Chat/search endpoints solid, worker status pipeline verified (EventWatcher → SessionTracker → WebSocket → ZoneRenderer → setActivity), custom bird cursor everywhere, recent files functional with click-to-open, comprehensive card CSS styling. Tests pass (113). No bugs or improvements found. Spec appears ready to close.
