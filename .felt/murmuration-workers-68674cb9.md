@@ -193,4 +193,37 @@ Activate `/frontend-design` if design questions arise about the visual treatment
 - Animation timing/easing refinement
 - Visual polish on expand feel
 - Worker activity status not yet reflecting (gold color for working)
+**2026-02-04 01:43** — **Session 4 progress (2026-02-04 01:45):**
+
+**Card dimensions implemented:**
+- Width: 550px (~80 monospace chars)
+- Height: 600px fixed (3× original 200px)
+- Scale threshold: 5 (was 7) - cards stop growing at closer zoom
+
+**Positioning work in progress:**
+- Card CSS2D object at y=0.15 (swarm particle level)
+- Transform: `translateY(calc(-50% - 10px))` to shift card above anchor
+- CSS2DRenderer applies translate(-50%, -50%) to wrapper, centering it
+- Card's additional translateY(-50%) should put bottom at anchor point
+
+**Current issue:** Card appears offset from swarm - need to verify:
+1. Swarm group world position is correct
+2. CSS2D child inherits parent transform properly
+3. Transform stacking (wrapper vs card element)
+
+**User feedback:**
+- "swarms should be centered on and directly below the cards, just a hair separating them"
+- "cards should cap in zoom earlier" (done - threshold=5)
+
+**Files changed this session:**
+- index.html: card CSS (550px width, 600px height, removed animation)
+- ConversationCard.ts: applyTransform with translateY, scale thresholds
+- ZoneRenderer.ts: card position y=0.15, SCALE_THRESHOLD=5
+- WorkerSwarm.ts: label position y=0.65
+
+**Next steps:**
+1. Debug why card appears offset - check CSS2D projection
+2. Verify swarm particles visible below card after positioning fix
+3. Test with multiple workers to ensure positioning is consistent
+4. May need to adjust CSS2D y position or transform calculation
 

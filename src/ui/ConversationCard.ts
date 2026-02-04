@@ -238,8 +238,8 @@ export class ConversationCard {
   }
 
   private applyTransform(): void {
-    // CSS2DRenderer centers at -50%,-50%. Shift up 50% + gap so card is above swarm.
-    this.element.style.transform = `translateY(calc(-50% - 15px)) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
+    // CSS2DRenderer centers wrapper at -50%,-50%. Shift card up so bottom is at anchor + gap.
+    this.element.style.transform = `translateY(calc(-50% - 10px)) translate(${this.offset.x}px, ${this.offset.y}px) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
