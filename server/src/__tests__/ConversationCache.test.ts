@@ -50,7 +50,7 @@ describe('ConversationCache', () => {
       const hookMessages: CachedMessage[] = [
         { type: 'user', content: 'From hook', timestamp: '2024-01-01T00:00:00Z' }
       ];
-      // Transcripts have ISO timestamps with milliseconds
+      // Transcripts have ISO timestamps with milliseconds — different precision = different message
       const transcriptMessages: CachedMessage[] = [
         { type: 'user', content: 'From transcript', timestamp: '2024-01-01T00:00:00.123Z' }
       ];
@@ -59,9 +59,10 @@ describe('ConversationCache', () => {
       cache.addMessages('session-1', 'tmux-1', '/test/cwd', transcriptMessages);
       const result = cache.getMessages('session-1');
 
-      // Should deduplicate to 1 message (same second, different ms precision)
-      expect(result).toHaveLength(1);
-      expect(result[0].content).toBe('From hook');  // First one wins
+      // Exact timestamp dedup: different ms precision = different timestamps = both kept
+      expect(result).toHaveLength(2);
+      expect(result[0].content).toBe('From hook');
+      expect(result[1].content).toBe('From transcript');
     });
 
     it('should skip invalid sessionIds', () => {

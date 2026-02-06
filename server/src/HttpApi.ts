@@ -1439,9 +1439,10 @@ export class HttpApi {
   /**
    * Resolve conversation messages using multiple lookup strategies
    *
-   * Priority: tmux aggregation > remote lookup > sessionId > TranscriptReader
-   * Tmux aggregation is preferred because Claude restarts get new sessionIds,
-   * but messages from all sessions in the same tmux should be aggregated.
+   * Priority: sessionId > tmux aggregation > remote lookup > TranscriptReader
+   * Session-specific lookup is preferred so different conversations in the same
+   * tmux don't bleed into each other. Tmux aggregation is the fallback for when
+   * a session has no messages yet (e.g., fresh restart gets a new sessionId).
    */
   private async resolveConversationMessages(sessionId: string | undefined, limit: number, tmuxSessionParam?: string): Promise<any[]> {
     const session = sessionId ? this.sessionLookup?.findSession(sessionId) : undefined;
@@ -1453,7 +1454,13 @@ export class HttpApi {
       ? `${session.originId}/${rawTmuxSession}`
       : rawTmuxSession;
 
-    // 1. ConversationCache by tmuxSession (aggregates all Claude sessions in tmux)
+    // 1. ConversationCache by sessionId (prefer current session's own messages)
+    if (this.conversationCache && sessionId) {
+      const messages = this.conversationCache.getMessages(sessionId, limit);
+      if (messages.length > 0) return messages;
+    }
+
+    // 2. ConversationCache by tmuxSession (fallback: aggregates across restarts)
     if (this.conversationCache && tmuxSession) {
       const messages = this.conversationCache.getMessagesByTmux(tmuxSession, limit);
       if (messages.length > 0) return messages;
@@ -1462,16 +1469,10 @@ export class HttpApi {
     // Remaining lookups require sessionId
     if (!sessionId) return [];
 
-    // 2. Remote conversation lookup
+    // 3. Remote conversation lookup
     if (isRemote) {
       const cached = this.remoteConversationLookup?.(sessionId);
       if (cached && cached.length > 0) return cached.slice(-limit);
-    }
-
-    // 3. ConversationCache by sessionId (fallback for ended sessions or no tmux)
-    if (this.conversationCache) {
-      const messages = this.conversationCache.getMessages(sessionId, limit);
-      if (messages.length > 0) return messages;
     }
 
     // 4. TranscriptReader (legacy fallback for local sessions)

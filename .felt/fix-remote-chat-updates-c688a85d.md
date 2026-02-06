@@ -1,9 +1,11 @@
 ---
 title: Fix remote chat updates
-status: open
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-04T13:52:42.543039+01:00
+closed-at: 2026-02-05T15:04:39.938436+01:00
+close-reason: 'Fixed across 3 iterations: (1) sessionId extraction in agent + tmuxSession prefix for remote lookups, (2) timestamp deduplication — different precision from hooks vs polling caused duplicates, fixed with normalizeTimestamp(), (3) WebSocket routing — added prefixedTmuxSession getter so remote conversation broadcasts match correctly. 114 tests pass.'
 ---
 
 ## Desired State
@@ -54,6 +56,7 @@ Each iteration:
 
 ### Server Fix
 - [x] HttpApi.ts: Prefix tmuxSession with originId for remote lookups
+- [x] ConversationCard.ts: prefixedTmuxSession getter for WebSocket routing
 
 ## Debug Commands
 
@@ -87,6 +90,10 @@ curl -X POST http://localhost:4004/send-message \
 4. `/hook/health` shows recent activity timestamps
 5. No message duplication
 
+## Constraints
+
+**DO NOT add viewport clamping to ConversationCard.applyTransform().** Cards must stay pinned to map coordinates (their swarm position). The transform must remain `translateY(-50%) scale(${this.currentScale})` — no wrapper rect calculations, no cardTop checks. Cards that pan off-screen should pan off-screen.
+
 ## Files
 
 - `server/agent.js` — Remote agent with hook server
@@ -97,4 +104,5 @@ curl -X POST http://localhost:4004/send-message \
 
 ## Comments
 **2026-02-04 16:20** — Iteration 1: Fixed sessionId extraction in agent, tmuxSession prefix in HttpApi for remote lookups, changed polling to 30s fallback. Remote and local conversation paths now equivalent. Tool uses propagate correctly.
-
+**2026-02-04 16:26** — Iteration 2: Fixed conversation deduplication. Timestamps from different sources (hooks vs polling) had different precision (.077Z vs .Z), causing duplicates. Added normalizeTimestamp() that truncates to seconds before comparing. All acceptance criteria verified working.
+**2026-02-04 16:33** — Iteration 3: Fixed WebSocket routing for remote cards. Conversation cache broadcasts with prefixed tmuxSession (originId/tmuxSession) but Session objects have unprefixed names. Added prefixedTmuxSession getter to ConversationCard for correct matching. All 114 tests pass.

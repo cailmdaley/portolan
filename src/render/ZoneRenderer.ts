@@ -1186,6 +1186,19 @@ export class ZoneRenderer {
   }
 
   /**
+   * Get the world position of a worker's swarm (for camera focus)
+   */
+  getSwarmWorldPosition(workerId: string): { x: number, z: number } | null {
+    const swarm = this.workerSwarms.get(workerId)
+    if (!swarm) return null
+    // Swarm group is parented to city group — need world position
+    swarm.group.updateWorldMatrix(true, false)
+    const pos = new Vector3()
+    swarm.group.getWorldPosition(pos)
+    return { x: pos.x, z: pos.z }
+  }
+
+  /**
    * Move a worker's swarm (and everything attached: label, card) by offset
    */
   private moveSwarm(workerId: string, dx: number, dz: number): void {
@@ -1321,17 +1334,14 @@ export class ZoneRenderer {
    * Handle WebSocket conversation update for cards
    * The tmuxSession from server is prefixed for remote sessions: "originId/tmuxSession"
    */
-  handleConversationMessage(tmuxSession: string, messages: ConversationMessage[]): void {
+  handleConversationMessage(sessionId: string | undefined, tmuxSession: string, messages: ConversationMessage[]): void {
     for (const card of this.conversationCards.values()) {
-      // Match against prefixed tmuxSession (handles both local and remote)
-      if (card.prefixedTmuxSession === tmuxSession) {
-        card.handleMessage(tmuxSession, messages)
-      }
+      card.handleMessage(sessionId, tmuxSession, messages)
     }
   }
 
   /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */
-  private readonly SCALE_THRESHOLD = 3  // Cards stop scaling at closer zoom
+  private readonly SCALE_THRESHOLD = 8  // Cards reach full size at this distance
 
   private calculateCardScale(cameraDistance: number): number {
     if (cameraDistance <= this.SCALE_THRESHOLD) return 1.0

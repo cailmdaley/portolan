@@ -149,6 +149,10 @@ export class Camera {
 
     // Arrow keys for navigation
     this.keyDownHandler = (e: KeyboardEvent) => {
+      // Don't intercept arrow keys when typing in inputs/textareas
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
+
       const step = 1.5
       switch (e.key) {
         case 'ArrowUp':

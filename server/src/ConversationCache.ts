@@ -50,6 +50,7 @@ export class ConversationCache {
   private sessionMaxAge = 7 * 24 * 60 * 60 * 1000;  // 7 days in ms
   private messageCallback: MessageCallback | null = null;
   private lastEventBySession: Map<string, number> = new Map();
+  private persistDebounce: ReturnType<typeof setTimeout> | null = null;
 
   constructor(persistPath?: string) {
     this.persistPath = persistPath ?? join(homedir(), '.portolan', 'conversations.json');
@@ -90,6 +91,17 @@ export class ConversationCache {
   }
 
   /**
+   * Debounced persist — writes within 2s of last message, prevents data loss on restart
+   */
+  private schedulePersist(): void {
+    if (this.persistDebounce) clearTimeout(this.persistDebounce);
+    this.persistDebounce = setTimeout(() => {
+      this.persistDebounce = null;
+      this.persist();
+    }, 2000);
+  }
+
+  /**
    * Add messages from a hook event
    */
   addMessages(
@@ -122,16 +134,31 @@ export class ConversationCache {
     cache.cwd = cwd;
     cache.lastUpdate = Date.now();
 
-    // Deduplicate: skip messages with timestamps we've already seen
-    // Normalize to seconds (truncate milliseconds) since different sources have different precision
-    const normalizeTimestamp = (ts: string): string => ts.replace(/\.\d{3}Z$/, 'Z');
-    const existingTimestamps = new Set(cache.messages.map(m => normalizeTimestamp(m.timestamp)));
-    const newMessages = messages.filter(m => !existingTimestamps.has(normalizeTimestamp(m.timestamp)));
+    // Deduplicate by exact timestamp AND by toolUseId.
+    // Millisecond precision in timestamps distinguishes blocks within the same second.
+    // toolUseId dedup handles PostToolUse → Stop overlap (different timestamps, same tool call).
+    // Also dedup within the incoming batch (transcript scan + payload can overlap).
+    const existingTimestamps = new Set(cache.messages.map(m => m.timestamp));
+    const existingToolUseIds = new Set(
+      cache.messages.filter(m => m.toolUseId).map(m => m.toolUseId)
+    );
+    const newMessages = messages.filter(m => {
+      if (m.toolUseId) {
+        if (existingToolUseIds.has(m.toolUseId)) return false;
+        existingToolUseIds.add(m.toolUseId);  // prevent within-batch duplicates
+      }
+      if (existingTimestamps.has(m.timestamp)) return false;
+      existingTimestamps.add(m.timestamp);  // prevent within-batch duplicates
+      return true;
+    });
 
     if (newMessages.length === 0) return;
 
-    // Add new messages
+    // Add new messages and sort chronologically.
+    // Messages arrive out of order: PostToolUse uses wall-clock timestamps,
+    // transcript scans use original timestamps with ms precision.
     cache.messages.push(...newMessages);
+    cache.messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
     // Trim to max
     if (cache.messages.length > this.maxMessagesPerSession) {
@@ -146,6 +173,9 @@ export class ConversationCache {
       this.messageCallback(sessionId, tmuxSession, newMessages);
     }
 
+    // Persist immediately — dev server restarts (tsx watch) lose unpersisted data
+    this.schedulePersist();
+
     console.log(`[ConversationCache] ${sessionId}: +${newMessages.length} messages (${cache.messages.length} total)`);
   }
 
@@ -159,27 +189,28 @@ export class ConversationCache {
 
   /**
    * Get messages for a session by tmux session name (fallback for lookup)
-   * Aggregates messages from ALL Claude sessions in this tmux session
+   * Aggregates messages from recent Claude sessions in this tmux session
    */
   getMessagesByTmux(tmuxSession: string, limit?: number): CachedMessage[] {
-    // Collect messages from all sessions with this tmux session
+    // Only aggregate sessions updated in the last hour (avoids stale tmux name reuse)
+    const ONE_HOUR = 60 * 60 * 1000;
+    const cutoff = Date.now() - ONE_HOUR;
+
     const allMessages: CachedMessage[] = [];
     for (const cache of this.sessions.values()) {
-      if (cache.tmuxSession === tmuxSession) {
+      if (cache.tmuxSession === tmuxSession && cache.lastUpdate > cutoff) {
         allMessages.push(...cache.messages);
       }
     }
 
     if (allMessages.length === 0) return [];
 
-    // Sort and deduplicate by timestamp (normalize to seconds for consistency)
-    const normalizeTimestamp = (ts: string): string => ts.replace(/\.\d{3}Z$/, 'Z');
+    // Sort and deduplicate by exact timestamp
     allMessages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const seen = new Set<string>();
     const deduped = allMessages.filter(m => {
-      const normalized = normalizeTimestamp(m.timestamp);
-      if (seen.has(normalized)) return false;
-      seen.add(normalized);
+      if (seen.has(m.timestamp)) return false;
+      seen.add(m.timestamp);
       return true;
     });
 
@@ -293,6 +324,20 @@ export class ConversationCache {
       for (const [sessionId, cache] of Object.entries(data.sessions)) {
         // Skip invalid sessionIds from old data
         if (!sessionId || sessionId === 'undefined') continue;
+
+        // Dedup and sort messages on restore (handles corruption from earlier bugs)
+        const seenTimestamps = new Set<string>();
+        const seenToolUseIds = new Set<string>();
+        cache.messages = cache.messages.filter(m => {
+          if (m.toolUseId) {
+            if (seenToolUseIds.has(m.toolUseId)) return false;
+            seenToolUseIds.add(m.toolUseId);
+          }
+          if (seenTimestamps.has(m.timestamp)) return false;
+          seenTimestamps.add(m.timestamp);
+          return true;
+        });
+        cache.messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
         this.sessions.set(sessionId, cache);
         this.lastEventBySession.set(sessionId, cache.lastUpdate);

@@ -208,26 +208,7 @@ export class ConversationCard {
 
   private applyTransform(): void {
     // CSS2DRenderer centers wrapper at anchor point. Shift card up by 50% so bottom is at anchor.
-    // But clamp to viewport top so header stays visible.
-    const wrapper = this.element.parentElement
-    if (!wrapper) {
-      this.element.style.transform = `translateY(-50%) scale(${this.currentScale})`
-      return
-    }
-
-    const wrapperRect = wrapper.getBoundingClientRect()
-    const cardHeight = this.element.offsetHeight * this.currentScale
-
-    // Default offset: shift up by 50% of card height (anchor at bottom)
-    let yOffset = -cardHeight / 2
-
-    // If top would be clipped, reduce the offset to keep header visible (with 10px margin)
-    const cardTop = wrapperRect.top + yOffset
-    if (cardTop < 10) {
-      yOffset = 10 - wrapperRect.top
-    }
-
-    this.element.style.transform = `translateY(${yOffset}px) scale(${this.currentScale})`
+    this.element.style.transform = `translateY(-50%) scale(${this.currentScale})`
   }
 
   private stopDrag = (): void => {
@@ -374,20 +355,30 @@ export class ConversationCard {
   }
 
   /**
-   * Handle WebSocket conversation update
-   * The tmuxSession from server is prefixed for remote sessions: "originId/tmuxSession"
+   * Handle WebSocket conversation update.
+   * Appends new messages incrementally. PostToolUse hook provides mid-turn
+   * updates; Stop provides assistant text at end of turn.
    */
-  handleMessage(tmuxSession: string, messages: ConversationMessage[]): void {
+  handleMessage(sessionId: string | undefined, tmuxSession: string, messages: ConversationMessage[]): void {
     if (this.disposed) return
-    if (this.prefixedTmuxSession !== tmuxSession) return
 
-    // Deduplicate by timestamp
+    // Match by sessionId (preferred) or prefixed tmuxSession (fallback)
+    const matchesSession = sessionId && sessionId === this.session.id
+    const matchesTmux = this.prefixedTmuxSession === tmuxSession
+    if (!matchesSession && !matchesTmux) return
+
+    // Deduplicate by timestamp and toolUseId
     const existingTimestamps = new Set(this.conversation.map(m => m.timestamp))
-    const toAdd = messages.filter(m => !existingTimestamps.has(m.timestamp))
+    const existingToolUseIds = new Set(
+      this.conversation.filter(m => m.toolUseId).map(m => m.toolUseId)
+    )
+    const toAdd = messages.filter(m => {
+      if (m.toolUseId && existingToolUseIds.has(m.toolUseId)) return false
+      return !existingTimestamps.has(m.timestamp)
+    })
 
     if (toAdd.length > 0) {
       this.conversation.push(...toAdd)
-      // Keep last 100 messages
       if (this.conversation.length > 100) {
         this.conversation = this.conversation.slice(-100)
       }
@@ -783,7 +774,7 @@ export class ConversationCard {
    */
   setScale(scale: number): void {
     // Clamp scale for readability (card base width is 550px)
-    const minScale = 0.35  // 550 * 0.35 = 192px at far zoom
+    const minScale = 0.6   // 550 * 0.6 = 330px at far zoom
     const maxScale = 1.0   // 550 * 1.0 = 550px at close zoom
     this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
     this.applyTransform()

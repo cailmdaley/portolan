@@ -1183,12 +1183,12 @@ gitStatusManager.setUpdateHandler(({ path, status }) => {
 gitStatusManager.start();
 
 // Conversation cache: broadcast new messages via WebSocket
-conversationCache.onMessage((sessionId, tmuxSession, messages) => {
+conversationCache.onMessage((sessionId, tmuxSession, newMessages) => {
   const message = JSON.stringify({
     type: 'conversation',
     sessionId,
     tmuxSession,
-    messages,
+    messages: newMessages,
   });
   for (const client of clients) {
     if (client.readyState === WebSocket.OPEN) {

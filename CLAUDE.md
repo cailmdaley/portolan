@@ -110,6 +110,7 @@ For real-time conversation updates on remote workers, install the hook script an
 {
   "hooks": {
     "UserPromptSubmit": ["~/bin/portolan-conversation-hook.sh"],
+    "PostToolUse": ["~/bin/portolan-conversation-hook.sh"],
     "Stop": ["~/bin/portolan-conversation-hook.sh"]
   }
 }
@@ -126,6 +127,12 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 **Event handler order matters.** `stopImmediatePropagation` only blocks handlers registered *after* yours. Earlier handlers still fire. See fiber `pattern-event-handler-d26b6bae`.
 
 **`kill $PPID` doesn't trigger Claude Code Stop hook.** Ralph loops exit via SIGTERM, which bypasses the Stop hook entirely. The conversation hook works around this by scanning recent transcripts on UserPromptSubmit to capture any missed assistant content.
+
+**tmuxSession prefix for remote conversations.** ConversationCache and WebSocket broadcasts use `originId/tmuxSession` (e.g., `remote-c02/test`). But Session objects from state have unprefixed `tmuxSession` (`test`). Client code must build the prefixed key when matching. See `ConversationCard.prefixedTmuxSession`.
+
+**Don't normalize conversation timestamps.** Millisecond precision distinguishes content blocks within the same second (thinking at .389Z vs text at .545Z). Stripping ms causes silent message loss. Use exact timestamps for dedup; toolUseId handles cross-source overlap. See fiber `gotcha-ms-precision-timestamps-9b21c263`.
+
+**Conversation lookup: sessionId first, tmux aggregation second.** Multiple sessions can share a tmux name. `resolveConversationMessages` must check `getMessages(sessionId)` before `getMessagesByTmux()` or old conversations bleed into new ones. Tmux aggregation is only for the restart case (new session, no messages yet). See fiber `conversation-session-isolation-dbb8aa40`.
 
 ## Deep Dives
 

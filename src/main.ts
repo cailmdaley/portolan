@@ -297,9 +297,9 @@ function connectWebSocket(): void {
       // Route to panels that handle specific message types
       if (cityPanel.handleMessage(message)) return
 
-      // Route conversation updates to open cards
-      if (message.type === 'conversation' && message.tmuxSession && message.messages) {
-        zoneRenderer.handleConversationMessage(message.tmuxSession, message.messages)
+      // Route conversation updates to open cards (by sessionId + tmuxSession)
+      if (message.type === 'conversation' && message.messages) {
+        zoneRenderer.handleConversationMessage(message.sessionId, message.tmuxSession, message.messages)
       }
 
       handleMessage(message)
@@ -854,6 +854,38 @@ function handleEscapeKey(e: KeyboardEvent): void {
 }
 window.addEventListener('keydown', handleEscapeKey)
 
+// Cycling keyboard shortcuts
+// Cmd+Alt+9/0: cycle workers, Cmd+Ctrl+9/0: cycle cities
+let workerCycleIndex = -1
+let cityCycleIndex = -1
+
+function handleCycleKeys(e: KeyboardEvent): void {
+  if (!e.metaKey) return
+  if (e.code !== 'Digit9' && e.code !== 'Digit0') return
+
+  const direction = e.code === 'Digit0' ? 1 : -1
+
+  if (e.altKey && !e.ctrlKey) {
+    // Cmd+Alt+9/0: cycle workers
+    e.preventDefault()
+    if (sessions.length === 0) return
+    workerCycleIndex = (workerCycleIndex + direction + sessions.length) % sessions.length
+    const session = sessions[workerCycleIndex]
+    zoneRenderer.openConversationCard(session)
+    // Focus camera on worker's swarm
+    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
+    if (swarmPos) camera.focusAndZoom(swarmPos, 6)
+  } else if (e.ctrlKey && !e.altKey) {
+    // Cmd+Ctrl+9/0: cycle cities (only those with active workers)
+    e.preventDefault()
+    const activeCities = cities.filter(c => sessions.some(s => s.cityId === c.id))
+    if (activeCities.length === 0) return
+    cityCycleIndex = (cityCycleIndex + direction + activeCities.length) % activeCities.length
+    handleCityClick(activeCities[cityCycleIndex])
+  }
+}
+window.addEventListener('keydown', handleCycleKeys)
+
 // Window resize handler
 function resizeHandler(): void {
   renderer.setSize(window.innerWidth, window.innerHeight)
@@ -910,6 +942,7 @@ if (import.meta.hot) {
     document.removeEventListener('contextmenu', contextMenuHandler)
     document.removeEventListener('click', forceClickCaptureHandler, true)
     window.removeEventListener('keydown', handleEscapeKey)
+    window.removeEventListener('keydown', handleCycleKeys)
     window.removeEventListener('resize', resizeHandler)
 
     // Dispose UI panels (removes DOM and detaches document listeners)
