@@ -2483,6 +2483,7 @@
         overflow: hidden;
         display: flex;
         flex-direction: column;
+        transition: max-height 200ms ease;
       }
 
       #city-hud.visible .hud-bottom-right {
@@ -2502,7 +2503,7 @@
 
       .hud-fibers-heading {
         font-family: var(--font-main);
-        font-size: 0.75rem;
+        font-size: 0.82rem;
         font-variant: small-caps;
         font-feature-settings: 'smcp' 1;
         letter-spacing: 0.08em;
@@ -2512,7 +2513,8 @@
         border-bottom: 1px solid var(--parchment-edge);
       }
 
-      .hud-fiber-list {
+      .hud-fiber-list,
+      .hud-search-results {
         list-style: none;
         margin: 0;
         padding: 0;
@@ -2520,10 +2522,12 @@
         flex: 1;
       }
 
-      .hud-fiber-list::-webkit-scrollbar {
+      .hud-fiber-list::-webkit-scrollbar,
+      .hud-search-results::-webkit-scrollbar {
         width: 4px;
       }
-      .hud-fiber-list::-webkit-scrollbar-thumb {
+      .hud-fiber-list::-webkit-scrollbar-thumb,
+      .hud-search-results::-webkit-scrollbar-thumb {
         background: var(--parchment-edge);
         border-radius: 2px;
       }
@@ -2532,11 +2536,11 @@
         display: flex;
         align-items: baseline;
         gap: 6px;
-        padding: 4px 4px 4px 2px;
+        padding: 5px 4px 5px 2px;
         cursor: pointer;
         border-radius: 3px;
         transition: background 120ms ease;
-        font-size: 0.78rem;
+        font-size: 0.88rem;
         line-height: 1.4;
       }
 
@@ -2546,8 +2550,8 @@
 
       .hud-fiber-status {
         flex-shrink: 0;
-        font-size: 0.7rem;
-        width: 14px;
+        font-size: 0.78rem;
+        width: 16px;
         text-align: center;
       }
 
@@ -2563,7 +2567,7 @@
       .hud-fiber-kind {
         flex-shrink: 0;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.6rem;
+        font-size: 0.65rem;
         color: var(--ink-faded);
         background: var(--parchment-dark);
         padding: 1px 5px;
@@ -2614,6 +2618,94 @@
         font-size: 0.65rem;
         color: var(--ink-faded);
         padding: 4px 2px;
+      }
+
+      /* ─── Search Bar (inside bottom-right widget) ───────────── */
+
+      .hud-search-bar {
+        position: relative;
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid var(--parchment-edge);
+      }
+
+      .hud-search-input {
+        width: 100%;
+        box-sizing: border-box;
+        background: rgba(255, 250, 240, 0.4);
+        border: 1px solid var(--parchment-edge);
+        border-radius: 4px;
+        padding: 5px 24px 5px 8px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+        color: var(--ink-body);
+        outline: none;
+        transition: border-color 150ms ease, background 150ms ease;
+      }
+
+      .hud-search-input::placeholder {
+        color: var(--ink-faded);
+        font-style: italic;
+      }
+
+      .hud-search-input:focus {
+        border-color: var(--sepia-accent);
+        background: rgba(255, 250, 240, 0.7);
+      }
+
+      .hud-search-clear {
+        position: absolute;
+        right: 4px;
+        top: 50%;
+        transform: translateY(-25%);
+        background: none;
+        border: none;
+        color: var(--ink-faded);
+        cursor: pointer;
+        font-size: 0.85rem;
+        line-height: 1;
+        padding: 2px 4px;
+      }
+
+      .hud-search-clear:hover {
+        color: var(--ink-body);
+      }
+
+      /* Expanded state — widget grows upward to show results.
+         search-focused (input has focus) < searching (results visible) */
+      .hud-bottom-right.search-focused {
+        max-height: 400px;
+      }
+
+      .hud-bottom-right.searching {
+        max-height: 480px;
+      }
+
+      /* Search results list — base styles merged above with .hud-fiber-list */
+      .hud-search-results {
+        min-height: 40px;
+      }
+
+      .hud-search-icon {
+        flex-shrink: 0;
+        font-size: 0.68rem;
+        width: 14px;
+        text-align: center;
+        color: var(--ink-faded);
+      }
+
+      .hud-fiber-title.mono {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.7rem;
+      }
+
+      .hud-search-empty,
+      .hud-search-loading {
+        font-family: var(--font-main);
+        font-size: 0.75rem;
+        color: var(--ink-faded);
+        font-style: italic;
+        padding: 8px 2px;
       }
 
       /* ═══════════════════════════════════════════════════════════

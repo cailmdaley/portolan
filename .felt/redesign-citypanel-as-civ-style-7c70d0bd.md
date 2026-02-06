@@ -103,4 +103,5 @@ Interactive explorer: `.portolan/playgrounds/city-hud-explorer.html`
 
 ## Comments
 **2026-02-06 23:51** — Loop 2 complete: Fiber List Widget. Bottom-right corner parchment widget showing open+closed fibers (max 6, overflow indicator). Status icons (○/◐/●), kind badges (spec/decision/question/doc with color accents), click-to-view in FileViewerModal, handoff button (↗). Staggered animation (140ms delay after identity). Shared fiberStatusIcon() extracted to utils.ts. Types imported from CityPanel (type-only, no runtime dep).
+**2026-02-06 23:58** — Loop 3 complete: Search bar inside bottom-right widget. Input below fiber list, focus expands widget upward, Enter fires unified search (filename + content for local, filename-only for remote + local fiber filter). Results overlay fiber list with shared hud-fiber-item styling. Escape collapses search then HUD. Event delegation for search clicks. openFiber/openFile helpers deduplicate path construction. Font sizes bumped: fibers 0.88rem, status 0.78rem, kind 0.65rem, heading 0.82rem.
 

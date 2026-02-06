@@ -19,6 +19,10 @@ export class CityHUD {
   private container: HTMLElement
   private identityWidget: HTMLElement
   private fiberList: HTMLElement
+  private fiberWidget: HTMLElement
+  private searchInput: HTMLInputElement
+  private searchClear: HTMLElement
+  private searchResultsList: HTMLElement
   private currentCity: City | null = null
   private ws: WebSocket | null = null
   private fibersCallback: FibersCallback | null = null
@@ -38,15 +42,22 @@ export class CityHUD {
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
-  // Search state (for handleMessage compatibility)
+  // Search state
   private currentSearchId = 0
   private searchResults: SearchResult[] = []
+  private searchQuery = ''
 
   constructor() {
     this.container = this.createContainer()
     this.identityWidget = this.container.querySelector('.hud-identity')!
     this.fiberList = this.container.querySelector('.hud-fiber-list')!
+    this.fiberWidget = this.container.querySelector('.hud-fibers')!
+    this.searchInput = this.container.querySelector('.hud-search-input')!
+    this.searchClear = this.container.querySelector('.hud-search-clear')!
+    this.searchResultsList = this.container.querySelector('.hud-search-results')!
     this.setupEventHandlers()
+    this.setupSearch()
+    this.setupDelegatedListeners()
     document.body.appendChild(this.container)
   }
 
@@ -64,6 +75,11 @@ export class CityHUD {
       <div class="hud-fibers hud-widget hud-bottom-right">
         <h3 class="hud-fibers-heading">Fibers</h3>
         <ul class="hud-fiber-list"></ul>
+        <ul class="hud-search-results" style="display: none;"></ul>
+        <div class="hud-search-bar">
+          <input type="text" class="hud-search-input" placeholder="Search…" />
+          <button class="hud-search-clear" style="display: none;">&times;</button>
+        </div>
       </div>
     `
     return el
@@ -91,6 +107,11 @@ export class CityHUD {
       if (e.key === 'Escape' && this.container.classList.contains('visible')) {
         const fileViewer = document.querySelector('.file-viewer-modal.visible')
         if (fileViewer) return
+        // Escape collapses search first, then hides HUD
+        if (this.fiberWidget.classList.contains('searching')) {
+          this.collapseSearch()
+          return
+        }
         this.hide()
       }
     }
@@ -161,9 +182,10 @@ export class CityHUD {
     pathEl.textContent = city.path
     gitEl.innerHTML = this.renderGitSummary(city.gitStatus)
 
-    // Clear fiber list for fresh load
+    // Clear state for fresh load
     this.openFibers = []
     this.closedFibers = []
+    this.collapseSearch()
 
     // Ignore the click that triggered show
     this.ignoreNextClick = true
@@ -224,19 +246,164 @@ export class CityHUD {
   }
 
   handleSearchResults(searchId: string, results: SearchResult[], error?: string): void {
-    // Stub for future search widget (Loop 3)
     const expectedPrefix = `${this.currentCity?.id || ''}-${this.currentSearchId}`
     if (!searchId.startsWith(expectedPrefix)) return
     if (error) {
       console.error('Search error:', error)
       return
     }
-    // Accumulate for when search widget lands
+    // Deduplicate and accumulate
     for (const r of results) {
       if (!this.searchResults.some(sr => sr.fullPath === r.fullPath)) {
         this.searchResults.push(r)
       }
     }
+    // Re-render combined results
+    this.renderSearchResults()
+  }
+
+  // ─── Search ───
+
+  private setupSearch(): void {
+    this.searchInput.addEventListener('input', () => {
+      this.searchQuery = this.searchInput.value.trim()
+      this.searchClear.style.display = this.searchInput.value ? 'block' : 'none'
+      if (!this.searchQuery) {
+        this.collapseSearch()
+      }
+    })
+
+    this.searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && this.searchQuery) {
+        this.performSearch()
+      }
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        this.collapseSearch()
+        this.searchInput.blur()
+      }
+    })
+
+    this.searchInput.addEventListener('focus', () => {
+      this.fiberWidget.classList.add('search-focused')
+    })
+
+    this.searchInput.addEventListener('blur', () => {
+      if (!this.searchQuery) {
+        this.fiberWidget.classList.remove('search-focused')
+      }
+    })
+
+    this.searchClear.addEventListener('click', () => {
+      this.collapseSearch()
+      this.searchInput.focus()
+    })
+  }
+
+  /** Event delegation for both fiber list and search results clicks */
+  private setupDelegatedListeners(): void {
+    this.searchResultsList.addEventListener('click', (e) => {
+      const item = (e.target as HTMLElement).closest('.hud-search-item') as HTMLElement | null
+      if (!item) return
+      if (item.dataset.type === 'file') {
+        this.openFile(item.dataset.path)
+      } else if (item.dataset.type === 'fiber') {
+        this.openFiber(item.dataset.fiberId)
+      }
+    })
+  }
+
+  private performSearch(): void {
+    this.searchResults = []
+    this.fiberWidget.classList.add('searching')
+
+    this.fiberList.style.display = 'none'
+    this.searchResultsList.style.display = 'block'
+    this.searchResultsList.innerHTML = '<li class="hud-search-loading">Searching…</li>'
+
+    if (this.currentCity && this.ws?.readyState === WebSocket.OPEN) {
+      const searchId = `${this.currentCity.id}-${++this.currentSearchId}`
+
+      this.ws.send(JSON.stringify({
+        type: 'searchFiles',
+        cityId: this.currentCity.id,
+        query: this.searchQuery,
+        searchId: `${searchId}-name`,
+        mode: 'filename',
+      }))
+
+      if (this.currentCity.originId === 'local') {
+        this.ws.send(JSON.stringify({
+          type: 'searchFiles',
+          cityId: this.currentCity.id,
+          query: this.searchQuery,
+          searchId: `${searchId}-content`,
+          mode: 'content',
+        }))
+      }
+    }
+
+    // Render fiber matches immediately while file results stream in
+    this.renderSearchResults()
+  }
+
+  private collapseSearch(): void {
+    this.fiberWidget.classList.remove('searching', 'search-focused')
+    this.searchResults = []
+    this.searchResultsList.style.display = 'none'
+    this.fiberList.style.display = ''
+    this.searchInput.value = ''
+    this.searchQuery = ''
+    this.searchClear.style.display = 'none'
+  }
+
+  private filterFibersLocally(query: string): Fiber[] {
+    const q = query.toLowerCase()
+    return [...this.openFibers, ...this.closedFibers].filter(f =>
+      f.title.toLowerCase().includes(q) ||
+      f.kind.toLowerCase().includes(q) ||
+      f.id.toLowerCase().includes(q) ||
+      (f.body?.toLowerCase().includes(q) ?? false) ||
+      (f.reason?.toLowerCase().includes(q) ?? false)
+    )
+  }
+
+  private renderSearchResults(): void {
+    const files = this.searchResults.slice(0, 15)
+    const fibers = this.filterFibersLocally(this.searchQuery)
+
+    // Still waiting for server results -- keep the loading indicator
+    if (files.length === 0 && fibers.length === 0) {
+      if (this.searchResultsList.querySelector('.hud-search-loading')) return
+      this.searchResultsList.innerHTML = '<li class="hud-search-empty">No matches</li>'
+      return
+    }
+
+    let html = ''
+
+    // Fiber matches first (reuse renderFiberItem markup)
+    for (const f of fibers.slice(0, 5)) {
+      const kind = f.kind || 'task'
+      html += `
+        <li class="hud-search-item hud-fiber-item ${kind}" data-type="fiber" data-fiber-id="${f.id}">
+          <span class="hud-fiber-status">${fiberStatusIcon(f.status)}</span>
+          <span class="hud-fiber-title">${escapeHtml(f.title)}</span>
+          <span class="hud-fiber-kind">${kind}</span>
+        </li>`
+    }
+
+    // File matches
+    for (const r of files) {
+      const fileName = r.path.split('/').pop() || r.path
+      const lineInfo = r.line !== undefined ? `:${r.line}` : ''
+      html += `
+        <li class="hud-search-item hud-fiber-item file" data-type="file" data-path="${escapeHtml(r.fullPath)}">
+          <span class="hud-search-icon">&#xf15c;</span>
+          <span class="hud-fiber-title mono">${escapeHtml(fileName)}${lineInfo}</span>
+        </li>`
+    }
+
+    this.searchResultsList.innerHTML = html || '<li class="hud-search-empty">No matches</li>'
   }
 
   private requestFibers(cityId: string): void {
@@ -290,16 +457,23 @@ export class CityHUD {
     `
   }
 
+  private openFiber(fiberId: string | undefined): void {
+    if (!fiberId || !this.currentCity || !this.onOpenFile) return
+    const feltPath = `${this.currentCity.path}/.felt/${fiberId}.md`
+    this.onOpenFile(feltPath, this.currentCity.originId, this.currentCity.path)
+  }
+
+  private openFile(fullPath: string | undefined): void {
+    if (!fullPath || !this.currentCity || !this.onOpenFile) return
+    this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path)
+  }
+
   private attachFiberListeners(): void {
     // Click fiber → open .felt/{id}.md in file viewer
     this.fiberList.querySelectorAll('.hud-fiber-item').forEach(item => {
       item.addEventListener('click', (e) => {
         if ((e.target as HTMLElement).closest('.hud-fiber-handoff')) return
-        const fiberId = (item as HTMLElement).dataset.fiberId
-        if (fiberId && this.currentCity && this.onOpenFile) {
-          const feltPath = `${this.currentCity.path}/.felt/${fiberId}.md`
-          this.onOpenFile(feltPath, this.currentCity.originId, this.currentCity.path)
-        }
+        this.openFiber((item as HTMLElement).dataset.fiberId)
       })
     })
 
