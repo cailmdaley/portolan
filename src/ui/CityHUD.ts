@@ -1,7 +1,7 @@
 // CityHUD.ts - Corner-anchored HUD widgets overlaying the map
 // Civ-style: information lives in corners, center stays clear
 
-import type { Activity, City, GitStatus, Session } from '../state/types'
+import type { City, GitStatus, Session } from '../state/types'
 import { escapeHtml, fiberStatusIcon } from './utils'
 import type { Fiber, SearchResult } from './CityPanel'
 import type { NewWorkerDialog } from './NewWorkerDialog'
@@ -17,12 +17,9 @@ type FibersCallback = (response: FibersResponse) => void
 
 export class CityHUD {
   private container: HTMLElement
-  private identityWidget: HTMLElement
-  private gitDetailWidget: HTMLElement
+  private headerWidget: HTMLElement
   private fiberList: HTMLElement
   private fiberWidget: HTMLElement
-  private workerWidget: HTMLElement
-  private workerList: HTMLElement
   private searchInput: HTMLInputElement
   private searchClear: HTMLElement
   private searchResultsList: HTMLElement
@@ -37,7 +34,6 @@ export class CityHUD {
 
   // Worker state
   private cityWorkers: Session[] = []
-  private activityBySession = new Map<string, Activity[]>()
 
   // Stored listener refs for HMR-safe cleanup
   private clickOutsideHandler: ((e: MouseEvent) => void) | null = null
@@ -57,12 +53,9 @@ export class CityHUD {
 
   constructor() {
     this.container = this.createContainer()
-    this.identityWidget = this.container.querySelector('.hud-identity')!
-    this.gitDetailWidget = this.container.querySelector('.hud-git-detail')!
+    this.headerWidget = this.container.querySelector('.hud-header')!
     this.fiberList = this.container.querySelector('.hud-fiber-list')!
     this.fiberWidget = this.container.querySelector('.hud-fibers')!
-    this.workerWidget = this.container.querySelector('.hud-workers')!
-    this.workerList = this.container.querySelector('.hud-worker-list')!
     this.searchInput = this.container.querySelector('.hud-search-input')!
     this.searchClear = this.container.querySelector('.hud-search-clear')!
     this.searchResultsList = this.container.querySelector('.hud-search-results')!
@@ -76,27 +69,21 @@ export class CityHUD {
     const el = document.createElement('div')
     el.id = 'city-hud'
     el.innerHTML = `
-      <div class="hud-identity hud-widget hud-top-left">
-        <div class="hud-identity-content">
+      <div class="hud-header hud-widget hud-top-right">
+        <div class="hud-header-row">
           <h2 class="hud-city-name"></h2>
-          <p class="hud-city-path"></p>
-          <div class="hud-git-summary"></div>
+          <div class="hud-actions"></div>
         </div>
-      </div>
-      <div class="hud-git-detail hud-widget hud-top-right" style="display: none;">
-        <h3 class="hud-git-detail-heading">Git</h3>
+        <p class="hud-city-path"></p>
         <div class="hud-git-detail-content"></div>
-      </div>
-      <div class="hud-workers hud-widget hud-bottom-left">
-        <h3 class="hud-workers-heading">Workers</h3>
-        <ul class="hud-worker-list"></ul>
+        <div class="hud-header-workers"></div>
       </div>
       <div class="hud-fibers hud-widget hud-bottom-right">
         <h3 class="hud-fibers-heading">Fibers</h3>
         <ul class="hud-fiber-list"></ul>
         <ul class="hud-search-results" style="display: none;"></ul>
         <div class="hud-search-bar">
-          <input type="text" class="hud-search-input" placeholder="Search…" />
+          <input type="text" class="hud-search-input" placeholder="Search files &amp; fibers…" />
           <button class="hud-search-clear" style="display: none;">&times;</button>
         </div>
       </div>
@@ -154,47 +141,12 @@ export class CityHUD {
     }
   }
 
-  private renderGitSummary(status?: GitStatus): string {
-    if (!status?.isRepo) return ''
-
-    const parts: string[] = []
-
-    // Branch name
-    parts.push(`<span class="hud-git-branch">${escapeHtml(status.branch)}</span>`)
-
-    // Change counts — compact inline
-    const staged = status.staged.added + status.staged.modified + status.staged.deleted
-    const unstaged = status.unstaged.modified + status.unstaged.deleted
-
-    if (staged > 0) {
-      parts.push(`<span class="hud-git-staged" title="Staged">●${staged}</span>`)
-    }
-    if (unstaged > 0) {
-      parts.push(`<span class="hud-git-unstaged" title="Unstaged">○${unstaged}</span>`)
-    }
-    if (status.untracked > 0) {
-      parts.push(`<span class="hud-git-untracked" title="Untracked">?${status.untracked}</span>`)
-    }
-
-    // Diff stats
-    if (status.linesAdded > 0 || status.linesRemoved > 0) {
-      const diffParts: string[] = []
-      if (status.linesAdded > 0) diffParts.push(`<span class="hud-git-add">+${status.linesAdded}</span>`)
-      if (status.linesRemoved > 0) diffParts.push(`<span class="hud-git-rm">−${status.linesRemoved}</span>`)
-      parts.push(diffParts.join(' '))
-    }
-
-    return parts.join(' ')
-  }
-
   private renderGitDetail(status?: GitStatus): void {
+    const content = this.headerWidget.querySelector('.hud-git-detail-content')!
     if (!status?.isRepo) {
-      this.gitDetailWidget.style.display = 'none'
+      content.innerHTML = ''
       return
     }
-
-    this.gitDetailWidget.style.display = ''
-    const content = this.gitDetailWidget.querySelector('.hud-git-detail-content')!
 
     const rows: string[] = []
 
@@ -286,22 +238,45 @@ export class CityHUD {
     return `${days}d ago`
   }
 
+  // ─── Actions ───
+
+  private renderActions(city: City): void {
+    const buttons: string[] = []
+
+    // Claims — only when city has them
+    if (city.hasClaims) {
+      buttons.push(`<button class="hud-action-btn hud-action-claims" title="Claims">⚖</button>`)
+    }
+
+    // Playgrounds — only when city has them
+    if (city.hasPlaygrounds) {
+      buttons.push(`<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds">▶</button>`)
+    }
+
+    const row = this.headerWidget.querySelector('.hud-actions')!
+    row.innerHTML = buttons.join('')
+
+    row.querySelector('.hud-action-claims')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.currentCity) this.onViewClaims?.(this.currentCity)
+    })
+
+    row.querySelector('.hud-action-playgrounds')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.currentCity) this.onViewPlaygrounds?.(this.currentCity)
+    })
+  }
+
   // ─── Public API (matches CityPanel interface) ───
 
   show(city: City): void {
     this.currentCity = city
 
-    // Populate identity widget
-    const nameEl = this.identityWidget.querySelector('.hud-city-name')!
-    const pathEl = this.identityWidget.querySelector('.hud-city-path')!
-    const gitEl = this.identityWidget.querySelector('.hud-git-summary')!
-
-    nameEl.textContent = city.name
-    pathEl.textContent = city.path
-    gitEl.innerHTML = this.renderGitSummary(city.gitStatus)
-
-    // Populate git detail widget (top-right)
+    // Populate merged header widget (top-right)
+    this.headerWidget.querySelector('.hud-city-name')!.textContent = city.name
+    this.headerWidget.querySelector('.hud-city-path')!.textContent = city.path
     this.renderGitDetail(city.gitStatus)
+    this.renderActions(city)
 
     // Clear state for fresh load
     this.openFibers = []
@@ -353,8 +328,7 @@ export class CityHUD {
   }
 
   /** Called from main.ts whenever state updates — filters to current city's workers */
-  updateWorkers(sessions: Session[], activityBySession: Map<string, Activity[]>): void {
-    this.activityBySession = activityBySession
+  updateWorkers(sessions: Session[]): void {
     if (!this.currentCity || !this.container.classList.contains('visible')) return
 
     this.cityWorkers = sessions.filter(s => s.cityId === this.currentCity!.id)
@@ -567,13 +541,7 @@ export class CityHUD {
       return
     }
 
-    // Show open fibers first, then recently closed (max ~6 total to keep compact)
-    const visible = all.slice(0, 6)
-    this.fiberList.innerHTML = visible.map(f => this.renderFiberItem(f)).join('')
-
-    if (all.length > 6) {
-      this.fiberList.innerHTML += `<li class="hud-fiber-overflow">+${all.length - 6} more</li>`
-    }
+    this.fiberList.innerHTML = all.map(f => this.renderFiberItem(f)).join('')
 
     this.attachFiberListeners()
   }
@@ -630,43 +598,48 @@ export class CityHUD {
   // ─── Workers ───
 
   private renderWorkers(): void {
-    // Hide widget entirely for dormant cities with no workers
-    if (this.cityWorkers.length === 0) {
-      this.workerWidget.style.display = 'none'
-      return
-    }
+    const container = this.headerWidget.querySelector('.hud-header-workers')!
 
-    this.workerWidget.style.display = ''
-    this.workerList.innerHTML = this.cityWorkers.map(s => this.renderWorkerItem(s)).join('')
-    this.attachWorkerListeners()
-  }
+    const parts: string[] = [`<span class="hud-header-workers-label">workers</span>`]
 
-  private renderWorkerItem(session: Session): string {
-    const statusClass = session.status === 'working' ? 'working' : 'idle'
-    const lastAct = this.getLastActivity(session.tmuxSession)
+    const chips = this.cityWorkers.map(s => {
+      const statusClass = s.status === 'working' ? 'working' : 'idle'
+      return `<span class="hud-worker-chip ${statusClass}" data-session-id="${s.id}" title="${escapeHtml(s.name)}">` +
+        `<span class="hud-worker-dot ${statusClass}">●</span>${escapeHtml(s.name)}</span>`
+    })
 
-    return `
-      <li class="hud-worker-item" data-session-id="${session.id}">
-        <span class="hud-worker-dot ${statusClass}">●</span>
-        <span class="hud-worker-name">${escapeHtml(session.name)}</span>
-        <span class="hud-worker-activity">${lastAct}</span>
-      </li>
-    `
-  }
+    // + button at the end
+    chips.push(`<button class="hud-worker-add" title="New Worker">+</button>`)
 
-  private getLastActivity(tmuxSession: string): string {
-    const last = this.activityBySession.get(tmuxSession)?.[0]
-    if (!last) return ''
-    return escapeHtml(last.summary || last.tool)
-  }
+    container.innerHTML = parts.concat(chips).join('')
 
-  private attachWorkerListeners(): void {
-    for (const item of this.workerList.querySelectorAll<HTMLElement>('.hud-worker-item')) {
-      item.addEventListener('click', () => {
-        const sessionId = item.dataset.sessionId
+    // Worker chip click → open conversation card
+    for (const chip of container.querySelectorAll<HTMLElement>('.hud-worker-chip')) {
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const sessionId = chip.dataset.sessionId
         if (sessionId) this.onFocusWorker?.(sessionId)
       })
     }
+
+    // + button click → new worker dialog
+    container.querySelector('.hud-worker-add')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.currentCity && this.newWorkerDialog) {
+        this.newWorkerDialog.show(this.currentCity.name).then(result => {
+          if (!result) return
+          if (this.ws?.readyState === WebSocket.OPEN && this.currentCity) {
+            this.ws.send(JSON.stringify({
+              type: 'newWorker',
+              cityPath: this.currentCity.path,
+              name: result.name || undefined,
+              chrome: result.chrome || undefined,
+              continue: result.continue || undefined,
+            }))
+          }
+        })
+      }
+    })
   }
 
   dispose(): void {
