@@ -2463,6 +2463,121 @@
         color: var(--rust);
       }
 
+      /* ─── Top-Right: Git Detail Widget ─────────────────────── */
+
+      .hud-top-right {
+        top: 0;
+        right: 0;
+        /* Only inner corner (bottom-left) is rounded */
+        border-radius: 0 0 0 12px;
+        padding: 14px 20px 14px 18px;
+        min-width: 180px;
+        max-width: 300px;
+        /* Subtle border on exposed edges */
+        border-left: 1px solid var(--parchment-edge);
+        border-bottom: 1px solid var(--parchment-edge);
+        /* Fade-in from corner */
+        transform: translate(8px, -8px);
+        opacity: 0;
+      }
+
+      #city-hud.visible .hud-top-right {
+        animation: hudCornerInTR 300ms 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      @keyframes hudCornerInTR {
+        from {
+          transform: translate(8px, -8px);
+          opacity: 0;
+        }
+        to {
+          transform: translate(0, 0);
+          opacity: 1;
+        }
+      }
+
+      .hud-git-detail-heading {
+        font-family: var(--font-main);
+        font-size: 0.82rem;
+        font-variant: small-caps;
+        font-feature-settings: 'smcp' 1;
+        letter-spacing: 0.08em;
+        color: var(--ink-light);
+        margin: 0 0 8px 0;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--parchment-edge);
+      }
+
+      .hud-gd-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        padding: 2px 0;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.7rem;
+        line-height: 1.5;
+      }
+
+      .hud-gd-label {
+        color: var(--ink-faded);
+        flex-shrink: 0;
+        min-width: 56px;
+      }
+
+      .hud-gd-value {
+        color: var(--ink-body);
+        text-align: right;
+      }
+
+      .hud-gd-branch {
+        color: var(--sepia-accent);
+        font-weight: 500;
+      }
+
+      .hud-gd-ahead {
+        color: #5a8a5a;
+      }
+
+      .hud-gd-behind {
+        color: var(--rust);
+      }
+
+      .hud-gd-staged {
+        color: #5a8a5a;
+      }
+
+      .hud-gd-unstaged {
+        color: var(--sepia-muted);
+      }
+
+      .hud-gd-untracked {
+        color: var(--ink-faded);
+      }
+
+      .hud-gd-commit {
+        margin-top: 6px;
+        padding-top: 6px;
+        border-top: 1px solid var(--parchment-edge);
+      }
+
+      .hud-gd-commit-msg {
+        display: block;
+        font-family: var(--font-main);
+        font-size: 0.72rem;
+        color: var(--ink-body);
+        line-height: 1.4;
+        font-style: italic;
+      }
+
+      .hud-gd-commit-time {
+        display: block;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.62rem;
+        color: var(--ink-faded);
+        margin-top: 2px;
+      }
+
       /* ─── Bottom-Right: Fiber List Widget ───────────────────── */
 
       .hud-bottom-right {

@@ -18,6 +18,7 @@ type FibersCallback = (response: FibersResponse) => void
 export class CityHUD {
   private container: HTMLElement
   private identityWidget: HTMLElement
+  private gitDetailWidget: HTMLElement
   private fiberList: HTMLElement
   private fiberWidget: HTMLElement
   private workerWidget: HTMLElement
@@ -57,6 +58,7 @@ export class CityHUD {
   constructor() {
     this.container = this.createContainer()
     this.identityWidget = this.container.querySelector('.hud-identity')!
+    this.gitDetailWidget = this.container.querySelector('.hud-git-detail')!
     this.fiberList = this.container.querySelector('.hud-fiber-list')!
     this.fiberWidget = this.container.querySelector('.hud-fibers')!
     this.workerWidget = this.container.querySelector('.hud-workers')!
@@ -80,6 +82,10 @@ export class CityHUD {
           <p class="hud-city-path"></p>
           <div class="hud-git-summary"></div>
         </div>
+      </div>
+      <div class="hud-git-detail hud-widget hud-top-right" style="display: none;">
+        <h3 class="hud-git-detail-heading">Git</h3>
+        <div class="hud-git-detail-content"></div>
       </div>
       <div class="hud-workers hud-widget hud-bottom-left">
         <h3 class="hud-workers-heading">Workers</h3>
@@ -181,6 +187,105 @@ export class CityHUD {
     return parts.join(' ')
   }
 
+  private renderGitDetail(status?: GitStatus): void {
+    if (!status?.isRepo) {
+      this.gitDetailWidget.style.display = 'none'
+      return
+    }
+
+    this.gitDetailWidget.style.display = ''
+    const content = this.gitDetailWidget.querySelector('.hud-git-detail-content')!
+
+    const rows: string[] = []
+
+    // Branch + remote tracking
+    rows.push(`<div class="hud-gd-row">
+      <span class="hud-gd-label">branch</span>
+      <span class="hud-gd-value hud-gd-branch">${escapeHtml(status.branch)}</span>
+    </div>`)
+
+    if (status.ahead > 0 || status.behind > 0) {
+      const parts: string[] = []
+      if (status.ahead > 0) parts.push(`<span class="hud-gd-ahead">↑${status.ahead}</span>`)
+      if (status.behind > 0) parts.push(`<span class="hud-gd-behind">↓${status.behind}</span>`)
+      rows.push(`<div class="hud-gd-row">
+        <span class="hud-gd-label">remote</span>
+        <span class="hud-gd-value">${parts.join(' ')}</span>
+      </div>`)
+    }
+
+    // Staged breakdown
+    const staged = status.staged
+    if (staged.added + staged.modified + staged.deleted > 0) {
+      const parts: string[] = []
+      if (staged.added > 0) parts.push(`+${staged.added}`)
+      if (staged.modified > 0) parts.push(`~${staged.modified}`)
+      if (staged.deleted > 0) parts.push(`-${staged.deleted}`)
+      rows.push(`<div class="hud-gd-row">
+        <span class="hud-gd-label">staged</span>
+        <span class="hud-gd-value hud-gd-staged">${parts.join(' ')}</span>
+      </div>`)
+    }
+
+    // Unstaged breakdown
+    const unstaged = status.unstaged
+    if (unstaged.added + unstaged.modified + unstaged.deleted > 0) {
+      const parts: string[] = []
+      if (unstaged.added > 0) parts.push(`+${unstaged.added}`)
+      if (unstaged.modified > 0) parts.push(`~${unstaged.modified}`)
+      if (unstaged.deleted > 0) parts.push(`-${unstaged.deleted}`)
+      rows.push(`<div class="hud-gd-row">
+        <span class="hud-gd-label">unstaged</span>
+        <span class="hud-gd-value hud-gd-unstaged">${parts.join(' ')}</span>
+      </div>`)
+    }
+
+    // Untracked
+    if (status.untracked > 0) {
+      rows.push(`<div class="hud-gd-row">
+        <span class="hud-gd-label">untracked</span>
+        <span class="hud-gd-value hud-gd-untracked">${status.untracked} file${status.untracked !== 1 ? 's' : ''}</span>
+      </div>`)
+    }
+
+    // Diff stats
+    if (status.linesAdded > 0 || status.linesRemoved > 0) {
+      const parts: string[] = []
+      if (status.linesAdded > 0) parts.push(`<span class="hud-git-add">+${status.linesAdded}</span>`)
+      if (status.linesRemoved > 0) parts.push(`<span class="hud-git-rm">−${status.linesRemoved}</span>`)
+      rows.push(`<div class="hud-gd-row">
+        <span class="hud-gd-label">diff</span>
+        <span class="hud-gd-value">${parts.join(' ')}</span>
+      </div>`)
+    }
+
+    // Last commit
+    if (status.lastCommitMessage) {
+      const timeStr = status.lastCommitTime ? this.relativeTime(status.lastCommitTime) : ''
+      const msg = status.lastCommitMessage.length > 48
+        ? status.lastCommitMessage.slice(0, 48) + '…'
+        : status.lastCommitMessage
+      rows.push(`<div class="hud-gd-commit">
+        <span class="hud-gd-commit-msg">${escapeHtml(msg)}</span>
+        ${timeStr ? `<span class="hud-gd-commit-time">${timeStr}</span>` : ''}
+      </div>`)
+    }
+
+    content.innerHTML = rows.join('')
+  }
+
+  private relativeTime(timestamp: number): string {
+    const now = Date.now()
+    const diff = now - timestamp
+    const minutes = Math.floor(diff / 60000)
+    if (minutes < 1) return 'just now'
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    return `${days}d ago`
+  }
+
   // ─── Public API (matches CityPanel interface) ───
 
   show(city: City): void {
@@ -194,6 +299,9 @@ export class CityHUD {
     nameEl.textContent = city.name
     pathEl.textContent = city.path
     gitEl.innerHTML = this.renderGitSummary(city.gitStatus)
+
+    // Populate git detail widget (top-right)
+    this.renderGitDetail(city.gitStatus)
 
     // Clear state for fresh load
     this.openFibers = []
