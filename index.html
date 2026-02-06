@@ -2708,6 +2708,114 @@
         padding: 8px 2px;
       }
 
+      /* ─── Bottom-Left: Worker Status Widget ──────────────────── */
+
+      .hud-bottom-left {
+        bottom: 0;
+        left: 0;
+        /* Only inner corner (top-right) is rounded */
+        border-radius: 0 12px 0 0;
+        padding: 14px 20px 16px 18px;
+        min-width: 180px;
+        max-width: 280px;
+        /* Subtle border on exposed edges */
+        border-right: 1px solid var(--parchment-edge);
+        border-top: 1px solid var(--parchment-edge);
+        /* Fade-in from corner */
+        transform: translate(-8px, 8px);
+        opacity: 0;
+      }
+
+      #city-hud.visible .hud-bottom-left {
+        animation: hudCornerInBL 300ms 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      @keyframes hudCornerInBL {
+        from {
+          transform: translate(-8px, 8px);
+          opacity: 0;
+        }
+        to {
+          transform: translate(0, 0);
+          opacity: 1;
+        }
+      }
+
+      .hud-workers-heading {
+        font-family: var(--font-main);
+        font-size: 0.82rem;
+        font-variant: small-caps;
+        font-feature-settings: 'smcp' 1;
+        letter-spacing: 0.08em;
+        color: var(--ink-light);
+        margin: 0 0 8px 0;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--parchment-edge);
+      }
+
+      .hud-worker-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .hud-worker-item {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        padding: 4px 4px 4px 2px;
+        cursor: pointer;
+        border-radius: 3px;
+        transition: background 120ms ease;
+        font-size: 0.82rem;
+        line-height: 1.4;
+      }
+
+      .hud-worker-item:hover {
+        background: rgba(90, 123, 123, 0.1);
+      }
+
+      .hud-worker-dot {
+        flex-shrink: 0;
+        font-size: 0.6rem;
+        width: 12px;
+        text-align: center;
+      }
+
+      .hud-worker-dot.working {
+        color: #5a7b7b;
+      }
+
+      .hud-worker-dot.idle {
+        color: var(--ink-faded);
+      }
+
+      .hud-worker-name {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.75rem;
+        color: var(--ink-body);
+        white-space: nowrap;
+      }
+
+      .hud-worker-activity {
+        flex: 1;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.65rem;
+        color: var(--ink-faded);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: right;
+      }
+
+      .hud-worker-empty {
+        font-family: var(--font-main);
+        font-size: 0.75rem;
+        color: var(--ink-faded);
+        font-style: italic;
+        padding: 4px 2px;
+      }
+
       /* ═══════════════════════════════════════════════════════════
          FILE VIEWER MODAL — Centered Code Display
          ═══════════════════════════════════════════════════════════ */

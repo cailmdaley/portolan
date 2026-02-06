@@ -151,6 +151,7 @@ function handleCityClick(city: City): void {
     activateRemoteCity(city)
   } else {
     cityPanel.show(city)
+    cityPanel.updateWorkers(sessions, activityBySession)
   }
 }
 
@@ -187,6 +188,9 @@ const newWorkerDialog = new NewWorkerDialog()
 
 // Wire up new worker dialog to city panel
 cityPanel.setNewWorkerDialog(newWorkerDialog)
+
+// Wire up worker click → focus Kitty tab
+cityPanel.setOnFocusWorker(focusKittyTab)
 
 // Setup view switching
 const viewOverlay = new ViewOverlay()
@@ -279,6 +283,9 @@ function handleActivityEvent(activity: { tmuxSession: string; tool: string; summ
 
   // Update ZoneRenderer worker marker activity
   zoneRenderer.updateWorkerActivity(activity.tmuxSession, activities)
+
+  // Update HUD worker list (activity text may have changed)
+  cityPanel.updateWorkers(sessions, activityBySession)
 }
 
 // Connect to server
@@ -436,6 +443,9 @@ function handleMessage(message: ServerMessage): void {
       }
     }
     zoneRenderer.updateState(cities, sessions)
+
+    // Update HUD worker list if visible
+    cityPanel.updateWorkers(sessions, activityBySession)
 
     // On first state, focus camera on most recently active city
     if (!hasReceivedInitialState && cities.length > 0) {

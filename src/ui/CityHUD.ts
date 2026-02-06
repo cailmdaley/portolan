@@ -1,7 +1,7 @@
 // CityHUD.ts - Corner-anchored HUD widgets overlaying the map
 // Civ-style: information lives in corners, center stays clear
 
-import type { City, GitStatus } from '../state/types'
+import type { Activity, City, GitStatus, Session } from '../state/types'
 import { escapeHtml, fiberStatusIcon } from './utils'
 import type { Fiber, SearchResult } from './CityPanel'
 import type { NewWorkerDialog } from './NewWorkerDialog'
@@ -20,6 +20,8 @@ export class CityHUD {
   private identityWidget: HTMLElement
   private fiberList: HTMLElement
   private fiberWidget: HTMLElement
+  private workerWidget: HTMLElement
+  private workerList: HTMLElement
   private searchInput: HTMLInputElement
   private searchClear: HTMLElement
   private searchResultsList: HTMLElement
@@ -32,6 +34,10 @@ export class CityHUD {
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
 
+  // Worker state
+  private cityWorkers: Session[] = []
+  private activityBySession = new Map<string, Activity[]>()
+
   // Stored listener refs for HMR-safe cleanup
   private clickOutsideHandler: ((e: MouseEvent) => void) | null = null
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -40,6 +46,7 @@ export class CityHUD {
   private onViewClaims: ((city: City) => void) | null = null
   private onViewPlaygrounds: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string) => void) | null = null
+  private onFocusWorker: ((sessionId: string) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
   // Search state
@@ -52,6 +59,8 @@ export class CityHUD {
     this.identityWidget = this.container.querySelector('.hud-identity')!
     this.fiberList = this.container.querySelector('.hud-fiber-list')!
     this.fiberWidget = this.container.querySelector('.hud-fibers')!
+    this.workerWidget = this.container.querySelector('.hud-workers')!
+    this.workerList = this.container.querySelector('.hud-worker-list')!
     this.searchInput = this.container.querySelector('.hud-search-input')!
     this.searchClear = this.container.querySelector('.hud-search-clear')!
     this.searchResultsList = this.container.querySelector('.hud-search-results')!
@@ -71,6 +80,10 @@ export class CityHUD {
           <p class="hud-city-path"></p>
           <div class="hud-git-summary"></div>
         </div>
+      </div>
+      <div class="hud-workers hud-widget hud-bottom-left">
+        <h3 class="hud-workers-heading">Workers</h3>
+        <ul class="hud-worker-list"></ul>
       </div>
       <div class="hud-fibers hud-widget hud-bottom-right">
         <h3 class="hud-fibers-heading">Fibers</h3>
@@ -225,6 +238,19 @@ export class CityHUD {
 
   setNewWorkerDialog(dialog: NewWorkerDialog): void {
     this.newWorkerDialog = dialog
+  }
+
+  setOnFocusWorker(callback: (sessionId: string) => void): void {
+    this.onFocusWorker = callback
+  }
+
+  /** Called from main.ts whenever state updates — filters to current city's workers */
+  updateWorkers(sessions: Session[], activityBySession: Map<string, Activity[]>): void {
+    this.activityBySession = activityBySession
+    if (!this.currentCity || !this.container.classList.contains('visible')) return
+
+    this.cityWorkers = sessions.filter(s => s.cityId === this.currentCity!.id)
+    this.renderWorkers()
   }
 
   handleMessage(message: unknown): boolean {
@@ -491,6 +517,48 @@ export class CityHUD {
         }
       })
     })
+  }
+
+  // ─── Workers ───
+
+  private renderWorkers(): void {
+    // Hide widget entirely for dormant cities with no workers
+    if (this.cityWorkers.length === 0) {
+      this.workerWidget.style.display = 'none'
+      return
+    }
+
+    this.workerWidget.style.display = ''
+    this.workerList.innerHTML = this.cityWorkers.map(s => this.renderWorkerItem(s)).join('')
+    this.attachWorkerListeners()
+  }
+
+  private renderWorkerItem(session: Session): string {
+    const statusClass = session.status === 'working' ? 'working' : 'idle'
+    const lastAct = this.getLastActivity(session.tmuxSession)
+
+    return `
+      <li class="hud-worker-item" data-session-id="${session.id}">
+        <span class="hud-worker-dot ${statusClass}">●</span>
+        <span class="hud-worker-name">${escapeHtml(session.name)}</span>
+        <span class="hud-worker-activity">${lastAct}</span>
+      </li>
+    `
+  }
+
+  private getLastActivity(tmuxSession: string): string {
+    const last = this.activityBySession.get(tmuxSession)?.[0]
+    if (!last) return ''
+    return escapeHtml(last.summary || last.tool)
+  }
+
+  private attachWorkerListeners(): void {
+    for (const item of this.workerList.querySelectorAll<HTMLElement>('.hud-worker-item')) {
+      item.addEventListener('click', () => {
+        const sessionId = item.dataset.sessionId
+        if (sessionId) this.onFocusWorker?.(sessionId)
+      })
+    }
   }
 
   dispose(): void {
