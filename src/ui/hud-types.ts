@@ -1,4 +1,4 @@
-// Shared types for CityHUD (and legacy CityPanel)
+// Shared types for CityHUD
 
 export interface Fiber {
   id: string

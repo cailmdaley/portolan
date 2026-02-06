@@ -1,9 +1,11 @@
 ---
 title: Redesign CityPanel as Civ-style corner HUD
-status: active
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-06T23:28:24.351499+01:00
+closed-at: 2026-02-07T00:47:04.557471+01:00
+close-reason: 'CityHUD complete. Seven loops delivered: (1) scaffold + identity widget, (2) fiber list, (3) search bar, (4) worker status, (5) git detail, (6) conditional actions + merge into two widgets, (7) type scale CSS variables (5-step --hud-font-* ramp replacing 22 hardcoded sizes), responsive media query (<720px), type extraction to hud-types.ts, CityPanel.ts deleted (863 LOC). Two corner-anchored parchment widgets remain: top-right header (name, git, workers, actions) and bottom-right fibers+search. Fade-in/out via CSS transitions, escape/click-away dismissal, staggered corner animations.'
 ---
 
 ## Vision
@@ -108,4 +110,5 @@ Interactive explorer: `.portolan/playgrounds/city-hud-explorer.html`
 **2026-02-07 00:08** — Loop 5 complete: Git Detail Widget. Top-right corner parchment widget showing detailed git status — branch, ahead/behind remote tracking, staged/unstaged breakdowns (add/modify/delete), untracked file count, diff stats (+/-), last commit message with relative time. Widget hidden when city has no git repo (display:none). Staggered 260ms animation. Reuses shared hud-git-add/hud-git-rm color classes from identity widget. Compact monospace layout with label/value rows.
 **2026-02-07 00:21** — Loop 6 complete: Conditional Actions. Identity widget now has an actions row below git summary with three buttons: + Worker (always visible, opens NewWorkerDialog and sends newWorker via WS), Claims (⚖, only when city.hasClaims), Playgrounds (▶, only when city.hasPlaygrounds). Buttons are subtle parchment-chrome style with hover transitions. Rendered fresh on each show() — conditional buttons appear/disappear based on city state. NewWorkerDialog wiring sends same payload as main.ts promptNewWorker. Type-checks clean.
 **2026-02-07 00:34** — Loop 6 revised: Collapsed four widgets into two. Top-right header now holds everything — city name + conditional action buttons (⚖ claims, ▶ playgrounds) on same line, path, git detail rows, then worker chips (small-caps 'workers' label, status dot + name per chip, + button at end). Bottom-left worker widget removed entirely. Fiber list now scrolls (all fibers shown, 35vh max, flex column layout with pinned heading/search). Search placeholder updated to 'Search files & fibers…'. Worker click opens conversation card on map (not Kitty). Two widgets remain: top-right header, bottom-right fibers+search.
-
+**2026-02-07 00:37** — Loop 7 remaining: fade-out animation on hide(), responsive reflow on narrow viewports, CityPanel.ts cleanup (move Fiber/SearchResult types out, remove dead code). CityHUD.ts still imports types from CityPanel — extract to shared types file.
+**2026-02-07 00:46** — Loop 7 progress: Extracted Fiber/SearchResult types from CityPanel.ts into shared hud-types.ts — CityPanel is now fully dead code (no imports). Replaced 22 hardcoded font-size declarations with 5-step CSS custom property type scale (--hud-font-2xs through --hud-font-lg). Added responsive media query for viewports <720px. Bumped widget max-widths. Remaining: CityPanel.ts cleanup (remove or archive).

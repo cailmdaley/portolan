@@ -267,7 +267,7 @@ export class CityHUD {
     })
   }
 
-  // ─── Public API (matches CityPanel interface) ───
+  // ─── Public API ───
 
   show(city: City): void {
     this.currentCity = city
