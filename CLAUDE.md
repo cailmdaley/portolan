@@ -134,6 +134,10 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 **Conversation lookup: sessionId first, tmux aggregation second.** Multiple sessions can share a tmux name. `resolveConversationMessages` must check `getMessages(sessionId)` before `getMessagesByTmux()` or old conversations bleed into new ones. Tmux aggregation is only for the restart case (new session, no messages yet). See fiber `conversation-session-isolation-dbb8aa40`.
 
+**Mid-turn text needs PostToolUse transcript scan.** Stop fires once at END of turn. PostToolUse fires per tool call but only sends tool_use + tool_result. Assistant text between tool uses has no delivery path unless PostToolUse also scans the transcript tail. The hook filters transcript to text/thinking only (tool_use comes from payload). See fiber `mid-turn-assistant-text-needs-3ab050e3`.
+
+**ConversationCache dedup must check within batch.** `addMessages()` deduplicates against existing cache but also needs to track seen items within the incoming batch itself, or transcript-extracted and payload messages in the same POST create duplicates. See fiber `gotcha-conversationcache-dedup-94a66c7c`.
+
 ## Deep Dives
 
 Fibers in `.felt/` provide detail beyond this overview.
