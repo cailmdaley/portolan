@@ -98,13 +98,13 @@ export class ConversationCard {
 
     // Apply initial size if provided (from localStorage persistence)
     // Only apply saved sizes if user explicitly made the card larger than CSS defaults
-    // CSS defaults: 550px width, 600px height - don't restore smaller sizes
+    // CSS defaults: 580px width, 520px height - don't restore smaller sizes
     if (this.options.initialSize) {
       const { width, height } = this.options.initialSize
-      if (width > 550) {
+      if (width > 580) {
         card.style.width = `${width}px`
       }
-      if (height > 600) {
+      if (height > 520 && height !== 600) {  // 600 was old default, don't restore it
         card.style.height = `${height}px`
       }
     }
@@ -187,6 +187,7 @@ export class ConversationCard {
 
     e.preventDefault()
     e.stopPropagation()
+    this.options.onBringToFront?.()
     this.isDragging = true
     this.dragStart = { x: e.clientX, y: e.clientY }
 
@@ -773,9 +774,9 @@ export class ConversationCard {
    * Update scale based on camera distance (for zoom clamping)
    */
   setScale(scale: number): void {
-    // Clamp scale for readability (card base width is 550px)
-    const minScale = 0.6   // 550 * 0.6 = 330px at far zoom
-    const maxScale = 1.0   // 550 * 1.0 = 550px at close zoom
+    // Clamp scale for readability (card base width is 580px)
+    const minScale = 0.6   // 580 * 0.6 = 348px at far zoom
+    const maxScale = 1.0   // 580 * 1.0 = 580px at close zoom
     this.currentScale = Math.max(minScale, Math.min(maxScale, scale))
     this.applyTransform()
   }

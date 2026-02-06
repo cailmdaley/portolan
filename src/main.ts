@@ -11,7 +11,7 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
-import { CityPanel } from './ui/CityPanel'
+import { CityHUD } from './ui/CityHUD'
 import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
 // GlobalView type for potential future view switching
@@ -136,8 +136,8 @@ zoneRenderer.setCityLabelClickHandler((cityId) => {
 // Provide camera's screen-to-world conversion for accurate drag
 zoneRenderer.setScreenToWorldConverter((x, y) => camera.screenToWorld(x, y))
 
-// Setup city panel
-const cityPanel = new CityPanel()
+// Setup city HUD (corner-anchored widgets, replaces CityPanel)
+const cityPanel = new CityHUD()
 
 // Shared handler for city clicks (used by sprite click and label click)
 function handleCityClick(city: City): void {
@@ -145,7 +145,7 @@ function handleCityClick(city: City): void {
 
   // Focus on city and zoom to detail level
   const pos = hexGrid.axialToCartesian(city.hex)
-  camera.focusAndZoom(pos, 6)
+  camera.focusAndZoom(pos, 6, 0.95)
 
   if (city.isDormant && city.originId !== 'local') {
     activateRemoteCity(city)
@@ -460,7 +460,7 @@ function handleMessage(message: ServerMessage): void {
       console.log('[InitialFocus]', mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
         sessions.length, 'sessions,', sessions.filter(s => s.cityId).length, 'with cityId')
       const pos = hexGrid.axialToCartesian(targetCity.hex)
-      camera.focusAndZoom(pos, 6, 0.7)  // City at bottom of screen (0.7 = 70% down)
+      camera.focusAndZoom(pos, 6, 0.95)
     }
   }
 }
@@ -874,7 +874,7 @@ function handleCycleKeys(e: KeyboardEvent): void {
     zoneRenderer.openConversationCard(session)
     // Focus camera on worker's swarm
     const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
-    if (swarmPos) camera.focusAndZoom(swarmPos, 6)
+    if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
   } else if (e.ctrlKey && !e.altKey) {
     // Cmd+Ctrl+9/0: cycle cities (only those with active workers)
     e.preventDefault()

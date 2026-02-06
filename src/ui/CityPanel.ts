@@ -2,7 +2,7 @@
 // Unified search + Files/Fibers tabs
 
 import type { City, GitStatus } from '../state/types'
-import { escapeHtml, formatTimeAgo } from './utils'
+import { escapeHtml, fiberStatusIcon, formatTimeAgo } from './utils'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 
 export interface Fiber {
@@ -495,7 +495,7 @@ export class CityPanel {
   }
 
   private renderFiberResult(fiber: Fiber): string {
-    const statusIcon = fiber.status === 'active' ? '◐' : fiber.status === 'closed' ? '●' : '○'
+    const statusIcon = fiberStatusIcon(fiber.status)
     const kindClass = fiber.kind || 'task'
 
     return `
@@ -624,7 +624,7 @@ export class CityPanel {
   }
 
   private renderFiberItem(fiber: Fiber): string {
-    const statusIcon = fiber.status === 'active' ? '◐' : fiber.status === 'closed' ? '●' : '○'
+    const statusIcon = fiberStatusIcon(fiber.status)
     const kindClass = fiber.kind || 'task'
 
     return `

@@ -1,17 +1,17 @@
-// WorkerSwarm.ts - Particle swarm rendering for workers
-// Replaces ship sprites with murmuration-style ink droplet clouds
+// WorkerSwarm.ts - Bird murmuration rendering for workers
+// InstancedMesh of tiny bird sprites that turn to face their flight direction
 
 import {
-  Points,
-  PointsMaterial,
-  BufferGeometry,
-  Float32BufferAttribute,
+  InstancedMesh,
+  MeshBasicMaterial,
+  PlaneGeometry,
   Vector3,
-  CanvasTexture,
+  TextureLoader,
   Group,
-  NormalBlending,
+  DoubleSide,
   Object3D,
 } from 'three'
+import type { Texture } from 'three'
 import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 
 // Simplex noise implementation (3D)
@@ -135,49 +135,19 @@ function noise3D(x: number, y: number, z: number): number {
   return 32 * (n0 + n1 + n2 + n3)
 }
 
-// Color gradient: dormant → active
-const INK_DORMANT = { r: 0x1a / 255, g: 0x18 / 255, b: 0x16 / 255 }    // #1A1816 deep black
-const INK_WARM = { r: 0x6a / 255, g: 0x5a / 255, b: 0x3a / 255 }       // #6A5A3A warm sepia
-const INK_FIREFLY = { r: 0xd4 / 255, g: 0xa5 / 255, b: 0x20 / 255 }    // #D4A520 firefly gold
+// Shared bird sprite texture for all swarms
+let sharedBirdTexture: Texture | null = null
 
-// Create sharp point texture with glow
-function createDropletTexture(): CanvasTexture {
-  const size = 64
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')!
-
-  // Sharp core with subtle glow halo
-  const gradient = ctx.createRadialGradient(
-    size / 2, size / 2, 0,
-    size / 2, size / 2, size / 2
-  )
-  // Bright sharp core
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-  gradient.addColorStop(0.15, 'rgba(255, 255, 255, 0.9)')
-  gradient.addColorStop(0.25, 'rgba(255, 255, 255, 0.4)')
-  // Subtle glow halo
-  gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)')
-  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
-
-  ctx.fillStyle = gradient
-  ctx.fillRect(0, 0, size, size)
-
-  const texture = new CanvasTexture(canvas)
-  texture.needsUpdate = true
-  return texture
-}
-
-// Shared texture for all swarms
-let sharedDropletTexture: CanvasTexture | null = null
-
-function getDropletTexture(): CanvasTexture {
-  if (!sharedDropletTexture) {
-    sharedDropletTexture = createDropletTexture()
+function getBirdTexture(): Texture {
+  if (!sharedBirdTexture) {
+    sharedBirdTexture = new TextureLoader().load('/cursors/bird.png')
   }
-  return sharedDropletTexture
+  return sharedBirdTexture
 }
+
+// Bird sprite faces upper-left in the PNG (~45° CCW from +Y in texture space)
+// Rotate CW to align beak with velocity direction
+const BIRD_ANGLE_OFFSET = -Math.PI / 4
 
 export interface SwarmConfig {
   particleCount?: number
@@ -185,18 +155,18 @@ export interface SwarmConfig {
   workingRadiusMultiplier?: number  // How much to expand when working
   baseSpeed?: number            // Noise sampling rate (idle)
   workingSpeedMultiplier?: number   // Speed increase when working
-  particleSize?: number
+  birdSize?: number             // World-unit size at reference distance
   heightOffset?: number         // Y position above vellum
 }
 
 const DEFAULT_CONFIG: Required<SwarmConfig> = {
   particleCount: 45,
-  baseRadius: 0.6,  // 1.5x bigger swarm spread
+  baseRadius: 0.6,
   workingRadiusMultiplier: 1.5,
-  baseSpeed: 0.15,  // Slow time evolution for smooth noise
-  workingSpeedMultiplier: 3.0,
-  particleSize: 9,  // Smaller dots
-  heightOffset: 0.15,  // Just above vellum, below label
+  baseSpeed: 0.15,
+  workingSpeedMultiplier: 2.0,
+  birdSize: 0.12,              // World units
+  heightOffset: 0.15,
 }
 
 export class WorkerSwarm {
@@ -204,12 +174,13 @@ export class WorkerSwarm {
   readonly workerId: string
   readonly tmuxSession: string
 
-  private points: Points
+  private mesh: InstancedMesh
   private positions: Float32Array
   private velocities: Float32Array
-  private material: PointsMaterial
+  private headings: Float32Array   // Per-bird Y rotation (smoothed)
   private particleCount: number
   private config: Required<SwarmConfig>
+  private dummy = new Object3D()   // Reused for matrix composition
 
   // Animation state
   private activity = 0  // 0 = idle, 1 = working (interpolated)
@@ -217,6 +188,10 @@ export class WorkerSwarm {
   private noiseOffset: number  // Unique offset per swarm
   private time = 0
   private frameCount = 0  // For throttling idle animation
+
+  // Camera state for sizing
+  private cameraScale = 1
+  private cameraDistance = 6
 
   // User-adjustable offset from default position (persisted, for dragging)
   userOffset = new Vector3()
@@ -233,42 +208,40 @@ export class WorkerSwarm {
 
     this.group = new Group()
 
-    // Initialize particle positions
+    // Initialize particle positions and headings
     this.positions = new Float32Array(this.particleCount * 3)
     this.velocities = new Float32Array(this.particleCount * 3)
+    this.headings = new Float32Array(this.particleCount)
     this.initializeParticles()
 
-    // Create point cloud
-    const geometry = new BufferGeometry()
-    geometry.setAttribute('position', new Float32BufferAttribute(this.positions, 3))
-
-    this.material = new PointsMaterial({
-      size: this.config.particleSize,
-      map: getDropletTexture(),
+    // Create instanced bird mesh
+    const geometry = new PlaneGeometry(1, 1)
+    const material = new MeshBasicMaterial({
+      map: getBirdTexture(),
       transparent: true,
-      opacity: 0.9,
+      alphaTest: 0.1,
+      side: DoubleSide,
       depthWrite: false,
-      depthTest: true,
-      blending: NormalBlending,
-      vertexColors: false,
-      sizeAttenuation: false,  // Manual scaling via setCameraDistance()
     })
-    this.setColor(0, 0)  // Start with dormant color, no pulse
 
-    this.points = new Points(geometry, this.material)
-    this.points.position.y = this.config.heightOffset
-    this.group.add(this.points)
+    this.mesh = new InstancedMesh(geometry, material, this.particleCount)
+    this.mesh.position.y = this.config.heightOffset
+    this.mesh.renderOrder = 9  // Above city sprites
+    this.group.add(this.mesh)
+
+    // Initial matrix setup
+    this.updateInstanceMatrices()
 
     // Store worker info for hit detection
     this.group.userData = { workerId, tmuxSession }
   }
 
   private initializeParticles(): void {
-    // Distribute particles in a sphere
+    // Distribute particles in a sphere with random initial headings
     for (let i = 0; i < this.particleCount; i++) {
       const theta = Math.random() * Math.PI * 2
       const phi = Math.acos(2 * Math.random() - 1)
-      const r = this.config.baseRadius * Math.cbrt(Math.random())  // Cube root for uniform volume
+      const r = this.config.baseRadius * Math.cbrt(Math.random())
 
       const x = r * Math.sin(phi) * Math.cos(theta)
       const y = r * Math.sin(phi) * Math.sin(theta) * 0.6  // Flatten vertically
@@ -277,7 +250,8 @@ export class WorkerSwarm {
       this.positions[i * 3] = x
       this.positions[i * 3 + 1] = y
       this.positions[i * 3 + 2] = z
-      // velocities start at 0 (Float32Array is zero-initialized)
+
+      this.headings[i] = Math.random() * Math.PI * 2
     }
   }
 
@@ -285,72 +259,53 @@ export class WorkerSwarm {
     this.targetActivity = Math.max(0, Math.min(1, level))
   }
 
-  /** Scale particles based on camera distance - smaller when zoomed out */
+  /** Scale birds based on camera distance — constant apparent size */
   setCameraDistance(distance: number): void {
-    // At distance 6: full size, scales down aggressively when zoomed out
-    // Min 0.25 at far zoom so particles become fine specks
-    const scale = Math.max(0.25, Math.min(1.0, 5 / distance))
-    this.cameraScale = scale
+    this.cameraDistance = distance
+    // Shrink when very zoomed out so birds become specks
+    this.cameraScale = Math.max(0.25, Math.min(1.0, 5 / distance))
   }
 
-  private cameraScale = 1
+  private updateInstanceMatrices(): void {
+    // Scale birds to maintain roughly constant screen size
+    // birdSize is tuned for distance ~6; scale proportionally
+    const worldSize = this.config.birdSize * (this.cameraDistance / 6) * this.cameraScale
 
-  private setColor(activity: number, pulse: number): void {
-    // 3-stop gradient: dormant (0) → warm (0.3) → firefly (1.0)
-    let r: number, g: number, b: number
-
-    if (activity < 0.3) {
-      // Dormant to warm
-      const t = activity / 0.3
-      r = INK_DORMANT.r + (INK_WARM.r - INK_DORMANT.r) * t
-      g = INK_DORMANT.g + (INK_WARM.g - INK_DORMANT.g) * t
-      b = INK_DORMANT.b + (INK_WARM.b - INK_DORMANT.b) * t
-    } else {
-      // Warm to firefly
-      const t = (activity - 0.3) / 0.7
-      r = INK_WARM.r + (INK_FIREFLY.r - INK_WARM.r) * t
-      g = INK_WARM.g + (INK_FIREFLY.g - INK_WARM.g) * t
-      b = INK_WARM.b + (INK_FIREFLY.b - INK_WARM.b) * t
+    for (let i = 0; i < this.particleCount; i++) {
+      const i3 = i * 3
+      this.dummy.position.set(
+        this.positions[i3],
+        this.positions[i3 + 1],
+        this.positions[i3 + 2]
+      )
+      // Lay flat (X rotation), then heading (Y rotation)
+      // Euler 'XYZ': M = Ry(heading) * Rx(-π/2)
+      // Texture +Y → -Z after Rx; Ry rotates in XZ plane
+      const heading = this.headings[i] + BIRD_ANGLE_OFFSET
+      this.dummy.rotation.set(-Math.PI / 2, heading, 0)
+      this.dummy.scale.setScalar(worldSize)
+      this.dummy.updateMatrix()
+      this.mesh.setMatrixAt(i, this.dummy.matrix)
     }
-
-    // Pulse brightness for active workers (adds glow)
-    const brighten = pulse * activity * 0.3
-    r = Math.min(1, r + brighten)
-    g = Math.min(1, g + brighten)
-    b = Math.min(1, b + brighten)
-
-    this.material.color.setRGB(r, g, b)
+    this.mesh.instanceMatrix.needsUpdate = true
   }
 
   update(deltaTime: number): void {
     this.frameCount++
 
     // Throttle idle swarms: update every 3rd frame (~20fps instead of 60fps)
-    // Saves ~66% CPU for idle workers while keeping motion smooth
     const isIdle = this.activity < 0.01 && this.targetActivity === 0
     if (isIdle && this.frameCount % 3 !== 0) {
       return
     }
 
     // Smooth activity transition (~500ms)
-    // Compensate for skipped frames when idle
     const activityRate = deltaTime * (isIdle ? 3 : 1) * 2
     if (this.activity < this.targetActivity) {
       this.activity = Math.min(this.targetActivity, this.activity + activityRate)
     } else if (this.activity > this.targetActivity) {
       this.activity = Math.max(this.targetActivity, this.activity - activityRate)
     }
-
-    // Pulsation for active workers (0-1 sine wave)
-    const pulse = (Math.sin(this.time * 3) + 1) / 2
-
-    // Update color with pulse
-    this.setColor(this.activity, pulse)
-
-    // Scale by camera distance, pulsate for active workers
-    const baseSize = this.config.particleSize * this.cameraScale
-    const sizeVariation = baseSize * 0.3 * this.activity * pulse
-    this.material.size = baseSize + sizeVariation
 
     // Calculate current parameters
     const speed = this.config.baseSpeed * (1 + (this.config.workingSpeedMultiplier - 1) * this.activity)
@@ -361,7 +316,7 @@ export class WorkerSwarm {
 
     // Update each particle
     const noiseScale = 1.5
-    const returnForce = 0.5  // How strongly particles return to center
+    const returnForce = 0.5
 
     for (let i = 0; i < this.particleCount; i++) {
       const i3 = i * 3
@@ -370,8 +325,7 @@ export class WorkerSwarm {
       const z = this.positions[i3 + 2]
 
       // Sample noise for velocity
-      // Per-particle offset prevents convergence when particles get close
-      const particleOffset = i * 7.3  // Prime-ish spacing in noise space
+      const particleOffset = i * 7.3
       const noiseX = x * noiseScale + this.noiseOffset + particleOffset
       const noiseY = y * noiseScale + this.noiseOffset
       const noiseZ = z * noiseScale + this.time
@@ -386,8 +340,8 @@ export class WorkerSwarm {
       this.velocities[i3 + 1] += (vy - this.velocities[i3 + 1]) * smoothing
       this.velocities[i3 + 2] += (vz - this.velocities[i3 + 2]) * smoothing
 
-      // Move particle - dormant: slow drift, active: lively undulation
-      const moveSpeed = 0.3 + this.activity * 2.7  // 0.3 dormant → 3.0 active
+      // Move particle
+      const moveSpeed = 0.3 + this.activity * 0.9  // 0.3 dormant → 1.2 active
       let newX = x + this.velocities[i3] * deltaTime * moveSpeed
       let newY = y + this.velocities[i3 + 1] * deltaTime * moveSpeed
       let newZ = z + this.velocities[i3 + 2] * deltaTime * moveSpeed
@@ -413,12 +367,22 @@ export class WorkerSwarm {
       this.positions[i3] = newX
       this.positions[i3 + 1] = newY
       this.positions[i3 + 2] = newZ
+
+      // Turn bird to face its velocity direction (smoothed)
+      const svx = this.velocities[i3]
+      const svz = this.velocities[i3 + 2]
+      const spd = Math.sqrt(svx * svx + svz * svz)
+      if (spd > 0.01) {
+        const targetHeading = Math.atan2(-svx, -svz)
+        let delta = targetHeading - this.headings[i]
+        // Normalize to [-π, π]
+        if (delta > Math.PI) delta -= Math.PI * 2
+        if (delta < -Math.PI) delta += Math.PI * 2
+        this.headings[i] += delta * 0.25  // Smooth but responsive turning
+      }
     }
 
-    // Update geometry - copy positions to attribute array (they're separate arrays)
-    const posAttr = this.points.geometry.getAttribute('position') as Float32BufferAttribute
-    posAttr.array.set(this.positions)
-    posAttr.needsUpdate = true
+    this.updateInstanceMatrices()
   }
 
   /**
@@ -477,8 +441,8 @@ export class WorkerSwarm {
   }
 
   dispose(): void {
-    this.points.geometry.dispose()
-    this.material.dispose()
-    // Note: don't dispose shared droplet texture
+    this.mesh.geometry.dispose()
+    ;(this.mesh.material as MeshBasicMaterial).dispose()
+    // Note: don't dispose shared bird texture
   }
 }

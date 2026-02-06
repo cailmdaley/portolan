@@ -83,6 +83,16 @@ export function formatTimeAgo(timestamp: number): string {
 }
 
 /**
+ * Map fiber status to a compact icon glyph.
+ * active = half-filled, closed = filled, open/other = hollow.
+ */
+export function fiberStatusIcon(status: string): string {
+  if (status === 'active') return '◐'
+  if (status === 'closed') return '●'
+  return '○'
+}
+
+/**
  * Show a toast notification
  */
 export function showToast(message: string, type: 'success' | 'error' = 'success', duration = 3000): void {
