@@ -2345,6 +2345,13 @@
         z-index: 900;
         opacity: 0;
         transition: opacity 250ms ease;
+
+        /* HUD type scale */
+        --hud-font-2xs: 0.5rem;   /* worker dots */
+        --hud-font-xs: 0.75rem;   /* kind badges, paths, chips, commit times */
+        --hud-font-sm: 0.85rem;   /* git rows, inputs, action buttons, labels */
+        --hud-font-md: 0.95rem;   /* fiber items, headings, new-worker */
+        --hud-font-lg: 1.35rem;   /* city name */
       }
 
       #city-hud.visible {
@@ -2382,7 +2389,7 @@
 
       .hud-city-name {
         font-family: var(--font-main);
-        font-size: 1.15rem;
+        font-size: var(--hud-font-lg);
         font-weight: 600;
         font-variant: small-caps;
         font-feature-settings: 'smcp' 1, 'kern' 1, 'liga' 1;
@@ -2405,8 +2412,8 @@
         border-radius: 4px;
         color: var(--ink-light);
         font-family: var(--font-main);
-        font-size: 0.72rem;
-        padding: 1px 7px;
+        font-size: var(--hud-font-sm);
+        padding: 2px 8px;
         cursor: pointer;
         transition: background 120ms, color 120ms, border-color 120ms;
         line-height: 1.4;
@@ -2420,13 +2427,13 @@
 
       .hud-action-new-worker {
         font-weight: 600;
-        font-size: 0.78rem;
+        font-size: var(--hud-font-md);
       }
 
       /* City path — monospace, muted */
       .hud-city-path {
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.66rem;
+        font-size: var(--hud-font-xs);
         color: var(--ink-faded);
         margin: 0 0 6px 0;
         letter-spacing: -0.01em;
@@ -2449,8 +2456,8 @@
         /* Only inner corner (bottom-left) is rounded */
         border-radius: 0 0 0 12px;
         padding: 16px 22px 14px 20px;
-        min-width: 220px;
-        max-width: 380px;
+        min-width: 240px;
+        max-width: 400px;
         /* Subtle border on exposed edges */
         border-left: 1px solid var(--parchment-edge);
         border-bottom: 1px solid var(--parchment-edge);
@@ -2481,7 +2488,7 @@
         gap: 12px;
         padding: 2px 0;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.7rem;
+        font-size: var(--hud-font-sm);
         line-height: 1.5;
       }
 
@@ -2530,7 +2537,7 @@
       .hud-gd-commit-msg {
         display: block;
         font-family: var(--font-main);
-        font-size: 0.72rem;
+        font-size: var(--hud-font-sm);
         color: var(--ink-body);
         line-height: 1.4;
         font-style: italic;
@@ -2539,7 +2546,7 @@
       .hud-gd-commit-time {
         display: block;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.62rem;
+        font-size: var(--hud-font-xs);
         color: var(--ink-faded);
         margin-top: 2px;
       }
@@ -2552,8 +2559,8 @@
         /* Only inner corner (top-left) is rounded */
         border-radius: 12px 0 0 0;
         padding: 14px 20px 16px 18px;
-        min-width: 240px;
-        max-width: 360px;
+        min-width: 260px;
+        max-width: 380px;
         max-height: 35vh;
         display: flex;
         flex-direction: column;
@@ -2586,7 +2593,7 @@
 
       .hud-fibers-heading {
         font-family: var(--font-main);
-        font-size: 0.82rem;
+        font-size: var(--hud-font-md);
         font-variant: small-caps;
         font-feature-settings: 'smcp' 1;
         letter-spacing: 0.08em;
@@ -2618,12 +2625,12 @@
       .hud-fiber-item {
         display: flex;
         align-items: baseline;
-        gap: 6px;
+        gap: 7px;
         padding: 5px 4px 5px 2px;
         cursor: pointer;
         border-radius: 3px;
         transition: background 120ms ease;
-        font-size: 0.88rem;
+        font-size: var(--hud-font-md);
         line-height: 1.4;
       }
 
@@ -2633,8 +2640,8 @@
 
       .hud-fiber-status {
         flex-shrink: 0;
-        font-size: 0.78rem;
-        width: 16px;
+        font-size: var(--hud-font-sm);
+        width: 18px;
         text-align: center;
       }
 
@@ -2650,7 +2657,7 @@
       .hud-fiber-kind {
         flex-shrink: 0;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.65rem;
+        font-size: var(--hud-font-xs);
         color: var(--ink-faded);
         background: var(--parchment-dark);
         padding: 1px 5px;
@@ -2670,7 +2677,7 @@
         border: none;
         cursor: pointer;
         color: var(--ink-faded);
-        font-size: 0.75rem;
+        font-size: var(--hud-font-sm);
         padding: 0 2px;
         opacity: 0;
         transition: opacity 120ms ease, color 120ms ease;
@@ -2686,7 +2693,7 @@
 
       .hud-fiber-empty {
         font-family: var(--font-main);
-        font-size: 0.75rem;
+        font-size: var(--hud-font-sm);
         color: var(--ink-faded);
         font-style: italic;
         padding: 4px 2px;
@@ -2698,7 +2705,7 @@
 
       .hud-fiber-overflow {
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.65rem;
+        font-size: var(--hud-font-xs);
         color: var(--ink-faded);
         padding: 4px 2px;
       }
@@ -2719,9 +2726,9 @@
         background: rgba(255, 250, 240, 0.4);
         border: 1px solid var(--parchment-edge);
         border-radius: 4px;
-        padding: 5px 24px 5px 8px;
+        padding: 6px 26px 6px 10px;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.72rem;
+        font-size: var(--hud-font-sm);
         color: var(--ink-body);
         outline: none;
         transition: border-color 150ms ease, background 150ms ease;
@@ -2746,7 +2753,7 @@
         border: none;
         color: var(--ink-faded);
         cursor: pointer;
-        font-size: 0.85rem;
+        font-size: var(--hud-font-md);
         line-height: 1;
         padding: 2px 4px;
       }
@@ -2772,21 +2779,21 @@
 
       .hud-search-icon {
         flex-shrink: 0;
-        font-size: 0.68rem;
-        width: 14px;
+        font-size: var(--hud-font-xs);
+        width: 16px;
         text-align: center;
         color: var(--ink-faded);
       }
 
       .hud-fiber-title.mono {
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.7rem;
+        font-size: var(--hud-font-sm);
       }
 
       .hud-search-empty,
       .hud-search-loading {
         font-family: var(--font-main);
-        font-size: 0.75rem;
+        font-size: var(--hud-font-sm);
         color: var(--ink-faded);
         font-style: italic;
         padding: 8px 2px;
@@ -2810,7 +2817,7 @@
 
       .hud-header-workers-label {
         font-family: var(--font-main);
-        font-size: 0.72rem;
+        font-size: var(--hud-font-sm);
         font-variant: small-caps;
         font-feature-settings: 'smcp' 1;
         letter-spacing: 0.06em;
@@ -2823,7 +2830,7 @@
         align-items: center;
         gap: 4px;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.68rem;
+        font-size: var(--hud-font-xs);
         color: var(--ink-body);
         padding: 2px 8px 2px 6px;
         border-radius: 3px;
@@ -2837,7 +2844,7 @@
       }
 
       .hud-worker-chip .hud-worker-dot {
-        font-size: 0.5rem;
+        font-size: var(--hud-font-2xs);
       }
 
       .hud-worker-chip .hud-worker-dot.working {
@@ -2854,7 +2861,7 @@
         border-radius: 3px;
         color: var(--ink-light);
         font-family: var(--font-main);
-        font-size: 0.75rem;
+        font-size: var(--hud-font-xs);
         font-weight: 600;
         padding: 1px 8px;
         cursor: pointer;
@@ -2866,6 +2873,28 @@
         background: rgba(60, 45, 30, 0.08);
         color: var(--ink-dark);
         border-color: var(--ink-faded);
+      }
+
+      /* ─── Responsive: narrow viewports ────────────────────────── */
+
+      @media (max-width: 720px) {
+        #city-hud {
+          --hud-font-2xs: 0.45rem;
+          --hud-font-xs: 0.65rem;
+          --hud-font-sm: 0.75rem;
+          --hud-font-md: 0.85rem;
+          --hud-font-lg: 1.1rem;
+        }
+
+        .hud-top-right {
+          max-width: 260px;
+          padding: 12px 14px 10px 14px;
+        }
+
+        .hud-bottom-right {
+          max-width: 240px;
+          padding: 10px 14px 12px 12px;
+        }
       }
 
       /* ═══════════════════════════════════════════════════════════

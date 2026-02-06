@@ -3,7 +3,7 @@
 
 import type { City, GitStatus, Session } from '../state/types'
 import { escapeHtml, fiberStatusIcon } from './utils'
-import type { Fiber, SearchResult } from './CityPanel'
+import type { Fiber, SearchResult } from './hud-types'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 
 interface FibersResponse {
