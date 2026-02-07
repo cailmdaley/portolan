@@ -952,6 +952,80 @@ const lightbox = { src: claim.id + '/' + artifactPath };
   });
 
   // ────────────────────────────────────────────────────────────
+  // Proxy injection: selectedClaimId variant
+  // ────────────────────────────────────────────────────────────
+
+  describe('GET /claims-dashboard (selectedClaimId variant)', () => {
+    const VARIANT_CITY_DIR = join(TEST_DIR, 'variant-city');
+    const VARIANT_DASHBOARD = join(VARIANT_CITY_DIR, 'results', 'claims', 'index.html');
+
+    // Remote dashboards may use selectedClaimId instead of currentClaimId
+    const VARIANT_HTML = `<!DOCTYPE html>
+<html>
+<head><title>Claims</title></head>
+<body>
+<script>
+let selectedClaimId = null;
+const claimGraph = {};
+</script>
+</body>
+</html>`;
+
+    let variantApi: HttpApi;
+
+    beforeEach(() => {
+      const dashDir = join(VARIANT_CITY_DIR, 'results', 'claims');
+      mkdirSync(dashDir, { recursive: true });
+      writeFileSync(VARIANT_DASHBOARD, VARIANT_HTML, 'utf-8');
+
+      const cityLookup = {
+        getCityById: (id: string) => id === 'variant-city' ? {
+          id: 'variant-city',
+          name: 'VariantCity',
+          path: VARIANT_CITY_DIR,
+          originId: 'local',
+        } : null,
+      };
+
+      variantApi = new HttpApi(cityLookup as any, stubOriginLookup as any, stubPersistenceLookup as any);
+    });
+
+    it('promotes selectedClaimId from let to var', async () => {
+      const res = await httpRequest(variantApi, 'GET', '/claims-dashboard?cityId=variant-city');
+
+      expect(res.status).toBe(200);
+      expect(res.data).toContain('var selectedClaimId');
+      expect(res.data).not.toContain('let selectedClaimId');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // shellQuote — unit test via private access
+  // ────────────────────────────────────────────────────────────
+
+  describe('shellQuote', () => {
+    function shellQuote(s: string): string {
+      return (api as any).shellQuote(s);
+    }
+
+    it('escapes single quotes', () => {
+      expect(shellQuote("it's")).toBe("it'\\''s");
+    });
+
+    it('leaves clean strings unchanged', () => {
+      expect(shellQuote('/home/user/results/claims/index.html')).toBe('/home/user/results/claims/index.html');
+    });
+
+    it('escapes multiple single quotes', () => {
+      expect(shellQuote("a'b'c")).toBe("a'\\''b'\\''c");
+    });
+
+    it('handles strings with double quotes (no change)', () => {
+      expect(shellQuote('say "hello"')).toBe('say "hello"');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
   // formatClaimsAnnotationsForClaude — send-to-worker format
   // ────────────────────────────────────────────────────────────
 

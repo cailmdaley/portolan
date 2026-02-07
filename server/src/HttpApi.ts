@@ -313,9 +313,12 @@ export class HttpApi {
         const { readFileSync } = await import('fs');
         html = readFileSync(dashboardPath, 'utf-8');
       } else {
-        // Remote city: fetch via SSH
+        // Remote city: fetch via SSH (execFileAsync bypasses local shell)
         const sshHost = this.getSshHost(city);
-        const { stdout } = await execAsync(`ssh ${sshHost} 'cat "${dashboardPath}"'`, { maxBuffer: 10 * 1024 * 1024 });
+        const { stdout } = await execFileAsync(
+          'ssh', [sshHost, `cat '${this.shellQuote(dashboardPath)}'`],
+          { maxBuffer: 10 * 1024 * 1024 }
+        );
         html = stdout;
       }
 
@@ -415,10 +418,10 @@ export class HttpApi {
         data = readFileSync(fullPath);
       } else {
         const sshHost = this.getSshHost(city);
-        const { stdout } = await execAsync(`ssh ${sshHost} 'cat "${fullPath}"'`, {
-          maxBuffer: 10 * 1024 * 1024,
-          encoding: 'buffer'
-        });
+        const { stdout } = await execFileAsync(
+          'ssh', [sshHost, `cat '${this.shellQuote(fullPath)}'`],
+          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' }
+        );
         data = stdout as unknown as Buffer;
       }
 
@@ -1078,9 +1081,9 @@ export class HttpApi {
         execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
         execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
       } else {
-        execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: message, timeout: 10000 });
-        execFileSync('ssh', [sshHost, `tmux paste-buffer -t '${escapedSession}'`], { timeout: 10000 });
-        execFileSync('ssh', [sshHost, `tmux send-keys -t '${escapedSession}' Enter`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost!, 'tmux load-buffer -'], { input: message, timeout: 10000 });
+        execFileSync('ssh', [sshHost!, `tmux paste-buffer -t '${escapedSession}'`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost!, `tmux send-keys -t '${escapedSession}' Enter`], { timeout: 10000 });
       }
 
       this.sendJsonSuccess(res, { success: true });

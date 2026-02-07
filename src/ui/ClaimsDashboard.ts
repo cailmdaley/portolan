@@ -14,6 +14,7 @@ export class ClaimsDashboard {
   private title: HTMLElement
   private loadingIndicator: HTMLElement
   private currentCity: City | null = null
+  private loadTimeout: ReturnType<typeof setTimeout> | null = null
 
   // Stored listener refs for HMR-safe cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -93,14 +94,32 @@ export class ClaimsDashboard {
     this.currentCity = city
     this.title.textContent = `Claims: ${city.name}`
 
+    this.loadingIndicator.textContent = 'Loading claims...'
+    this.loadingIndicator.classList.remove('error')
     this.loadingIndicator.style.display = 'flex'
     this.iframe.style.opacity = '0'
     this.iframe.src = dashboardUrl
 
+    // Clear any previous timeout
+    if (this.loadTimeout) clearTimeout(this.loadTimeout)
+
     this.iframe.onload = () => {
+      if (this.loadTimeout) clearTimeout(this.loadTimeout)
       this.loadingIndicator.style.display = 'none'
       this.iframe.style.opacity = '1'
     }
+
+    this.iframe.onerror = () => {
+      if (this.loadTimeout) clearTimeout(this.loadTimeout)
+      this.showLoadError('Failed to load claims dashboard')
+    }
+
+    // Timeout after 15s for remote dashboards (SSH can be slow)
+    this.loadTimeout = setTimeout(() => {
+      if (this.iframe.style.opacity === '0') {
+        this.showLoadError('Dashboard load timed out')
+      }
+    }, 15000)
 
     if (this.escapeHandler) {
       document.addEventListener('keydown', this.escapeHandler)
@@ -108,9 +127,21 @@ export class ClaimsDashboard {
     this.panel.classList.add('visible')
   }
 
+  private showLoadError(message: string): void {
+    this.loadingIndicator.textContent = message
+    this.loadingIndicator.classList.add('error')
+    this.loadingIndicator.style.display = 'flex'
+    this.iframe.style.opacity = '0'
+  }
+
   hide(): void {
     this.panel.classList.remove('visible')
     this.currentCity = null
+
+    if (this.loadTimeout) {
+      clearTimeout(this.loadTimeout)
+      this.loadTimeout = null
+    }
 
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)
