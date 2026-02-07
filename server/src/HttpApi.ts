@@ -808,11 +808,14 @@ export class HttpApi {
       return;
     }
 
-    const annotations = allClaims
-      ? this.annotationPersistence.getAllClaims()
-      : claimId
-        ? this.annotationPersistence.getByClaimId(claimId)
-        : this.annotationPersistence.getByFile(filePath!, originId);
+    let annotations: Annotation[];
+    if (allClaims) {
+      annotations = this.annotationPersistence.getAllClaims();
+    } else if (claimId) {
+      annotations = this.annotationPersistence.getByClaimId(claimId);
+    } else {
+      annotations = this.annotationPersistence.getByFile(filePath!, originId);
+    }
 
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -846,8 +849,7 @@ export class HttpApi {
       return;
     }
 
-    const isClaimAnnotation = data.isClaimAnnotation;
-    if (isClaimAnnotation) {
+    if (data.isClaimAnnotation) {
       if (!data.claimId || !data.comment) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required fields for claims annotation (claimId, comment)' }));
@@ -1038,12 +1040,6 @@ export class HttpApi {
         res.end(JSON.stringify({ error: 'Failed to create worker: ' + error.message }));
         return;
       }
-
-      // Get SSH host for remote origins
-      if (isRemote) {
-        const origin = this.originLookup.getOrigin(originId);
-        sshHost = origin?.sshHost;
-      }
     } else {
       // Use existing worker
       const session = this.sessionLookup.findSession(workerId!);
@@ -1053,12 +1049,12 @@ export class HttpApi {
         return;
       }
       tmuxSession = session.tmuxSession;
+    }
 
-      // Get SSH host for remote origins
-      if (isRemote) {
-        const origin = this.originLookup.getOrigin(originId);
-        sshHost = origin?.sshHost;
-      }
+    // Get SSH host for remote origins (shared by both paths)
+    if (isRemote) {
+      const origin = this.originLookup.getOrigin(originId);
+      sshHost = origin?.sshHost;
     }
 
     // Format annotations as markdown

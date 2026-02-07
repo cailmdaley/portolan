@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';

@@ -186,22 +186,20 @@ export class AnnotationPersistence {
       createdAt: Date.now(),
     };
 
-    // Resolve file path for file annotations
-    if (!newAnnotation.isClaimAnnotation && newAnnotation.filePath) {
-      newAnnotation.filePath = resolve(newAnnotation.filePath);
-    }
+    // File annotations: resolve path and update history
+    const isFileAnnotation = !newAnnotation.isClaimAnnotation && !!newAnnotation.filePath;
+    if (isFileAnnotation) {
+      newAnnotation.filePath = resolve(newAnnotation.filePath!);
 
-    this.annotations.set(newAnnotation.id, newAnnotation);
-
-    // Update annotation history (file annotations only)
-    if (!newAnnotation.isClaimAnnotation && newAnnotation.filePath) {
-      const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath);
+      const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath!);
       this.annotationHistory.set(historyKey, {
-        filePath: newAnnotation.filePath,
+        filePath: newAnnotation.filePath!,
         originId: newAnnotation.originId,
         lastAnnotatedAt: newAnnotation.createdAt,
       });
     }
+
+    this.annotations.set(newAnnotation.id, newAnnotation);
 
     this.save();
 

@@ -153,37 +153,28 @@ export class ClaimsDashboard {
     y?: number
     comment: string
   }): Promise<void> {
-    try {
-      const response = await fetch(`${API_BASE}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          originId: this.currentCity?.originId || 'local',
-          comment: data.comment,
-          isClaimAnnotation: true,
-          claimId: data.claimId,
-          claimTitle: data.claimTitle,
-          selectedText: data.selectedText,
-          artifact: data.artifact,
-          x: data.x,
-          y: data.y,
-          isImageAnnotation: !!data.artifact,
-        }),
-      })
+    const response = await this.fetchApi('/annotations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        originId: this.currentCity?.originId || 'local',
+        comment: data.comment,
+        isClaimAnnotation: true,
+        claimId: data.claimId,
+        claimTitle: data.claimTitle,
+        selectedText: data.selectedText,
+        artifact: data.artifact,
+        x: data.x,
+        y: data.y,
+        isImageAnnotation: !!data.artifact,
+      }),
+    })
 
-      if (!response.ok) {
-        console.error('Failed to save claims annotation:', await response.text())
-        showToast('Failed to save annotation', 'error')
-        return
-      }
+    if (!response) return
 
-      showToast('Annotation saved', 'success', 2000)
-      // Reload annotations in iframe so permanent markers replace temporary pins
-      this.handleAnnotationLoad({ claimId: data.claimId })
-    } catch (err) {
-      console.error('Failed to save claims annotation:', err)
-      showToast('Failed to save annotation', 'error')
-    }
+    showToast('Annotation saved', 'success', 2000)
+    // Reload annotations in iframe so permanent markers replace temporary pins
+    this.handleAnnotationLoad({ claimId: data.claimId })
   }
 
   private async handleAnnotationLoad(data: { claimId: string }): Promise<void> {
@@ -209,67 +200,66 @@ export class ClaimsDashboard {
   }
 
   private async handleAnnotationSend(data: { claimId: string; cityId: string }): Promise<void> {
-    if (!this.currentCity) return
-
-    // Fetch all claims annotations for this claim
-    try {
-      const response = await fetch(
-        `${API_BASE}/annotations?claimId=${encodeURIComponent(data.claimId)}`
-      )
-      if (!response.ok) return
-
-      const result = await response.json()
-      const annotations = result.annotations || []
-
-      if (annotations.length === 0) return
-
-      this.showWorkerPicker(annotations)
-    } catch (err) {
-      console.error('Failed to send claims annotations:', err)
-    }
+    await this.fetchAnnotationsAndPickWorker(
+      `/annotations?claimId=${encodeURIComponent(data.claimId)}`
+    )
   }
 
   private async handleAnnotationDelete(data: { annotationId: string; claimId: string }): Promise<void> {
-    try {
-      const response = await fetch(`${API_BASE}/annotations/${encodeURIComponent(data.annotationId)}`, {
-        method: 'DELETE',
-      })
+    const response = await this.fetchApi(
+      `/annotations/${encodeURIComponent(data.annotationId)}`,
+      { method: 'DELETE' }
+    )
 
-      if (!response.ok) {
-        console.error('Failed to delete claims annotation:', await response.text())
-        showToast('Failed to delete annotation', 'error')
-        return
-      }
+    if (!response) return
 
-      showToast('Annotation deleted', 'success', 2000)
-      // Reload annotations in iframe so the deleted marker disappears
-      this.handleAnnotationLoad({ claimId: data.claimId })
-    } catch (err) {
-      console.error('Failed to delete claims annotation:', err)
-      showToast('Failed to delete annotation', 'error')
-    }
+    showToast('Annotation deleted', 'success', 2000)
+    // Reload annotations in iframe so the deleted marker disappears
+    this.handleAnnotationLoad({ claimId: data.claimId })
   }
 
   private async handleSendAll(): Promise<void> {
+    await this.fetchAnnotationsAndPickWorker('/annotations?claims=true', 'No annotations to send')
+  }
+
+  // ── Shared fetch helpers ──────────────────────────────────────────────
+
+  /** Fetch from API with error handling and toast. Returns Response on success, null on failure. */
+  private async fetchApi(path: string, init?: RequestInit): Promise<Response | null> {
+    try {
+      const response = await fetch(`${API_BASE}${path}`, init)
+      if (!response.ok) {
+        console.error(`API error ${path}:`, await response.text())
+        showToast(`Request failed`, 'error')
+        return null
+      }
+      return response
+    } catch (err) {
+      console.error(`API error ${path}:`, err)
+      showToast(`Request failed`, 'error')
+      return null
+    }
+  }
+
+  /** Fetch annotations from a query path and show the worker picker if results exist. */
+  private async fetchAnnotationsAndPickWorker(
+    queryPath: string,
+    emptyMessage?: string
+  ): Promise<void> {
     if (!this.currentCity) return
 
-    try {
-      const response = await fetch(`${API_BASE}/annotations?claims=true`)
-      if (!response.ok) return
+    const response = await this.fetchApi(queryPath)
+    if (!response) return
 
-      const result = await response.json()
-      const annotations = result.annotations || []
+    const result = await response.json()
+    const annotations = result.annotations || []
 
-      if (annotations.length === 0) {
-        showToast('No annotations to send', 'error', 2000)
-        return
-      }
-
-      this.showWorkerPicker(annotations)
-    } catch (err) {
-      console.error('Failed to fetch all claims annotations:', err)
-      showToast('Failed to load annotations', 'error')
+    if (annotations.length === 0) {
+      if (emptyMessage) showToast(emptyMessage, 'error', 2000)
+      return
     }
+
+    this.showWorkerPicker(annotations)
   }
 
   // ── Worker picker ──────────────────────────────────────────────────────
@@ -337,31 +327,22 @@ export class ClaimsDashboard {
   ): Promise<void> {
     if (!this.currentCity) return
 
-    try {
-      const response = await fetch(`${API_BASE}/send-annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workerId,
-          createNewWorker: createNew,
-          filePath: this.currentCity.path,
-          originId: this.currentCity.originId,
-          annotations,
-          cityName: this.currentCity.name,
-          isClaimsSend: true,
-        }),
-      })
+    const response = await this.fetchApi('/send-annotations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workerId,
+        createNewWorker: createNew,
+        filePath: this.currentCity.path,
+        originId: this.currentCity.originId,
+        annotations,
+        cityName: this.currentCity.name,
+        isClaimsSend: true,
+      }),
+    })
 
-      if (!response.ok) {
-        console.error('Failed to send claims annotations:', await response.text())
-        showToast('Failed to send to worker', 'error')
-        return
-      }
-
+    if (response) {
       showToast('Annotations sent to worker', 'success')
-    } catch (err) {
-      console.error('Failed to send claims annotations:', err)
-      showToast('Failed to send to worker', 'error')
     }
   }
 }
