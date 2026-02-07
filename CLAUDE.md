@@ -45,6 +45,9 @@ Server polls tmux → builds state → broadcasts. Conversation flows via hooks 
 | Text | #2E2A26 primary, #7A7368 muted |
 | Accents | #9A7B35 gold (cities), #5A7B7B teal (working) |
 | Fonts | EB Garamond (body), JetBrains Mono (code) |
+| Card font | `--card-font-base: 20px` on `.conversation-card`, all child sizes in `em` |
+| Card size | 580×520px default |
+| Workers | InstancedMesh bird sprites (bird.png), heading from velocity |
 
 Labels use 3-slice banners (parchment for cities, leather for workers).
 
@@ -138,6 +141,10 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 **ConversationCache dedup must check within batch.** `addMessages()` deduplicates against existing cache but also needs to track seen items within the incoming batch itself, or transcript-extracted and payload messages in the same POST create duplicates. See fiber `gotcha-conversationcache-dedup-94a66c7c`.
 
+**Card header drag blocks bringToFront.** `startDrag` on the card header calls `stopPropagation()`, which prevents the card-level mousedown listener from firing `onBringToFront`. Fix: call `onBringToFront()` directly in startDrag. See fiber `gotcha-card-header-drag-28ae4165`.
+
+**SSH commands: never double-quote-wrap user content.** `execAsync(\`ssh host "cmd '${userArg}'"\`)` is vulnerable — double quotes in `userArg` break out of wrapping. Use `execFileAsync('ssh', [host, cmd])` to bypass local shell entirely. See fiber `gotcha-ssh-double-quote-810f6df9`.
+
 ## Deep Dives
 
 Fibers in `.felt/` provide detail beyond this overview.
@@ -153,5 +160,6 @@ Fibers in `.felt/` provide detail beyond this overview.
 | City Sprites | `.felt/document-nano-banana-prompting-15652206.md` |
 | Worker Swarms | `.felt/murmuration-workers-68674cb9.md` |
 | Remote Proxying | `.felt/pattern-portolan-remote-content-8180cf9d.md` |
+| Claims Annotation | `.felt/claims-annotation-inline-bba0fc30.md` |
 
 Search patterns/gotchas: `felt find pattern` or `felt find gotcha`
