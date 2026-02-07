@@ -1019,6 +1019,24 @@ const claimGraph = {};
     it('handles strings with double quotes (no change)', () => {
       expect(shellQuote('say "hello"')).toBe('say "hello"');
     });
+
+    it('handles backticks (no change — safe inside single quotes)', () => {
+      expect(shellQuote('`whoami`')).toBe('`whoami`');
+    });
+
+    it('handles dollar substitution (no change — safe inside single quotes)', () => {
+      expect(shellQuote('$(id)')).toBe('$(id)');
+    });
+
+    it('handles path with spaces', () => {
+      expect(shellQuote('/home/user/my project/file.txt')).toBe('/home/user/my project/file.txt');
+    });
+
+    it('escapes single quotes in paths with dangerous chars', () => {
+      // The key insight: inside single quotes, only ' needs escaping.
+      // Double quotes, backticks, $ are all literal inside single quotes.
+      expect(shellQuote("path'with\"dangerous`chars$(id)")).toBe("path'\\''with\"dangerous`chars$(id)");
+    });
   });
 
   // ────────────────────────────────────────────────────────────

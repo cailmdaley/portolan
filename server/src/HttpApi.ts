@@ -505,8 +505,8 @@ export class HttpApi {
           return;
         }
 
-        const { stdout } = await execAsync(
-          `ssh ${origin.sshHost} 'cat "${filePath}"'`,
+        const { stdout } = await execFileAsync(
+          'ssh', [origin.sshHost, `cat '${this.shellQuote(filePath)}'`],
           { maxBuffer: 10 * 1024 * 1024, timeout: 10000 }
         );
         content = stdout;
@@ -577,8 +577,8 @@ export class HttpApi {
           return;
         }
 
-        const { stdout } = await execAsync(
-          `ssh ${origin.sshHost} 'base64 "${filePath}"'`,
+        const { stdout } = await execFileAsync(
+          'ssh', [origin.sshHost, `base64 '${this.shellQuote(filePath)}'`],
           { maxBuffer, timeout }
         );
         data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
@@ -648,7 +648,7 @@ export class HttpApi {
    */
   private writeRemoteFile(sshHost: string, filePath: string, content: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ssh = spawn('ssh', [sshHost, `cat > "${filePath}"`], {
+      const ssh = spawn('ssh', [sshHost, `cat > '${this.shellQuote(filePath)}'`], {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -748,8 +748,8 @@ export class HttpApi {
     try {
       // Check if agent is already running on this host
       // Use -T to disable TTY allocation (avoids "Pseudo-terminal will not be allocated" warnings)
-      const { stdout: checkOutput } = await execAsync(
-        `ssh -T ${sshHost} 'tmux has-session -t portolan-agent 2>/dev/null && echo running || echo stopped'`,
+      const { stdout: checkOutput } = await execFileAsync(
+        'ssh', ['-T', sshHost, 'tmux has-session -t portolan-agent 2>/dev/null && echo running || echo stopped'],
         { timeout: 10000 }
       );
 
@@ -762,8 +762,9 @@ export class HttpApi {
       // Start the agent via SSH
       // Use -T to disable TTY allocation, bash -l to get login shell with nvm/node in PATH
       console.log(`[Activate] Starting portolan-agent on ${sshHost}...`);
-      await execAsync(
-        `ssh -T ${sshHost} 'tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${sshHost}\\""'`,
+      const escapedHost = this.shellQuote(sshHost);
+      await execFileAsync(
+        'ssh', ['-T', sshHost, `tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${escapedHost}\\""`],
         { timeout: 30000 }
       );
 
@@ -1254,7 +1255,7 @@ export class HttpApi {
     try {
       let fiberId: string;
 
-      const feltCmd = `cd '${this.shellQuote(cityPath)}' && felt add '${this.shellQuote(title)}' -k ${kind} -b '${this.shellQuote(body)}'`;
+      const feltCmd = `cd '${this.shellQuote(cityPath)}' && felt add '${this.shellQuote(title)}' -k '${this.shellQuote(kind)}' -b '${this.shellQuote(body)}'`;
 
       if (!isRemote) {
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
@@ -1359,8 +1360,8 @@ export class HttpApi {
         files = readdirSync(playgroundsDir).filter(f => f.endsWith('.html'));
       } else {
         const sshHost = this.getSshHost(city);
-        const { stdout } = await execAsync(
-          `ssh ${sshHost} 'ls "${playgroundsDir}"/*.html 2>/dev/null || true'`,
+        const { stdout } = await execFileAsync(
+          'ssh', [sshHost, `ls '${this.shellQuote(playgroundsDir)}'/*.html 2>/dev/null || true`],
           { timeout: 10000 }
         );
         files = stdout.trim().split('\n')
@@ -1424,8 +1425,8 @@ export class HttpApi {
         html = readFileSync(playgroundPath, 'utf-8');
       } else {
         const sshHost = this.getSshHost(city);
-        const { stdout } = await execAsync(
-          `ssh ${sshHost} 'cat "${playgroundPath}"'`,
+        const { stdout } = await execFileAsync(
+          'ssh', [sshHost, `cat '${this.shellQuote(playgroundPath)}'`],
           { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
         );
         html = stdout;

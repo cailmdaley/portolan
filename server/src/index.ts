@@ -8,13 +8,14 @@
 
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { exec, spawn, ChildProcess } from 'child_process';
+import { exec, execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // Track active file searches for cancellation
 const activeSearches = new Map<string, ChildProcess>();
@@ -627,8 +628,8 @@ async function getRemoteFibers(
   const recentFlag = status === 'closed' ? '--recent 5' : '';
 
   try {
-    const { stdout } = await execAsync(
-      `ssh ${shellEscape(sshHost)} "cd ${escapedPath} && felt ls ${statusFlag} ${recentFlag} --json --body 2>/dev/null || echo '[]'"`,
+    const { stdout } = await execFileAsync(
+      'ssh', [sshHost, `cd ${escapedPath} && felt ls ${statusFlag} ${recentFlag} --json --body 2>/dev/null || echo '[]'`],
       { timeout: 10000 }
     );
     const fibers = JSON.parse(stdout.trim() || '[]');
@@ -848,9 +849,9 @@ function searchRemote(
     remoteCmd = `(rg --line-number --no-heading --color never --max-count 1 --no-ignore --glob '!.git' --glob '!node_modules' --glob '!__pycache__' ${escapedQuery} 2>/dev/null || grep -rn --include='*' -I '${safeQuery}' . --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ 2>/dev/null) | head -50`;
   }
 
-  const cmd = `ssh ${shellEscape(sshHost)} "cd ${escapedPath} && ${remoteCmd}"`;
+  const remoteScript = `cd ${escapedPath} && ${remoteCmd}`;
 
-  const proc = spawn('sh', ['-c', cmd]);
+  const proc = spawn('ssh', [sshHost, remoteScript]);
   activeSearches.set(searchKey, proc);
 
   let stdout = '';
