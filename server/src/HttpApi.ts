@@ -313,13 +313,15 @@ export class HttpApi {
 
       // Rewrite relative URLs (fonts, images) to use the proxy
       const assetsBase = `/claims-assets`;
+      // Escape cityId for safe embedding in <script> and HTML attributes
+      const safeCityId = cityId.replace(/[<>"'&\\]/g, '');
       const rewrittenHtml = html
         .replace(/url\(['"]?([^'")\s]+\.(otf|ttf|woff2?|png|jpe?g|svg))['"]?\)/gi,
-          (_, path) => `url('${assetsBase}/${path}?cityId=${cityId}')`)
+          (_, path) => `url('${assetsBase}/${path}?cityId=${safeCityId}')`)
         .replace(/src=['"]([^'"]+\.(png|jpe?g|svg|gif))['"]/gi,
-          (_, path) => `src="${assetsBase}/${path}?cityId=${cityId}"`)
+          (_, path) => `src="${assetsBase}/${path}?cityId=${safeCityId}"`)
         // Inject base URL for dynamic image loading (used by JS code)
-        .replace(/<head>/i, `<head><script>window.CLAIMS_ASSETS_BASE = "${assetsBase}"; window.CLAIMS_CITY_ID = "${cityId}";</script><script src="/claims-annotate.js"></script>`)
+        .replace(/<head>/i, `<head><script>window.CLAIMS_ASSETS_BASE = "${assetsBase}"; window.CLAIMS_CITY_ID = "${safeCityId}";</script><script src="/claims-annotate.js"></script>`)
         // Rewrite dynamic imgPath construction to use proxy
         .replace(/const imgPath = ([^;]+);/g,
           `const imgPath = window.CLAIMS_ASSETS_BASE + '/' + ($1) + '?cityId=' + window.CLAIMS_CITY_ID;`)
@@ -344,11 +346,28 @@ export class HttpApi {
    */
   private async handleClaimsAssets(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
-    const assetPath = url.pathname.replace('/claims-assets/', '');
+    const rawAssetPath = url.pathname.replace('/claims-assets/', '');
 
-    if (!cityId || !assetPath) {
+    if (!cityId || !rawAssetPath) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
       res.end('Missing cityId or asset path');
+      return;
+    }
+
+    // Decode percent-encoding before security checks
+    let assetPath: string;
+    try {
+      assetPath = decodeURIComponent(rawAssetPath);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Invalid asset path');
+      return;
+    }
+
+    // Security: prevent directory traversal and shell injection
+    if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Invalid asset path');
       return;
     }
 

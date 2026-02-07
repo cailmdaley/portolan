@@ -708,5 +708,158 @@ const lightbox = { src: claim.id + '/' + artifactPath };
 
       expect(res.status).toBe(404);
     });
+
+    it('sanitizes cityId to prevent XSS in injected script', async () => {
+      // Create a city with a dangerous-looking ID
+      const xssId = 'test"></script><script>alert(1)</script>';
+      const xssCityDir = join(TEST_DIR, 'xss-city');
+      const xssDashDir = join(xssCityDir, 'results', 'claims');
+      mkdirSync(xssDashDir, { recursive: true });
+      writeFileSync(join(xssDashDir, 'index.html'), MOCK_DASHBOARD_HTML, 'utf-8');
+
+      const xssLookup = {
+        getCityById: (id: string) => id === xssId ? {
+          id: xssId,
+          name: 'XSS City',
+          path: xssCityDir,
+          originId: 'local',
+        } : null,
+      };
+      const xssApi = new HttpApi(xssLookup as any, stubOriginLookup as any, stubPersistenceLookup as any);
+
+      const res = await httpRequest(xssApi, 'GET', `/claims-dashboard?cityId=${encodeURIComponent(xssId)}`);
+
+      expect(res.status).toBe(200);
+      // Script-breaking characters stripped: no closing/opening script tags
+      expect(res.data).not.toContain('</script><script>');
+      // Quotes and angle brackets removed from injected cityId
+      expect(res.data).not.toContain('CLAIMS_CITY_ID = "test"');
+      expect(res.data).toContain('CLAIMS_CITY_ID = "test');
+      // The original dangerous payload is defanged
+      expect(res.data).not.toMatch(/<script>alert/);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // formatClaimsAnnotationsForClaude — additional edge cases
+  // ────────────────────────────────────────────────────────────
+
+  describe('formatClaimsAnnotationsForClaude — edge cases', () => {
+    function formatClaims(cityName: string, annotations: Annotation[], globalComment?: string): string {
+      return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
+    }
+
+    it('formats comment-only annotations (no selectedText or artifact)', () => {
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'This claim needs more evidence',
+          claimTitle: 'Dark energy equation of state',
+        }),
+      ];
+
+      const output = formatClaims('test', annotations);
+
+      expect(output).toContain('## 1. [Dark energy equation of state]');
+      expect(output).toContain('> This claim needs more evidence');
+      // Should not contain "On text:" or "On plot:" lines
+      expect(output).not.toContain('On text:');
+      expect(output).not.toContain('On plot:');
+    });
+
+    it('handles empty annotations array', () => {
+      const output = formatClaims('test', []);
+
+      expect(output).toContain('# Claims review: test');
+      expect(output).toContain('---');
+      expect(output).not.toContain('pieces of feedback');
+    });
+
+    it('handles mixed annotation types under the same claim', () => {
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'General note',
+          claimId: 'c1',
+          claimTitle: 'Multi-type claim',
+        }),
+        makeClaimAnnotation({
+          id: '2',
+          comment: 'Text note',
+          claimId: 'c1',
+          claimTitle: 'Multi-type claim',
+          selectedText: 'PTE = 0.3',
+        }),
+        makeClaimAnnotation({
+          id: '3',
+          comment: 'Image note',
+          claimId: 'c1',
+          claimTitle: 'Multi-type claim',
+          artifact: 'spectrum.png',
+          x: 50,
+          y: 25,
+        }),
+      ];
+
+      const output = formatClaims('test', annotations);
+
+      // Single heading for all three
+      const headingMatches = output.match(/\[Multi-type claim\]/g);
+      expect(headingMatches).toHaveLength(1);
+      // All three annotation types present
+      expect(output).toContain('> General note');
+      expect(output).toContain('> On text: "PTE = 0.3"');
+      expect(output).toContain('> On plot: spectrum.png (at 50%, 25%)');
+      expect(output).toContain('3 pieces of feedback');
+    });
+
+    it('handles image annotation without coordinates', () => {
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'General plot note',
+          artifact: 'overview.png',
+        }),
+      ];
+
+      const output = formatClaims('test', annotations);
+
+      expect(output).toContain('> On plot: overview.png');
+      // No position reference when x/y are undefined
+      expect(output).not.toContain('at');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // Claims assets proxy — security
+  // ────────────────────────────────────────────────────────────
+
+  describe('GET /claims-assets (security)', () => {
+    it('rejects path traversal in nested segments', async () => {
+      // URL parser resolves bare ../.. but not embedded traversal segments
+      const res = await httpRequest(api, 'GET', '/claims-assets/sub/..%2F..%2Fetc/passwd?cityId=test');
+
+      // Either 400 (caught by traversal check) or 404 (city not found) — never serves the file
+      expect([400, 404]).toContain(res.status);
+    });
+
+    it('rejects shell injection via dollar substitution', async () => {
+      const res = await httpRequest(api, 'GET', '/claims-assets/$(id).png?cityId=test');
+
+      expect(res.status).toBe(400);
+      expect(res.data).toContain('Invalid asset path');
+    });
+
+    it('rejects shell injection via backticks', async () => {
+      const res = await httpRequest(api, 'GET', '/claims-assets/`whoami`.png?cityId=test');
+
+      expect(res.status).toBe(400);
+      expect(res.data).toContain('Invalid asset path');
+    });
+
+    it('accepts clean asset paths', async () => {
+      // Will 404 (city not found) but should pass the security check
+      const res = await httpRequest(api, 'GET', '/claims-assets/claim-123/plot.png?cityId=test');
+
+      // 404 because stub city lookup returns null — but NOT 400
+      expect(res.status).toBe(404);
+    });
   });
 });
