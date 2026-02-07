@@ -43,10 +43,12 @@
   function clampToViewport(el) {
     requestAnimationFrame(() => {
       const rect = el.getBoundingClientRect()
-      if (rect.right > window.innerWidth - 10) {
+      if (rect.left < 10) el.style.left = '10px'
+      else if (rect.right > window.innerWidth - 10) {
         el.style.left = Math.max(10, window.innerWidth - rect.width - 10) + 'px'
       }
-      if (rect.bottom > window.innerHeight - 10) {
+      if (rect.top < 10) el.style.top = '10px'
+      else if (rect.bottom > window.innerHeight - 10) {
         el.style.top = Math.max(10, window.innerHeight - rect.height - 10) + 'px'
       }
     })
@@ -257,6 +259,9 @@
   document.addEventListener('click', (e) => {
     const img = e.target
     if (img.tagName !== 'IMG') return
+
+    // Alt+click passes through to dashboard's original handler (e.g. lightbox)
+    if (e.altKey) return
 
     // Resolve artifact name: explicit data attribute, or derive from src
     const artifact = img.dataset.artifact || deriveArtifact(img.getAttribute('src'))
