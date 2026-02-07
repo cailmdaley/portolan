@@ -202,11 +202,10 @@ export class ClaimsDashboard {
       }),
     })
 
-    if (!response) return
-
-    showToast('Annotation saved', 'success', 2000)
-    // Reload so permanent markers replace temporary pins
-    this.handleAnnotationLoad({ claimId: data.claimId })
+    if (response) {
+      showToast('Annotation saved', 'success', 2000)
+      this.handleAnnotationLoad({ claimId: data.claimId })
+    }
   }
 
   private async handleAnnotationLoad(data: { claimId: string }): Promise<void> {
@@ -238,10 +237,10 @@ export class ClaimsDashboard {
       { method: 'DELETE' }
     )
 
-    if (!response) return
-
-    showToast('Annotation deleted', 'success', 2000)
-    this.handleAnnotationLoad({ claimId: data.claimId })
+    if (response) {
+      showToast('Annotation deleted', 'success', 2000)
+      this.handleAnnotationLoad({ claimId: data.claimId })
+    }
   }
 
   private async handleAnnotationPromote(data: {
@@ -278,30 +277,25 @@ export class ClaimsDashboard {
     await this.fetchAnnotationsAndPickWorker('/annotations?claims=true', 'No annotations to send')
   }
 
-  // ── Shared fetch helpers ──────────────────────────────────────────────
+  // ── Fetch helpers ─────────────────────────────────────────────────────
 
-  /** Fetch from API with error handling and toast. Returns Response on success, null on failure. */
   private async fetchApi(path: string, init?: RequestInit): Promise<Response | null> {
     try {
       const response = await fetch(`${API_BASE}${path}`, init)
       if (!response.ok) {
         console.error(`API error ${path}:`, await response.text())
-        showToast(`Request failed`, 'error')
+        showToast('Request failed', 'error')
         return null
       }
       return response
     } catch (err) {
       console.error(`API error ${path}:`, err)
-      showToast(`Request failed`, 'error')
+      showToast('Request failed', 'error')
       return null
     }
   }
 
-  /** Fetch annotations from a query path and show the worker picker if results exist. */
-  private async fetchAnnotationsAndPickWorker(
-    queryPath: string,
-    emptyMessage?: string
-  ): Promise<void> {
+  private async fetchAnnotationsAndPickWorker(queryPath: string, emptyMessage?: string): Promise<void> {
     if (!this.currentCity) return
 
     const response = await this.fetchApi(queryPath)

@@ -42,13 +42,13 @@ function makePersistence(): AnnotationPersistence {
 /** Factory: create an Annotation with claim defaults, overriding only what matters per test */
 function makeClaimAnnotation(overrides: Partial<Annotation> = {}): Annotation {
   return {
-    id: overrides.id ?? '1',
+    id: '1',
     originId: 'local',
     comment: 'test comment',
     createdAt: Date.now(),
     isClaimAnnotation: true,
     claimId: 'c1',
-    ...overrides,
+    ...overrides, // Override defaults with provided values
   };
 }
 
@@ -206,27 +206,23 @@ describe('HttpApi — claims annotations', () => {
 
   describe('GET /annotations?claimId=', () => {
     it('returns annotations for a specific claim', async () => {
-      persistence.add({
-        originId: 'local',
+      persistence.add(makeClaimAnnotation({
         comment: 'First',
-        isClaimAnnotation: true,
         claimId: 'claim-1',
         claimTitle: 'Test claim',
-      } as any);
-      persistence.add({
-        originId: 'local',
+      }));
+      persistence.add(makeClaimAnnotation({
+        id: '2',
         comment: 'Second',
-        isClaimAnnotation: true,
         claimId: 'claim-1',
         claimTitle: 'Test claim',
-      } as any);
-      persistence.add({
-        originId: 'local',
+      }));
+      persistence.add(makeClaimAnnotation({
+        id: '3',
         comment: 'Other',
-        isClaimAnnotation: true,
         claimId: 'claim-2',
         claimTitle: 'Other claim',
-      } as any);
+      }));
 
       const res = await httpRequest(api, 'GET', '/annotations?claimId=claim-1');
 
@@ -250,13 +246,11 @@ describe('HttpApi — claims annotations', () => {
         from: 0,
         to: 10,
       } as any);
-      persistence.add({
-        originId: 'local',
+      persistence.add(makeClaimAnnotation({
         comment: 'Claim annotation',
-        isClaimAnnotation: true,
         claimId: 'claim-1',
         claimTitle: 'Test',
-      } as any);
+      }));
 
       const res = await httpRequest(api, 'GET', '/annotations?claimId=claim-1');
 
@@ -450,14 +444,17 @@ describe('HttpApi — claims annotations', () => {
 
   describe('GET /annotations?claims=true', () => {
     it('returns all claims annotations across claims', async () => {
-      persistence.add({
-        originId: 'local', comment: 'A', isClaimAnnotation: true,
-        claimId: 'c1', claimTitle: 'First',
-      } as any);
-      persistence.add({
-        originId: 'local', comment: 'B', isClaimAnnotation: true,
-        claimId: 'c2', claimTitle: 'Second',
-      } as any);
+      persistence.add(makeClaimAnnotation({
+        comment: 'A',
+        claimId: 'c1',
+        claimTitle: 'First',
+      }));
+      persistence.add(makeClaimAnnotation({
+        id: '2',
+        comment: 'B',
+        claimId: 'c2',
+        claimTitle: 'Second',
+      }));
       persistence.add({
         originId: 'local', comment: 'File only',
         filePath: '/test/file.ts', from: 0, to: 10,
@@ -769,7 +766,7 @@ const lightbox = { src: claim.id + '/' + artifactPath };
     const REAL_CITY_DIR = join(TEST_DIR, 'kinelens-city');
     const REAL_DASHBOARD = join(REAL_CITY_DIR, 'results', 'claims', 'index.html');
 
-    // HTML closely modeled on actual KineLens claims dashboard structure
+    // Modeled on actual KineLens claims dashboard structure
     const REALISTIC_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -940,10 +937,10 @@ function selectClaim(claimId) {
       expect(annotateIdx).toBeGreaterThan(headIdx);
     });
 
-    it('empty lightbox img src is not rewritten (no image extension)', async () => {
+    it('does not rewrite empty lightbox img src (no image extension)', async () => {
       const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
 
-      // The lightbox <img src=""> has no file extension, so src rewrite regex doesn't match
+      // Empty src has no file extension, so regex doesn't match
       expect(res.data).toContain('src=""');
     });
   });
