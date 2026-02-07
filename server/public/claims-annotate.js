@@ -19,6 +19,14 @@
     }
   }
 
+  function ensurePositionedParent(el) {
+    const container = el.parentElement
+    if (container && getComputedStyle(container).position === 'static') {
+      container.style.position = 'relative'
+    }
+    return container
+  }
+
   function getClaimContext(el) {
     // Walk up to find the claim container with data attributes
     let node = el
@@ -183,11 +191,7 @@
       z-index: 99998;
     `
 
-    // Image needs a positioned parent
-    const container = img.parentElement
-    if (container && getComputedStyle(container).position === 'static') {
-      container.style.position = 'relative'
-    }
+    const container = ensurePositionedParent(img)
     if (container) container.appendChild(pin)
 
     createAnnotationInput({
@@ -262,16 +266,43 @@
     // Clear old markers
     panel.querySelectorAll('.portolan-existing-marker').forEach((m) => m.remove())
 
+    // Add "Send to Worker" button if there are annotations
+    if (annotations.length > 0) {
+      const sendBar = document.createElement('div')
+      sendBar.className = 'portolan-existing-marker portolan-send-bar'
+      sendBar.style.cssText = `
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 10px; margin: 4px 0 8px;
+        background: rgba(154,123,53,0.08);
+        border-radius: 4px;
+        font-size: 12px; color: #7A7368;
+      `
+      const sendBtn = document.createElement('button')
+      sendBtn.textContent = `Send ${annotations.length} annotation${annotations.length === 1 ? '' : 's'} to worker`
+      sendBtn.style.cssText = `
+        padding: 4px 12px; border: none; border-radius: 4px;
+        background: #9A7B35; color: #fff; cursor: pointer;
+        font-size: 12px; font-family: inherit;
+      `
+      sendBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        parent.postMessage({
+          type: 'claims-annotation-send',
+          claimId: claimId,
+          cityId: cityId,
+        }, '*')
+      })
+      sendBar.appendChild(sendBtn)
+      panel.insertBefore(sendBar, panel.firstChild)
+    }
+
     annotations.forEach((ann, i) => {
       if (ann.artifact && ann.x !== undefined && ann.y !== undefined) {
         // Image pin — find the artifact image
         const img = panel.querySelector(`img[data-artifact="${ann.artifact}"]`)
         if (!img) return
 
-        const container = img.parentElement
-        if (container && getComputedStyle(container).position === 'static') {
-          container.style.position = 'relative'
-        }
+        const container = ensurePositionedParent(img)
 
         const marker = document.createElement('div')
         marker.className = 'portolan-existing-marker'

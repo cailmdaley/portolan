@@ -2,6 +2,8 @@
 // Handles postMessage bridge for inline annotation from the dashboard iframe
 
 import type { City } from '../state/types'
+import type { WorkerInfo } from './FileViewerModal'
+import { escapeHtml } from './utils'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 
@@ -17,8 +19,8 @@ export class ClaimsDashboard {
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private messageHandler: ((e: MessageEvent) => void) | null = null
 
-  // Callback for send-to-worker (set by main.ts)
-  onSendToWorker: ((city: City, annotations: any[]) => void) | null = null
+  // Callback for getting available workers (set by main.ts)
+  private onGetWorkers: ((city: City) => WorkerInfo[]) | null = null
 
   constructor() {
     this.panel = this.createPanel()
@@ -147,21 +149,15 @@ export class ClaimsDashboard {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          filePath: '',
           originId: this.currentCity?.originId || 'local',
-          from: 0,
-          to: 0,
-          originalText: data.selectedText || '',
-          contextBefore: '',
-          contextAfter: '',
           comment: data.comment,
+          isClaimAnnotation: true,
           claimId: data.claimId,
           claimTitle: data.claimTitle,
           selectedText: data.selectedText,
           artifact: data.artifact,
           x: data.x,
           y: data.y,
-          isClaimAnnotation: true,
           isImageAnnotation: !!data.artifact,
         }),
       })
@@ -199,7 +195,7 @@ export class ClaimsDashboard {
   private async handleAnnotationSend(data: { claimId: string; cityId: string }): Promise<void> {
     if (!this.currentCity) return
 
-    // Fetch all claims annotations for this city
+    // Fetch all claims annotations for this claim
     try {
       const response = await fetch(
         `${API_BASE}/annotations?claimId=${encodeURIComponent(data.claimId)}`
@@ -211,8 +207,95 @@ export class ClaimsDashboard {
 
       if (annotations.length === 0) return
 
-      if (this.onSendToWorker) {
-        this.onSendToWorker(this.currentCity, annotations)
+      this.showWorkerPicker(annotations)
+    } catch (err) {
+      console.error('Failed to send claims annotations:', err)
+    }
+  }
+
+  // ── Worker picker ──────────────────────────────────────────────────────
+
+  setOnGetWorkers(fn: (city: City) => WorkerInfo[]): void {
+    this.onGetWorkers = fn
+  }
+
+  private showWorkerPicker(annotations: any[]): void {
+    if (!this.currentCity) return
+
+    const workers = this.onGetWorkers ? this.onGetWorkers(this.currentCity) : []
+
+    const picker = document.createElement('div')
+    picker.className = 'worker-picker-overlay'
+    picker.innerHTML = `
+      <div class="worker-picker">
+        <div class="worker-picker-header">
+          <span>Send ${annotations.length} annotation${annotations.length === 1 ? '' : 's'} to worker</span>
+          <button class="worker-picker-close">&times;</button>
+        </div>
+        <div class="worker-picker-list">
+          <button class="worker-picker-item worker-picker-new" data-action="new">
+            <span class="worker-name">+ New Worker</span>
+            <span class="worker-session">Create new worker and send</span>
+          </button>
+          ${workers.map(w => `
+            <button class="worker-picker-item" data-worker-id="${w.id}">
+              <span class="worker-name">${escapeHtml(w.name)}</span>
+              <span class="worker-session">${escapeHtml(w.tmuxSession)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `
+
+    document.body.appendChild(picker)
+
+    picker.querySelector('.worker-picker-close')?.addEventListener('click', () => {
+      picker.remove()
+    })
+
+    picker.addEventListener('click', (e) => {
+      if (e.target === picker) picker.remove()
+    })
+
+    picker.querySelector('.worker-picker-new')?.addEventListener('click', async () => {
+      picker.remove()
+      await this.sendClaimsToWorker(annotations, undefined, true)
+    })
+
+    picker.querySelectorAll('.worker-picker-item:not(.worker-picker-new)').forEach(item => {
+      item.addEventListener('click', async () => {
+        const workerId = item.getAttribute('data-worker-id')!
+        picker.remove()
+        await this.sendClaimsToWorker(annotations, workerId)
+      })
+    })
+  }
+
+  private async sendClaimsToWorker(
+    annotations: any[],
+    workerId?: string,
+    createNew?: boolean
+  ): Promise<void> {
+    if (!this.currentCity) return
+
+    try {
+      const response = await fetch(`${API_BASE}/send-annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workerId,
+          createNewWorker: createNew,
+          filePath: this.currentCity.path,
+          originId: this.currentCity.originId,
+          annotations,
+          cityName: this.currentCity.name,
+          isClaimsSend: true,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        console.error('Failed to send claims annotations:', error.error)
       }
     } catch (err) {
       console.error('Failed to send claims annotations:', err)

@@ -242,6 +242,13 @@ cityPanel.setOnViewClaims((city) => {
   claimsDashboard.show(city, dashboardUrl)
 })
 
+// Wire up worker lookup for claims send-to-worker
+claimsDashboard.setOnGetWorkers((city) => {
+  return sessions
+    .filter(s => s.cityId === city.id && s.originId === city.originId)
+    .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
+})
+
 // Setup playground viewer
 const playgroundViewer = new PlaygroundViewer()
 
@@ -508,7 +515,7 @@ canvasOverlay.addEventListener('click', (e) => {
   if (movingCityId) {
     moveCity(movingCityId, hex)
     movingCityId = null
-    document.body.style.cursor = 'var(--cursor-bird)'
+    document.body.style.cursor = ''
     return
   }
 
@@ -609,19 +616,16 @@ canvasOverlay.addEventListener('mousemove', (e) => {
   // Check for worker swarm first (smaller hit area, more specific)
   const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
   if (workerHit) {
+    canvas.style.cursor = 'grab'
+    return
+  }
+
+  if (zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)) {
     canvas.style.cursor = 'var(--cursor-bird)'
     return
   }
 
-  // Check for city
-  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
-  if (cityHit) {
-    canvas.style.cursor = 'var(--cursor-bird)'
-    return
-  }
-
-  // Swallow cursor everywhere on map
-  canvas.style.cursor = 'var(--cursor-bird)'
+  canvas.style.cursor = ''
 })
 
 // Claim gesture to prevent system Quick Look
@@ -861,7 +865,7 @@ function handleEscapeKey(e: KeyboardEvent): void {
 
   if (movingCityId) {
     movingCityId = null
-    document.body.style.cursor = 'var(--cursor-bird)'
+    document.body.style.cursor = ''
     return
   }
 
