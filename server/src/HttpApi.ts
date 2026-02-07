@@ -9,7 +9,7 @@
 
 import { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
-import { exec, spawn, execSync } from 'child_process';
+import { exec, execFile, execFileSync, spawn, execSync } from 'child_process';
 import { readFile, writeFile } from 'fs/promises';
 import { promisify } from 'util';
 import { extname, join, dirname } from 'path';
@@ -23,6 +23,7 @@ import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 import type { CardStatePersistence } from './CardStatePersistence.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ============================================================================
 // Types
@@ -1007,8 +1008,9 @@ export class HttpApi {
           return;
         }
 
-        execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: formattedMessage, timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
+        // execFileSync avoids local shell — command strings interpreted only by remote shell
+        execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: formattedMessage, timeout: 10000 });
+        execFileSync('ssh', [sshHost, `tmux paste-buffer -t '${escapedSession}'`], { timeout: 10000 });
       }
 
       if (workerId && this.onFocusSession) {
@@ -1242,14 +1244,11 @@ export class HttpApi {
     try {
       let fiberId: string;
 
-      const escapedTitle = title.replace(/'/g, "'\\''");
-      const escapedBody = body.replace(/'/g, "'\\''");
+      const sq = (s: string) => s.replace(/'/g, "'\\''");
+      const feltCmd = `cd '${sq(cityPath)}' && felt add '${sq(title)}' -k ${kind} -b '${sq(body)}'`;
 
       if (!isRemote) {
-        const { stdout } = await execAsync(
-          `cd '${cityPath}' && felt add '${escapedTitle}' -k ${kind} -b '${escapedBody}'`,
-          { timeout: 10000, maxBuffer: 1024 * 1024 }
-        );
+        const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
         fiberId = stdout.trim();
       } else {
         const origin = this.originLookup.getOrigin(originId);
@@ -1258,8 +1257,9 @@ export class HttpApi {
           return;
         }
 
-        const { stdout } = await execAsync(
-          `ssh ${origin.sshHost} "cd '${cityPath}' && felt add '${escapedTitle}' -k ${kind} -b '${escapedBody}'"`,
+        // execFileAsync avoids local shell — feltCmd is interpreted only by the remote shell
+        const { stdout } = await execFileAsync(
+          'ssh', [origin.sshHost, feltCmd],
           { timeout: 30000, maxBuffer: 1024 * 1024 }
         );
         fiberId = stdout.trim();
@@ -1299,22 +1299,17 @@ export class HttpApi {
     }
 
     const isRemote = city.originId !== 'local' && !!city.originId;
-    const escapedClaimId = claimId.replace(/'/g, "'\\''");
-    const escapedComment = comment.replace(/'/g, "'\\''");
+    const sq = (s: string) => s.replace(/'/g, "'\\''");
     const cityPath = city.path;
 
     try {
+      const feltCmd = `cd '${sq(cityPath)}' && felt comment '${sq(claimId)}' '${sq(comment)}'`;
       if (!isRemote) {
-        await execAsync(
-          `cd '${cityPath}' && felt comment '${escapedClaimId}' '${escapedComment}'`,
-          { timeout: 10000 }
-        );
+        await execAsync(feltCmd, { timeout: 10000 });
       } else {
         const sshHost = this.getSshHost(city);
-        await execAsync(
-          `ssh ${sshHost} "cd '${cityPath}' && felt comment '${escapedClaimId}' '${escapedComment}'"`,
-          { timeout: 30000 }
-        );
+        // execFileAsync avoids local shell — feltCmd is interpreted only by the remote shell
+        await execFileAsync('ssh', [sshHost, feltCmd], { timeout: 30000 });
       }
 
       this.sendJsonSuccess(res, { success: true });

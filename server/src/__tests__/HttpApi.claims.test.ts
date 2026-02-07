@@ -876,4 +876,142 @@ const lightbox = { src: claim.id + '/' + artifactPath };
       expect(res.status).toBe(404);
     });
   });
+
+  // ────────────────────────────────────────────────────────────
+  // Special characters in annotation comments
+  // ────────────────────────────────────────────────────────────
+
+  describe('annotations with special characters', () => {
+    it('handles single quotes in comment', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: "it's got single quotes",
+        isClaimAnnotation: true,
+        claimId: 'claim-sq',
+        claimTitle: 'Single quotes test',
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.data.annotation.comment).toBe("it's got single quotes");
+    });
+
+    it('handles double quotes in comment', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'the "scare quotes" issue',
+        isClaimAnnotation: true,
+        claimId: 'claim-dq',
+        claimTitle: 'Double quotes test',
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.data.annotation.comment).toBe('the "scare quotes" issue');
+    });
+
+    it('handles unicode in selectedText', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'check this',
+        isClaimAnnotation: true,
+        claimId: 'claim-uni',
+        selectedText: 'σ = 2.3 ± 0.1',
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.data.annotation.selectedText).toBe('σ = 2.3 ± 0.1');
+    });
+
+    it('round-trips special chars through CRUD', async () => {
+      const comment = "it's a \"complex\" note — with em-dash & symbols <>";
+
+      const createRes = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment,
+        isClaimAnnotation: true,
+        claimId: 'claim-special',
+        claimTitle: 'Special chars',
+        selectedText: 'PTE < 0.05 & σ > 3',
+      });
+      expect(createRes.status).toBe(201);
+      const id = createRes.data.annotation.id;
+
+      const getRes = await httpRequest(api, 'GET', '/annotations?claimId=claim-special');
+      expect(getRes.status).toBe(200);
+      expect(getRes.data.annotations[0].comment).toBe(comment);
+      expect(getRes.data.annotations[0].selectedText).toBe('PTE < 0.05 & σ > 3');
+
+      // Verify format output handles special chars
+      const formatClaims = (api as any).formatClaimsAnnotationsForClaude.bind(api);
+      const formatted = formatClaims('test', getRes.data.annotations);
+      expect(formatted).toContain('PTE < 0.05 & σ > 3');
+      expect(formatted).toContain(comment);
+
+      // Clean up
+      await httpRequest(api, 'DELETE', `/annotations/${id}`);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // formatClaimsAnnotationsForClaude — send-to-worker format
+  // ────────────────────────────────────────────────────────────
+
+  describe('formatClaimsAnnotationsForClaude for send-to-worker', () => {
+    function formatClaims(cityName: string, annotations: Annotation[], globalComment?: string): string {
+      return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
+    }
+
+    it('produces the expected worker paste format', () => {
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'Seems low — recheck with different bin edges',
+          claimId: 'c1',
+          claimTitle: 'B-modes consistent with zero',
+          selectedText: 'PTE 0.29',
+        }),
+        makeClaimAnnotation({
+          id: '2',
+          comment: 'Check edge effects on velocity profile',
+          claimId: 'c2',
+          claimTitle: 'Galaxy generation pipeline',
+          artifact: 'galaxy_fields.png',
+          x: 45,
+          y: 32,
+        }),
+      ];
+
+      const output = formatClaims('pure-eb', annotations);
+
+      // Verify structure matches spec: "# Claims review: {cityName}"
+      expect(output).toMatch(/^[\n]*# Claims review: pure-eb/);
+      // "I've reviewed..." introduction
+      expect(output).toContain("I've reviewed the claims dashboard and have 2 pieces of feedback:");
+      // Claim headings with numbering
+      expect(output).toContain('## 1. [B-modes consistent with zero]');
+      expect(output).toContain('## 2. [Galaxy generation pipeline]');
+      // Text annotation format
+      expect(output).toContain('> On text: "PTE 0.29"');
+      expect(output).toContain('> Seems low — recheck with different bin edges');
+      // Image annotation format with position
+      expect(output).toContain('> On plot: galaxy_fields.png (at 45%, 32%)');
+      expect(output).toContain('> Check edge effects on velocity profile');
+      // Ends with separator
+      expect(output).toMatch(/---\s*$/);
+    });
+
+    it('produces readable output with global comment', () => {
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'Minor issue',
+          claimTitle: 'Test claim',
+        }),
+      ];
+
+      const output = formatClaims('KineLens', annotations, 'Overall the analysis is solid, just a few notes.');
+
+      expect(output).toContain('# Claims review: KineLens');
+      expect(output).toContain('Overall the analysis is solid, just a few notes.');
+      expect(output).toContain('## 1. [Test claim]');
+      expect(output).toContain('> Minor issue');
+    });
+  });
 });
