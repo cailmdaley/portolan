@@ -3,7 +3,7 @@
 
 import type { City } from '../state/types'
 import type { WorkerInfo } from './FileViewerModal'
-import { escapeHtml } from './utils'
+import { escapeHtml, showToast } from './utils'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 
@@ -11,6 +11,7 @@ export class ClaimsDashboard {
   private panel: HTMLElement
   private iframe: HTMLIFrameElement
   private closeBtn: HTMLElement
+  private sendAllBtn: HTMLElement
   private title: HTMLElement
   private loadingIndicator: HTMLElement
   private currentCity: City | null = null
@@ -26,6 +27,7 @@ export class ClaimsDashboard {
     this.panel = this.createPanel()
     this.iframe = this.panel.querySelector('iframe')!
     this.closeBtn = this.panel.querySelector('.close-btn')!
+    this.sendAllBtn = this.panel.querySelector('.send-all-btn')!
     this.title = this.panel.querySelector('h2')!
     this.loadingIndicator = this.panel.querySelector('.loading-indicator')!
 
@@ -39,7 +41,10 @@ export class ClaimsDashboard {
     panel.innerHTML = `
       <div class="claims-dashboard-header">
         <h2>Claims Dashboard</h2>
-        <button class="close-btn">&times;</button>
+        <div class="claims-dashboard-actions">
+          <button class="send-all-btn" title="Send all annotations to worker">Send All to Worker</button>
+          <button class="close-btn">&times;</button>
+        </div>
       </div>
       <div class="loading-indicator">Loading claims...</div>
       <iframe src="about:blank" frameborder="0"></iframe>
@@ -49,6 +54,7 @@ export class ClaimsDashboard {
 
   private setupEventListeners(): void {
     this.closeBtn.addEventListener('click', () => this.hide())
+    this.sendAllBtn.addEventListener('click', () => this.handleSendAll())
 
     // Define escape handler (attached/detached dynamically to avoid HMR stacking)
     this.escapeHandler = (e: KeyboardEvent) => {
@@ -72,6 +78,9 @@ export class ClaimsDashboard {
           break
         case 'claims-annotation-send':
           this.handleAnnotationSend(e.data)
+          break
+        case 'claims-annotation-delete':
+          this.handleAnnotationDelete(e.data)
           break
       }
     }
@@ -164,13 +173,16 @@ export class ClaimsDashboard {
 
       if (!response.ok) {
         console.error('Failed to save claims annotation:', await response.text())
+        showToast('Failed to save annotation', 'error')
         return
       }
 
+      showToast('Annotation saved', 'success', 2000)
       // Reload annotations in iframe so permanent markers replace temporary pins
       this.handleAnnotationLoad({ claimId: data.claimId })
     } catch (err) {
       console.error('Failed to save claims annotation:', err)
+      showToast('Failed to save annotation', 'error')
     }
   }
 
@@ -214,6 +226,49 @@ export class ClaimsDashboard {
       this.showWorkerPicker(annotations)
     } catch (err) {
       console.error('Failed to send claims annotations:', err)
+    }
+  }
+
+  private async handleAnnotationDelete(data: { annotationId: string; claimId: string }): Promise<void> {
+    try {
+      const response = await fetch(`${API_BASE}/annotations/${encodeURIComponent(data.annotationId)}`, {
+        method: 'DELETE',
+      })
+
+      if (!response.ok) {
+        console.error('Failed to delete claims annotation:', await response.text())
+        showToast('Failed to delete annotation', 'error')
+        return
+      }
+
+      showToast('Annotation deleted', 'success', 2000)
+      // Reload annotations in iframe so the deleted marker disappears
+      this.handleAnnotationLoad({ claimId: data.claimId })
+    } catch (err) {
+      console.error('Failed to delete claims annotation:', err)
+      showToast('Failed to delete annotation', 'error')
+    }
+  }
+
+  private async handleSendAll(): Promise<void> {
+    if (!this.currentCity) return
+
+    try {
+      const response = await fetch(`${API_BASE}/annotations?claims=true`)
+      if (!response.ok) return
+
+      const result = await response.json()
+      const annotations = result.annotations || []
+
+      if (annotations.length === 0) {
+        showToast('No annotations to send', 'error', 2000)
+        return
+      }
+
+      this.showWorkerPicker(annotations)
+    } catch (err) {
+      console.error('Failed to fetch all claims annotations:', err)
+      showToast('Failed to load annotations', 'error')
     }
   }
 
@@ -299,9 +354,14 @@ export class ClaimsDashboard {
 
       if (!response.ok) {
         console.error('Failed to send claims annotations:', await response.text())
+        showToast('Failed to send to worker', 'error')
+        return
       }
+
+      showToast('Annotations sent to worker', 'success')
     } catch (err) {
       console.error('Failed to send claims annotations:', err)
+      showToast('Failed to send to worker', 'error')
     }
   }
 }

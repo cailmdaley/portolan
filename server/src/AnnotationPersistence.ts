@@ -16,28 +16,26 @@ import { randomUUID } from 'crypto';
 
 export interface Annotation {
   id: string;
-  filePath: string;        // Full file path
   originId: string;        // 'local' or 'remote-{hostname}'
-
-  // Selection anchor (for text annotations)
-  from: number;            // char offset at creation
-  to: number;
-  line?: number;           // line number at 'from' (1-indexed)
-  endLine?: number;        // line number at 'to' (1-indexed)
-  originalText: string;    // the selected text
-  contextBefore: string;   // ~20 chars for re-anchoring
-  contextAfter: string;    // ~20 chars for re-anchoring
-
-  // The feedback
   comment: string;
   createdAt: number;
 
-  // Image annotation fields (optional)
+  // File anchoring (required for file annotations, absent for claims)
+  filePath?: string;       // Full file path
+  from?: number;           // char offset at creation
+  to?: number;
+  line?: number;           // line number at 'from' (1-indexed)
+  endLine?: number;        // line number at 'to' (1-indexed)
+  originalText?: string;   // the selected text
+  contextBefore?: string;  // ~20 chars for re-anchoring
+  contextAfter?: string;   // ~20 chars for re-anchoring
+
+  // Image annotation fields
   x?: number;              // percentage 0-100
   y?: number;              // percentage 0-100
   isImageAnnotation?: boolean;
 
-  // Claims annotation fields (optional, mutually exclusive with filePath anchoring)
+  // Claims annotation fields (mutually exclusive with file anchoring)
   claimId?: string;        // claim identifier from dashboard
   claimTitle?: string;     // human-readable claim title
   selectedText?: string;   // text user highlighted in rendered claim
@@ -158,7 +156,7 @@ export class AnnotationPersistence {
   getByFile(filePath: string, originId: string = 'local'): Annotation[] {
     const fileKey = this.makeFileKey(originId, filePath);
     return this.getAll().filter(
-      (a) => this.makeFileKey(a.originId, a.filePath) === fileKey
+      (a) => a.filePath && this.makeFileKey(a.originId, a.filePath) === fileKey
     );
   }
 
@@ -170,6 +168,13 @@ export class AnnotationPersistence {
   }
 
   /**
+   * Get all claims annotations
+   */
+  getAllClaims(): Annotation[] {
+    return this.getAll().filter(a => a.isClaimAnnotation);
+  }
+
+  /**
    * Add a new annotation
    */
   add(
@@ -178,14 +183,18 @@ export class AnnotationPersistence {
     const newAnnotation: Annotation = {
       ...annotation,
       id: randomUUID(),
-      filePath: annotation.isClaimAnnotation ? (annotation.filePath || '') : resolve(annotation.filePath),
       createdAt: Date.now(),
     };
 
+    // Resolve file path for file annotations
+    if (!newAnnotation.isClaimAnnotation && newAnnotation.filePath) {
+      newAnnotation.filePath = resolve(newAnnotation.filePath);
+    }
+
     this.annotations.set(newAnnotation.id, newAnnotation);
 
-    // Update annotation history (track that this file/claim was annotated)
-    if (!newAnnotation.isClaimAnnotation) {
+    // Update annotation history (file annotations only)
+    if (!newAnnotation.isClaimAnnotation && newAnnotation.filePath) {
       const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath);
       this.annotationHistory.set(historyKey, {
         filePath: newAnnotation.filePath,
@@ -195,9 +204,11 @@ export class AnnotationPersistence {
     }
 
     this.save();
-    console.log(
-      `Added annotation to ${newAnnotation.filePath} at ${newAnnotation.from}-${newAnnotation.to}`
-    );
+
+    const target = newAnnotation.isClaimAnnotation
+      ? `claim ${newAnnotation.claimId}`
+      : `${newAnnotation.filePath} at ${newAnnotation.from}-${newAnnotation.to}`;
+    console.log(`Added annotation to ${target}`);
     return newAnnotation;
   }
 
@@ -254,6 +265,9 @@ export class AnnotationPersistence {
     }>();
 
     for (const annotation of this.annotations.values()) {
+      // Skip claims annotations (no file path)
+      if (annotation.isClaimAnnotation || !annotation.filePath) continue;
+
       // Filter by originId if provided
       if (originId && annotation.originId !== originId) {
         continue;

@@ -251,7 +251,7 @@ describe('HttpApi — claims annotations', () => {
       const res = await httpRequest(api, 'GET', '/annotations');
 
       expect(res.status).toBe(400);
-      expect(res.data.error).toMatch(/path or claimId/i);
+      expect(res.data.error).toMatch(/path.*claimId|claimId.*path/i);
     });
   });
 
@@ -402,6 +402,131 @@ describe('HttpApi — claims annotations', () => {
   });
 
   // ────────────────────────────────────────────────────────────
+  // GET /annotations?claims=true — all claims annotations
+  // ────────────────────────────────────────────────────────────
+
+  describe('GET /annotations?claims=true', () => {
+    it('returns all claims annotations across claims', async () => {
+      persistence.add({
+        originId: 'local', comment: 'A', isClaimAnnotation: true,
+        claimId: 'c1', claimTitle: 'First',
+      } as any);
+      persistence.add({
+        originId: 'local', comment: 'B', isClaimAnnotation: true,
+        claimId: 'c2', claimTitle: 'Second',
+      } as any);
+      persistence.add({
+        originId: 'local', comment: 'File only',
+        filePath: '/test/file.ts', from: 0, to: 10,
+      } as any);
+
+      const res = await httpRequest(api, 'GET', '/annotations?claims=true');
+
+      expect(res.status).toBe(200);
+      expect(res.data.annotations).toHaveLength(2);
+      expect(res.data.annotations.every((a: any) => a.isClaimAnnotation)).toBe(true);
+    });
+
+    it('returns empty array when no claims exist', async () => {
+      persistence.add({
+        originId: 'local', comment: 'File only',
+        filePath: '/test/file.ts', from: 0, to: 10,
+      } as any);
+
+      const res = await httpRequest(api, 'GET', '/annotations?claims=true');
+
+      expect(res.status).toBe(200);
+      expect(res.data.annotations).toHaveLength(0);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // Image annotation validation
+  // ────────────────────────────────────────────────────────────
+
+  describe('POST /annotations — image validation', () => {
+    it('rejects claim image annotation without x coordinate', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'Missing position',
+        isClaimAnnotation: true,
+        claimId: 'claim-img',
+        artifact: 'plot.png',
+        y: 50,
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.data.error).toMatch(/x and y/i);
+    });
+
+    it('rejects claim image annotation without y coordinate', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'Missing position',
+        isClaimAnnotation: true,
+        claimId: 'claim-img',
+        artifact: 'plot.png',
+        x: 50,
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.data.error).toMatch(/x and y/i);
+    });
+
+    it('accepts claim image annotation with both coordinates', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'Valid image',
+        isClaimAnnotation: true,
+        claimId: 'claim-img',
+        artifact: 'plot.png',
+        x: 45, y: 32,
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('accepts claim text annotation without artifact', async () => {
+      const res = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'Just text',
+        isClaimAnnotation: true,
+        claimId: 'claim-txt',
+        selectedText: 'some text',
+      });
+
+      expect(res.status).toBe(201);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // Delete annotation lifecycle
+  // ────────────────────────────────────────────────────────────
+
+  describe('DELETE /annotations/:id (claims)', () => {
+    it('deletes a claims annotation and removes it from claimId query', async () => {
+      const createRes = await httpRequest(api, 'POST', '/annotations', {
+        originId: 'local',
+        comment: 'To delete',
+        isClaimAnnotation: true,
+        claimId: 'claim-del',
+      });
+      expect(createRes.status).toBe(201);
+      const id = createRes.data.annotation.id;
+
+      const deleteRes = await httpRequest(api, 'DELETE', `/annotations/${id}`);
+      expect(deleteRes.status).toBe(200);
+
+      const getRes = await httpRequest(api, 'GET', '/annotations?claimId=claim-del');
+      expect(getRes.data.annotations).toHaveLength(0);
+
+      // Also gone from all-claims query
+      const allRes = await httpRequest(api, 'GET', '/annotations?claims=true');
+      expect(allRes.data.annotations).toHaveLength(0);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
   // /claims-annotate.js endpoint
   // ────────────────────────────────────────────────────────────
 
@@ -414,6 +539,7 @@ describe('HttpApi — claims annotations', () => {
       expect(typeof res.data).toBe('string');
       expect(res.data).toContain('claims-annotation-save');
       expect(res.data).toContain('claims-annotation-load');
+      expect(res.data).toContain('claims-annotation-delete');
       expect(res.data).toContain('window === window.top');
     });
   });

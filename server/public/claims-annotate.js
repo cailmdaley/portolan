@@ -260,6 +260,29 @@
     }
   })
 
+  function createDeleteBtn(annotationId, claimId) {
+    const btn = document.createElement('span')
+    btn.className = 'portolan-delete-btn'
+    btn.textContent = '\u00d7'
+    btn.title = 'Delete annotation'
+    btn.style.cssText = `
+      cursor: pointer; margin-left: 4px;
+      color: #7A7368; font-size: 14px; line-height: 1;
+      opacity: 0.6; transition: opacity 150ms;
+    `
+    btn.addEventListener('mouseenter', () => { btn.style.opacity = '1' })
+    btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.6' })
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      parent.postMessage({
+        type: 'claims-annotation-delete',
+        annotationId,
+        claimId,
+      }, '*')
+    })
+    return btn
+  }
+
   function renderExistingAnnotations(claimId, annotations) {
     // Find the claim panel
     const panel = document.querySelector(`[data-claim-id="${claimId}"]`)
@@ -322,6 +345,15 @@
         `
         marker.textContent = String(i + 1)
         marker.title = ann.comment
+        // Delete on right-click for image pins (left-click shows comment)
+        marker.addEventListener('contextmenu', (e) => {
+          e.preventDefault()
+          parent.postMessage({
+            type: 'claims-annotation-delete',
+            annotationId: ann.id,
+            claimId,
+          }, '*')
+        })
         if (container) container.appendChild(marker)
       } else if (ann.selectedText) {
         // Text annotation — show as a small badge near the panel header
@@ -337,7 +369,10 @@
           cursor: default;
         `
         badge.title = ann.comment
-        badge.textContent = `"${ann.selectedText.slice(0, 40)}${ann.selectedText.length > 40 ? '…' : ''}" — ${ann.comment.slice(0, 40)}`
+        const textSpan = document.createElement('span')
+        textSpan.textContent = `"${ann.selectedText.slice(0, 40)}${ann.selectedText.length > 40 ? '\u2026' : ''}" \u2014 ${ann.comment.slice(0, 40)}`
+        badge.appendChild(textSpan)
+        badge.appendChild(createDeleteBtn(ann.id, claimId))
         panel.insertBefore(badge, panel.firstChild)
       }
     })

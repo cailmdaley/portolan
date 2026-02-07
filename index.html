@@ -117,19 +117,17 @@
         --ui-teal: var(--verdigris);
 
         /* Custom cursor - the swallow for the whole map, beak tip is hotspot */
-        --cursor-bird: url('/cursors/bird.png') 2 3, default;
+        --cursor-bird: url('/cursors/bird-small.png') 1 2, default;
       }
       body {
         overflow: hidden;
         background: var(--bg-primary);
         font-family: var(--font-main);
-        cursor: var(--cursor-bird);
       }
       #canvas {
         display: block;
         width: 100vw;
         height: 100vh;
-        cursor: var(--cursor-bird);
       }
 
       /* ═══════════════════════════════════════════════════════════
@@ -2347,11 +2345,11 @@
         transition: opacity 250ms ease;
 
         /* HUD type scale */
-        --hud-font-2xs: 0.5rem;   /* worker dots */
-        --hud-font-xs: 0.75rem;   /* kind badges, paths, chips, commit times */
-        --hud-font-sm: 0.85rem;   /* git rows, inputs, action buttons, labels */
-        --hud-font-md: 0.95rem;   /* fiber items, headings, new-worker */
-        --hud-font-lg: 1.35rem;   /* city name */
+        --hud-font-2xs: 0.6rem;   /* worker dots */
+        --hud-font-xs: 0.85rem;   /* kind badges, paths, chips, commit times */
+        --hud-font-sm: 1rem;      /* git rows, inputs, action buttons, labels */
+        --hud-font-md: 1.1rem;    /* fiber items, headings, new-worker */
+        --hud-font-lg: 1.6rem;    /* city name */
       }
 
       #city-hud.visible {
@@ -2879,11 +2877,11 @@
 
       @media (max-width: 720px) {
         #city-hud {
-          --hud-font-2xs: 0.45rem;
-          --hud-font-xs: 0.65rem;
-          --hud-font-sm: 0.75rem;
-          --hud-font-md: 0.85rem;
-          --hud-font-lg: 1.1rem;
+          --hud-font-2xs: 0.55rem;
+          --hud-font-xs: 0.75rem;
+          --hud-font-sm: 0.85rem;
+          --hud-font-md: 0.95rem;
+          --hud-font-lg: 1.35rem;
         }
 
         .hud-top-right {
@@ -4165,6 +4163,29 @@
         letter-spacing: 0.08em;
         color: var(--ui-gold);
         margin: 0;
+      }
+
+      .claims-dashboard-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .claims-dashboard .send-all-btn {
+        padding: 0.3rem 0.75rem;
+        font-family: var(--font-main);
+        font-size: 0.8rem;
+        color: var(--ui-gold);
+        background: var(--ui-dark-surface);
+        border: 1px solid var(--ui-border);
+        border-radius: 3px;
+        cursor: pointer;
+        transition: all 200ms ease;
+      }
+
+      .claims-dashboard .send-all-btn:hover {
+        background: rgba(154, 123, 53, 0.15);
+        border-color: var(--ui-gold);
       }
 
       .claims-dashboard .close-btn {

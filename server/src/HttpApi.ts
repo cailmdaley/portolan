@@ -799,17 +799,20 @@ export class HttpApi {
 
     const filePath = url.searchParams.get('path');
     const claimId = url.searchParams.get('claimId');
+    const allClaims = url.searchParams.get('claims') === 'true';
     const originId = url.searchParams.get('originId') || 'local';
 
-    if (!filePath && !claimId) {
+    if (!filePath && !claimId && !allClaims) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing path or claimId parameter' }));
+      res.end(JSON.stringify({ error: 'Missing path, claimId, or claims parameter' }));
       return;
     }
 
-    const annotations = claimId
-      ? this.annotationPersistence.getByClaimId(claimId)
-      : this.annotationPersistence.getByFile(filePath!, originId);
+    const annotations = allClaims
+      ? this.annotationPersistence.getAllClaims()
+      : claimId
+        ? this.annotationPersistence.getByClaimId(claimId)
+        : this.annotationPersistence.getByFile(filePath!, originId);
 
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -848,6 +851,11 @@ export class HttpApi {
       if (!data.claimId || !data.comment) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required fields for claims annotation (claimId, comment)' }));
+        return;
+      }
+      if (data.artifact && (data.x === undefined || data.y === undefined)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Image annotation requires x and y coordinates' }));
         return;
       }
     } else if (!data.filePath || !data.comment) {
@@ -1209,7 +1217,7 @@ export class HttpApi {
         } else {
           // Text annotation - show selected text with start...end format for multiline
           let contextText: string;
-          const text = ann.originalText;
+          const text = ann.originalText || '';
           const isMultiline = text.includes('\n');
 
           if (isMultiline) {

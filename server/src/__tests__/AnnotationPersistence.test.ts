@@ -251,6 +251,30 @@ describe('AnnotationPersistence', () => {
   });
 
   // ────────────────────────────────────────────────────────────
+  // getAllClaims
+  // ────────────────────────────────────────────────────────────
+
+  describe('getAllClaims', () => {
+    it('returns all claims annotations', () => {
+      persistence.load();
+      persistence.add(claimAnnotation({ claimId: 'c1', comment: 'first' }));
+      persistence.add(claimAnnotation({ claimId: 'c2', comment: 'second' }));
+      persistence.add(fileAnnotation({ comment: 'file only' }));
+
+      const result = persistence.getAllClaims();
+      expect(result).toHaveLength(2);
+      expect(result.every(a => a.isClaimAnnotation)).toBe(true);
+    });
+
+    it('returns empty array when no claims exist', () => {
+      persistence.load();
+      persistence.add(fileAnnotation());
+
+      expect(persistence.getAllClaims()).toHaveLength(0);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
   // getByFile
   // ────────────────────────────────────────────────────────────
 
