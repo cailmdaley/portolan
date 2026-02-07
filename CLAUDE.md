@@ -143,7 +143,7 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 **Card header drag blocks bringToFront.** `startDrag` on the card header calls `stopPropagation()`, which prevents the card-level mousedown listener from firing `onBringToFront`. Fix: call `onBringToFront()` directly in startDrag. See fiber `gotcha-card-header-drag-28ae4165`.
 
-**SSH commands: never double-quote-wrap user content.** `execAsync(\`ssh host "cmd '${userArg}'"\`)` is vulnerable — double quotes in `userArg` break out of wrapping. Use `execFileAsync('ssh', [host, cmd])` to bypass local shell entirely. See fiber `gotcha-ssh-double-quote-810f6df9`.
+**SSH commands: never double-quote-wrap user content.** `execAsync(\`ssh host "cmd '${userArg}'"\`)` is vulnerable — double quotes in `userArg` break out of wrapping. Use `execFileAsync('ssh', [host, cmd])` to bypass local shell entirely, and `shellEscape()` (from KittyIntegration) for quoting within the remote command string. All SSH handlers now follow this pattern. See fiber `gotcha-ssh-double-quote-810f6df9`.
 
 ## Deep Dives
 
