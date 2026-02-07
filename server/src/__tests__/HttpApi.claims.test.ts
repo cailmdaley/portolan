@@ -943,6 +943,16 @@ function selectClaim(claimId) {
       // Empty src has no file extension, so regex doesn't match
       expect(res.data).toContain('src=""');
     });
+
+    it('rewrites lightbox src: property in object literal', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // The lightboxImages src: property should be rewritten to use proxy
+      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE');
+      expect(res.data).toContain('window.CLAIMS_CITY_ID');
+      // Original bare src: construction should be gone
+      expect(res.data).not.toMatch(/src: claim\.id \+ '\/'\s*\+\s*path\.split/);
+    });
   });
 
   // ────────────────────────────────────────────────────────────
