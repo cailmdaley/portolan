@@ -82,6 +82,9 @@ export class ClaimsDashboard {
         case 'claims-annotation-delete':
           this.handleAnnotationDelete(e.data)
           break
+        case 'claims-annotation-promote':
+          this.handleAnnotationPromote(e.data)
+          break
       }
     }
     window.addEventListener('message', this.messageHandler)
@@ -216,6 +219,24 @@ export class ClaimsDashboard {
     showToast('Annotation deleted', 'success', 2000)
     // Reload annotations in iframe so the deleted marker disappears
     this.handleAnnotationLoad({ claimId: data.claimId })
+  }
+
+  private async handleAnnotationPromote(data: { claimId: string; comment: string }): Promise<void> {
+    if (!this.currentCity) return
+
+    const response = await this.fetchApi('/promote-to-felt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        claimId: data.claimId,
+        comment: data.comment,
+        cityId: this.currentCity.id,
+      }),
+    })
+
+    if (response) {
+      showToast('Promoted to felt', 'success', 2000)
+    }
   }
 
   private async handleSendAll(): Promise<void> {

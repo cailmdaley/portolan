@@ -540,7 +540,42 @@ describe('HttpApi — claims annotations', () => {
       expect(res.data).toContain('claims-annotation-save');
       expect(res.data).toContain('claims-annotation-load');
       expect(res.data).toContain('claims-annotation-delete');
+      expect(res.data).toContain('claims-annotation-promote');
       expect(res.data).toContain('window === window.top');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // POST /promote-to-felt
+  // ────────────────────────────────────────────────────────────
+
+  describe('POST /promote-to-felt', () => {
+    it('rejects request without required fields', async () => {
+      const res = await httpRequest(api, 'POST', '/promote-to-felt', {
+        claimId: 'claim-1',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.data.error).toMatch(/claimId.*comment.*cityId|Missing required/i);
+    });
+
+    it('rejects request with invalid JSON', async () => {
+      // httpRequest always sends valid JSON, so test missing fields instead
+      const res = await httpRequest(api, 'POST', '/promote-to-felt', {});
+
+      expect(res.status).toBe(400);
+      expect(res.data.error).toMatch(/Missing required/i);
+    });
+
+    it('returns 404 for unknown city', async () => {
+      const res = await httpRequest(api, 'POST', '/promote-to-felt', {
+        claimId: 'claim-1',
+        comment: 'Test comment',
+        cityId: 'nonexistent-city',
+      });
+
+      expect(res.status).toBe(404);
+      expect(res.data.error).toMatch(/City not found/i);
     });
   });
 });

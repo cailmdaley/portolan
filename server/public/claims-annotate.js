@@ -27,8 +27,18 @@
     return container
   }
 
+  function addHoverFade(el) {
+    el.style.opacity = '0.6'
+    el.style.transition = 'opacity 150ms'
+    el.addEventListener('mouseenter', () => { el.style.opacity = '1' })
+    el.addEventListener('mouseleave', () => { el.style.opacity = '0.6' })
+  }
+
+  function postAnnotationMessage(type, payload) {
+    parent.postMessage({ type, ...payload }, '*')
+  }
+
   function getClaimContext(el) {
-    // Walk up to find the claim container with data attributes
     let node = el
     while (node && node !== document.body) {
       if (node.dataset && node.dataset.claimId) {
@@ -147,13 +157,12 @@
           margin-bottom: 4px; border-radius: 0 4px 4px 0;
         ">"${selectedText.slice(0, 80)}${selectedText.length > 80 ? '…' : ''}"</div>`,
         onSave(comment) {
-          parent.postMessage({
-            type: 'claims-annotation-save',
+          postAnnotationMessage('claims-annotation-save', {
             claimId: claim.claimId,
             claimTitle: claim.claimTitle,
             selectedText,
             comment,
-          }, '*')
+          })
         },
       })
     }, 10)
@@ -206,15 +215,14 @@
         background: #9A7B35; display: inline-block;
       "></span> Pin on ${img.dataset.artifact}</div>`,
       onSave(comment) {
-        parent.postMessage({
-          type: 'claims-annotation-save',
+        postAnnotationMessage('claims-annotation-save', {
           claimId: claim.claimId,
           claimTitle: claim.claimTitle,
           artifact: img.dataset.artifact,
           x,
           y,
           comment,
-        }, '*')
+        })
       },
     })
 
@@ -242,10 +250,9 @@
           : [...node.querySelectorAll('[data-claim-id]')]
 
         for (const panel of panels) {
-          parent.postMessage({
-            type: 'claims-annotation-load',
+          postAnnotationMessage('claims-annotation-load', {
             claimId: panel.dataset.claimId,
-          }, '*')
+          })
         }
       }
     }
@@ -260,6 +267,26 @@
     }
   })
 
+  function createPromoteBtn(annotation) {
+    const btn = document.createElement('span')
+    btn.className = 'portolan-promote-btn'
+    btn.textContent = '\u2B06'
+    btn.title = 'Promote to felt'
+    btn.style.cssText = `
+      cursor: pointer; margin-left: 2px;
+      color: #9A7B35; font-size: 12px; line-height: 1;
+    `
+    addHoverFade(btn)
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      postAnnotationMessage('claims-annotation-promote', {
+        claimId: annotation.claimId,
+        comment: annotation.comment,
+      })
+    })
+    return btn
+  }
+
   function createDeleteBtn(annotationId, claimId) {
     const btn = document.createElement('span')
     btn.className = 'portolan-delete-btn'
@@ -268,19 +295,101 @@
     btn.style.cssText = `
       cursor: pointer; margin-left: 4px;
       color: #7A7368; font-size: 14px; line-height: 1;
-      opacity: 0.6; transition: opacity 150ms;
     `
-    btn.addEventListener('mouseenter', () => { btn.style.opacity = '1' })
-    btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.6' })
+    addHoverFade(btn)
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
-      parent.postMessage({
-        type: 'claims-annotation-delete',
-        annotationId,
-        claimId,
-      }, '*')
+      postAnnotationMessage('claims-annotation-delete', { annotationId, claimId })
     })
     return btn
+  }
+
+  function createPopoverActionBtn(label, borderColor, textColor, onClick) {
+    const btn = document.createElement('button')
+    btn.textContent = label
+    btn.style.cssText = `
+      padding: 2px 8px; border: 1px solid ${borderColor}; border-radius: 4px;
+      background: transparent; color: ${textColor}; cursor: pointer;
+      font-size: 11px; font-family: inherit;
+    `
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      onClick()
+    })
+    return btn
+  }
+
+  function showPinPopover(marker, ann, claimId) {
+    document.querySelectorAll('.portolan-pin-popover').forEach((p) => p.remove())
+
+    const rect = marker.getBoundingClientRect()
+    const popover = document.createElement('div')
+    popover.className = 'portolan-pin-popover'
+    popover.style.cssText = `
+      position: fixed;
+      left: ${rect.right + 8}px;
+      top: ${rect.top - 4}px;
+      background: #EDE8E0;
+      border: 1px solid #C8B8A8;
+      border-radius: 6px;
+      padding: 8px 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      font-family: -apple-system, sans-serif;
+      font-size: 12px;
+      max-width: 260px;
+      z-index: 99999;
+    `
+
+    const commentText = document.createElement('div')
+    commentText.style.cssText = 'color: #2E2A26; margin-bottom: 6px; line-height: 1.4;'
+    commentText.textContent = ann.comment
+
+    const actions = document.createElement('div')
+    actions.style.cssText = 'display: flex; gap: 8px; justify-content: flex-end;'
+
+    actions.appendChild(createPopoverActionBtn('\u2B06 Felt', '#9A7B35', '#9A7B35', () => {
+      postAnnotationMessage('claims-annotation-promote', {
+        claimId: ann.claimId,
+        comment: ann.comment,
+      })
+      popover.remove()
+    }))
+
+    actions.appendChild(createPopoverActionBtn('\u00d7 Delete', '#C8B8A8', '#7A7368', () => {
+      postAnnotationMessage('claims-annotation-delete', {
+        annotationId: ann.id,
+        claimId,
+      })
+      popover.remove()
+    }))
+
+    popover.appendChild(commentText)
+    popover.appendChild(actions)
+
+    popover.addEventListener('mousedown', (e) => e.stopPropagation())
+    popover.addEventListener('click', (e) => e.stopPropagation())
+
+    document.body.appendChild(popover)
+
+    // Clamp to viewport
+    requestAnimationFrame(() => {
+      const r = popover.getBoundingClientRect()
+      if (r.right > window.innerWidth - 10) {
+        popover.style.left = Math.max(10, rect.left - r.width - 8) + 'px'
+      }
+      if (r.bottom > window.innerHeight - 10) {
+        popover.style.top = Math.max(10, window.innerHeight - r.height - 10) + 'px'
+      }
+    })
+
+    // Dismiss on click outside
+    const dismiss = (e) => {
+      if (!popover.contains(e.target) && e.target !== marker) {
+        popover.remove()
+        document.removeEventListener('mousedown', dismiss)
+      }
+    }
+    setTimeout(() => document.addEventListener('mousedown', dismiss), 0)
   }
 
   function renderExistingAnnotations(claimId, annotations) {
@@ -288,8 +397,9 @@
     const panel = document.querySelector(`[data-claim-id="${claimId}"]`)
     if (!panel) return
 
-    // Clear old markers and temporary pins (replaced by permanent numbered markers)
+    // Clear old markers, temporary pins, and any open popovers
     panel.querySelectorAll('.portolan-existing-marker, .portolan-pin-marker').forEach((m) => m.remove())
+    document.querySelectorAll('.portolan-pin-popover').forEach((p) => p.remove())
 
     // Add "Send to Worker" button if there are annotations
     if (annotations.length > 0) {
@@ -311,11 +421,7 @@
       `
       sendBtn.addEventListener('click', (e) => {
         e.stopPropagation()
-        parent.postMessage({
-          type: 'claims-annotation-send',
-          claimId,
-          cityId,
-        }, '*')
+        postAnnotationMessage('claims-annotation-send', { claimId, cityId })
       })
       sendBar.appendChild(sendBtn)
       panel.insertBefore(sendBar, panel.firstChild)
@@ -345,14 +451,15 @@
         `
         marker.textContent = String(i + 1)
         marker.title = ann.comment
-        // Delete on right-click for image pins (left-click shows comment)
+        // Click to show popover with comment, promote, delete
+        marker.addEventListener('click', (e) => {
+          e.stopPropagation()
+          e.preventDefault()
+          showPinPopover(marker, ann, claimId)
+        })
         marker.addEventListener('contextmenu', (e) => {
           e.preventDefault()
-          parent.postMessage({
-            type: 'claims-annotation-delete',
-            annotationId: ann.id,
-            claimId,
-          }, '*')
+          postAnnotationMessage('claims-annotation-delete', { annotationId: ann.id, claimId })
         })
         if (container) container.appendChild(marker)
       } else if (ann.selectedText) {
@@ -372,6 +479,7 @@
         const textSpan = document.createElement('span')
         textSpan.textContent = `"${ann.selectedText.slice(0, 40)}${ann.selectedText.length > 40 ? '\u2026' : ''}" \u2014 ${ann.comment.slice(0, 40)}`
         badge.appendChild(textSpan)
+        badge.appendChild(createPromoteBtn(ann))
         badge.appendChild(createDeleteBtn(ann.id, claimId))
         panel.insertBefore(badge, panel.firstChild)
       }

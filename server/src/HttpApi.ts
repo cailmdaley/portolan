@@ -206,6 +206,11 @@ export class HttpApi {
       return true;
     }
 
+    if (url.pathname === '/promote-to-felt' && req.method === 'POST') {
+      await this.handlePromoteToFelt(req, res);
+      return true;
+    }
+
     if (url.pathname === '/playground-list') {
       await this.handlePlaygroundList(url, res);
       return true;
@@ -1382,6 +1387,58 @@ export class HttpApi {
       console.error('Failed to file as fiber:', error.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to file as fiber: ' + error.message }));
+    }
+  }
+
+  // ============================================================================
+  // Promote to Felt
+  // ============================================================================
+
+  /**
+   * Promote a claims annotation to a felt comment on the claim's fiber.
+   * POST /promote-to-felt
+   * Body: { claimId, comment, cityId }
+   */
+  private async handlePromoteToFelt(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const data = await this.parseJsonBody<{ claimId: string; comment: string; cityId: string }>(req, res);
+    if (!data) return;
+
+    const { claimId, comment, cityId } = data;
+
+    if (!claimId || !comment || !cityId) {
+      this.sendJsonError(res, 400, 'Missing required fields (claimId, comment, cityId)');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const isRemote = city.originId !== 'local' && !!city.originId;
+    const escapedClaimId = claimId.replace(/'/g, "'\\''");
+    const escapedComment = comment.replace(/'/g, "'\\''");
+    const cityPath = city.path;
+
+    try {
+      if (!isRemote) {
+        await execAsync(
+          `cd '${cityPath}' && felt comment '${escapedClaimId}' '${escapedComment}'`,
+          { timeout: 10000 }
+        );
+      } else {
+        const sshHost = this.getSshHost(city);
+        await execAsync(
+          `ssh ${sshHost} "cd '${cityPath}' && felt comment '${escapedClaimId}' '${escapedComment}'"`,
+          { timeout: 30000 }
+        );
+      }
+
+      this.sendJsonSuccess(res, { success: true });
+    } catch (error: any) {
+      console.error('Failed to promote to felt:', error.message);
+      this.sendJsonError(res, 500, 'Failed to promote to felt: ' + error.message);
     }
   }
 
