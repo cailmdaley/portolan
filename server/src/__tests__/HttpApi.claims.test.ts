@@ -13,7 +13,7 @@ import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -573,6 +573,19 @@ describe('HttpApi — claims annotations', () => {
       expect(res.data).toContain('claims-annotation-promote');
       expect(res.data).toContain('window === window.top');
     });
+
+    it('includes auto-bridging for dashboards without data attributes', async () => {
+      const res = await httpRequest(api, 'GET', '/claims-annotate.js');
+
+      expect(res.status).toBe(200);
+      // Auto-tagging reads dashboard globals to inject data attributes
+      expect(res.data).toContain('getClaimContextFromGlobals');
+      expect(res.data).toContain('autoTagClaimPanel');
+      expect(res.data).toContain('currentClaimId');
+      expect(res.data).toContain('claimGraph');
+      // Derives artifact name from image src when data-artifact is missing
+      expect(res.data).toContain('img:not([data-artifact])');
+    });
   });
 
   // ────────────────────────────────────────────────────────────
@@ -605,6 +618,95 @@ describe('HttpApi — claims annotations', () => {
 
       expect(res.status).toBe(404);
       expect(res.data.error).toMatch(/City not found/i);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // Claims dashboard proxy injection
+  // ────────────────────────────────────────────────────────────
+
+  describe('GET /claims-dashboard (proxy injection)', () => {
+    const MOCK_CITY_DIR = join(TEST_DIR, 'mock-city');
+    const MOCK_DASHBOARD = join(MOCK_CITY_DIR, 'results', 'claims', 'index.html');
+
+    const MOCK_DASHBOARD_HTML = `<!DOCTYPE html>
+<html>
+<head><title>Claims</title></head>
+<body>
+<img src="claim_id/plot.png" alt="Plot">
+<style>@font-face { url('fonts/custom.woff2') }</style>
+<script>
+const imgPath = claim.id + '/' + path.split('/').pop();
+const lightbox = { src: claim.id + '/' + artifactPath };
+</script>
+</body>
+</html>`;
+
+    let cityApi: HttpApi;
+
+    beforeEach(() => {
+      const dashDir = join(MOCK_CITY_DIR, 'results', 'claims');
+      mkdirSync(dashDir, { recursive: true });
+      writeFileSync(MOCK_DASHBOARD, MOCK_DASHBOARD_HTML, 'utf-8');
+
+      const cityLookup = {
+        getCityById: (id: string) => id === 'test-city' ? {
+          id: 'test-city',
+          name: 'TestCity',
+          path: MOCK_CITY_DIR,
+          originId: 'local',
+        } : null,
+      };
+
+      cityApi = new HttpApi(cityLookup as any, stubOriginLookup as any, stubPersistenceLookup as any);
+    });
+
+    it('injects claims-annotate.js script tag', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
+
+      expect(res.status).toBe(200);
+      expect(res.data).toContain('<script src="/claims-annotate.js"></script>');
+    });
+
+    it('injects CLAIMS_ASSETS_BASE and CLAIMS_CITY_ID globals', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
+
+      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE = "/claims-assets"');
+      expect(res.data).toContain('window.CLAIMS_CITY_ID = "test-city"');
+    });
+
+    it('rewrites static image src to use proxy', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
+
+      expect(res.data).toContain('src="/claims-assets/claim_id/plot.png?cityId=test-city"');
+      expect(res.data).not.toContain('src="claim_id/plot.png"');
+    });
+
+    it('rewrites CSS font urls to use proxy', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
+
+      expect(res.data).toContain("url('/claims-assets/fonts/custom.woff2?cityId=test-city')");
+    });
+
+    it('rewrites dynamic imgPath construction', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
+
+      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE');
+      expect(res.data).toContain('window.CLAIMS_CITY_ID');
+      // Original imgPath construction should be rewritten
+      expect(res.data).not.toMatch(/const imgPath = claim\.id \+ '\/'/);
+    });
+
+    it('returns 400 without cityId', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard');
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for unknown city', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=nonexistent');
+
+      expect(res.status).toBe(404);
     });
   });
 });

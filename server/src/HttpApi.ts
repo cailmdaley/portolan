@@ -1162,19 +1162,18 @@ export class HttpApi {
         const title = group[0].claimTitle || group[0].claimId || 'Unknown claim';
         lines.push(`## ${claimNum}. [${title}]`);
 
-        for (const ann of group) {
+        for (let i = 0; i < group.length; i++) {
+          const ann = group[i];
+          if (i > 0) lines.push('>');
           if (ann.artifact) {
             const posRef = ann.x !== undefined && ann.y !== undefined
               ? ` (at ${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
               : '';
             lines.push(`> On plot: ${ann.artifact}${posRef}`);
-            lines.push(`> ${ann.comment}`);
-          } else {
-            if (ann.selectedText) {
-              lines.push(`> On text: "${ann.selectedText.slice(0, 60)}"`);
-            }
-            lines.push(`> ${ann.comment}`);
+          } else if (ann.selectedText) {
+            lines.push(`> On text: "${ann.selectedText.slice(0, 60)}"`);
           }
+          lines.push(`> ${ann.comment}`);
         }
         lines.push('');
       }
