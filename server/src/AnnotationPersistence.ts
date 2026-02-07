@@ -36,6 +36,13 @@ export interface Annotation {
   x?: number;              // percentage 0-100
   y?: number;              // percentage 0-100
   isImageAnnotation?: boolean;
+
+  // Claims annotation fields (optional, mutually exclusive with filePath anchoring)
+  claimId?: string;        // claim identifier from dashboard
+  claimTitle?: string;     // human-readable claim title
+  selectedText?: string;   // text user highlighted in rendered claim
+  artifact?: string;       // plot filename if annotating an image
+  isClaimAnnotation?: boolean;
 }
 
 interface PersistenceFile {
@@ -156,6 +163,13 @@ export class AnnotationPersistence {
   }
 
   /**
+   * Get annotations for a specific claim
+   */
+  getByClaimId(claimId: string): Annotation[] {
+    return this.getAll().filter(a => a.isClaimAnnotation && a.claimId === claimId);
+  }
+
+  /**
    * Add a new annotation
    */
   add(
@@ -164,19 +178,21 @@ export class AnnotationPersistence {
     const newAnnotation: Annotation = {
       ...annotation,
       id: randomUUID(),
-      filePath: resolve(annotation.filePath),
+      filePath: annotation.isClaimAnnotation ? (annotation.filePath || '') : resolve(annotation.filePath),
       createdAt: Date.now(),
     };
 
     this.annotations.set(newAnnotation.id, newAnnotation);
 
-    // Update annotation history (track that this file was annotated)
-    const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath);
-    this.annotationHistory.set(historyKey, {
-      filePath: newAnnotation.filePath,
-      originId: newAnnotation.originId,
-      lastAnnotatedAt: newAnnotation.createdAt,
-    });
+    // Update annotation history (track that this file/claim was annotated)
+    if (!newAnnotation.isClaimAnnotation) {
+      const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath);
+      this.annotationHistory.set(historyKey, {
+        filePath: newAnnotation.filePath,
+        originId: newAnnotation.originId,
+        lastAnnotatedAt: newAnnotation.createdAt,
+      });
+    }
 
     this.save();
     console.log(

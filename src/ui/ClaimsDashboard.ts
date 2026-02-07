@@ -1,6 +1,9 @@
 // ClaimsDashboard.ts - Large panel for viewing claims DAG
+// Handles postMessage bridge for inline annotation from the dashboard iframe
 
 import type { City } from '../state/types'
+
+const API_BASE = `http://${window.location.hostname}:4004`
 
 export class ClaimsDashboard {
   private panel: HTMLElement
@@ -8,9 +11,14 @@ export class ClaimsDashboard {
   private closeBtn: HTMLElement
   private title: HTMLElement
   private loadingIndicator: HTMLElement
+  private currentCity: City | null = null
 
-  // Stored listener ref for HMR-safe cleanup
+  // Stored listener refs for HMR-safe cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+  private messageHandler: ((e: MessageEvent) => void) | null = null
+
+  // Callback for send-to-worker (set by main.ts)
+  onSendToWorker: ((city: City, annotations: any[]) => void) | null = null
 
   constructor() {
     this.panel = this.createPanel()
@@ -46,9 +54,31 @@ export class ClaimsDashboard {
         this.hide()
       }
     }
+
+    // postMessage handler for claims annotation bridge
+    this.messageHandler = (e: MessageEvent) => {
+      if (!e.data || !e.data.type) return
+      // Only handle messages from our iframe
+      if (e.source !== this.iframe.contentWindow) return
+
+      switch (e.data.type) {
+        case 'claims-annotation-save':
+          this.handleAnnotationSave(e.data)
+          break
+        case 'claims-annotation-load':
+          this.handleAnnotationLoad(e.data)
+          break
+        case 'claims-annotation-send':
+          this.handleAnnotationSend(e.data)
+          break
+      }
+    }
+    window.addEventListener('message', this.messageHandler)
   }
 
   show(city: City, dashboardUrl: string): void {
+    this.currentCity = city
+
     // Update title
     this.title.textContent = `Claims: ${city.name}`
 
@@ -74,6 +104,7 @@ export class ClaimsDashboard {
 
   hide(): void {
     this.panel.classList.remove('visible')
+    this.currentCity = null
 
     // Detach escape listener
     if (this.escapeHandler) {
@@ -94,6 +125,97 @@ export class ClaimsDashboard {
 
   dispose(): void {
     this.hide()
+    if (this.messageHandler) {
+      window.removeEventListener('message', this.messageHandler)
+    }
     this.panel.remove()
+  }
+
+  // ── postMessage handlers ──────────────────────────────────────────────
+
+  private async handleAnnotationSave(data: {
+    claimId: string
+    claimTitle?: string
+    selectedText?: string
+    artifact?: string
+    x?: number
+    y?: number
+    comment: string
+  }): Promise<void> {
+    try {
+      const response = await fetch(`${API_BASE}/annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: '',
+          originId: this.currentCity?.originId || 'local',
+          from: 0,
+          to: 0,
+          originalText: data.selectedText || '',
+          contextBefore: '',
+          contextAfter: '',
+          comment: data.comment,
+          claimId: data.claimId,
+          claimTitle: data.claimTitle,
+          selectedText: data.selectedText,
+          artifact: data.artifact,
+          x: data.x,
+          y: data.y,
+          isClaimAnnotation: true,
+          isImageAnnotation: !!data.artifact,
+        }),
+      })
+
+      if (!response.ok) {
+        console.error('Failed to save claims annotation:', await response.text())
+      }
+    } catch (err) {
+      console.error('Failed to save claims annotation:', err)
+    }
+  }
+
+  private async handleAnnotationLoad(data: { claimId: string }): Promise<void> {
+    try {
+      const response = await fetch(
+        `${API_BASE}/annotations?claimId=${encodeURIComponent(data.claimId)}`
+      )
+      if (!response.ok) return
+
+      const result = await response.json()
+      // Send annotations back to iframe
+      this.iframe.contentWindow?.postMessage(
+        {
+          type: 'claims-annotation-loaded',
+          claimId: data.claimId,
+          annotations: result.annotations || [],
+        },
+        '*'
+      )
+    } catch (err) {
+      console.error('Failed to load claims annotations:', err)
+    }
+  }
+
+  private async handleAnnotationSend(data: { claimId: string; cityId: string }): Promise<void> {
+    if (!this.currentCity) return
+
+    // Fetch all claims annotations for this city
+    try {
+      const response = await fetch(
+        `${API_BASE}/annotations?claimId=${encodeURIComponent(data.claimId)}`
+      )
+      if (!response.ok) return
+
+      const result = await response.json()
+      const annotations = result.annotations || []
+
+      if (annotations.length === 0) return
+
+      if (this.onSendToWorker) {
+        this.onSendToWorker(this.currentCity, annotations)
+      }
+    } catch (err) {
+      console.error('Failed to send claims annotations:', err)
+    }
   }
 }

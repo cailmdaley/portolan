@@ -12,7 +12,8 @@ import { URL } from 'url';
 import { exec, spawn, execSync } from 'child_process';
 import { readFile, writeFile } from 'fs/promises';
 import { promisify } from 'util';
-import { extname } from 'path';
+import { extname, join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
@@ -139,6 +140,11 @@ export class HttpApi {
 
     if (url.pathname.startsWith('/claims-assets/')) {
       await this.handleClaimsAssets(url, res);
+      return true;
+    }
+
+    if (url.pathname === '/claims-annotate.js') {
+      await this.handleClaimsAnnotateScript(res);
       return true;
     }
 
@@ -308,7 +314,7 @@ export class HttpApi {
         .replace(/src=['"]([^'"]+\.(png|jpe?g|svg|gif))['"]/gi,
           (_, path) => `src="${assetsBase}/${path}?cityId=${cityId}"`)
         // Inject base URL for dynamic image loading (used by JS code)
-        .replace(/<head>/i, `<head><script>window.CLAIMS_ASSETS_BASE = "${assetsBase}"; window.CLAIMS_CITY_ID = "${cityId}";</script>`)
+        .replace(/<head>/i, `<head><script>window.CLAIMS_ASSETS_BASE = "${assetsBase}"; window.CLAIMS_CITY_ID = "${cityId}";</script><script src="/claims-annotate.js"></script>`)
         // Rewrite dynamic imgPath construction to use proxy
         .replace(/const imgPath = ([^;]+);/g,
           `const imgPath = window.CLAIMS_ASSETS_BASE + '/' + ($1) + '?cityId=' + window.CLAIMS_CITY_ID;`)
@@ -390,6 +396,28 @@ export class HttpApi {
       console.error('Failed to fetch claims asset:', error);
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end(`Asset not found: ${assetPath}`);
+    }
+  }
+
+  /**
+   * Serve the claims annotation script (injected into dashboard iframe)
+   */
+  private async handleClaimsAnnotateScript(res: ServerResponse): Promise<void> {
+    try {
+      const __dirname = dirname(fileURLToPath(import.meta.url));
+      const scriptPath = join(__dirname, '..', 'public', 'claims-annotate.js');
+      const { readFileSync } = await import('fs');
+      const content = readFileSync(scriptPath, 'utf-8');
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-cache',
+      });
+      res.end(content);
+    } catch (error) {
+      console.error('Failed to serve claims-annotate.js:', error);
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('claims-annotate.js not found');
     }
   }
 
@@ -770,15 +798,18 @@ export class HttpApi {
     }
 
     const filePath = url.searchParams.get('path');
+    const claimId = url.searchParams.get('claimId');
     const originId = url.searchParams.get('originId') || 'local';
 
-    if (!filePath) {
+    if (!filePath && !claimId) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing path parameter' }));
+      res.end(JSON.stringify({ error: 'Missing path or claimId parameter' }));
       return;
     }
 
-    const annotations = this.annotationPersistence.getByFile(filePath, originId);
+    const annotations = claimId
+      ? this.annotationPersistence.getByClaimId(claimId)
+      : this.annotationPersistence.getByFile(filePath!, originId);
 
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -812,7 +843,14 @@ export class HttpApi {
       return;
     }
 
-    if (!data.filePath || !data.comment) {
+    const isClaimAnnotation = data.isClaimAnnotation;
+    if (isClaimAnnotation) {
+      if (!data.claimId || !data.comment) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required fields for claims annotation (claimId, comment)' }));
+        return;
+      }
+    } else if (!data.filePath || !data.comment) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing required fields' }));
       return;
@@ -941,6 +979,8 @@ export class HttpApi {
       originId: string;
       annotations: Annotation[];
       globalComment?: string;
+      cityName?: string;       // For claims annotation formatting
+      isClaimsSend?: boolean;  // Format as claims review
     };
     try {
       data = JSON.parse(body);
@@ -950,7 +990,7 @@ export class HttpApi {
       return;
     }
 
-    const { workerId, createNewWorker, filePath, originId, annotations, globalComment } = data;
+    const { workerId, createNewWorker, filePath, originId, annotations, globalComment, cityName, isClaimsSend } = data;
 
     const hasContent = (annotations && annotations.length > 0) || (globalComment && globalComment.trim().length > 0);
     if (!hasContent) {
@@ -1014,7 +1054,9 @@ export class HttpApi {
     }
 
     // Format annotations as markdown
-    const formattedMessage = this.formatAnnotationsForClaude(filePath, annotations, globalComment);
+    const formattedMessage = isClaimsSend
+      ? this.formatClaimsAnnotationsForClaude(cityName || 'unknown', annotations, globalComment)
+      : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
       const escapedSession = tmuxSession.replace(/'/g, "'\\''");
@@ -1194,6 +1236,54 @@ export class HttpApi {
           }
 
           lines.push(`## ${i + 1}.${lineRef} Feedback on: "${contextText}"`);
+          lines.push(`> ${ann.comment}`);
+          lines.push('');
+        }
+      });
+    }
+
+    lines.push('---');
+    return lines.join('\n');
+  }
+
+  /**
+   * Format claims annotations as markdown for Claude
+   * Groups by claim title, shows text selections and image pins
+   */
+  private formatClaimsAnnotationsForClaude(cityName: string, annotations: Annotation[], globalComment?: string): string {
+    const lines = [
+      '',
+      `# Claims review: ${cityName}`,
+      '',
+    ];
+
+    if (globalComment) {
+      lines.push(globalComment);
+      lines.push('');
+    }
+
+    if (annotations && annotations.length > 0) {
+      lines.push(`I've reviewed the claims dashboard and have ${annotations.length} piece${annotations.length === 1 ? '' : 's'} of feedback:`);
+      lines.push('');
+
+      annotations.forEach((ann, i) => {
+        const title = ann.claimTitle || ann.claimId || 'Unknown claim';
+
+        if (ann.artifact) {
+          // Image/plot annotation
+          const posRef = ann.x !== undefined && ann.y !== undefined
+            ? ` (at ${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
+            : '';
+          lines.push(`## ${i + 1}. [${title}]`);
+          lines.push(`> On plot: ${ann.artifact}${posRef}`);
+          lines.push(`> ${ann.comment}`);
+          lines.push('');
+        } else {
+          // Text annotation
+          lines.push(`## ${i + 1}. [${title}]`);
+          if (ann.selectedText) {
+            lines.push(`> On text: "${ann.selectedText.slice(0, 60)}"`);
+          }
           lines.push(`> ${ann.comment}`);
           lines.push('');
         }
