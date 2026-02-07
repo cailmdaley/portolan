@@ -12,6 +12,9 @@
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
+  /** CSS.escape polyfill for older browsers */
+  const cssEscape = CSS.escape || ((s) => s.replace(/([^\w-])/g, '\\$1'))
+
   function removeActiveInput() {
     if (activeInput) {
       activeInput.remove()
@@ -28,10 +31,7 @@
   }
 
   function addHoverFade(el) {
-    el.style.opacity = '0.6'
-    el.style.transition = 'opacity 150ms'
-    el.addEventListener('mouseenter', () => { el.style.opacity = '1' })
-    el.addEventListener('mouseleave', () => { el.style.opacity = '0.6' })
+    el.classList.add('pa-hover-fade')
   }
 
   function clampToViewport(el) {
@@ -69,46 +69,30 @@
 
     const wrapper = document.createElement('div')
     wrapper.className = 'portolan-annotation-input'
-    wrapper.style.cssText = `
-      position: fixed;
-      z-index: 99999;
-      left: ${opts.screenX}px;
-      top: ${opts.screenY}px;
-      background: #EDE8E0;
-      border: 1px solid #C8B8A8;
-      border-radius: 6px;
-      padding: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      font-family: -apple-system, sans-serif;
-      font-size: 13px;
-      min-width: 240px;
-      max-width: 320px;
-    `
+    wrapper.style.left = opts.screenX + 'px'
+    wrapper.style.top = opts.screenY + 'px'
 
     const preview = opts.previewHtml || ''
     wrapper.innerHTML = `
       ${preview}
-      <textarea style="
-        width: 100%; min-height: 60px; margin-top: 4px;
-        border: 1px solid #C8B8A8; border-radius: 4px;
-        padding: 6px; font-size: 13px; font-family: inherit;
-        background: #fff; resize: vertical;
-      " placeholder="Add annotation..."></textarea>
-      <div style="display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end;">
-        <button class="pa-cancel" style="
-          padding: 4px 10px; border: 1px solid #C8B8A8; border-radius: 4px;
-          background: #fff; cursor: pointer; font-size: 12px;
-        ">Cancel</button>
-        <button class="pa-save" style="
-          padding: 4px 10px; border: none; border-radius: 4px;
-          background: #9A7B35; color: #fff; cursor: pointer; font-size: 12px;
-        ">Save</button>
+      <textarea class="pa-textarea" placeholder="Add annotation..."></textarea>
+      <div class="pa-actions">
+        <button class="pa-cancel">Cancel</button>
+        <button class="pa-save">Save</button>
       </div>
     `
 
     const textarea = wrapper.querySelector('textarea')
     const saveBtn = wrapper.querySelector('.pa-save')
     const cancelBtn = wrapper.querySelector('.pa-cancel')
+
+    function doSave() {
+      const comment = textarea.value.trim()
+      if (!comment) return
+      opts.onSave(comment)
+      wrapper._saved = true
+      removeActiveInput()
+    }
 
     cancelBtn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -117,11 +101,15 @@
 
     saveBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      const comment = textarea.value.trim()
-      if (!comment) return
-      opts.onSave(comment)
-      wrapper._saved = true
-      removeActiveInput()
+      doSave()
+    })
+
+    // Cmd/Ctrl+Enter to save
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        doSave()
+      }
     })
 
     // Prevent clicks inside from propagating
@@ -153,12 +141,7 @@
       createAnnotationInput({
         screenX: Math.min(rect.left, window.innerWidth - 280),
         screenY: rect.bottom + 6,
-        previewHtml: `<div style="
-          padding: 4px 8px; background: rgba(154,123,53,0.1);
-          border-left: 3px solid #9A7B35; font-size: 12px;
-          color: #2E2A26; max-height: 60px; overflow: hidden;
-          margin-bottom: 4px; border-radius: 0 4px 4px 0;
-        ">"${selectedText.slice(0, 80)}${selectedText.length > 80 ? '…' : ''}"</div>`,
+        previewHtml: `<div class="pa-text-preview">"${selectedText.slice(0, 80)}${selectedText.length > 80 ? '…' : ''}"</div>`,
         onSave(comment) {
           postAnnotationMessage('claims-annotation-save', {
             claimId: claim.claimId,
@@ -190,19 +173,8 @@
     // Place a temporary pin marker
     const pin = document.createElement('div')
     pin.className = 'portolan-pin-marker'
-    pin.style.cssText = `
-      position: absolute;
-      left: ${x}%;
-      top: ${y}%;
-      transform: translate(-50%, -50%);
-      width: 16px; height: 16px;
-      border-radius: 50%;
-      background: #9A7B35;
-      border: 2px solid #EDE8E0;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-      pointer-events: none;
-      z-index: 99998;
-    `
+    pin.style.left = x + '%'
+    pin.style.top = y + '%'
 
     const container = ensurePositionedParent(img)
     if (container) container.appendChild(pin)
@@ -210,13 +182,7 @@
     createAnnotationInput({
       screenX: e.clientX + 12,
       screenY: e.clientY - 20,
-      previewHtml: `<div style="
-        display: flex; align-items: center; gap: 6px;
-        font-size: 12px; color: #7A7368; margin-bottom: 4px;
-      "><span style="
-        width: 10px; height: 10px; border-radius: 50%;
-        background: #9A7B35; display: inline-block;
-      "></span> Pin on ${img.dataset.artifact}</div>`,
+      previewHtml: `<div class="pa-pin-preview"><span class="pa-pin-dot"></span> Pin on ${img.dataset.artifact}</div>`,
       onSave(comment) {
         postAnnotationMessage('claims-annotation-save', {
           claimId: claim.claimId,
@@ -274,13 +240,12 @@
 
   function showPromotedFeedback(annotationId) {
     if (!annotationId) return
-    // Find the promote button by annotation ID and show checkmark
-    const btn = document.querySelector(`.portolan-promote-btn[data-annotation-id="${annotationId}"]`)
+    const btn = document.querySelector(`.portolan-promote-btn[data-annotation-id="${cssEscape(annotationId)}"]`)
     if (!btn) return
-    btn.style.color = '#5A7B5A'
+    btn.classList.add('promoted')
     btn.textContent = '\u2713'
     setTimeout(() => {
-      btn.style.color = '#9A7B35'
+      btn.classList.remove('promoted')
       btn.textContent = '\u2B06'
     }, 2000)
   }
@@ -291,10 +256,6 @@
     btn.dataset.annotationId = annotation.id
     btn.textContent = '\u2B06'
     btn.title = 'Promote to felt'
-    btn.style.cssText = `
-      cursor: pointer; margin-left: 2px;
-      color: #9A7B35; font-size: 12px; line-height: 1;
-    `
     addHoverFade(btn)
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -312,10 +273,6 @@
     btn.className = 'portolan-delete-btn'
     btn.textContent = '\u00d7'
     btn.title = 'Delete annotation'
-    btn.style.cssText = `
-      cursor: pointer; margin-left: 4px;
-      color: #7A7368; font-size: 14px; line-height: 1;
-    `
     addHoverFade(btn)
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -324,14 +281,10 @@
     return btn
   }
 
-  function createPopoverActionBtn(label, borderColor, textColor, onClick) {
+  function createPopoverActionBtn(label, className, onClick) {
     const btn = document.createElement('button')
     btn.textContent = label
-    btn.style.cssText = `
-      padding: 2px 8px; border: 1px solid ${borderColor}; border-radius: 4px;
-      background: transparent; color: ${textColor}; cursor: pointer;
-      font-size: 11px; font-family: inherit;
-    `
+    btn.className = 'pa-popover-btn ' + className
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
       onClick()
@@ -345,29 +298,17 @@
     const rect = marker.getBoundingClientRect()
     const popover = document.createElement('div')
     popover.className = 'portolan-pin-popover'
-    popover.style.cssText = `
-      position: fixed;
-      left: ${rect.right + 8}px;
-      top: ${rect.top - 4}px;
-      background: #EDE8E0;
-      border: 1px solid #C8B8A8;
-      border-radius: 6px;
-      padding: 8px 10px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      font-family: -apple-system, sans-serif;
-      font-size: 12px;
-      max-width: 260px;
-      z-index: 99999;
-    `
+    popover.style.left = (rect.right + 8) + 'px'
+    popover.style.top = (rect.top - 4) + 'px'
 
     const commentText = document.createElement('div')
-    commentText.style.cssText = 'color: #2E2A26; margin-bottom: 6px; line-height: 1.4;'
+    commentText.className = 'pa-popover-comment'
     commentText.textContent = ann.comment
 
     const actions = document.createElement('div')
-    actions.style.cssText = 'display: flex; gap: 8px; justify-content: flex-end;'
+    actions.className = 'pa-popover-actions'
 
-    actions.appendChild(createPopoverActionBtn('\u2B06 Felt', '#9A7B35', '#9A7B35', () => {
+    actions.appendChild(createPopoverActionBtn('\u2B06 Felt', 'pa-popover-promote', () => {
       postAnnotationMessage('claims-annotation-promote', {
         claimId: ann.claimId,
         annotationId: ann.id,
@@ -376,7 +317,7 @@
       popover.remove()
     }))
 
-    actions.appendChild(createPopoverActionBtn('\u00d7 Delete', '#C8B8A8', '#7A7368', () => {
+    actions.appendChild(createPopoverActionBtn('\u00d7 Delete', 'pa-popover-delete', () => {
       postAnnotationMessage('claims-annotation-delete', {
         annotationId: ann.id,
         claimId,
@@ -414,7 +355,7 @@
   }
 
   function renderExistingAnnotations(claimId, annotations) {
-    const panel = document.querySelector(`[data-claim-id="${claimId}"]`)
+    const panel = document.querySelector(`[data-claim-id="${cssEscape(claimId)}"]`)
     if (!panel) return
 
     // Clear old markers, temporary pins, and any open popovers
@@ -425,20 +366,9 @@
     if (annotations.length > 0) {
       const sendBar = document.createElement('div')
       sendBar.className = 'portolan-existing-marker portolan-send-bar'
-      sendBar.style.cssText = `
-        display: flex; align-items: center; gap: 8px;
-        padding: 6px 10px; margin: 4px 0 8px;
-        background: rgba(154,123,53,0.08);
-        border-radius: 4px;
-        font-size: 12px; color: #7A7368;
-      `
       const sendBtn = document.createElement('button')
+      sendBtn.className = 'pa-send-btn'
       sendBtn.textContent = `Send ${annotations.length} annotation${annotations.length === 1 ? '' : 's'} to worker`
-      sendBtn.style.cssText = `
-        padding: 4px 12px; border: none; border-radius: 4px;
-        background: #9A7B35; color: #fff; cursor: pointer;
-        font-size: 12px; font-family: inherit;
-      `
       sendBtn.addEventListener('click', (e) => {
         e.stopPropagation()
         postAnnotationMessage('claims-annotation-send', { claimId, cityId })
@@ -450,25 +380,15 @@
     annotations.forEach((ann, i) => {
       if (ann.artifact && ann.x !== undefined && ann.y !== undefined) {
         // Image pin — find the artifact image
-        const img = panel.querySelector(`img[data-artifact="${ann.artifact}"]`)
+        const img = panel.querySelector(`img[data-artifact="${cssEscape(ann.artifact)}"]`)
         if (!img) return
 
         const container = ensurePositionedParent(img)
 
         const marker = document.createElement('div')
-        marker.className = 'portolan-existing-marker'
-        marker.style.cssText = `
-          position: absolute;
-          left: ${ann.x}%; top: ${ann.y}%;
-          transform: translate(-50%, -50%);
-          width: 20px; height: 20px;
-          border-radius: 50%;
-          background: #9A7B35;
-          border: 2px solid #EDE8E0;
-          color: #fff; font-size: 10px;
-          display: flex; align-items: center; justify-content: center;
-          cursor: pointer; z-index: 99997;
-        `
+        marker.className = 'portolan-existing-marker portolan-image-pin'
+        marker.style.left = ann.x + '%'
+        marker.style.top = ann.y + '%'
         marker.textContent = String(i + 1)
         marker.title = ann.comment
         marker.dataset.annotationId = ann.id
@@ -486,16 +406,7 @@
       } else if (ann.selectedText) {
         // Text annotation — show as a small badge near the panel header
         const badge = document.createElement('div')
-        badge.className = 'portolan-existing-marker'
-        badge.style.cssText = `
-          display: inline-flex; align-items: center; gap: 4px;
-          padding: 2px 8px; margin: 2px 4px;
-          background: rgba(154,123,53,0.12);
-          border-left: 3px solid #9A7B35;
-          font-size: 11px; color: #2E2A26;
-          border-radius: 0 4px 4px 0;
-          cursor: default;
-        `
+        badge.className = 'portolan-existing-marker portolan-text-badge'
         badge.title = ann.comment
         badge.dataset.annotationId = ann.id
         const textSpan = document.createElement('span')
@@ -511,18 +422,172 @@
   // ── Dismiss on Escape ─────────────────────────────────────────────────
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') removeActiveInput()
+    if (e.key === 'Escape') {
+      removeActiveInput()
+      // Clear text selection so it doesn't linger
+      window.getSelection()?.removeAllRanges()
+    }
   })
 
-  // ── Visual indicator that annotations are active ──────────────────────
+  // ── Styles ────────────────────────────────────────────────────────────
 
   const style = document.createElement('style')
   style.textContent = `
     [data-claim-id] { cursor: text; }
     img[data-artifact] { cursor: crosshair !important; }
-    .portolan-annotation-input textarea:focus {
+
+    /* Annotation input popup */
+    .portolan-annotation-input {
+      position: fixed;
+      z-index: 99999;
+      background: #EDE8E0;
+      border: 1px solid #C8B8A8;
+      border-radius: 6px;
+      padding: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      font-family: -apple-system, sans-serif;
+      font-size: 13px;
+      min-width: 240px;
+      max-width: 320px;
+    }
+    .pa-textarea {
+      width: 100%; min-height: 60px; margin-top: 4px;
+      border: 1px solid #C8B8A8; border-radius: 4px;
+      padding: 6px; font-size: 13px; font-family: inherit;
+      background: #fff; resize: vertical; box-sizing: border-box;
+    }
+    .pa-textarea:focus {
       outline: 2px solid #9A7B35;
       outline-offset: -1px;
+    }
+    .pa-actions {
+      display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end;
+    }
+    .pa-cancel {
+      padding: 4px 10px; border: 1px solid #C8B8A8; border-radius: 4px;
+      background: #fff; cursor: pointer; font-size: 12px;
+    }
+    .pa-save {
+      padding: 4px 10px; border: none; border-radius: 4px;
+      background: #9A7B35; color: #fff; cursor: pointer; font-size: 12px;
+    }
+
+    /* Text selection preview */
+    .pa-text-preview {
+      padding: 4px 8px; background: rgba(154,123,53,0.1);
+      border-left: 3px solid #9A7B35; font-size: 12px;
+      color: #2E2A26; max-height: 60px; overflow: hidden;
+      margin-bottom: 4px; border-radius: 0 4px 4px 0;
+    }
+
+    /* Pin preview */
+    .pa-pin-preview {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: #7A7368; margin-bottom: 4px;
+    }
+    .pa-pin-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #9A7B35; display: inline-block;
+    }
+
+    /* Temporary pin marker */
+    .portolan-pin-marker {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #9A7B35;
+      border: 2px solid #EDE8E0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+      pointer-events: none;
+      z-index: 99998;
+    }
+
+    /* Existing image pin */
+    .portolan-image-pin {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: #9A7B35;
+      border: 2px solid #EDE8E0;
+      color: #fff; font-size: 10px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; z-index: 99997;
+    }
+
+    /* Existing text badge */
+    .portolan-text-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; margin: 2px 4px;
+      background: rgba(154,123,53,0.12);
+      border-left: 3px solid #9A7B35;
+      font-size: 11px; color: #2E2A26;
+      border-radius: 0 4px 4px 0;
+      cursor: default;
+    }
+
+    /* Send bar */
+    .portolan-send-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; margin: 4px 0 8px;
+      background: rgba(154,123,53,0.08);
+      border-radius: 4px;
+      font-size: 12px; color: #7A7368;
+    }
+    .pa-send-btn {
+      padding: 4px 12px; border: none; border-radius: 4px;
+      background: #9A7B35; color: #fff; cursor: pointer;
+      font-size: 12px; font-family: inherit;
+    }
+
+    /* Hover fade (promote/delete buttons) */
+    .pa-hover-fade {
+      opacity: 0.6;
+      transition: opacity 150ms;
+    }
+    .pa-hover-fade:hover { opacity: 1; }
+
+    /* Promote / delete buttons */
+    .portolan-promote-btn {
+      cursor: pointer; margin-left: 2px;
+      color: #9A7B35; font-size: 12px; line-height: 1;
+    }
+    .portolan-promote-btn.promoted { color: #5A7B5A; }
+    .portolan-delete-btn {
+      cursor: pointer; margin-left: 4px;
+      color: #7A7368; font-size: 14px; line-height: 1;
+    }
+
+    /* Pin popover */
+    .portolan-pin-popover {
+      position: fixed;
+      background: #EDE8E0;
+      border: 1px solid #C8B8A8;
+      border-radius: 6px;
+      padding: 8px 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      font-family: -apple-system, sans-serif;
+      font-size: 12px;
+      max-width: 260px;
+      z-index: 99999;
+    }
+    .pa-popover-comment {
+      color: #2E2A26; margin-bottom: 6px; line-height: 1.4;
+    }
+    .pa-popover-actions {
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .pa-popover-btn {
+      padding: 2px 8px; border-radius: 4px;
+      background: transparent; cursor: pointer;
+      font-size: 11px; font-family: inherit;
+    }
+    .pa-popover-promote {
+      border: 1px solid #9A7B35; color: #9A7B35;
+    }
+    .pa-popover-delete {
+      border: 1px solid #C8B8A8; color: #7A7368;
     }
   `
   document.head.appendChild(style)

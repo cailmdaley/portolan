@@ -310,7 +310,7 @@ export class ClaimsDashboard {
       body: JSON.stringify({
         workerId,
         createNewWorker: createNew,
-        filePath: this.currentCity.path,
+        filePath: this.currentCity.path + '/claims', // city path (used for new worker creation)
         originId: this.currentCity.originId,
         annotations,
         cityName: this.currentCity.name,

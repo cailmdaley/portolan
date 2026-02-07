@@ -573,61 +573,39 @@ export class HttpApi {
    * Body: { path: string, content: string, originId?: string }
    */
   private async handleSaveFile(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // Parse JSON body
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-    }
-
-    let data: { path?: string; content?: string; originId?: string };
-    try {
-      data = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+    const data = await this.parseJsonBody<{ path?: string; content?: string; originId?: string }>(req, res);
+    if (!data) return;
 
     const { path: filePath, content, originId } = data;
 
     if (!filePath || content === undefined) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing path or content' }));
+      this.sendJsonError(res, 400, 'Missing path or content');
       return;
     }
 
     // Security: prevent directory traversal
     if (filePath.includes('..')) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid path' }));
+      this.sendJsonError(res, 400, 'Invalid path');
       return;
     }
 
     try {
       if (!originId || originId === 'local') {
-        // Local file: write directly
         await writeFile(filePath, content, 'utf-8');
       } else {
-        // Remote file: write via SSH using stdin to avoid escaping issues
         const origin = this.originLookup.getOrigin(originId);
         if (!origin?.sshHost) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Origin not found or not connected' }));
+          this.sendJsonError(res, 404, 'Origin not found or not connected');
           return;
         }
 
         await this.writeRemoteFile(origin.sshHost, filePath, content);
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ success: true, path: filePath }));
+      this.sendJsonSuccess(res, { success: true, path: filePath });
     } catch (error: any) {
       console.error('Failed to save file:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to save file: ' + error.message }));
+      this.sendJsonError(res, 500, 'Failed to save file: ' + error.message);
     }
   }
 
@@ -774,8 +752,7 @@ export class HttpApi {
    */
   private async handleRecentAnnotations(url: URL, res: ServerResponse): Promise<void> {
     if (!this.annotationPersistence) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation persistence not initialized' }));
+      this.sendJsonError(res, 500, 'Annotation persistence not initialized');
       return;
     }
 
@@ -783,12 +760,7 @@ export class HttpApi {
     const limit = parseInt(url.searchParams.get('limit') || '10', 10);
 
     const recentFiles = this.annotationPersistence.getRecentFiles(originId, limit);
-
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(JSON.stringify({ files: recentFiles }));
+    this.sendJsonSuccess(res, { files: recentFiles });
   }
 
   /**
@@ -797,8 +769,7 @@ export class HttpApi {
    */
   private async handleGetAnnotations(url: URL, res: ServerResponse): Promise<void> {
     if (!this.annotationPersistence) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation persistence not initialized' }));
+      this.sendJsonError(res, 500, 'Annotation persistence not initialized');
       return;
     }
 
@@ -808,8 +779,7 @@ export class HttpApi {
     const originId = url.searchParams.get('originId') || 'local';
 
     if (!filePath && !claimId && !allClaims) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing path, claimId, or claims parameter' }));
+      this.sendJsonError(res, 400, 'Missing path, claimId, or claims parameter');
       return;
     }
 
@@ -822,11 +792,7 @@ export class HttpApi {
       annotations = this.annotationPersistence.getByFile(filePath!, originId);
     }
 
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(JSON.stringify({ annotations }));
+    this.sendJsonSuccess(res, { annotations });
   }
 
   /**
@@ -835,39 +801,24 @@ export class HttpApi {
    */
   private async handleCreateAnnotation(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.annotationPersistence) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation persistence not initialized' }));
+      this.sendJsonError(res, 500, 'Annotation persistence not initialized');
       return;
     }
 
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-    }
-
-    let data: Omit<Annotation, 'id' | 'createdAt'>;
-    try {
-      data = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+    const data = await this.parseJsonBody<Omit<Annotation, 'id' | 'createdAt'>>(req, res);
+    if (!data) return;
 
     if (data.isClaimAnnotation) {
       if (!data.claimId || !data.comment) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required fields for claims annotation (claimId, comment)' }));
+        this.sendJsonError(res, 400, 'Missing required fields for claims annotation (claimId, comment)');
         return;
       }
       if (data.artifact && (data.x === undefined || data.y === undefined)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Image annotation requires x and y coordinates' }));
+        this.sendJsonError(res, 400, 'Image annotation requires x and y coordinates');
         return;
       }
     } else if (!data.filePath || !data.comment) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required fields' }));
+      this.sendJsonError(res, 400, 'Missing required fields');
       return;
     }
 
@@ -880,8 +831,7 @@ export class HttpApi {
       });
       res.end(JSON.stringify({ annotation }));
     } catch (error: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.message }));
+      this.sendJsonError(res, 500, error.message);
     }
   }
 
@@ -891,37 +841,20 @@ export class HttpApi {
    */
   private async handleUpdateAnnotation(id: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.annotationPersistence) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation persistence not initialized' }));
+      this.sendJsonError(res, 500, 'Annotation persistence not initialized');
       return;
     }
 
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-    }
-
-    let updates: Partial<Annotation>;
-    try {
-      updates = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+    const updates = await this.parseJsonBody<Partial<Annotation>>(req, res);
+    if (!updates) return;
 
     const annotation = this.annotationPersistence.update(id, updates);
     if (!annotation) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation not found' }));
+      this.sendJsonError(res, 404, 'Annotation not found');
       return;
     }
 
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(JSON.stringify({ annotation }));
+    this.sendJsonSuccess(res, { annotation });
   }
 
   /**
@@ -930,23 +863,17 @@ export class HttpApi {
    */
   private async handleDeleteAnnotation(id: string, res: ServerResponse): Promise<void> {
     if (!this.annotationPersistence) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation persistence not initialized' }));
+      this.sendJsonError(res, 500, 'Annotation persistence not initialized');
       return;
     }
 
     const annotation = this.annotationPersistence.delete(id);
     if (!annotation) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Annotation not found' }));
+      this.sendJsonError(res, 404, 'Annotation not found');
       return;
     }
 
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(JSON.stringify({ success: true }));
+    this.sendJsonSuccess(res, { success: true });
   }
 
   // Callback for creating new workers
@@ -977,46 +904,32 @@ export class HttpApi {
    */
   private async handleSendAnnotations(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.sessionLookup) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session lookup not initialized' }));
+      this.sendJsonError(res, 500, 'Session lookup not initialized');
       return;
     }
 
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-    }
-
-    let data: {
+    const data = await this.parseJsonBody<{
       workerId?: string;
       createNewWorker?: boolean;
       filePath: string;
       originId: string;
       annotations: Annotation[];
       globalComment?: string;
-      cityName?: string;       // For claims annotation formatting
-      isClaimsSend?: boolean;  // Format as claims review
-    };
-    try {
-      data = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+      cityName?: string;
+      isClaimsSend?: boolean;
+    }>(req, res);
+    if (!data) return;
 
     const { workerId, createNewWorker, filePath, originId, annotations, globalComment, cityName, isClaimsSend } = data;
 
     const hasContent = (annotations && annotations.length > 0) || (globalComment && globalComment.trim().length > 0);
     if (!hasContent) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No content to send' }));
+      this.sendJsonError(res, 400, 'No content to send');
       return;
     }
 
     if (!workerId && !createNewWorker) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Must specify workerId or createNewWorker' }));
+      this.sendJsonError(res, 400, 'Must specify workerId or createNewWorker');
       return;
     }
 
@@ -1025,15 +938,12 @@ export class HttpApi {
     let sshHost: string | undefined;
 
     if (createNewWorker) {
-      // Create a new worker
       if (!this.onCreateNewWorker) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'New worker creation not configured' }));
+        this.sendJsonError(res, 500, 'New worker creation not configured');
         return;
       }
 
       try {
-        // Get city path from file path (directory containing the file)
         const cityPath = filePath.substring(0, filePath.lastIndexOf('/'));
         tmuxSession = await this.onCreateNewWorker(cityPath, originId);
         console.log(`[SendAnnotations] Created new worker: ${tmuxSession}`);
@@ -1041,28 +951,23 @@ export class HttpApi {
         // Wait for Claude to start up (4s for remote systems)
         await new Promise(resolve => setTimeout(resolve, 4000));
       } catch (error: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Failed to create worker: ' + error.message }));
+        this.sendJsonError(res, 500, 'Failed to create worker: ' + error.message);
         return;
       }
     } else {
-      // Use existing worker
       const session = this.sessionLookup.findSession(workerId!);
       if (!session) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Worker not found' }));
+        this.sendJsonError(res, 404, 'Worker not found');
         return;
       }
       tmuxSession = session.tmuxSession;
     }
 
-    // Get SSH host for remote origins (shared by both paths)
     if (isRemote) {
       const origin = this.originLookup.getOrigin(originId);
       sshHost = origin?.sshHost;
     }
 
-    // Format annotations as markdown
     const formattedMessage = isClaimsSend
       ? this.formatClaimsAnnotationsForClaude(cityName || 'unknown', annotations, globalComment)
       : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
@@ -1071,16 +976,11 @@ export class HttpApi {
       const escapedSession = tmuxSession.replace(/'/g, "'\\''");
 
       if (!isRemote) {
-        // Local: use tmux load-buffer via stdin to avoid escaping issues
-        // Don't send Enter - let user add more feedback from other files first
         execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
         execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
       } else {
-        // Remote: send via SSH with tmux load-buffer
-        // Don't send Enter - let user add more feedback from other files first
         if (!sshHost) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Origin not found' }));
+          this.sendJsonError(res, 404, 'Origin not found');
           return;
         }
 
@@ -1088,20 +988,14 @@ export class HttpApi {
         execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
       }
 
-      // Focus the worker in Kitty (for existing workers only; new workers are already focused)
       if (workerId && this.onFocusSession) {
         this.onFocusSession(workerId);
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ success: true }));
+      this.sendJsonSuccess(res, { success: true });
     } catch (error: any) {
       console.error('Failed to send annotations:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to send annotations: ' + error.message }));
+      this.sendJsonError(res, 500, 'Failed to send annotations: ' + error.message);
     }
   }
 
@@ -1111,37 +1005,23 @@ export class HttpApi {
    */
   private async handleSendMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.sessionLookup) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session lookup not initialized' }));
+      this.sendJsonError(res, 500, 'Session lookup not initialized');
       return;
     }
 
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-    }
-
-    let data: { sessionId: string; message: string };
-    try {
-      data = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+    const data = await this.parseJsonBody<{ sessionId: string; message: string }>(req, res);
+    if (!data) return;
 
     const { sessionId, message } = data;
 
     if (!sessionId || !message?.trim()) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'sessionId and message are required' }));
+      this.sendJsonError(res, 400, 'sessionId and message are required');
       return;
     }
 
     const session = this.sessionLookup.findSession(sessionId);
     if (!session) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found' }));
+      this.sendJsonError(res, 404, 'Session not found');
       return;
     }
 
@@ -1153,8 +1033,7 @@ export class HttpApi {
       const origin = this.originLookup.getOrigin(session.originId);
       sshHost = origin?.sshHost;
       if (!sshHost) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Origin not found for remote session' }));
+        this.sendJsonError(res, 404, 'Origin not found for remote session');
         return;
       }
     }
@@ -1163,26 +1042,19 @@ export class HttpApi {
       const escapedSession = tmuxSession.replace(/'/g, "'\\''");
 
       if (!isRemote) {
-        // Local: load message to buffer, paste, then send Enter to execute
         execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
         execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
         execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
       } else {
-        // Remote: same via SSH
         execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: message, timeout: 10000 });
         execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
         execSync(`ssh ${sshHost} "tmux send-keys -t '${escapedSession}' Enter"`, { timeout: 10000 });
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ success: true }));
+      this.sendJsonSuccess(res, { success: true });
     } catch (error: any) {
       console.error('Failed to send message:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to send message: ' + error.message }));
+      this.sendJsonError(res, 500, 'Failed to send message: ' + error.message);
     }
   }
 
@@ -1322,64 +1194,45 @@ export class HttpApi {
    * Body: { filePath, originId, title, body, kind }
    */
   private async handleFileAsFiber(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    let bodyStr = '';
-    for await (const chunk of req) {
-      bodyStr += chunk;
-    }
-
-    let data: {
+    const data = await this.parseJsonBody<{
       filePath: string;
       originId: string;
       cityPath?: string;
       title: string;
       body: string;
       kind?: string;
-    };
-    try {
-      data = JSON.parse(bodyStr);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
+    }>(req, res);
+    if (!data) return;
 
     const { filePath, originId, title, body, kind = 'task' } = data;
 
     if (!filePath || !title || !body) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required fields' }));
+      this.sendJsonError(res, 400, 'Missing required fields');
       return;
     }
 
-    // Use provided cityPath, or fall back to file's parent directory
     const cityPath = data.cityPath || filePath.substring(0, filePath.lastIndexOf('/'));
     const isRemote = originId !== 'local' && !!originId;
 
     try {
       let fiberId: string;
 
-      // Escape body for shell - use a temp file approach to avoid shell escaping issues
       const escapedTitle = title.replace(/'/g, "'\\''");
       const escapedBody = body.replace(/'/g, "'\\''");
 
       if (!isRemote) {
-        // Local: run felt add directly
-        // felt add returns just the fiber ID on stdout
         const { stdout } = await execAsync(
           `cd '${cityPath}' && felt add '${escapedTitle}' -k ${kind} -b '${escapedBody}'`,
           { timeout: 10000, maxBuffer: 1024 * 1024 }
         );
         fiberId = stdout.trim();
       } else {
-        // Remote: run via SSH
         const origin = this.originLookup.getOrigin(originId);
         if (!origin?.sshHost) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Origin not found or not connected' }));
+          this.sendJsonError(res, 404, 'Origin not found or not connected');
           return;
         }
 
-        // For remote, need to escape for both local and remote shells
         const { stdout } = await execAsync(
           `ssh ${origin.sshHost} "cd '${cityPath}' && felt add '${escapedTitle}' -k ${kind} -b '${escapedBody}'"`,
           { timeout: 30000, maxBuffer: 1024 * 1024 }
@@ -1387,15 +1240,10 @@ export class HttpApi {
         fiberId = stdout.trim();
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ success: true, fiberId }));
+      this.sendJsonSuccess(res, { success: true, fiberId });
     } catch (error: any) {
       console.error('Failed to file as fiber:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to file as fiber: ' + error.message }));
+      this.sendJsonError(res, 500, 'Failed to file as fiber: ' + error.message);
     }
   }
 
