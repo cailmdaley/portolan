@@ -359,6 +359,36 @@ describe('HttpApi — claims annotations', () => {
       const output = formatClaims('test', annotations);
       expect(output).toContain('[claim-xyz]');
     });
+
+    it('groups multiple annotations under the same claim heading', () => {
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'First note', claimId: 'c1', claimTitle: 'B-modes',
+          selectedText: 'PTE 0.29',
+        }),
+        makeClaimAnnotation({
+          id: '2', comment: 'Second note', claimId: 'c1', claimTitle: 'B-modes',
+          artifact: 'b_modes.png', x: 50, y: 25,
+        }),
+        makeClaimAnnotation({
+          id: '3', comment: 'Other claim', claimId: 'c2', claimTitle: 'Galaxy pipeline',
+        }),
+      ];
+
+      const output = formatClaims('test', annotations);
+
+      // Single heading for B-modes (not repeated)
+      expect(output).toContain('## 1. [B-modes]');
+      expect(output).toContain('## 2. [Galaxy pipeline]');
+      // Both annotations under claim 1
+      expect(output).toContain('> On text: "PTE 0.29"');
+      expect(output).toContain('> On plot: b_modes.png (at 50%, 25%)');
+      // B-modes heading appears only once
+      const headingMatches = output.match(/\[B-modes\]/g);
+      expect(headingMatches).toHaveLength(1);
+      // 3 total annotations
+      expect(output).toContain('3 pieces of feedback');
+    });
   });
 
   // ────────────────────────────────────────────────────────────
@@ -559,8 +589,7 @@ describe('HttpApi — claims annotations', () => {
       expect(res.data.error).toMatch(/claimId.*comment.*cityId|Missing required/i);
     });
 
-    it('rejects request with invalid JSON', async () => {
-      // httpRequest always sends valid JSON, so test missing fields instead
+    it('rejects request with empty body', async () => {
       const res = await httpRequest(api, 'POST', '/promote-to-felt', {});
 
       expect(res.status).toBe(400);

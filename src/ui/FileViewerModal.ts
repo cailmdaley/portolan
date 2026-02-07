@@ -17,6 +17,7 @@ import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
 import { escapeHtml, formatTimeAgo, showToast } from './utils'
+import { showWorkerPicker, type WorkerInfo } from './WorkerPicker'
 
 // Configure marked for GFM (tables, task lists, etc.)
 marked.setOptions({
@@ -58,12 +59,6 @@ export interface Annotation {
   isImageAnnotation?: boolean
 }
 
-// Worker info for send-to-worker
-export interface WorkerInfo {
-  id: string
-  name: string
-  tmuxSession: string
-}
 
 // Image file extensions
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'])
@@ -1604,54 +1599,9 @@ export class FileViewerModal {
       }
     }
 
-    // Show picker modal
-    const picker = document.createElement('div')
-    picker.className = 'worker-picker-overlay'
-    picker.innerHTML = `
-      <div class="worker-picker">
-        <div class="worker-picker-header">
-          <span>Send annotations to worker</span>
-          <button class="worker-picker-close">&times;</button>
-        </div>
-        <div class="worker-picker-list">
-          <button class="worker-picker-item worker-picker-new" data-action="new">
-            <span class="worker-name">+ New Worker</span>
-            <span class="worker-session">Create new worker and send</span>
-          </button>
-          ${this.cityWorkers.map(w => `
-            <button class="worker-picker-item" data-worker-id="${w.id}">
-              <span class="worker-name">${escapeHtml(w.name)}</span>
-              <span class="worker-session">${escapeHtml(w.tmuxSession)}</span>
-            </button>
-          `).join('')}
-        </div>
-      </div>
-    `
-
-    document.body.appendChild(picker)
-
-    // Event handlers
-    picker.querySelector('.worker-picker-close')?.addEventListener('click', () => {
-      picker.remove()
-    })
-
-    picker.addEventListener('click', (e) => {
-      if (e.target === picker) picker.remove()
-    })
-
-    // Handle "New Worker" button
-    picker.querySelector('.worker-picker-new')?.addEventListener('click', async () => {
-      picker.remove()
-      await this.sendToNewWorker()
-    })
-
-    // Handle existing worker buttons
-    picker.querySelectorAll('.worker-picker-item:not(.worker-picker-new)').forEach(item => {
-      item.addEventListener('click', async () => {
-        const workerId = item.getAttribute('data-worker-id')!
-        picker.remove()
-        await this.sendToWorker(workerId)
-      })
+    showWorkerPicker(this.cityWorkers, this.annotations.length, {
+      onSelectWorker: (workerId) => this.sendToWorker(workerId),
+      onNewWorker: () => this.sendToNewWorker(),
     })
   }
 

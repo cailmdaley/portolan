@@ -34,6 +34,18 @@
     el.addEventListener('mouseleave', () => { el.style.opacity = '0.6' })
   }
 
+  function clampToViewport(el) {
+    requestAnimationFrame(() => {
+      const rect = el.getBoundingClientRect()
+      if (rect.right > window.innerWidth - 10) {
+        el.style.left = Math.max(10, window.innerWidth - rect.width - 10) + 'px'
+      }
+      if (rect.bottom > window.innerHeight - 10) {
+        el.style.top = Math.max(10, window.innerHeight - rect.height - 10) + 'px'
+      }
+    })
+  }
+
   function postAnnotationMessage(type, payload) {
     parent.postMessage({ type, ...payload }, '*')
   }
@@ -119,17 +131,8 @@
     document.body.appendChild(wrapper)
     activeInput = wrapper
 
-    // Clamp to viewport
-    requestAnimationFrame(() => {
-      const rect = wrapper.getBoundingClientRect()
-      if (rect.right > window.innerWidth - 10) {
-        wrapper.style.left = Math.max(10, window.innerWidth - rect.width - 10) + 'px'
-      }
-      if (rect.bottom > window.innerHeight - 10) {
-        wrapper.style.top = Math.max(10, window.innerHeight - rect.height - 10) + 'px'
-      }
-      textarea.focus()
-    })
+    clampToViewport(wrapper)
+    requestAnimationFrame(() => textarea.focus())
   }
 
   // ── Text Annotation (mouseup on claim content) ────────────────────────
@@ -264,12 +267,28 @@
   window.addEventListener('message', (event) => {
     if (event.data.type === 'claims-annotation-loaded') {
       renderExistingAnnotations(event.data.claimId, event.data.annotations || [])
+    } else if (event.data.type === 'claims-annotation-promoted') {
+      showPromotedFeedback(event.data.annotationId)
     }
   })
+
+  function showPromotedFeedback(annotationId) {
+    if (!annotationId) return
+    // Find the promote button by annotation ID and show checkmark
+    const btn = document.querySelector(`.portolan-promote-btn[data-annotation-id="${annotationId}"]`)
+    if (!btn) return
+    btn.style.color = '#5A7B5A'
+    btn.textContent = '\u2713'
+    setTimeout(() => {
+      btn.style.color = '#9A7B35'
+      btn.textContent = '\u2B06'
+    }, 2000)
+  }
 
   function createPromoteBtn(annotation) {
     const btn = document.createElement('span')
     btn.className = 'portolan-promote-btn'
+    btn.dataset.annotationId = annotation.id
     btn.textContent = '\u2B06'
     btn.title = 'Promote to felt'
     btn.style.cssText = `
@@ -281,6 +300,7 @@
       e.stopPropagation()
       postAnnotationMessage('claims-annotation-promote', {
         claimId: annotation.claimId,
+        annotationId: annotation.id,
         comment: annotation.comment,
       })
     })
@@ -350,6 +370,7 @@
     actions.appendChild(createPopoverActionBtn('\u2B06 Felt', '#9A7B35', '#9A7B35', () => {
       postAnnotationMessage('claims-annotation-promote', {
         claimId: ann.claimId,
+        annotationId: ann.id,
         comment: ann.comment,
       })
       popover.remove()
@@ -371,7 +392,7 @@
 
     document.body.appendChild(popover)
 
-    // Clamp to viewport
+    // Clamp to viewport, flipping to left of marker if needed
     requestAnimationFrame(() => {
       const r = popover.getBoundingClientRect()
       if (r.right > window.innerWidth - 10) {
@@ -393,7 +414,6 @@
   }
 
   function renderExistingAnnotations(claimId, annotations) {
-    // Find the claim panel
     const panel = document.querySelector(`[data-claim-id="${claimId}"]`)
     if (!panel) return
 
@@ -451,6 +471,7 @@
         `
         marker.textContent = String(i + 1)
         marker.title = ann.comment
+        marker.dataset.annotationId = ann.id
         // Click to show popover with comment, promote, delete
         marker.addEventListener('click', (e) => {
           e.stopPropagation()
@@ -476,6 +497,7 @@
           cursor: default;
         `
         badge.title = ann.comment
+        badge.dataset.annotationId = ann.id
         const textSpan = document.createElement('span')
         textSpan.textContent = `"${ann.selectedText.slice(0, 40)}${ann.selectedText.length > 40 ? '\u2026' : ''}" \u2014 ${ann.comment.slice(0, 40)}`
         badge.appendChild(textSpan)

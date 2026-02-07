@@ -1,9 +1,8 @@
-// ClaimsDashboard.ts - Large panel for viewing claims DAG
 // Handles postMessage bridge for inline annotation from the dashboard iframe
 
 import type { City } from '../state/types'
-import type { WorkerInfo } from './FileViewerModal'
-import { escapeHtml, showToast } from './utils'
+import { showToast } from './utils'
+import { showWorkerPicker, type WorkerInfo } from './WorkerPicker'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 
@@ -92,24 +91,17 @@ export class ClaimsDashboard {
 
   show(city: City, dashboardUrl: string): void {
     this.currentCity = city
-
-    // Update title
     this.title.textContent = `Claims: ${city.name}`
 
-    // Show loading
     this.loadingIndicator.style.display = 'flex'
     this.iframe.style.opacity = '0'
-
-    // Set iframe src
     this.iframe.src = dashboardUrl
 
-    // Hide loading when iframe loads
     this.iframe.onload = () => {
       this.loadingIndicator.style.display = 'none'
       this.iframe.style.opacity = '1'
     }
 
-    // Attach escape listener and show panel
     if (this.escapeHandler) {
       document.addEventListener('keydown', this.escapeHandler)
     }
@@ -120,12 +112,11 @@ export class ClaimsDashboard {
     this.panel.classList.remove('visible')
     this.currentCity = null
 
-    // Detach escape listener
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)
     }
 
-    // Clear iframe after animation
+    // Clear iframe after CSS transition completes
     setTimeout(() => {
       if (!this.isVisible()) {
         this.iframe.src = 'about:blank'
@@ -176,30 +167,25 @@ export class ClaimsDashboard {
     if (!response) return
 
     showToast('Annotation saved', 'success', 2000)
-    // Reload annotations in iframe so permanent markers replace temporary pins
+    // Reload so permanent markers replace temporary pins
     this.handleAnnotationLoad({ claimId: data.claimId })
   }
 
   private async handleAnnotationLoad(data: { claimId: string }): Promise<void> {
-    try {
-      const response = await fetch(
-        `${API_BASE}/annotations?claimId=${encodeURIComponent(data.claimId)}`
-      )
-      if (!response.ok) return
+    const response = await this.fetchApi(
+      `/annotations?claimId=${encodeURIComponent(data.claimId)}`
+    )
+    if (!response) return
 
-      const result = await response.json()
-      // Send annotations back to iframe
-      this.iframe.contentWindow?.postMessage(
-        {
-          type: 'claims-annotation-loaded',
-          claimId: data.claimId,
-          annotations: result.annotations || [],
-        },
-        '*'
-      )
-    } catch (err) {
-      console.error('Failed to load claims annotations:', err)
-    }
+    const result = await response.json()
+    this.iframe.contentWindow?.postMessage(
+      {
+        type: 'claims-annotation-loaded',
+        claimId: data.claimId,
+        annotations: result.annotations || [],
+      },
+      '*'
+    )
   }
 
   private async handleAnnotationSend(data: { claimId: string; cityId: string }): Promise<void> {
@@ -217,11 +203,14 @@ export class ClaimsDashboard {
     if (!response) return
 
     showToast('Annotation deleted', 'success', 2000)
-    // Reload annotations in iframe so the deleted marker disappears
     this.handleAnnotationLoad({ claimId: data.claimId })
   }
 
-  private async handleAnnotationPromote(data: { claimId: string; comment: string }): Promise<void> {
+  private async handleAnnotationPromote(data: {
+    claimId: string
+    annotationId?: string
+    comment: string
+  }): Promise<void> {
     if (!this.currentCity) return
 
     const response = await this.fetchApi('/promote-to-felt', {
@@ -236,6 +225,14 @@ export class ClaimsDashboard {
 
     if (response) {
       showToast('Promoted to felt', 'success', 2000)
+      this.iframe.contentWindow?.postMessage(
+        {
+          type: 'claims-annotation-promoted',
+          claimId: data.claimId,
+          annotationId: data.annotationId,
+        },
+        '*'
+      )
     }
   }
 
@@ -280,7 +277,7 @@ export class ClaimsDashboard {
       return
     }
 
-    this.showWorkerPicker(annotations)
+    this.showWorkerPickerUI(annotations)
   }
 
   // ── Worker picker ──────────────────────────────────────────────────────
@@ -289,55 +286,14 @@ export class ClaimsDashboard {
     this.onGetWorkers = fn
   }
 
-  private showWorkerPicker(annotations: any[]): void {
+  private showWorkerPickerUI(annotations: any[]): void {
     if (!this.currentCity) return
 
     const workers = this.onGetWorkers ? this.onGetWorkers(this.currentCity) : []
 
-    const picker = document.createElement('div')
-    picker.className = 'worker-picker-overlay'
-    picker.innerHTML = `
-      <div class="worker-picker">
-        <div class="worker-picker-header">
-          <span>Send ${annotations.length} annotation${annotations.length === 1 ? '' : 's'} to worker</span>
-          <button class="worker-picker-close">&times;</button>
-        </div>
-        <div class="worker-picker-list">
-          <button class="worker-picker-item worker-picker-new" data-action="new">
-            <span class="worker-name">+ New Worker</span>
-            <span class="worker-session">Create new worker and send</span>
-          </button>
-          ${workers.map(w => `
-            <button class="worker-picker-item" data-worker-id="${w.id}">
-              <span class="worker-name">${escapeHtml(w.name)}</span>
-              <span class="worker-session">${escapeHtml(w.tmuxSession)}</span>
-            </button>
-          `).join('')}
-        </div>
-      </div>
-    `
-
-    document.body.appendChild(picker)
-
-    picker.querySelector('.worker-picker-close')?.addEventListener('click', () => {
-      picker.remove()
-    })
-
-    picker.addEventListener('click', (e) => {
-      if (e.target === picker) picker.remove()
-    })
-
-    picker.querySelector('.worker-picker-new')?.addEventListener('click', async () => {
-      picker.remove()
-      await this.sendClaimsToWorker(annotations, undefined, true)
-    })
-
-    picker.querySelectorAll('.worker-picker-item:not(.worker-picker-new)').forEach(item => {
-      item.addEventListener('click', async () => {
-        const workerId = item.getAttribute('data-worker-id')!
-        picker.remove()
-        await this.sendClaimsToWorker(annotations, workerId)
-      })
+    showWorkerPicker(workers, annotations.length, {
+      onSelectWorker: (workerId) => this.sendClaimsToWorker(annotations, workerId),
+      onNewWorker: () => this.sendClaimsToWorker(annotations, undefined, true),
     })
   }
 

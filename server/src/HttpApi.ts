@@ -1275,28 +1275,37 @@ export class HttpApi {
       lines.push(`I've reviewed the claims dashboard and have ${annotations.length} piece${annotations.length === 1 ? '' : 's'} of feedback:`);
       lines.push('');
 
-      annotations.forEach((ann, i) => {
-        const title = ann.claimTitle || ann.claimId || 'Unknown claim';
+      // Group annotations by claim (preserves insertion order)
+      const grouped = new Map<string, Annotation[]>();
+      for (const ann of annotations) {
+        const key = ann.claimId || 'unknown';
+        const group = grouped.get(key);
+        if (group) group.push(ann);
+        else grouped.set(key, [ann]);
+      }
 
-        if (ann.artifact) {
-          // Image/plot annotation
-          const posRef = ann.x !== undefined && ann.y !== undefined
-            ? ` (at ${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
-            : '';
-          lines.push(`## ${i + 1}. [${title}]`);
-          lines.push(`> On plot: ${ann.artifact}${posRef}`);
-          lines.push(`> ${ann.comment}`);
-          lines.push('');
-        } else {
-          // Text annotation
-          lines.push(`## ${i + 1}. [${title}]`);
-          if (ann.selectedText) {
-            lines.push(`> On text: "${ann.selectedText.slice(0, 60)}"`);
+      let claimNum = 0;
+      for (const [, group] of grouped) {
+        claimNum++;
+        const title = group[0].claimTitle || group[0].claimId || 'Unknown claim';
+        lines.push(`## ${claimNum}. [${title}]`);
+
+        for (const ann of group) {
+          if (ann.artifact) {
+            const posRef = ann.x !== undefined && ann.y !== undefined
+              ? ` (at ${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
+              : '';
+            lines.push(`> On plot: ${ann.artifact}${posRef}`);
+            lines.push(`> ${ann.comment}`);
+          } else {
+            if (ann.selectedText) {
+              lines.push(`> On text: "${ann.selectedText.slice(0, 60)}"`);
+            }
+            lines.push(`> ${ann.comment}`);
           }
-          lines.push(`> ${ann.comment}`);
-          lines.push('');
         }
-      });
+        lines.push('');
+      }
     }
 
     lines.push('---');
