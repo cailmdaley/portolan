@@ -15,6 +15,7 @@ export class ClaimsDashboard {
   private loadingIndicator: HTMLElement
   private currentCity: City | null = null
   private loadTimeout: ReturnType<typeof setTimeout> | null = null
+  private loading = false
 
   // Stored listener refs for HMR-safe cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -93,6 +94,7 @@ export class ClaimsDashboard {
   show(city: City, dashboardUrl: string): void {
     this.currentCity = city
     this.title.textContent = `Claims: ${city.name}`
+    this.loading = true
 
     this.loadingIndicator.textContent = 'Loading claims...'
     this.loadingIndicator.classList.remove('error')
@@ -100,23 +102,23 @@ export class ClaimsDashboard {
     this.iframe.style.opacity = '0'
     this.iframe.src = dashboardUrl
 
-    // Clear any previous timeout
-    if (this.loadTimeout) clearTimeout(this.loadTimeout)
+    this.clearLoadTimeout()
 
     this.iframe.onload = () => {
-      if (this.loadTimeout) clearTimeout(this.loadTimeout)
+      this.clearLoadTimeout()
+      this.loading = false
       this.loadingIndicator.style.display = 'none'
       this.iframe.style.opacity = '1'
     }
 
     this.iframe.onerror = () => {
-      if (this.loadTimeout) clearTimeout(this.loadTimeout)
+      this.clearLoadTimeout()
       this.showLoadError('Failed to load claims dashboard')
     }
 
     // Timeout after 15s for remote dashboards (SSH can be slow)
     this.loadTimeout = setTimeout(() => {
-      if (this.iframe.style.opacity === '0') {
+      if (this.loading) {
         this.showLoadError('Dashboard load timed out')
       }
     }, 15000)
@@ -127,7 +129,15 @@ export class ClaimsDashboard {
     this.panel.classList.add('visible')
   }
 
+  private clearLoadTimeout(): void {
+    if (this.loadTimeout) {
+      clearTimeout(this.loadTimeout)
+      this.loadTimeout = null
+    }
+  }
+
   private showLoadError(message: string): void {
+    this.loading = false
     this.loadingIndicator.textContent = message
     this.loadingIndicator.classList.add('error')
     this.loadingIndicator.style.display = 'flex'
@@ -138,10 +148,7 @@ export class ClaimsDashboard {
     this.panel.classList.remove('visible')
     this.currentCity = null
 
-    if (this.loadTimeout) {
-      clearTimeout(this.loadTimeout)
-      this.loadTimeout = null
-    }
+    this.clearLoadTimeout()
 
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)

@@ -117,6 +117,23 @@ describe('HttpApi — claims annotations', () => {
     }
   });
 
+  /** Access private formatClaimsAnnotationsForClaude via api instance */
+  function formatClaims(cityName: string, annotations: Annotation[], globalComment?: string): string {
+    return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
+  }
+
+  /** Create a city lookup stub that resolves a single city by id */
+  function makeCityLookup(cityId: string, cityDir: string, name: string) {
+    return {
+      getCityById: (id: string) => id === cityId ? {
+        id: cityId,
+        name,
+        path: cityDir,
+        originId: 'local',
+      } : null,
+    };
+  }
+
   // ────────────────────────────────────────────────────────────
   // POST /annotations — create claims annotation
   // ────────────────────────────────────────────────────────────
@@ -260,11 +277,6 @@ describe('HttpApi — claims annotations', () => {
   // ────────────────────────────────────────────────────────────
 
   describe('formatClaimsAnnotationsForClaude', () => {
-    // Access private method for direct testing
-    function formatClaims(cityName: string, annotations: Annotation[], globalComment?: string): string {
-      return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
-    }
-
     it('formats text annotations', () => {
       const annotations = [
         makeClaimAnnotation({
@@ -651,16 +663,10 @@ const lightbox = { src: claim.id + '/' + artifactPath };
       mkdirSync(dashDir, { recursive: true });
       writeFileSync(MOCK_DASHBOARD, MOCK_DASHBOARD_HTML, 'utf-8');
 
-      const cityLookup = {
-        getCityById: (id: string) => id === 'test-city' ? {
-          id: 'test-city',
-          name: 'TestCity',
-          path: MOCK_CITY_DIR,
-          originId: 'local',
-        } : null,
-      };
-
-      cityApi = new HttpApi(cityLookup as any, stubOriginLookup as any, stubPersistenceLookup as any);
+      cityApi = new HttpApi(
+        makeCityLookup('test-city', MOCK_CITY_DIR, 'TestCity') as any,
+        stubOriginLookup as any, stubPersistenceLookup as any,
+      );
     });
 
     it('injects claims-annotate.js script tag', async () => {
@@ -759,10 +765,6 @@ const lightbox = { src: claim.id + '/' + artifactPath };
   // ────────────────────────────────────────────────────────────
 
   describe('formatClaimsAnnotationsForClaude — edge cases', () => {
-    function formatClaims(cityName: string, annotations: Annotation[], globalComment?: string): string {
-      return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
-    }
-
     it('formats comment-only annotations (no selectedText or artifact)', () => {
       const annotations = [
         makeClaimAnnotation({
@@ -978,16 +980,10 @@ const claimGraph = {};
       mkdirSync(dashDir, { recursive: true });
       writeFileSync(VARIANT_DASHBOARD, VARIANT_HTML, 'utf-8');
 
-      const cityLookup = {
-        getCityById: (id: string) => id === 'variant-city' ? {
-          id: 'variant-city',
-          name: 'VariantCity',
-          path: VARIANT_CITY_DIR,
-          originId: 'local',
-        } : null,
-      };
-
-      variantApi = new HttpApi(cityLookup as any, stubOriginLookup as any, stubPersistenceLookup as any);
+      variantApi = new HttpApi(
+        makeCityLookup('variant-city', VARIANT_CITY_DIR, 'VariantCity') as any,
+        stubOriginLookup as any, stubPersistenceLookup as any,
+      );
     });
 
     it('promotes selectedClaimId from let to var', async () => {
@@ -1030,10 +1026,6 @@ const claimGraph = {};
   // ────────────────────────────────────────────────────────────
 
   describe('formatClaimsAnnotationsForClaude for send-to-worker', () => {
-    function formatClaims(cityName: string, annotations: Annotation[], globalComment?: string): string {
-      return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
-    }
-
     it('produces the expected worker paste format', () => {
       const annotations = [
         makeClaimAnnotation({

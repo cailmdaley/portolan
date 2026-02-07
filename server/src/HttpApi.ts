@@ -1007,7 +1007,7 @@ export class HttpApi {
       : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
-      const escapedSession = tmuxSession.replace(/'/g, "'\\''");
+      const escapedSession = this.shellQuote(tmuxSession);
 
       if (!isRemote) {
         execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
@@ -1074,7 +1074,7 @@ export class HttpApi {
     }
 
     try {
-      const escapedSession = tmuxSession.replace(/'/g, "'\\''");
+      const escapedSession = this.shellQuote(tmuxSession);
 
       if (!isRemote) {
         execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
