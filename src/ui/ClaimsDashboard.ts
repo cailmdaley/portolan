@@ -164,7 +164,11 @@ export class ClaimsDashboard {
 
       if (!response.ok) {
         console.error('Failed to save claims annotation:', await response.text())
+        return
       }
+
+      // Reload annotations in iframe so permanent markers replace temporary pins
+      this.handleAnnotationLoad({ claimId: data.claimId })
     } catch (err) {
       console.error('Failed to save claims annotation:', err)
     }

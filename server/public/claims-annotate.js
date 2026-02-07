@@ -98,6 +98,7 @@
       const comment = textarea.value.trim()
       if (!comment) return
       opts.onSave(comment)
+      wrapper._saved = true
       removeActiveInput()
     })
 
@@ -217,10 +218,11 @@
       },
     })
 
-    // Remove pin if cancelled (input removed but pin stays)
+    // Remove pin only on cancel; on save, pin stays until permanent marker replaces it
+    const inputRef = activeInput
     const observer = new MutationObserver(() => {
       if (!document.querySelector('.portolan-annotation-input')) {
-        pin.remove()
+        if (!inputRef || !inputRef._saved) pin.remove()
         observer.disconnect()
       }
     })
@@ -263,8 +265,8 @@
     const panel = document.querySelector(`[data-claim-id="${claimId}"]`)
     if (!panel) return
 
-    // Clear old markers
-    panel.querySelectorAll('.portolan-existing-marker').forEach((m) => m.remove())
+    // Clear old markers and temporary pins (replaced by permanent numbered markers)
+    panel.querySelectorAll('.portolan-existing-marker, .portolan-pin-marker').forEach((m) => m.remove())
 
     // Add "Send to Worker" button if there are annotations
     if (annotations.length > 0) {
