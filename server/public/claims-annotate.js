@@ -151,8 +151,8 @@
             type: 'claims-annotation-save',
             claimId: claim.claimId,
             claimTitle: claim.claimTitle,
-            selectedText: selectedText,
-            comment: comment,
+            selectedText,
+            comment,
           }, '*')
         },
       })
@@ -211,9 +211,9 @@
           claimId: claim.claimId,
           claimTitle: claim.claimTitle,
           artifact: img.dataset.artifact,
-          x: x,
-          y: y,
-          comment: comment,
+          x,
+          y,
+          comment,
         }, '*')
       },
     })
@@ -236,10 +236,10 @@
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue
-        // Check if this is or contains a claim panel
+        // nodeType === 1 guarantees an Element with querySelectorAll
         const panels = node.dataset && node.dataset.claimId
           ? [node]
-          : (node.querySelectorAll ? [...node.querySelectorAll('[data-claim-id]')] : [])
+          : [...node.querySelectorAll('[data-claim-id]')]
 
         for (const panel of panels) {
           parent.postMessage({
@@ -290,8 +290,8 @@
         e.stopPropagation()
         parent.postMessage({
           type: 'claims-annotation-send',
-          claimId: claimId,
-          cityId: cityId,
+          claimId,
+          cityId,
         }, '*')
       })
       sendBar.appendChild(sendBtn)

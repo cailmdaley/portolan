@@ -8,7 +8,7 @@
  * - Proxy injection of claims-annotate.js
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import type { AddressInfo } from 'net';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
@@ -36,6 +36,19 @@ function makePersistence(): AnnotationPersistence {
   (p as any).dataDir = TEST_DIR;
   (p as any).filePath = TEST_FILE;
   return p;
+}
+
+/** Factory: create an Annotation with claim defaults, overriding only what matters per test */
+function makeClaimAnnotation(overrides: Partial<Annotation> = {}): Annotation {
+  return {
+    id: overrides.id ?? '1',
+    originId: 'local',
+    comment: 'test comment',
+    createdAt: Date.now(),
+    isClaimAnnotation: true,
+    claimId: 'c1',
+    ...overrides,
+  };
 }
 
 /** Helper: fire an HTTP request against HttpApi and return parsed response */
@@ -253,17 +266,13 @@ describe('HttpApi — claims annotations', () => {
     }
 
     it('formats text annotations', () => {
-      const annotations: Annotation[] = [
-        {
-          id: '1',
-          originId: 'local',
+      const annotations = [
+        makeClaimAnnotation({
           comment: 'Seems low — recheck with different bin edges',
-          createdAt: Date.now(),
-          isClaimAnnotation: true,
           claimId: 'claim-1',
           claimTitle: 'B-modes consistent with zero',
           selectedText: 'PTE 0.29',
-        },
+        }),
       ];
 
       const output = formatClaims('pure-eb', annotations);
@@ -276,19 +285,15 @@ describe('HttpApi — claims annotations', () => {
     });
 
     it('formats image/artifact annotations with position', () => {
-      const annotations: Annotation[] = [
-        {
-          id: '1',
-          originId: 'local',
+      const annotations = [
+        makeClaimAnnotation({
           comment: 'Check edge effects on velocity',
-          createdAt: Date.now(),
-          isClaimAnnotation: true,
           claimId: 'claim-2',
           claimTitle: 'Galaxy generation pipeline',
           artifact: 'galaxy_fields.png',
           x: 45,
           y: 32,
-        },
+        }),
       ];
 
       const output = formatClaims('pure-eb', annotations);
@@ -299,17 +304,14 @@ describe('HttpApi — claims annotations', () => {
     });
 
     it('formats multiple annotations with numbering', () => {
-      const annotations: Annotation[] = [
-        {
-          id: '1', originId: 'local', comment: 'First',
-          createdAt: Date.now(), isClaimAnnotation: true,
-          claimId: 'c1', claimTitle: 'Claim A', selectedText: 'text A',
-        },
-        {
-          id: '2', originId: 'local', comment: 'Second',
-          createdAt: Date.now(), isClaimAnnotation: true,
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'First', claimTitle: 'Claim A', selectedText: 'text A',
+        }),
+        makeClaimAnnotation({
+          id: '2', comment: 'Second',
           claimId: 'c2', claimTitle: 'Claim B', artifact: 'plot.png', x: 10, y: 20,
-        },
+        }),
       ];
 
       const output = formatClaims('test', annotations);
@@ -327,12 +329,8 @@ describe('HttpApi — claims annotations', () => {
     });
 
     it('handles single annotation pluralization', () => {
-      const annotations: Annotation[] = [
-        {
-          id: '1', originId: 'local', comment: 'Just one',
-          createdAt: Date.now(), isClaimAnnotation: true,
-          claimId: 'c1', claimTitle: 'Single',
-        },
+      const annotations = [
+        makeClaimAnnotation({ comment: 'Just one', claimTitle: 'Single' }),
       ];
 
       const output = formatClaims('test', annotations);
@@ -340,14 +338,11 @@ describe('HttpApi — claims annotations', () => {
     });
 
     it('truncates long selected text', () => {
-      const annotations: Annotation[] = [
-        {
-          id: '1', originId: 'local',
-          comment: 'Too long',
-          createdAt: Date.now(), isClaimAnnotation: true,
-          claimId: 'c1', claimTitle: 'Long Text',
+      const annotations = [
+        makeClaimAnnotation({
+          comment: 'Too long', claimTitle: 'Long Text',
           selectedText: 'A'.repeat(100),
-        },
+        }),
       ];
 
       const output = formatClaims('test', annotations);
@@ -357,12 +352,8 @@ describe('HttpApi — claims annotations', () => {
     });
 
     it('falls back to claimId when claimTitle missing', () => {
-      const annotations: Annotation[] = [
-        {
-          id: '1', originId: 'local', comment: 'No title',
-          createdAt: Date.now(), isClaimAnnotation: true,
-          claimId: 'claim-xyz',
-        },
+      const annotations = [
+        makeClaimAnnotation({ comment: 'No title', claimId: 'claim-xyz' }),
       ];
 
       const output = formatClaims('test', annotations);

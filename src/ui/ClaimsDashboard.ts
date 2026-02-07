@@ -298,8 +298,7 @@ export class ClaimsDashboard {
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        console.error('Failed to send claims annotations:', error.error)
+        console.error('Failed to send claims annotations:', await response.text())
       }
     } catch (err) {
       console.error('Failed to send claims annotations:', err)
