@@ -322,6 +322,9 @@ export class HttpApi {
           (_, path) => `src="${assetsBase}/${path}?cityId=${safeCityId}"`)
         // Inject base URL for dynamic image loading (used by JS code)
         .replace(/<head>/i, `<head><script>window.CLAIMS_ASSETS_BASE = "${assetsBase}"; window.CLAIMS_CITY_ID = "${safeCityId}";</script><script src="/claims-annotate.js"></script>`)
+        // Promote let/const to var for globals the annotation script reads via window.*
+        .replace(/\blet (currentClaimId)\b/g, 'var $1')
+        .replace(/\bconst (claimGraph)\b/g, 'var $1')
         // Rewrite dynamic imgPath construction to use proxy
         .replace(/const imgPath = ([^;]+);/g,
           `const imgPath = window.CLAIMS_ASSETS_BASE + '/' + ($1) + '?cityId=' + window.CLAIMS_CITY_ID;`)
@@ -1190,7 +1193,10 @@ export class HttpApi {
               : '';
             lines.push(`> On plot: ${ann.artifact}${posRef}`);
           } else if (ann.selectedText) {
-            lines.push(`> On text: "${ann.selectedText.slice(0, 60)}"`);
+            const truncated = ann.selectedText.length > 60
+              ? ann.selectedText.slice(0, 60) + '…'
+              : ann.selectedText;
+            lines.push(`> On text: "${truncated}"`);
           }
           lines.push(`> ${ann.comment}`);
         }

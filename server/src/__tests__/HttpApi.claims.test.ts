@@ -346,8 +346,8 @@ describe('HttpApi — claims annotations', () => {
       ];
 
       const output = formatClaims('test', annotations);
-      // selectedText is sliced to 60 chars
-      expect(output).toContain('"' + 'A'.repeat(60) + '"');
+      // selectedText is sliced to 60 chars with ellipsis
+      expect(output).toContain('"' + 'A'.repeat(60) + '…"');
       expect(output).not.toContain('A'.repeat(100));
     });
 
@@ -636,6 +636,8 @@ describe('HttpApi — claims annotations', () => {
 <img src="claim_id/plot.png" alt="Plot">
 <style>@font-face { url('fonts/custom.woff2') }</style>
 <script>
+let currentClaimId = null;
+const claimGraph = {};
 const imgPath = claim.id + '/' + path.split('/').pop();
 const lightbox = { src: claim.id + '/' + artifactPath };
 </script>
@@ -695,6 +697,18 @@ const lightbox = { src: claim.id + '/' + artifactPath };
       expect(res.data).toContain('window.CLAIMS_CITY_ID');
       // Original imgPath construction should be rewritten
       expect(res.data).not.toMatch(/const imgPath = claim\.id \+ '\/'/);
+    });
+
+    it('promotes let/const to var for annotation bridge globals', async () => {
+      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
+
+      // let currentClaimId → var currentClaimId (so window.currentClaimId works)
+      expect(res.data).toContain('var currentClaimId');
+      expect(res.data).not.toContain('let currentClaimId');
+      // const claimGraph → var claimGraph (so window.claimGraph works)
+      expect(res.data).toContain('var claimGraph');
+      // Other const declarations should be untouched
+      expect(res.data).toContain('const lightbox');
     });
 
     it('returns 400 without cityId', async () => {

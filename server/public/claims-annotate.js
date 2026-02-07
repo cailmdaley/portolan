@@ -131,10 +131,19 @@
   }
 
   // Observe #claim-panel for content changes (renderClaim sets innerHTML)
+  let autoTagTimer = null
+  function debouncedAutoTag() {
+    if (autoTagTimer) return
+    autoTagTimer = requestAnimationFrame(() => {
+      autoTagTimer = null
+      autoTagClaimPanel()
+    })
+  }
+
   function setupAutoTagging() {
     const panel = document.getElementById('claim-panel')
     if (panel) {
-      const tagObserver = new MutationObserver(() => autoTagClaimPanel())
+      const tagObserver = new MutationObserver(debouncedAutoTag)
       tagObserver.observe(panel, { childList: true, subtree: true })
       // Tag immediately in case content is already rendered
       autoTagClaimPanel()

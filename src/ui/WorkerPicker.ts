@@ -34,7 +34,7 @@ export function showWorkerPicker(
           <span class="worker-session">Create new worker and send</span>
         </button>
         ${workers.map(w => `
-          <button class="worker-picker-item" data-worker-id="${w.id}">
+          <button class="worker-picker-item" data-worker-id="${escapeHtml(w.id)}">
             <span class="worker-name">${escapeHtml(w.name)}</span>
             <span class="worker-session">${escapeHtml(w.tmuxSession)}</span>
           </button>
