@@ -21,6 +21,7 @@ import type { Session } from './SessionTracker.js';
 import type { TranscriptReader } from './TranscriptReader.js';
 import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 import type { CardStatePersistence } from './CardStatePersistence.js';
+import { shellEscape } from './KittyIntegration.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -271,13 +272,6 @@ export class HttpApi {
   }
 
   /**
-   * Escape single quotes for safe embedding in shell single-quoted strings
-   */
-  private shellQuote(s: string): string {
-    return s.replace(/'/g, "'\\''");
-  }
-
-  /**
    * Get SSH host for a city (from origin or persistence)
    */
   private getSshHost(city: City): string {
@@ -316,7 +310,7 @@ export class HttpApi {
         // Remote city: fetch via SSH (execFileAsync bypasses local shell)
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat '${this.shellQuote(dashboardPath)}'`],
+          'ssh', [sshHost, `cat ${shellEscape(dashboardPath)}`],
           { maxBuffer: 10 * 1024 * 1024 }
         );
         html = stdout;
@@ -419,7 +413,7 @@ export class HttpApi {
       } else {
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat '${this.shellQuote(fullPath)}'`],
+          'ssh', [sshHost, `cat ${shellEscape(fullPath)}`],
           { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' }
         );
         data = stdout as unknown as Buffer;
@@ -506,7 +500,7 @@ export class HttpApi {
         }
 
         const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, `cat '${this.shellQuote(filePath)}'`],
+          'ssh', [origin.sshHost, `cat ${shellEscape(filePath)}`],
           { maxBuffer: 10 * 1024 * 1024, timeout: 10000 }
         );
         content = stdout;
@@ -578,7 +572,7 @@ export class HttpApi {
         }
 
         const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, `base64 '${this.shellQuote(filePath)}'`],
+          'ssh', [origin.sshHost, `base64 ${shellEscape(filePath)}`],
           { maxBuffer, timeout }
         );
         data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
@@ -648,7 +642,7 @@ export class HttpApi {
    */
   private writeRemoteFile(sshHost: string, filePath: string, content: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ssh = spawn('ssh', [sshHost, `cat > '${this.shellQuote(filePath)}'`], {
+      const ssh = spawn('ssh', [sshHost, `cat > ${shellEscape(filePath)}`], {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -762,9 +756,8 @@ export class HttpApi {
       // Start the agent via SSH
       // Use -T to disable TTY allocation, bash -l to get login shell with nvm/node in PATH
       console.log(`[Activate] Starting portolan-agent on ${sshHost}...`);
-      const escapedHost = this.shellQuote(sshHost);
       await execFileAsync(
-        'ssh', ['-T', sshHost, `tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${escapedHost}\\""`],
+        'ssh', ['-T', sshHost, `tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${sshHost}\\""`],
         { timeout: 30000 }
       );
 
@@ -1008,11 +1001,11 @@ export class HttpApi {
       : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
-      const escapedSession = this.shellQuote(tmuxSession);
+      const escaped = shellEscape(tmuxSession);
 
       if (!isRemote) {
         execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
-        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
+        execSync(`tmux paste-buffer -t ${escaped}`, { timeout: 5000 });
       } else {
         if (!sshHost) {
           this.sendJsonError(res, 404, 'Origin not found');
@@ -1021,7 +1014,7 @@ export class HttpApi {
 
         // execFileSync avoids local shell — command strings interpreted only by remote shell
         execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: formattedMessage, timeout: 10000 });
-        execFileSync('ssh', [sshHost, `tmux paste-buffer -t '${escapedSession}'`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost, `tmux paste-buffer -t ${escaped}`], { timeout: 10000 });
       }
 
       if (workerId && this.onFocusSession) {
@@ -1075,16 +1068,16 @@ export class HttpApi {
     }
 
     try {
-      const escapedSession = this.shellQuote(tmuxSession);
+      const escaped = shellEscape(tmuxSession);
 
       if (!isRemote) {
         execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
-        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
-        execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
+        execSync(`tmux paste-buffer -t ${escaped}`, { timeout: 5000 });
+        execSync(`tmux send-keys -t ${escaped} Enter`, { timeout: 5000 });
       } else {
         execFileSync('ssh', [sshHost!, 'tmux load-buffer -'], { input: message, timeout: 10000 });
-        execFileSync('ssh', [sshHost!, `tmux paste-buffer -t '${escapedSession}'`], { timeout: 10000 });
-        execFileSync('ssh', [sshHost!, `tmux send-keys -t '${escapedSession}' Enter`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost!, `tmux paste-buffer -t ${escaped}`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost!, `tmux send-keys -t ${escaped} Enter`], { timeout: 10000 });
       }
 
       this.sendJsonSuccess(res, { success: true });
@@ -1255,7 +1248,7 @@ export class HttpApi {
     try {
       let fiberId: string;
 
-      const feltCmd = `cd '${this.shellQuote(cityPath)}' && felt add '${this.shellQuote(title)}' -k '${this.shellQuote(kind)}' -b '${this.shellQuote(body)}'`;
+      const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(title)} -k ${shellEscape(kind)} -b ${shellEscape(body)}`;
 
       if (!isRemote) {
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
@@ -1312,7 +1305,7 @@ export class HttpApi {
     const cityPath = city.path;
 
     try {
-      const feltCmd = `cd '${this.shellQuote(cityPath)}' && felt comment '${this.shellQuote(claimId)}' '${this.shellQuote(comment)}'`;
+      const feltCmd = `cd ${shellEscape(cityPath)} && felt comment ${shellEscape(claimId)} ${shellEscape(comment)}`;
       if (!isRemote) {
         await execAsync(feltCmd, { timeout: 10000 });
       } else {
@@ -1361,7 +1354,7 @@ export class HttpApi {
       } else {
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `ls '${this.shellQuote(playgroundsDir)}'/*.html 2>/dev/null || true`],
+          'ssh', [sshHost, `ls ${shellEscape(playgroundsDir)}/*.html 2>/dev/null || true`],
           { timeout: 10000 }
         );
         files = stdout.trim().split('\n')
@@ -1426,7 +1419,7 @@ export class HttpApi {
       } else {
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat '${this.shellQuote(playgroundPath)}'`],
+          'ssh', [sshHost, `cat ${shellEscape(playgroundPath)}`],
           { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
         );
         html = stdout;

@@ -13,6 +13,7 @@ import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';
+import { shellEscape } from '../KittyIntegration.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -996,46 +997,42 @@ const claimGraph = {};
   });
 
   // ────────────────────────────────────────────────────────────
-  // shellQuote — unit test via private access
+  // shellEscape — imported from KittyIntegration
   // ────────────────────────────────────────────────────────────
 
-  describe('shellQuote', () => {
-    function shellQuote(s: string): string {
-      return (api as any).shellQuote(s);
-    }
-
-    it('escapes single quotes', () => {
-      expect(shellQuote("it's")).toBe("it'\\''s");
+  describe('shellEscape', () => {
+    it('wraps in single quotes and escapes embedded single quotes', () => {
+      expect(shellEscape("it's")).toBe("'it'\\''s'");
     });
 
-    it('leaves clean strings unchanged', () => {
-      expect(shellQuote('/home/user/results/claims/index.html')).toBe('/home/user/results/claims/index.html');
+    it('wraps clean strings in single quotes', () => {
+      expect(shellEscape('/home/user/results/claims/index.html')).toBe("'/home/user/results/claims/index.html'");
     });
 
     it('escapes multiple single quotes', () => {
-      expect(shellQuote("a'b'c")).toBe("a'\\''b'\\''c");
+      expect(shellEscape("a'b'c")).toBe("'a'\\''b'\\''c'");
     });
 
-    it('handles strings with double quotes (no change)', () => {
-      expect(shellQuote('say "hello"')).toBe('say "hello"');
+    it('handles strings with double quotes (safe inside single quotes)', () => {
+      expect(shellEscape('say "hello"')).toBe("'say \"hello\"'");
     });
 
-    it('handles backticks (no change — safe inside single quotes)', () => {
-      expect(shellQuote('`whoami`')).toBe('`whoami`');
+    it('handles backticks (safe inside single quotes)', () => {
+      expect(shellEscape('`whoami`')).toBe("'`whoami`'");
     });
 
-    it('handles dollar substitution (no change — safe inside single quotes)', () => {
-      expect(shellQuote('$(id)')).toBe('$(id)');
+    it('handles dollar substitution (safe inside single quotes)', () => {
+      expect(shellEscape('$(id)')).toBe("'$(id)'");
     });
 
     it('handles path with spaces', () => {
-      expect(shellQuote('/home/user/my project/file.txt')).toBe('/home/user/my project/file.txt');
+      expect(shellEscape('/home/user/my project/file.txt')).toBe("'/home/user/my project/file.txt'");
     });
 
     it('escapes single quotes in paths with dangerous chars', () => {
-      // The key insight: inside single quotes, only ' needs escaping.
+      // Inside single quotes, only ' needs escaping.
       // Double quotes, backticks, $ are all literal inside single quotes.
-      expect(shellQuote("path'with\"dangerous`chars$(id)")).toBe("path'\\''with\"dangerous`chars$(id)");
+      expect(shellEscape("path'with\"dangerous`chars$(id)")).toBe("'path'\\''with\"dangerous`chars$(id)'");
     });
   });
 
