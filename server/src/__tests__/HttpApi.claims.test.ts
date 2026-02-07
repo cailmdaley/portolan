@@ -762,6 +762,193 @@ const lightbox = { src: claim.id + '/' + artifactPath };
   });
 
   // ────────────────────────────────────────────────────────────
+  // Realistic dashboard proxy rewrite (modeled on KineLens)
+  // ────────────────────────────────────────────────────────────
+
+  describe('GET /claims-dashboard — realistic dashboard proxy rewrite', () => {
+    const REAL_CITY_DIR = join(TEST_DIR, 'kinelens-city');
+    const REAL_DASHBOARD = join(REAL_CITY_DIR, 'results', 'claims', 'index.html');
+
+    // HTML closely modeled on actual KineLens claims dashboard structure
+    const REALISTIC_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>KineLens Claims</title>
+    <link href="https://fonts.googleapis.com/css2?family=EB+Garamond&display=swap" rel="stylesheet">
+    <style>
+        @font-face {
+            font-family: 'EBGaramondInitialsF1';
+            src: url('EBGaramond-InitialsF1.otf') format('opentype');
+            font-weight: normal;
+        }
+        @font-face {
+            font-family: 'EBGaramondLocal';
+            src: url('EBGaramond12-Regular.otf') format('opentype');
+            font-weight: normal;
+        }
+        @font-face {
+            font-family: 'EBGaramondLocal';
+            src: url('EBGaramond12-Italic.otf') format('opentype');
+            font-style: italic;
+        }
+        .claim-panel { padding: 1rem; }
+        .artifact img { max-width: 100%; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <img src="logo.png" alt="Logo">
+    </div>
+    <div class="claim-panel" id="claim-panel"></div>
+    <div class="lightbox">
+        <img src="" alt="Lightbox">
+    </div>
+
+<script>
+let currentClaimId = null;
+let currentPlotIndex = 0;
+const claimGraph = {};
+const evidenceCache = {};
+let lightboxOpen = false;
+
+// Populate claim graph
+claims.forEach(c => {
+    claimGraph[c.id] = {
+        data: c,
+        children: [],
+    };
+});
+
+function renderClaim() {
+    if (!currentClaimId) return;
+    const claim = claimGraph[currentClaimId].data;
+    const artifactEntries = Object.entries(claim.artifacts);
+    let artifactsHtml = '';
+    if (artifactEntries.length > 0) {
+        const [name, path] = artifactEntries[currentPlotIndex];
+        const imgPath = claim.id + '/' + path.split('/').pop();
+        artifactsHtml = '<div class="artifact"><img src="' + imgPath + '" alt="' + name + '"></div>';
+    }
+    document.getElementById('claim-panel').innerHTML = artifactsHtml;
+}
+
+function openLightbox(clickedSrc) {
+    const claim = claimGraph[currentClaimId].data;
+    const artifactEntries = Object.entries(claim.artifacts);
+    lightboxImages = artifactEntries.map(([name, path]) => ({
+        name: name,
+        src: claim.id + '/' + path.split('/').pop()
+    }));
+    document.querySelector('.lightbox img').src = lightboxImages[0].src;
+}
+
+function selectClaim(claimId) {
+    if (!claimGraph[claimId]) return;
+    currentClaimId = claimId;
+    renderClaim();
+}
+</script>
+</body>
+</html>`;
+
+    let realApi: HttpApi;
+
+    beforeEach(() => {
+      const dashDir = join(REAL_CITY_DIR, 'results', 'claims');
+      mkdirSync(dashDir, { recursive: true });
+      writeFileSync(REAL_DASHBOARD, REALISTIC_HTML, 'utf-8');
+
+      realApi = new HttpApi(
+        makeCityLookup('kinelens', REAL_CITY_DIR, 'KineLens') as any,
+        stubOriginLookup as any, stubPersistenceLookup as any,
+      );
+    });
+
+    it('rewrites all @font-face url() declarations', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      expect(res.status).toBe(200);
+      // All three font files rewritten
+      expect(res.data).toContain("url('/claims-assets/EBGaramond-InitialsF1.otf?cityId=kinelens')");
+      expect(res.data).toContain("url('/claims-assets/EBGaramond12-Regular.otf?cityId=kinelens')");
+      expect(res.data).toContain("url('/claims-assets/EBGaramond12-Italic.otf?cityId=kinelens')");
+      // Original bare font URLs replaced
+      expect(res.data).not.toContain("url('EBGaramond-InitialsF1.otf')");
+      expect(res.data).not.toContain("url('EBGaramond12-Regular.otf')");
+    });
+
+    it('rewrites static <img src> for images in body', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // logo.png in sidebar rewritten
+      expect(res.data).toContain('src="/claims-assets/logo.png?cityId=kinelens"');
+      expect(res.data).not.toContain('src="logo.png"');
+    });
+
+    it('does not rewrite external Google Fonts link', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // External link left untouched
+      expect(res.data).toContain('href="https://fonts.googleapis.com');
+    });
+
+    it('rewrites imgPath construction inside renderClaim', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // The imgPath line should be rewritten to use CLAIMS_ASSETS_BASE
+      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE');
+      expect(res.data).not.toMatch(/const imgPath = claim\.id \+ '\/'/);
+    });
+
+    it('promotes let currentClaimId and const claimGraph to var', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      expect(res.data).toContain('var currentClaimId');
+      expect(res.data).not.toContain('let currentClaimId');
+      expect(res.data).toContain('var claimGraph');
+      expect(res.data).not.toContain('const claimGraph');
+    });
+
+    it('does not promote unrelated let/const declarations', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // These should remain untouched
+      expect(res.data).toContain('let currentPlotIndex');
+      expect(res.data).toContain('const evidenceCache');
+      expect(res.data).toContain('let lightboxOpen');
+      expect(res.data).toContain('let artifactsHtml');
+    });
+
+    it('preserves #claim-panel element for annotation script auto-bridging', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      expect(res.data).toContain('id="claim-panel"');
+      expect(res.data).toContain('class="claim-panel"');
+    });
+
+    it('injects annotation infrastructure into <head>', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // Script injection happens right after <head>
+      const headIdx = res.data.indexOf('<head>');
+      const scriptIdx = res.data.indexOf('window.CLAIMS_ASSETS_BASE');
+      const annotateIdx = res.data.indexOf('claims-annotate.js');
+
+      expect(headIdx).toBeGreaterThan(-1);
+      expect(scriptIdx).toBeGreaterThan(headIdx);
+      expect(annotateIdx).toBeGreaterThan(headIdx);
+    });
+
+    it('empty lightbox img src is not rewritten (no image extension)', async () => {
+      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
+
+      // The lightbox <img src=""> has no file extension, so src rewrite regex doesn't match
+      expect(res.data).toContain('src=""');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
   // formatClaimsAnnotationsForClaude — additional edge cases
   // ────────────────────────────────────────────────────────────
 
