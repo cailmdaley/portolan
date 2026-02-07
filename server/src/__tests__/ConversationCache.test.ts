@@ -60,9 +60,10 @@ describe('ConversationCache', () => {
       const result = cache.getMessages('session-1');
 
       // Exact timestamp dedup: different ms precision = different timestamps = both kept
+      // localeCompare sorts '.123Z' before 'Z' (period < Z), so transcript comes first
       expect(result).toHaveLength(2);
-      expect(result[0].content).toBe('From hook');
-      expect(result[1].content).toBe('From transcript');
+      expect(result[0].content).toBe('From transcript');
+      expect(result[1].content).toBe('From hook');
     });
 
     it('should skip invalid sessionIds', () => {
@@ -78,10 +79,11 @@ describe('ConversationCache', () => {
     });
 
     it('should trim messages beyond maxMessagesPerSession', () => {
+      // Use proper ISO timestamps so lexicographic sort = chronological sort
       const messages: CachedMessage[] = Array.from({ length: 150 }, (_, i) => ({
         type: 'user' as const,
         content: `Message ${i}`,
-        timestamp: `2024-01-01T00:00:${String(i).padStart(2, '0')}Z`
+        timestamp: new Date(Date.UTC(2024, 0, 1, 0, Math.floor(i / 60), i % 60)).toISOString()
       }));
 
       cache.addMessages('session-1', 'tmux-1', '/test/cwd', messages);
