@@ -271,6 +271,13 @@ export class HttpApi {
   }
 
   /**
+   * Escape single quotes for safe embedding in shell single-quoted strings
+   */
+  private shellQuote(s: string): string {
+    return s.replace(/'/g, "'\\''");
+  }
+
+  /**
    * Get SSH host for a city (from origin or persistence)
    */
   private getSshHost(city: City): string {
@@ -1071,9 +1078,9 @@ export class HttpApi {
         execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
         execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
       } else {
-        execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: message, timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux send-keys -t '${escapedSession}' Enter"`, { timeout: 10000 });
+        execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: message, timeout: 10000 });
+        execFileSync('ssh', [sshHost, `tmux paste-buffer -t '${escapedSession}'`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost, `tmux send-keys -t '${escapedSession}' Enter`], { timeout: 10000 });
       }
 
       this.sendJsonSuccess(res, { success: true });
@@ -1244,8 +1251,7 @@ export class HttpApi {
     try {
       let fiberId: string;
 
-      const sq = (s: string) => s.replace(/'/g, "'\\''");
-      const feltCmd = `cd '${sq(cityPath)}' && felt add '${sq(title)}' -k ${kind} -b '${sq(body)}'`;
+      const feltCmd = `cd '${this.shellQuote(cityPath)}' && felt add '${this.shellQuote(title)}' -k ${kind} -b '${this.shellQuote(body)}'`;
 
       if (!isRemote) {
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
@@ -1299,11 +1305,10 @@ export class HttpApi {
     }
 
     const isRemote = city.originId !== 'local' && !!city.originId;
-    const sq = (s: string) => s.replace(/'/g, "'\\''");
     const cityPath = city.path;
 
     try {
-      const feltCmd = `cd '${sq(cityPath)}' && felt comment '${sq(claimId)}' '${sq(comment)}'`;
+      const feltCmd = `cd '${this.shellQuote(cityPath)}' && felt comment '${this.shellQuote(claimId)}' '${this.shellQuote(comment)}'`;
       if (!isRemote) {
         await execAsync(feltCmd, { timeout: 10000 });
       } else {
