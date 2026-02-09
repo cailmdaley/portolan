@@ -19,6 +19,7 @@ type GlobalView = 'map' | 'plots' | 'plans'
 import { ViewOverlay } from './ui/ViewOverlay'
 import { TabbedPlansView } from './ui/TabbedPlansView'
 import { ClaimsDashboard } from './ui/ClaimsDashboard'
+import { RhizomeView } from './ui/RhizomeView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
@@ -232,18 +233,24 @@ function handleViewChange(view: GlobalView): void {
 
 // ViewSwitcher removed — view stays on 'map' for now
 
-// Setup claims dashboard
+// Setup claims dashboard (legacy — will be removed)
 const claimsDashboard = new ClaimsDashboard()
 
-// Wire up View Claims button
+// Setup rhizome view (native DAG — replacement for claims dashboard)
+const rhizomeView = new RhizomeView()
+
+// Wire up View Claims button — uses native RhizomeView
 cityPanel.setOnViewClaims((city) => {
-  // Proxy through portolan server to handle both local and remote cities
-  const dashboardUrl = `http://${window.location.hostname}:4004/claims-dashboard?cityId=${encodeURIComponent(city.id)}`
-  claimsDashboard.show(city, dashboardUrl)
+  rhizomeView.show(city)
 })
 
-// Wire up worker lookup for claims send-to-worker
+// Wire up worker lookup for both views
 claimsDashboard.setOnGetWorkers((city) => {
+  return sessions
+    .filter(s => s.cityId === city.id && s.originId === city.originId)
+    .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
+})
+rhizomeView.setOnGetWorkers((city) => {
   return sessions
     .filter(s => s.cityId === city.id && s.originId === city.originId)
     .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
@@ -633,10 +640,27 @@ canvasOverlay.addEventListener('webkitmouseforcewillbegin', (e) => {
   e.preventDefault()
 })
 
-// Force click shows context menu
+// Force click: deep-press a city opens claims/playground, otherwise context menu
 canvasOverlay.addEventListener('webkitmouseforcedown', () => {
   if (camera.dragging) return
   forceTouchFired = true
+
+  // Hit-test for city with deep content
+  const worldPos = camera.screenToWorld(forceMouseX, forceMouseY)
+  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
+  if (cityHit) {
+    const city = cities.find(c => c.id === cityHit.entityId)
+    if (city && (city.hasClaims || city.hasPlaygrounds)) {
+      handleCityClick(city)
+      if (city.hasClaims) {
+        rhizomeView.show(city)
+      } else {
+        playgroundViewer.show(city)
+      }
+      return
+    }
+  }
+
   handleContextMenu(forceMouseX, forceMouseY)
 })
 
@@ -972,6 +996,7 @@ if (import.meta.hot) {
     viewOverlay.dispose()
     tabbedPlansView.dispose()
     claimsDashboard.dispose()
+    rhizomeView.dispose()
     playgroundViewer.dispose()
 
     // Dispose renderer components in reverse initialization order
