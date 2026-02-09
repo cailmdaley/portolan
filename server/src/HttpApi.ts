@@ -22,7 +22,7 @@ import type { TranscriptReader } from './TranscriptReader.js';
 import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 import type { CardStatePersistence } from './CardStatePersistence.js';
 import { shellEscape } from './KittyIntegration.js';
-import { getFibersByTag, getAllFibers, type Fiber } from './FiberReader.js';
+import { getAllFibers, type Fiber } from './FiberReader.js';
 import { readEvidence, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 
 const execAsync = promisify(exec);
@@ -318,8 +318,9 @@ export class HttpApi {
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
     try {
-      // Get all fibers with rule: tags
-      const ruleFibers = await this.getRhizomeFibers(city.path, sshHost);
+      // Single read: get all fibers, then partition into rule vs non-rule
+      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const ruleFibers = allFibers.filter(f => f.tags?.some(t => t.startsWith('rule:')));
       const fiberIds = new Set(ruleFibers.map(f => f.id));
 
       // Build spec name map: fiberId → specName
@@ -333,24 +334,19 @@ export class HttpApi {
 
       // Read evidence for each fiber (parallel)
       const evidenceMap = new Map<string, Evidence | null>();
-      const evidencePromises = Array.from(fiberSpecMap.entries()).map(
-        async ([, specName]) => {
+      await Promise.all(
+        Array.from(fiberSpecMap.entries()).map(async ([, specName]) => {
           const ev = await readEvidence(city.path, specName, sshHost);
           evidenceMap.set(specName, ev);
-        }
+        })
       );
-      await Promise.all(evidencePromises);
 
-      // Build response
+      // Build response nodes
       const nodes = ruleFibers.map(fiber => {
         const specName = fiberSpecMap.get(fiber.id);
         const evidence = specName ? evidenceMap.get(specName) : null;
-        const staleness = computeStaleness(
-          fiber.id,
-          (fiber.dependsOn || []).filter(d => fiberIds.has(d)),
-          evidenceMap,
-          fiberSpecMap,
-        );
+        const deps = (fiber.dependsOn || []).filter(d => fiberIds.has(d));
+        const staleness = computeStaleness(fiber.id, deps, evidenceMap, fiberSpecMap);
 
         return {
           id: fiber.id,
@@ -358,7 +354,7 @@ export class HttpApi {
           kind: fiber.kind,
           status: fiber.status,
           body: fiber.body,
-          dependsOn: (fiber.dependsOn || []).filter(d => fiberIds.has(d)),
+          dependsOn: deps,
           specName: specName || null,
           staleness,
           evidence: evidence ? {
@@ -371,7 +367,7 @@ export class HttpApi {
       });
 
       // Build edges
-      const links = [];
+      const links: Array<{ source: string; target: string }> = [];
       for (const fiber of ruleFibers) {
         for (const dep of (fiber.dependsOn || [])) {
           if (fiberIds.has(dep)) {
@@ -380,11 +376,10 @@ export class HttpApi {
         }
       }
 
-      // Also gather downstream concerns (non-rule fibers that depend on rule fibers)
-      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      // Downstream concerns: non-rule fibers that depend on rule fibers
       const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
       for (const fiber of allFibers) {
-        if (fiberIds.has(fiber.id)) continue; // skip rule fibers themselves
+        if (fiberIds.has(fiber.id)) continue;
         for (const dep of (fiber.dependsOn || [])) {
           if (fiberIds.has(dep)) {
             if (!downstreamMap[dep]) downstreamMap[dep] = [];
@@ -410,54 +405,22 @@ export class HttpApi {
   }
 
   /**
-   * Get fibers with rule: tags for a city (local or remote).
-   */
-  private async getRhizomeFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
-    if (!sshHost) {
-      return getFibersByTag(cityPath, 'rule:');
-    }
-
-    // Remote: use felt CLI via SSH
-    const cmd = `cd ${shellEscape(cityPath)} && felt ls -s all --json --body 2>/dev/null || echo '[]'`;
-    const { stdout } = await execFileAsync(
-      'ssh', [sshHost, cmd],
-      { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
-    );
-
-    const fibers = JSON.parse(stdout.trim() || '[]');
-    return fibers
-      .filter((f: any) => f.tags?.some((t: string) => t.startsWith('rule:')))
-      .map((f: any): Fiber => ({
-        id: f.id,
-        title: f.title || f.id,
-        status: f.status || 'open',
-        kind: f.kind || 'task',
-        priority: f.priority || 2,
-        createdAt: f.created_at || '',
-        closedAt: f.closed_at,
-        reason: f.close_reason,
-        body: f.body,
-        tags: f.tags,
-        dependsOn: f.depends_on,
-      }));
-  }
-
-  /**
-   * Get all fibers for a city (for downstream concern detection).
+   * Get all fibers for a city (local or remote).
+   * Remote cities use `felt ls --json --body` via SSH.
    */
   private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
     if (!sshHost) {
       return getAllFibers(cityPath);
     }
 
-    const cmd = `cd ${shellEscape(cityPath)} && felt ls -s all --json 2>/dev/null || echo '[]'`;
+    const cmd = `cd ${shellEscape(cityPath)} && felt ls -s all --json --body 2>/dev/null || echo '[]'`;
     const { stdout } = await execFileAsync(
       'ssh', [sshHost, cmd],
       { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
     );
 
-    const fibers = JSON.parse(stdout.trim() || '[]');
-    return fibers.map((f: any): Fiber => ({
+    const raw = JSON.parse(stdout.trim() || '[]');
+    return raw.map((f: any): Fiber => ({
       id: f.id,
       title: f.title || f.id,
       status: f.status || 'open',
@@ -478,8 +441,8 @@ export class HttpApi {
    */
   private async handleRhizomeAsset(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
-    const pathAfterPrefix = url.pathname.replace('/rhizome-asset/', '');
-    const parts = pathAfterPrefix.split('/');
+    const rawPath = url.pathname.replace('/rhizome-asset/', '');
+    const parts = rawPath.split('/');
 
     if (!cityId || parts.length < 2) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -487,60 +450,16 @@ export class HttpApi {
       return;
     }
 
-    const specName = parts[0];
-    const filename = parts.slice(1).join('/');
-
-    // Security: prevent directory traversal and shell injection
-    if (specName.includes('..') || filename.includes('..') || /[`$"\\]/.test(specName + filename)) {
+    let assetPath: string;
+    try {
+      assetPath = decodeURIComponent(parts.join('/'));
+    } catch {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
       res.end('Invalid asset path');
       return;
     }
 
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('City not found');
-      return;
-    }
-
-    const fullPath = `${city.path}/results/claims/${specName}/${filename}`;
-
-    const ext = filename.split('.').pop()?.toLowerCase();
-    const contentTypes: Record<string, string> = {
-      'png': 'image/png',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'svg': 'image/svg+xml',
-      'gif': 'image/gif',
-      'pdf': 'application/pdf',
-    };
-    const contentType = contentTypes[ext || ''] || 'application/octet-stream';
-
-    try {
-      let data: Buffer;
-      if (city.originId === 'local') {
-        const { readFileSync } = await import('fs');
-        data = readFileSync(fullPath);
-      } else {
-        const sshHost = this.getSshHost(city);
-        const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat ${shellEscape(fullPath)}`],
-          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' },
-        );
-        data = stdout as unknown as Buffer;
-      }
-
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-cache',
-      });
-      res.end(data);
-    } catch (error) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end(`Asset not found: ${specName}/${filename}`);
-    }
+    await this.serveClaimsAsset(cityId, assetPath, res);
   }
 
   /**
@@ -626,7 +545,6 @@ export class HttpApi {
       return;
     }
 
-    // Decode percent-encoding before security checks
     let assetPath: string;
     try {
       assetPath = decodeURIComponent(rawAssetPath);
@@ -636,6 +554,32 @@ export class HttpApi {
       return;
     }
 
+    await this.serveClaimsAsset(cityId, assetPath, res);
+  }
+
+  // ── Shared asset serving ──────────────────────────────────────────
+
+  /** Content types for claims/rhizome asset serving */
+  private readonly assetContentTypes: Record<string, string> = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'svg': 'image/svg+xml',
+    'gif': 'image/gif',
+    'pdf': 'application/pdf',
+    'otf': 'font/otf',
+    'ttf': 'font/ttf',
+    'woff': 'font/woff',
+    'woff2': 'font/woff2',
+    'css': 'text/css',
+    'js': 'application/javascript',
+  };
+
+  /**
+   * Shared asset serving for both /rhizome-asset and /claims-assets.
+   * Validates path, resolves city, reads file locally or via SSH.
+   */
+  private async serveClaimsAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
     // Security: prevent directory traversal and shell injection
     if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -651,22 +595,8 @@ export class HttpApi {
     }
 
     const fullPath = `${city.path}/results/claims/${assetPath}`;
-
-    // Determine content type
     const ext = assetPath.split('.').pop()?.toLowerCase();
-    const contentTypes: Record<string, string> = {
-      'otf': 'font/otf',
-      'ttf': 'font/ttf',
-      'woff': 'font/woff',
-      'woff2': 'font/woff2',
-      'png': 'image/png',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'svg': 'image/svg+xml',
-      'css': 'text/css',
-      'js': 'application/javascript',
-    };
-    const contentType = contentTypes[ext || ''] || 'application/octet-stream';
+    const contentType = this.assetContentTypes[ext || ''] || 'application/octet-stream';
 
     try {
       let data: Buffer;
@@ -677,7 +607,7 @@ export class HttpApi {
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
           'ssh', [sshHost, `cat ${shellEscape(fullPath)}`],
-          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' }
+          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' },
         );
         data = stdout as unknown as Buffer;
       }
@@ -689,7 +619,6 @@ export class HttpApi {
       });
       res.end(data);
     } catch (error) {
-      console.error('Failed to fetch claims asset:', error);
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end(`Asset not found: ${assetPath}`);
     }

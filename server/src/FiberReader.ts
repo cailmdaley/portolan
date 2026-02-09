@@ -16,164 +16,13 @@ export interface Fiber {
   dependsOn?: string[]; // fiber IDs this depends on
 }
 
-/**
- * Counts open fibers for a city by reading its .felt/ directory.
- *
- * @param cityPath Absolute path to the city directory
- * @returns Number of fibers with status !== 'closed'
- */
-export async function countOpenFibers(cityPath: string): Promise<number> {
-  const fibers = await getOpenFibers(cityPath);
-  return fibers.length;
-}
+// ── Internal ───────────────────────────────────────────────────────
 
 /**
- * Gets all open fibers for a city.
- *
- * @param cityPath Absolute path to the city directory
- * @returns Array of fibers with status !== 'closed', sorted by active first, then by priority
+ * Read and parse all .md files in a city's .felt/ directory.
+ * All public functions delegate to this, then filter/sort as needed.
  */
-export async function getOpenFibers(cityPath: string): Promise<Fiber[]> {
-  const feltPath = join(cityPath, '.felt');
-
-  // Check if .felt directory exists
-  if (!existsSync(feltPath)) {
-    return [];
-  }
-
-  try {
-    const files = await readdir(feltPath);
-    const mdFiles = files.filter(f => f.endsWith('.md'));
-
-    const fibers: Fiber[] = [];
-
-    for (const file of mdFiles) {
-      const filePath = join(feltPath, file);
-      try {
-        const content = await readFile(filePath, 'utf-8');
-        const fiber = parseFiber(file, content);
-
-        // Only include non-closed fibers
-        if (fiber.status !== 'closed') {
-          fibers.push(fiber);
-        }
-      } catch (err) {
-        console.warn(`Failed to read fiber file ${filePath}:`, err);
-      }
-    }
-
-    // Sort: active first, then open by priority (ascending)
-    return fibers.sort((a, b) => {
-      if (a.status === 'active' && b.status !== 'active') return -1;
-      if (a.status !== 'active' && b.status === 'active') return 1;
-      return a.priority - b.priority;
-    });
-  } catch (err) {
-    console.warn(`Failed to read .felt directory at ${feltPath}:`, err);
-    return [];
-  }
-}
-
-/**
- * Gets recently closed fibers for a city.
- *
- * @param cityPath Absolute path to the city directory
- * @param limit Maximum number of fibers to return
- * @returns Array of closed fibers sorted by closed date descending
- */
-export async function getRecentlyClosed(cityPath: string, limit: number): Promise<Fiber[]> {
-  const feltPath = join(cityPath, '.felt');
-
-  if (!existsSync(feltPath)) {
-    return [];
-  }
-
-  try {
-    const files = await readdir(feltPath);
-    const mdFiles = files.filter(f => f.endsWith('.md'));
-
-    const closedFibers: Fiber[] = [];
-
-    for (const file of mdFiles) {
-      const filePath = join(feltPath, file);
-      try {
-        const content = await readFile(filePath, 'utf-8');
-        const fiber = parseFiber(file, content);
-
-        if (fiber.status === 'closed') {
-          closedFibers.push(fiber);
-        }
-      } catch (err) {
-        console.warn(`Failed to read fiber file ${filePath}:`, err);
-      }
-    }
-
-    // Sort by closed date descending (most recent first)
-    const sorted = closedFibers.sort((a, b) => {
-      const dateA = a.closedAt ? new Date(a.closedAt).getTime() : 0;
-      const dateB = b.closedAt ? new Date(b.closedAt).getTime() : 0;
-      return dateB - dateA;
-    });
-
-    return sorted.slice(0, limit);
-  } catch (err) {
-    console.warn(`Failed to read .felt directory at ${feltPath}:`, err);
-    return [];
-  }
-}
-
-/**
- * Parse a fiber file into a Fiber object.
- *
- * @param filename The filename (e.g., "my-fiber-abc123.md")
- * @param content File content with YAML frontmatter
- * @returns Fiber object
- */
-/**
- * Gets all fibers (any status) matching a tag prefix.
- *
- * @param cityPath Absolute path to the city directory
- * @param tagPrefix Tag prefix to filter by (e.g., "rule:")
- * @returns Array of matching fibers
- */
-export async function getFibersByTag(cityPath: string, tagPrefix: string): Promise<Fiber[]> {
-  const feltPath = join(cityPath, '.felt');
-
-  if (!existsSync(feltPath)) {
-    return [];
-  }
-
-  try {
-    const files = await readdir(feltPath);
-    const mdFiles = files.filter(f => f.endsWith('.md'));
-
-    const fibers: Fiber[] = [];
-
-    for (const file of mdFiles) {
-      const filePath = join(feltPath, file);
-      try {
-        const content = await readFile(filePath, 'utf-8');
-        const fiber = parseFiber(file, content);
-
-        if (fiber.tags?.some(t => t.startsWith(tagPrefix))) {
-          fibers.push(fiber);
-        }
-      } catch (err) {
-        console.warn(`Failed to read fiber file ${filePath}:`, err);
-      }
-    }
-
-    return fibers;
-  } catch (err) {
-    console.warn(`Failed to read .felt directory at ${feltPath}:`, err);
-    return [];
-  }
-}
-
-/**
- * Gets all fibers for a city regardless of status.
- */
-export async function getAllFibers(cityPath: string): Promise<Fiber[]> {
+async function readAllFibers(cityPath: string): Promise<Fiber[]> {
   const feltPath = join(cityPath, '.felt');
 
   if (!existsSync(feltPath)) {
@@ -203,8 +52,70 @@ export async function getAllFibers(cityPath: string): Promise<Fiber[]> {
   }
 }
 
+// ── Public API ─────────────────────────────────────────────────────
+
 /**
- * Export for testing.
+ * Counts open fibers for a city by reading its .felt/ directory.
+ */
+export async function countOpenFibers(cityPath: string): Promise<number> {
+  const fibers = await getOpenFibers(cityPath);
+  return fibers.length;
+}
+
+/**
+ * Gets all open fibers for a city.
+ * Returns fibers with status !== 'closed', sorted by active first, then by priority.
+ */
+export async function getOpenFibers(cityPath: string): Promise<Fiber[]> {
+  const fibers = await readAllFibers(cityPath);
+
+  return fibers
+    .filter(f => f.status !== 'closed')
+    .sort((a, b) => {
+      if (a.status === 'active' && b.status !== 'active') return -1;
+      if (a.status !== 'active' && b.status === 'active') return 1;
+      return a.priority - b.priority;
+    });
+}
+
+/**
+ * Gets recently closed fibers for a city.
+ */
+export async function getRecentlyClosed(cityPath: string, limit: number): Promise<Fiber[]> {
+  const fibers = await readAllFibers(cityPath);
+
+  return fibers
+    .filter(f => f.status === 'closed')
+    .sort((a, b) => {
+      const dateA = a.closedAt ? new Date(a.closedAt).getTime() : 0;
+      const dateB = b.closedAt ? new Date(b.closedAt).getTime() : 0;
+      return dateB - dateA;
+    })
+    .slice(0, limit);
+}
+
+/**
+ * Gets all fibers (any status) matching a tag prefix.
+ */
+export async function getFibersByTag(cityPath: string, tagPrefix: string): Promise<Fiber[]> {
+  const fibers = await readAllFibers(cityPath);
+  return fibers.filter(f => f.tags?.some(t => t.startsWith(tagPrefix)));
+}
+
+/**
+ * Gets all fibers for a city regardless of status.
+ */
+export async function getAllFibers(cityPath: string): Promise<Fiber[]> {
+  return readAllFibers(cityPath);
+}
+
+// ── Parser ─────────────────────────────────────────────────────────
+
+/**
+ * Parse a fiber file into a Fiber object.
+ *
+ * @param filename The filename (e.g., "my-fiber-abc123.md")
+ * @param content File content with YAML frontmatter
  */
 export function parseFiber(filename: string, content: string): Fiber {
   const id = filename.replace(/\.md$/, '');
@@ -248,4 +159,3 @@ export function parseFiber(filename: string, content: string): Fiber {
     dependsOn: dependsOn,
   };
 }
-
