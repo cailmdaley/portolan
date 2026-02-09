@@ -26,10 +26,10 @@ Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-so
 Server (Node, :4004)          Browser (Three.js, :5173)
 ├── SessionTracker            ├── ZoneRenderer (hex meshes)
 ├── CityManager               ├── Camera (sieve drag)
-├── OriginManager (remote)    ├── CityPanel (fibers, search)
-├── FiberReader               ├── ContextMenu
-├── EvidenceReader            └── main.ts
-├── ConversationCache
+├── OriginManager (remote)    ├── CityHUD (fibers, search)
+├── FiberReader               ├── RhizomeView (D3 DAG)
+├── EvidenceReader            ├── ContextMenu
+├── ConversationCache         └── main.ts
 ├── KittyIntegration
 └── index.ts (state, WS)
 ```
@@ -170,5 +170,6 @@ Fibers in `.felt/` provide detail beyond this overview.
 | Claims Side Panel | `.felt/claims-annotation-side-panel-f290eeb2.md` |
 | Rhizome Endpoint | `.felt/rhizome-endpoint-returns-full-2a1e18b5.md` |
 | Rhizome rule: tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
+| Rhizome DAG spec | `.felt/absorb-claims-dashboard-into-ed04e0e9.md` |
 
 Search patterns/gotchas: `felt find pattern` or `felt find gotcha`
