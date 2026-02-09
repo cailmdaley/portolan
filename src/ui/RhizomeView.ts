@@ -959,7 +959,13 @@ export class RhizomeView {
     lightbox.appendChild(bigImg)
     lightbox.appendChild(closeBtn)
 
-    const close = () => lightbox.remove()
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    const close = () => {
+      document.removeEventListener('keydown', escHandler)
+      lightbox.remove()
+    }
     closeBtn.addEventListener('click', close)
     lightbox.addEventListener('click', (e) => {
       if (e.target === lightbox) close()
@@ -975,12 +981,7 @@ export class RhizomeView {
       close()
     })
 
-    document.addEventListener('keydown', function handler(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        close()
-        document.removeEventListener('keydown', handler)
-      }
-    })
+    document.addEventListener('keydown', escHandler)
 
     document.body.appendChild(lightbox)
   }

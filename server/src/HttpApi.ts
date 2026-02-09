@@ -430,7 +430,7 @@ export class HttpApi {
     const parts = rawPath.split('/');
 
     if (!cityId || parts.length < 2) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
       res.end('Missing cityId or invalid asset path');
       return;
     }
@@ -439,7 +439,7 @@ export class HttpApi {
     try {
       assetPath = decodeURIComponent(parts.join('/'));
     } catch {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
       res.end('Invalid asset path');
       return;
     }
@@ -472,14 +472,14 @@ export class HttpApi {
   private async serveRhizomeAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
     // Security: prevent directory traversal and shell injection
     if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
       res.end('Invalid asset path');
       return;
     }
 
     const city = this.cityLookup.getCityById(cityId);
     if (!city) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
       res.end('City not found');
       return;
     }
@@ -508,7 +508,7 @@ export class HttpApi {
       });
       res.end(data);
     } catch (error) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
       res.end(`Asset not found: ${assetPath}`);
     }
   }
