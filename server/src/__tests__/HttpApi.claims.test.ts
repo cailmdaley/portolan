@@ -600,330 +600,6 @@ describe('HttpApi — claims annotations', () => {
   });
 
   // ────────────────────────────────────────────────────────────
-  // Claims dashboard proxy injection
-  // ────────────────────────────────────────────────────────────
-
-  describe('GET /claims-dashboard (proxy injection)', () => {
-    const MOCK_CITY_DIR = join(TEST_DIR, 'mock-city');
-    const MOCK_DASHBOARD = join(MOCK_CITY_DIR, 'results', 'claims', 'index.html');
-
-    const MOCK_DASHBOARD_HTML = `<!DOCTYPE html>
-<html>
-<head><title>Claims</title></head>
-<body>
-<img src="claim_id/plot.png" alt="Plot">
-<style>@font-face { url('fonts/custom.woff2') }</style>
-<script>
-let currentClaimId = null;
-const claimGraph = {};
-const imgPath = claim.id + '/' + path.split('/').pop();
-const lightbox = { src: claim.id + '/' + artifactPath };
-</script>
-</body>
-</html>`;
-
-    let cityApi: HttpApi;
-
-    beforeEach(() => {
-      const dashDir = join(MOCK_CITY_DIR, 'results', 'claims');
-      mkdirSync(dashDir, { recursive: true });
-      writeFileSync(MOCK_DASHBOARD, MOCK_DASHBOARD_HTML, 'utf-8');
-
-      cityApi = new HttpApi(
-        makeCityLookup('test-city', MOCK_CITY_DIR, 'TestCity') as any,
-        stubOriginLookup as any, stubPersistenceLookup as any,
-      );
-    });
-
-    it('injects claims-annotate.js script tag', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
-
-      expect(res.status).toBe(200);
-      expect(res.data).toContain('<script src="/claims-annotate.js"></script>');
-    });
-
-    it('injects CLAIMS_ASSETS_BASE and CLAIMS_CITY_ID globals', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
-
-      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE = "/claims-assets"');
-      expect(res.data).toContain('window.CLAIMS_CITY_ID = "test-city"');
-    });
-
-    it('rewrites static image src to use proxy', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
-
-      expect(res.data).toContain('src="/claims-assets/claim_id/plot.png?cityId=test-city"');
-      expect(res.data).not.toContain('src="claim_id/plot.png"');
-    });
-
-    it('rewrites CSS font urls to use proxy', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
-
-      expect(res.data).toContain("url('/claims-assets/fonts/custom.woff2?cityId=test-city')");
-    });
-
-    it('rewrites dynamic imgPath construction', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
-
-      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE');
-      expect(res.data).toContain('window.CLAIMS_CITY_ID');
-      // Original imgPath construction should be rewritten
-      expect(res.data).not.toMatch(/const imgPath = claim\.id \+ '\/'/);
-    });
-
-    it('promotes let/const to var for annotation bridge globals', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=test-city');
-
-      // let currentClaimId → var currentClaimId (so window.currentClaimId works)
-      expect(res.data).toContain('var currentClaimId');
-      expect(res.data).not.toContain('let currentClaimId');
-      // const claimGraph → var claimGraph (so window.claimGraph works)
-      expect(res.data).toContain('var claimGraph');
-      // Other const declarations should be untouched
-      expect(res.data).toContain('const lightbox');
-    });
-
-    it('returns 400 without cityId', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard');
-
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 404 for unknown city', async () => {
-      const res = await httpRequest(cityApi, 'GET', '/claims-dashboard?cityId=nonexistent');
-
-      expect(res.status).toBe(404);
-    });
-
-    it('sanitizes cityId to prevent XSS in injected script', async () => {
-      // Create a city with a dangerous-looking ID
-      const xssId = 'test"></script><script>alert(1)</script>';
-      const xssCityDir = join(TEST_DIR, 'xss-city');
-      const xssDashDir = join(xssCityDir, 'results', 'claims');
-      mkdirSync(xssDashDir, { recursive: true });
-      writeFileSync(join(xssDashDir, 'index.html'), MOCK_DASHBOARD_HTML, 'utf-8');
-
-      const xssLookup = {
-        getCityById: (id: string) => id === xssId ? {
-          id: xssId,
-          name: 'XSS City',
-          path: xssCityDir,
-          originId: 'local',
-        } : null,
-      };
-      const xssApi = new HttpApi(xssLookup as any, stubOriginLookup as any, stubPersistenceLookup as any);
-
-      const res = await httpRequest(xssApi, 'GET', `/claims-dashboard?cityId=${encodeURIComponent(xssId)}`);
-
-      expect(res.status).toBe(200);
-      // Script-breaking characters stripped: no closing/opening script tags
-      expect(res.data).not.toContain('</script><script>');
-      // Quotes and angle brackets removed from injected cityId
-      expect(res.data).not.toContain('CLAIMS_CITY_ID = "test"');
-      expect(res.data).toContain('CLAIMS_CITY_ID = "test');
-      // The original dangerous payload is defanged
-      expect(res.data).not.toMatch(/<script>alert/);
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────
-  // Realistic dashboard proxy rewrite (modeled on KineLens)
-  // ────────────────────────────────────────────────────────────
-
-  describe('GET /claims-dashboard — realistic dashboard proxy rewrite', () => {
-    const REAL_CITY_DIR = join(TEST_DIR, 'kinelens-city');
-    const REAL_DASHBOARD = join(REAL_CITY_DIR, 'results', 'claims', 'index.html');
-
-    // Modeled on actual KineLens claims dashboard structure
-    const REALISTIC_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>KineLens Claims</title>
-    <link href="https://fonts.googleapis.com/css2?family=EB+Garamond&display=swap" rel="stylesheet">
-    <style>
-        @font-face {
-            font-family: 'EBGaramondInitialsF1';
-            src: url('EBGaramond-InitialsF1.otf') format('opentype');
-            font-weight: normal;
-        }
-        @font-face {
-            font-family: 'EBGaramondLocal';
-            src: url('EBGaramond12-Regular.otf') format('opentype');
-            font-weight: normal;
-        }
-        @font-face {
-            font-family: 'EBGaramondLocal';
-            src: url('EBGaramond12-Italic.otf') format('opentype');
-            font-style: italic;
-        }
-        .claim-panel { padding: 1rem; }
-        .artifact img { max-width: 100%; cursor: pointer; }
-    </style>
-</head>
-<body>
-    <div id="sidebar">
-        <img src="logo.png" alt="Logo">
-    </div>
-    <div class="claim-panel" id="claim-panel"></div>
-    <div class="lightbox">
-        <img src="" alt="Lightbox">
-    </div>
-
-<script>
-let currentClaimId = null;
-let currentPlotIndex = 0;
-const claimGraph = {};
-const evidenceCache = {};
-let lightboxOpen = false;
-
-// Populate claim graph
-claims.forEach(c => {
-    claimGraph[c.id] = {
-        data: c,
-        children: [],
-    };
-});
-
-function renderClaim() {
-    if (!currentClaimId) return;
-    const claim = claimGraph[currentClaimId].data;
-    const artifactEntries = Object.entries(claim.artifacts);
-    let artifactsHtml = '';
-    if (artifactEntries.length > 0) {
-        const [name, path] = artifactEntries[currentPlotIndex];
-        const imgPath = claim.id + '/' + path.split('/').pop();
-        artifactsHtml = '<div class="artifact"><img src="' + imgPath + '" alt="' + name + '"></div>';
-    }
-    document.getElementById('claim-panel').innerHTML = artifactsHtml;
-}
-
-function openLightbox(clickedSrc) {
-    const claim = claimGraph[currentClaimId].data;
-    const artifactEntries = Object.entries(claim.artifacts);
-    lightboxImages = artifactEntries.map(([name, path]) => ({
-        name: name,
-        src: claim.id + '/' + path.split('/').pop()
-    }));
-    document.querySelector('.lightbox img').src = lightboxImages[0].src;
-}
-
-function selectClaim(claimId) {
-    if (!claimGraph[claimId]) return;
-    currentClaimId = claimId;
-    renderClaim();
-}
-</script>
-</body>
-</html>`;
-
-    let realApi: HttpApi;
-
-    beforeEach(() => {
-      const dashDir = join(REAL_CITY_DIR, 'results', 'claims');
-      mkdirSync(dashDir, { recursive: true });
-      writeFileSync(REAL_DASHBOARD, REALISTIC_HTML, 'utf-8');
-
-      realApi = new HttpApi(
-        makeCityLookup('kinelens', REAL_CITY_DIR, 'KineLens') as any,
-        stubOriginLookup as any, stubPersistenceLookup as any,
-      );
-    });
-
-    it('rewrites all @font-face url() declarations', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      expect(res.status).toBe(200);
-      // All three font files rewritten
-      expect(res.data).toContain("url('/claims-assets/EBGaramond-InitialsF1.otf?cityId=kinelens')");
-      expect(res.data).toContain("url('/claims-assets/EBGaramond12-Regular.otf?cityId=kinelens')");
-      expect(res.data).toContain("url('/claims-assets/EBGaramond12-Italic.otf?cityId=kinelens')");
-      // Original bare font URLs replaced
-      expect(res.data).not.toContain("url('EBGaramond-InitialsF1.otf')");
-      expect(res.data).not.toContain("url('EBGaramond12-Regular.otf')");
-    });
-
-    it('rewrites static <img src> for images in body', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // logo.png in sidebar rewritten
-      expect(res.data).toContain('src="/claims-assets/logo.png?cityId=kinelens"');
-      expect(res.data).not.toContain('src="logo.png"');
-    });
-
-    it('does not rewrite external Google Fonts link', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // External link left untouched
-      expect(res.data).toContain('href="https://fonts.googleapis.com');
-    });
-
-    it('rewrites imgPath construction inside renderClaim', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // The imgPath line should be rewritten to use CLAIMS_ASSETS_BASE
-      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE');
-      expect(res.data).not.toMatch(/const imgPath = claim\.id \+ '\/'/);
-    });
-
-    it('promotes let currentClaimId and const claimGraph to var', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      expect(res.data).toContain('var currentClaimId');
-      expect(res.data).not.toContain('let currentClaimId');
-      expect(res.data).toContain('var claimGraph');
-      expect(res.data).not.toContain('const claimGraph');
-    });
-
-    it('does not promote unrelated let/const declarations', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // These should remain untouched
-      expect(res.data).toContain('let currentPlotIndex');
-      expect(res.data).toContain('const evidenceCache');
-      expect(res.data).toContain('let lightboxOpen');
-      expect(res.data).toContain('let artifactsHtml');
-    });
-
-    it('preserves #claim-panel element for annotation script auto-bridging', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      expect(res.data).toContain('id="claim-panel"');
-      expect(res.data).toContain('class="claim-panel"');
-    });
-
-    it('injects annotation infrastructure into <head>', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // Script injection happens right after <head>
-      const headIdx = res.data.indexOf('<head>');
-      const scriptIdx = res.data.indexOf('window.CLAIMS_ASSETS_BASE');
-      const annotateIdx = res.data.indexOf('claims-annotate.js');
-
-      expect(headIdx).toBeGreaterThan(-1);
-      expect(scriptIdx).toBeGreaterThan(headIdx);
-      expect(annotateIdx).toBeGreaterThan(headIdx);
-    });
-
-    it('does not rewrite empty lightbox img src (no image extension)', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // Empty src has no file extension, so regex doesn't match
-      expect(res.data).toContain('src=""');
-    });
-
-    it('rewrites lightbox src: property in object literal', async () => {
-      const res = await httpRequest(realApi, 'GET', '/claims-dashboard?cityId=kinelens');
-
-      // The lightboxImages src: property should be rewritten to use proxy
-      expect(res.data).toContain('window.CLAIMS_ASSETS_BASE');
-      expect(res.data).toContain('window.CLAIMS_CITY_ID');
-      // Original bare src: construction should be gone
-      expect(res.data).not.toMatch(/src: claim\.id \+ '\/'\s*\+\s*path\.split/);
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────
   // formatClaimsAnnotationsForClaude — additional edge cases
   // ────────────────────────────────────────────────────────────
 
@@ -1007,35 +683,35 @@ function selectClaim(claimId) {
   });
 
   // ────────────────────────────────────────────────────────────
-  // Claims assets proxy — security
+  // Rhizome asset serving — security
   // ────────────────────────────────────────────────────────────
 
-  describe('GET /claims-assets (security)', () => {
+  describe('GET /rhizome-asset (security)', () => {
     it('rejects path traversal in nested segments', async () => {
-      // URL parser resolves bare ../.. but not embedded traversal segments
-      const res = await httpRequest(api, 'GET', '/claims-assets/sub/..%2F..%2Fetc/passwd?cityId=test');
+      const res = await httpRequest(api, 'GET', '/rhizome-asset/sub/..%2F..%2Fetc/passwd?cityId=test');
 
       // Either 400 (caught by traversal check) or 404 (city not found) — never serves the file
       expect([400, 404]).toContain(res.status);
     });
 
     it('rejects shell injection via dollar substitution', async () => {
-      const res = await httpRequest(api, 'GET', '/claims-assets/$(id).png?cityId=test');
+      // /rhizome-asset requires {specName}/{filename} — single segment is rejected early
+      const res = await httpRequest(api, 'GET', '/rhizome-asset/spec/$(id).png?cityId=test');
 
       expect(res.status).toBe(400);
       expect(res.data).toContain('Invalid asset path');
     });
 
     it('rejects shell injection via backticks', async () => {
-      const res = await httpRequest(api, 'GET', '/claims-assets/`whoami`.png?cityId=test');
+      const res = await httpRequest(api, 'GET', '/rhizome-asset/spec/`whoami`.png?cityId=test');
 
       expect(res.status).toBe(400);
       expect(res.data).toContain('Invalid asset path');
     });
 
     it('accepts clean asset paths', async () => {
-      // Will 404 (city not found) but should pass the security check
-      const res = await httpRequest(api, 'GET', '/claims-assets/claim-123/plot.png?cityId=test');
+      // Will 404 (city not found in stub) but should pass the security check
+      const res = await httpRequest(api, 'GET', '/rhizome-asset/spec-name/plot.png?cityId=test');
 
       // 404 because stub city lookup returns null — but NOT 400
       expect(res.status).toBe(404);
@@ -1117,48 +793,6 @@ function selectClaim(claimId) {
   });
 
   // ────────────────────────────────────────────────────────────
-  // Proxy injection: selectedClaimId variant
-  // ────────────────────────────────────────────────────────────
-
-  describe('GET /claims-dashboard (selectedClaimId variant)', () => {
-    const VARIANT_CITY_DIR = join(TEST_DIR, 'variant-city');
-    const VARIANT_DASHBOARD = join(VARIANT_CITY_DIR, 'results', 'claims', 'index.html');
-
-    // Remote dashboards may use selectedClaimId instead of currentClaimId
-    const VARIANT_HTML = `<!DOCTYPE html>
-<html>
-<head><title>Claims</title></head>
-<body>
-<script>
-let selectedClaimId = null;
-const claimGraph = {};
-</script>
-</body>
-</html>`;
-
-    let variantApi: HttpApi;
-
-    beforeEach(() => {
-      const dashDir = join(VARIANT_CITY_DIR, 'results', 'claims');
-      mkdirSync(dashDir, { recursive: true });
-      writeFileSync(VARIANT_DASHBOARD, VARIANT_HTML, 'utf-8');
-
-      variantApi = new HttpApi(
-        makeCityLookup('variant-city', VARIANT_CITY_DIR, 'VariantCity') as any,
-        stubOriginLookup as any, stubPersistenceLookup as any,
-      );
-    });
-
-    it('promotes selectedClaimId from let to var', async () => {
-      const res = await httpRequest(variantApi, 'GET', '/claims-dashboard?cityId=variant-city');
-
-      expect(res.status).toBe(200);
-      expect(res.data).toContain('var selectedClaimId');
-      expect(res.data).not.toContain('let selectedClaimId');
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────
   // shellEscape — imported from KittyIntegration
   // ────────────────────────────────────────────────────────────
 
@@ -1195,6 +829,123 @@ const claimGraph = {};
       // Inside single quotes, only ' needs escaping.
       // Double quotes, backticks, $ are all literal inside single quotes.
       expect(shellEscape("path'with\"dangerous`chars$(id)")).toBe("'path'\\''with\"dangerous`chars$(id)'");
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────
+  // GET /rhizome endpoint
+  // ────────────────────────────────────────────────────────────
+
+  describe('GET /rhizome', () => {
+    const RHIZOME_CITY_DIR = join(TEST_DIR, 'rhizome-city');
+
+    function makeRhizomeApi(cityId: string, cityDir: string) {
+      return new HttpApi(
+        makeCityLookup(cityId, cityDir, 'RhizomeCity') as any,
+        stubOriginLookup as any, stubPersistenceLookup as any,
+      );
+    }
+
+    function writeFiber(dir: string, id: string, content: string) {
+      const feltDir = join(dir, '.felt');
+      if (!existsSync(feltDir)) mkdirSync(feltDir, { recursive: true });
+      writeFileSync(join(feltDir, `${id}.md`), content, 'utf-8');
+    }
+
+    it('returns 400 without cityId', async () => {
+      const rhizomeApi = makeRhizomeApi('test', RHIZOME_CITY_DIR);
+      const res = await httpRequest(rhizomeApi, 'GET', '/rhizome');
+
+      expect(res.status).toBe(400);
+      expect(res.data.error).toMatch(/cityId/i);
+    });
+
+    it('returns 404 for unknown city', async () => {
+      const rhizomeApi = makeRhizomeApi('test', RHIZOME_CITY_DIR);
+      const res = await httpRequest(rhizomeApi, 'GET', '/rhizome?cityId=nonexistent');
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns DAG with nodes, links, and downstream for rule: fibers', async () => {
+      // Set up two rule: fibers with a dependency
+      writeFiber(RHIZOME_CITY_DIR, 'fiber-a', `---
+title: Fiber A
+status: active
+kind: spec
+tags:
+  - rule:fiber_a
+---
+Body of fiber A.
+`);
+      writeFiber(RHIZOME_CITY_DIR, 'fiber-b', `---
+title: Fiber B
+status: open
+kind: spec
+tags:
+  - rule:fiber_b
+depends-on:
+  - fiber-a
+---
+Body of fiber B depends on A.
+`);
+      // A non-rule fiber that depends on a rule fiber (downstream concern)
+      writeFiber(RHIZOME_CITY_DIR, 'task-c', `---
+title: Task C
+status: open
+kind: task
+depends-on:
+  - fiber-a
+---
+Downstream task.
+`);
+
+      const rhizomeApi = makeRhizomeApi('rhizome-test', RHIZOME_CITY_DIR);
+      const res = await httpRequest(rhizomeApi, 'GET', '/rhizome?cityId=rhizome-test');
+
+      expect(res.status).toBe(200);
+
+      // Nodes: only rule: fibers (fiber-a, fiber-b), not task-c
+      expect(res.data.nodes).toHaveLength(2);
+      const nodeIds = res.data.nodes.map((n: any) => n.id);
+      expect(nodeIds).toContain('fiber-a');
+      expect(nodeIds).toContain('fiber-b');
+
+      // Each node has expected fields
+      const nodeA = res.data.nodes.find((n: any) => n.id === 'fiber-a');
+      expect(nodeA.title).toBe('Fiber A');
+      expect(nodeA.body).toContain('Body of fiber A');
+      expect(nodeA.specName).toBe('fiber_a');
+      expect(nodeA.staleness).toBeDefined();
+
+      // Links: fiber-a → fiber-b (source: fiber-a, target: fiber-b)
+      expect(res.data.links).toHaveLength(1);
+      expect(res.data.links[0]).toEqual({ source: 'fiber-a', target: 'fiber-b' });
+
+      // Downstream: task-c depends on fiber-a
+      expect(res.data.downstream['fiber-a']).toBeDefined();
+      expect(res.data.downstream['fiber-a']).toHaveLength(1);
+      expect(res.data.downstream['fiber-a'][0].id).toBe('task-c');
+    });
+
+    it('returns empty DAG when no rule: fibers exist', async () => {
+      const emptyDir = join(TEST_DIR, 'empty-city');
+      mkdirSync(join(emptyDir, '.felt'), { recursive: true });
+      writeFiber(emptyDir, 'plain-task', `---
+title: Just a task
+status: open
+kind: task
+---
+No rule tag.
+`);
+
+      const emptyApi = makeRhizomeApi('empty-test', emptyDir);
+      const res = await httpRequest(emptyApi, 'GET', '/rhizome?cityId=empty-test');
+
+      expect(res.status).toBe(200);
+      expect(res.data.nodes).toHaveLength(0);
+      expect(res.data.links).toHaveLength(0);
+      expect(res.data.downstream).toEqual({});
     });
   });
 
