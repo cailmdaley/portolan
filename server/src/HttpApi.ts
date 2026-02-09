@@ -22,6 +22,8 @@ import type { TranscriptReader } from './TranscriptReader.js';
 import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 import type { CardStatePersistence } from './CardStatePersistence.js';
 import { shellEscape } from './KittyIntegration.js';
+import { getFibersByTag, getAllFibers, type Fiber } from './FiberReader.js';
+import { readEvidence, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -132,6 +134,16 @@ export class HttpApi {
         'Access-Control-Max-Age': '86400',
       });
       res.end();
+      return true;
+    }
+
+    if (url.pathname === '/rhizome') {
+      await this.handleRhizome(url, res);
+      return true;
+    }
+
+    if (url.pathname.startsWith('/rhizome-asset/')) {
+      await this.handleRhizomeAsset(url, res);
       return true;
     }
 
@@ -278,6 +290,257 @@ export class HttpApi {
     const origin = this.originLookup.getOrigin(city.originId);
     const persistedCity = this.persistenceLookup.getCityById(city.id);
     return origin?.sshHost || persistedCity?.sshHost || city.originId.replace('remote-', '');
+  }
+
+  // ============================================================================
+  // Rhizome Endpoint
+  // ============================================================================
+
+  /**
+   * GET /rhizome?cityId=xxx
+   *
+   * Returns the full DAG for RhizomeView: fibers with rule: tags,
+   * dependency edges, evidence summary per fiber, staleness flags.
+   */
+  private async handleRhizome(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      // Get all fibers with rule: tags
+      const ruleFibers = await this.getRhizomeFibers(city.path, sshHost);
+      const fiberIds = new Set(ruleFibers.map(f => f.id));
+
+      // Build spec name map: fiberId → specName
+      const fiberSpecMap = new Map<string, string>();
+      for (const fiber of ruleFibers) {
+        const specName = getSpecName(fiber.tags || []);
+        if (specName) {
+          fiberSpecMap.set(fiber.id, specName);
+        }
+      }
+
+      // Read evidence for each fiber (parallel)
+      const evidenceMap = new Map<string, Evidence | null>();
+      const evidencePromises = Array.from(fiberSpecMap.entries()).map(
+        async ([, specName]) => {
+          const ev = await readEvidence(city.path, specName, sshHost);
+          evidenceMap.set(specName, ev);
+        }
+      );
+      await Promise.all(evidencePromises);
+
+      // Build response
+      const nodes = ruleFibers.map(fiber => {
+        const specName = fiberSpecMap.get(fiber.id);
+        const evidence = specName ? evidenceMap.get(specName) : null;
+        const staleness = computeStaleness(
+          fiber.id,
+          (fiber.dependsOn || []).filter(d => fiberIds.has(d)),
+          evidenceMap,
+          fiberSpecMap,
+        );
+
+        return {
+          id: fiber.id,
+          title: fiber.title,
+          kind: fiber.kind,
+          status: fiber.status,
+          body: fiber.body,
+          dependsOn: (fiber.dependsOn || []).filter(d => fiberIds.has(d)),
+          specName: specName || null,
+          staleness,
+          evidence: evidence ? {
+            metrics: evidence.metrics,
+            artifacts: evidence.artifacts,
+            mtime: evidence.mtime,
+            generated: evidence.generated,
+          } : null,
+        };
+      });
+
+      // Build edges
+      const links = [];
+      for (const fiber of ruleFibers) {
+        for (const dep of (fiber.dependsOn || [])) {
+          if (fiberIds.has(dep)) {
+            links.push({ source: dep, target: fiber.id });
+          }
+        }
+      }
+
+      // Also gather downstream concerns (non-rule fibers that depend on rule fibers)
+      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
+      for (const fiber of allFibers) {
+        if (fiberIds.has(fiber.id)) continue; // skip rule fibers themselves
+        for (const dep of (fiber.dependsOn || [])) {
+          if (fiberIds.has(dep)) {
+            if (!downstreamMap[dep]) downstreamMap[dep] = [];
+            downstreamMap[dep].push({
+              id: fiber.id,
+              title: fiber.title,
+              status: fiber.status,
+              kind: fiber.kind,
+            });
+          }
+        }
+      }
+
+      this.sendJsonSuccess(res, {
+        nodes,
+        links,
+        downstream: downstreamMap,
+      });
+    } catch (error: any) {
+      console.error('Failed to build rhizome:', error);
+      this.sendJsonError(res, 500, 'Failed to build rhizome: ' + error.message);
+    }
+  }
+
+  /**
+   * Get fibers with rule: tags for a city (local or remote).
+   */
+  private async getRhizomeFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
+    if (!sshHost) {
+      return getFibersByTag(cityPath, 'rule:');
+    }
+
+    // Remote: use felt CLI via SSH
+    const cmd = `cd ${shellEscape(cityPath)} && felt ls -s all --json --body 2>/dev/null || echo '[]'`;
+    const { stdout } = await execFileAsync(
+      'ssh', [sshHost, cmd],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
+    );
+
+    const fibers = JSON.parse(stdout.trim() || '[]');
+    return fibers
+      .filter((f: any) => f.tags?.some((t: string) => t.startsWith('rule:')))
+      .map((f: any): Fiber => ({
+        id: f.id,
+        title: f.title || f.id,
+        status: f.status || 'open',
+        kind: f.kind || 'task',
+        priority: f.priority || 2,
+        createdAt: f.created_at || '',
+        closedAt: f.closed_at,
+        reason: f.close_reason,
+        body: f.body,
+        tags: f.tags,
+        dependsOn: f.depends_on,
+      }));
+  }
+
+  /**
+   * Get all fibers for a city (for downstream concern detection).
+   */
+  private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
+    if (!sshHost) {
+      return getAllFibers(cityPath);
+    }
+
+    const cmd = `cd ${shellEscape(cityPath)} && felt ls -s all --json 2>/dev/null || echo '[]'`;
+    const { stdout } = await execFileAsync(
+      'ssh', [sshHost, cmd],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
+    );
+
+    const fibers = JSON.parse(stdout.trim() || '[]');
+    return fibers.map((f: any): Fiber => ({
+      id: f.id,
+      title: f.title || f.id,
+      status: f.status || 'open',
+      kind: f.kind || 'task',
+      priority: f.priority || 2,
+      createdAt: f.created_at || '',
+      closedAt: f.closed_at,
+      reason: f.close_reason,
+      body: f.body,
+      tags: f.tags,
+      dependsOn: f.depends_on,
+    }));
+  }
+
+  /**
+   * Serve evidence artifacts (plots, images) from results/claims/{specName}/
+   * GET /rhizome-asset/{specName}/{filename}?cityId=xxx
+   */
+  private async handleRhizomeAsset(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    const pathAfterPrefix = url.pathname.replace('/rhizome-asset/', '');
+    const parts = pathAfterPrefix.split('/');
+
+    if (!cityId || parts.length < 2) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing cityId or invalid asset path');
+      return;
+    }
+
+    const specName = parts[0];
+    const filename = parts.slice(1).join('/');
+
+    // Security: prevent directory traversal and shell injection
+    if (specName.includes('..') || filename.includes('..') || /[`$"\\]/.test(specName + filename)) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Invalid asset path');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('City not found');
+      return;
+    }
+
+    const fullPath = `${city.path}/results/claims/${specName}/${filename}`;
+
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const contentTypes: Record<string, string> = {
+      'png': 'image/png',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'svg': 'image/svg+xml',
+      'gif': 'image/gif',
+      'pdf': 'application/pdf',
+    };
+    const contentType = contentTypes[ext || ''] || 'application/octet-stream';
+
+    try {
+      let data: Buffer;
+      if (city.originId === 'local') {
+        const { readFileSync } = await import('fs');
+        data = readFileSync(fullPath);
+      } else {
+        const sshHost = this.getSshHost(city);
+        const { stdout } = await execFileAsync(
+          'ssh', [sshHost, `cat ${shellEscape(fullPath)}`],
+          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' },
+        );
+        data = stdout as unknown as Buffer;
+      }
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-cache',
+      });
+      res.end(data);
+    } catch (error) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end(`Asset not found: ${specName}/${filename}`);
+    }
   }
 
   /**

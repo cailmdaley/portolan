@@ -12,6 +12,8 @@ export interface Fiber {
   body?: string;     // markdown body after frontmatter
   reason?: string;   // close reason from frontmatter
   closedAt?: string; // ISO date from frontmatter
+  tags?: string[];   // e.g. ["rule:cosebis_data_vector"]
+  dependsOn?: string[]; // fiber IDs this depends on
 }
 
 /**
@@ -127,7 +129,84 @@ export async function getRecentlyClosed(cityPath: string, limit: number): Promis
  * @param content File content with YAML frontmatter
  * @returns Fiber object
  */
-function parseFiber(filename: string, content: string): Fiber {
+/**
+ * Gets all fibers (any status) matching a tag prefix.
+ *
+ * @param cityPath Absolute path to the city directory
+ * @param tagPrefix Tag prefix to filter by (e.g., "rule:")
+ * @returns Array of matching fibers
+ */
+export async function getFibersByTag(cityPath: string, tagPrefix: string): Promise<Fiber[]> {
+  const feltPath = join(cityPath, '.felt');
+
+  if (!existsSync(feltPath)) {
+    return [];
+  }
+
+  try {
+    const files = await readdir(feltPath);
+    const mdFiles = files.filter(f => f.endsWith('.md'));
+
+    const fibers: Fiber[] = [];
+
+    for (const file of mdFiles) {
+      const filePath = join(feltPath, file);
+      try {
+        const content = await readFile(filePath, 'utf-8');
+        const fiber = parseFiber(file, content);
+
+        if (fiber.tags?.some(t => t.startsWith(tagPrefix))) {
+          fibers.push(fiber);
+        }
+      } catch (err) {
+        console.warn(`Failed to read fiber file ${filePath}:`, err);
+      }
+    }
+
+    return fibers;
+  } catch (err) {
+    console.warn(`Failed to read .felt directory at ${feltPath}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Gets all fibers for a city regardless of status.
+ */
+export async function getAllFibers(cityPath: string): Promise<Fiber[]> {
+  const feltPath = join(cityPath, '.felt');
+
+  if (!existsSync(feltPath)) {
+    return [];
+  }
+
+  try {
+    const files = await readdir(feltPath);
+    const mdFiles = files.filter(f => f.endsWith('.md'));
+
+    const fibers: Fiber[] = [];
+
+    for (const file of mdFiles) {
+      const filePath = join(feltPath, file);
+      try {
+        const content = await readFile(filePath, 'utf-8');
+        fibers.push(parseFiber(file, content));
+      } catch (err) {
+        console.warn(`Failed to read fiber file ${filePath}:`, err);
+      }
+    }
+
+    return fibers;
+  } catch (err) {
+    console.warn(`Failed to read .felt directory at ${feltPath}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Export for testing.
+ */
+export function parseFiber(filename: string, content: string): Fiber {
   const id = filename.replace(/\.md$/, '');
 
   // Extract frontmatter
@@ -135,12 +214,25 @@ function parseFiber(filename: string, content: string): Fiber {
   const frontmatter = fmMatch ? fmMatch[1] : '';
   const body = fmMatch ? content.slice(fmMatch[0].length).trim() : content.trim();
 
-  // Parse frontmatter fields
+  // Parse single-line frontmatter field
   const getField = (name: string): string | undefined => {
     const match = frontmatter.match(new RegExp(`^${name}:\\s*(.+)$`, 'm'));
     if (!match) return undefined;
     return match[1].trim().replace(/^["']|["']$/g, '');
   };
+
+  // Parse YAML list field (indented "- item" lines after field header)
+  const getListField = (name: string): string[] | undefined => {
+    const regex = new RegExp(`^${name}:\\s*\\n((?:[ \\t]+- .+\\n?)*)`, 'm');
+    const match = frontmatter.match(regex);
+    if (!match) return undefined;
+    const items = match[1].match(/^\s+- (.+)$/gm);
+    if (!items) return undefined;
+    return items.map(line => line.replace(/^\s+- /, '').trim().replace(/^["']|["']$/g, ''));
+  };
+
+  const tags = getListField('tags');
+  const dependsOn = getListField('depends-on');
 
   return {
     id,
@@ -148,10 +240,12 @@ function parseFiber(filename: string, content: string): Fiber {
     status: getField('status') || 'open',
     kind: getField('kind') || 'task',
     priority: parseInt(getField('priority') || '2', 10),
-    createdAt: getField('created') || '',
-    closedAt: getField('closed') || undefined,
-    reason: getField('reason') || undefined,
+    createdAt: getField('created-at') || getField('created') || '',
+    closedAt: getField('closed-at') || getField('closed') || undefined,
+    reason: getField('close-reason') || getField('reason') || undefined,
     body: body || undefined,
+    tags: tags,
+    dependsOn: dependsOn,
   };
 }
 
