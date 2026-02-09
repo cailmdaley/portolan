@@ -1,6 +1,6 @@
-// RhizomeView — native DAG visualization for rule: fibers.
-// Replaces the iframe-based ClaimsDashboard with D3 force-directed layout,
-// organic node shapes, staleness coloring, and fiber detail panel.
+// RhizomeView — native DAG visualization for fibers.
+// D3 force-directed layout with organic node shapes, staleness coloring,
+// fiber detail panel, and annotation support.
 
 import * as d3Force from 'd3-force'
 import * as d3Selection from 'd3-selection'
@@ -70,14 +70,18 @@ interface ClaimsAnnotation extends BaseAnnotation {
 
 const NODE_RX = 52
 const NODE_RY = 18
-const RING_SCALES = [1.0, 1.15, 1.3]
-const RING_COUNT = 2
+const RING_SCALES = [1.0, 1.15]
+const RING_COUNT = RING_SCALES.length
 
-const STALENESS_COLORS = {
+const STALENESS_COLORS: Record<string, string> = {
   fresh: '#5A7B7B',   // teal
   stale: '#A87070',   // red
   unknown: '#7A7368', // muted gray
-} as const
+}
+
+function stalenessColor(staleness: string): string {
+  return STALENESS_COLORS[staleness] || STALENESS_COLORS.unknown
+}
 
 // ── Procedural helpers ───────────────────────────────────────────────
 
@@ -136,7 +140,7 @@ function ringOpacity(index: number): number {
   return 0.9 * (1 - index / (RING_SCALES.length * 3))
 }
 
-function ellipsePoint(cx: number, cy: number, rx: number, ry: number, theta: number) {
+function ellipsePoint(cx: number, cy: number, rx: number, ry: number, theta: number): { x: number; y: number } {
   return {
     x: cx + rx * Math.cos(theta),
     y: cy + ry * Math.sin(theta),
@@ -149,10 +153,10 @@ function shortName(title: string): string {
   return words.slice(0, 3).join(' ')
 }
 
-function stalenessIcon(staleness: string): string {
-  if (staleness === 'fresh') return '●'
-  if (staleness === 'stale') return '◌'
-  return '○'
+function stalenessIcon(staleness: RhizomeNode['staleness']): string {
+  if (staleness === 'fresh') return '\u25CF'
+  if (staleness === 'stale') return '\u25CC'
+  return '\u25CB'
 }
 
 // ── RhizomeView ──────────────────────────────────────────────────────
@@ -517,14 +521,13 @@ export class RhizomeView {
     const edgePaths: d3Selection.Selection<SVGPathElement, unknown, null, undefined>[] = []
 
     simLinks.forEach(link => {
-      const color = STALENESS_COLORS[link.target.data.staleness] || STALENESS_COLORS.unknown
+      const color = stalenessColor(link.target.data.staleness)
       const edgeRand = seededRandom(hashString(link.source.data.id + link.target.data.id))
-      const strandCount = 2
       const tension = 0.4 + edgeRand() * 0.1
       const cpOffset1 = (edgeRand() - 0.5) * 8
       const cpOffset2 = (edgeRand() - 0.5) * 8
 
-      for (let s = 0; s < strandCount; s++) {
+      for (let s = 0; s < RING_COUNT; s++) {
         const strandOpacity = ringOpacity(s) * 0.4
 
         const path = edgeGroup.append('path')
@@ -533,8 +536,7 @@ export class RhizomeView {
           .attr('stroke', color)
           .attr('stroke-width', 1)
           .attr('stroke-opacity', strandOpacity)
-          .attr('stroke-linecap', 'round')
-          .attr('fill', 'none') as d3Selection.Selection<SVGPathElement, unknown, null, undefined>
+          .attr('stroke-linecap', 'round') as d3Selection.Selection<SVGPathElement, unknown, null, undefined>
 
         edgePaths.push(path)
       }
@@ -549,7 +551,6 @@ export class RhizomeView {
       .enter()
       .append('g')
       .attr('class', 'rhizome-node')
-      .style('cursor', 'grab')
       .call(d3Drag.drag<SVGGElement, SimNode>()
         .on('start', (event, d) => {
           draggedDistance = 0
@@ -575,7 +576,7 @@ export class RhizomeView {
     // Build node visuals
     nodeElements.each(function (d) {
       const g = d3Selection.select(this)
-      const color = STALENESS_COLORS[d.data.staleness] || STALENESS_COLORS.unknown
+      const color = stalenessColor(d.data.staleness)
       const nodeSeed = hashString(d.data.id) / 1000000
 
       // Fill layers
@@ -720,17 +721,16 @@ export class RhizomeView {
   private updateHighlighting(): void {
     if (!this.selectedNodeId || !this.rhizomeData) return
 
-    const connectedNodes = new Set([this.selectedNodeId])
+    const selectedId = this.selectedNodeId
+    const connectedNodes = new Set([selectedId])
     this.rhizomeData.nodes.forEach(n => {
-      if (n.id === this.selectedNodeId) {
+      if (n.id === selectedId) {
         n.dependsOn.forEach(dep => connectedNodes.add(dep))
       }
-      if (n.dependsOn.includes(this.selectedNodeId!)) {
+      if (n.dependsOn.includes(selectedId)) {
         connectedNodes.add(n.id)
       }
     })
-
-    const selectedId = this.selectedNodeId
 
     d3Selection.selectAll<SVGGElement, SimNode>('.rhizome-node').each(function (d) {
       const el = d3Selection.select(this)
@@ -762,7 +762,7 @@ export class RhizomeView {
     if (!node) return
 
     const downstream = this.rhizomeData.downstream[nodeId] || []
-    const stalenessColor = STALENESS_COLORS[node.staleness]
+    const nodeColor = stalenessColor(node.staleness)
 
     // Dependencies
     const depsHtml = node.dependsOn.length > 0
@@ -801,28 +801,31 @@ export class RhizomeView {
       ? `<div class="rhizome-detail-body">${renderMarkdown(node.body)}</div>`
       : ''
 
-    // Evidence metrics
+    // Evidence metrics — flatten nested objects into key.subkey pairs
     let evidenceHtml = ''
     if (node.evidence?.metrics && Object.keys(node.evidence.metrics).length > 0) {
+      const items: Array<{ key: string; value: string }> = []
+      for (const [key, value] of Object.entries(node.evidence.metrics)) {
+        if (typeof value === 'object' && value !== null) {
+          for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+            items.push({ key: `${key}.${k}`, value: typeof v === 'number' ? v.toFixed(4) : String(v) })
+          }
+        } else {
+          items.push({ key, value: typeof value === 'number' ? value.toFixed(4) : String(value) })
+        }
+      }
+      const itemsHtml = items.map(({ key, value }) =>
+        `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
+      ).join('')
       evidenceHtml = `
         <div class="rhizome-evidence-section">
           <h3 class="rhizome-collapsible" data-target="evidence-container">
             <span class="toggle-icon">\u25B8</span> Evidence
           </h3>
           <div class="evidence-container collapsed">
-            <div class="rhizome-evidence">`
-      for (const [key, value] of Object.entries(node.evidence.metrics)) {
-        if (typeof value === 'object' && value !== null) {
-          for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-            const formatted = typeof v === 'number' ? v.toFixed(4) : String(v)
-            evidenceHtml += `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}.${escapeHtml(k)}</span><span class="evidence-value">${escapeHtml(formatted)}</span></div>`
-          }
-        } else {
-          const formatted = typeof value === 'number' ? (value as number).toFixed(4) : String(value)
-          evidenceHtml += `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(formatted)}</span></div>`
-        }
-      }
-      evidenceHtml += '</div></div></div>'
+            <div class="rhizome-evidence">${itemsHtml}</div>
+          </div>
+        </div>`
     }
 
     // Downstream concerns
@@ -849,7 +852,7 @@ export class RhizomeView {
     this.detailPanel.innerHTML = `
       <div class="rhizome-detail-header">
         <div class="rhizome-detail-title">
-          <span class="staleness-badge" style="color: ${stalenessColor}">${stalenessIcon(node.staleness)}</span>
+          <span class="staleness-badge" style="color: ${nodeColor}">${stalenessIcon(node.staleness)}</span>
           <span class="detail-name">${escapeHtml(shortName(node.title))}</span>
           <span class="detail-status">${escapeHtml(node.status)}</span>
         </div>
@@ -888,8 +891,8 @@ export class RhizomeView {
         const container = this.detailPanel.querySelector(`.${target}`)
         const icon = h3.querySelector('.toggle-icon')
         if (container && icon) {
-          const isExpanded = container.classList.toggle('collapsed')
-          icon.textContent = isExpanded ? '\u25B8' : '\u25BE'
+          const isCollapsed = container.classList.toggle('collapsed')
+          icon.textContent = isCollapsed ? '\u25B8' : '\u25BE'
         }
       })
     })
@@ -933,9 +936,7 @@ export class RhizomeView {
       .classed('selected', false)
       .style('opacity', 1)
     d3Selection.selectAll('.rhizome-link')
-      .attr('stroke-opacity', function () {
-        return (this as SVGPathElement).getAttribute('data-base-opacity') || '0.3'
-      })
+      .attr('stroke-opacity', 0.3)
   }
 
   // ── Lightbox ───────────────────────────────────────────────────────
@@ -1016,7 +1017,7 @@ export class RhizomeView {
       this.searchResults.innerHTML = '<div class="search-no-results">no matches</div>'
     } else {
       matches.forEach(m => {
-        const color = STALENESS_COLORS[m.node.staleness] || STALENESS_COLORS.unknown
+        const color = stalenessColor(m.node.staleness)
         const div = document.createElement('div')
         div.className = 'search-result'
         div.innerHTML = `

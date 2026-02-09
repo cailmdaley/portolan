@@ -4910,25 +4910,7 @@
         height: 100%;
       }
 
-      .rhizome-loading {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        color: var(--ui-text-muted);
-        font-family: var(--font-main);
-        font-size: 1rem;
-        font-style: italic;
-        animation: subtlePulse 1.5s ease-in-out infinite;
-        z-index: 5;
-      }
-
-      .rhizome-loading.error {
-        color: #8B4513;
-        animation: none;
-        font-style: normal;
-      }
-
+      .rhizome-loading,
       .rhizome-empty {
         position: absolute;
         top: 50%;
@@ -4940,10 +4922,21 @@
         font-style: italic;
       }
 
+      .rhizome-loading {
+        animation: subtlePulse 1.5s ease-in-out infinite;
+        z-index: 5;
+      }
+
+      .rhizome-loading.error {
+        color: var(--ui-red);
+        animation: none;
+        font-style: normal;
+      }
+
       /* ── DAG nodes ── */
 
       .rhizome-node {
-        cursor: pointer;
+        cursor: grab;
       }
 
       .rhizome-node:hover path {

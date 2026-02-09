@@ -233,10 +233,10 @@ function handleViewChange(view: GlobalView): void {
 
 // ViewSwitcher removed — view stays on 'map' for now
 
-// Setup claims dashboard (legacy — will be removed)
+// Legacy claims dashboard (iframe-based, superseded by RhizomeView)
 const claimsDashboard = new ClaimsDashboard()
 
-// Setup rhizome view (native DAG — replacement for claims dashboard)
+// Rhizome view — native DAG visualization for fibers
 const rhizomeView = new RhizomeView()
 
 // Wire up View Claims button — uses native RhizomeView
@@ -245,16 +245,13 @@ cityPanel.setOnViewClaims((city) => {
 })
 
 // Wire up worker lookup for both views
-claimsDashboard.setOnGetWorkers((city) => {
+function getCityWorkers(city: City): { id: string; name: string; tmuxSession: string }[] {
   return sessions
     .filter(s => s.cityId === city.id && s.originId === city.originId)
     .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
-})
-rhizomeView.setOnGetWorkers((city) => {
-  return sessions
-    .filter(s => s.cityId === city.id && s.originId === city.originId)
-    .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
-})
+}
+claimsDashboard.setOnGetWorkers(getCityWorkers)
+rhizomeView.setOnGetWorkers(getCityWorkers)
 
 // Setup playground viewer
 const playgroundViewer = new PlaygroundViewer()
