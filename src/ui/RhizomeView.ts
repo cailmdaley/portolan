@@ -177,6 +177,7 @@ export class RhizomeView {
   private selectedNodeId: string | null = null
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private currentPlotIndex = 0
+  private detailWidth = 420
 
   // HMR-safe listener refs
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -841,7 +842,7 @@ export class RhizomeView {
           <div class="downstream-container collapsed">
             ${downstream.map(d => {
               const icon = d.status === 'closed' ? '\u25CF' : d.status === 'active' ? '\u25D0' : '\u25CB'
-              return `<div class="downstream-item">
+              return `<div class="downstream-item" data-fiber-id="${escapeHtml(d.id)}">
                 <span class="downstream-status">${icon}</span>
                 <span class="downstream-title">${escapeHtml(d.title)}</span>
                 <span class="downstream-kind">${escapeHtml(d.kind)}</span>
@@ -852,6 +853,7 @@ export class RhizomeView {
     }
 
     this.detailPanel.innerHTML = `
+      <div class="rhizome-detail-resize"></div>
       <div class="rhizome-detail-header">
         <div class="rhizome-detail-title">
           <span class="staleness-badge" style="color: ${nodeColor}">${stalenessIcon(node.staleness)}</span>
@@ -869,6 +871,7 @@ export class RhizomeView {
       </div>
     `
 
+    this.detailPanel.style.width = `${this.detailWidth}px`
     this.detailPanel.classList.remove('hidden')
 
     // Highlight code blocks in body
@@ -884,6 +887,27 @@ export class RhizomeView {
     this.detailPanel.querySelector('.rhizome-detail-close')?.addEventListener('click', () => {
       this.hideDetail()
     })
+
+    // Resize handle
+    const resizeHandle = this.detailPanel.querySelector('.rhizome-detail-resize')
+    if (resizeHandle) {
+      resizeHandle.addEventListener('mousedown', (e) => {
+        e.preventDefault()
+        const startX = (e as MouseEvent).clientX
+        const startWidth = this.detailWidth
+        const onMove = (ev: MouseEvent) => {
+          const newWidth = Math.max(280, Math.min(800, startWidth - (ev.clientX - startX)))
+          this.detailWidth = newWidth
+          this.detailPanel.style.width = `${newWidth}px`
+        }
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      })
+    }
 
     // Collapsible sections
     this.detailPanel.querySelectorAll('.rhizome-collapsible').forEach(h3 => {
@@ -919,11 +943,25 @@ export class RhizomeView {
       })
     })
 
-    // Dependency tag click → navigate
+    // Dependency tag click → navigate to node
     this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
       tag.addEventListener('click', () => {
         const depId = (tag as HTMLElement).dataset.depId
         if (depId) this.selectNode(depId)
+      })
+    })
+
+    // Downstream item click → navigate to node (if rule fiber) or show mini detail
+    this.detailPanel.querySelectorAll('.downstream-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const fiberId = (item as HTMLElement).dataset.fiberId
+        if (!fiberId || !this.rhizomeData) return
+        const dagNode = this.rhizomeData.nodes.find(n => n.id === fiberId)
+        if (dagNode) {
+          this.selectNode(fiberId)
+        } else {
+          this.showMiniFiberDetail(fiberId, item as HTMLElement)
+        }
       })
     })
   }
@@ -940,6 +978,46 @@ export class RhizomeView {
       .style('opacity', 1)
     d3Selection.selectAll('.rhizome-link')
       .attr('stroke-opacity', 0.3)
+  }
+
+  /** Show a small popover for non-rule fibers (downstream items not in the DAG). */
+  private showMiniFiberDetail(fiberId: string, anchor: HTMLElement): void {
+    // Remove any existing mini detail
+    this.detailPanel.querySelector('.rhizome-mini-detail')?.remove()
+
+    // Find fiber info from downstream data
+    if (!this.rhizomeData) return
+    let fiber: { id: string; title: string; status: string; kind: string } | undefined
+    for (const items of Object.values(this.rhizomeData.downstream)) {
+      fiber = items.find(d => d.id === fiberId)
+      if (fiber) break
+    }
+    if (!fiber) return
+
+    const icon = fiber.status === 'closed' ? '\u25CF' : fiber.status === 'active' ? '\u25D0' : '\u25CB'
+    const mini = document.createElement('div')
+    mini.className = 'rhizome-mini-detail'
+    mini.innerHTML = `
+      <div class="mini-detail-header">
+        <span class="mini-detail-status">${icon}</span>
+        <span class="mini-detail-title">${escapeHtml(fiber.title)}</span>
+        <span class="mini-detail-kind">${escapeHtml(fiber.kind)}</span>
+      </div>
+      <div class="mini-detail-id">${escapeHtml(fiber.id)}</div>
+    `
+
+    // Position relative to anchor
+    anchor.style.position = 'relative'
+    anchor.appendChild(mini)
+
+    // Dismiss on click outside
+    const dismiss = (e: MouseEvent) => {
+      if (!mini.contains(e.target as Node)) {
+        mini.remove()
+        document.removeEventListener('click', dismiss, true)
+      }
+    }
+    setTimeout(() => document.addEventListener('click', dismiss, true), 0)
   }
 
   // ── Lightbox ───────────────────────────────────────────────────────

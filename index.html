@@ -5052,14 +5052,31 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        transition: width 200ms ease, opacity 200ms ease;
+        position: relative;
       }
 
       .rhizome-detail.hidden {
-        width: 0;
+        width: 0 !important;
         opacity: 0;
         border: none;
         overflow: hidden;
+      }
+
+      .rhizome-detail-resize {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        cursor: col-resize;
+        z-index: 10;
+        background: transparent;
+      }
+
+      .rhizome-detail-resize:hover,
+      .rhizome-detail-resize:active {
+        background: var(--accent-gold);
+        opacity: 0.4;
       }
 
       .rhizome-detail-header {
@@ -5357,6 +5374,13 @@
         gap: 0.3rem;
         padding: 0.2rem 0;
         font-size: 0.78rem;
+        cursor: pointer;
+        border-radius: 3px;
+        padding: 0.2rem 0.3rem;
+      }
+
+      .downstream-item:hover {
+        background: var(--ui-dark-surface);
       }
 
       .downstream-status {
@@ -5375,6 +5399,52 @@
         font-size: 0.65rem;
         color: var(--ui-text-muted);
         margin-left: auto;
+      }
+
+      .rhizome-mini-detail {
+        position: absolute;
+        left: -8px;
+        top: 100%;
+        z-index: 20;
+        background: var(--ui-dark-surface);
+        border: 1px solid var(--ui-border);
+        border-radius: 4px;
+        padding: 0.5rem 0.7rem;
+        min-width: 240px;
+        max-width: 360px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      }
+
+      .mini-detail-header {
+        display: flex;
+        align-items: baseline;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+      }
+
+      .mini-detail-status {
+        font-size: 0.6rem;
+        color: var(--ui-text-muted);
+      }
+
+      .mini-detail-title {
+        color: var(--ui-text);
+        font-family: var(--font-main);
+        font-weight: 500;
+      }
+
+      .mini-detail-kind {
+        font-family: var(--font-mono);
+        font-size: 0.65rem;
+        color: var(--ui-text-muted);
+        margin-left: auto;
+      }
+
+      .mini-detail-id {
+        font-family: var(--font-mono);
+        font-size: 0.6rem;
+        color: var(--ui-text-muted);
+        margin-top: 0.2rem;
       }
 
       /* ── Annotation panel (reuses claims classes) ── */
