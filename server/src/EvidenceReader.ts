@@ -33,14 +33,50 @@ export async function readEvidence(
   const evidenceDir = `${cityPath}/results/claims/${specName}`;
 
   try {
-    if (!sshHost) {
-      return await readLocalEvidence(evidenceDir, specName);
-    } else {
+    if (sshHost) {
       return await readRemoteEvidence(sshHost, evidenceDir, specName);
     }
+    return await readLocalEvidence(evidenceDir, specName);
   } catch {
     return null;
   }
+}
+
+const IMAGE_RE = /\.(png|jpe?g)$/i;
+
+function mergeImageArtifacts(
+  artifacts: Record<string, string>,
+  filenames: string[],
+): void {
+  for (const f of filenames) {
+    if (IMAGE_RE.test(f)) {
+      const stem = f.replace(/\.[^.]+$/, '');
+      if (!artifacts[stem]) {
+        artifacts[stem] = f;
+      }
+    }
+  }
+}
+
+function buildEvidence(
+  specName: string,
+  data: Record<string, unknown>,
+  mtime: number,
+  artifacts: Record<string, string>,
+): Evidence {
+  return {
+    specName,
+    metrics: (data.evidence as Record<string, unknown>) || {},
+    artifacts,
+    mtime,
+    generated: (data.generated as string) ?? null,
+  };
+}
+
+function parseArtifactsFromData(data: Record<string, unknown>): Record<string, string> {
+  return {
+    ...((data.artifact_paths || data.artifacts || {}) as Record<string, string>),
+  };
 }
 
 async function readLocalEvidence(evidenceDir: string, specName: string): Promise<Evidence | null> {
@@ -55,34 +91,16 @@ async function readLocalEvidence(evidenceDir: string, specName: string): Promise
   }
 
   const content = await readFile(evidencePath, 'utf-8');
-  const data = JSON.parse(content);
-
-  // Collect artifacts from evidence.json + PNG/JPG files in directory
-  const artifacts: Record<string, string> = {
-    ...(data.artifact_paths || data.artifacts || {}),
-  };
+  const data = JSON.parse(content) as Record<string, unknown>;
+  const artifacts = parseArtifactsFromData(data);
 
   try {
-    const files = await readdir(evidenceDir);
-    for (const f of files) {
-      if (/\.(png|jpe?g)$/i.test(f)) {
-        const stem = f.replace(/\.[^.]+$/, '');
-        if (!artifacts[stem]) {
-          artifacts[stem] = f;
-        }
-      }
-    }
+    mergeImageArtifacts(artifacts, await readdir(evidenceDir));
   } catch {
     // directory listing failed — use what we have
   }
 
-  return {
-    specName,
-    metrics: data.evidence || {},
-    artifacts,
-    mtime,
-    generated: data.generated ?? null,
-  };
+  return buildEvidence(specName, data, mtime, artifacts);
 }
 
 async function readRemoteEvidence(
@@ -90,11 +108,12 @@ async function readRemoteEvidence(
   evidenceDir: string,
   specName: string,
 ): Promise<Evidence | null> {
-  // Read evidence.json and its mtime in one SSH call
+  const escapedPath = shellEscape(evidenceDir + '/evidence.json');
+  const escapedDir = shellEscape(evidenceDir);
   const cmd = [
-    `stat -c '%Y' ${shellEscape(evidenceDir + '/evidence.json')} 2>/dev/null || stat -f '%m' ${shellEscape(evidenceDir + '/evidence.json')} 2>/dev/null`,
-    `cat ${shellEscape(evidenceDir + '/evidence.json')}`,
-    `ls ${shellEscape(evidenceDir)}/*.png ${shellEscape(evidenceDir)}/*.jpg 2>/dev/null || true`,
+    `stat -c '%Y' ${escapedPath} 2>/dev/null || stat -f '%m' ${escapedPath} 2>/dev/null`,
+    `cat ${escapedPath}`,
+    `ls ${escapedDir}/*.png ${escapedDir}/*.jpg 2>/dev/null || true`,
   ].join(' && echo "---SEPARATOR---" && ');
 
   const { stdout } = await execFileAsync(
@@ -105,38 +124,20 @@ async function readRemoteEvidence(
   const parts = stdout.split('---SEPARATOR---');
   if (parts.length < 2) return null;
 
-  const mtimeStr = parts[0].trim();
-  const mtime = parseInt(mtimeStr, 10) * 1000; // convert seconds to ms
+  const mtime = parseInt(parts[0].trim(), 10) * 1000; // seconds to ms
   if (isNaN(mtime)) return null;
 
-  const jsonStr = parts[1].trim();
-  const data = JSON.parse(jsonStr);
+  const data = JSON.parse(parts[1].trim()) as Record<string, unknown>;
+  const artifacts = parseArtifactsFromData(data);
 
-  const artifacts: Record<string, string> = {
-    ...(data.artifact_paths || data.artifacts || {}),
-  };
-
-  // Parse ls output for additional images
   if (parts[2]) {
-    const files = parts[2].trim().split('\n').filter(Boolean);
-    for (const f of files) {
-      const filename = f.split('/').pop()!;
-      if (/\.(png|jpe?g)$/i.test(filename)) {
-        const stem = filename.replace(/\.[^.]+$/, '');
-        if (!artifacts[stem]) {
-          artifacts[stem] = filename;
-        }
-      }
-    }
+    const filenames = parts[2].trim().split('\n')
+      .filter(Boolean)
+      .map(f => f.split('/').pop()!);
+    mergeImageArtifacts(artifacts, filenames);
   }
 
-  return {
-    specName,
-    metrics: data.evidence || {},
-    artifacts,
-    mtime,
-    generated: data.generated ?? null,
-  };
+  return buildEvidence(specName, data, mtime, artifacts);
 }
 
 /**

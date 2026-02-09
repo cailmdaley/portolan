@@ -184,9 +184,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     const globalTextarea = this.globalInputEl.querySelector('textarea')
     if (globalTextarea) {
       globalTextarea.addEventListener('input', () => {
-        const ta = globalTextarea as HTMLTextAreaElement
-        ta.style.height = 'auto'
-        ta.style.height = ta.scrollHeight + 'px'
+        this.autoResizeTextarea(globalTextarea)
       })
     }
 
@@ -197,6 +195,11 @@ export class AnnotationPanel<T extends BaseAnnotation> {
 
   private collapseGlyph(collapsed: boolean): string {
     return collapsed ? '\u25B6' : '\u25C0'
+  }
+
+  private autoResizeTextarea(textarea: HTMLTextAreaElement): void {
+    textarea.style.height = 'auto'
+    textarea.style.height = textarea.scrollHeight + 'px'
   }
 
   // ── List rendering ─────────────────────────────────────────────────
@@ -284,9 +287,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     const saveBtn = commentEl.querySelector('.ann-edit-save')!
     const cancelBtn = commentEl.querySelector('.ann-edit-cancel')!
 
-    // Auto-resize
-    textarea.style.height = 'auto'
-    textarea.style.height = textarea.scrollHeight + 'px'
+    this.autoResizeTextarea(textarea)
 
     const finishEdit = async (save: boolean): Promise<void> => {
       if (save) {
@@ -344,21 +345,22 @@ export class AnnotationPanel<T extends BaseAnnotation> {
   }
 
   private async clearAll(): Promise<void> {
-    try {
-      await Promise.all(
-        this.annotations.map(ann =>
-          this.fetchApi(
-            `/annotations/${encodeURIComponent(ann.id)}`,
-            { method: 'DELETE' }
-          )
+    const results = await Promise.all(
+      this.annotations.map(ann =>
+        this.fetchApi(
+          `/annotations/${encodeURIComponent(ann.id)}`,
+          { method: 'DELETE' }
         )
       )
-      showToast('All annotations cleared', 'success', 2000)
-      await this.options.onRefresh()
-    } catch (err) {
-      console.error('Failed to clear annotations:', err)
-      showToast('Failed to clear annotations', 'error')
+    )
+
+    if (results.some(r => r === null)) {
+      showToast('Some annotations failed to delete', 'error')
+      return
     }
+
+    showToast('All annotations cleared', 'success', 2000)
+    await this.options.onRefresh()
   }
 
   // ── Footer ─────────────────────────────────────────────────────────
@@ -380,11 +382,6 @@ export class AnnotationPanel<T extends BaseAnnotation> {
   }
 
   private showWorkerPickerUI(): void {
-    if (this.annotations.length === 0) {
-      showToast('No annotations to send', 'error', 2000)
-      return
-    }
-
     const workers = this.options.getWorkers()
 
     showWorkerPicker(workers, this.annotations.length, {

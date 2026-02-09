@@ -28,6 +28,24 @@ import { readEvidence, getSpecName, computeStaleness, type Evidence } from './Ev
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+/** Shared MIME type map for binary/asset serving (rhizome assets, file-content) */
+const MIME_TYPES: Record<string, string> = {
+  'png': 'image/png',
+  'jpg': 'image/jpeg',
+  'jpeg': 'image/jpeg',
+  'gif': 'image/gif',
+  'svg': 'image/svg+xml',
+  'webp': 'image/webp',
+  'ico': 'image/x-icon',
+  'pdf': 'application/pdf',
+  'otf': 'font/otf',
+  'ttf': 'font/ttf',
+  'woff': 'font/woff',
+  'woff2': 'font/woff2',
+  'css': 'text/css',
+  'js': 'application/javascript',
+};
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -317,10 +335,11 @@ export class HttpApi {
         }
       }
 
-      // Read evidence for each fiber (parallel)
+      // Read evidence for each unique specName (parallel, deduplicated)
       const evidenceMap = new Map<string, Evidence | null>();
+      const uniqueSpecNames = new Set(fiberSpecMap.values());
       await Promise.all(
-        Array.from(fiberSpecMap.entries()).map(async ([, specName]) => {
+        Array.from(uniqueSpecNames).map(async (specName) => {
           const ev = await readEvidence(city.path, specName, sshHost);
           evidenceMap.set(specName, ev);
         })
@@ -449,22 +468,6 @@ export class HttpApi {
 
   // ── Shared asset serving ──────────────────────────────────────────
 
-  /** Content types for rhizome asset serving */
-  private readonly assetContentTypes: Record<string, string> = {
-    'png': 'image/png',
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'svg': 'image/svg+xml',
-    'gif': 'image/gif',
-    'pdf': 'application/pdf',
-    'otf': 'font/otf',
-    'ttf': 'font/ttf',
-    'woff': 'font/woff',
-    'woff2': 'font/woff2',
-    'css': 'text/css',
-    'js': 'application/javascript',
-  };
-
   /**
    * Serve a rhizome asset file (plot, image, etc.) from results/claims/.
    * Validates path, resolves city, reads file locally or via SSH.
@@ -486,7 +489,7 @@ export class HttpApi {
 
     const fullPath = `${city.path}/results/claims/${assetPath}`;
     const ext = assetPath.split('.').pop()?.toLowerCase();
-    const contentType = this.assetContentTypes[ext || ''] || 'application/octet-stream';
+    const contentType = MIME_TYPES[ext || ''] || 'application/octet-stream';
 
     try {
       let data: Buffer;
@@ -494,11 +497,13 @@ export class HttpApi {
         data = await readFile(fullPath);
       } else {
         const sshHost = this.getSshHost(city);
-        const { stdout } = await execFileAsync(
+        // encoding: 'buffer' returns { stdout: Buffer } at runtime, but
+        // promisify(execFile) types don't express this overload
+        const result = await execFileAsync(
           'ssh', [sshHost, `cat ${shellEscape(fullPath)}`],
-          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' },
+          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' as BufferEncoding },
         );
-        data = stdout as unknown as Buffer;
+        data = Buffer.from(result.stdout as unknown as Buffer);
       }
 
       res.writeHead(200, {
@@ -581,25 +586,13 @@ export class HttpApi {
     }
   }
 
-  /**
-   * Binary MIME types by extension
-   */
-  private readonly binaryMimeTypes: Record<string, string> = {
-    'png': 'image/png',
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'gif': 'image/gif',
-    'svg': 'image/svg+xml',
-    'webp': 'image/webp',
-    'ico': 'image/x-icon',
-    'pdf': 'application/pdf',
-  };
+  /** Binary extensions: subset of MIME_TYPES used for base64 data URL serving */
+  private static readonly BINARY_EXTENSIONS = new Set([
+    'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'pdf',
+  ]);
 
-  /**
-   * Check if extension is a binary type (image or PDF)
-   */
   private isBinaryExtension(ext: string): boolean {
-    return ext in this.binaryMimeTypes;
+    return HttpApi.BINARY_EXTENSIONS.has(ext);
   }
 
   /**
@@ -611,7 +604,7 @@ export class HttpApi {
     ext: string,
     res: ServerResponse
   ): Promise<void> {
-    const mimeType = this.binaryMimeTypes[ext] || 'application/octet-stream';
+    const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
     const fileType = ext === 'pdf' ? 'pdf' : 'image';
     // PDFs need larger buffer/timeout
     const maxBuffer = ext === 'pdf' ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
@@ -1672,7 +1665,10 @@ export class HttpApi {
    * Send JSON error response
    */
   private sendJsonError(res: ServerResponse, status: number, error: string): void {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
     res.end(JSON.stringify({ error }));
   }
 

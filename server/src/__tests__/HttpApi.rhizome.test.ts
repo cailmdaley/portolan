@@ -10,9 +10,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import { HttpApi } from '../HttpApi.js';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { parseFiber } from '../FiberReader.js';
+import { readEvidence, getSpecName, computeStaleness } from '../EvidenceReader.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-httpapi-rhizome');
 
@@ -321,19 +323,20 @@ priority: 2
 created-at: 2026-01-02T00:00:00Z
 ---`);
 
-    // Write upstream evidence first (older mtime)
     writeEvidence(CLAIMS_DIR, 'upstream', {
       evidence: { x: 1 },
       generated: '2026-01-10T00:00:00Z',
     });
-
-    // Wait briefly so downstream gets a newer mtime
-    await new Promise(r => setTimeout(r, 50));
-
     writeEvidence(CLAIMS_DIR, 'downstream', {
       evidence: { y: 2 },
       generated: '2026-01-15T00:00:00Z',
     });
+
+    // Force deterministic mtimes: upstream older, downstream newer
+    const oldTime = new Date('2026-01-10T00:00:00Z');
+    const newTime = new Date('2026-01-15T00:00:00Z');
+    utimesSync(join(CLAIMS_DIR, 'upstream', 'evidence.json'), oldTime, oldTime);
+    utimesSync(join(CLAIMS_DIR, 'downstream', 'evidence.json'), newTime, newTime);
 
     const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
 
@@ -364,19 +367,20 @@ priority: 2
 created-at: 2026-01-02T00:00:00Z
 ---`);
 
-    // Write downstream evidence first (older mtime)
     writeEvidence(CLAIMS_DIR, 'downstream', {
       evidence: { y: 2 },
       generated: '2026-01-10T00:00:00Z',
     });
-
-    // Wait, then write upstream evidence (newer mtime → downstream is stale)
-    await new Promise(r => setTimeout(r, 50));
-
     writeEvidence(CLAIMS_DIR, 'upstream', {
       evidence: { x: 1 },
       generated: '2026-01-15T00:00:00Z',
     });
+
+    // Force deterministic mtimes: downstream older, upstream newer (stale)
+    const oldTime = new Date('2026-01-10T00:00:00Z');
+    const newTime = new Date('2026-01-15T00:00:00Z');
+    utimesSync(join(CLAIMS_DIR, 'downstream', 'evidence.json'), oldTime, oldTime);
+    utimesSync(join(CLAIMS_DIR, 'upstream', 'evidence.json'), newTime, newTime);
 
     const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
 
@@ -482,14 +486,6 @@ describe('HttpApi — /rhizome-asset endpoint', () => {
 // ── FiberReader parseFiber tests ─────────────────────────────────
 
 describe('FiberReader — parseFiber with tags and dependsOn', () => {
-  // Import parseFiber directly for unit testing
-  let parseFiber: (filename: string, content: string) => any;
-
-  beforeEach(async () => {
-    const mod = await import('../FiberReader.js');
-    parseFiber = mod.parseFiber;
-  });
-
   it('parses tags from YAML list', () => {
     const content = `---
 title: Test fiber
@@ -589,17 +585,6 @@ Follow standard pipeline.`;
 // ── EvidenceReader unit tests ────────────────────────────────────
 
 describe('EvidenceReader', () => {
-  let readEvidence: any;
-  let getSpecName: any;
-  let computeStaleness: any;
-
-  beforeEach(async () => {
-    const mod = await import('../EvidenceReader.js');
-    readEvidence = mod.readEvidence;
-    getSpecName = mod.getSpecName;
-    computeStaleness = mod.computeStaleness;
-  });
-
   afterEach(() => {
     if (existsSync(TEST_DIR)) {
       rmSync(TEST_DIR, { recursive: true, force: true });

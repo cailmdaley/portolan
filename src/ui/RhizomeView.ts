@@ -56,6 +56,16 @@ interface SimLink extends d3Force.SimulationLinkDatum<SimNode> {
   target: SimNode
 }
 
+type SVGPathSelection = d3Selection.Selection<SVGPathElement, unknown, null, undefined>
+
+interface EdgeDatum {
+  link: SimLink
+  strandIndex: number
+  tension: number
+  cpOffset1: number
+  cpOffset2: number
+}
+
 interface ClaimsAnnotation extends BaseAnnotation {
   claimId: string
   claimTitle?: string
@@ -73,13 +83,26 @@ const NODE_RY = 18
 const RING_SCALES = [1.0, 1.15]
 const RING_COUNT = RING_SCALES.length
 
-const STALENESS_COLORS: Record<string, string> = {
-  'fresh': '#5A7B7B',       // teal
-  'stale': '#A87070',       // red
-  'no-evidence': '#7A7368', // muted gray
+const DETAIL_DEFAULT_WIDTH = 420
+const DETAIL_MIN_WIDTH = 280
+const DETAIL_MAX_WIDTH = 800
+const SIMULATION_TICKS = 500
+const SEARCH_SNIPPET_CONTEXT = 15
+const TEXT_SELECTION_TRUNCATION = 60
+const POPOVER_WIDTH = 280
+const POPOVER_HEIGHT = 160
+const POPOVER_MARGIN = 8
+const PREVIEW_TRUNCATION = 80
+
+type Staleness = RhizomeNode['staleness']
+
+const STALENESS_COLORS: Record<Staleness, string> = {
+  'fresh': '#5A7B7B',
+  'stale': '#A87070',
+  'no-evidence': '#7A7368',
 }
 
-function stalenessColor(staleness: string): string {
+function stalenessColor(staleness: Staleness): string {
   return STALENESS_COLORS[staleness] || STALENESS_COLORS['no-evidence']
 }
 
@@ -153,9 +176,15 @@ function shortName(title: string): string {
   return words.slice(0, 3).join(' ')
 }
 
-function stalenessIcon(staleness: RhizomeNode['staleness']): string {
+function stalenessIcon(staleness: Staleness): string {
   if (staleness === 'fresh') return '\u25CF'
   if (staleness === 'stale') return '\u25CC'
+  return '\u25CB'
+}
+
+function statusIcon(status: string): string {
+  if (status === 'closed') return '\u25CF'
+  if (status === 'active') return '\u25D0'
   return '\u25CB'
 }
 
@@ -177,7 +206,7 @@ export class RhizomeView {
   private selectedNodeId: string | null = null
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private currentPlotIndex = 0
-  private detailWidth = 420
+  private detailWidth = DETAIL_DEFAULT_WIDTH
 
   // HMR-safe listener refs
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -199,8 +228,8 @@ export class RhizomeView {
 
       renderPreview: (ann) => {
         if (ann.selectedText) {
-          const truncated = ann.selectedText.slice(0, 80)
-          const ellipsis = ann.selectedText.length > 80 ? '\u2026' : ''
+          const truncated = ann.selectedText.slice(0, PREVIEW_TRUNCATION)
+          const ellipsis = ann.selectedText.length > PREVIEW_TRUNCATION ? '\u2026' : ''
           return `<div class="ann-selected-text">\u201c${escapeHtml(truncated)}${ellipsis}\u201d</div>`
         }
         if (ann.artifact) {
@@ -490,7 +519,7 @@ export class RhizomeView {
     const visualGap = 60
     const minSeparation = 2 * NODE_RX + visualGap
 
-    for (let i = 0; i < 500; i++) {
+    for (let i = 0; i < SIMULATION_TICKS; i++) {
       this.simulation.tick()
       for (let iter = 0; iter < 3; iter++) {
         simLinks.forEach(link => {
@@ -522,7 +551,7 @@ export class RhizomeView {
 
     // Draw edges
     const edgeGroup = rootGroup.append('g').attr('class', 'rhizome-edges')
-    const edgePaths: d3Selection.Selection<SVGPathElement, unknown, null, undefined>[] = []
+    const edgePaths: SVGPathSelection[] = []
 
     simLinks.forEach(link => {
       const color = stalenessColor(link.target.data.staleness)
@@ -540,7 +569,7 @@ export class RhizomeView {
           .attr('stroke', color)
           .attr('stroke-width', 1)
           .attr('stroke-opacity', strandOpacity)
-          .attr('stroke-linecap', 'round') as d3Selection.Selection<SVGPathElement, unknown, null, undefined>
+          .attr('stroke-linecap', 'round') as SVGPathSelection
 
         edgePaths.push(path)
       }
@@ -637,14 +666,8 @@ export class RhizomeView {
     })
 
     // Update edge path positions
-    const updateEdgePath = (pathEl: d3Selection.Selection<SVGPathElement, unknown, null, undefined>) => {
-      const d = pathEl.datum() as {
-        link: SimLink
-        strandIndex: number
-        tension: number
-        cpOffset1: number
-        cpOffset2: number
-      }
+    const updateEdgePath = (pathEl: SVGPathSelection) => {
+      const d = pathEl.datum() as EdgeDatum
       const link = d.link
       const s = d.strandIndex
       const ringScale = RING_SCALES[s]
@@ -748,7 +771,7 @@ export class RhizomeView {
         .style('opacity', String(opacity))
     })
 
-    d3Selection.selectAll<SVGPathElement, { link: SimLink }>('.rhizome-link').each(function (d) {
+    d3Selection.selectAll<SVGPathElement, EdgeDatum>('.rhizome-link').each(function (d) {
       const linkEl = d3Selection.select(this)
       const sourceId = d.link.source.data.id
       const targetId = d.link.target.data.id
@@ -841,7 +864,7 @@ export class RhizomeView {
           </h3>
           <div class="downstream-container collapsed">
             ${downstream.map(d => {
-              const icon = d.status === 'closed' ? '\u25CF' : d.status === 'active' ? '\u25D0' : '\u25CB'
+              const icon = statusIcon(d.status)
               return `<div class="downstream-item" data-fiber-id="${escapeHtml(d.id)}">
                 <span class="downstream-status">${icon}</span>
                 <span class="downstream-title">${escapeHtml(d.title)}</span>
@@ -896,7 +919,7 @@ export class RhizomeView {
         const startX = (e as MouseEvent).clientX
         const startWidth = this.detailWidth
         const onMove = (ev: MouseEvent) => {
-          const newWidth = Math.max(280, Math.min(800, startWidth - (ev.clientX - startX)))
+          const newWidth = Math.max(DETAIL_MIN_WIDTH, Math.min(DETAIL_MAX_WIDTH, startWidth - (ev.clientX - startX)))
           this.detailWidth = newWidth
           this.detailPanel.style.width = `${newWidth}px`
         }
@@ -994,7 +1017,7 @@ export class RhizomeView {
     }
     if (!fiber) return
 
-    const icon = fiber.status === 'closed' ? '\u25CF' : fiber.status === 'active' ? '\u25D0' : '\u25CB'
+    const icon = statusIcon(fiber.status)
     const mini = document.createElement('div')
     mini.className = 'rhizome-mini-detail'
     mini.innerHTML = `
@@ -1079,8 +1102,8 @@ export class RhizomeView {
         .filter(Boolean).join(' ').toLowerCase()
       if (searchText.includes(query)) {
         const idx = searchText.indexOf(query)
-        const start = Math.max(0, idx - 15)
-        const end = Math.min(searchText.length, idx + query.length + 15)
+        const start = Math.max(0, idx - SEARCH_SNIPPET_CONTEXT)
+        const end = Math.min(searchText.length, idx + query.length + SEARCH_SNIPPET_CONTEXT)
         let snippet = searchText.substring(start, end)
         if (start > 0) snippet = '...' + snippet
         if (end < searchText.length) snippet = snippet + '...'
@@ -1136,7 +1159,7 @@ export class RhizomeView {
     this.showAnnotationPopover(
       rect.left + rect.width / 2,
       rect.bottom + 4,
-      `\u201c${text.slice(0, 60)}${text.length > 60 ? '\u2026' : ''}\u201d`,
+      `\u201c${text.slice(0, TEXT_SELECTION_TRUNCATION)}${text.length > TEXT_SELECTION_TRUNCATION ? '\u2026' : ''}\u201d`,
     ).then(comment => {
       if (comment) {
         this.saveAnnotation({ claimId: nodeId, selectedText: text, comment })
@@ -1179,13 +1202,10 @@ export class RhizomeView {
       const popover = document.createElement('div')
       popover.className = 'rhizome-ann-popover'
 
-      // Position: ensure it stays within viewport
-      const popW = 280
-      const popH = 160
-      let left = Math.max(8, Math.min(anchorX - popW / 2, window.innerWidth - popW - 8))
-      let top = anchorY + 8
-      if (top + popH > window.innerHeight - 8) {
-        top = anchorY - popH - 8
+      const left = Math.max(POPOVER_MARGIN, Math.min(anchorX - POPOVER_WIDTH / 2, window.innerWidth - POPOVER_WIDTH - POPOVER_MARGIN))
+      let top = anchorY + POPOVER_MARGIN
+      if (top + POPOVER_HEIGHT > window.innerHeight - POPOVER_MARGIN) {
+        top = anchorY - POPOVER_HEIGHT - POPOVER_MARGIN
       }
 
       popover.style.left = `${left}px`
@@ -1242,27 +1262,14 @@ export class RhizomeView {
     comment: string
     isImageAnnotation?: boolean
   }): Promise<void> {
-    const response = await this.fetchApi('/annotations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        originId: this.currentCity?.originId || 'local',
-        comment: data.comment,
-        isClaimAnnotation: true,
-        claimId: data.claimId,
-        selectedText: data.selectedText,
-        artifact: data.artifact,
-        x: data.x,
-        y: data.y,
-        isImageAnnotation: !!data.isImageAnnotation,
-      }),
-    })
-
-    if (response) {
-      showToast('Annotation saved', 'success', 2000)
-      this.annotationPanel.expand()
-      this.loadAnnotations(data.claimId)
-    }
+    await this.postAnnotation(data.claimId, {
+      comment: data.comment,
+      selectedText: data.selectedText,
+      artifact: data.artifact,
+      x: data.x,
+      y: data.y,
+      isImageAnnotation: !!data.isImageAnnotation,
+    }, 'Annotation saved')
   }
 
   private async loadAnnotations(nodeId: string): Promise<void> {
@@ -1291,24 +1298,35 @@ export class RhizomeView {
       return
     }
 
+    const saved = await this.postAnnotation(this.selectedNodeId, { comment }, 'Feedback saved')
+    if (saved) {
+      textarea.value = ''
+      textarea.style.height = ''
+    }
+  }
+
+  private async postAnnotation(
+    claimId: string,
+    fields: Record<string, unknown>,
+    successMessage: string,
+  ): Promise<boolean> {
     const response = await this.fetchApi('/annotations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         originId: this.currentCity?.originId || 'local',
-        comment,
         isClaimAnnotation: true,
-        claimId: this.selectedNodeId,
+        claimId,
+        ...fields,
       }),
     })
 
-    if (response) {
-      textarea.value = ''
-      textarea.style.height = ''
-      showToast('Feedback saved', 'success', 2000)
-      this.annotationPanel.expand()
-      this.loadAnnotations(this.selectedNodeId)
-    }
+    if (!response) return false
+
+    showToast(successMessage, 'success', 2000)
+    this.annotationPanel.expand()
+    this.loadAnnotations(claimId)
+    return true
   }
 
   private async handleAnnotationPromote(ann: ClaimsAnnotation): Promise<void> {
