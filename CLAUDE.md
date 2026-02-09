@@ -28,7 +28,8 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 ├── CityManager               ├── Camera (sieve drag)
 ├── OriginManager (remote)    ├── CityPanel (fibers, search)
 ├── FiberReader               ├── ContextMenu
-├── ConversationCache         └── main.ts
+├── EvidenceReader            └── main.ts
+├── ConversationCache
 ├── KittyIntegration
 └── index.ts (state, WS)
 ```
@@ -76,6 +77,7 @@ Reference: [Red Blob Games](https://www.redblobgames.com/grids/hexagons/)
 ```bash
 curl http://localhost:4004/debug-transcripts   # session→transcript mappings
 curl http://localhost:4004/hook/health         # conversation hook status per session
+curl 'http://localhost:4004/rhizome?cityId=X'  # full DAG: fibers, evidence, staleness
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
 
@@ -145,6 +147,10 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 **SSH commands: never double-quote-wrap user content.** `execAsync(\`ssh host "cmd '${userArg}'"\`)` is vulnerable — double quotes in `userArg` break out of wrapping. Use `execFileAsync('ssh', [host, cmd])` to bypass local shell entirely, and `shellEscape()` (from KittyIntegration) for quoting within the remote command string. All SSH handlers now follow this pattern. See fiber `gotcha-ssh-double-quote-810f6df9`.
 
+**Stop hook fires before transcript flush.** The Stop hook and the final assistant text write happen in the same sub-second. The hook's `tail|jq` reads a stale transcript missing the last entry. Fix: `sleep 0.3` at the top of the Stop handler. While the hook sleeps, Claude Code's event loop flushes the pending write. See fiber `gotcha-stop-hook-transcript-c50e76c0`.
+
+**Subagent transcripts bleed into parent conversation.** Task tool subagents write to `.../subagents/agent-<id>.jsonl`. The UserPromptSubmit scan (`find *.jsonl`) recurses into this directory, and subagent Stop hooks fire with the subagent's transcript_path but the parent's session_id. Fix: `-not -path "*/subagents/*"` in find, and `case */subagents/*` skip in Stop handler. See fiber `gotcha-subagent-transcripts-8975ca25`.
+
 ## Deep Dives
 
 Fibers in `.felt/` provide detail beyond this overview.
@@ -161,5 +167,8 @@ Fibers in `.felt/` provide detail beyond this overview.
 | Worker Swarms | `.felt/murmuration-workers-68674cb9.md` |
 | Remote Proxying | `.felt/pattern-portolan-remote-content-8180cf9d.md` |
 | Claims Annotation | `.felt/claims-annotation-inline-bba0fc30.md` |
+| Claims Side Panel | `.felt/claims-annotation-side-panel-f290eeb2.md` |
+| Rhizome Endpoint | `.felt/rhizome-endpoint-returns-full-2a1e18b5.md` |
+| Rhizome rule: tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
 
 Search patterns/gotchas: `felt find pattern` or `felt find gotcha`
