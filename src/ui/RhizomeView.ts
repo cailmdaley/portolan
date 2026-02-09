@@ -456,10 +456,10 @@ export class RhizomeView {
 
     const simLinks: SimLink[] = rawLinks
       .map(l => ({
-        source: simNodeMap.get(l.source)!,
-        target: simNodeMap.get(l.target)!,
+        source: simNodeMap.get(l.source),
+        target: simNodeMap.get(l.target),
       }))
-      .filter(l => l.source && l.target)
+      .filter((l): l is SimLink => !!l.source && !!l.target)
 
     // Compute degrees
     simLinks.forEach(link => {
@@ -672,7 +672,8 @@ export class RhizomeView {
     }
 
     // Tick handler
-    const margin = { top: 60, right: 80, bottom: 60, left: 80 }
+    const minX_bound = 80 + NODE_RX
+    const minY_bound = 60 + NODE_RY
 
     this.simulation.on('tick', () => {
       // DAG constraint: target right of source
@@ -687,19 +688,17 @@ export class RhizomeView {
 
       // Constrain within bounds
       simNodes.forEach(n => {
-        n.x = Math.max(margin.left + NODE_RX, n.x!)
-        n.y = Math.max(margin.top + NODE_RY, n.y!)
+        n.x = Math.max(minX_bound, n.x!)
+        n.y = Math.max(minY_bound, n.y!)
       })
 
-      // Update viewBox
-      const pad = 40
-      const minNodeX = Math.min(...simNodes.map(n => n.x!)) - NODE_RX - pad
-      const minNodeY = Math.min(...simNodes.map(n => n.y!)) - NODE_RY - pad
-      const maxNodeX = Math.max(...simNodes.map(n => n.x!)) + NODE_RX + pad
-      const maxNodeY = Math.max(...simNodes.map(n => n.y!)) + NODE_RY + pad
-
-      // Only set viewBox on first tick (then zoom handles it)
+      // Set viewBox on first tick only (zoom handles it after)
       if (!svg.attr('viewBox')) {
+        const pad = 40
+        const minNodeX = Math.min(...simNodes.map(n => n.x!)) - NODE_RX - pad
+        const minNodeY = Math.min(...simNodes.map(n => n.y!)) - NODE_RY - pad
+        const maxNodeX = Math.max(...simNodes.map(n => n.x!)) + NODE_RX + pad
+        const maxNodeY = Math.max(...simNodes.map(n => n.y!)) + NODE_RY + pad
         svg.attr('viewBox', `${minNodeX} ${minNodeY} ${maxNodeX - minNodeX} ${maxNodeY - minNodeY}`)
       }
 

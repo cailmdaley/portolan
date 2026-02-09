@@ -19,7 +19,7 @@ export interface Evidence {
   metrics: Record<string, unknown>;
   artifacts: Record<string, string>; // name → filename
   mtime: number;                     // ms since epoch — evidence.json mtime
-  generated?: string;                // ISO timestamp from evidence.json
+  generated: string | null;           // ISO timestamp from evidence.json
 }
 
 /**
@@ -81,7 +81,7 @@ async function readLocalEvidence(evidenceDir: string, specName: string): Promise
     metrics: data.evidence || {},
     artifacts,
     mtime,
-    generated: data.generated,
+    generated: data.generated ?? null,
   };
 }
 
@@ -135,7 +135,7 @@ async function readRemoteEvidence(
     metrics: data.evidence || {},
     artifacts,
     mtime,
-    generated: data.generated,
+    generated: data.generated ?? null,
   };
 }
 

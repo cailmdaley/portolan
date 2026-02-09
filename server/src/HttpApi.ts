@@ -346,7 +346,7 @@ export class HttpApi {
             metrics: evidence.metrics,
             artifacts: evidence.artifacts,
             mtime: evidence.mtime,
-            generated: evidence.generated,
+            generated: evidence.generated ?? null,
           } : null,
         };
       });
