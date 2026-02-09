@@ -16,8 +16,9 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
-import { escapeHtml, formatTimeAgo, showToast } from './utils'
-import { showWorkerPicker, type WorkerInfo } from './WorkerPicker'
+import { escapeHtml, showToast } from './utils'
+import { type WorkerInfo } from './WorkerPicker'
+import { AnnotationPanel } from './AnnotationPanel'
 
 // Configure marked for GFM (tables, task lists, etc.)
 marked.setOptions({
@@ -65,6 +66,8 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.web
 
 // PDF extension
 const PDF_EXTENSIONS = new Set(['.pdf'])
+
+const API_BASE = `http://${window.location.hostname}:4004`
 
 // Porch Morning theme for CodeMirror
 const porchMorningTheme = EditorView.theme({
@@ -181,7 +184,8 @@ export class FileViewerModal {
   // @ts-expect-error Stored for potential future layout changes
   private contentWrapper: HTMLElement
   private contentEl: HTMLElement
-  private annotationsPanel: HTMLElement
+  private annotationsPanelEl: HTMLElement
+  private annotationPanel: AnnotationPanel<Annotation>
   private modeLineEl: HTMLElement
   private selectionToolbar: HTMLElement | null = null
   private currentContent: FileContent | null = null
@@ -204,7 +208,7 @@ export class FileViewerModal {
   private navigationIndex: number = -1
   private skipEditorFocus: boolean = false
 
-  // Double-Escape tracking for vim: first Escape → normal mode, second Escape → close
+  // Double-Escape tracking for vim: first Escape -> normal mode, second Escape -> close
   private lastEscapeTime: number = 0
 
   // Handler refs for HMR cleanup
@@ -225,8 +229,49 @@ export class FileViewerModal {
     this.closeBtn = this.modal.querySelector('.file-viewer-close')!
     this.contentWrapper = this.modal.querySelector('.file-viewer-content-wrapper')!
     this.contentEl = this.modal.querySelector('.file-viewer-content')!
-    this.annotationsPanel = this.modal.querySelector('.file-viewer-annotations')!
+    this.annotationsPanelEl = this.modal.querySelector('.file-viewer-annotations')!
     this.modeLineEl = this.modal.querySelector('.file-viewer-modeline')!
+
+    this.annotationPanel = new AnnotationPanel<Annotation>(this.annotationsPanelEl, {
+      cssPrefix: 'file-viewer',
+      emptyMessage: 'No annotations yet. Select text to add one.',
+
+      renderPreview: (ann, index) => {
+        if (ann.isImageAnnotation) {
+          return `<span class="annotation-line">#${index + 1}</span> <em style="color: var(--text-muted);">[Image point]</em>`
+        }
+        let locationInfo = ''
+        if (ann.line) {
+          const lineRange = ann.endLine && ann.endLine !== ann.line
+            ? `L${ann.line}-${ann.endLine}`
+            : `L${ann.line}`
+          locationInfo = `<span class="annotation-line">${lineRange}</span> `
+        }
+        const truncated = ann.originalText.length > 50
+          ? ann.originalText.slice(0, 50) + '...'
+          : ann.originalText
+        return `${locationInfo}"${escapeHtml(truncated)}"`
+      },
+
+      onGoto: (ann) => this.gotoAnnotation(ann),
+
+      onRefresh: async () => {
+        await this.reloadAnnotations()
+      },
+
+      buildLoadQuery: () => {
+        if (!this.currentPath) return ''
+        return `path=${encodeURIComponent(this.currentPath)}&originId=${encodeURIComponent(this.currentOriginId)}`
+      },
+
+      getWorkers: () => this.cityWorkers,
+
+      onSendToWorker: (annotations, workerId, createNew) =>
+        this.sendAnnotationsToWorker(annotations, workerId, createNew),
+
+      globalCommentPlaceholder: 'Add summary or overall context...',
+      globalCommentLabel: 'Overall feedback:',
+    })
 
     this.setupEventListeners()
     this.setupVimCommands()
@@ -251,7 +296,7 @@ export class FileViewerModal {
           <button class="file-viewer-btn file-viewer-save" style="display: none;">Save</button>
           <button class="file-viewer-btn file-viewer-fiber" style="display: none;">File as Fiber</button>
           <button class="file-viewer-btn file-viewer-send" style="display: none;">Send to Worker</button>
-          <button class="file-viewer-btn file-viewer-refresh" title="Refresh file">↻</button>
+          <button class="file-viewer-btn file-viewer-refresh" title="Refresh file">\u21BB</button>
           <button class="file-viewer-btn file-viewer-copy">Copy</button>
           <button class="file-viewer-btn file-viewer-download">Download</button>
           <button class="file-viewer-close">&times;</button>
@@ -260,18 +305,10 @@ export class FileViewerModal {
       <div class="file-viewer-content-wrapper">
         <div class="file-viewer-content"></div>
         <div class="file-viewer-annotations">
-          <div class="annotations-header">
-            <span>Annotations</span>
-            <div class="annotations-header-actions">
-              <button class="annotations-clear-all" title="Clear all annotations">Clear</button>
-              <button class="annotations-toggle" title="Toggle panel">◀</button>
-            </div>
-          </div>
-          <div class="annotations-list"></div>
-          <div class="annotations-global-comment">
-            <label>Overall feedback:</label>
-            <textarea class="global-comment-textarea" placeholder="Add summary or overall context..."></textarea>
-          </div>
+          ${AnnotationPanel.buildPanelHTML({
+            globalCommentPlaceholder: 'Add summary or overall context...',
+            globalCommentLabel: 'Overall feedback:',
+          })}
         </div>
       </div>
       <div class="file-viewer-modeline"></div>
@@ -310,23 +347,8 @@ export class FileViewerModal {
     // File as fiber button
     this.fiberBtn.addEventListener('click', () => this.fileAsFiber())
 
-    // Annotations panel toggle
-    const toggleBtn = this.annotationsPanel.querySelector('.annotations-toggle')
-    toggleBtn?.addEventListener('click', () => {
-      this.annotationsPanel.classList.toggle('collapsed')
-      const btn = toggleBtn as HTMLElement
-      btn.textContent = this.annotationsPanel.classList.contains('collapsed') ? '▶' : '◀'
-    })
-
-    // Clear all annotations
-    const clearAllBtn = this.annotationsPanel.querySelector('.annotations-clear-all')
-    clearAllBtn?.addEventListener('click', () => {
-      if (this.annotations.length === 0) return
-      this.clearAllAnnotations()
-    })
-
-    // Global comment textarea
-    const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
+    // Global comment textarea - track changes for send button visibility
+    const globalCommentTextarea = this.annotationsPanelEl.querySelector('.ann-panel-global-input textarea') as HTMLTextAreaElement
     globalCommentTextarea?.addEventListener('input', () => {
       this.globalComment = globalCommentTextarea.value
       this.updateSendButton()
@@ -341,7 +363,7 @@ export class FileViewerModal {
     if (this.escapeHandler) return
 
     // Escape key to close the file viewer
-    // For vim: first Escape → normal mode, second Escape (within 1s) → close
+    // For vim: first Escape -> normal mode, second Escape (within 1s) -> close
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !this.modal.classList.contains('visible')) return
 
@@ -356,20 +378,20 @@ export class FileViewerModal {
 
       // If editor exists and has focus, use double-Escape
       if (this.editorView?.hasFocus) {
-        // Second Escape within 1 second → close
+        // Second Escape within 1 second -> close
         if (now - this.lastEscapeTime < 1000) {
           this.tryClose()
           e.stopPropagation()
           this.lastEscapeTime = 0
         } else {
-          // First Escape → let vim handle it, record time
+          // First Escape -> let vim handle it, record time
           this.lastEscapeTime = now
           // Don't stop propagation - let vim see it
         }
         return
       }
 
-      // No editor or not focused → close immediately
+      // No editor or not focused -> close immediately
       this.tryClose()
       e.stopPropagation()
     }
@@ -508,9 +530,8 @@ export class FileViewerModal {
     // Reset double-Escape tracking
     this.lastEscapeTime = 0
 
-    // Reset global comment textarea
-    const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
-    if (globalCommentTextarea) globalCommentTextarea.value = ''
+    // Reset annotation panel
+    this.annotationPanel.reset()
 
     // Destroy any existing editor
     if (this.editorView) {
@@ -545,10 +566,10 @@ export class FileViewerModal {
       // Fetch file content and annotations in parallel
       const [contentResponse, annotationsResponse] = await Promise.all([
         fetch(
-          `http://${window.location.hostname}:4004/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
+          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
         ),
         fetch(
-          `http://${window.location.hostname}:4004/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
+          `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
         ),
       ])
 
@@ -580,8 +601,8 @@ export class FileViewerModal {
       // Create CodeMirror editor
       this.createEditor(data.content, data.language)
 
-      // Render annotations panel
-      this.renderAnnotationsPanel()
+      // Update annotation panel
+      this.annotationPanel.setAnnotations(this.annotations)
     } catch (error: any) {
       this.langEl.textContent = 'error'
       this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
@@ -605,10 +626,10 @@ export class FileViewerModal {
       // Fetch image and annotations in parallel
       const [imageResponse, annotationsResponse] = await Promise.all([
         fetch(
-          `http://${window.location.hostname}:4004/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
+          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
         ),
         fetch(
-          `http://${window.location.hostname}:4004/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
+          `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
         ),
       ])
 
@@ -641,7 +662,7 @@ export class FileViewerModal {
 
         // Show send/fiber buttons if we have annotations
         this.updateSendButton()
-        this.renderAnnotationsPanel()
+        this.annotationPanel.setAnnotations(this.annotations)
       } else {
         throw new Error('Invalid image response')
       }
@@ -744,7 +765,7 @@ export class FileViewerModal {
     if (!this.currentPath) return
 
     try {
-      const response = await fetch(`http://${window.location.hostname}:4004/annotations`, {
+      const response = await fetch(`${API_BASE}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -771,7 +792,7 @@ export class FileViewerModal {
       this.annotations.push(data.annotation)
 
       // Update panel and buttons
-      this.renderAnnotationsPanel()
+      this.annotationPanel.setAnnotations(this.annotations)
       this.updateSendButton()
     } catch (error: any) {
       console.error('Failed to save image annotation:', error)
@@ -814,7 +835,7 @@ export class FileViewerModal {
         // Click to scroll to annotation in panel
         marker.addEventListener('click', (e) => {
           e.stopPropagation()
-          const annItem = this.annotationsPanel.querySelector(`[data-id="${ann.id}"]`)
+          const annItem = this.annotationsPanelEl.querySelector(`[data-annotation-id="${ann.id}"]`)
           if (annItem) {
             annItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
             annItem.classList.add('highlight')
@@ -837,7 +858,7 @@ export class FileViewerModal {
 
     try {
       const response = await fetch(
-        `http://${window.location.hostname}:4004/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
+        `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
       )
 
       if (!response.ok) {
@@ -992,7 +1013,7 @@ export class FileViewerModal {
       this.saveBtn.textContent = 'Saving...'
       this.saveBtn.setAttribute('disabled', 'true')
 
-      const response = await fetch(`http://${window.location.hostname}:4004/save-file`, {
+      const response = await fetch(`${API_BASE}/save-file`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1304,7 +1325,7 @@ export class FileViewerModal {
     }
 
     try {
-      const response = await fetch(`http://${window.location.hostname}:4004/annotations`, {
+      const response = await fetch(`${API_BASE}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1331,7 +1352,7 @@ export class FileViewerModal {
 
       // Update highlights and panel
       this.updateAnnotationHighlights()
-      this.renderAnnotationsPanel()
+      this.annotationPanel.setAnnotations(this.annotations)
       this.updateSendButton()
     } catch (error: any) {
       console.error('Failed to save annotation:', error)
@@ -1348,223 +1369,51 @@ export class FileViewerModal {
   }
 
   // ============================================================================
-  // Annotations Panel
+  // Annotation Panel Callbacks
   // ============================================================================
 
-  private renderAnnotationsPanel(): void {
-    const list = this.annotationsPanel.querySelector('.annotations-list')!
-
-    if (this.annotations.length === 0) {
-      const isImage = this.langEl.textContent === 'image'
-      list.innerHTML = `<div class="annotations-empty">No annotations yet. ${isImage ? 'Click on image to add one.' : 'Select text to add one.'}</div>`
-      return
-    }
-
-    list.innerHTML = this.annotations.map((ann, index) => {
-      // Different display for image vs text annotations
-      let locationInfo: string
-      if (ann.isImageAnnotation) {
-        locationInfo = `<span class="annotation-line">#${index + 1}</span> `
-      } else if (ann.line) {
-        // Show line range if multiline
-        const lineRange = ann.endLine && ann.endLine !== ann.line
-          ? `L${ann.line}-${ann.endLine}`
-          : `L${ann.line}`
-        locationInfo = `<span class="annotation-line">${lineRange}</span> `
-      } else {
-        locationInfo = ''
+  private gotoAnnotation(ann: Annotation): void {
+    if (ann.isImageAnnotation) {
+      // For image annotations, find and highlight the marker
+      const marker = this.contentEl.querySelector(`.image-annotation-marker[title="${ann.comment}"]`) as HTMLElement
+      if (marker) {
+        marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        // Pulse animation
+        marker.style.transform = 'translate(-50%, -50%) scale(1.5)'
+        setTimeout(() => {
+          marker.style.transform = 'translate(-50%, -50%) scale(1)'
+        }, 300)
       }
-
-      const textDisplay = ann.isImageAnnotation
-        ? '<em style="color: var(--text-muted);">[Image point]</em>'
-        : `"${escapeHtml(this.truncate(ann.originalText, 50))}"`
-
-      return `
-        <div class="annotation-item" data-id="${ann.id}">
-          <div class="annotation-text">${locationInfo}${textDisplay}</div>
-          <div class="annotation-comment">${escapeHtml(ann.comment)}</div>
-          <div class="annotation-meta">
-            <span>${formatTimeAgo(ann.createdAt)}</span>
-            <div class="annotation-actions">
-              <button class="annotation-edit" title="Edit">✎</button>
-              <button class="annotation-goto" title="Go to">↗</button>
-              <button class="annotation-delete" title="Delete">×</button>
-            </div>
-          </div>
-        </div>
-      `
-    }).join('')
-
-    // Add event listeners
-    list.querySelectorAll('.annotation-item').forEach(item => {
-      const id = item.getAttribute('data-id')!
-
-      item.querySelector('.annotation-goto')?.addEventListener('click', () => {
-        const ann = this.annotations.find(a => a.id === id)
-        if (!ann) return
-
-        if (ann.isImageAnnotation) {
-          // For image annotations, find and highlight the marker
-          const marker = this.contentEl.querySelector(`.image-annotation-marker[title="${ann.comment}"]`) as HTMLElement
-          if (marker) {
-            marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            // Pulse animation
-            marker.style.transform = 'translate(-50%, -50%) scale(1.5)'
-            setTimeout(() => {
-              marker.style.transform = 'translate(-50%, -50%) scale(1)'
-            }, 300)
-          }
-        } else if (this.editorView) {
-          // For text annotations, scroll to position
-          this.editorView.dispatch({
-            selection: { anchor: ann.from, head: ann.to },
-            scrollIntoView: true,
-          })
-        }
+    } else if (this.editorView) {
+      // For text annotations, scroll to position
+      this.editorView.dispatch({
+        selection: { anchor: ann.from, head: ann.to },
+        scrollIntoView: true,
       })
-
-      item.querySelector('.annotation-delete')?.addEventListener('click', async () => {
-        await this.deleteAnnotation(id)
-      })
-
-      item.querySelector('.annotation-edit')?.addEventListener('click', () => {
-        this.startEditAnnotation(item as HTMLElement, id)
-      })
-    })
+    }
   }
 
-  private startEditAnnotation(item: HTMLElement, id: string): void {
-    const ann = this.annotations.find(a => a.id === id)
-    if (!ann) return
+  private async reloadAnnotations(): Promise<void> {
+    if (!this.currentPath) return
 
-    const commentDiv = item.querySelector('.annotation-comment')
-    if (!commentDiv) return
-
-    // Replace comment with inline edit form
-    const currentComment = ann.comment
-    commentDiv.innerHTML = `
-      <textarea class="annotation-edit-input">${escapeHtml(currentComment)}</textarea>
-      <div class="annotation-edit-actions">
-        <button class="annotation-edit-save">Save</button>
-        <button class="annotation-edit-cancel">Cancel</button>
-      </div>
-    `
-
-    const textarea = commentDiv.querySelector('.annotation-edit-input') as HTMLTextAreaElement
-    const saveBtn = commentDiv.querySelector('.annotation-edit-save')!
-    const cancelBtn = commentDiv.querySelector('.annotation-edit-cancel')!
-
-    // Focus and select
-    textarea.focus()
-    textarea.select()
-
-    // Auto-resize textarea
-    textarea.style.height = 'auto'
-    textarea.style.height = textarea.scrollHeight + 'px'
-
-    // Save handler
-    const save = async () => {
-      const newComment = textarea.value.trim()
-      if (!newComment || newComment === currentComment) {
-        cancel()
-        return
-      }
-      await this.updateAnnotation(id, newComment)
-    }
-
-    // Cancel handler
-    const cancel = () => {
-      commentDiv.textContent = currentComment
-    }
-
-    saveBtn.addEventListener('click', save)
-    cancelBtn.addEventListener('click', cancel)
-
-    textarea.addEventListener('keydown', (e) => {
-      e.stopPropagation()
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        save()
-      } else if (e.key === 'Escape') {
-        cancel()
-      }
-    })
-  }
-
-  private async updateAnnotation(id: string, comment: string): Promise<void> {
     try {
-      const response = await fetch(`http://${window.location.hostname}:4004/annotations/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ comment }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to update annotation')
-      }
-
-      // Update local state
-      const ann = this.annotations.find(a => a.id === id)
-      if (ann) {
-        ann.comment = comment
-      }
-
-      // Re-render panel
-      this.renderAnnotationsPanel()
-    } catch (error: any) {
-      console.error('Failed to update annotation:', error)
-      alert(`Failed to update annotation: ${error.message}`)
-    }
-  }
-
-  private async deleteAnnotation(id: string): Promise<void> {
-    try {
-      const response = await fetch(`http://${window.location.hostname}:4004/annotations/${id}`, {
-        method: 'DELETE',
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to delete annotation')
-      }
-
-      this.annotations = this.annotations.filter(a => a.id !== id)
-      this.updateAnnotationHighlights()
-      this.renderAnnotationsPanel()
-      this.updateSendButton()
-    } catch (error: any) {
-      console.error('Failed to delete annotation:', error)
-      alert(`Failed to delete annotation: ${error.message}`)
-    }
-  }
-
-  private async clearAllAnnotations(): Promise<void> {
-    try {
-      // Delete all annotations in parallel
-      await Promise.all(
-        this.annotations.map(ann =>
-          fetch(`http://${window.location.hostname}:4004/annotations/${ann.id}`, {
-            method: 'DELETE',
-          })
-        )
+      const response = await fetch(
+        `${API_BASE}/annotations?path=${encodeURIComponent(this.currentPath)}&originId=${encodeURIComponent(this.currentOriginId)}`
       )
-
+      if (response.ok) {
+        const data = await response.json()
+        this.annotations = data.annotations || []
+      } else {
+        this.annotations = []
+      }
+    } catch {
       this.annotations = []
-      this.updateAnnotationHighlights()
-      this.renderAnnotationsPanel()
-      this.updateSendButton()
-    } catch (error: any) {
-      console.error('Failed to clear annotations:', error)
-      alert(`Failed to clear annotations: ${error.message}`)
     }
-  }
 
-  private truncate(text: string, maxLength: number): string {
-    if (text.length <= maxLength) return text
-    return text.slice(0, maxLength) + '...'
+    this.annotationPanel.setAnnotations(this.annotations)
+    this.updateAnnotationHighlights()
+    this.updateSendButton()
   }
-
 
   // ============================================================================
   // Send to Worker
@@ -1582,7 +1431,7 @@ export class FileViewerModal {
 
     // If we have a source worker, send directly (global comment is already tracked in state)
     if (this.sourceWorkerId) {
-      await this.sendToWorker(this.sourceWorkerId)
+      await this.sendAnnotationsToWorker(this.annotations, this.sourceWorkerId)
       return
     }
 
@@ -1599,25 +1448,33 @@ export class FileViewerModal {
       }
     }
 
+    // The annotation panel's footer handles the worker picker for panel-initiated sends.
+    // This path is for the header "Send to Worker" button which includes globalComment.
+    const { showWorkerPicker } = await import('./WorkerPicker')
     showWorkerPicker(this.cityWorkers, this.annotations.length, {
-      onSelectWorker: (workerId) => this.sendToWorker(workerId),
-      onNewWorker: () => this.sendToNewWorker(),
+      onSelectWorker: (workerId) => this.sendAnnotationsToWorker(this.annotations, workerId),
+      onNewWorker: () => this.sendAnnotationsToWorker(this.annotations, undefined, true),
     })
   }
 
-  private async sendToWorker(workerId: string): Promise<void> {
-    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
+  private async sendAnnotationsToWorker(
+    annotations: Annotation[],
+    workerId?: string,
+    createNew?: boolean
+  ): Promise<void> {
+    const hasContent = annotations.length > 0 || this.globalComment.trim().length > 0
     if (!this.currentPath || !hasContent) return
 
     try {
-      const response = await fetch(`http://${window.location.hostname}:4004/send-annotations`, {
+      const response = await fetch(`${API_BASE}/send-annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           workerId,
+          createNewWorker: createNew,
           filePath: this.currentPath,
           originId: this.currentOriginId,
-          annotations: this.annotations,
+          annotations,
           globalComment: this.globalComment || undefined,
         }),
       })
@@ -1629,59 +1486,23 @@ export class FileViewerModal {
 
       // Clear feedback after successful send
       this.globalComment = ''
-      const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
-      if (globalCommentTextarea) globalCommentTextarea.value = ''
+      this.annotationPanel.resetGlobalInput()
       this.updateSendButton()
 
       // Show success feedback
-      const originalText = this.sendBtn.textContent
-      this.sendBtn.textContent = 'Sent!'
-      setTimeout(() => {
-        this.sendBtn.textContent = originalText
-      }, 2000)
-    } catch (error: any) {
-      console.error('Failed to send annotations:', error)
-      alert(`Failed to send annotations: ${error.message}`)
-    }
-  }
-
-  private async sendToNewWorker(): Promise<void> {
-    if (!this.currentPath || this.annotations.length === 0) return
-
-    try {
-      // Show loading state
-      this.sendBtn.textContent = 'Creating...'
-      this.sendBtn.setAttribute('disabled', 'true')
-
-      const response = await fetch(`http://${window.location.hostname}:4004/send-annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          createNewWorker: true,
-          filePath: this.currentPath,
-          originId: this.currentOriginId,
-          annotations: this.annotations,
-          globalComment: this.globalComment || undefined,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to send annotations')
+      if (createNew) {
+        this.sendBtn.textContent = 'Sent!'
+        this.sendBtn.removeAttribute('disabled')
+        setTimeout(() => {
+          this.sendBtn.textContent = 'Send to Worker'
+        }, 2000)
+      } else {
+        const originalText = this.sendBtn.textContent
+        this.sendBtn.textContent = 'Sent!'
+        setTimeout(() => {
+          this.sendBtn.textContent = originalText
+        }, 2000)
       }
-
-      // Clear feedback after successful send
-      this.globalComment = ''
-      const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
-      if (globalCommentTextarea) globalCommentTextarea.value = ''
-      this.updateSendButton()
-
-      // Show success feedback
-      this.sendBtn.textContent = 'Sent!'
-      this.sendBtn.removeAttribute('disabled')
-      setTimeout(() => {
-        this.sendBtn.textContent = 'Send to Worker'
-      }, 2000)
     } catch (error: any) {
       console.error('Failed to send annotations:', error)
       this.sendBtn.textContent = 'Send to Worker'
@@ -1732,7 +1553,7 @@ export class FileViewerModal {
       this.fiberBtn.textContent = 'Filing...'
       this.fiberBtn.setAttribute('disabled', 'true')
 
-      const response = await fetch(`http://${window.location.hostname}:4004/file-as-fiber`, {
+      const response = await fetch(`${API_BASE}/file-as-fiber`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1754,8 +1575,7 @@ export class FileViewerModal {
 
       // Clear feedback after successful filing
       this.globalComment = ''
-      const globalCommentTextarea = this.annotationsPanel.querySelector('.global-comment-textarea') as HTMLTextAreaElement
-      if (globalCommentTextarea) globalCommentTextarea.value = ''
+      this.annotationPanel.resetGlobalInput()
       this.updateSendButton()
 
       // Show success feedback

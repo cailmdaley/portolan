@@ -2,8 +2,9 @@
  * HttpApi - HTTP request handlers
  *
  * Handles non-WebSocket HTTP endpoints:
- * - Claims dashboard proxy (local and remote)
- * - Claims assets proxy (fonts, images)
+ * - Rhizome DAG (fibers, evidence, staleness)
+ * - Evidence artifact serving
+ * - Annotation CRUD
  * - City activation (start remote agent)
  */
 
@@ -12,8 +13,7 @@ import { URL } from 'url';
 import { exec, execFile, execFileSync, spawn, execSync } from 'child_process';
 import { readFile, writeFile } from 'fs/promises';
 import { promisify } from 'util';
-import { extname, join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { extname, join } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
@@ -144,21 +144,6 @@ export class HttpApi {
 
     if (url.pathname.startsWith('/rhizome-asset/')) {
       await this.handleRhizomeAsset(url, res);
-      return true;
-    }
-
-    if (url.pathname === '/claims-dashboard') {
-      await this.handleClaimsDashboard(url, res);
-      return true;
-    }
-
-    if (url.pathname.startsWith('/claims-assets/')) {
-      await this.handleClaimsAssets(url, res);
-      return true;
-    }
-
-    if (url.pathname === '/claims-annotate.js') {
-      await this.handleClaimsAnnotateScript(res);
       return true;
     }
 
@@ -462,101 +447,6 @@ export class HttpApi {
     await this.serveClaimsAsset(cityId, assetPath, res);
   }
 
-  /**
-   * Claims dashboard proxy endpoint
-   */
-  private async handleClaimsDashboard(url: URL, res: ServerResponse): Promise<void> {
-    const cityId = url.searchParams.get('cityId');
-    if (!cityId) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Missing cityId parameter');
-      return;
-    }
-
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('City not found');
-      return;
-    }
-
-    const dashboardPath = `${city.path}/results/claims/index.html`;
-
-    try {
-      let html: string;
-      if (city.originId === 'local') {
-        // Local city: read file directly
-        const { readFileSync } = await import('fs');
-        html = readFileSync(dashboardPath, 'utf-8');
-      } else {
-        // Remote city: fetch via SSH (execFileAsync bypasses local shell)
-        const sshHost = this.getSshHost(city);
-        const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat ${shellEscape(dashboardPath)}`],
-          { maxBuffer: 10 * 1024 * 1024 }
-        );
-        html = stdout;
-      }
-
-      // Rewrite relative URLs (fonts, images) to use the proxy
-      const assetsBase = `/claims-assets`;
-      // Escape cityId for safe embedding in <script> and HTML attributes
-      const safeCityId = cityId.replace(/[<>"'&\\]/g, '');
-      const rewrittenHtml = html
-        .replace(/url\(['"]?([^'")\s]+\.(otf|ttf|woff2?|png|jpe?g|svg))['"]?\)/gi,
-          (_, path) => `url('${assetsBase}/${path}?cityId=${safeCityId}')`)
-        .replace(/src=['"]([^'"]+\.(png|jpe?g|svg|gif))['"]/gi,
-          (_, path) => `src="${assetsBase}/${path}?cityId=${safeCityId}"`)
-        // Inject base URL for dynamic image loading (used by JS code)
-        .replace(/<head>/i, `<head><script>window.CLAIMS_ASSETS_BASE = "${assetsBase}"; window.CLAIMS_CITY_ID = "${safeCityId}";</script><script src="/claims-annotate.js"></script>`)
-        // Promote let/const to var for globals the annotation script reads via window.*
-        // Dashboards may use currentClaimId or selectedClaimId depending on version
-        .replace(/\blet (currentClaimId|selectedClaimId)\b/g, 'var $1')
-        .replace(/\bconst (claimGraph)\b/g, 'var $1')
-        // Rewrite dynamic imgPath construction to use proxy
-        .replace(/const imgPath = ([^;]+);/g,
-          `const imgPath = window.CLAIMS_ASSETS_BASE + '/' + ($1) + '?cityId=' + window.CLAIMS_CITY_ID;`)
-        // Rewrite lightbox src construction
-        .replace(/src: (claim\.id \+ '\/'\s*\+\s*[^}]+)/g,
-          `src: window.CLAIMS_ASSETS_BASE + '/' + ($1) + '?cityId=' + window.CLAIMS_CITY_ID`);
-
-      res.writeHead(200, {
-        'Content-Type': 'text/html',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(rewrittenHtml);
-    } catch (error) {
-      console.error('Failed to fetch claims dashboard:', error);
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end(`Failed to load claims dashboard: ${error}`);
-    }
-  }
-
-  /**
-   * Claims assets proxy (fonts, images, etc.)
-   */
-  private async handleClaimsAssets(url: URL, res: ServerResponse): Promise<void> {
-    const cityId = url.searchParams.get('cityId');
-    const rawAssetPath = url.pathname.replace('/claims-assets/', '');
-
-    if (!cityId || !rawAssetPath) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Missing cityId or asset path');
-      return;
-    }
-
-    let assetPath: string;
-    try {
-      assetPath = decodeURIComponent(rawAssetPath);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Invalid asset path');
-      return;
-    }
-
-    await this.serveClaimsAsset(cityId, assetPath, res);
-  }
-
   // ── Shared asset serving ──────────────────────────────────────────
 
   /** Content types for claims/rhizome asset serving */
@@ -621,28 +511,6 @@ export class HttpApi {
     } catch (error) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end(`Asset not found: ${assetPath}`);
-    }
-  }
-
-  /**
-   * Serve the claims annotation script (injected into dashboard iframe)
-   */
-  private async handleClaimsAnnotateScript(res: ServerResponse): Promise<void> {
-    try {
-      const __dirname = dirname(fileURLToPath(import.meta.url));
-      const scriptPath = join(__dirname, '..', 'public', 'claims-annotate.js');
-      const { readFileSync } = await import('fs');
-      const content = readFileSync(scriptPath, 'utf-8');
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-cache',
-      });
-      res.end(content);
-    } catch (error) {
-      console.error('Failed to serve claims-annotate.js:', error);
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('claims-annotate.js not found');
     }
   }
 

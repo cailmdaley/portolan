@@ -18,7 +18,6 @@ import { ContextMenu } from './ui/ContextMenu'
 type GlobalView = 'map' | 'plots' | 'plans'
 import { ViewOverlay } from './ui/ViewOverlay'
 import { TabbedPlansView } from './ui/TabbedPlansView'
-import { ClaimsDashboard } from './ui/ClaimsDashboard'
 import { RhizomeView } from './ui/RhizomeView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
@@ -233,9 +232,6 @@ function handleViewChange(view: GlobalView): void {
 
 // ViewSwitcher removed — view stays on 'map' for now
 
-// Legacy claims dashboard (iframe-based, superseded by RhizomeView)
-const claimsDashboard = new ClaimsDashboard()
-
 // Rhizome view — native DAG visualization for fibers
 const rhizomeView = new RhizomeView()
 
@@ -244,13 +240,12 @@ cityPanel.setOnViewClaims((city) => {
   rhizomeView.show(city)
 })
 
-// Wire up worker lookup for both views
+// Wire up worker lookup for rhizome view
 function getCityWorkers(city: City): { id: string; name: string; tmuxSession: string }[] {
   return sessions
     .filter(s => s.cityId === city.id && s.originId === city.originId)
     .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
 }
-claimsDashboard.setOnGetWorkers(getCityWorkers)
 rhizomeView.setOnGetWorkers(getCityWorkers)
 
 // Setup playground viewer
@@ -992,7 +987,6 @@ if (import.meta.hot) {
     newWorkerDialog.dispose()
     viewOverlay.dispose()
     tabbedPlansView.dispose()
-    claimsDashboard.dispose()
     rhizomeView.dispose()
     playgroundViewer.dispose()
 

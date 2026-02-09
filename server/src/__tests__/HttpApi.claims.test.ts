@@ -5,7 +5,7 @@
  * - GET /annotations?claimId= returns claim annotations
  * - POST /annotations creates claims annotations with validation
  * - formatClaimsAnnotationsForClaude output format
- * - Proxy injection of claims-annotate.js
+ * - /rhizome endpoint (DAG with fibers, evidence, staleness)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -563,38 +563,6 @@ describe('HttpApi — claims annotations', () => {
       // Also gone from all-claims query
       const allRes = await httpRequest(api, 'GET', '/annotations?claims=true');
       expect(allRes.data.annotations).toHaveLength(0);
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────
-  // /claims-annotate.js endpoint
-  // ────────────────────────────────────────────────────────────
-
-  describe('GET /claims-annotate.js', () => {
-    it('serves the annotation script with correct content type', async () => {
-      const res = await httpRequest(api, 'GET', '/claims-annotate.js');
-
-      expect(res.status).toBe(200);
-      // The response is JavaScript content (string, not parsed JSON)
-      expect(typeof res.data).toBe('string');
-      expect(res.data).toContain('claims-annotation-save');
-      expect(res.data).toContain('claims-annotation-load');
-      expect(res.data).toContain('claims-annotation-delete');
-      expect(res.data).toContain('claims-annotation-promote');
-      expect(res.data).toContain('window === window.top');
-    });
-
-    it('includes auto-bridging for dashboards without data attributes', async () => {
-      const res = await httpRequest(api, 'GET', '/claims-annotate.js');
-
-      expect(res.status).toBe(200);
-      // Auto-tagging reads dashboard globals to inject data attributes
-      expect(res.data).toContain('getClaimContextFromGlobals');
-      expect(res.data).toContain('autoTagClaimPanel');
-      expect(res.data).toContain('currentClaimId');
-      expect(res.data).toContain('claimGraph');
-      // Derives artifact name from image src when data-artifact is missing
-      expect(res.data).toContain('img:not([data-artifact])');
     });
   });
 

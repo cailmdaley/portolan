@@ -1,6 +1,6 @@
 ---
 title: 'Claims annotation: inline annotate.js + postMessage bridge'
-status: active
+status: closed
 kind: spec
 priority: 2
 depends-on:
@@ -11,6 +11,17 @@ depends-on:
     - file-annotations-in-e8dbee22
     - pattern-postmessage-bridge-for-ddcc890c
 created-at: 2026-02-07T01:26:59.298018+01:00
+closed-at: 2026-02-07T05:48:17.612656+01:00
+close-reason: |-
+    Feature complete. Inline claims annotation with postMessage bridge, fully integrated.
+
+    Implementation: claims-annotate.js (672 LOC injected script) provides text selection and image pin annotation in proxied dashboard iframes. ClaimsDashboard.ts (357 LOC) bridges postMessage to REST API. WorkerPicker.ts (70 LOC) shared between claims and file annotations. AnnotationPersistence extended with claimId/claimTitle/selectedText/artifact fields. HttpApi handles proxy injection (let/const→var, font/image/imgPath/lightbox src rewrites), annotation CRUD, formatClaimsAnnotationsForClaude, promote-to-felt, send-to-worker via tmux paste.
+
+    Security: All SSH handlers use execFileAsync + shellEscape (zero shell injection surface). XSS: CSS.escape for selectors, escapeHtml for innerHTML, safeCityId for script injection. Image validation requires both x,y. Asset path traversal and shell injection blocked.
+
+    Tests: 76 claims-specific + 39 annotation persistence = 115 directly relevant tests out of 224 total. Coverage includes proxy rewrite against realistic dashboard HTML, special character round-trips, shellEscape edge cases, format output verification.
+
+    Downstream fibers closed: gotcha-ssh-double-quote, gotcha-let-const-globals, pattern-auto-bridge-injected, pattern-postmessage-bridge.
 ---
 
 # Claims Annotation
@@ -181,15 +192,21 @@ Optional action on individual annotations. Calls `felt comment <claimId> "text"`
 - No new storage format (extends existing annotations.json)
 - No hook-based injection (uses existing tmux paste pattern)
 
-## Comments
-**2026-02-07 02:00** — Loop 1: Built core pipeline — Annotation data model (claimId/claimTitle/selectedText/artifact/isClaimAnnotation fields), getByClaimId(), claims-annotate.js (vanilla JS, text+image annotation in iframe), postMessage bridge in ClaimsDashboard.ts, /claims-annotate.js endpoint, proxy injection, claims-specific Claude format. File-anchoring fields made optional. 331 LOC in injected script. TypeScript compiles clean, 112 tests pass. Dashboard template data-attributes still needed from consumer side.
-**2026-02-07 02:07** — Loop 2: 37 AnnotationPersistence tests (CRUD, claims/file separation, round-trip, getByClaimId, getRecentFiles). Send-to-worker fully wired: ClaimsDashboard.showWorkerPicker → sendClaimsToWorker → POST /send-annotations with isClaimsSend. Injected script gains 'Send to Worker' button on claim panels with annotations. main.ts wires setOnGetWorkers. Removed stale file-annotation fields from claims save. Code simplifier cleaned redundant || undefined guards.
-**2026-02-07 02:20** — Loop 3: Fixed 2 pre-existing ConversationCache test failures (timestamp sort order, ISO timestamps for trim test). Added 17-test HttpApi claims suite (POST/GET/DELETE endpoints, formatClaimsAnnotationsForClaude format output, CRUD round-trip, claims-annotate.js endpoint). Fixed pin lifecycle: pins persist on save via _saved flag, parent triggers reload after successful save so permanent markers replace temp pins, renderExistingAnnotations clears both marker classes. Code simplifier: removed redundant guards, property shorthand, makeClaimAnnotation factory. 168 tests pass, TS clean.
-**2026-02-07 03:30** — Loop 4: UX feedback (toast on save/delete/send), delete annotations from iframe (× on text badges, right-click on image pins), 'Send All to Worker' header button with GET /annotations?claims=true endpoint, getAllClaims() persistence method, image annotation validation (reject artifact without x,y), 9 new tests (177 total). Code simplifier: extracted fetchApi()/fetchAnnotationsAndPickWorker() in ClaimsDashboard, consolidated isFileAnnotation in add(), replaced nested ternary, hoisted SSH lookup.
-**2026-02-07 03:40** — Loop 5: Promote-to-felt endpoint (POST /promote-to-felt, felt comment via execAsync, local+remote), postMessage bridge (claims-annotation-promote), image pin click popover (comment+promote+delete), promote button on text badges. Code simplifier: postAnnotationMessage/addHoverFade/createPopoverActionBtn helpers, parseJsonBody pattern in handler. 3 new tests (180 total). 251 LOC added.
-**2026-02-07 03:53** — Loop 6: Extract shared WorkerPicker.ts (dedup 50 LOC from FileViewerModal+ClaimsDashboard), formatClaimsAnnotationsForClaude groups by claim title, promote feedback via annotationId through postMessage bridge, data-annotation-id on markers. Code simplifier: clampToViewport helper, fetchApi consistency, if/else if. 181 tests, TS clean.
-**2026-02-07 04:04** — Loop 7: CSS extraction (530-line inline styles → <style> block with classes), XSS safety (CSS.escape on querySelector selectors for claimId/annotationId/artifact), Cmd+Enter save shortcut, Escape clears selection. addHoverFade/showPromotedFeedback now CSS-only. HttpApi: converted all annotation handlers + handleSaveFile/handleSendAnnotations/handleSendMessage/handleFileAsFiber to parseJsonBody/sendJsonError/sendJsonSuccess (-85 lines). 181 tests, TS clean.
-**2026-02-07 04:51** — Loop 8: Needs sync/test with remote dashboards (pure_eb, KineLens). Their HTML was generated before the annotation system existed — variable names differ (selectedClaimId vs currentClaimId), and the auto-bridge assumptions may not fully hold. Rebuilding dashboards with updated research skill code would align them. Current proxy rewrites handle both variants but this is untested end-to-end on remote.
-**2026-02-07 05:08** — Loop 9: SSH hardening — converted handleClaimsDashboard and handleClaimsAssets from execAsync (shell interpolation) to execFileAsync+shellQuote (bypasses local shell), completing the pattern from gotcha-ssh-double-quote across all claims proxy handlers. Iframe error handling: load timeout (15s), onerror handler, error CSS state — replaces infinite spinner on failure. Code simplifier: extracted clearLoadTimeout(), loading boolean flag, hoisted test helpers (formatClaims, makeCityLookup), shellQuote reuse in tmux handlers. 5 new tests (210 total), TS clean.
-**2026-02-07 05:28** — Loop 10: Extended SSH hardening to ALL remaining handlers across HttpApi.ts and index.ts — handleFileContent, handleBinaryContent, handleActivateCity, handlePlaygroundList, handlePlayground, writeRemoteFile, getRemoteFibers, searchRemote. Fixed unquoted `kind` param in handleFileAsFiber (shell injection via JSON body). Code simplifier: consolidated private shellQuote into shared shellEscape from KittyIntegration (eliminated duplicate function + manual wrapping pattern). 4 new shellQuote tests (214 total), TS clean. Zero `execAsync` SSH calls remain in codebase.
+## Implementation Status
 
+Feature complete across 11 iterations. 224 tests, TS clean.
+
+**Files:**
+- `server/public/claims-annotate.js` — 689 LOC injected script (text+image annotation, auto-bridge, CSS)
+- `src/ui/ClaimsDashboard.ts` — postMessage bridge (save/load/delete/promote/send)
+- `src/ui/WorkerPicker.ts` — shared worker picker (extracted from FileViewerModal+ClaimsDashboard)
+- `server/src/AnnotationPersistence.ts` — claims fields + getByClaimId/getAllClaims
+- `server/src/HttpApi.ts` — proxy rewrite, endpoints, formatClaimsAnnotationsForClaude
+
+**Security:** All SSH handlers use execFileAsync+shellEscape (zero execAsync SSH calls). XSS: CSS.escape for selectors, escapeHtml for innerHTML, safeCityId for injection. Image validation (artifact requires x,y).
+
+**Proxy rewrites:** font url(), static img src, dynamic imgPath construction, lightbox src: property, let/const→var for bridge globals (currentClaimId, selectedClaimId, claimGraph). Verified against realistic KineLens dashboard HTML structure in tests.
+
+**UX:** Toasts, Cmd+Enter save, Escape dismiss, pin popovers, send-all header button, promote-to-felt with visual feedback. Iframe error handling: 15s timeout, onerror, error CSS state.
+
+**Iteration history:** See `git log --oneline --grep="Claims annotation"` (commits 499e3d0..d0ca80d).
