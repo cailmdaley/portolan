@@ -1,4 +1,4 @@
-// Shared annotation side panel used by ClaimsDashboard and FileViewerModal.
+// Shared annotation side panel used by RhizomeView and FileViewerModal.
 // Handles list rendering, inline edit, CRUD, clear all, global comment, and footer.
 
 import { escapeHtml, formatTimeAgo, showToast } from './utils'
@@ -191,7 +191,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     }
 
     // Global save button and enter-to-save are wired by consumers directly,
-    // since the save behavior is consumer-specific (e.g., ClaimsDashboard creates
+    // since the save behavior is consumer-specific (e.g., RhizomeView creates
     // a new annotation via POST, FileViewerModal just tracks the text in state).
   }
 

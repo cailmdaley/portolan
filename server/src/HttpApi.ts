@@ -13,7 +13,7 @@ import { URL } from 'url';
 import { exec, execFile, execFileSync, spawn, execSync } from 'child_process';
 import { readFile, writeFile } from 'fs/promises';
 import { promisify } from 'util';
-import { extname, join } from 'path';
+import { extname } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
@@ -444,12 +444,12 @@ export class HttpApi {
       return;
     }
 
-    await this.serveClaimsAsset(cityId, assetPath, res);
+    await this.serveRhizomeAsset(cityId, assetPath, res);
   }
 
   // ── Shared asset serving ──────────────────────────────────────────
 
-  /** Content types for claims/rhizome asset serving */
+  /** Content types for rhizome asset serving */
   private readonly assetContentTypes: Record<string, string> = {
     'png': 'image/png',
     'jpg': 'image/jpeg',
@@ -466,10 +466,10 @@ export class HttpApi {
   };
 
   /**
-   * Shared asset serving for both /rhizome-asset and /claims-assets.
+   * Serve a rhizome asset file (plot, image, etc.) from results/claims/.
    * Validates path, resolves city, reads file locally or via SSH.
    */
-  private async serveClaimsAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
+  private async serveRhizomeAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
     // Security: prevent directory traversal and shell injection
     if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });

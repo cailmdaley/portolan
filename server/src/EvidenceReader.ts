@@ -22,14 +22,6 @@ export interface Evidence {
   generated?: string;                // ISO timestamp from evidence.json
 }
 
-export interface EvidenceSummary {
-  fiberId: string;
-  specName: string;
-  evidence: Evidence | null;
-  stale: boolean;     // true if upstream evidence is newer
-  hasEvidence: boolean;
-}
-
 /**
  * Read evidence for a single spec directory.
  */
