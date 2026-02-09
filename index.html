@@ -5434,6 +5434,93 @@
         color: white;
       }
 
+      /* ── Annotation popover ── */
+
+      .rhizome-ann-popover {
+        position: fixed;
+        z-index: 2100;
+        width: 280px;
+        background: var(--ui-dark-elevated);
+        border: 1px solid var(--ui-border);
+        border-radius: 4px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        padding: 0.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .ann-popover-preview {
+        font-family: var(--font-main);
+        font-size: 0.75rem;
+        color: var(--ui-text-muted);
+        font-style: italic;
+        line-height: 1.4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .ann-popover-input {
+        width: 100%;
+        font-family: var(--font-main);
+        font-size: 0.82rem;
+        color: var(--ui-text);
+        background: var(--ui-dark-surface);
+        border: 1px solid var(--ui-border);
+        border-radius: 2px;
+        padding: 0.35rem 0.5rem;
+        resize: vertical;
+        min-height: 2.5rem;
+        line-height: 1.4;
+      }
+
+      .ann-popover-input:focus {
+        outline: none;
+        border-color: var(--ui-teal);
+      }
+
+      .ann-popover-input::placeholder {
+        color: var(--ui-text-muted);
+        font-style: italic;
+      }
+
+      .ann-popover-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.4rem;
+      }
+
+      .ann-popover-actions button {
+        font-family: var(--font-main);
+        font-size: 0.72rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 2px;
+        cursor: pointer;
+        border: 1px solid var(--ui-border);
+        transition: all 150ms;
+      }
+
+      .ann-popover-cancel {
+        background: transparent;
+        color: var(--ui-text-muted);
+      }
+
+      .ann-popover-cancel:hover {
+        color: var(--ui-text);
+        border-color: var(--ui-text-muted);
+      }
+
+      .ann-popover-save {
+        background: var(--ui-teal);
+        color: var(--ui-dark);
+        border-color: var(--ui-teal);
+      }
+
+      .ann-popover-save:hover {
+        filter: brightness(1.1);
+      }
+
       /* ═══════════════════════════════════════════════════════════
          PLAYGROUND VIEWER — Large Overlay Panel
          ═══════════════════════════════════════════════════════════ */

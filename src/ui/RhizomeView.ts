@@ -23,11 +23,11 @@ interface RhizomeNode {
   body: string
   dependsOn: string[]
   specName: string | null
-  staleness: 'fresh' | 'stale' | 'unknown'
+  staleness: 'fresh' | 'stale' | 'no-evidence'
   evidence: {
     metrics: Record<string, unknown>
     artifacts: Record<string, string>
-    mtime: string | null
+    mtime: number
     generated: string | null
   } | null
 }
@@ -74,13 +74,13 @@ const RING_SCALES = [1.0, 1.15]
 const RING_COUNT = RING_SCALES.length
 
 const STALENESS_COLORS: Record<string, string> = {
-  fresh: '#5A7B7B',   // teal
-  stale: '#A87070',   // red
-  unknown: '#7A7368', // muted gray
+  'fresh': '#5A7B7B',       // teal
+  'stale': '#A87070',       // red
+  'no-evidence': '#7A7368', // muted gray
 }
 
 function stalenessColor(staleness: string): string {
-  return STALENESS_COLORS[staleness] || STALENESS_COLORS.unknown
+  return STALENESS_COLORS[staleness] || STALENESS_COLORS['no-evidence']
 }
 
 // ── Procedural helpers ───────────────────────────────────────────────
@@ -327,6 +327,8 @@ export class RhizomeView {
     this.hideDetail()
 
     this.loadingIndicator.style.display = 'flex'
+    this.loadingIndicator.textContent = 'Loading rhizome\u2026'
+    this.loadingIndicator.classList.remove('error')
     this.dagContainer.innerHTML = ''
 
     if (this.escapeHandler) {
@@ -349,6 +351,7 @@ export class RhizomeView {
 
   hide(): void {
     this.panel.classList.remove('visible')
+    this.panel.querySelector('.rhizome-ann-popover')?.remove()
     this.currentCity = null
     this.selectedNodeId = null
     this.rhizomeData = null
@@ -930,6 +933,7 @@ export class RhizomeView {
     this.detailPanel.classList.add('hidden')
     this.selectedNodeId = null
     this.annotationPanel.hidePanel()
+    this.panel.querySelector('.rhizome-ann-popover')?.remove()
 
     // Reset node highlighting
     d3Selection.selectAll('.rhizome-node')
@@ -1046,14 +1050,19 @@ export class RhizomeView {
     const text = selection.toString().trim()
     if (!text || !this.selectedNodeId) return
 
-    // Simple prompt for comment
-    const comment = prompt('Annotation comment:')
-    if (!comment) return
+    // Position popover near the selection
+    const range = selection.getRangeAt(0)
+    const rect = range.getBoundingClientRect()
+    const nodeId = this.selectedNodeId
 
-    this.saveAnnotation({
-      claimId: this.selectedNodeId,
-      selectedText: text,
-      comment,
+    this.showAnnotationPopover(
+      rect.left + rect.width / 2,
+      rect.bottom + 4,
+      `\u201c${text.slice(0, 60)}${text.length > 60 ? '\u2026' : ''}\u201d`,
+    ).then(comment => {
+      if (comment) {
+        this.saveAnnotation({ claimId: nodeId, selectedText: text, comment })
+      }
     })
   }
 
@@ -1063,16 +1072,86 @@ export class RhizomeView {
     x: number,
     y: number,
   ): void {
-    const comment = prompt('Image annotation:')
-    if (!comment) return
+    // Position popover at click location (approximate viewport coords)
+    this.showAnnotationPopover(
+      window.innerWidth / 2,
+      window.innerHeight / 2,
+      `Pin on ${artifactName} (${Math.round(x)}%, ${Math.round(y)}%)`,
+    ).then(comment => {
+      if (comment) {
+        this.saveAnnotation({
+          claimId: node.id,
+          artifact: artifactName,
+          x, y, comment,
+          isImageAnnotation: true,
+        })
+      }
+    })
+  }
 
-    this.saveAnnotation({
-      claimId: node.id,
-      artifact: artifactName,
-      x,
-      y,
-      comment,
-      isImageAnnotation: true,
+  private showAnnotationPopover(
+    anchorX: number,
+    anchorY: number,
+    preview: string,
+  ): Promise<string | null> {
+    return new Promise(resolve => {
+      // Remove any existing popover
+      this.panel.querySelector('.rhizome-ann-popover')?.remove()
+
+      const popover = document.createElement('div')
+      popover.className = 'rhizome-ann-popover'
+
+      // Position: ensure it stays within viewport
+      const popW = 280
+      const popH = 160
+      let left = Math.max(8, Math.min(anchorX - popW / 2, window.innerWidth - popW - 8))
+      let top = anchorY + 8
+      if (top + popH > window.innerHeight - 8) {
+        top = anchorY - popH - 8
+      }
+
+      popover.style.left = `${left}px`
+      popover.style.top = `${top}px`
+
+      popover.innerHTML = `
+        <div class="ann-popover-preview">${escapeHtml(preview)}</div>
+        <textarea class="ann-popover-input" placeholder="Add comment\u2026" rows="3"></textarea>
+        <div class="ann-popover-actions">
+          <button class="ann-popover-cancel">Cancel</button>
+          <button class="ann-popover-save">Save</button>
+        </div>
+      `
+
+      const textarea = popover.querySelector('textarea')!
+      const saveBtn = popover.querySelector('.ann-popover-save')!
+      const cancelBtn = popover.querySelector('.ann-popover-cancel')!
+
+      const close = (result: string | null) => {
+        popover.remove()
+        resolve(result)
+      }
+
+      saveBtn.addEventListener('click', () => {
+        const val = textarea.value.trim()
+        close(val || null)
+      })
+
+      cancelBtn.addEventListener('click', () => close(null))
+
+      textarea.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          const val = textarea.value.trim()
+          close(val || null)
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          close(null)
+        }
+      })
+
+      this.panel.appendChild(popover)
+      textarea.focus()
     })
   }
 

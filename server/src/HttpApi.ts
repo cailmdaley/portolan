@@ -491,8 +491,7 @@ export class HttpApi {
     try {
       let data: Buffer;
       if (city.originId === 'local') {
-        const { readFileSync } = await import('fs');
-        data = readFileSync(fullPath);
+        data = await readFile(fullPath);
       } else {
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
@@ -1474,8 +1473,7 @@ export class HttpApi {
     try {
       let html: string;
       if (city.originId === 'local') {
-        const { readFileSync } = await import('fs');
-        html = readFileSync(playgroundPath, 'utf-8');
+        html = await readFile(playgroundPath, 'utf-8');
       } else {
         const sshHost = this.getSshHost(city);
         const { stdout } = await execFileAsync(
