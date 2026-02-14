@@ -7,70 +7,21 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createServer } from 'http';
-import type { AddressInfo } from 'net';
 import { HttpApi } from '../HttpApi.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { parseFiber } from '../FiberReader.js';
 import { readEvidence, getSpecName, computeStaleness } from '../EvidenceReader.js';
+import {
+  httpRequest,
+  makeCityLookup,
+  writeFiber,
+  stubOriginLookup,
+  stubPersistenceLookup,
+} from './test-utils.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-httpapi-rhizome');
-
-// ── Stubs ──────────────────────────────────────────────────────────
-
-const stubOriginLookup = { getOrigin: () => null };
-const stubPersistenceLookup = { getCityById: () => null };
-
-function makeCityLookup(cityId: string, cityDir: string) {
-  return {
-    getCityById: (id: string) => id === cityId ? {
-      id: cityId,
-      name: 'TestCity',
-      path: cityDir,
-      originId: 'local',
-    } : null,
-  };
-}
-
-/** Fire an HTTP request against HttpApi */
-async function httpRequest(
-  api: HttpApi,
-  method: string,
-  path: string,
-): Promise<{ status: number; data: any }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer(async (req, res) => {
-      const handled = await api.handleRequest(req, res);
-      if (!handled) {
-        res.writeHead(404);
-        res.end('Not found');
-      }
-    });
-
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo;
-      const url = `http://127.0.0.1:${port}${path}`;
-
-      fetch(url, { method })
-        .then(async (res) => {
-          const text = await res.text();
-          let data: any;
-          try { data = JSON.parse(text); } catch { data = text; }
-          server.close();
-          resolve({ status: res.status, data });
-        })
-        .catch((err) => { server.close(); reject(err); });
-    });
-  });
-}
-
-// ── Helpers ────────────────────────────────────────────────────────
-
-function writeFiber(feltDir: string, id: string, content: string) {
-  writeFileSync(join(feltDir, `${id}.md`), content, 'utf-8');
-}
 
 function writeEvidence(claimsDir: string, specName: string, evidence: object) {
   const dir = join(claimsDir, specName);

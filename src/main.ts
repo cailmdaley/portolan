@@ -248,6 +248,11 @@ function getCityWorkers(city: City): { id: string; name: string; tmuxSession: st
 }
 rhizomeView.setOnGetWorkers(getCityWorkers)
 
+// Wire up file navigation from rhizome view — open files in file viewer
+rhizomeView.setOnOpenFile((filePath, city) => {
+  fileViewerModal.show(filePath, city.originId, undefined, undefined, city.path)
+})
+
 // Setup playground viewer
 const playgroundViewer = new PlaygroundViewer()
 
@@ -307,6 +312,8 @@ function connectWebSocket(): void {
   ws.onopen = () => {
     console.log('Connected to portolan server')
     cityPanel.setWebSocket(ws!)
+    // Re-fetch conversations for all open cards (recovers from missed messages during disconnect)
+    zoneRenderer.refetchAllConversations()
   }
 
   ws.onmessage = (event) => {

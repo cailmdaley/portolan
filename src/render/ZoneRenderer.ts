@@ -1340,6 +1340,15 @@ export class ZoneRenderer {
     }
   }
 
+  /**
+   * Re-fetch conversations for all open cards (called on WebSocket reconnect)
+   */
+  refetchAllConversations(): void {
+    for (const card of this.conversationCards.values()) {
+      card.refetch()
+    }
+  }
+
   /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */
   private readonly SCALE_THRESHOLD = 8  // Cards reach full size at this distance
 

@@ -1,9 +1,11 @@
 ---
 title: Feedback on absorb-claims-dashboard-into-ed04e0e9.md
-status: open
+status: closed
 kind: task
 priority: 2
 created-at: 2026-02-08T16:27:42.627037+01:00
+closed-at: 2026-02-09T03:06:38.569865+01:00
+close-reason: 'All feedback incorporated: three-kind taxonomy dropped (rule: tags only), staleness coloring (teal/red/gray) replaces kind colors, D3 tree-shaken via npm individual packages, no-evidence renders as muted gray, detail panel layout follows requested order (title/status → artifact plot → fiber body → evidence metrics → downstream concerns), full-page overlay pattern matches original ClaimsDashboard.'
 ---
 
 ## Annotations
@@ -25,4 +27,3 @@ created-at: 2026-02-08T16:27:42.627037+01:00
 
 6. (L99) **"or overlay it?"**
    > overlay, same pattern
-

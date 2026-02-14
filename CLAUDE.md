@@ -20,6 +20,24 @@ cd server && npm test       # ~100 tests
 
 Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
 
+### Static Tapestry (GitHub Pages)
+
+Deployed to `cailmdaley.github.io/tapestries/` from repo `cailmdaley/tapestries` (Pages serves root of `main`).
+
+```bash
+# 1. Build + export (order matters: build first, export second)
+npm run build:static                        # Vite → docs/
+npx tsx scripts/export-rhizome.ts pure-eb   # Data + artifacts → docs/data/
+
+# 2. Verify locally
+npx serve docs
+
+# 3. Push docs/ to tapestries repo
+cd docs && git add -A && git commit -m "Update tapestry" && git push && cd ..
+```
+
+The `docs/` directory is a separate git repo (remote: `cailmdaley/tapestries`). Build overwrites `index.html`/`assets/` but preserves `data/` (`emptyOutDir: false`). Export adds/updates `data/rhizome.json` and artifact images.
+
 ## Architecture
 
 ```
@@ -103,6 +121,8 @@ ssh remote-host                                       # fresh connection with tu
 ssh -T remote-host "tmux kill-session -t portolan-agent; tmux new-session -d -s portolan-agent 'node ~/bin/portolan-agent.js connect --ssh-host=remote-host'"
 ```
 
+If tunnel still fails after ControlMaster reset (`remote forward failure for: listen 4004`), the old sshd child is still holding the port on the remote. Fix: `ssh remote-host "fuser -k 4004/tcp"`, then reconnect. See fiber `gotcha-ssh-remoteforward-port-3c440457`.
+
 ## Remote Conversation Hooks
 
 For real-time conversation updates on remote workers, install the hook script and configure it to POST to the agent's local hook server (port 4005).
@@ -125,6 +145,8 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 ## Gotchas
 
+**Claude native build breaks silently on remote machines.** Claude exits cleanly (exit 0) ~2s after startup — no error message. Debug log (`--debug-file`) shows normal init through OAuth check, then `Released PID lock` and exit. Existing interactive sessions keep working; only new launches fail. Fix: `claude doctor` or `claude install` on the remote. Recurs after auto-updates. See fiber `gotcha-claude-code-native-build-61c642e8`.
+
 **Force Touch events are additive.** `webkitmouseforcedown` fires *in addition to* normal mouse events — the `click` still fires on release. Suppress with capture-phase listener + flag. See `main.ts:451-478`.
 
 **Vite HMR stacks constructor listeners.** Document-level listeners added in constructors accumulate across hot reloads. Add listeners dynamically (in show/hide) with stored references for cleanup.
@@ -133,11 +155,11 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 **`kill $PPID` doesn't trigger Claude Code Stop hook.** Ralph loops exit via SIGTERM, which bypasses the Stop hook entirely. The conversation hook works around this by scanning recent transcripts on UserPromptSubmit to capture any missed assistant content.
 
-**tmuxSession prefix for remote conversations.** ConversationCache and WebSocket broadcasts use `originId/tmuxSession` (e.g., `remote-c02/test`). But Session objects from state have unprefixed `tmuxSession` (`test`). Client code must build the prefixed key when matching. See `ConversationCard.prefixedTmuxSession`.
+**tmuxSession prefix for remote conversations.** ConversationCache and WebSocket broadcasts use `originId/tmuxSession` (e.g., `remote-c02/test`). But Session objects from state have unprefixed `tmuxSession` (`test`). Client code must build the prefixed key when matching. See `ConversationCard.prefixedTmuxSession`. Server-side: `handleHookMessage` auto-detects remote hooks (via SSH tunnel) and prefixes tmuxSession before storing — no `PORTOLAN_URL` config needed on remotes.
 
 **Don't normalize conversation timestamps.** Millisecond precision distinguishes content blocks within the same second (thinking at .389Z vs text at .545Z). Stripping ms causes silent message loss. Use exact timestamps for dedup; toolUseId handles cross-source overlap. See fiber `gotcha-ms-precision-timestamps-9b21c263`.
 
-**Conversation lookup: sessionId first, tmux aggregation second.** Multiple sessions can share a tmux name. `resolveConversationMessages` must check `getMessages(sessionId)` before `getMessagesByTmux()` or old conversations bleed into new ones. Tmux aggregation is only for the restart case (new session, no messages yet). See fiber `conversation-session-isolation-dbb8aa40`.
+**Conversation lookup: sessionId only, no tmux aggregation.** `resolveConversationMessages` uses `getMessages(sessionId)` exclusively — tmux aggregation removed because it caused cross-contamination between sessions after disconnects. `ConversationCard.handleMessage()` matches by sessionId only (no tmux fallback). On WebSocket reconnect, all open cards re-fetch from server to recover missed messages. See fibers `conversation-session-isolation-dbb8aa40`, `conversationcard-tmux-match-f7c8fc8f`.
 
 **Mid-turn text needs PostToolUse transcript scan.** Stop fires once at END of turn. PostToolUse fires per tool call but only sends tool_use + tool_result. Assistant text between tool uses has no delivery path unless PostToolUse also scans the transcript tail. The hook filters transcript to text/thinking only (tool_use comes from payload). See fiber `mid-turn-assistant-text-needs-3ab050e3`.
 
@@ -147,9 +169,13 @@ The agent receives hook POSTs on port 4005 and forwards them via WebSocket to th
 
 **SSH commands: never double-quote-wrap user content.** `execAsync(\`ssh host "cmd '${userArg}'"\`)` is vulnerable — double quotes in `userArg` break out of wrapping. Use `execFileAsync('ssh', [host, cmd])` to bypass local shell entirely, and `shellEscape()` (from KittyIntegration) for quoting within the remote command string. All SSH handlers now follow this pattern. See fiber `gotcha-ssh-double-quote-810f6df9`.
 
+**felt depends_on is objects, not strings.** `felt ls --json` emits `depends_on: [{id: "..."}]` (Dependency objects with optional label), not bare string arrays. `getAllCityFibers` must extract `.id` from each entry. See fiber `portolan-depends-on-mapping-6e692fcf`.
+
 **Stop hook fires before transcript flush.** The Stop hook and the final assistant text write happen in the same sub-second. The hook's `tail|jq` reads a stale transcript missing the last entry. Fix: `sleep 0.3` at the top of the Stop handler. While the hook sleeps, Claude Code's event loop flushes the pending write. See fiber `gotcha-stop-hook-transcript-c50e76c0`.
 
 **Subagent transcripts bleed into parent conversation.** Task tool subagents write to `.../subagents/agent-<id>.jsonl`. The UserPromptSubmit scan (`find *.jsonl`) recurses into this directory, and subagent Stop hooks fire with the subagent's transcript_path but the parent's session_id. Fix: `-not -path "*/subagents/*"` in find, and `case */subagents/*` skip in Stop handler. See fiber `gotcha-subagent-transcripts-8975ca25`.
+
+**Parallel SSH calls exhaust ControlMaster connections.** 20+ concurrent `execFileAsync('ssh', ...)` calls cause silent failures — half return errors, caught and swallowed as null. Fix: batch into a single SSH command with delimited output. See `readEvidenceBatch()` in EvidenceReader.ts. See fiber `batch-ssh-evidence-reads-to-bf8c0096`.
 
 ## Deep Dives
 
@@ -171,5 +197,10 @@ Fibers in `.felt/` provide detail beyond this overview.
 | Rhizome Endpoint | `.felt/rhizome-endpoint-returns-full-2a1e18b5.md` |
 | Rhizome rule: tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
 | Rhizome DAG spec | `.felt/absorb-claims-dashboard-into-ed04e0e9.md` |
+| Config Interpolation | `.felt/config-value-interpolation-in-e3a39852.md` |
+| SSH Batch Evidence | `.felt/batch-ssh-evidence-reads-to-bf8c0096.md` |
+| Static Tapestry | `.felt/static-rhizome-dashboard-on-13a8fbc4.md` |
+| Fiber Sidebar | `.felt/tapestry-fiber-sidebar-ec45c86b.md` |
+| Rendered Markdown | `.felt/rendered-markdown-by-default-6cb4d4f3.md` |
 
 Search patterns/gotchas: `felt find pattern` or `felt find gotcha`

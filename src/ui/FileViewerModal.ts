@@ -16,7 +16,7 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
-import { escapeHtml, showToast } from './utils'
+import { escapeHtml, showToast, renderMarkdown } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 import { AnnotationPanel } from './AnnotationPanel'
 
@@ -211,6 +211,9 @@ export class FileViewerModal {
   // Double-Escape tracking for vim: first Escape -> normal mode, second Escape -> close
   private lastEscapeTime: number = 0
 
+  // Markdown render mode: true when showing rendered markdown instead of editor
+  private markdownRendered: boolean = false
+
   // Handler refs for HMR cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private arrowHandler: ((e: KeyboardEvent) => void) | null = null
@@ -271,6 +274,7 @@ export class FileViewerModal {
 
       globalCommentPlaceholder: 'Add summary or overall context...',
       globalCommentLabel: 'Overall feedback:',
+      hideFooter: true,
     })
 
     this.setupEventListeners()
@@ -375,6 +379,24 @@ export class FileViewerModal {
       }
 
       const now = Date.now()
+
+      // If editing a markdown file, Escape returns to rendered view
+      if (this.editorView?.hasFocus && !this.markdownRendered && this.isMarkdownFile()) {
+        if (now - this.lastEscapeTime < 1000) {
+          // Save if dirty, then exit to rendered view
+          if (this.isDirty) {
+            this.saveFile().then(() => this.exitFileEditMode())
+          } else {
+            this.exitFileEditMode()
+          }
+          e.stopPropagation()
+          this.lastEscapeTime = 0
+          return
+        } else {
+          this.lastEscapeTime = now
+          return
+        }
+      }
 
       // If editor exists and has focus, use double-Escape
       if (this.editorView?.hasFocus) {
@@ -529,6 +551,7 @@ export class FileViewerModal {
 
     // Reset double-Escape tracking
     this.lastEscapeTime = 0
+    this.markdownRendered = false
 
     // Reset annotation panel
     this.annotationPanel.reset()
@@ -598,8 +621,14 @@ export class FileViewerModal {
       // Show send button if we have annotations
       this.updateSendButton()
 
-      // Create CodeMirror editor
-      this.createEditor(data.content, data.language)
+      // Markdown files: render by default, double-click to edit
+      const isMarkdown = data.language === 'markdown' || /\.(md|markdown)$/i.test(filePath)
+      if (isMarkdown) {
+        this.showRenderedMarkdown(data.content)
+      } else {
+        // Create CodeMirror editor
+        this.createEditor(data.content, data.language)
+      }
 
       // Update annotation panel
       this.annotationPanel.setAnnotations(this.annotations)
@@ -989,6 +1018,341 @@ export class FileViewerModal {
     }
   }
 
+  private isMarkdownFile(): boolean {
+    if (!this.currentContent) return false
+    return this.currentContent.language === 'markdown' || /\.(md|markdown)$/i.test(this.currentPath)
+  }
+
+  private showRenderedMarkdown(content: string): void {
+    this.markdownRendered = true
+    this.contentEl.innerHTML = ''
+
+    // Resolve image paths: try city root first (project-relative), fall back to file directory
+    const dirPath = this.currentPath.replace(/\/[^/]+$/, '')
+    const mdOpts = {
+      basePath: this.currentCityPath || dirPath,
+      originId: this.currentOriginId,
+    }
+
+    const wrapper = document.createElement('div')
+    wrapper.className = 'file-viewer-markdown editable-markdown'
+
+    // Detect fiber files and render rich frontmatter header
+    const isFiber = /\.felt\/[^/]+\.md$/i.test(this.currentPath)
+    const { frontmatter, body } = isFiber
+      ? this.parseFrontmatter(content)
+      : { frontmatter: null, body: content }
+
+    if (frontmatter) {
+      wrapper.innerHTML = this.renderFiberHeader(frontmatter) + renderMarkdown(body, mdOpts)
+    } else {
+      wrapper.innerHTML = renderMarkdown(content, mdOpts)
+    }
+
+    this.contentEl.appendChild(wrapper)
+
+    // Syntax highlight code blocks
+    if ((window as any).Prism) {
+      (window as any).Prism.highlightAllUnder(wrapper)
+    }
+
+    this.modeLineEl.textContent = 'Double-click to edit'
+
+    // Double-click → swap to editor (suppress annotation on dblclick)
+    let dblClickPending = false
+    wrapper.addEventListener('dblclick', (e) => {
+      dblClickPending = true
+      if ((e.target as HTMLElement).closest('a')) return
+      this.enterFileEditMode()
+    })
+
+    // Text selection → annotation toolbar (same as editor mode)
+    wrapper.addEventListener('mouseup', () => {
+      // Skip if double-click triggered
+      setTimeout(() => {
+        if (dblClickPending) { dblClickPending = false; return }
+        const sel = window.getSelection()
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+          this.hideSelectionToolbar()
+          return
+        }
+        this.handleRenderedSelection(sel)
+      }, 200)
+    })
+  }
+
+  // ── Fiber frontmatter parsing & rendering ──────────────────────────
+
+  private parseFrontmatter(content: string): { frontmatter: Record<string, any> | null; body: string } {
+    const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
+    if (!match) return { frontmatter: null, body: content }
+
+    const raw = match[1]
+    const body = match[2]
+    const fm: Record<string, any> = {}
+
+    // Simple YAML parser for fiber frontmatter (flat + arrays)
+    let currentKey = ''
+    let inArray = false
+    for (const line of raw.split('\n')) {
+      const arrayItem = line.match(/^\s+-\s+(.+)$/)
+      if (arrayItem && inArray && currentKey) {
+        if (!Array.isArray(fm[currentKey])) fm[currentKey] = []
+        // Handle object items like {id: "..."} or bare strings
+        const val = arrayItem[1].trim()
+        if (val.startsWith('{') || val.match(/^\w+:/)) {
+          // Simple object: extract id field
+          const idMatch = val.match(/(?:id:\s*['"]?)([^'"}\s]+)/)
+          fm[currentKey].push(idMatch ? { id: idMatch[1] } : val)
+        } else {
+          fm[currentKey].push(val.replace(/^['"]|['"]$/g, ''))
+        }
+        continue
+      }
+
+      const kvMatch = line.match(/^(\S[\w-]+):\s*(.*)$/)
+      if (kvMatch) {
+        currentKey = kvMatch[1]
+        const val = kvMatch[2].trim()
+        if (val === '' || val === '|') {
+          inArray = !val // empty value = potential array start
+          fm[currentKey] = val === '|' ? '' : undefined
+        } else {
+          inArray = false
+          fm[currentKey] = val.replace(/^['"]|['"]$/g, '')
+        }
+      } else if (currentKey && fm[currentKey] === '' && line.startsWith('  ')) {
+        // Multi-line scalar continuation
+        fm[currentKey] += (fm[currentKey] ? '\n' : '') + line.trim()
+      }
+    }
+
+    return { frontmatter: fm, body }
+  }
+
+  private renderFiberHeader(fm: Record<string, any>): string {
+    const statusIcons: Record<string, string> = {
+      untracked: '·', open: '○', active: '◐', closed: '●'
+    }
+    const kindLabels: Record<string, string> = {
+      task: 'Task', decision: 'Decision', spec: 'Specification',
+      doc: 'Document', question: 'Question', bug: 'Bug'
+    }
+
+    const status = fm.status || 'open'
+    const kind = fm.kind || ''
+    const title = fm.title || 'Untitled'
+    const tags = Array.isArray(fm.tags) ? fm.tags : []
+    const deps = Array.isArray(fm['depends-on']) ? fm['depends-on'] : []
+    const createdAt = fm['created-at']
+    const closedAt = fm['closed-at']
+    const closeReason = fm['close-reason'] || fm.outcome || ''
+
+    // Format dates
+    const formatDate = (iso: string) => {
+      try {
+        const d = new Date(iso)
+        return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+      } catch { return iso }
+    }
+
+    // Status badge color
+    const statusClass = `fiber-status-${status}`
+
+    // Tags
+    const tagsHtml = tags.length > 0
+      ? `<div class="fiber-card-tags">${tags.map((t: string) =>
+          `<span class="fiber-card-tag">${escapeHtml(t.replace(/^\[|\]$/g, ''))}</span>`
+        ).join('')}</div>`
+      : ''
+
+    // Dependencies
+    const depsHtml = deps.length > 0
+      ? `<div class="fiber-card-deps">
+          <span class="fiber-card-deps-label">depends on</span>
+          ${deps.map((d: any) => {
+            const id = typeof d === 'string' ? d : d.id
+            const short = id.replace(/-[a-f0-9]{8}$/, '')
+            return `<a href=".felt/${escapeHtml(id)}.md" class="fiber-card-dep md-link">${escapeHtml(short)}</a>`
+          }).join('<span class="fiber-card-deps-sep">,</span> ')}
+        </div>`
+      : ''
+
+    // Dates
+    const datesHtml = createdAt
+      ? `<div class="fiber-card-dates">
+          <span>Filed ${formatDate(createdAt)}</span>
+          ${closedAt ? `<span class="fiber-card-date-sep">·</span><span>Closed ${formatDate(closedAt)}</span>` : ''}
+        </div>`
+      : ''
+
+    // Close reason / outcome
+    const outcomeHtml = closeReason
+      ? `<div class="fiber-card-outcome">
+          <div class="fiber-card-outcome-label">Outcome</div>
+          <div class="fiber-card-outcome-text">${renderMarkdown(closeReason)}</div>
+        </div>`
+      : ''
+
+    // One dense console line: status · kind · deps · dates · tags
+    const parts: string[] = []
+    parts.push(`<span class="fiber-card-status ${statusClass}">${statusIcons[status] || '○'} ${escapeHtml(status)}</span>`)
+    if (kind) parts.push(`<span class="fiber-card-kind">${escapeHtml(kindLabels[kind] || kind)}</span>`)
+    if (deps.length > 0) parts.push(depsHtml)
+    if (datesHtml) parts.push(datesHtml)
+    if (tags.length > 0) parts.push(tagsHtml)
+
+    return `
+      <header class="fiber-card">
+        <div class="fiber-card-title">${escapeHtml(title)}</div>
+        <div class="fiber-card-console">${parts.join('<span class="fc-sep">·</span>')}</div>
+        ${outcomeHtml}
+        <div class="fiber-card-rule"></div>
+      </header>
+    `
+  }
+
+  /**
+   * Handle text selection in rendered markdown view.
+   * Maps the selected text to character offsets in the raw markdown source.
+   */
+  private handleRenderedSelection(sel: Selection): void {
+    const selectedText = sel.toString().trim()
+    if (!selectedText || !this.originalContent) return
+
+    const rawContent = this.originalContent
+
+    // Try exact match first
+    const idx = rawContent.indexOf(selectedText)
+    if (idx !== -1) {
+      this.showRenderedSelectionToolbar(sel, idx, idx + selectedText.length, selectedText)
+      return
+    }
+
+    // Fuzzy match: normalize all whitespace (newlines, double newlines, etc.)
+    // Extract only alphanumeric+punctuation "skeleton" for matching
+    const normalize = (s: string) => s.replace(/\s+/g, '\x00')
+    const normSelected = normalize(selectedText)
+    const normRaw = normalize(rawContent)
+
+    const fIdx = normRaw.indexOf(normSelected)
+    if (fIdx !== -1) {
+      // Map back to raw offsets: count actual characters consumed
+      let rawFrom = 0, consumed = 0
+      while (consumed < fIdx && rawFrom < rawContent.length) {
+        const rc = rawContent[rawFrom]
+        const nc = normRaw[consumed]
+        if (/\s/.test(rc) && nc === '\x00') {
+          // Skip entire whitespace run in raw
+          while (rawFrom < rawContent.length && /\s/.test(rawContent[rawFrom])) rawFrom++
+          consumed++
+        } else {
+          rawFrom++
+          consumed++
+        }
+      }
+      const from = rawFrom
+
+      // Now advance through the matched portion
+      let matchConsumed = 0
+      while (matchConsumed < normSelected.length && rawFrom < rawContent.length) {
+        const rc = rawContent[rawFrom]
+        const nc = normSelected[matchConsumed]
+        if (/\s/.test(rc) && nc === '\x00') {
+          while (rawFrom < rawContent.length && /\s/.test(rawContent[rawFrom])) rawFrom++
+          matchConsumed++
+        } else {
+          rawFrom++
+          matchConsumed++
+        }
+      }
+
+      this.showRenderedSelectionToolbar(sel, from, rawFrom, selectedText)
+      return
+    }
+
+    // Last resort: use character offsets 0,0 — still allow annotation with selected text
+    this.showRenderedSelectionToolbar(sel, 0, 0, selectedText)
+  }
+
+  /**
+   * Show the selection toolbar positioned relative to a browser Selection in rendered markdown.
+   */
+  private showRenderedSelectionToolbar(sel: Selection, from: number, to: number, selectedText: string): void {
+    const range = sel.getRangeAt(0)
+    const rect = range.getBoundingClientRect()
+    const modalRect = this.modal.getBoundingClientRect()
+
+    // Remove existing toolbar
+    this.hideSelectionToolbar()
+
+    // Create toolbar (same markup as editor mode)
+    const toolbar = document.createElement('div')
+    toolbar.className = 'selection-toolbar'
+    toolbar.innerHTML = `
+      <button class="selection-toolbar-btn" data-action="comment" title="Add comment">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+        </svg>
+        Comment
+      </button>
+      <button class="selection-toolbar-btn" data-action="delete" title="Mark for deletion">
+        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12" />
+        </svg>
+        Delete
+      </button>
+      <button class="selection-toolbar-btn selection-toolbar-close" title="Cancel">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    `
+
+    toolbar.style.position = 'absolute'
+    toolbar.style.left = `${rect.left - modalRect.left}px`
+    toolbar.style.top = `${rect.top - modalRect.top - 40}px`
+
+    toolbar.querySelector('[data-action="comment"]')!.addEventListener('click', () => {
+      this.startAnnotationInput(from, to, selectedText)
+    })
+    toolbar.querySelector('[data-action="delete"]')!.addEventListener('click', () => {
+      this.saveAnnotation(from, to, selectedText, '[DELETE]')
+      this.hideSelectionToolbar()
+    })
+    toolbar.querySelector('.selection-toolbar-close')!.addEventListener('click', () => {
+      this.hideSelectionToolbar()
+    })
+
+    this.selectionToolbar = toolbar
+    this.modal.appendChild(toolbar)
+  }
+
+  private enterFileEditMode(): void {
+    if (!this.currentContent) return
+    this.markdownRendered = false
+    this.createEditor(this.currentContent.content, this.currentContent.language)
+    this.modeLineEl.textContent = ''
+    if (this.editorView) this.editorView.focus()
+  }
+
+  private exitFileEditMode(): void {
+    if (!this.currentContent) return
+    // Get current editor content (may have been edited)
+    const content = this.editorView?.state.doc.toString() || this.currentContent.content
+    // Update stored content
+    this.currentContent.content = content
+    this.originalContent = content
+    this.isDirty = false
+    this.updateDirtyIndicator()
+    // Destroy editor and show rendered markdown
+    if (this.editorView) {
+      this.editorView.destroy()
+      this.editorView = null
+    }
+    this.showRenderedMarkdown(content)
+  }
+
   private updateModeLine(state: EditorState): void {
     const pos = state.selection.main.head
     const line = state.doc.lineAt(pos)
@@ -1262,7 +1626,7 @@ export class FileViewerModal {
   }
 
   private startAnnotationInput(from: number, to: number, selectedText: string): void {
-    if (!this.selectionToolbar || !this.editorView) return
+    if (!this.selectionToolbar) return
 
     // Replace toolbar content with input
     this.selectionToolbar.innerHTML = `
@@ -1322,6 +1686,12 @@ export class FileViewerModal {
       const endLineInfo = this.editorView.state.doc.lineAt(to)
       line = startLineInfo.number
       endLine = endLineInfo.number
+    } else {
+      // Compute from raw content when in rendered mode
+      const before = content.slice(0, from)
+      line = (before.match(/\n/g) || []).length + 1
+      const beforeEnd = content.slice(0, to)
+      endLine = (beforeEnd.match(/\n/g) || []).length + 1
     }
 
     try {

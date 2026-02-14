@@ -6,6 +6,12 @@ import * as d3Force from 'd3-force'
 import * as d3Selection from 'd3-selection'
 import * as d3Drag from 'd3-drag'
 import * as d3Zoom from 'd3-zoom'
+import { EditorState, type Extension } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view'
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
+import { markdown } from '@codemirror/lang-markdown'
+import { vim } from '@replit/codemirror-vim'
 import type { City } from '../state/types'
 import { escapeHtml, renderMarkdown, highlightCodeBlocks, showToast } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
@@ -37,10 +43,23 @@ interface RhizomeLink {
   target: string
 }
 
-interface RhizomeResponse {
+interface RhizomeFiber {
+  id: string
+  title: string
+  status: string
+  kind: string
+  tags?: string[]
+  body?: string
+  reason?: string
+  dependsOn: string[]
+}
+
+export interface RhizomeResponse {
   nodes: RhizomeNode[]
   links: RhizomeLink[]
   downstream: Record<string, Array<{ id: string; title: string; status: string; kind: string }>>
+  config: Record<string, string> | null
+  fibers?: RhizomeFiber[]
 }
 
 /** D3 simulation node with position. */
@@ -73,6 +92,9 @@ interface ClaimsAnnotation extends BaseAnnotation {
   artifact?: string
   x?: number
   y?: number
+  line?: number
+  endLine?: number
+  filePath?: string
   isImageAnnotation?: boolean
 }
 
@@ -86,7 +108,7 @@ const RING_COUNT = RING_SCALES.length
 const DETAIL_DEFAULT_WIDTH = 420
 const DETAIL_MIN_WIDTH = 280
 const DETAIL_MAX_WIDTH = 800
-const SIMULATION_TICKS = 500
+const SIMULATION_TICKS = 800
 const SEARCH_SNIPPET_CONTEXT = 15
 const TEXT_SELECTION_TRUNCATION = 60
 const POPOVER_WIDTH = 280
@@ -191,11 +213,14 @@ function statusIcon(status: string): string {
 // ── RhizomeView ──────────────────────────────────────────────────────
 
 export class RhizomeView {
+  private detailKeyHandler: ((e: KeyboardEvent) => void) | null = null
   private panel: HTMLElement
   private closeBtn: HTMLElement
   private dagContainer: HTMLElement
   private detailPanel: HTMLElement
-  private searchInput: HTMLInputElement
+  private fiberListEl: HTMLElement
+  private fiberSearchInput: HTMLInputElement
+  private fiberResultsEl: HTMLElement
   private searchResults: HTMLElement
   private loadingIndicator: HTMLElement
   private annotationPanelEl: HTMLElement
@@ -204,6 +229,8 @@ export class RhizomeView {
   private currentCity: City | null = null
   private rhizomeData: RhizomeResponse | null = null
   private selectedNodeId: string | null = null
+  private staticMode = false
+  private staticAssetBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private currentPlotIndex = 0
   private detailWidth = DETAIL_DEFAULT_WIDTH
@@ -211,13 +238,20 @@ export class RhizomeView {
   // HMR-safe listener refs
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private onGetWorkers: ((city: City) => WorkerInfo[]) | null = null
+  private onOpenFile: ((path: string, city: City) => void) | null = null
+
+  // Inline markdown editor state
+  private bodyEditorView: EditorView | null = null
+  private bodyEditorNodeId: string | null = null
 
   constructor() {
     this.panel = this.createPanel()
     this.closeBtn = this.panel.querySelector('.rhizome-close')!
     this.dagContainer = this.panel.querySelector('.rhizome-dag')!
     this.detailPanel = this.panel.querySelector('.rhizome-detail')!
-    this.searchInput = this.panel.querySelector('.rhizome-search input') as HTMLInputElement
+    this.fiberListEl = this.panel.querySelector('.rhizome-fiber-list')!
+    this.fiberSearchInput = this.panel.querySelector('.rhizome-fiber-search') as HTMLInputElement
+    this.fiberResultsEl = this.panel.querySelector('.rhizome-fiber-results')!
     this.searchResults = this.panel.querySelector('.rhizome-search-results')!
     this.loadingIndicator = this.panel.querySelector('.rhizome-loading')!
     this.annotationPanelEl = this.panel.querySelector('.rhizome-annotation-panel')!
@@ -260,6 +294,7 @@ export class RhizomeView {
         this.sendAnnotationsToWorker(annotations, workerId, createNew),
 
       globalCommentPlaceholder: 'General feedback\u2026',
+      hideFooter: true,
     })
 
     this.setupEventListeners()
@@ -276,19 +311,33 @@ export class RhizomeView {
       <div class="rhizome-body">
         <div class="rhizome-main">
           <div class="rhizome-dag-wrapper">
-            <div class="rhizome-loading">Loading rhizome\u2026</div>
+            <div class="rhizome-loading">Loading tapestry\u2026</div>
             <div class="rhizome-dag"></div>
-            <div class="rhizome-search">
-              <input type="text" placeholder="Search fibers\u2026" />
-              <div class="rhizome-search-results"></div>
-            </div>
           </div>
-          <div class="rhizome-detail hidden"></div>
+          <div class="rhizome-sidebar">
+            <div class="rhizome-sidebar-resize"></div>
+            <div class="rhizome-fiber-list">
+              <div class="rhizome-search">
+                <input type="text" class="rhizome-fiber-search" placeholder="Search fibers\u2026" />
+                <div class="rhizome-search-results"></div>
+              </div>
+              <div class="rhizome-legend">
+                <span class="legend-item"><span style="color:#5A7B7B">\u25CF</span> fresh</span>
+                <span class="legend-item"><span style="color:#A87070">\u25CF</span> stale</span>
+                <span class="legend-item"><span style="color:#7A7368">\u25CF</span> no evidence</span>
+                <span class="legend-sep">|</span>
+                <span class="legend-item">\u25CB open</span>
+                <span class="legend-item">\u25D0 active</span>
+                <span class="legend-item">\u25CF closed</span>
+              </div>
+              <div class="rhizome-fiber-results"></div>
+            </div>
+            <div class="rhizome-detail hidden"></div>
+          </div>
         </div>
         <div class="rhizome-annotation-panel hidden">
           ${AnnotationPanel.buildPanelHTML({
             globalCommentPlaceholder: 'General feedback\u2026',
-            showSaveButton: true,
           })}
         </div>
       </div>
@@ -299,24 +348,14 @@ export class RhizomeView {
   private setupEventListeners(): void {
     this.closeBtn.addEventListener('click', () => this.hide())
 
-    // Global feedback save
-    const globalSaveBtn = this.annotationPanelEl.querySelector('.ann-global-save')
-    const globalTextarea = this.annotationPanelEl.querySelector('.ann-panel-global-input textarea') as HTMLTextAreaElement | null
-
-    if (globalSaveBtn && globalTextarea) {
-      globalSaveBtn.addEventListener('click', () => {
-        this.saveGlobalFeedback(globalTextarea)
-      })
-      globalTextarea.addEventListener('keydown', (e: KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
-          this.saveGlobalFeedback(globalTextarea)
-        }
-      })
-    }
-
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.isVisible()) {
+        // If editing body, exit edit mode (discard changes)
+        if (this.bodyEditorView) {
+          const node = this.rhizomeData?.nodes.find(n => n.id === this.bodyEditorNodeId)
+          if (node) this.exitBodyEditMode(node)
+          return
+        }
         if (this.detailPanel.classList.contains('hidden')) {
           this.hide()
         } else {
@@ -325,22 +364,61 @@ export class RhizomeView {
       }
     }
 
-    // Search
-    this.searchInput.addEventListener('input', () => this.handleSearch())
-    this.searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
+    // Search (fiber sidebar)
+    this.fiberSearchInput.addEventListener('input', () => {
+      this.handleSearch()
+      this.renderFiberList()
+    })
+    this.fiberSearchInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        this.searchInput.value = ''
+        this.fiberSearchInput.value = ''
         this.searchResults.innerHTML = ''
         this.clearSearchHighlights()
-        this.searchInput.blur()
+        this.fiberSearchInput.blur()
+        this.renderFiberList()
       }
     })
 
-    // Text selection for annotation
+    // Sidebar resize (only active when expanded)
+    const sidebarResize = this.panel.querySelector('.rhizome-sidebar-resize')
+    const sidebar = this.panel.querySelector('.rhizome-sidebar') as HTMLElement
+    if (sidebarResize && sidebar) {
+      sidebarResize.addEventListener('mousedown', (e) => {
+        e.preventDefault()
+        sidebar.style.transition = 'none'
+        const startX = (e as MouseEvent).clientX
+        const startWidth = sidebar.getBoundingClientRect().width
+        const onMove = (ev: MouseEvent) => {
+          const newWidth = Math.max(300, Math.min(800, startWidth - (ev.clientX - startX)))
+          sidebar.style.width = `${newWidth}px`
+        }
+        const onUp = () => {
+          sidebar.style.transition = ''
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      })
+    }
+
+    // Text selection for annotation (disabled in static mode)
+    // Delay mouseup handler to distinguish single-click selection from double-click (edit mode)
+    let selectionTimeout: ReturnType<typeof setTimeout> | null = null
     this.detailPanel.addEventListener('mouseup', () => {
-      const selection = window.getSelection()
-      if (selection && selection.toString().trim().length > 0) {
-        this.handleTextSelection(selection)
+      if (this.staticMode) return
+      // Wait briefly — if a dblclick follows, it will cancel this
+      selectionTimeout = setTimeout(() => {
+        const selection = window.getSelection()
+        if (selection && selection.toString().trim().length > 0) {
+          this.handleTextSelection(selection)
+        }
+      }, 250)
+    })
+    this.detailPanel.addEventListener('dblclick', () => {
+      if (selectionTimeout) {
+        clearTimeout(selectionTimeout)
+        selectionTimeout = null
       }
     })
   }
@@ -357,7 +435,7 @@ export class RhizomeView {
     this.hideDetail()
 
     this.loadingIndicator.style.display = 'flex'
-    this.loadingIndicator.textContent = 'Loading rhizome\u2026'
+    this.loadingIndicator.textContent = 'Loading tapestry\u2026'
     this.loadingIndicator.classList.remove('error')
     this.dagContainer.innerHTML = ''
 
@@ -372,8 +450,9 @@ export class RhizomeView {
       this.rhizomeData = await response.json()
       this.loadingIndicator.style.display = 'none'
       this.renderDAG()
+      this.renderFiberList()
     } catch (err) {
-      this.loadingIndicator.textContent = 'Failed to load rhizome'
+      this.loadingIndicator.textContent = 'Failed to load tapestry'
       this.loadingIndicator.classList.add('error')
       console.error('Rhizome fetch failed:', err)
     }
@@ -416,6 +495,43 @@ export class RhizomeView {
 
   setOnGetWorkers(fn: (city: City) => WorkerInfo[]): void {
     this.onGetWorkers = fn
+  }
+
+  setOnOpenFile(fn: (path: string, city: City) => void): void {
+    this.onOpenFile = fn
+  }
+
+  /** Render a static (server-less) view from pre-baked data. */
+  showStatic(data: RhizomeResponse, title: string, assetBase = './data/claims'): void {
+    this.staticMode = true
+    this.staticAssetBase = assetBase
+    this.rhizomeData = data
+    this.selectedNodeId = null
+    this.currentPlotIndex = 0
+
+    this.annotationPanel.hidePanel()
+    this.annotationPanelEl.style.display = 'none'
+    this.closeBtn.style.display = 'none'
+
+    this.loadingIndicator.style.display = 'none'
+    this.dagContainer.innerHTML = ''
+
+    if (this.escapeHandler) {
+      document.addEventListener('keydown', this.escapeHandler)
+    }
+    this.panel.classList.add('visible')
+
+    this.renderDAG()
+    this.renderFiberList()
+  }
+
+  /** Build an artifact image URL, using local paths in static mode. */
+  private artifactUrl(specName: string, filePath: string): string {
+    const filename = filePath.split('/').pop() || ''
+    if (this.staticMode) {
+      return `${this.staticAssetBase}/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}`
+    }
+    return `${API_BASE}/rhizome-asset/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}?cityId=${encodeURIComponent(this.currentCity?.id || '')}`
   }
 
   // ── DAG rendering ──────────────────────────────────────────────────
@@ -497,22 +613,110 @@ export class RhizomeView {
       link.target.degree++
     })
 
+    // ── Branch separation: compute ancestry for Y-divergence force ──
+    // For each node, collect the full set of ancestors (all upstream nodes).
+    // Two nodes are "independent" if neither is an ancestor of the other.
+    // The branching distance is how far back their nearest common ancestor is.
+    const ancestors = new Map<string, Set<string>>()
+
+    function getAncestors(id: string, visited = new Set<string>()): Set<string> {
+      if (ancestors.has(id)) return ancestors.get(id)!
+      if (visited.has(id)) return new Set()
+      visited.add(id)
+      const node = nodeMap.get(id)
+      const result = new Set<string>()
+      if (node) {
+        for (const dep of node.dependsOn) {
+          result.add(dep)
+          for (const a of getAncestors(dep, visited)) result.add(a)
+        }
+      }
+      ancestors.set(id, result)
+      return result
+    }
+    rawNodes.forEach(n => getAncestors(n.id))
+
+    // Nearest common ancestor depth for two nodes (max depth among shared ancestors, -1 if none)
+    function ncaDepth(idA: string, idB: string): number {
+      const aAnc = ancestors.get(idA)!
+      const bAnc = ancestors.get(idB)!
+      let best = -1
+      for (const a of aAnc) {
+        if (bAnc.has(a)) {
+          const d = depthMap.get(a) || 0
+          if (d > best) best = d
+        }
+      }
+      return best
+    }
+
+    // Custom force: push independent branches apart in Y.
+    // Acts as a structural force — sets branch layout early, then fades.
+    const BRANCH_SEP_STRENGTH = 3.0
+    const BRANCH_MIN_Y_SEP = 2 * NODE_RY + 50
+
+    function branchSeparationForce(alpha: number): void {
+      for (let i = 0; i < simNodes.length; i++) {
+        for (let j = i + 1; j < simNodes.length; j++) {
+          const a = simNodes[i]
+          const b = simNodes[j]
+
+          // Skip if one is ancestor of the other (same branch)
+          const aAnc = ancestors.get(a.id)!
+          const bAnc = ancestors.get(b.id)!
+          if (aAnc.has(b.id) || bAnc.has(a.id)) continue
+
+          // Only affect nodes at similar X positions (within ~3 tiers)
+          const xDist = Math.abs(a.x! - b.x!)
+          if (xDist > minSeparation * 3) continue
+
+          const dy = b.y! - a.y!
+          const absDy = Math.abs(dy)
+          if (absDy > BRANCH_MIN_Y_SEP * 4) continue
+
+          // Branch distance: how far each node is from their NCA
+          const nca = ncaDepth(a.id, b.id)
+          const depthA = depthMap.get(a.id) || 0
+          const depthB = depthMap.get(b.id) || 0
+          const branchDist = nca >= 0
+            ? Math.min(depthA - nca, depthB - nca)
+            : Math.max(depthA, depthB) + 1
+
+          // Scale: ramps quickly from split point, full strength by distance 3
+          const scale = Math.min(branchDist, 3) / 3
+          const force = BRANCH_SEP_STRENGTH * scale * alpha
+
+          // Push apart in Y — position-based for overlap, velocity-based otherwise
+          if (absDy < BRANCH_MIN_Y_SEP) {
+            const push = force * (BRANCH_MIN_Y_SEP - absDy)
+            const sign = dy >= 0 ? 1 : -1
+            // Direct position nudge for strong structural effect
+            b.y! += sign * push * 0.3
+            a.y! -= sign * push * 0.3
+            b.vy! += sign * push * 0.2
+            a.vy! -= sign * push * 0.2
+          }
+        }
+      }
+    }
+
     // Force simulation
     this.simulation = d3Force.forceSimulation<SimNode>(simNodes)
       .force('link', d3Force.forceLink<SimNode, SimLink>(simLinks)
         .id(d => d.id)
-        .distance(100)
+        .distance(140)
         .strength(link => {
           const tgt = (link.target as SimNode).degree || 1
           const src = (link.source as SimNode).degree || 1
-          return 1 / Math.max(tgt, src)
+          return Math.max(0.4, 1.5 / Math.max(tgt, src))
         }))
-      .force('charge', d3Force.forceManyBody().strength(-400))
+      .force('charge', d3Force.forceManyBody().strength(-500).distanceMax(400))
       .force('collide', d3Force.forceCollide<SimNode>().radius(60).strength(0.9))
-      .force('x', d3Force.forceX(width / 2).strength(0.03))
-      .force('y', d3Force.forceY(height / 2).strength(0.05))
-      .alphaDecay(0.02)
-      .velocityDecay(0.85)
+      .force('branchSeparation', branchSeparationForce)
+      .force('x', d3Force.forceX(width / 2).strength(0.015))
+      .force('y', d3Force.forceY(height / 2).strength(0.03))
+      .alphaDecay(0.012)
+      .velocityDecay(0.8)
       .stop()
 
     // Pre-run simulation
@@ -532,6 +736,19 @@ export class RhizomeView {
         })
       }
     }
+
+    // Remove structural forces after burn-in — interactive dragging should
+    // only use gentle link/charge/collide, not the layout forces.
+    this.simulation.force('branchSeparation', null)
+    this.simulation.force('x', null)
+    this.simulation.force('y', null)
+    this.simulation.alphaDecay(0.05)
+    this.simulation.velocityDecay(0.9)
+
+    // After burn-in: pin X positions so dragging only moves Y.
+    // This prevents both rightward drift (from DAG constraint) and
+    // leftward collapse (from link force without DAG constraint).
+    simNodes.forEach(n => { n.fx = n.x })
 
     // Create SVG
     const svg = d3Selection.select(this.dagContainer)
@@ -587,17 +804,21 @@ export class RhizomeView {
       .call(d3Drag.drag<SVGGElement, SimNode>()
         .on('start', (event, d) => {
           draggedDistance = 0
-          if (!event.active) this.simulation?.alphaTarget(0.3).restart()
+          if (!event.active) this.simulation?.alphaTarget(0.1).restart()
+          d.fx = d.x
           d.fy = d.y
           d3Selection.select(event.sourceEvent.target.closest('.rhizome-node') as Element)
-            .style('cursor', 'ns-resize')
+            .style('cursor', 'grabbing')
         })
         .on('drag', (event, d) => {
           draggedDistance += Math.abs(event.dx) + Math.abs(event.dy)
+          d.fx = event.x
           d.fy = event.y
         })
         .on('end', (event, d) => {
           if (!event.active) this.simulation?.alphaTarget(0)
+          // Keep X pinned where user left it, release Y to settle
+          d.fx = d.x
           d.fy = null
           d3Selection.select(event.sourceEvent.target.closest('.rhizome-node') as Element)
             .style('cursor', 'grab')
@@ -700,15 +921,7 @@ export class RhizomeView {
     const minY_bound = 60 + NODE_RY
 
     this.simulation.on('tick', () => {
-      // DAG constraint: target right of source
-      for (let iter = 0; iter < 3; iter++) {
-        simLinks.forEach(link => {
-          const minX = link.source.x! + minSeparation
-          if (link.target.x! < minX) {
-            link.target.x = minX
-          }
-        })
-      }
+      // DAG X-constraint disabled post burn-in (X positions are pinned via fx)
 
       // Constrain within bounds
       simNodes.forEach(n => {
@@ -741,7 +954,7 @@ export class RhizomeView {
     this.currentPlotIndex = 0
     this.updateHighlighting()
     this.renderDetailPanel(id)
-    this.loadAnnotations(id)
+    if (!this.staticMode) this.loadAnnotations(id)
   }
 
   private updateHighlighting(): void {
@@ -787,19 +1000,38 @@ export class RhizomeView {
     const node = this.rhizomeData.nodes.find(n => n.id === nodeId)
     if (!node) return
 
+    // Clean up any active body editor
+    this.destroyBodyEditor()
+
     const downstream = this.rhizomeData.downstream[nodeId] || []
     const nodeColor = stalenessColor(node.staleness)
 
-    // Dependencies
-    const depsHtml = node.dependsOn.length > 0
-      ? `<div class="rhizome-detail-deps">
-           <span class="deps-label">Depends on:</span>
+    // Upstream / Downstream fiber tags
+    const renderFiberTag = (id: string, label: string) =>
+      `<span class="dep-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(label)}</span>`
+
+    const upstreamHtml = node.dependsOn.length > 0
+      ? `<div class="rhizome-detail-graph-line">
+           <span class="graph-label">Upstream</span>
            ${node.dependsOn.map(dep => {
              const depNode = this.rhizomeData!.nodes.find(n => n.id === dep)
-             const name = depNode ? shortName(depNode.title) : dep.slice(0, 12)
-             return `<span class="dep-tag" data-dep-id="${escapeHtml(dep)}">${escapeHtml(name)}</span>`
+             return renderFiberTag(dep, depNode ? shortName(depNode.title) : dep.slice(0, 12))
            }).join('')}
          </div>`
+      : ''
+
+    const downstreamHtml = downstream.length > 0
+      ? `<div class="rhizome-detail-graph-line">
+           <span class="graph-label">Downstream</span>
+           ${downstream.map(d => {
+             const icon = statusIcon(d.status)
+             return `<span class="dep-tag downstream-tag" data-dep-id="${escapeHtml(d.id)}">${icon} ${escapeHtml(shortName(d.title))}</span>`
+           }).join('')}
+         </div>`
+      : ''
+
+    const graphHtml = (upstreamHtml || downstreamHtml)
+      ? `<div class="rhizome-detail-graph">${upstreamHtml}${downstreamHtml}</div>`
       : ''
 
     // Artifact viewer
@@ -808,7 +1040,7 @@ export class RhizomeView {
       const entries = Object.entries(node.evidence.artifacts)
       if (entries.length > 0) {
         const [name, path] = entries[this.currentPlotIndex] || entries[0]
-        const imgSrc = `${API_BASE}/rhizome-asset/${encodeURIComponent(node.specName || '')}/${encodeURIComponent(path.split('/').pop() || '')}?cityId=${encodeURIComponent(this.currentCity?.id || '')}`
+        const imgSrc = this.artifactUrl(node.specName || '', path)
         const hasMultiple = entries.length > 1
         artifactsHtml = `
           <div class="rhizome-artifact-viewer">
@@ -822,9 +1054,12 @@ export class RhizomeView {
       }
     }
 
-    // Body (markdown)
+    // Body (markdown) — rendered by default, double-click to edit
+    const mdOpts = this.currentCity
+      ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
+      : undefined
     const bodyHtml = node.body
-      ? `<div class="rhizome-detail-body">${renderMarkdown(node.body)}</div>`
+      ? `<div class="rhizome-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}">${renderMarkdown(node.body, mdOpts)}</div>`
       : ''
 
     // Evidence metrics — flatten nested objects into key.subkey pairs
@@ -845,33 +1080,7 @@ export class RhizomeView {
       ).join('')
       evidenceHtml = `
         <div class="rhizome-evidence-section">
-          <h3 class="rhizome-collapsible" data-target="evidence-container">
-            <span class="toggle-icon">\u25B8</span> Evidence
-          </h3>
-          <div class="evidence-container collapsed">
-            <div class="rhizome-evidence">${itemsHtml}</div>
-          </div>
-        </div>`
-    }
-
-    // Downstream concerns
-    let downstreamHtml = ''
-    if (downstream.length > 0) {
-      downstreamHtml = `
-        <div class="rhizome-downstream-section">
-          <h3 class="rhizome-collapsible" data-target="downstream-container">
-            <span class="toggle-icon">\u25B8</span> Downstream (${downstream.length})
-          </h3>
-          <div class="downstream-container collapsed">
-            ${downstream.map(d => {
-              const icon = statusIcon(d.status)
-              return `<div class="downstream-item" data-fiber-id="${escapeHtml(d.id)}">
-                <span class="downstream-status">${icon}</span>
-                <span class="downstream-title">${escapeHtml(d.title)}</span>
-                <span class="downstream-kind">${escapeHtml(d.kind)}</span>
-              </div>`
-            }).join('')}
-          </div>
+          <div class="rhizome-evidence">${itemsHtml}</div>
         </div>`
     }
 
@@ -886,20 +1095,23 @@ export class RhizomeView {
         <button class="rhizome-detail-close">&times;</button>
       </div>
       <div class="rhizome-detail-content">
-        ${depsHtml}
+        ${graphHtml}
         ${artifactsHtml}
         ${bodyHtml}
         ${evidenceHtml}
-        ${downstreamHtml}
       </div>
     `
 
-    this.detailPanel.style.width = `${this.detailWidth}px`
+    this.fiberListEl.classList.add('hidden')
     this.detailPanel.classList.remove('hidden')
+    this.panel.querySelector('.rhizome-sidebar')?.classList.add('expanded')
 
-    // Highlight code blocks in body
+    // Highlight code blocks and interpolate config values in body
     const bodyContainer = this.detailPanel.querySelector('.rhizome-detail-body')
-    if (bodyContainer) highlightCodeBlocks(bodyContainer as HTMLElement)
+    if (bodyContainer) {
+      highlightCodeBlocks(bodyContainer as HTMLElement)
+      this.interpolateConfig(bodyContainer as HTMLElement)
+    }
 
     // Bind detail panel events
     this.bindDetailEvents(node)
@@ -959,6 +1171,19 @@ export class RhizomeView {
       })
     })
 
+    // Arrow key artifact navigation
+    if (node.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 1) {
+      this.detailKeyHandler = (e: KeyboardEvent) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+        e.preventDefault()
+        const count = Object.keys(node.evidence!.artifacts!).length
+        const delta = e.key === 'ArrowLeft' ? -1 : 1
+        this.currentPlotIndex = (this.currentPlotIndex + delta + count) % count
+        this.renderDetailPanel(node.id)
+      }
+      document.addEventListener('keydown', this.detailKeyHandler)
+    }
+
     // Artifact image click → lightbox
     this.detailPanel.querySelectorAll('.rhizome-artifact img').forEach(img => {
       img.addEventListener('click', () => {
@@ -966,33 +1191,217 @@ export class RhizomeView {
       })
     })
 
-    // Dependency tag click → navigate to node
+    // Dependency tag click → navigate to node or open in file viewer
     this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
       tag.addEventListener('click', () => {
         const depId = (tag as HTMLElement).dataset.depId
-        if (depId) this.selectNode(depId)
+        if (!depId) return
+        this.navigateToFiber(depId)
       })
     })
 
-    // Downstream item click → navigate to node (if rule fiber) or show mini detail
-    this.detailPanel.querySelectorAll('.downstream-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const fiberId = (item as HTMLElement).dataset.fiberId
-        if (!fiberId || !this.rhizomeData) return
-        const dagNode = this.rhizomeData.nodes.find(n => n.id === fiberId)
-        if (dagNode) {
-          this.selectNode(fiberId)
-        } else {
-          this.showMiniFiberDetail(fiberId, item as HTMLElement)
+    // Body link click → navigate in DAG, open in file viewer, or open external URL
+    const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+    if (bodyEl) {
+      bodyEl.addEventListener('click', (e) => {
+        const link = (e.target as HTMLElement).closest('a')
+        if (!link) return
+        e.preventDefault()
+        const href = link.getAttribute('href') || ''
+        // External URLs open normally
+        if (/^https?:\/\//.test(href)) {
+          window.open(href, '_blank', 'noopener')
+          return
         }
+        // Check if it's a rule fiber in the DAG
+        const fiberId = this.extractFiberId(href)
+        if (fiberId) {
+          const dagNode = this.rhizomeData?.nodes.find(n => n.id === fiberId)
+          if (dagNode) {
+            this.selectNode(fiberId)
+            return
+          }
+        }
+        // In static mode, open exported files relative to data dir
+        if (this.staticMode) {
+          window.open(`./data/${href}`, '_blank', 'noopener')
+          return
+        }
+        // Everything else (file paths, fiber files) → file viewer
+        this.openFileFromLink(href)
       })
+
+      // Double-click → swap to CodeMirror editor
+      bodyEl.addEventListener('dblclick', (e) => {
+        // Don't trigger on links or code blocks
+        if ((e.target as HTMLElement).closest('a, pre, code')) return
+        if (this.staticMode) return
+        this.enterBodyEditMode(node)
+      })
+    }
+  }
+
+  // ── Inline markdown editing ──────────────────────────────────────────
+
+  private enterBodyEditMode(node: RhizomeNode): void {
+    if (!node.body || !this.currentCity) return
+    const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+    if (!bodyEl) return
+
+    // Destroy any previous editor
+    this.destroyBodyEditor()
+
+    // Fade out rendered markdown, replace with editor
+    bodyEl.classList.add('editing')
+    bodyEl.innerHTML = ''
+
+    const editorTheme = EditorView.theme({
+      '&': {
+        fontSize: '0.85rem',
+        fontFamily: 'var(--font-mono)',
+        background: 'transparent',
+        maxHeight: '100%',
+      },
+      '.cm-content': {
+        fontFamily: 'var(--font-mono)',
+        caretColor: 'var(--ui-gold)',
+        padding: '0',
+      },
+      '.cm-gutters': {
+        background: 'transparent',
+        border: 'none',
+        color: 'var(--ui-text-muted)',
+      },
+      '.cm-activeLine': {
+        background: 'rgba(154, 123, 53, 0.06)',
+      },
+      '.cm-cursor': {
+        borderLeftColor: 'var(--ui-gold)',
+      },
+      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
+        background: 'rgba(90, 123, 123, 0.2) !important',
+      },
+      '.cm-line': {
+        padding: '0 0.2rem',
+      },
     })
+
+    const extensions: Extension[] = [
+      vim(),
+      lineNumbers(),
+      history(),
+      drawSelection(),
+      EditorView.lineWrapping,
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      highlightActiveLine(),
+      keymap.of([
+        ...defaultKeymap,
+        ...historyKeymap,
+        { key: 'Mod-s', run: () => { this.saveBodyAndExit(node); return true } },
+      ]),
+      markdown(),
+      editorTheme,
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          bodyEl.classList.toggle('dirty', update.state.doc.toString() !== node.body)
+        }
+      }),
+    ]
+
+    const state = EditorState.create({
+      doc: node.body,
+      extensions,
+    })
+
+    this.bodyEditorView = new EditorView({ state, parent: bodyEl })
+    this.bodyEditorNodeId = node.id
+
+    // Focus editor
+    this.bodyEditorView.focus()
+  }
+
+  private async saveBodyAndExit(node: RhizomeNode): Promise<void> {
+    if (!this.bodyEditorView || !this.currentCity) return
+
+    const newContent = this.bodyEditorView.state.doc.toString()
+    const filePath = `${this.currentCity.path}/.felt/${node.id}.md`
+
+    try {
+      // Read existing file, replace body section
+      const response = await fetch(
+        `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(this.currentCity.originId)}`
+      )
+      if (!response.ok) throw new Error('Failed to read fiber file')
+      const data = await response.json()
+      const existingContent: string = data.content
+
+      // Fiber files have YAML frontmatter then body. Replace everything after frontmatter.
+      const fmEnd = existingContent.indexOf('\n---\n')
+      let updatedContent: string
+      if (fmEnd >= 0) {
+        const frontmatter = existingContent.slice(0, fmEnd + 5) // include \n---\n
+        updatedContent = frontmatter + '\n' + newContent
+      } else {
+        updatedContent = newContent
+      }
+
+      const saveResponse = await fetch(`${API_BASE}/save-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: filePath,
+          content: updatedContent,
+          originId: this.currentCity.originId,
+        }),
+      })
+      if (!saveResponse.ok) throw new Error('Failed to save fiber file')
+
+      // Update node body in local data
+      node.body = newContent
+      showToast('Saved', 'success', 1500)
+    } catch (error: any) {
+      showToast(`Save failed: ${error.message}`, 'error')
+      return // Stay in edit mode on failure
+    }
+
+    this.exitBodyEditMode(node)
+  }
+
+  private exitBodyEditMode(node: RhizomeNode): void {
+    this.destroyBodyEditor()
+    const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+    if (bodyEl) {
+      bodyEl.classList.remove('editing', 'dirty')
+      const mdOpts = this.currentCity
+        ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
+        : undefined
+      bodyEl.innerHTML = renderMarkdown(node.body, mdOpts)
+      highlightCodeBlocks(bodyEl as HTMLElement)
+      this.interpolateConfig(bodyEl as HTMLElement)
+    }
+  }
+
+  private destroyBodyEditor(): void {
+    if (this.bodyEditorView) {
+      this.bodyEditorView.destroy()
+      this.bodyEditorView = null
+      this.bodyEditorNodeId = null
+    }
   }
 
   private hideDetail(): void {
+    if (this.detailKeyHandler) {
+      document.removeEventListener('keydown', this.detailKeyHandler)
+      this.detailKeyHandler = null
+    }
+    this.destroyBodyEditor()
     this.detailPanel.classList.add('hidden')
+    this.fiberListEl.classList.remove('hidden')
+    const sidebar = this.panel.querySelector('.rhizome-sidebar') as HTMLElement
+    sidebar?.classList.remove('expanded')
+    sidebar?.style.removeProperty('width')
     this.selectedNodeId = null
-    this.annotationPanel.hidePanel()
+    if (!this.staticMode) this.annotationPanel.hidePanel()
     this.panel.querySelector('.rhizome-ann-popover')?.remove()
 
     // Reset node highlighting
@@ -1003,49 +1412,76 @@ export class RhizomeView {
       .attr('stroke-opacity', 0.3)
   }
 
-  /** Show a small popover for non-rule fibers (downstream items not in the DAG). */
-  private showMiniFiberDetail(fiberId: string, anchor: HTMLElement): void {
-    // Remove any existing mini detail
-    this.detailPanel.querySelector('.rhizome-mini-detail')?.remove()
-
-    // Find fiber info from downstream data
+  /** Navigate to a fiber: select in DAG if it's a rule fiber, otherwise show in sidebar detail. */
+  private navigateToFiber(fiberId: string): void {
     if (!this.rhizomeData) return
-    let fiber: { id: string; title: string; status: string; kind: string } | undefined
-    for (const items of Object.values(this.rhizomeData.downstream)) {
-      fiber = items.find(d => d.id === fiberId)
-      if (fiber) break
+    const dagNode = this.rhizomeData.nodes.find(n => n.id === fiberId)
+    if (dagNode) {
+      this.selectNode(fiberId)
+    } else if (this.rhizomeData.fibers?.find(f => f.id === fiberId)) {
+      this.selectFiber(fiberId)
+    } else {
+      this.openFileFromLink(`.felt/${fiberId}.md`)
     }
-    if (!fiber) return
+  }
 
-    const icon = statusIcon(fiber.status)
-    const mini = document.createElement('div')
-    mini.className = 'rhizome-mini-detail'
-    mini.innerHTML = `
-      <div class="mini-detail-header">
-        <span class="mini-detail-status">${icon}</span>
-        <span class="mini-detail-title">${escapeHtml(fiber.title)}</span>
-        <span class="mini-detail-kind">${escapeHtml(fiber.kind)}</span>
-      </div>
-      <div class="mini-detail-id">${escapeHtml(fiber.id)}</div>
-    `
+  /** Open a file path in the file viewer, resolving relative to city root. */
+  private openFileFromLink(href: string): void {
+    if (this.staticMode || !this.onOpenFile || !this.currentCity) return
+    // Resolve relative path against city root
+    const path = href.startsWith('/') ? href : `${this.currentCity.path}/${href}`
+    this.onOpenFile(path, this.currentCity)
+  }
 
-    // Position relative to anchor
-    anchor.style.position = 'relative'
-    anchor.appendChild(mini)
+  /** Extract a fiber ID from a link href (e.g. ".felt/some-fiber-id.md" or just "some-fiber-id"). */
+  private extractFiberId(href: string): string | null {
+    // Match .felt/<fiber-id>.md paths
+    const feltMatch = href.match(/\.felt\/([^/]+)\.md$/)
+    if (feltMatch) return feltMatch[1]
+    // Match bare fiber IDs (slug-with-8hex pattern)
+    if (/^[\w-]+-[0-9a-f]{8}$/.test(href)) return href
+    return null
+  }
 
-    // Dismiss on click outside
-    const dismiss = (e: MouseEvent) => {
-      if (!mini.contains(e.target as Node)) {
-        mini.remove()
-        document.removeEventListener('click', dismiss, true)
+  /**
+   * Find inline <code> elements whose text matches a config key and
+   * append the resolved value as a styled annotation.
+   */
+  private interpolateConfig(container: HTMLElement): void {
+    const config = this.rhizomeData?.config
+    if (!config) return
+
+    // Match <code> elements inside paragraphs and table cells (not code blocks)
+    container.querySelectorAll('p code, td code, li code').forEach(code => {
+      const text = code.textContent?.trim() || ''
+      // Strip various config reference formats to get the key path:
+      //   config["x"]["y"]  →  x.y
+      //   config.x.y        →  x.y
+      //   config.yaml: x.y  →  x.y
+      const key = text
+        .replace(/^config\.yaml:\s*/, '')                       // config.yaml: x.y → x.y
+        .replace(/^config\[["']/, '').replace(/["']\]$/g, '')   // config["x"]["y"] → x"]["y
+        .replace(/["']\]\[["']/g, '.')                          // x"]["y → x.y
+        .replace(/^config\./, '')                                // config.x.y → x.y
+      const value = config[key]
+      if (value !== undefined) {
+        const span = document.createElement('span')
+        span.className = 'config-resolved'
+        // Truncate long values (arrays, etc.)
+        const display = value.length > 60 ? value.slice(0, 57) + '...' : value
+        span.textContent = ` = ${display}`
+        span.title = value
+        code.appendChild(span)
       }
-    }
-    setTimeout(() => document.addEventListener('click', dismiss, true), 0)
+    })
   }
 
   // ── Lightbox ───────────────────────────────────────────────────────
 
   private openLightbox(img: HTMLImageElement, node: RhizomeNode): void {
+    const entries = Object.entries(node.evidence?.artifacts || {})
+    if (entries.length === 0) return
+
     const lightbox = document.createElement('div')
     lightbox.className = 'rhizome-lightbox'
 
@@ -1053,44 +1489,219 @@ export class RhizomeView {
     bigImg.src = img.src
     bigImg.alt = img.alt
 
+    let labelEl: HTMLElement | null = null
+    const updateLabel = () => {
+      if (!labelEl) return
+      const [name] = entries[this.currentPlotIndex]
+      labelEl.textContent = `${name} (${this.currentPlotIndex + 1}/${entries.length})`
+    }
+    if (entries.length > 1) {
+      labelEl = document.createElement('span')
+      labelEl.className = 'rhizome-lightbox-label'
+      updateLabel()
+    }
+
     const closeBtn = document.createElement('button')
     closeBtn.className = 'rhizome-lightbox-close'
     closeBtn.textContent = '\u00D7'
 
     lightbox.appendChild(bigImg)
+    if (labelEl) lightbox.appendChild(labelEl)
     lightbox.appendChild(closeBtn)
 
-    const escHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
+    const navigate = (delta: number) => {
+      const count = entries.length
+      this.currentPlotIndex = (this.currentPlotIndex + delta + count) % count
+      const [name, path] = entries[this.currentPlotIndex]
+      bigImg.src = this.artifactUrl(node.specName || '', path)
+      bigImg.alt = name
+      bigImg.dataset.artifactName = name
+      updateLabel()
+    }
+
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { close(); return }
+      if (entries.length <= 1) return
+      if (e.key === 'ArrowLeft') { e.preventDefault(); navigate(-1) }
+      if (e.key === 'ArrowRight') { e.preventDefault(); navigate(1) }
     }
     const close = () => {
-      document.removeEventListener('keydown', escHandler)
+      document.removeEventListener('keydown', keyHandler)
       lightbox.remove()
+      // Sync detail panel artifact to match
+      if (this.selectedNodeId) this.renderDetailPanel(this.selectedNodeId)
     }
     closeBtn.addEventListener('click', close)
     lightbox.addEventListener('click', (e) => {
       if (e.target === lightbox) close()
     })
 
-    // Image annotation: click on image to place pin
-    bigImg.addEventListener('click', (e) => {
-      e.stopPropagation()
-      const rect = bigImg.getBoundingClientRect()
-      const x = ((e.clientX - rect.left) / rect.width) * 100
-      const y = ((e.clientY - rect.top) / rect.height) * 100
-      this.promptImageAnnotation(node, img.dataset.artifactName || '', x, y)
-      close()
-    })
+    // Image annotation: click on image to place pin (not in static mode)
+    if (!this.staticMode) {
+      bigImg.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const rect = bigImg.getBoundingClientRect()
+        const x = ((e.clientX - rect.left) / rect.width) * 100
+        const y = ((e.clientY - rect.top) / rect.height) * 100
+        this.promptImageAnnotation(node, bigImg.dataset.artifactName || '', x, y)
+        close()
+      })
+    }
 
-    document.addEventListener('keydown', escHandler)
+    document.addEventListener('keydown', keyHandler)
 
     document.body.appendChild(lightbox)
+  }
+
+  // ── Fiber sidebar ──────────────────────────────────────────────────
+
+  private renderFiberList(): void {
+    if (!this.rhizomeData) return
+    const fibers = this.rhizomeData.fibers || []
+    const query = this.fiberSearchInput.value.toLowerCase().trim()
+
+    const filtered = query
+      ? fibers.filter(f => {
+          const text = [f.title, f.body, f.kind, f.id, f.reason,
+            ...(f.tags || [])].filter(Boolean).join(' ').toLowerCase()
+          return text.includes(query)
+        })
+      : fibers
+
+    const isRule = (f: RhizomeFiber) => f.tags?.some(t => t.startsWith('rule:')) ?? false
+
+    // Staleness order: stale first (needs attention), then no-evidence, then fresh
+    const stalenessOrder: Record<string, number> = { stale: 0, 'no-evidence': 1, fresh: 2 }
+    const statusOrder: Record<string, number> = { active: 0, open: 1, untracked: 2, closed: 3 }
+
+    const sorted = [...filtered].sort((a, b) => {
+      const aRule = isRule(a) ? 0 : 1
+      const bRule = isRule(b) ? 0 : 1
+      if (aRule !== bRule) return aRule - bRule
+      // Within rule fibers, sort by staleness (stale first)
+      if (aRule === 0 && bRule === 0) {
+        const aDag = this.rhizomeData!.nodes.find(n => n.id === a.id)
+        const bDag = this.rhizomeData!.nodes.find(n => n.id === b.id)
+        const aStal = stalenessOrder[aDag?.staleness || 'no-evidence'] ?? 1
+        const bStal = stalenessOrder[bDag?.staleness || 'no-evidence'] ?? 1
+        if (aStal !== bStal) return aStal - bStal
+      }
+      const aStatus = statusOrder[a.status] ?? 2
+      const bStatus = statusOrder[b.status] ?? 2
+      if (aStatus !== bStatus) return aStatus - bStatus
+      return a.title.localeCompare(b.title)
+    })
+
+    this.fiberResultsEl.innerHTML = sorted.map(f => {
+      const dagNode = this.rhizomeData!.nodes.find(n => n.id === f.id)
+      const ruleTag = isRule(f)
+
+      // Unified dot: status shape + staleness color (for DAG nodes) or neutral
+      const dotColor = dagNode ? stalenessColor(dagNode.staleness) : '#7A7368'
+      const dotIcon = statusIcon(f.status)
+
+      // Non-rule tags
+      const nonRuleTags = (f.tags || []).filter(t => !t.startsWith('rule:'))
+      const tagsHtml = nonRuleTags.map(t =>
+        `<span class="fiber-tag">${escapeHtml(t.replace(/^\[|\]$/g, ''))}</span>`
+      ).join('')
+
+      const kindBadge = f.kind !== 'task' ? `<span class="fiber-kind">${escapeHtml(f.kind)}</span>` : ''
+      const ruleClass = ruleTag ? ' fiber-item-rule' : ''
+      return `<div class="fiber-item${ruleClass}" data-fiber-id="${escapeHtml(f.id)}">
+        <span class="fiber-dot" style="color: ${dotColor}">${dotIcon}</span>
+        <span class="fiber-title">${escapeHtml(shortName(f.title))}</span>
+        ${tagsHtml}${kindBadge}
+      </div>`
+    }).join('')
+
+    // Bind click handlers
+    this.fiberResultsEl.querySelectorAll('.fiber-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const fiberId = (el as HTMLElement).dataset.fiberId
+        if (!fiberId) return
+        const dagNode = this.rhizomeData?.nodes.find(n => n.id === fiberId)
+        if (dagNode) {
+          this.selectNode(fiberId)
+        } else {
+          this.selectFiber(fiberId)
+        }
+      })
+    })
+  }
+
+  /** Show detail panel for a non-DAG fiber. */
+  private selectFiber(fiberId: string): void {
+    if (!this.rhizomeData?.fibers) return
+    const fiber = this.rhizomeData.fibers.find(f => f.id === fiberId)
+    if (!fiber) return
+
+    this.selectedNodeId = fiberId
+    this.destroyBodyEditor()
+
+    const mdOpts = this.currentCity
+      ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
+      : undefined
+    const bodyHtml = fiber.body
+      ? `<div class="rhizome-detail-body">${renderMarkdown(fiber.body, mdOpts)}</div>`
+      : ''
+
+    // Upstream tags
+    const upstreamHtml = fiber.dependsOn.length > 0
+      ? `<div class="rhizome-detail-graph-line">
+           <span class="graph-label">Upstream</span>
+           ${fiber.dependsOn.map(dep => {
+             const depFiber = this.rhizomeData!.fibers?.find(f => f.id === dep)
+             return `<span class="dep-tag" data-dep-id="${escapeHtml(dep)}">${escapeHtml(depFiber ? shortName(depFiber.title) : dep.slice(0, 12))}</span>`
+           }).join('')}
+         </div>`
+      : ''
+
+    const reasonHtml = fiber.reason
+      ? `<div class="rhizome-detail-reason"><em>${escapeHtml(fiber.reason)}</em></div>`
+      : ''
+
+    this.detailPanel.innerHTML = `
+      <div class="rhizome-detail-header">
+        <div class="rhizome-detail-title">
+          <span class="staleness-badge">${statusIcon(fiber.status)}</span>
+          <span class="detail-name">${escapeHtml(shortName(fiber.title))}</span>
+          <span class="detail-status">${escapeHtml(fiber.status)}</span>
+        </div>
+        <button class="rhizome-detail-close">&times;</button>
+      </div>
+      <div class="rhizome-detail-content">
+        ${upstreamHtml ? `<div class="rhizome-detail-graph">${upstreamHtml}</div>` : ''}
+        ${reasonHtml}
+        ${bodyHtml}
+      </div>
+    `
+
+    this.fiberListEl.classList.add('hidden')
+    this.detailPanel.classList.remove('hidden')
+    this.panel.querySelector('.rhizome-sidebar')?.classList.add('expanded')
+
+    // Highlight code blocks
+    const bodyContainer = this.detailPanel.querySelector('.rhizome-detail-body')
+    if (bodyContainer) {
+      highlightCodeBlocks(bodyContainer as HTMLElement)
+      this.interpolateConfig(bodyContainer as HTMLElement)
+    }
+
+    // Bind events
+    this.detailPanel.querySelector('.rhizome-detail-close')?.addEventListener('click', () => this.hideDetail())
+    this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
+      tag.addEventListener('click', () => {
+        const depId = (tag as HTMLElement).dataset.depId
+        if (depId) this.navigateToFiber(depId)
+      })
+    })
   }
 
   // ── Search ─────────────────────────────────────────────────────────
 
   private handleSearch(): void {
-    const query = this.searchInput.value.toLowerCase().trim()
+    const query = this.fiberSearchInput.value.toLowerCase().trim()
     this.clearSearchHighlights()
     this.searchResults.innerHTML = ''
 
@@ -1132,9 +1743,10 @@ export class RhizomeView {
         `
         div.addEventListener('click', () => {
           this.selectNode(m.node.id)
-          this.searchInput.value = ''
+          this.fiberSearchInput.value = ''
           this.searchResults.innerHTML = ''
           this.clearSearchHighlights()
+          this.renderFiberList()
         })
         this.searchResults.appendChild(div)
       })
@@ -1156,13 +1768,45 @@ export class RhizomeView {
     const rect = range.getBoundingClientRect()
     const nodeId = this.selectedNodeId
 
+    // Compute line numbers within the fiber body
+    const node = this.rhizomeData?.nodes.find(n => n.id === nodeId)
+    let line: number | undefined
+    let endLine: number | undefined
+    let filePath: string | undefined
+
+    if (node?.body) {
+      const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+      if (bodyEl) {
+        // Get text content up to the selection start to count lines
+        const fullText = bodyEl.textContent || ''
+        const beforeSelection = fullText.substring(0, fullText.indexOf(text))
+        if (beforeSelection !== undefined) {
+          // Count newlines in the body source up to approximate offset
+          const ratio = beforeSelection.length / (fullText.length || 1)
+          const bodyLines = node.body.split('\n')
+          const startLineIdx = Math.min(
+            Math.floor(ratio * bodyLines.length),
+            bodyLines.length - 1
+          )
+          line = startLineIdx + 1
+
+          // Estimate end line from selection length
+          const selectionLines = text.split('\n').length
+          if (selectionLines > 1) {
+            endLine = line + selectionLines - 1
+          }
+        }
+      }
+      filePath = `.felt/${nodeId}.md`
+    }
+
     this.showAnnotationPopover(
       rect.left + rect.width / 2,
       rect.bottom + 4,
       `\u201c${text.slice(0, TEXT_SELECTION_TRUNCATION)}${text.length > TEXT_SELECTION_TRUNCATION ? '\u2026' : ''}\u201d`,
     ).then(comment => {
       if (comment) {
-        this.saveAnnotation({ claimId: nodeId, selectedText: text, comment })
+        this.saveAnnotation({ claimId: nodeId, selectedText: text, comment, line, endLine, filePath })
       }
     })
   }
@@ -1259,6 +1903,9 @@ export class RhizomeView {
     artifact?: string
     x?: number
     y?: number
+    line?: number
+    endLine?: number
+    filePath?: string
     comment: string
     isImageAnnotation?: boolean
   }): Promise<void> {
@@ -1268,6 +1915,9 @@ export class RhizomeView {
       artifact: data.artifact,
       x: data.x,
       y: data.y,
+      line: data.line,
+      endLine: data.endLine,
+      filePath: data.filePath,
       isImageAnnotation: !!data.isImageAnnotation,
     }, 'Annotation saved')
   }
@@ -1288,21 +1938,6 @@ export class RhizomeView {
     }
 
     this.annotationPanel.setAnnotations(annotations)
-  }
-
-  private async saveGlobalFeedback(textarea: HTMLTextAreaElement): Promise<void> {
-    const comment = textarea.value.trim()
-    if (!comment) return
-    if (!this.selectedNodeId) {
-      showToast('Select a fiber first', 'error', 2000)
-      return
-    }
-
-    const saved = await this.postAnnotation(this.selectedNodeId, { comment }, 'Feedback saved')
-    if (saved) {
-      textarea.value = ''
-      textarea.style.height = ''
-    }
   }
 
   private async postAnnotation(
@@ -1354,6 +1989,8 @@ export class RhizomeView {
   ): Promise<void> {
     if (!this.currentCity) return
 
+    const globalComment = this.annotationPanel.getGlobalComment()
+
     const response = await this.fetchApi('/send-annotations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1363,6 +2000,7 @@ export class RhizomeView {
         filePath: this.currentCity.path + '/claims',
         originId: this.currentCity.originId,
         annotations,
+        globalComment: globalComment || undefined,
         cityName: this.currentCity.name,
         isClaimsSend: true,
       }),

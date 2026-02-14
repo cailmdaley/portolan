@@ -192,13 +192,9 @@ export class ConversationCache {
    * Aggregates messages from recent Claude sessions in this tmux session
    */
   getMessagesByTmux(tmuxSession: string, limit?: number): CachedMessage[] {
-    // Only aggregate sessions updated in the last hour (avoids stale tmux name reuse)
-    const ONE_HOUR = 60 * 60 * 1000;
-    const cutoff = Date.now() - ONE_HOUR;
-
     const allMessages: CachedMessage[] = [];
     for (const cache of this.sessions.values()) {
-      if (cache.tmuxSession === tmuxSession && cache.lastUpdate > cutoff) {
+      if (cache.tmuxSession === tmuxSession) {
         allMessages.push(...cache.messages);
       }
     }

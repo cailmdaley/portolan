@@ -141,6 +141,86 @@ async function readRemoteEvidence(
 }
 
 /**
+ * Batch-read evidence for multiple specNames in a single SSH call.
+ * Avoids SSH connection exhaustion from parallel per-spec calls.
+ */
+export async function readEvidenceBatch(
+  cityPath: string,
+  specNames: string[],
+  sshHost: string,
+): Promise<Map<string, Evidence | null>> {
+  const results = new Map<string, Evidence | null>();
+  if (specNames.length === 0) return results;
+
+  // Build a shell loop that emits delimited blocks per spec
+  const claimsDir = shellEscape(`${cityPath}/results/claims`);
+  const perSpec = specNames.map(spec => {
+    const dir = `${claimsDir}/${shellEscape(spec)}`;
+    const ej = `${dir}/evidence.json`;
+    return [
+      `echo "===SPEC:${spec}==="`,
+      `stat -c '%Y' ${ej} 2>/dev/null || stat -f '%m' ${ej} 2>/dev/null || echo 'NO_STAT'`,
+      `echo "---SEP---"`,
+      `cat ${ej} 2>/dev/null || echo 'NO_FILE'`,
+      `echo "---SEP---"`,
+      `ls ${dir}/*.png ${dir}/*.jpg 2>/dev/null || true`,
+    ].join(' && ');
+  }).join(' && ');
+
+  try {
+    const { stdout } = await execFileAsync(
+      'ssh', [sshHost, perSpec],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
+    );
+
+    // Split into per-spec blocks
+    const blocks = stdout.split(/===SPEC:([^=]+)===/);
+    // blocks: ['', specName1, content1, specName2, content2, ...]
+    for (let i = 1; i < blocks.length; i += 2) {
+      const specName = blocks[i];
+      const content = blocks[i + 1] || '';
+      const parts = content.split('---SEP---');
+
+      const mtimeStr = (parts[0] || '').trim();
+      const jsonStr = (parts[1] || '').trim();
+      const fileList = (parts[2] || '').trim();
+
+      if (mtimeStr === 'NO_STAT' || jsonStr === 'NO_FILE') {
+        results.set(specName, null);
+        continue;
+      }
+
+      const mtime = parseInt(mtimeStr, 10) * 1000;
+      if (isNaN(mtime)) {
+        results.set(specName, null);
+        continue;
+      }
+
+      try {
+        const data = JSON.parse(jsonStr) as Record<string, unknown>;
+        const artifacts = parseArtifactsFromData(data);
+        if (fileList) {
+          mergeImageArtifacts(
+            artifacts,
+            fileList.split('\n').filter(Boolean).map(f => f.split('/').pop()!),
+          );
+        }
+        results.set(specName, buildEvidence(specName, data, mtime, artifacts));
+      } catch {
+        results.set(specName, null);
+      }
+    }
+  } catch (err) {
+    console.error('Evidence batch read failed:', err);
+    for (const spec of specNames) {
+      results.set(spec, null);
+    }
+  }
+
+  return results;
+}
+
+/**
  * Extract the spec name from a fiber's rule: tag.
  * e.g., "rule:cosebis_data_vector" → "cosebis_data_vector"
  */

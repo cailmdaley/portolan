@@ -3,15 +3,13 @@ import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { makePersistence as _makePersistence } from './test-utils.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-annotations');
 const TEST_FILE = join(TEST_DIR, 'annotations.json');
 
 function makePersistence(): AnnotationPersistence {
-  const p = new AnnotationPersistence();
-  (p as any).dataDir = TEST_DIR;
-  (p as any).filePath = TEST_FILE;
-  return p;
+  return _makePersistence(TEST_DIR, TEST_FILE);
 }
 
 /** Helper: minimal file annotation input */

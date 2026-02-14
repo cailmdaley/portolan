@@ -48,6 +48,9 @@ export interface AnnotationPanelOptions<T extends BaseAnnotation> {
 
   /** Global comment label (FileViewerModal uses "Overall feedback:"). Omit for no label. */
   globalCommentLabel?: string
+
+  /** Hide the "Send N annotations to worker" footer button. */
+  hideFooter?: boolean
 }
 
 // ── Class ──────────────────────────────────────────────────────────────
@@ -366,7 +369,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
   // ── Footer ─────────────────────────────────────────────────────────
 
   private renderFooter(): void {
-    if (this.annotations.length === 0) {
+    if (this.options.hideFooter || this.annotations.length === 0) {
       this.footerEl.innerHTML = ''
       return
     }

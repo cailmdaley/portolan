@@ -363,10 +363,11 @@ export class ConversationCard {
   handleMessage(sessionId: string | undefined, tmuxSession: string, messages: ConversationMessage[]): void {
     if (this.disposed) return
 
-    // Match by sessionId (preferred) or prefixed tmuxSession (fallback)
-    const matchesSession = sessionId && sessionId === this.session.id
-    const matchesTmux = this.prefixedTmuxSession === tmuxSession
-    if (!matchesSession && !matchesTmux) return
+    // Strict sessionId matching only — no tmux fallback.
+    // The tmux fallback caused cross-contamination: after disconnects, empty cards
+    // with matching tmux names would accept messages from other sessions.
+    // Cards that haven't received hooks yet get their data via fetchConversation().
+    if (!sessionId || sessionId !== this.session.id) return
 
     // Deduplicate by timestamp and toolUseId
     const existingTimestamps = new Set(this.conversation.map(m => m.timestamp))
@@ -786,6 +787,13 @@ export class ConversationCard {
    */
   updateViewportClamp(): void {
     this.applyTransform()
+  }
+
+  /**
+   * Re-fetch conversation from server (called on WebSocket reconnect)
+   */
+  refetch(): void {
+    this.fetchConversation()
   }
 
   get workerId(): string {

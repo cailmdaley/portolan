@@ -23,7 +23,7 @@ import type { ConversationCache, CachedMessage } from './ConversationCache.js';
 import type { CardStatePersistence } from './CardStatePersistence.js';
 import { shellEscape } from './KittyIntegration.js';
 import { getAllFibers, type Fiber } from './FiberReader.js';
-import { readEvidence, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
+import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -335,15 +335,21 @@ export class HttpApi {
         }
       }
 
-      // Read evidence for each unique specName (parallel, deduplicated)
-      const evidenceMap = new Map<string, Evidence | null>();
-      const uniqueSpecNames = new Set(fiberSpecMap.values());
-      await Promise.all(
-        Array.from(uniqueSpecNames).map(async (specName) => {
-          const ev = await readEvidence(city.path, specName, sshHost);
-          evidenceMap.set(specName, ev);
-        })
-      );
+      // Read evidence for each unique specName
+      const uniqueSpecNames = Array.from(new Set(fiberSpecMap.values()));
+      let evidenceMap: Map<string, Evidence | null>;
+      if (sshHost && uniqueSpecNames.length > 0) {
+        // Single SSH call for all specs — avoids connection exhaustion
+        evidenceMap = await readEvidenceBatch(city.path, uniqueSpecNames, sshHost);
+      } else {
+        evidenceMap = new Map<string, Evidence | null>();
+        await Promise.all(
+          uniqueSpecNames.map(async (specName) => {
+            const ev = await readEvidence(city.path, specName);
+            evidenceMap.set(specName, ev);
+          })
+        );
+      }
 
       // Build response nodes
       const nodes = ruleFibers.map(fiber => {
@@ -380,10 +386,9 @@ export class HttpApi {
         }
       }
 
-      // Downstream concerns: non-rule fibers that depend on rule fibers
+      // Downstream concerns: all fibers that depend on rule fibers
       const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
       for (const fiber of allFibers) {
-        if (fiberIds.has(fiber.id)) continue;
         for (const dep of (fiber.dependsOn || [])) {
           if (fiberIds.has(dep)) {
             if (!downstreamMap[dep]) downstreamMap[dep] = [];
@@ -397,10 +402,27 @@ export class HttpApi {
         }
       }
 
+      // Read project config (workflow/config/config.yaml) if it exists
+      const config = await this.readCityConfig(city.path, sshHost);
+
+      // All fibers (for sidebar listing)
+      const fibers = allFibers.map(f => ({
+        id: f.id,
+        title: f.title,
+        status: f.status,
+        kind: f.kind,
+        tags: f.tags,
+        body: f.body,
+        reason: f.reason,
+        dependsOn: f.dependsOn || [],
+      }));
+
       this.sendJsonSuccess(res, {
         nodes,
         links,
         downstream: downstreamMap,
+        config,
+        fibers,
       });
     } catch (error: any) {
       console.error('Failed to build rhizome:', error);
@@ -435,8 +457,61 @@ export class HttpApi {
       reason: f.close_reason,
       body: f.body,
       tags: f.tags,
-      dependsOn: f.depends_on,
+      dependsOn: f.depends_on?.map((d: any) => typeof d === 'string' ? d : d.id),
     }));
+  }
+
+  /**
+   * Read and flatten project config (workflow/config/config.yaml).
+   * Returns a flat Record<string, string> of dotted key paths to values,
+   * or null if no config exists.
+   */
+  private async readCityConfig(
+    cityPath: string,
+    sshHost?: string,
+  ): Promise<Record<string, string> | null> {
+    const configPath = `${cityPath}/workflow/config/config.yaml`;
+
+    try {
+      let content: string;
+      if (sshHost) {
+        const { stdout } = await execFileAsync(
+          'ssh', [sshHost, `cat ${shellEscape(configPath)} 2>/dev/null || echo ''`],
+          { maxBuffer: 1024 * 1024, timeout: 10000 },
+        );
+        content = stdout.trim();
+      } else {
+        const { readFile } = await import('fs/promises');
+        content = await readFile(configPath, 'utf-8');
+      }
+
+      if (!content) return null;
+
+      const { parse } = await import('yaml');
+      const data = parse(content);
+      if (!data || typeof data !== 'object') return null;
+
+      // Flatten to dotted paths
+      const flat: Record<string, string> = {};
+      const walk = (obj: unknown, prefix: string) => {
+        if (obj === null || obj === undefined) return;
+        if (Array.isArray(obj)) {
+          flat[prefix] = JSON.stringify(obj);
+          return;
+        }
+        if (typeof obj === 'object') {
+          for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+            walk(v, prefix ? `${prefix}.${k}` : k);
+          }
+          return;
+        }
+        flat[prefix] = String(obj);
+      };
+      walk(data, '');
+      return flat;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -526,6 +601,7 @@ export class HttpApi {
     const filePath = url.searchParams.get('path');
     const originId = url.searchParams.get('originId');
     const binary = url.searchParams.get('binary') === 'true';
+    const raw = url.searchParams.get('raw') === 'true';
 
     if (!filePath) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -542,7 +618,13 @@ export class HttpApi {
 
     const ext = extname(filePath).toLowerCase().slice(1);
 
-    // Handle binary files (images, PDFs)
+    // Handle raw binary response (for <img src="..."> tags)
+    if (raw && this.isBinaryExtension(ext)) {
+      await this.handleRawBinaryContent(filePath, originId, ext, res);
+      return;
+    }
+
+    // Handle binary files (images, PDFs) - returns JSON with data URL
     if (binary && this.isBinaryExtension(ext)) {
       await this.handleBinaryContent(filePath, originId, ext, res);
       return;
@@ -644,6 +726,56 @@ export class HttpApi {
       res.end(JSON.stringify({
         error: error.code === 'ENOENT' ? `${fileType} not found` : `Failed to read ${fileType}`
       }));
+    }
+  }
+
+  /**
+   * Serve raw binary content with proper Content-Type (for direct <img src="..."> use)
+   */
+  private async handleRawBinaryContent(
+    filePath: string,
+    originId: string | null,
+    ext: string,
+    res: ServerResponse
+  ): Promise<void> {
+    const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
+    const maxBuffer = ext === 'pdf' ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
+    const timeout = ext === 'pdf' ? 60000 : 30000;
+
+    try {
+      let data: Buffer;
+
+      if (!originId || originId === 'local') {
+        data = await readFile(filePath);
+      } else {
+        const origin = this.originLookup.getOrigin(originId);
+        if (!origin?.sshHost) {
+          res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+          res.end('Origin not found');
+          return;
+        }
+
+        const { stdout } = await execFileAsync(
+          'ssh', [origin.sshHost, `base64 ${shellEscape(filePath)}`],
+          { maxBuffer, timeout }
+        );
+        data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
+      }
+
+      res.writeHead(200, {
+        'Content-Type': mimeType,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600',
+        'Content-Length': data.length,
+      });
+      res.end(data);
+    } catch (error: any) {
+      console.error('Failed to serve raw binary:', error.message, error.stderr || '');
+      res.writeHead(error.code === 'ENOENT' ? 404 : 500, {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(error.message || 'Not found');
     }
   }
 
@@ -1241,11 +1373,24 @@ export class HttpApi {
       for (const [, group] of grouped) {
         claimNum++;
         const title = group[0].claimTitle || group[0].claimId || 'Unknown claim';
-        lines.push(`## ${claimNum}. [${title}]`);
+        const filePath = group[0].filePath;
+        const header = filePath ? filePath : `[${title}]`;
+        lines.push(`## ${claimNum}. ${header}`);
 
         for (let i = 0; i < group.length; i++) {
           const ann = group[i];
           if (i > 0) lines.push('>');
+
+          // Line reference
+          let lineRef = '';
+          if (ann.line) {
+            if (ann.endLine && ann.endLine !== ann.line) {
+              lineRef = ` (L${ann.line}-${ann.endLine})`;
+            } else {
+              lineRef = ` (L${ann.line})`;
+            }
+          }
+
           if (ann.artifact) {
             const posRef = ann.x !== undefined && ann.y !== undefined
               ? ` (at ${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
@@ -1255,7 +1400,7 @@ export class HttpApi {
             const truncated = ann.selectedText.length > 60
               ? ann.selectedText.slice(0, 60) + '…'
               : ann.selectedText;
-            lines.push(`> On text: "${truncated}"`);
+            lines.push(`>${lineRef} On text: "${truncated}"`);
           }
           lines.push(`> ${ann.comment}`);
         }
@@ -1300,7 +1445,7 @@ export class HttpApi {
     try {
       let fiberId: string;
 
-      const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(title)} -k ${shellEscape(kind)} -b ${shellEscape(body)}`;
+      const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(title)} -t ${shellEscape(kind)} -b ${shellEscape(body)}`;
 
       if (!isRemote) {
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
@@ -1490,13 +1635,7 @@ export class HttpApi {
 
   /**
    * Get conversation history for a session
-   * Query params: sessionId (tmux session name)
-   *
-   * Lookup priority:
-   * 1. ConversationCache by tmuxSession (aggregates all Claude sessions)
-   * 2. Remote conversation lookup (for remote sessions)
-   * 3. ConversationCache by sessionId (fallback for ended sessions)
-   * 4. TranscriptReader (legacy fallback for local sessions)
+   * Query params: sessionId, tmuxSession, limit
    */
   private async handleConversation(url: URL, res: ServerResponse): Promise<void> {
     const sessionId = url.searchParams.get('sessionId') ?? undefined;
@@ -1520,43 +1659,41 @@ export class HttpApi {
   /**
    * Resolve conversation messages using multiple lookup strategies
    *
-   * Priority: sessionId > tmux aggregation > remote lookup > TranscriptReader
-   * Session-specific lookup is preferred so different conversations in the same
-   * tmux don't bleed into each other. Tmux aggregation is the fallback for when
-   * a session has no messages yet (e.g., fresh restart gets a new sessionId).
+   * Priority: sessionId > remote lookup > TranscriptReader
+   * Session-specific lookup is strongly preferred. Tmux aggregation removed —
+   * it caused cross-contamination between sessions sharing a tmux name after
+   * disconnects/reconnects.
    */
   private async resolveConversationMessages(sessionId: string | undefined, limit: number, tmuxSessionParam?: string): Promise<any[]> {
     const session = sessionId ? this.sessionLookup?.findSession(sessionId) : undefined;
-    const rawTmuxSession = tmuxSessionParam ?? session?.tmuxSession;
-
-    // For remote sessions, prefix tmuxSession with originId (matches how agent stores it)
     const isRemote = session?.originId && session.originId !== 'local';
-    const tmuxSession = isRemote && rawTmuxSession
-      ? `${session.originId}/${rawTmuxSession}`
-      : rawTmuxSession;
 
-    // 1. ConversationCache by sessionId (prefer current session's own messages)
+    // 1. ConversationCache by sessionId (primary path)
     if (this.conversationCache && sessionId) {
       const messages = this.conversationCache.getMessages(sessionId, limit);
       if (messages.length > 0) return messages;
     }
 
-    // 2. ConversationCache by tmuxSession (fallback: aggregates across restarts)
-    if (this.conversationCache && tmuxSession) {
-      const messages = this.conversationCache.getMessagesByTmux(tmuxSession, limit);
+    // 2. ConversationCache by prefixed tmux session (remote hooks path)
+    // Remote hooks store messages under Claude's own sessionId (a UUID),
+    // but portolan session IDs are constructed differently (e.g. "remote-host-tmuxName").
+    // Fall back to tmux-based lookup using the originId/tmuxSession key.
+    if (this.conversationCache && isRemote && session) {
+      const prefixedTmux = `${session.originId}/${session.tmuxSession}`;
+      const messages = this.conversationCache.getMessagesByTmux(prefixedTmux, limit);
       if (messages.length > 0) return messages;
     }
 
     // Remaining lookups require sessionId
     if (!sessionId) return [];
 
-    // 3. Remote conversation lookup
+    // 3. Remote conversation lookup (legacy agent-proxied path)
     if (isRemote) {
       const cached = this.remoteConversationLookup?.(sessionId);
       if (cached && cached.length > 0) return cached.slice(-limit);
     }
 
-    // 4. TranscriptReader (legacy fallback for local sessions)
+    // 3. TranscriptReader (legacy fallback for local sessions)
     if (this.transcriptReader && session && !isRemote) {
       await this.updateTranscriptMapping(sessionId, session);
       return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
@@ -1636,7 +1773,20 @@ export class HttpApi {
     }
 
     try {
-      this.conversationCache.addMessages(sessionId, tmuxSession, cwd || '', messages);
+      // Auto-detect remote origin for hooks arriving via SSH tunnel.
+      // Remote hooks POST directly to :4004 with unprefixed tmuxSession,
+      // but ConversationCache keys need the originId/ prefix for lookup.
+      let effectiveTmux = tmuxSession;
+      if (this.sessionLookup) {
+        const remoteSession = this.sessionLookup.getAllSessions().find(
+          s => s.tmuxSession === tmuxSession && s.originId !== 'local'
+        );
+        if (remoteSession) {
+          effectiveTmux = `${remoteSession.originId}/${tmuxSession}`;
+        }
+      }
+
+      this.conversationCache.addMessages(sessionId, effectiveTmux, cwd || '', messages);
       this.sendJsonSuccess(res, { success: true, count: messages.length });
     } catch (error: any) {
       console.error('[Hook] Failed to add messages:', error.message);

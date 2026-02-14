@@ -1,11 +1,20 @@
 // Shared UI utilities
 import { marked } from 'marked'
+import markedKatex from 'marked-katex-extension'
+import 'katex/dist/katex.min.css'
 
-// Configure marked for safe rendering
+// Configure marked for safe rendering with KaTeX math support
 marked.setOptions({
   gfm: true,        // GitHub Flavored Markdown
   breaks: true,     // Convert \n to <br>
 })
+
+// $..$ for inline math, $$...$$ for display math
+marked.use(markedKatex({
+  throwOnError: false,
+  output: 'html',
+  nonStandard: true, // allow $...$ after punctuation like hyphen (pseudo-$C_\ell$)
+}))
 
 // Custom renderer for code blocks to integrate with Prism
 const renderer = new marked.Renderer()
@@ -24,6 +33,12 @@ renderer.link = ({ href, text }: { href: string; text: string }) => {
   return `<a href="${escapeHtml(href)}" class="md-link" target="_blank" rel="noopener">${text}</a>`
 }
 
+// Strip KaTeX HTML from image alt text (marked-katex-extension processes $ inside alt)
+renderer.image = ({ href, text: alt }: { href: string; text?: string }) => {
+  const cleanAlt = (alt || '').replace(/<[^>]*>/g, '')
+  return `<img src="${escapeHtml(href)}" alt="${escapeHtml(cleanAlt)}" loading="lazy" />`
+}
+
 marked.use({ renderer })
 
 /**
@@ -35,14 +50,44 @@ export function escapeHtml(text: string): string {
   return div.innerHTML
 }
 
+const API_BASE = `http://${window.location.hostname}:4004`
+
+interface RenderMarkdownOptions {
+  /** Base directory for resolving relative image paths (e.g. city path) */
+  basePath?: string
+  /** Origin ID for remote file access */
+  originId?: string
+}
+
 /**
- * Render markdown to HTML with syntax highlighting
- * Uses marked library with Prism.js for code blocks
+ * Render markdown to HTML with syntax highlighting.
+ * Relative image paths are proxied through /file-content?binary=true when basePath is provided.
  */
-export function renderMarkdown(text: string): string {
+export function renderMarkdown(text: string, opts?: RenderMarkdownOptions): string {
   try {
-    const html = marked.parse(text) as string
-    return html
+    // Use a per-call renderer to handle image path resolution
+    if (opts?.basePath) {
+      const localRenderer = new marked.Renderer()
+      // Inherit code/codespan/link from the global renderer
+      localRenderer.code = renderer.code
+      localRenderer.codespan = renderer.codespan
+      localRenderer.link = renderer.link
+      localRenderer.image = ({ href, text: alt }: { href: string; text?: string }) => {
+        let src = href
+        // Resolve relative paths through the file-content API
+        if (!/^https?:\/\//.test(href) && !/^data:/.test(href)) {
+          const fullPath = href.startsWith('/') ? href : `${opts.basePath}/${href}`
+          src = `${API_BASE}/file-content?path=${encodeURIComponent(fullPath)}&raw=true`
+          if (opts.originId && opts.originId !== 'local') {
+            src += `&originId=${encodeURIComponent(opts.originId)}`
+          }
+        }
+        const cleanAlt = (alt || '').replace(/<[^>]*>/g, '')
+        return `<img src="${escapeHtml(src)}" alt="${escapeHtml(cleanAlt)}" loading="lazy" />`
+      }
+      return marked.parse(text, { renderer: localRenderer }) as string
+    }
+    return marked.parse(text) as string
   } catch (e) {
     console.error('Markdown render error:', e)
     return escapeHtml(text)

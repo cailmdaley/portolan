@@ -1,9 +1,11 @@
 ---
 title: 'Absorb claims dashboard into portolan: native DAG view'
-status: active
+status: closed
 kind: spec
 priority: 2
 created-at: 2026-02-08T16:17:17.619968+01:00
+closed-at: 2026-02-09T03:19:58.319596+01:00
+close-reason: 'Complete. RhizomeView.ts replaces ClaimsDashboard as native D3 DAG view — no iframe, no postMessage, no injected scripts. All 10 done-when criteria met: (1) DAG renders from fibers+evidence for local+remote cities. (2) Staleness coloring: teal/red/gray computed server-side. (3) Detail panel: title→plot→body→evidence→downstream with resizable width. (4) Text selection and image annotation work natively via inline popover. (5) AnnotationPanel wired directly. (6) All annotation CRUD + send-to-worker + promote-to-felt. (7) claims-annotate.js deleted. (8) Proxy rewriting deleted. (9) Tests updated: proxy tests removed, /rhizome+/rhizome-asset tests added (239 pass). (10) Six code-simplifier passes completed across RhizomeView, HttpApi, EvidenceReader, AnnotationPanel, and tests. Key deletions: ~800 LOC injection script, iframe wrapper, URL rewriting, three-kind taxonomy. Key additions: /rhizome endpoint (single DAG call), EvidenceReader (local+SSH), d3 tree-shaken ESM.'
 ---
 
 This is your spec for a Ralph loop, a meditative iteration toward a desired state.

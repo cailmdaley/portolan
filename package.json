@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:static": "vite build --config vite.static.config.ts",
+    "export:rhizome": "tsx scripts/export-rhizome.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -28,6 +30,7 @@
     "d3-zoom": "^3.0.0",
     "katex": "^0.16.27",
     "marked": "^17.0.1",
+    "marked-katex-extension": "^5.1.6",
     "three": "^0.172.0"
   },
   "devDependencies": {

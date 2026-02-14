@@ -9,34 +9,31 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createServer } from 'http';
-import type { AddressInfo } from 'net';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';
 import { shellEscape } from '../KittyIntegration.js';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import {
+  makePersistence as _makePersistence,
+  httpRequest,
+  makeCityLookup,
+  writeFiber,
+  stubOriginLookup,
+  stubPersistenceLookup,
+} from './test-utils.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-httpapi-claims');
 const TEST_FILE = join(TEST_DIR, 'annotations.json');
 
-// Minimal stubs for HttpApi constructor requirements
+// Minimal stub for HttpApi constructor — city lookup with no results
 const stubCityLookup = {
-  getCityById: () => null,
-};
-const stubOriginLookup = {
-  getOrigin: () => null,
-};
-const stubPersistenceLookup = {
   getCityById: () => null,
 };
 
 function makePersistence(): AnnotationPersistence {
-  const p = new AnnotationPersistence();
-  (p as any).dataDir = TEST_DIR;
-  (p as any).filePath = TEST_FILE;
-  return p;
+  return _makePersistence(TEST_DIR, TEST_FILE);
 }
 
 /** Factory: create an Annotation with claim defaults, overriding only what matters per test */
@@ -48,53 +45,8 @@ function makeClaimAnnotation(overrides: Partial<Annotation> = {}): Annotation {
     createdAt: Date.now(),
     isClaimAnnotation: true,
     claimId: 'c1',
-    ...overrides, // Override defaults with provided values
+    ...overrides,
   };
-}
-
-/** Helper: fire an HTTP request against HttpApi and return parsed response */
-async function httpRequest(
-  api: HttpApi,
-  method: string,
-  path: string,
-  body?: object,
-): Promise<{ status: number; data: any }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer(async (req, res) => {
-      const handled = await api.handleRequest(req, res);
-      if (!handled) {
-        res.writeHead(404);
-        res.end('Not found');
-      }
-    });
-
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo;
-      const url = `http://127.0.0.1:${port}${path}`;
-      const bodyStr = body ? JSON.stringify(body) : undefined;
-
-      fetch(url, {
-        method,
-        headers: bodyStr ? { 'Content-Type': 'application/json' } : {},
-        body: bodyStr,
-      })
-        .then(async (res) => {
-          const text = await res.text();
-          let data: any;
-          try {
-            data = JSON.parse(text);
-          } catch {
-            data = text;
-          }
-          server.close();
-          resolve({ status: res.status, data });
-        })
-        .catch((err) => {
-          server.close();
-          reject(err);
-        });
-    });
-  });
 }
 
 describe('HttpApi — claims annotations', () => {
@@ -123,17 +75,6 @@ describe('HttpApi — claims annotations', () => {
     return (api as any).formatClaimsAnnotationsForClaude(cityName, annotations, globalComment);
   }
 
-  /** Create a city lookup stub that resolves a single city by id */
-  function makeCityLookup(cityId: string, cityDir: string, name: string) {
-    return {
-      getCityById: (id: string) => id === cityId ? {
-        id: cityId,
-        name,
-        path: cityDir,
-        originId: 'local',
-      } : null,
-    };
-  }
 
   // ────────────────────────────────────────────────────────────
   // POST /annotations — create claims annotation
@@ -838,18 +779,13 @@ describe('HttpApi — claims annotations', () => {
 
   describe('GET /rhizome', () => {
     const RHIZOME_CITY_DIR = join(TEST_DIR, 'rhizome-city');
+    const RHIZOME_FELT_DIR = join(RHIZOME_CITY_DIR, '.felt');
 
     function makeRhizomeApi(cityId: string, cityDir: string) {
       return new HttpApi(
         makeCityLookup(cityId, cityDir, 'RhizomeCity') as any,
         stubOriginLookup as any, stubPersistenceLookup as any,
       );
-    }
-
-    function writeFiber(dir: string, id: string, content: string) {
-      const feltDir = join(dir, '.felt');
-      if (!existsSync(feltDir)) mkdirSync(feltDir, { recursive: true });
-      writeFileSync(join(feltDir, `${id}.md`), content, 'utf-8');
     }
 
     it('returns 400 without cityId', async () => {
@@ -869,7 +805,7 @@ describe('HttpApi — claims annotations', () => {
 
     it('returns DAG with nodes, links, and downstream for rule: fibers', async () => {
       // Set up two rule: fibers with a dependency
-      writeFiber(RHIZOME_CITY_DIR, 'fiber-a', `---
+      writeFiber(RHIZOME_FELT_DIR, 'fiber-a', `---
 title: Fiber A
 status: active
 kind: spec
@@ -878,7 +814,7 @@ tags:
 ---
 Body of fiber A.
 `);
-      writeFiber(RHIZOME_CITY_DIR, 'fiber-b', `---
+      writeFiber(RHIZOME_FELT_DIR, 'fiber-b', `---
 title: Fiber B
 status: open
 kind: spec
@@ -890,7 +826,7 @@ depends-on:
 Body of fiber B depends on A.
 `);
       // A non-rule fiber that depends on a rule fiber (downstream concern)
-      writeFiber(RHIZOME_CITY_DIR, 'task-c', `---
+      writeFiber(RHIZOME_FELT_DIR, 'task-c', `---
 title: Task C
 status: open
 kind: task
@@ -922,16 +858,19 @@ Downstream task.
       expect(res.data.links).toHaveLength(1);
       expect(res.data.links[0]).toEqual({ source: 'fiber-a', target: 'fiber-b' });
 
-      // Downstream: task-c depends on fiber-a
+      // Downstream: fiber-b and task-c both depend on fiber-a
       expect(res.data.downstream['fiber-a']).toBeDefined();
-      expect(res.data.downstream['fiber-a']).toHaveLength(1);
-      expect(res.data.downstream['fiber-a'][0].id).toBe('task-c');
+      expect(res.data.downstream['fiber-a']).toHaveLength(2);
+      const downstreamIds = res.data.downstream['fiber-a'].map((d: any) => d.id);
+      expect(downstreamIds).toContain('fiber-b');
+      expect(downstreamIds).toContain('task-c');
     });
 
     it('returns empty DAG when no rule: fibers exist', async () => {
       const emptyDir = join(TEST_DIR, 'empty-city');
-      mkdirSync(join(emptyDir, '.felt'), { recursive: true });
-      writeFiber(emptyDir, 'plain-task', `---
+      const emptyFeltDir = join(emptyDir, '.felt');
+      mkdirSync(emptyFeltDir, { recursive: true });
+      writeFiber(emptyFeltDir, 'plain-task', `---
 title: Just a task
 status: open
 kind: task
