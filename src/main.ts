@@ -18,7 +18,7 @@ import { ContextMenu } from './ui/ContextMenu'
 type GlobalView = 'map' | 'plots' | 'plans'
 import { ViewOverlay } from './ui/ViewOverlay'
 import { TabbedPlansView } from './ui/TabbedPlansView'
-import { RhizomeView } from './ui/RhizomeView'
+import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
@@ -232,24 +232,24 @@ function handleViewChange(view: GlobalView): void {
 
 // ViewSwitcher removed — view stays on 'map' for now
 
-// Rhizome view — native DAG visualization for fibers
-const rhizomeView = new RhizomeView()
+// Tapestry view — native DAG visualization for fibers
+const tapestryView = new TapestryView()
 
-// Wire up View Claims button — uses native RhizomeView
+// Wire up View Claims button — uses native TapestryView
 cityPanel.setOnViewClaims((city) => {
-  rhizomeView.show(city)
+  tapestryView.show(city)
 })
 
-// Wire up worker lookup for rhizome view
+// Wire up worker lookup for tapestry view
 function getCityWorkers(city: City): { id: string; name: string; tmuxSession: string }[] {
   return sessions
     .filter(s => s.cityId === city.id && s.originId === city.originId)
     .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
 }
-rhizomeView.setOnGetWorkers(getCityWorkers)
+tapestryView.setOnGetWorkers(getCityWorkers)
 
-// Wire up file navigation from rhizome view — open files in file viewer
-rhizomeView.setOnOpenFile((filePath, city) => {
+// Wire up file navigation from tapestry view — open files in file viewer
+tapestryView.setOnOpenFile((filePath, city) => {
   fileViewerModal.show(filePath, city.originId, undefined, undefined, city.path)
 })
 
@@ -652,7 +652,7 @@ canvasOverlay.addEventListener('webkitmouseforcedown', () => {
     if (city && (city.hasClaims || city.hasPlaygrounds)) {
       handleCityClick(city)
       if (city.hasClaims) {
-        rhizomeView.show(city)
+        tapestryView.show(city)
       } else {
         playgroundViewer.show(city)
       }
@@ -994,7 +994,7 @@ if (import.meta.hot) {
     newWorkerDialog.dispose()
     viewOverlay.dispose()
     tabbedPlansView.dispose()
-    rhizomeView.dispose()
+    tapestryView.dispose()
     playgroundViewer.dispose()
 
     // Dispose renderer components in reverse initialization order

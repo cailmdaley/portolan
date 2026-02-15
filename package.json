@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "build:static": "vite build --config vite.static.config.ts",
-    "export:rhizome": "tsx scripts/export-rhizome.ts"
+    "export:tapestry": "tsx scripts/export-tapestry.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",

@@ -1,9 +1,9 @@
 /**
- * HttpApi rhizome endpoint tests
+ * HttpApi tapestry endpoint tests
  *
- * Tests the /rhizome endpoint that returns the full DAG for RhizomeView:
+ * Tests the /tapestry endpoint that returns the full DAG for TapestryView:
  * - Fibers with rule: tags, edges, evidence, staleness
- * - /rhizome-asset/* artifact serving
+ * - /tapestry-asset/* artifact serving
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -21,7 +21,7 @@ import {
   stubPersistenceLookup,
 } from './test-utils.js';
 
-const TEST_DIR = join(homedir(), '.portolan-test-httpapi-rhizome');
+const TEST_DIR = join(homedir(), '.portolan-test-httpapi-tapestry');
 
 function writeEvidence(claimsDir: string, specName: string, evidence: object) {
   const dir = join(claimsDir, specName);
@@ -37,7 +37,7 @@ function writeArtifact(claimsDir: string, specName: string, filename: string, co
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-describe('HttpApi — /rhizome endpoint', () => {
+describe('HttpApi — /tapestry endpoint', () => {
   const CITY_DIR = join(TEST_DIR, 'test-city');
   const FELT_DIR = join(CITY_DIR, '.felt');
   const CLAIMS_DIR = join(CITY_DIR, 'results', 'claims');
@@ -62,13 +62,13 @@ describe('HttpApi — /rhizome endpoint', () => {
   // ── Basic request validation ─────────────────────────────────
 
   it('returns 400 without cityId', async () => {
-    const res = await httpRequest(api, 'GET', '/rhizome');
+    const res = await httpRequest(api, 'GET', '/tapestry');
     expect(res.status).toBe(400);
     expect(res.data.error).toMatch(/cityId/i);
   });
 
   it('returns 404 for unknown city', async () => {
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=nonexistent');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=nonexistent');
     expect(res.status).toBe(404);
   });
 
@@ -83,7 +83,7 @@ created-at: 2026-01-01T00:00:00Z
 
 Just a task, no rule tag.`);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
     expect(res.status).toBe(200);
     expect(res.data.nodes).toHaveLength(0);
     expect(res.data.links).toHaveLength(0);
@@ -120,7 +120,7 @@ created-at: 2026-01-03T00:00:00Z
 
 Testing the cosebis claim.`);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     expect(res.status).toBe(200);
     expect(res.data.nodes).toHaveLength(2);
@@ -165,7 +165,7 @@ priority: 2
 created-at: 2026-01-02T00:00:00Z
 ---`);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     expect(res.data.links).toHaveLength(1);
     expect(res.data.links[0]).toEqual({
@@ -195,7 +195,7 @@ priority: 2
 created-at: 2026-01-02T00:00:00Z
 ---`);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     expect(res.data.nodes).toHaveLength(1);
     expect(res.data.nodes[0].dependsOn).toEqual([]);
@@ -221,7 +221,7 @@ created-at: 2026-01-01T00:00:00Z
       generated: '2026-01-15T12:00:00Z',
     });
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     expect(res.status).toBe(200);
     const node = res.data.nodes[0];
@@ -243,7 +243,7 @@ priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     expect(res.data.nodes[0].evidence).toBeNull();
     expect(res.data.nodes[0].staleness).toBe('no-evidence');
@@ -289,7 +289,7 @@ created-at: 2026-01-02T00:00:00Z
     utimesSync(join(CLAIMS_DIR, 'upstream', 'evidence.json'), oldTime, oldTime);
     utimesSync(join(CLAIMS_DIR, 'downstream', 'evidence.json'), newTime, newTime);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     const downstream = res.data.nodes.find((n: any) => n.id === 'downstream-def456');
     expect(downstream.staleness).toBe('fresh');
@@ -333,7 +333,7 @@ created-at: 2026-01-02T00:00:00Z
     utimesSync(join(CLAIMS_DIR, 'downstream', 'evidence.json'), oldTime, oldTime);
     utimesSync(join(CLAIMS_DIR, 'upstream', 'evidence.json'), newTime, newTime);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     const downstream = res.data.nodes.find((n: any) => n.id === 'downstream-def456');
     expect(downstream.staleness).toBe('stale');
@@ -372,7 +372,7 @@ priority: 2
 created-at: 2026-01-03T00:00:00Z
 ---`);
 
-    const res = await httpRequest(api, 'GET', '/rhizome?cityId=test');
+    const res = await httpRequest(api, 'GET', '/tapestry?cityId=test');
 
     expect(res.data.downstream).toBeDefined();
     const concerns = res.data.downstream['rule-abc123'];
@@ -382,9 +382,9 @@ created-at: 2026-01-03T00:00:00Z
   });
 });
 
-// ── /rhizome-asset tests ─────────────────────────────────────────
+// ── /tapestry-asset tests ─────────────────────────────────────────
 
-describe('HttpApi — /rhizome-asset endpoint', () => {
+describe('HttpApi — /tapestry-asset endpoint', () => {
   const CITY_DIR = join(TEST_DIR, 'asset-city');
   const CLAIMS_DIR = join(CITY_DIR, 'results', 'claims');
   let api: HttpApi;
@@ -408,28 +408,28 @@ describe('HttpApi — /rhizome-asset endpoint', () => {
     const pngData = Buffer.from([0x89, 0x50, 0x4E, 0x47]); // PNG magic bytes
     writeArtifact(CLAIMS_DIR, 'test_claim', 'figure.png', pngData);
 
-    const res = await httpRequest(api, 'GET', '/rhizome-asset/test_claim/figure.png?cityId=asset-test');
+    const res = await httpRequest(api, 'GET', '/tapestry-asset/test_claim/figure.png?cityId=asset-test');
 
     expect(res.status).toBe(200);
   });
 
   it('returns 404 for missing artifact', async () => {
-    const res = await httpRequest(api, 'GET', '/rhizome-asset/nonexistent/plot.png?cityId=asset-test');
+    const res = await httpRequest(api, 'GET', '/tapestry-asset/nonexistent/plot.png?cityId=asset-test');
     expect(res.status).toBe(404);
   });
 
   it('rejects directory traversal', async () => {
-    const res = await httpRequest(api, 'GET', '/rhizome-asset/..%2F..%2Fetc/passwd?cityId=asset-test');
+    const res = await httpRequest(api, 'GET', '/tapestry-asset/..%2F..%2Fetc/passwd?cityId=asset-test');
     expect(res.status).toBe(400);
   });
 
   it('rejects shell injection', async () => {
-    const res = await httpRequest(api, 'GET', '/rhizome-asset/$(id)/plot.png?cityId=asset-test');
+    const res = await httpRequest(api, 'GET', '/tapestry-asset/$(id)/plot.png?cityId=asset-test');
     expect(res.status).toBe(400);
   });
 
   it('returns 400 without cityId', async () => {
-    const res = await httpRequest(api, 'GET', '/rhizome-asset/spec/plot.png');
+    const res = await httpRequest(api, 'GET', '/tapestry-asset/spec/plot.png');
     expect(res.status).toBe(400);
   });
 });

@@ -3179,38 +3179,38 @@
       /* Light-mode Prism overrides for rendered markdown */
       .file-viewer-markdown pre[class*="language-"],
       .file-viewer-markdown code[class*="language-"],
-      .rhizome-detail-body pre[class*="language-"],
-      .rhizome-detail-body code[class*="language-"] {
+      .tapestry-detail-body pre[class*="language-"],
+      .tapestry-detail-body code[class*="language-"] {
         color: var(--ink-body);
         background: none;
         text-shadow: none;
       }
       .file-viewer-markdown .token.comment,
       .file-viewer-markdown .token.prolog,
-      .rhizome-detail-body .token.comment,
-      .rhizome-detail-body .token.prolog { color: var(--ink-faded); font-style: italic; }
+      .tapestry-detail-body .token.comment,
+      .tapestry-detail-body .token.prolog { color: var(--ink-faded); font-style: italic; }
       .file-viewer-markdown .token.keyword,
       .file-viewer-markdown .token.tag,
-      .rhizome-detail-body .token.keyword,
-      .rhizome-detail-body .token.tag { color: var(--rust); }
+      .tapestry-detail-body .token.keyword,
+      .tapestry-detail-body .token.tag { color: var(--rust); }
       .file-viewer-markdown .token.string,
       .file-viewer-markdown .token.attr-value,
-      .rhizome-detail-body .token.string,
-      .rhizome-detail-body .token.attr-value { color: var(--verdigris); }
+      .tapestry-detail-body .token.string,
+      .tapestry-detail-body .token.attr-value { color: var(--verdigris); }
       .file-viewer-markdown .token.function,
-      .rhizome-detail-body .token.function { color: var(--sepia-accent); }
+      .tapestry-detail-body .token.function { color: var(--sepia-accent); }
       .file-viewer-markdown .token.number,
       .file-viewer-markdown .token.boolean,
-      .rhizome-detail-body .token.number,
-      .rhizome-detail-body .token.boolean { color: var(--rust); }
+      .tapestry-detail-body .token.number,
+      .tapestry-detail-body .token.boolean { color: var(--rust); }
       .file-viewer-markdown .token.operator,
       .file-viewer-markdown .token.punctuation,
-      .rhizome-detail-body .token.operator,
-      .rhizome-detail-body .token.punctuation { color: var(--ink-light); }
+      .tapestry-detail-body .token.operator,
+      .tapestry-detail-body .token.punctuation { color: var(--ink-light); }
       .file-viewer-markdown .token.property,
       .file-viewer-markdown .token.class-name,
-      .rhizome-detail-body .token.property,
-      .rhizome-detail-body .token.class-name { color: var(--sepia-muted); }
+      .tapestry-detail-body .token.property,
+      .tapestry-detail-body .token.class-name { color: var(--sepia-muted); }
 
       .file-viewer-markdown blockquote {
         border-left: 3px solid var(--ui-gold-muted);
@@ -4622,7 +4622,7 @@
       }
 
       /* ── Shared annotation panel (.ann-panel-*) ── */
-      /* Used by RhizomeView (.rhizome-annotation-panel) and FileViewerModal (.file-viewer-annotations) */
+      /* Used by TapestryView (.tapestry-annotation-panel) and FileViewerModal (.file-viewer-annotations) */
 
       .ann-panel-header {
         display: flex;
@@ -4985,10 +4985,10 @@
       }
 
       /* ═══════════════════════════════════════════════════════════
-         RHIZOME VIEW — Native DAG Visualization
+         TAPESTRY VIEW — Native DAG Visualization
          ═══════════════════════════════════════════════════════════ */
 
-      .rhizome-view {
+      .tapestry-view {
         position: fixed;
         inset: 0;
         background: var(--ui-dark);
@@ -4998,12 +4998,12 @@
         transition: opacity 300ms ease;
       }
 
-      .rhizome-view.visible {
+      .tapestry-view.visible {
         pointer-events: auto;
         opacity: 1;
       }
 
-      .rhizome-close {
+      .tapestry-close {
         position: absolute;
         top: 0.5rem;
         left: 0.5rem;
@@ -5020,26 +5020,26 @@
         transition: all 200ms ease;
       }
 
-      .rhizome-close:hover {
+      .tapestry-close:hover {
         opacity: 1;
         color: var(--ui-red);
         border-color: var(--ui-red);
         background: rgba(200, 128, 128, 0.15);
       }
 
-      .rhizome-body {
+      .tapestry-body {
         display: flex;
         position: absolute;
         inset: 0;
       }
 
-      .rhizome-main {
+      .tapestry-main {
         flex: 1;
         display: flex;
         min-width: 0;
       }
 
-      .rhizome-dag-wrapper {
+      .tapestry-dag-wrapper {
         flex: 1;
         position: relative;
         display: flex;
@@ -5047,20 +5047,20 @@
         min-width: 0;
       }
 
-      .rhizome-dag {
+      .tapestry-dag {
         flex: 1;
         overflow: hidden;
         position: relative;
       }
 
-      .rhizome-svg {
+      .tapestry-svg {
         display: block;
         width: 100%;
         height: 100%;
       }
 
-      .rhizome-loading,
-      .rhizome-empty {
+      .tapestry-loading,
+      .tapestry-empty {
         position: absolute;
         top: 50%;
         left: 50%;
@@ -5071,12 +5071,12 @@
         font-style: italic;
       }
 
-      .rhizome-loading {
+      .tapestry-loading {
         animation: subtlePulse 1.5s ease-in-out infinite;
         z-index: 5;
       }
 
-      .rhizome-loading.error {
+      .tapestry-loading.error {
         color: var(--ui-red);
         animation: none;
         font-style: normal;
@@ -5084,44 +5084,44 @@
 
       /* ── DAG nodes ── */
 
-      .rhizome-node {
+      .tapestry-node {
         cursor: grab;
       }
 
-      .rhizome-node:hover path {
+      .tapestry-node:hover path {
         filter: brightness(1.15);
       }
 
-      .rhizome-node.selected path:first-child {
+      .tapestry-node.selected path:first-child {
         stroke-width: 2.5 !important;
       }
 
-      .rhizome-node.search-match path:first-child {
+      .tapestry-node.search-match path:first-child {
         stroke-width: 2.5 !important;
         filter: brightness(1.2);
       }
 
-      .rhizome-node-label {
+      .tapestry-node-label {
         font-family: var(--font-main);
         font-size: 14px;
         fill: var(--ui-text);
         pointer-events: none;
       }
 
-      .rhizome-link {
+      .tapestry-link {
         fill: none;
         transition: stroke-opacity 0.15s ease;
       }
 
       /* ── Search ── */
 
-      .rhizome-search {
+      .tapestry-search {
         padding: 0.5rem 1rem;
         border-top: 1px solid var(--ui-border);
         flex-shrink: 0;
       }
 
-      .rhizome-search input {
+      .tapestry-search input {
         width: 100%;
         font-family: var(--font-main);
         font-size: 0.85rem;
@@ -5132,23 +5132,23 @@
         color: var(--ui-text);
       }
 
-      .rhizome-search input:focus {
+      .tapestry-search input:focus {
         outline: none;
         border-color: var(--ui-teal);
       }
 
-      .rhizome-search input::placeholder {
+      .tapestry-search input::placeholder {
         color: var(--ui-text-muted);
         font-style: italic;
       }
 
-      .rhizome-search-results {
+      .tapestry-search-results {
         margin-top: 0.4rem;
         max-height: 120px;
         overflow-y: auto;
       }
 
-      .rhizome-search-results .search-result {
+      .tapestry-search-results .search-result {
         padding: 0.3rem 0.4rem;
         font-size: 0.8rem;
         cursor: pointer;
@@ -5160,22 +5160,22 @@
         font-family: var(--font-main);
       }
 
-      .rhizome-search-results .search-result:hover {
+      .tapestry-search-results .search-result:hover {
         background: var(--ui-dark-surface);
       }
 
-      .rhizome-search-results .search-result-dot {
+      .tapestry-search-results .search-result-dot {
         width: 7px;
         height: 7px;
         border-radius: 50%;
         flex-shrink: 0;
       }
 
-      .rhizome-search-results .search-result-name {
+      .tapestry-search-results .search-result-name {
         font-style: normal;
       }
 
-      .rhizome-search-results .search-result-match {
+      .tapestry-search-results .search-result-match {
         font-family: var(--font-mono);
         font-size: 0.7rem;
         color: var(--ui-text-muted);
@@ -5184,7 +5184,7 @@
         white-space: nowrap;
       }
 
-      .rhizome-search-results .search-no-results {
+      .tapestry-search-results .search-no-results {
         font-size: 0.8rem;
         color: var(--ui-text-muted);
         font-style: italic;
@@ -5193,7 +5193,7 @@
 
       /* ── Sidebar (fiber list + detail) ── */
 
-      .rhizome-sidebar {
+      .tapestry-sidebar {
         width: 20vw;
         min-width: 200px;
         flex-shrink: 0;
@@ -5206,29 +5206,29 @@
         transition: width 200ms ease;
       }
 
-      .rhizome-sidebar.expanded {
+      .tapestry-sidebar.expanded {
         width: 40vw;
         min-width: 300px;
         max-width: 800px;
       }
 
-      .rhizome-fiber-list {
+      .tapestry-fiber-list {
         flex: 1;
         display: flex;
         flex-direction: column;
         overflow: hidden;
       }
 
-      .rhizome-fiber-list.hidden {
+      .tapestry-fiber-list.hidden {
         display: none;
       }
 
-      .rhizome-fiber-list .rhizome-search {
+      .tapestry-fiber-list .tapestry-search {
         border-top: none;
         border-bottom: 1px solid var(--ui-border);
       }
 
-      .rhizome-fiber-results {
+      .tapestry-fiber-results {
         flex: 1;
         overflow-y: auto;
         padding: 0.2rem 0;
@@ -5275,7 +5275,7 @@
         color: var(--ui-text-muted);
       }
 
-      .rhizome-sidebar-resize {
+      .tapestry-sidebar-resize {
         position: absolute;
         left: 0;
         top: 0;
@@ -5287,12 +5287,12 @@
         display: none;
       }
 
-      .rhizome-sidebar.expanded .rhizome-sidebar-resize {
+      .tapestry-sidebar.expanded .tapestry-sidebar-resize {
         display: block;
       }
 
-      .rhizome-sidebar-resize:hover,
-      .rhizome-sidebar-resize:active {
+      .tapestry-sidebar-resize:hover,
+      .tapestry-sidebar-resize:active {
         background: var(--ui-gold);
         opacity: 0.4;
       }
@@ -5313,7 +5313,7 @@
         border: 1px solid var(--ui-border);
       }
 
-      .rhizome-legend {
+      .tapestry-legend {
         flex-shrink: 0;
         padding: 0.4rem 0.8rem;
         border-top: 1px solid var(--ui-border);
@@ -5333,7 +5333,7 @@
         color: var(--ui-border);
       }
 
-      .rhizome-detail-reason {
+      .tapestry-detail-reason {
         font-size: 0.82rem;
         color: var(--ui-text-muted);
         margin-bottom: 0.6rem;
@@ -5343,7 +5343,7 @@
 
       /* ── Detail panel ── */
 
-      .rhizome-detail {
+      .tapestry-detail {
         flex: 1;
         flex-shrink: 0;
         background: var(--ui-dark-elevated);
@@ -5353,11 +5353,11 @@
         position: relative;
       }
 
-      .rhizome-detail.hidden {
+      .tapestry-detail.hidden {
         display: none;
       }
 
-      .rhizome-detail-resize {
+      .tapestry-detail-resize {
         position: absolute;
         left: 0;
         top: 0;
@@ -5368,13 +5368,13 @@
         background: transparent;
       }
 
-      .rhizome-detail-resize:hover,
-      .rhizome-detail-resize:active {
+      .tapestry-detail-resize:hover,
+      .tapestry-detail-resize:active {
         background: var(--accent-gold);
         opacity: 0.4;
       }
 
-      .rhizome-detail-header {
+      .tapestry-detail-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -5383,7 +5383,7 @@
         flex-shrink: 0;
       }
 
-      .rhizome-detail-title {
+      .tapestry-detail-title {
         display: flex;
         align-items: center;
         gap: 0.4rem;
@@ -5417,7 +5417,7 @@
         flex-shrink: 0;
       }
 
-      .rhizome-detail-close {
+      .tapestry-detail-close {
         background: none;
         border: none;
         color: var(--ui-text-muted);
@@ -5428,24 +5428,24 @@
         flex-shrink: 0;
       }
 
-      .rhizome-detail-close:hover {
+      .tapestry-detail-close:hover {
         color: var(--ui-text);
       }
 
-      .rhizome-detail-content {
+      .tapestry-detail-content {
         flex: 1;
         overflow-y: auto;
         padding: 0.8rem;
       }
 
       /* Detail: upstream/downstream graph */
-      .rhizome-detail-graph {
+      .tapestry-detail-graph {
         padding-bottom: 0.6rem;
         margin-bottom: 0.6rem;
         border-bottom: 1px solid var(--ui-border);
       }
 
-      .rhizome-detail-graph-line {
+      .tapestry-detail-graph-line {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
@@ -5454,7 +5454,7 @@
         padding: 0.15rem 0;
       }
 
-      .rhizome-detail-graph-line .graph-label {
+      .tapestry-detail-graph-line .graph-label {
         color: var(--ui-text-muted);
         font-style: italic;
         font-family: var(--font-main);
@@ -5480,18 +5480,18 @@
       }
 
       /* Detail: artifact viewer */
-      .rhizome-artifact-viewer {
+      .tapestry-artifact-viewer {
         display: flex;
         align-items: center;
         gap: 0.4rem;
         margin-bottom: 0.8rem;
       }
 
-      .rhizome-artifact {
+      .tapestry-artifact {
         flex: 1;
       }
 
-      .rhizome-artifact .artifact-label {
+      .tapestry-artifact .artifact-label {
         display: block;
         font-family: var(--font-mono);
         font-size: 0.65rem;
@@ -5501,7 +5501,7 @@
         letter-spacing: 0.05em;
       }
 
-      .rhizome-artifact img {
+      .tapestry-artifact img {
         width: 100%;
         border-radius: 2px;
         border: 1px solid var(--ui-border);
@@ -5509,11 +5509,11 @@
         transition: border-color 0.2s;
       }
 
-      .rhizome-artifact img:hover {
+      .tapestry-artifact img:hover {
         border-color: var(--ui-teal);
       }
 
-      .rhizome-artifact-viewer .artifact-nav {
+      .tapestry-artifact-viewer .artifact-nav {
         font-size: 1.2rem;
         color: var(--ui-text-muted);
         cursor: pointer;
@@ -5521,12 +5521,12 @@
         user-select: none;
       }
 
-      .rhizome-artifact-viewer .artifact-nav:hover {
+      .tapestry-artifact-viewer .artifact-nav:hover {
         color: var(--ui-teal);
       }
 
       /* Detail: body (markdown) */
-      .rhizome-detail-body {
+      .tapestry-detail-body {
         font-family: var(--font-main);
         font-size: 0.85rem;
         color: var(--ui-text);
@@ -5534,19 +5534,19 @@
         margin-bottom: 0.8rem;
       }
 
-      .rhizome-detail-body h1 { font-size: 1.1rem; margin: 0.8rem 0 0.4rem; }
-      .rhizome-detail-body h2 {
+      .tapestry-detail-body h1 { font-size: 1.1rem; margin: 0.8rem 0 0.4rem; }
+      .tapestry-detail-body h2 {
         font-size: 0.95rem;
         margin: 0.6rem 0 0.3rem;
         color: var(--ui-gold);
         font-variant: small-caps;
         letter-spacing: 0.05em;
       }
-      .rhizome-detail-body h3 { font-size: 0.85rem; margin: 0.5rem 0 0.2rem; }
-      .rhizome-detail-body p { margin: 0.2rem 0; }
-      .rhizome-detail-body ul, .rhizome-detail-body ol { margin: 0.2rem 0 0.2rem 1.5rem; padding: 0; }
-      .rhizome-detail-body li { margin: 0.1rem 0; }
-      .rhizome-detail-body code {
+      .tapestry-detail-body h3 { font-size: 0.85rem; margin: 0.5rem 0 0.2rem; }
+      .tapestry-detail-body p { margin: 0.2rem 0; }
+      .tapestry-detail-body ul, .tapestry-detail-body ol { margin: 0.2rem 0 0.2rem 1.5rem; padding: 0; }
+      .tapestry-detail-body li { margin: 0.1rem 0; }
+      .tapestry-detail-body code {
         font-family: var(--font-mono);
         font-size: 0.8em;
         background: rgba(0, 0, 0, 0.05);
@@ -5558,7 +5558,7 @@
         color: var(--ui-teal);
         font-weight: 500;
       }
-      .rhizome-detail-body pre {
+      .tapestry-detail-body pre {
         background: rgba(255, 255, 255, 0.35);
         border: 1px solid var(--ui-border-light);
         border-radius: 3px;
@@ -5566,46 +5566,46 @@
         overflow-x: auto;
         margin: 0.4rem 0;
       }
-      .rhizome-detail-body pre code {
+      .tapestry-detail-body pre code {
         background: none;
         padding: 0;
         color: var(--ink-body);
         font-size: 0.78rem;
         line-height: 1.5;
       }
-      .rhizome-detail-body blockquote {
+      .tapestry-detail-body blockquote {
         border-left: 2px solid var(--ui-teal);
         padding-left: 0.7rem;
         margin: 0.4rem 0;
         color: var(--ui-text-muted);
         font-style: italic;
       }
-      .rhizome-detail-body a {
+      .tapestry-detail-body a {
         color: var(--ui-teal);
         text-decoration: none;
       }
-      .rhizome-detail-body a:hover {
+      .tapestry-detail-body a:hover {
         text-decoration: underline;
       }
-      .rhizome-detail-body table {
+      .tapestry-detail-body table {
         width: 100%;
         border-collapse: collapse;
         margin: 0.4rem 0;
         font-size: 0.8rem;
       }
-      .rhizome-detail-body th,
-      .rhizome-detail-body td {
+      .tapestry-detail-body th,
+      .tapestry-detail-body td {
         padding: 0.3rem 0.5rem;
         border: 1px solid var(--ui-border);
         text-align: left;
       }
-      .rhizome-detail-body th {
+      .tapestry-detail-body th {
         background: var(--ui-dark-surface);
         font-weight: 600;
       }
 
       /* KaTeX: scale down math to match body text */
-      .rhizome-detail-body .katex { font-size: 0.92em; }
+      .tapestry-detail-body .katex { font-size: 0.92em; }
       .file-viewer-markdown .katex { font-size: 0.95em; }
 
       /* Editable markdown: shared hint + transition styles */
@@ -5641,11 +5641,11 @@
       }
 
       /* Detail: evidence (code block) */
-      .rhizome-evidence-section {
+      .tapestry-evidence-section {
         margin-top: 0.8rem;
       }
 
-      .rhizome-evidence {
+      .tapestry-evidence {
         background: var(--ui-dark-surface);
         border-radius: 2px;
         padding: 0.5rem;
@@ -5653,26 +5653,26 @@
         overflow-y: auto;
       }
 
-      .rhizome-evidence .evidence-item {
+      .tapestry-evidence .evidence-item {
         display: flex;
         justify-content: space-between;
         padding: 0.2rem 0;
         font-size: 0.78rem;
       }
 
-      .rhizome-evidence .evidence-key {
+      .tapestry-evidence .evidence-key {
         font-family: var(--font-mono);
         color: var(--ui-text-muted);
       }
 
-      .rhizome-evidence .evidence-value {
+      .tapestry-evidence .evidence-value {
         font-family: var(--font-mono);
         color: var(--ui-text);
       }
 
       /* ── Annotation panel (reuses claims classes) ── */
 
-      .rhizome-annotation-panel {
+      .tapestry-annotation-panel {
         width: 280px;
         flex-shrink: 0;
         border-left: 1px solid var(--ui-border);
@@ -5683,17 +5683,17 @@
         transition: width 200ms ease;
       }
 
-      .rhizome-annotation-panel.hidden {
+      .tapestry-annotation-panel.hidden {
         display: none;
       }
 
-      .rhizome-annotation-panel.collapsed {
+      .tapestry-annotation-panel.collapsed {
         width: 40px;
       }
 
       /* ── Lightbox ── */
 
-      .rhizome-lightbox {
+      .tapestry-lightbox {
         position: fixed;
         inset: 0;
         background: rgba(0, 0, 0, 0.9);
@@ -5704,14 +5704,14 @@
         cursor: pointer;
       }
 
-      .rhizome-lightbox img {
+      .tapestry-lightbox img {
         max-width: 95%;
         max-height: 95%;
         border-radius: 2px;
         cursor: crosshair;
       }
 
-      .rhizome-lightbox-close {
+      .tapestry-lightbox-close {
         position: absolute;
         top: 1.5rem;
         right: 1.5rem;
@@ -5723,11 +5723,11 @@
         z-index: 2001;
       }
 
-      .rhizome-lightbox-close:hover {
+      .tapestry-lightbox-close:hover {
         color: white;
       }
 
-      .rhizome-lightbox-label {
+      .tapestry-lightbox-label {
         position: absolute;
         bottom: 1.5rem;
         left: 50%;
@@ -5743,7 +5743,7 @@
 
       /* ── Annotation popover ── */
 
-      .rhizome-ann-popover {
+      .tapestry-ann-popover {
         position: fixed;
         z-index: 2100;
         width: 280px;

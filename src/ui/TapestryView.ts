@@ -1,4 +1,4 @@
-// RhizomeView — native DAG visualization for fibers.
+// TapestryView — native DAG visualization for fibers.
 // D3 force-directed layout with organic node shapes, staleness coloring,
 // fiber detail panel, and annotation support.
 
@@ -21,7 +21,7 @@ const API_BASE = `http://${window.location.hostname}:4004`
 
 // ── Types ────────────────────────────────────────────────────────────
 
-interface RhizomeNode {
+interface TapestryNode {
   id: string
   title: string
   kind: string
@@ -38,12 +38,12 @@ interface RhizomeNode {
   } | null
 }
 
-interface RhizomeLink {
+interface TapestryLink {
   source: string
   target: string
 }
 
-interface RhizomeFiber {
+interface TapestryFiber {
   id: string
   title: string
   status: string
@@ -54,18 +54,18 @@ interface RhizomeFiber {
   dependsOn: string[]
 }
 
-export interface RhizomeResponse {
-  nodes: RhizomeNode[]
-  links: RhizomeLink[]
+export interface TapestryResponse {
+  nodes: TapestryNode[]
+  links: TapestryLink[]
   downstream: Record<string, Array<{ id: string; title: string; status: string; kind: string }>>
   config: Record<string, string> | null
-  fibers?: RhizomeFiber[]
+  fibers?: TapestryFiber[]
 }
 
 /** D3 simulation node with position. */
 interface SimNode extends d3Force.SimulationNodeDatum {
   id: string
-  data: RhizomeNode
+  data: TapestryNode
   degree: number
 }
 
@@ -116,7 +116,7 @@ const POPOVER_HEIGHT = 160
 const POPOVER_MARGIN = 8
 const PREVIEW_TRUNCATION = 80
 
-type Staleness = RhizomeNode['staleness']
+type Staleness = TapestryNode['staleness']
 
 const STALENESS_COLORS: Record<Staleness, string> = {
   'fresh': '#5A7B7B',
@@ -210,9 +210,9 @@ function statusIcon(status: string): string {
   return '\u25CB'
 }
 
-// ── RhizomeView ──────────────────────────────────────────────────────
+// ── TapestryView ──────────────────────────────────────────────────────
 
-export class RhizomeView {
+export class TapestryView {
   private detailKeyHandler: ((e: KeyboardEvent) => void) | null = null
   private panel: HTMLElement
   private closeBtn: HTMLElement
@@ -227,7 +227,7 @@ export class RhizomeView {
   private annotationPanel: AnnotationPanel<ClaimsAnnotation>
 
   private currentCity: City | null = null
-  private rhizomeData: RhizomeResponse | null = null
+  private tapestryData: TapestryResponse | null = null
   private selectedNodeId: string | null = null
   private staticMode = false
   private staticAssetBase = ''
@@ -246,15 +246,15 @@ export class RhizomeView {
 
   constructor() {
     this.panel = this.createPanel()
-    this.closeBtn = this.panel.querySelector('.rhizome-close')!
-    this.dagContainer = this.panel.querySelector('.rhizome-dag')!
-    this.detailPanel = this.panel.querySelector('.rhizome-detail')!
-    this.fiberListEl = this.panel.querySelector('.rhizome-fiber-list')!
-    this.fiberSearchInput = this.panel.querySelector('.rhizome-fiber-search') as HTMLInputElement
-    this.fiberResultsEl = this.panel.querySelector('.rhizome-fiber-results')!
-    this.searchResults = this.panel.querySelector('.rhizome-search-results')!
-    this.loadingIndicator = this.panel.querySelector('.rhizome-loading')!
-    this.annotationPanelEl = this.panel.querySelector('.rhizome-annotation-panel')!
+    this.closeBtn = this.panel.querySelector('.tapestry-close')!
+    this.dagContainer = this.panel.querySelector('.tapestry-dag')!
+    this.detailPanel = this.panel.querySelector('.tapestry-detail')!
+    this.fiberListEl = this.panel.querySelector('.tapestry-fiber-list')!
+    this.fiberSearchInput = this.panel.querySelector('.tapestry-fiber-search') as HTMLInputElement
+    this.fiberResultsEl = this.panel.querySelector('.tapestry-fiber-results')!
+    this.searchResults = this.panel.querySelector('.tapestry-search-results')!
+    this.loadingIndicator = this.panel.querySelector('.tapestry-loading')!
+    this.annotationPanelEl = this.panel.querySelector('.tapestry-annotation-panel')!
 
     this.annotationPanel = new AnnotationPanel<ClaimsAnnotation>(this.annotationPanelEl, {
       cssPrefix: 'claims',
@@ -305,23 +305,23 @@ export class RhizomeView {
 
   private createPanel(): HTMLElement {
     const panel = document.createElement('div')
-    panel.className = 'rhizome-view'
+    panel.className = 'tapestry-view'
     panel.innerHTML = `
-      <button class="rhizome-close">&times;</button>
-      <div class="rhizome-body">
-        <div class="rhizome-main">
-          <div class="rhizome-dag-wrapper">
-            <div class="rhizome-loading">Loading tapestry\u2026</div>
-            <div class="rhizome-dag"></div>
+      <button class="tapestry-close">&times;</button>
+      <div class="tapestry-body">
+        <div class="tapestry-main">
+          <div class="tapestry-dag-wrapper">
+            <div class="tapestry-loading">Loading tapestry\u2026</div>
+            <div class="tapestry-dag"></div>
           </div>
-          <div class="rhizome-sidebar">
-            <div class="rhizome-sidebar-resize"></div>
-            <div class="rhizome-fiber-list">
-              <div class="rhizome-search">
-                <input type="text" class="rhizome-fiber-search" placeholder="Search fibers\u2026" />
-                <div class="rhizome-search-results"></div>
+          <div class="tapestry-sidebar">
+            <div class="tapestry-sidebar-resize"></div>
+            <div class="tapestry-fiber-list">
+              <div class="tapestry-search">
+                <input type="text" class="tapestry-fiber-search" placeholder="Search fibers\u2026" />
+                <div class="tapestry-search-results"></div>
               </div>
-              <div class="rhizome-legend">
+              <div class="tapestry-legend">
                 <span class="legend-item"><span style="color:#5A7B7B">\u25CF</span> fresh</span>
                 <span class="legend-item"><span style="color:#A87070">\u25CF</span> stale</span>
                 <span class="legend-item"><span style="color:#7A7368">\u25CF</span> no evidence</span>
@@ -330,12 +330,12 @@ export class RhizomeView {
                 <span class="legend-item">\u25D0 active</span>
                 <span class="legend-item">\u25CF closed</span>
               </div>
-              <div class="rhizome-fiber-results"></div>
+              <div class="tapestry-fiber-results"></div>
             </div>
-            <div class="rhizome-detail hidden"></div>
+            <div class="tapestry-detail hidden"></div>
           </div>
         </div>
-        <div class="rhizome-annotation-panel hidden">
+        <div class="tapestry-annotation-panel hidden">
           ${AnnotationPanel.buildPanelHTML({
             globalCommentPlaceholder: 'General feedback\u2026',
           })}
@@ -352,7 +352,7 @@ export class RhizomeView {
       if (e.key === 'Escape' && this.isVisible()) {
         // If editing body, exit edit mode (discard changes)
         if (this.bodyEditorView) {
-          const node = this.rhizomeData?.nodes.find(n => n.id === this.bodyEditorNodeId)
+          const node = this.tapestryData?.nodes.find(n => n.id === this.bodyEditorNodeId)
           if (node) this.exitBodyEditMode(node)
           return
         }
@@ -380,8 +380,8 @@ export class RhizomeView {
     })
 
     // Sidebar resize (only active when expanded)
-    const sidebarResize = this.panel.querySelector('.rhizome-sidebar-resize')
-    const sidebar = this.panel.querySelector('.rhizome-sidebar') as HTMLElement
+    const sidebarResize = this.panel.querySelector('.tapestry-sidebar-resize')
+    const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement
     if (sidebarResize && sidebar) {
       sidebarResize.addEventListener('mousedown', (e) => {
         e.preventDefault()
@@ -445,25 +445,25 @@ export class RhizomeView {
     this.panel.classList.add('visible')
 
     try {
-      const response = await fetch(`${API_BASE}/rhizome?cityId=${encodeURIComponent(city.id)}`)
+      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(city.id)}`)
       if (!response.ok) throw new Error(await response.text())
-      this.rhizomeData = await response.json()
+      this.tapestryData = await response.json()
       this.loadingIndicator.style.display = 'none'
       this.renderDAG()
       this.renderFiberList()
     } catch (err) {
       this.loadingIndicator.textContent = 'Failed to load tapestry'
       this.loadingIndicator.classList.add('error')
-      console.error('Rhizome fetch failed:', err)
+      console.error('Tapestry fetch failed:', err)
     }
   }
 
   hide(): void {
     this.panel.classList.remove('visible')
-    this.panel.querySelector('.rhizome-ann-popover')?.remove()
+    this.panel.querySelector('.tapestry-ann-popover')?.remove()
     this.currentCity = null
     this.selectedNodeId = null
-    this.rhizomeData = null
+    this.tapestryData = null
     this.annotationPanel.reset()
 
     if (this.escapeHandler) {
@@ -502,10 +502,10 @@ export class RhizomeView {
   }
 
   /** Render a static (server-less) view from pre-baked data. */
-  showStatic(data: RhizomeResponse, title: string, assetBase = './data/claims'): void {
+  showStatic(data: TapestryResponse, title: string, assetBase = './data/claims'): void {
     this.staticMode = true
     this.staticAssetBase = assetBase
-    this.rhizomeData = data
+    this.tapestryData = data
     this.selectedNodeId = null
     this.currentPlotIndex = 0
 
@@ -531,17 +531,17 @@ export class RhizomeView {
     if (this.staticMode) {
       return `${this.staticAssetBase}/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}`
     }
-    return `${API_BASE}/rhizome-asset/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}?cityId=${encodeURIComponent(this.currentCity?.id || '')}`
+    return `${API_BASE}/tapestry-asset/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}?cityId=${encodeURIComponent(this.currentCity?.id || '')}`
   }
 
   // ── DAG rendering ──────────────────────────────────────────────────
 
   private renderDAG(): void {
-    if (!this.rhizomeData) return
+    if (!this.tapestryData) return
 
-    const { nodes: rawNodes, links: rawLinks } = this.rhizomeData
+    const { nodes: rawNodes, links: rawLinks } = this.tapestryData
     if (rawNodes.length === 0) {
-      this.dagContainer.innerHTML = '<div class="rhizome-empty">No rule: fibers found</div>'
+      this.dagContainer.innerHTML = '<div class="tapestry-empty">No rule: fibers found</div>'
       return
     }
 
@@ -753,7 +753,7 @@ export class RhizomeView {
     // Create SVG
     const svg = d3Selection.select(this.dagContainer)
       .append('svg')
-      .attr('class', 'rhizome-svg')
+      .attr('class', 'tapestry-svg')
 
     // Zoom behavior
     const zoomBehavior = d3Zoom.zoom<SVGSVGElement, unknown>()
@@ -767,7 +767,7 @@ export class RhizomeView {
     const rootGroup = svg.append('g')
 
     // Draw edges
-    const edgeGroup = rootGroup.append('g').attr('class', 'rhizome-edges')
+    const edgeGroup = rootGroup.append('g').attr('class', 'tapestry-edges')
     const edgePaths: SVGPathSelection[] = []
 
     simLinks.forEach(link => {
@@ -782,7 +782,7 @@ export class RhizomeView {
 
         const path = edgeGroup.append('path')
           .datum({ link, strandIndex: s, tension, cpOffset1, cpOffset2 })
-          .attr('class', 'rhizome-link')
+          .attr('class', 'tapestry-link')
           .attr('stroke', color)
           .attr('stroke-width', 1)
           .attr('stroke-opacity', strandOpacity)
@@ -793,21 +793,21 @@ export class RhizomeView {
     })
 
     // Draw nodes
-    const nodeGroup = rootGroup.append('g').attr('class', 'rhizome-nodes')
+    const nodeGroup = rootGroup.append('g').attr('class', 'tapestry-nodes')
     let draggedDistance = 0
 
-    const nodeElements = nodeGroup.selectAll<SVGGElement, SimNode>('.rhizome-node')
+    const nodeElements = nodeGroup.selectAll<SVGGElement, SimNode>('.tapestry-node')
       .data(simNodes)
       .enter()
       .append('g')
-      .attr('class', 'rhizome-node')
+      .attr('class', 'tapestry-node')
       .call(d3Drag.drag<SVGGElement, SimNode>()
         .on('start', (event, d) => {
           draggedDistance = 0
           if (!event.active) this.simulation?.alphaTarget(0.1).restart()
           d.fx = d.x
           d.fy = d.y
-          d3Selection.select(event.sourceEvent.target.closest('.rhizome-node') as Element)
+          d3Selection.select(event.sourceEvent.target.closest('.tapestry-node') as Element)
             .style('cursor', 'grabbing')
         })
         .on('drag', (event, d) => {
@@ -820,7 +820,7 @@ export class RhizomeView {
           // Keep X pinned where user left it, release Y to settle
           d.fx = d.x
           d.fy = null
-          d3Selection.select(event.sourceEvent.target.closest('.rhizome-node') as Element)
+          d3Selection.select(event.sourceEvent.target.closest('.tapestry-node') as Element)
             .style('cursor', 'grab')
           if (draggedDistance < 5) {
             this.selectNode(d.data.id)
@@ -838,7 +838,7 @@ export class RhizomeView {
         const scale = RING_SCALES[i]
         const fillOpacity = 0.12 + (RING_COUNT - 1 - i) * 0.06
         g.append('path')
-          .attr('class', 'rhizome-node-fill')
+          .attr('class', 'tapestry-node-fill')
           .attr('d', organicEllipse(NODE_RX, NODE_RY, nodeSeed + i * 0.1, scale))
           .attr('fill', color)
           .attr('fill-opacity', fillOpacity)
@@ -850,7 +850,7 @@ export class RhizomeView {
         const scale = RING_SCALES[i]
         const isCore = i === 0
         g.append('path')
-          .attr('class', 'rhizome-node-ring')
+          .attr('class', 'tapestry-node-ring')
           .attr('d', organicEllipse(NODE_RX, NODE_RY, nodeSeed + i * 0.1, scale))
           .attr('fill', 'none')
           .attr('stroke', color)
@@ -865,20 +865,20 @@ export class RhizomeView {
       if (words.length > 2) {
         const mid = Math.ceil(words.length / 2)
         g.append('text')
-          .attr('class', 'rhizome-node-label')
+          .attr('class', 'tapestry-node-label')
           .attr('y', -4)
           .attr('text-anchor', 'middle')
           .attr('font-size', '9.5px')
           .text(words.slice(0, mid).join(' '))
         g.append('text')
-          .attr('class', 'rhizome-node-label')
+          .attr('class', 'tapestry-node-label')
           .attr('y', 8)
           .attr('text-anchor', 'middle')
           .attr('font-size', '9.5px')
           .text(words.slice(mid).join(' '))
       } else {
         g.append('text')
-          .attr('class', 'rhizome-node-label')
+          .attr('class', 'tapestry-node-label')
           .attr('y', 3)
           .attr('text-anchor', 'middle')
           .attr('font-size', '10px')
@@ -958,11 +958,11 @@ export class RhizomeView {
   }
 
   private updateHighlighting(): void {
-    if (!this.selectedNodeId || !this.rhizomeData) return
+    if (!this.selectedNodeId || !this.tapestryData) return
 
     const selectedId = this.selectedNodeId
     const connectedNodes = new Set([selectedId])
-    this.rhizomeData.nodes.forEach(n => {
+    this.tapestryData.nodes.forEach(n => {
       if (n.id === selectedId) {
         n.dependsOn.forEach(dep => connectedNodes.add(dep))
       }
@@ -971,7 +971,7 @@ export class RhizomeView {
       }
     })
 
-    d3Selection.selectAll<SVGGElement, SimNode>('.rhizome-node').each(function (d) {
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
       const el = d3Selection.select(this)
       const isSelected = d.data.id === selectedId
       const isConnected = connectedNodes.has(d.data.id)
@@ -984,7 +984,7 @@ export class RhizomeView {
         .style('opacity', String(opacity))
     })
 
-    d3Selection.selectAll<SVGPathElement, EdgeDatum>('.rhizome-link').each(function (d) {
+    d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
       const linkEl = d3Selection.select(this)
       const sourceId = d.link.source.data.id
       const targetId = d.link.target.data.id
@@ -996,14 +996,14 @@ export class RhizomeView {
   // ── Detail panel ───────────────────────────────────────────────────
 
   private renderDetailPanel(nodeId: string): void {
-    if (!this.rhizomeData) return
-    const node = this.rhizomeData.nodes.find(n => n.id === nodeId)
+    if (!this.tapestryData) return
+    const node = this.tapestryData.nodes.find(n => n.id === nodeId)
     if (!node) return
 
     // Clean up any active body editor
     this.destroyBodyEditor()
 
-    const downstream = this.rhizomeData.downstream[nodeId] || []
+    const downstream = this.tapestryData.downstream[nodeId] || []
     const nodeColor = stalenessColor(node.staleness)
 
     // Upstream / Downstream fiber tags
@@ -1011,17 +1011,17 @@ export class RhizomeView {
       `<span class="dep-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(label)}</span>`
 
     const upstreamHtml = node.dependsOn.length > 0
-      ? `<div class="rhizome-detail-graph-line">
+      ? `<div class="tapestry-detail-graph-line">
            <span class="graph-label">Upstream</span>
            ${node.dependsOn.map(dep => {
-             const depNode = this.rhizomeData!.nodes.find(n => n.id === dep)
+             const depNode = this.tapestryData!.nodes.find(n => n.id === dep)
              return renderFiberTag(dep, depNode ? shortName(depNode.title) : dep.slice(0, 12))
            }).join('')}
          </div>`
       : ''
 
     const downstreamHtml = downstream.length > 0
-      ? `<div class="rhizome-detail-graph-line">
+      ? `<div class="tapestry-detail-graph-line">
            <span class="graph-label">Downstream</span>
            ${downstream.map(d => {
              const icon = statusIcon(d.status)
@@ -1031,7 +1031,7 @@ export class RhizomeView {
       : ''
 
     const graphHtml = (upstreamHtml || downstreamHtml)
-      ? `<div class="rhizome-detail-graph">${upstreamHtml}${downstreamHtml}</div>`
+      ? `<div class="tapestry-detail-graph">${upstreamHtml}${downstreamHtml}</div>`
       : ''
 
     // Artifact viewer
@@ -1043,9 +1043,9 @@ export class RhizomeView {
         const imgSrc = this.artifactUrl(node.specName || '', path)
         const hasMultiple = entries.length > 1
         artifactsHtml = `
-          <div class="rhizome-artifact-viewer">
+          <div class="tapestry-artifact-viewer">
             ${hasMultiple ? `<span class="artifact-nav" data-delta="-1">\u2190</span>` : ''}
-            <div class="rhizome-artifact">
+            <div class="tapestry-artifact">
               <span class="artifact-label">${escapeHtml(name)}${hasMultiple ? ` (${this.currentPlotIndex + 1}/${entries.length})` : ''}</span>
               <img src="${imgSrc}" alt="${escapeHtml(name)}" data-artifact-name="${escapeHtml(name)}" />
             </div>
@@ -1059,7 +1059,7 @@ export class RhizomeView {
       ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
       : undefined
     const bodyHtml = node.body
-      ? `<div class="rhizome-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}">${renderMarkdown(node.body, mdOpts)}</div>`
+      ? `<div class="tapestry-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}">${renderMarkdown(node.body, mdOpts)}</div>`
       : ''
 
     // Evidence metrics — flatten nested objects into key.subkey pairs
@@ -1079,22 +1079,22 @@ export class RhizomeView {
         `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
       ).join('')
       evidenceHtml = `
-        <div class="rhizome-evidence-section">
-          <div class="rhizome-evidence">${itemsHtml}</div>
+        <div class="tapestry-evidence-section">
+          <div class="tapestry-evidence">${itemsHtml}</div>
         </div>`
     }
 
     this.detailPanel.innerHTML = `
-      <div class="rhizome-detail-resize"></div>
-      <div class="rhizome-detail-header">
-        <div class="rhizome-detail-title">
+      <div class="tapestry-detail-resize"></div>
+      <div class="tapestry-detail-header">
+        <div class="tapestry-detail-title">
           <span class="staleness-badge" style="color: ${nodeColor}">${stalenessIcon(node.staleness)}</span>
           <span class="detail-name">${escapeHtml(shortName(node.title))}</span>
           <span class="detail-status">${escapeHtml(node.status)}</span>
         </div>
-        <button class="rhizome-detail-close">&times;</button>
+        <button class="tapestry-detail-close">&times;</button>
       </div>
-      <div class="rhizome-detail-content">
+      <div class="tapestry-detail-content">
         ${graphHtml}
         ${artifactsHtml}
         ${bodyHtml}
@@ -1104,10 +1104,10 @@ export class RhizomeView {
 
     this.fiberListEl.classList.add('hidden')
     this.detailPanel.classList.remove('hidden')
-    this.panel.querySelector('.rhizome-sidebar')?.classList.add('expanded')
+    this.panel.querySelector('.tapestry-sidebar')?.classList.add('expanded')
 
     // Highlight code blocks and interpolate config values in body
-    const bodyContainer = this.detailPanel.querySelector('.rhizome-detail-body')
+    const bodyContainer = this.detailPanel.querySelector('.tapestry-detail-body')
     if (bodyContainer) {
       highlightCodeBlocks(bodyContainer as HTMLElement)
       this.interpolateConfig(bodyContainer as HTMLElement)
@@ -1117,14 +1117,14 @@ export class RhizomeView {
     this.bindDetailEvents(node)
   }
 
-  private bindDetailEvents(node: RhizomeNode): void {
+  private bindDetailEvents(node: TapestryNode): void {
     // Close button
-    this.detailPanel.querySelector('.rhizome-detail-close')?.addEventListener('click', () => {
+    this.detailPanel.querySelector('.tapestry-detail-close')?.addEventListener('click', () => {
       this.hideDetail()
     })
 
     // Resize handle
-    const resizeHandle = this.detailPanel.querySelector('.rhizome-detail-resize')
+    const resizeHandle = this.detailPanel.querySelector('.tapestry-detail-resize')
     if (resizeHandle) {
       resizeHandle.addEventListener('mousedown', (e) => {
         e.preventDefault()
@@ -1145,7 +1145,7 @@ export class RhizomeView {
     }
 
     // Collapsible sections
-    this.detailPanel.querySelectorAll('.rhizome-collapsible').forEach(h3 => {
+    this.detailPanel.querySelectorAll('.tapestry-collapsible').forEach(h3 => {
       h3.addEventListener('click', () => {
         const target = h3.getAttribute('data-target')
         if (!target) return
@@ -1185,7 +1185,7 @@ export class RhizomeView {
     }
 
     // Artifact image click → lightbox
-    this.detailPanel.querySelectorAll('.rhizome-artifact img').forEach(img => {
+    this.detailPanel.querySelectorAll('.tapestry-artifact img').forEach(img => {
       img.addEventListener('click', () => {
         this.openLightbox(img as HTMLImageElement, node)
       })
@@ -1201,7 +1201,7 @@ export class RhizomeView {
     })
 
     // Body link click → navigate in DAG, open in file viewer, or open external URL
-    const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
     if (bodyEl) {
       bodyEl.addEventListener('click', (e) => {
         const link = (e.target as HTMLElement).closest('a')
@@ -1216,7 +1216,7 @@ export class RhizomeView {
         // Check if it's a rule fiber in the DAG
         const fiberId = this.extractFiberId(href)
         if (fiberId) {
-          const dagNode = this.rhizomeData?.nodes.find(n => n.id === fiberId)
+          const dagNode = this.tapestryData?.nodes.find(n => n.id === fiberId)
           if (dagNode) {
             this.selectNode(fiberId)
             return
@@ -1243,9 +1243,9 @@ export class RhizomeView {
 
   // ── Inline markdown editing ──────────────────────────────────────────
 
-  private enterBodyEditMode(node: RhizomeNode): void {
+  private enterBodyEditMode(node: TapestryNode): void {
     if (!node.body || !this.currentCity) return
-    const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
     if (!bodyEl) return
 
     // Destroy any previous editor
@@ -1320,7 +1320,7 @@ export class RhizomeView {
     this.bodyEditorView.focus()
   }
 
-  private async saveBodyAndExit(node: RhizomeNode): Promise<void> {
+  private async saveBodyAndExit(node: TapestryNode): Promise<void> {
     if (!this.bodyEditorView || !this.currentCity) return
 
     const newContent = this.bodyEditorView.state.doc.toString()
@@ -1367,9 +1367,9 @@ export class RhizomeView {
     this.exitBodyEditMode(node)
   }
 
-  private exitBodyEditMode(node: RhizomeNode): void {
+  private exitBodyEditMode(node: TapestryNode): void {
     this.destroyBodyEditor()
-    const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
     if (bodyEl) {
       bodyEl.classList.remove('editing', 'dirty')
       const mdOpts = this.currentCity
@@ -1397,28 +1397,28 @@ export class RhizomeView {
     this.destroyBodyEditor()
     this.detailPanel.classList.add('hidden')
     this.fiberListEl.classList.remove('hidden')
-    const sidebar = this.panel.querySelector('.rhizome-sidebar') as HTMLElement
+    const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement
     sidebar?.classList.remove('expanded')
     sidebar?.style.removeProperty('width')
     this.selectedNodeId = null
     if (!this.staticMode) this.annotationPanel.hidePanel()
-    this.panel.querySelector('.rhizome-ann-popover')?.remove()
+    this.panel.querySelector('.tapestry-ann-popover')?.remove()
 
     // Reset node highlighting
-    d3Selection.selectAll('.rhizome-node')
+    d3Selection.selectAll('.tapestry-node')
       .classed('selected', false)
       .style('opacity', 1)
-    d3Selection.selectAll('.rhizome-link')
+    d3Selection.selectAll('.tapestry-link')
       .attr('stroke-opacity', 0.3)
   }
 
   /** Navigate to a fiber: select in DAG if it's a rule fiber, otherwise show in sidebar detail. */
   private navigateToFiber(fiberId: string): void {
-    if (!this.rhizomeData) return
-    const dagNode = this.rhizomeData.nodes.find(n => n.id === fiberId)
+    if (!this.tapestryData) return
+    const dagNode = this.tapestryData.nodes.find(n => n.id === fiberId)
     if (dagNode) {
       this.selectNode(fiberId)
-    } else if (this.rhizomeData.fibers?.find(f => f.id === fiberId)) {
+    } else if (this.tapestryData.fibers?.find(f => f.id === fiberId)) {
       this.selectFiber(fiberId)
     } else {
       this.openFileFromLink(`.felt/${fiberId}.md`)
@@ -1448,7 +1448,7 @@ export class RhizomeView {
    * append the resolved value as a styled annotation.
    */
   private interpolateConfig(container: HTMLElement): void {
-    const config = this.rhizomeData?.config
+    const config = this.tapestryData?.config
     if (!config) return
 
     // Match <code> elements inside paragraphs and table cells (not code blocks)
@@ -1478,12 +1478,12 @@ export class RhizomeView {
 
   // ── Lightbox ───────────────────────────────────────────────────────
 
-  private openLightbox(img: HTMLImageElement, node: RhizomeNode): void {
+  private openLightbox(img: HTMLImageElement, node: TapestryNode): void {
     const entries = Object.entries(node.evidence?.artifacts || {})
     if (entries.length === 0) return
 
     const lightbox = document.createElement('div')
-    lightbox.className = 'rhizome-lightbox'
+    lightbox.className = 'tapestry-lightbox'
 
     const bigImg = document.createElement('img')
     bigImg.src = img.src
@@ -1497,12 +1497,12 @@ export class RhizomeView {
     }
     if (entries.length > 1) {
       labelEl = document.createElement('span')
-      labelEl.className = 'rhizome-lightbox-label'
+      labelEl.className = 'tapestry-lightbox-label'
       updateLabel()
     }
 
     const closeBtn = document.createElement('button')
-    closeBtn.className = 'rhizome-lightbox-close'
+    closeBtn.className = 'tapestry-lightbox-close'
     closeBtn.textContent = '\u00D7'
 
     lightbox.appendChild(bigImg)
@@ -1556,8 +1556,8 @@ export class RhizomeView {
   // ── Fiber sidebar ──────────────────────────────────────────────────
 
   private renderFiberList(): void {
-    if (!this.rhizomeData) return
-    const fibers = this.rhizomeData.fibers || []
+    if (!this.tapestryData) return
+    const fibers = this.tapestryData.fibers || []
     const query = this.fiberSearchInput.value.toLowerCase().trim()
 
     const filtered = query
@@ -1568,7 +1568,7 @@ export class RhizomeView {
         })
       : fibers
 
-    const isRule = (f: RhizomeFiber) => f.tags?.some(t => t.startsWith('rule:')) ?? false
+    const isRule = (f: TapestryFiber) => f.tags?.some(t => t.startsWith('rule:')) ?? false
 
     // Staleness order: stale first (needs attention), then no-evidence, then fresh
     const stalenessOrder: Record<string, number> = { stale: 0, 'no-evidence': 1, fresh: 2 }
@@ -1580,8 +1580,8 @@ export class RhizomeView {
       if (aRule !== bRule) return aRule - bRule
       // Within rule fibers, sort by staleness (stale first)
       if (aRule === 0 && bRule === 0) {
-        const aDag = this.rhizomeData!.nodes.find(n => n.id === a.id)
-        const bDag = this.rhizomeData!.nodes.find(n => n.id === b.id)
+        const aDag = this.tapestryData!.nodes.find(n => n.id === a.id)
+        const bDag = this.tapestryData!.nodes.find(n => n.id === b.id)
         const aStal = stalenessOrder[aDag?.staleness || 'no-evidence'] ?? 1
         const bStal = stalenessOrder[bDag?.staleness || 'no-evidence'] ?? 1
         if (aStal !== bStal) return aStal - bStal
@@ -1593,7 +1593,7 @@ export class RhizomeView {
     })
 
     this.fiberResultsEl.innerHTML = sorted.map(f => {
-      const dagNode = this.rhizomeData!.nodes.find(n => n.id === f.id)
+      const dagNode = this.tapestryData!.nodes.find(n => n.id === f.id)
       const ruleTag = isRule(f)
 
       // Unified dot: status shape + staleness color (for DAG nodes) or neutral
@@ -1620,7 +1620,7 @@ export class RhizomeView {
       el.addEventListener('click', () => {
         const fiberId = (el as HTMLElement).dataset.fiberId
         if (!fiberId) return
-        const dagNode = this.rhizomeData?.nodes.find(n => n.id === fiberId)
+        const dagNode = this.tapestryData?.nodes.find(n => n.id === fiberId)
         if (dagNode) {
           this.selectNode(fiberId)
         } else {
@@ -1632,8 +1632,8 @@ export class RhizomeView {
 
   /** Show detail panel for a non-DAG fiber. */
   private selectFiber(fiberId: string): void {
-    if (!this.rhizomeData?.fibers) return
-    const fiber = this.rhizomeData.fibers.find(f => f.id === fiberId)
+    if (!this.tapestryData?.fibers) return
+    const fiber = this.tapestryData.fibers.find(f => f.id === fiberId)
     if (!fiber) return
 
     this.selectedNodeId = fiberId
@@ -1643,35 +1643,35 @@ export class RhizomeView {
       ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
       : undefined
     const bodyHtml = fiber.body
-      ? `<div class="rhizome-detail-body">${renderMarkdown(fiber.body, mdOpts)}</div>`
+      ? `<div class="tapestry-detail-body">${renderMarkdown(fiber.body, mdOpts)}</div>`
       : ''
 
     // Upstream tags
     const upstreamHtml = fiber.dependsOn.length > 0
-      ? `<div class="rhizome-detail-graph-line">
+      ? `<div class="tapestry-detail-graph-line">
            <span class="graph-label">Upstream</span>
            ${fiber.dependsOn.map(dep => {
-             const depFiber = this.rhizomeData!.fibers?.find(f => f.id === dep)
+             const depFiber = this.tapestryData!.fibers?.find(f => f.id === dep)
              return `<span class="dep-tag" data-dep-id="${escapeHtml(dep)}">${escapeHtml(depFiber ? shortName(depFiber.title) : dep.slice(0, 12))}</span>`
            }).join('')}
          </div>`
       : ''
 
     const reasonHtml = fiber.reason
-      ? `<div class="rhizome-detail-reason"><em>${escapeHtml(fiber.reason)}</em></div>`
+      ? `<div class="tapestry-detail-reason"><em>${escapeHtml(fiber.reason)}</em></div>`
       : ''
 
     this.detailPanel.innerHTML = `
-      <div class="rhizome-detail-header">
-        <div class="rhizome-detail-title">
+      <div class="tapestry-detail-header">
+        <div class="tapestry-detail-title">
           <span class="staleness-badge">${statusIcon(fiber.status)}</span>
           <span class="detail-name">${escapeHtml(shortName(fiber.title))}</span>
           <span class="detail-status">${escapeHtml(fiber.status)}</span>
         </div>
-        <button class="rhizome-detail-close">&times;</button>
+        <button class="tapestry-detail-close">&times;</button>
       </div>
-      <div class="rhizome-detail-content">
-        ${upstreamHtml ? `<div class="rhizome-detail-graph">${upstreamHtml}</div>` : ''}
+      <div class="tapestry-detail-content">
+        ${upstreamHtml ? `<div class="tapestry-detail-graph">${upstreamHtml}</div>` : ''}
         ${reasonHtml}
         ${bodyHtml}
       </div>
@@ -1679,17 +1679,17 @@ export class RhizomeView {
 
     this.fiberListEl.classList.add('hidden')
     this.detailPanel.classList.remove('hidden')
-    this.panel.querySelector('.rhizome-sidebar')?.classList.add('expanded')
+    this.panel.querySelector('.tapestry-sidebar')?.classList.add('expanded')
 
     // Highlight code blocks
-    const bodyContainer = this.detailPanel.querySelector('.rhizome-detail-body')
+    const bodyContainer = this.detailPanel.querySelector('.tapestry-detail-body')
     if (bodyContainer) {
       highlightCodeBlocks(bodyContainer as HTMLElement)
       this.interpolateConfig(bodyContainer as HTMLElement)
     }
 
     // Bind events
-    this.detailPanel.querySelector('.rhizome-detail-close')?.addEventListener('click', () => this.hideDetail())
+    this.detailPanel.querySelector('.tapestry-detail-close')?.addEventListener('click', () => this.hideDetail())
     this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
       tag.addEventListener('click', () => {
         const depId = (tag as HTMLElement).dataset.depId
@@ -1705,10 +1705,10 @@ export class RhizomeView {
     this.clearSearchHighlights()
     this.searchResults.innerHTML = ''
 
-    if (!query || !this.rhizomeData) return
+    if (!query || !this.tapestryData) return
 
-    const matches: Array<{ node: RhizomeNode; context: string }> = []
-    this.rhizomeData.nodes.forEach(node => {
+    const matches: Array<{ node: TapestryNode; context: string }> = []
+    this.tapestryData.nodes.forEach(node => {
       const searchText = [node.title, node.body, node.kind, node.id]
         .filter(Boolean).join(' ').toLowerCase()
       if (searchText.includes(query)) {
@@ -1724,7 +1724,7 @@ export class RhizomeView {
 
     // Highlight matching nodes
     matches.forEach(m => {
-      d3Selection.selectAll<SVGGElement, SimNode>('.rhizome-node')
+      d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node')
         .filter(d => d.data.id === m.node.id)
         .classed('search-match', true)
     })
@@ -1754,7 +1754,7 @@ export class RhizomeView {
   }
 
   private clearSearchHighlights(): void {
-    d3Selection.selectAll('.rhizome-node').classed('search-match', false)
+    d3Selection.selectAll('.tapestry-node').classed('search-match', false)
   }
 
   // ── Annotations ────────────────────────────────────────────────────
@@ -1769,13 +1769,13 @@ export class RhizomeView {
     const nodeId = this.selectedNodeId
 
     // Compute line numbers within the fiber body
-    const node = this.rhizomeData?.nodes.find(n => n.id === nodeId)
+    const node = this.tapestryData?.nodes.find(n => n.id === nodeId)
     let line: number | undefined
     let endLine: number | undefined
     let filePath: string | undefined
 
     if (node?.body) {
-      const bodyEl = this.detailPanel.querySelector('.rhizome-detail-body')
+      const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
       if (bodyEl) {
         // Get text content up to the selection start to count lines
         const fullText = bodyEl.textContent || ''
@@ -1812,7 +1812,7 @@ export class RhizomeView {
   }
 
   private promptImageAnnotation(
-    node: RhizomeNode,
+    node: TapestryNode,
     artifactName: string,
     x: number,
     y: number,
@@ -1841,10 +1841,10 @@ export class RhizomeView {
   ): Promise<string | null> {
     return new Promise(resolve => {
       // Remove any existing popover
-      this.panel.querySelector('.rhizome-ann-popover')?.remove()
+      this.panel.querySelector('.tapestry-ann-popover')?.remove()
 
       const popover = document.createElement('div')
-      popover.className = 'rhizome-ann-popover'
+      popover.className = 'tapestry-ann-popover'
 
       const left = Math.max(POPOVER_MARGIN, Math.min(anchorX - POPOVER_WIDTH / 2, window.innerWidth - POPOVER_WIDTH - POPOVER_MARGIN))
       let top = anchorY + POPOVER_MARGIN

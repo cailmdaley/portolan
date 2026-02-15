@@ -1,0 +1,163 @@
+#!/usr/bin/env tsx
+// Export tapestry data, artifact images, and linked files from a running portolan server.
+// Usage: npx tsx scripts/export-tapestry.ts <cityName|cityId>
+
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import { execFileSync } from 'node:child_process'
+
+const cityArg = process.argv[2]
+if (!cityArg) {
+  console.error('Usage: npx tsx scripts/export-tapestry.ts <cityName|cityId>')
+  process.exit(1)
+}
+
+const API_BASE = process.env.PORTOLAN_URL || 'http://localhost:4004'
+const OUT_DIR = path.resolve(import.meta.dirname, '..', 'docs', 'data')
+
+interface CityInfo {
+  id: string
+  path: string
+  sshHost?: string
+}
+
+function resolveCity(nameOrId: string): CityInfo {
+  const citiesPath = path.join(os.homedir(), '.portolan', 'cities.json')
+  if (!fs.existsSync(citiesPath)) {
+    console.error(`Cannot resolve city: ${citiesPath} not found`)
+    process.exit(1)
+  }
+  const data = JSON.parse(fs.readFileSync(citiesPath, 'utf-8'))
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(nameOrId)
+  const match = data.cities.find((c: any) =>
+    isUuid ? c.id === nameOrId : c.name === nameOrId
+  )
+  if (!match) {
+    const names = data.cities.map((c: any) => c.name).join(', ')
+    console.error(`City "${nameOrId}" not found. Available: ${names}`)
+    process.exit(1)
+  }
+  if (!isUuid) console.log(`Resolved "${nameOrId}" → ${match.id}`)
+  return { id: match.id, path: match.path, sshHost: match.sshHost }
+}
+
+/** Find non-URL, non-.md links in markdown body text. */
+function findLinkedFiles(body: string): string[] {
+  const linkRe = /\[[^\]]+\]\(([^)]+)\)/g
+  const files: string[] = []
+  let m
+  while ((m = linkRe.exec(body)) !== null) {
+    const href = m[1]
+    if (/^https?:\/\//.test(href)) continue
+    if (/\.md$/.test(href)) continue
+    if (!files.includes(href)) files.push(href)
+  }
+  return files
+}
+
+/** Download a file from a city (local or remote via scp). */
+function downloadFile(city: CityInfo, relativePath: string, outPath: string): boolean {
+  const remotePath = `${city.path}/${relativePath}`
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true })
+    if (city.sshHost) {
+      execFileSync('scp', [`${city.sshHost}:${remotePath}`, outPath], { timeout: 15000 })
+    } else {
+      fs.copyFileSync(remotePath, outPath)
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Rewrite local file links in body to point to exported paths. */
+function rewriteLinks(body: string, rewriteMap: Map<string, string>): string {
+  return body.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, href) => {
+    const rewritten = rewriteMap.get(href)
+    return rewritten ? `[${text}](${rewritten})` : _match
+  })
+}
+
+const city = resolveCity(cityArg)
+
+async function main() {
+  console.log(`Fetching tapestry for city "${cityArg}"...`)
+  const res = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(city.id)}`)
+  if (!res.ok) throw new Error(`Tapestry fetch failed: ${res.status} ${await res.text()}`)
+  const data = await res.json()
+
+  console.log(`  ${data.nodes.length} nodes, ${data.links.length} links`)
+
+  // Download artifact images
+  let artifactCount = 0
+  for (const node of data.nodes) {
+    if (!node.evidence?.artifacts || !node.specName) continue
+    for (const [_name, filePath] of Object.entries(node.evidence.artifacts)) {
+      const filename = (filePath as string).split('/').pop() || ''
+      const outDir = path.join(OUT_DIR, 'claims', node.specName)
+      const outPath = path.join(outDir, filename)
+
+      if (fs.existsSync(outPath)) continue
+
+      const url = `${API_BASE}/tapestry-asset/${encodeURIComponent(node.specName)}/${encodeURIComponent(filename)}?cityId=${encodeURIComponent(city.id)}`
+      try {
+        const imgRes = await fetch(url)
+        if (!imgRes.ok) {
+          console.warn(`  ⚠ ${node.specName}/${filename}: ${imgRes.status}`)
+          continue
+        }
+        fs.mkdirSync(outDir, { recursive: true })
+        const buffer = Buffer.from(await imgRes.arrayBuffer())
+        fs.writeFileSync(outPath, buffer)
+        artifactCount++
+      } catch (err) {
+        console.warn(`  ⚠ ${node.specName}/${filename}: ${(err as Error).message}`)
+      }
+    }
+  }
+
+  // Download linked files and rewrite body links
+  let fileCount = 0
+  for (const node of data.nodes) {
+    if (!node.body) continue
+    const linkedFiles = findLinkedFiles(node.body)
+    if (linkedFiles.length === 0) continue
+
+    const rewriteMap = new Map<string, string>()
+    for (const href of linkedFiles) {
+      const filename = href.split('/').pop() || ''
+      const outDir = path.join(OUT_DIR, 'files')
+      const outPath = path.join(outDir, filename)
+
+      if (fs.existsSync(outPath)) {
+        rewriteMap.set(href, `files/${filename}`)
+        continue
+      }
+
+      if (downloadFile(city, href, outPath)) {
+        rewriteMap.set(href, `files/${filename}`)
+        fileCount++
+        console.log(`  ↓ ${href}`)
+      } else {
+        console.warn(`  ⚠ ${href}: download failed`)
+      }
+    }
+
+    if (rewriteMap.size > 0) {
+      node.body = rewriteLinks(node.body, rewriteMap)
+    }
+  }
+
+  // Write JSON
+  fs.mkdirSync(OUT_DIR, { recursive: true })
+  fs.writeFileSync(path.join(OUT_DIR, 'tapestry.json'), JSON.stringify(data, null, 2))
+
+  console.log(`Exported: ${data.nodes.length} nodes, ${artifactCount} artifacts, ${fileCount} files → docs/data/`)
+}
+
+main().catch(err => {
+  console.error(err)
+  process.exit(1)
+})

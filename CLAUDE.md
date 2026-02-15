@@ -27,7 +27,7 @@ Deployed to `cailmdaley.github.io/tapestries/` from repo `cailmdaley/tapestries`
 ```bash
 # 1. Build + export (order matters: build first, export second)
 npm run build:static                        # Vite → docs/
-npx tsx scripts/export-rhizome.ts pure-eb   # Data + artifacts → docs/data/
+npx tsx scripts/export-tapestry.ts pure-eb   # Data + artifacts → docs/data/
 
 # 2. Verify locally
 npx serve docs
@@ -36,7 +36,7 @@ npx serve docs
 cd docs && git add -A && git commit -m "Update tapestry" && git push && cd ..
 ```
 
-The `docs/` directory is a separate git repo (remote: `cailmdaley/tapestries`). Build overwrites `index.html`/`assets/` but preserves `data/` (`emptyOutDir: false`). Export adds/updates `data/rhizome.json` and artifact images.
+The `docs/` directory is a separate git repo (remote: `cailmdaley/tapestries`). Build overwrites `index.html`/`assets/` but preserves `data/` (`emptyOutDir: false`). Export adds/updates `data/tapestry.json` and artifact images.
 
 ## Architecture
 
@@ -45,7 +45,7 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 ├── SessionTracker            ├── ZoneRenderer (hex meshes)
 ├── CityManager               ├── Camera (sieve drag)
 ├── OriginManager (remote)    ├── CityHUD (fibers, search)
-├── FiberReader               ├── RhizomeView (D3 DAG)
+├── FiberReader               ├── TapestryView (D3 DAG)
 ├── EvidenceReader            ├── ContextMenu
 ├── ConversationCache         └── main.ts
 ├── KittyIntegration
@@ -95,7 +95,7 @@ Reference: [Red Blob Games](https://www.redblobgames.com/grids/hexagons/)
 ```bash
 curl http://localhost:4004/debug-transcripts   # session→transcript mappings
 curl http://localhost:4004/hook/health         # conversation hook status per session
-curl 'http://localhost:4004/rhizome?cityId=X'  # full DAG: fibers, evidence, staleness
+curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
 
@@ -194,9 +194,9 @@ Fibers in `.felt/` provide detail beyond this overview.
 | Remote Proxying | `.felt/pattern-portolan-remote-content-8180cf9d.md` |
 | Claims Annotation | `.felt/claims-annotation-inline-bba0fc30.md` |
 | Claims Side Panel | `.felt/claims-annotation-side-panel-f290eeb2.md` |
-| Rhizome Endpoint | `.felt/rhizome-endpoint-returns-full-2a1e18b5.md` |
-| Rhizome rule: tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
-| Rhizome DAG spec | `.felt/absorb-claims-dashboard-into-ed04e0e9.md` |
+| Tapestry Endpoint | `.felt/tapestry-endpoint-returns-full-2a1e18b5.md` |
+| Tapestry rule: tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
+| Tapestry DAG spec | `.felt/absorb-claims-dashboard-into-ed04e0e9.md` |
 | Config Interpolation | `.felt/config-value-interpolation-in-e3a39852.md` |
 | SSH Batch Evidence | `.felt/batch-ssh-evidence-reads-to-bf8c0096.md` |
 | Static Tapestry | `.felt/static-rhizome-dashboard-on-13a8fbc4.md` |

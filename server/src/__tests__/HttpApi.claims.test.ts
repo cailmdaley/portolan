@@ -5,7 +5,7 @@
  * - GET /annotations?claimId= returns claim annotations
  * - POST /annotations creates claims annotations with validation
  * - formatClaimsAnnotationsForClaude output format
- * - /rhizome endpoint (DAG with fibers, evidence, staleness)
+ * - /tapestry endpoint (DAG with fibers, evidence, staleness)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -624,27 +624,27 @@ describe('HttpApi — claims annotations', () => {
   });
 
   // ────────────────────────────────────────────────────────────
-  // Rhizome asset serving — security
+  // Tapestry asset serving — security
   // ────────────────────────────────────────────────────────────
 
-  describe('GET /rhizome-asset (security)', () => {
+  describe('GET /tapestry-asset (security)', () => {
     it('rejects path traversal in nested segments', async () => {
-      const res = await httpRequest(api, 'GET', '/rhizome-asset/sub/..%2F..%2Fetc/passwd?cityId=test');
+      const res = await httpRequest(api, 'GET', '/tapestry-asset/sub/..%2F..%2Fetc/passwd?cityId=test');
 
       // Either 400 (caught by traversal check) or 404 (city not found) — never serves the file
       expect([400, 404]).toContain(res.status);
     });
 
     it('rejects shell injection via dollar substitution', async () => {
-      // /rhizome-asset requires {specName}/{filename} — single segment is rejected early
-      const res = await httpRequest(api, 'GET', '/rhizome-asset/spec/$(id).png?cityId=test');
+      // /tapestry-asset requires {specName}/{filename} — single segment is rejected early
+      const res = await httpRequest(api, 'GET', '/tapestry-asset/spec/$(id).png?cityId=test');
 
       expect(res.status).toBe(400);
       expect(res.data).toContain('Invalid asset path');
     });
 
     it('rejects shell injection via backticks', async () => {
-      const res = await httpRequest(api, 'GET', '/rhizome-asset/spec/`whoami`.png?cityId=test');
+      const res = await httpRequest(api, 'GET', '/tapestry-asset/spec/`whoami`.png?cityId=test');
 
       expect(res.status).toBe(400);
       expect(res.data).toContain('Invalid asset path');
@@ -652,7 +652,7 @@ describe('HttpApi — claims annotations', () => {
 
     it('accepts clean asset paths', async () => {
       // Will 404 (city not found in stub) but should pass the security check
-      const res = await httpRequest(api, 'GET', '/rhizome-asset/spec-name/plot.png?cityId=test');
+      const res = await httpRequest(api, 'GET', '/tapestry-asset/spec-name/plot.png?cityId=test');
 
       // 404 because stub city lookup returns null — but NOT 400
       expect(res.status).toBe(404);
@@ -774,38 +774,38 @@ describe('HttpApi — claims annotations', () => {
   });
 
   // ────────────────────────────────────────────────────────────
-  // GET /rhizome endpoint
+  // GET /tapestry endpoint
   // ────────────────────────────────────────────────────────────
 
-  describe('GET /rhizome', () => {
-    const RHIZOME_CITY_DIR = join(TEST_DIR, 'rhizome-city');
-    const RHIZOME_FELT_DIR = join(RHIZOME_CITY_DIR, '.felt');
+  describe('GET /tapestry', () => {
+    const TAPESTRY_CITY_DIR = join(TEST_DIR, 'tapestry-city');
+    const TAPESTRY_FELT_DIR = join(TAPESTRY_CITY_DIR, '.felt');
 
-    function makeRhizomeApi(cityId: string, cityDir: string) {
+    function makeTapestryApi(cityId: string, cityDir: string) {
       return new HttpApi(
-        makeCityLookup(cityId, cityDir, 'RhizomeCity') as any,
+        makeCityLookup(cityId, cityDir, 'TapestryCity') as any,
         stubOriginLookup as any, stubPersistenceLookup as any,
       );
     }
 
     it('returns 400 without cityId', async () => {
-      const rhizomeApi = makeRhizomeApi('test', RHIZOME_CITY_DIR);
-      const res = await httpRequest(rhizomeApi, 'GET', '/rhizome');
+      const tapestryApi = makeTapestryApi('test', TAPESTRY_CITY_DIR);
+      const res = await httpRequest(tapestryApi, 'GET', '/tapestry');
 
       expect(res.status).toBe(400);
       expect(res.data.error).toMatch(/cityId/i);
     });
 
     it('returns 404 for unknown city', async () => {
-      const rhizomeApi = makeRhizomeApi('test', RHIZOME_CITY_DIR);
-      const res = await httpRequest(rhizomeApi, 'GET', '/rhizome?cityId=nonexistent');
+      const tapestryApi = makeTapestryApi('test', TAPESTRY_CITY_DIR);
+      const res = await httpRequest(tapestryApi, 'GET', '/tapestry?cityId=nonexistent');
 
       expect(res.status).toBe(404);
     });
 
     it('returns DAG with nodes, links, and downstream for rule: fibers', async () => {
       // Set up two rule: fibers with a dependency
-      writeFiber(RHIZOME_FELT_DIR, 'fiber-a', `---
+      writeFiber(TAPESTRY_FELT_DIR, 'fiber-a', `---
 title: Fiber A
 status: active
 kind: spec
@@ -814,7 +814,7 @@ tags:
 ---
 Body of fiber A.
 `);
-      writeFiber(RHIZOME_FELT_DIR, 'fiber-b', `---
+      writeFiber(TAPESTRY_FELT_DIR, 'fiber-b', `---
 title: Fiber B
 status: open
 kind: spec
@@ -826,7 +826,7 @@ depends-on:
 Body of fiber B depends on A.
 `);
       // A non-rule fiber that depends on a rule fiber (downstream concern)
-      writeFiber(RHIZOME_FELT_DIR, 'task-c', `---
+      writeFiber(TAPESTRY_FELT_DIR, 'task-c', `---
 title: Task C
 status: open
 kind: task
@@ -836,8 +836,8 @@ depends-on:
 Downstream task.
 `);
 
-      const rhizomeApi = makeRhizomeApi('rhizome-test', RHIZOME_CITY_DIR);
-      const res = await httpRequest(rhizomeApi, 'GET', '/rhizome?cityId=rhizome-test');
+      const tapestryApi = makeTapestryApi('tapestry-test', TAPESTRY_CITY_DIR);
+      const res = await httpRequest(tapestryApi, 'GET', '/tapestry?cityId=tapestry-test');
 
       expect(res.status).toBe(200);
 
@@ -878,8 +878,8 @@ kind: task
 No rule tag.
 `);
 
-      const emptyApi = makeRhizomeApi('empty-test', emptyDir);
-      const res = await httpRequest(emptyApi, 'GET', '/rhizome?cityId=empty-test');
+      const emptyApi = makeTapestryApi('empty-test', emptyDir);
+      const res = await httpRequest(emptyApi, 'GET', '/tapestry?cityId=empty-test');
 
       expect(res.status).toBe(200);
       expect(res.data.nodes).toHaveLength(0);

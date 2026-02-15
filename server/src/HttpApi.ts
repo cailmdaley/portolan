@@ -2,7 +2,7 @@
  * HttpApi - HTTP request handlers
  *
  * Handles non-WebSocket HTTP endpoints:
- * - Rhizome DAG (fibers, evidence, staleness)
+ * - Tapestry DAG (fibers, evidence, staleness)
  * - Evidence artifact serving
  * - Annotation CRUD
  * - City activation (start remote agent)
@@ -28,7 +28,7 @@ import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Ev
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
-/** Shared MIME type map for binary/asset serving (rhizome assets, file-content) */
+/** Shared MIME type map for binary/asset serving (tapestry assets, file-content) */
 const MIME_TYPES: Record<string, string> = {
   'png': 'image/png',
   'jpg': 'image/jpeg',
@@ -155,13 +155,13 @@ export class HttpApi {
       return true;
     }
 
-    if (url.pathname === '/rhizome') {
-      await this.handleRhizome(url, res);
+    if (url.pathname === '/tapestry') {
+      await this.handleTapestry(url, res);
       return true;
     }
 
-    if (url.pathname.startsWith('/rhizome-asset/')) {
-      await this.handleRhizomeAsset(url, res);
+    if (url.pathname.startsWith('/tapestry-asset/')) {
+      await this.handleTapestryAsset(url, res);
       return true;
     }
 
@@ -296,16 +296,16 @@ export class HttpApi {
   }
 
   // ============================================================================
-  // Rhizome Endpoint
+  // Tapestry Endpoint
   // ============================================================================
 
   /**
-   * GET /rhizome?cityId=xxx
+   * GET /tapestry?cityId=xxx
    *
-   * Returns the full DAG for RhizomeView: fibers with rule: tags,
+   * Returns the full DAG for TapestryView: fibers with rule: tags,
    * dependency edges, evidence summary per fiber, staleness flags.
    */
-  private async handleRhizome(url: URL, res: ServerResponse): Promise<void> {
+  private async handleTapestry(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
     if (!cityId) {
       this.sendJsonError(res, 400, 'Missing cityId parameter');
@@ -425,8 +425,8 @@ export class HttpApi {
         fibers,
       });
     } catch (error: any) {
-      console.error('Failed to build rhizome:', error);
-      this.sendJsonError(res, 500, 'Failed to build rhizome: ' + error.message);
+      console.error('Failed to build tapestry:', error);
+      this.sendJsonError(res, 500, 'Failed to build tapestry: ' + error.message);
     }
   }
 
@@ -516,11 +516,11 @@ export class HttpApi {
 
   /**
    * Serve evidence artifacts (plots, images) from results/claims/{specName}/
-   * GET /rhizome-asset/{specName}/{filename}?cityId=xxx
+   * GET /tapestry-asset/{specName}/{filename}?cityId=xxx
    */
-  private async handleRhizomeAsset(url: URL, res: ServerResponse): Promise<void> {
+  private async handleTapestryAsset(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
-    const rawPath = url.pathname.replace('/rhizome-asset/', '');
+    const rawPath = url.pathname.replace('/tapestry-asset/', '');
     const parts = rawPath.split('/');
 
     if (!cityId || parts.length < 2) {
@@ -538,16 +538,16 @@ export class HttpApi {
       return;
     }
 
-    await this.serveRhizomeAsset(cityId, assetPath, res);
+    await this.serveTapestryAsset(cityId, assetPath, res);
   }
 
   // ── Shared asset serving ──────────────────────────────────────────
 
   /**
-   * Serve a rhizome asset file (plot, image, etc.) from results/claims/.
+   * Serve a tapestry asset file (plot, image, etc.) from results/claims/.
    * Validates path, resolves city, reads file locally or via SSH.
    */
-  private async serveRhizomeAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
+  private async serveTapestryAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
     // Security: prevent directory traversal and shell injection
     if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
       res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
