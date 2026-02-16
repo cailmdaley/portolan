@@ -27,12 +27,16 @@ interface TapestryNode {
   kind: string
   status: string
   body: string
+  outcome: string | null
+  tags: string[]
+  createdAt: string | null
+  closedAt: string | null
   dependsOn: string[]
   specName: string | null
   staleness: 'fresh' | 'stale' | 'no-evidence'
   evidence: {
     metrics: Record<string, unknown>
-    artifacts: Record<string, string>
+    artifacts: Record<string, string | string[]>
     mtime: number
     generated: string | null
   } | null
@@ -50,7 +54,9 @@ interface TapestryFiber {
   kind: string
   tags?: string[]
   body?: string
-  reason?: string
+  outcome?: string | null
+  createdAt?: string | null
+  closedAt?: string | null
   dependsOn: string[]
 }
 
@@ -126,6 +132,11 @@ const STALENESS_COLORS: Record<Staleness, string> = {
 
 function stalenessColor(staleness: Staleness): string {
   return STALENESS_COLORS[staleness] || STALENESS_COLORS['no-evidence']
+}
+
+/** Filter artifact entries to image paths only (excludes array metadata like individual_evidence). */
+function imageArtifacts(artifacts: Record<string, string | string[]>): [string, string][] {
+  return Object.entries(artifacts).filter(([, v]) => typeof v === 'string') as [string, string][]
 }
 
 // ── Procedural helpers ───────────────────────────────────────────────
@@ -234,6 +245,7 @@ export class TapestryView {
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private currentPlotIndex = 0
   private detailWidth = DETAIL_DEFAULT_WIDTH
+  private preloadCache = new Map<string, HTMLImageElement>()
 
   // HMR-safe listener refs
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -541,7 +553,7 @@ export class TapestryView {
 
     const { nodes: rawNodes, links: rawLinks } = this.tapestryData
     if (rawNodes.length === 0) {
-      this.dagContainer.innerHTML = '<div class="tapestry-empty">No rule: fibers found</div>'
+      this.dagContainer.innerHTML = '<div class="tapestry-empty">No tapestry: fibers found</div>'
       return
     }
 
@@ -954,6 +966,7 @@ export class TapestryView {
     this.currentPlotIndex = 0
     this.updateHighlighting()
     this.renderDetailPanel(id)
+    this.preloadNeighborArtifacts(id)
     if (!this.staticMode) this.loadAnnotations(id)
   }
 
@@ -1034,10 +1047,10 @@ export class TapestryView {
       ? `<div class="tapestry-detail-graph">${upstreamHtml}${downstreamHtml}</div>`
       : ''
 
-    // Artifact viewer
+    // Artifact viewer — filter to string values only (arrays like individual_evidence are metadata, not images)
     let artifactsHtml = ''
     if (node.evidence?.artifacts) {
-      const entries = Object.entries(node.evidence.artifacts)
+      const entries = imageArtifacts(node.evidence.artifacts)
       if (entries.length > 0) {
         const [name, path] = entries[this.currentPlotIndex] || entries[0]
         const imgSrc = this.artifactUrl(node.specName || '', path)
@@ -1047,7 +1060,7 @@ export class TapestryView {
             ${hasMultiple ? `<span class="artifact-nav" data-delta="-1">\u2190</span>` : ''}
             <div class="tapestry-artifact">
               <span class="artifact-label">${escapeHtml(name)}${hasMultiple ? ` (${this.currentPlotIndex + 1}/${entries.length})` : ''}</span>
-              <img src="${imgSrc}" alt="${escapeHtml(name)}" data-artifact-name="${escapeHtml(name)}" />
+              <img src="${imgSrc}" alt="${escapeHtml(name)}" data-artifact-name="${escapeHtml(name)}" loading="lazy" />
             </div>
             ${hasMultiple ? `<span class="artifact-nav" data-delta="1">\u2192</span>` : ''}
           </div>`
@@ -1084,18 +1097,35 @@ export class TapestryView {
         </div>`
     }
 
+    // Outcome
+    const outcomeHtml = node.outcome
+      ? `<div class="tapestry-detail-outcome"><span class="outcome-label">Outcome</span> ${renderMarkdown(node.outcome, mdOpts)}</div>`
+      : ''
+
+    // Tags (exclude tapestry: prefix tags — those are implicit from the DAG)
+    const displayTags = node.tags.filter(t => !t.startsWith('tapestry:'))
+    const tagsHtml = displayTags.length > 0
+      ? `<div class="tapestry-detail-tags">${displayTags.map(t => `<span class="fiber-tag">${escapeHtml(t)}</span>`).join('')}</div>`
+      : ''
+
+    // Kind badge (only if not 'task', which is the default)
+    const kindBadge = node.kind !== 'task' ? `<span class="kind-badge">${escapeHtml(node.kind)}</span>` : ''
+
     this.detailPanel.innerHTML = `
       <div class="tapestry-detail-resize"></div>
       <div class="tapestry-detail-header">
         <div class="tapestry-detail-title">
           <span class="staleness-badge" style="color: ${nodeColor}">${stalenessIcon(node.staleness)}</span>
-          <span class="detail-name">${escapeHtml(shortName(node.title))}</span>
+          <span class="detail-name">${escapeHtml(node.title)}</span>
+          ${kindBadge}
           <span class="detail-status">${escapeHtml(node.status)}</span>
         </div>
         <button class="tapestry-detail-close">&times;</button>
       </div>
       <div class="tapestry-detail-content">
         ${graphHtml}
+        ${tagsHtml}
+        ${outcomeHtml}
         ${artifactsHtml}
         ${bodyHtml}
         ${evidenceHtml}
@@ -1164,22 +1194,22 @@ export class TapestryView {
         e.stopPropagation()
         const delta = parseInt((btn as HTMLElement).dataset.delta || '0')
         if (node.evidence?.artifacts) {
-          const count = Object.keys(node.evidence.artifacts).length
+          const count = imageArtifacts(node.evidence.artifacts).length
           this.currentPlotIndex = (this.currentPlotIndex + delta + count) % count
-          this.renderDetailPanel(node.id)
+          this.updateArtifact(node)
         }
       })
     })
 
     // Arrow key artifact navigation
-    if (node.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 1) {
+    if (node.evidence?.artifacts && imageArtifacts(node.evidence.artifacts).length > 1) {
       this.detailKeyHandler = (e: KeyboardEvent) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
         e.preventDefault()
-        const count = Object.keys(node.evidence!.artifacts!).length
+        const count = imageArtifacts(node.evidence!.artifacts!).length
         const delta = e.key === 'ArrowLeft' ? -1 : 1
         this.currentPlotIndex = (this.currentPlotIndex + delta + count) % count
-        this.renderDetailPanel(node.id)
+        this.updateArtifact(node)
       }
       document.addEventListener('keydown', this.detailKeyHandler)
     }
@@ -1238,6 +1268,54 @@ export class TapestryView {
         if (this.staticMode) return
         this.enterBodyEditMode(node)
       })
+    }
+  }
+
+  /** Swap artifact image in-place without rebuilding the entire detail panel. */
+  private updateArtifact(node: TapestryNode): void {
+    if (!node.evidence?.artifacts) return
+    const entries = imageArtifacts(node.evidence.artifacts)
+    if (entries.length === 0) return
+
+    const [name, path] = entries[this.currentPlotIndex] || entries[0]
+    const imgSrc = this.artifactUrl(node.specName || '', path)
+
+    const img = this.detailPanel.querySelector('.tapestry-artifact img') as HTMLImageElement | null
+    if (img) {
+      img.src = imgSrc
+      img.alt = name
+      img.dataset.artifactName = name
+    }
+
+    const label = this.detailPanel.querySelector('.artifact-label')
+    if (label) {
+      label.textContent = `${name}${entries.length > 1 ? ` (${this.currentPlotIndex + 1}/${entries.length})` : ''}`
+    }
+  }
+
+  /** Preload the first artifact image for upstream/downstream neighbors. */
+  private preloadNeighborArtifacts(nodeId: string): void {
+    if (!this.tapestryData) return
+    const node = this.tapestryData.nodes.find(n => n.id === nodeId)
+    if (!node) return
+
+    const neighborIds = new Set<string>()
+    node.dependsOn.forEach(id => neighborIds.add(id))
+    const downstream = this.tapestryData.downstream[nodeId] || []
+    downstream.forEach(d => neighborIds.add(d.id))
+
+    for (const nId of neighborIds) {
+      const neighbor = this.tapestryData.nodes.find(n => n.id === nId)
+      if (!neighbor?.evidence?.artifacts) continue
+      const entries = imageArtifacts(neighbor.evidence.artifacts)
+      if (entries.length === 0) continue
+      const [, path] = entries[0]
+      const url = this.artifactUrl(neighbor.specName || '', path)
+      if (!this.preloadCache.has(url)) {
+        const img = new Image()
+        img.src = url
+        this.preloadCache.set(url, img)
+      }
     }
   }
 
@@ -1479,7 +1557,7 @@ export class TapestryView {
   // ── Lightbox ───────────────────────────────────────────────────────
 
   private openLightbox(img: HTMLImageElement, node: TapestryNode): void {
-    const entries = Object.entries(node.evidence?.artifacts || {})
+    const entries = imageArtifacts(node.evidence?.artifacts || {})
     if (entries.length === 0) return
 
     const lightbox = document.createElement('div')
@@ -1529,7 +1607,10 @@ export class TapestryView {
       document.removeEventListener('keydown', keyHandler)
       lightbox.remove()
       // Sync detail panel artifact to match
-      if (this.selectedNodeId) this.renderDetailPanel(this.selectedNodeId)
+      if (this.selectedNodeId) {
+        const selNode = this.tapestryData?.nodes.find(n => n.id === this.selectedNodeId)
+        if (selNode) this.updateArtifact(selNode)
+      }
     }
     closeBtn.addEventListener('click', close)
     lightbox.addEventListener('click', (e) => {
@@ -1562,13 +1643,13 @@ export class TapestryView {
 
     const filtered = query
       ? fibers.filter(f => {
-          const text = [f.title, f.body, f.kind, f.id, f.reason,
+          const text = [f.title, f.body, f.kind, f.id, f.outcome,
             ...(f.tags || [])].filter(Boolean).join(' ').toLowerCase()
           return text.includes(query)
         })
       : fibers
 
-    const isRule = (f: TapestryFiber) => f.tags?.some(t => t.startsWith('rule:')) ?? false
+    const isRule = (f: TapestryFiber) => f.tags?.some(t => t.startsWith('tapestry:')) ?? false
 
     // Staleness order: stale first (needs attention), then no-evidence, then fresh
     const stalenessOrder: Record<string, number> = { stale: 0, 'no-evidence': 1, fresh: 2 }
@@ -1600,8 +1681,8 @@ export class TapestryView {
       const dotColor = dagNode ? stalenessColor(dagNode.staleness) : '#7A7368'
       const dotIcon = statusIcon(f.status)
 
-      // Non-rule tags
-      const nonRuleTags = (f.tags || []).filter(t => !t.startsWith('rule:'))
+      // Non-tapestry tags
+      const nonRuleTags = (f.tags || []).filter(t => !t.startsWith('tapestry:'))
       const tagsHtml = nonRuleTags.map(t =>
         `<span class="fiber-tag">${escapeHtml(t.replace(/^\[|\]$/g, ''))}</span>`
       ).join('')
@@ -1657,22 +1738,32 @@ export class TapestryView {
          </div>`
       : ''
 
-    const reasonHtml = fiber.reason
-      ? `<div class="tapestry-detail-reason"><em>${escapeHtml(fiber.reason)}</em></div>`
+    const outcomeHtml = fiber.outcome
+      ? `<div class="tapestry-detail-outcome"><span class="outcome-label">Outcome</span> ${renderMarkdown(fiber.outcome, mdOpts)}</div>`
       : ''
+
+    // Tags
+    const displayTags = (fiber.tags || []).filter(t => !t.startsWith('tapestry:'))
+    const tagsHtml = displayTags.length > 0
+      ? `<div class="tapestry-detail-tags">${displayTags.map(t => `<span class="fiber-tag">${escapeHtml(t)}</span>`).join('')}</div>`
+      : ''
+
+    const kindBadge = fiber.kind !== 'task' ? `<span class="kind-badge">${escapeHtml(fiber.kind)}</span>` : ''
 
     this.detailPanel.innerHTML = `
       <div class="tapestry-detail-header">
         <div class="tapestry-detail-title">
           <span class="staleness-badge">${statusIcon(fiber.status)}</span>
-          <span class="detail-name">${escapeHtml(shortName(fiber.title))}</span>
+          <span class="detail-name">${escapeHtml(fiber.title)}</span>
+          ${kindBadge}
           <span class="detail-status">${escapeHtml(fiber.status)}</span>
         </div>
         <button class="tapestry-detail-close">&times;</button>
       </div>
       <div class="tapestry-detail-content">
         ${upstreamHtml ? `<div class="tapestry-detail-graph">${upstreamHtml}</div>` : ''}
-        ${reasonHtml}
+        ${tagsHtml}
+        ${outcomeHtml}
         ${bodyHtml}
       </div>
     `
