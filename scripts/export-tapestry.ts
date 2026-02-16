@@ -7,14 +7,16 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 
-const cityArg = process.argv[2]
+const force = process.argv.includes('--force')
+const cityArg = process.argv.filter(a => !a.startsWith('--'))[2]
 if (!cityArg) {
-  console.error('Usage: npx tsx scripts/export-tapestry.ts <cityName|cityId>')
+  console.error('Usage: npx tsx scripts/export-tapestry.ts <cityName|cityId> [--force]')
   process.exit(1)
 }
 
 const API_BASE = process.env.PORTOLAN_URL || 'http://localhost:4004'
-const OUT_DIR = path.resolve(import.meta.dirname, '..', 'docs', 'data')
+const BASE_OUT = path.resolve(import.meta.dirname, '..', 'docs', 'data')
+const OUT_DIR = path.join(BASE_OUT, cityArg)
 
 interface CityInfo {
   id: string
@@ -95,11 +97,12 @@ async function main() {
   for (const node of data.nodes) {
     if (!node.evidence?.artifacts || !node.specName) continue
     for (const [_name, filePath] of Object.entries(node.evidence.artifacts)) {
-      const filename = (filePath as string).split('/').pop() || ''
+      if (typeof filePath !== 'string') continue
+      const filename = filePath.split('/').pop() || ''
       const outDir = path.join(OUT_DIR, 'claims', node.specName)
       const outPath = path.join(outDir, filename)
 
-      if (fs.existsSync(outPath)) continue
+      if (!force && fs.existsSync(outPath)) continue
 
       const url = `${API_BASE}/tapestry-asset/${encodeURIComponent(node.specName)}/${encodeURIComponent(filename)}?cityId=${encodeURIComponent(city.id)}`
       try {
@@ -131,13 +134,13 @@ async function main() {
       const outDir = path.join(OUT_DIR, 'files')
       const outPath = path.join(outDir, filename)
 
-      if (fs.existsSync(outPath)) {
-        rewriteMap.set(href, `files/${filename}`)
+      if (!force && fs.existsSync(outPath)) {
+        rewriteMap.set(href, `${cityArg}/files/${filename}`)
         continue
       }
 
       if (downloadFile(city, href, outPath)) {
-        rewriteMap.set(href, `files/${filename}`)
+        rewriteMap.set(href, `${cityArg}/files/${filename}`)
         fileCount++
         console.log(`  ↓ ${href}`)
       } else {
@@ -154,7 +157,18 @@ async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true })
   fs.writeFileSync(path.join(OUT_DIR, 'tapestry.json'), JSON.stringify(data, null, 2))
 
-  console.log(`Exported: ${data.nodes.length} nodes, ${artifactCount} artifacts, ${fileCount} files → docs/data/`)
+  // Update manifest (list of all exported tapestries)
+  const manifestPath = path.join(BASE_OUT, 'manifest.json')
+  let manifest: { name: string; nodeCount: number; updated: string }[] = []
+  if (fs.existsSync(manifestPath)) {
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) } catch {}
+  }
+  const entry = { name: cityArg, nodeCount: data.nodes.length, updated: new Date().toISOString() }
+  const idx = manifest.findIndex(m => m.name === cityArg)
+  if (idx >= 0) manifest[idx] = entry; else manifest.push(entry)
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+
+  console.log(`Exported: ${data.nodes.length} nodes, ${artifactCount} artifacts, ${fileCount} files → docs/data/${cityArg}/`)
 }
 
 main().catch(err => {
