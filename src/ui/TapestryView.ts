@@ -890,13 +890,6 @@ export class TapestryView {
       // Mark section nodes with a CSS class
       if (isSection) g.classed('tapestry-section-node', true)
 
-      // Parchment halo — outermost, slightly larger, white pop
-      g.append('path')
-        .attr('d', organicEllipse(rx, ry, nodeSeed + 0.25, 1.28))
-        .attr('fill', '#EDE8E0')
-        .attr('fill-opacity', 0.13)
-        .attr('stroke', 'none')
-
       // Fill layers — original opacities, both using node color for richness
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
