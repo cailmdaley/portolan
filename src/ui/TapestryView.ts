@@ -879,7 +879,7 @@ export class TapestryView {
     nodeElements.each((d, _i, nodes) => {
       const g = d3Selection.select(nodes[_i])
       const nodeHash = hashString(d.data.id)
-      const paletteColors = ['#2E5252', '#6B3838', '#1E1A14']  // verdigris, iron-gall, sepia
+      const paletteColors = ['#2E5252', '#6B3838', '#B4A080']  // verdigris, iron-gall, sand
       const color = paletteColors[nodeHash % paletteColors.length]
       const nodeSeed = nodeHash / 1000000
       const isSection = isSectionNode(d.data)
