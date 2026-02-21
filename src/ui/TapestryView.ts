@@ -87,9 +87,10 @@ interface EdgeDatum {
   link: SimLink
   strandIndex: number
   tension: number
-  sagFraction: number  // perpendicular sag as fraction of edge length (catenary-like arc)
-  wobble1: number      // small individual perpendicular variation at cp1 (px)
-  wobble2: number      // small individual perpendicular variation at cp2 (px)
+  sagMagnitude: number  // sag as fraction of edge length (always positive)
+  edgeSeed: number      // 0–1 per-edge value; sets the angle phase for dynamic sag direction
+  wobble1: number       // individual CP variation (px)
+  wobble2: number       // individual CP variation (px)
 }
 
 interface ClaimsAnnotation extends BaseAnnotation {
@@ -739,6 +740,21 @@ export class TapestryView {
     this.simulation.velocityDecay(0.9)
     simNodes.forEach(n => { n.fx = n.x; n.fy = n.y })
 
+    // Center the frozen layout in the canvas so no nodes are clipped at edges.
+    const pad = NODE_RX * 2
+    const xs = simNodes.map(n => n.x!)
+    const ys = simNodes.map(n => n.y!)
+    const xOffset = (width - (Math.max(...xs) - Math.min(...xs))) / 2 - Math.min(...xs)
+    const yOffset = (height - (Math.max(...ys) - Math.min(...ys))) / 2 - Math.min(...ys)
+    const clampedXOffset = Math.max(xOffset, pad - Math.min(...xs))
+    const clampedYOffset = Math.max(yOffset, pad - Math.min(...ys))
+    simNodes.forEach(n => {
+      n.x = n.x! + clampedXOffset
+      n.y = n.y! + clampedYOffset
+      n.fx = n.x
+      n.fy = n.y
+    })
+
     // Create SVG
     const svg = d3Selection.select(this.dagContainer)
       .append('svg')
@@ -774,9 +790,10 @@ export class TapestryView {
       const color = stalenessColor(link.target.data.staleness)
       const edgeRand = seededRandom(hashString(link.source.data.id + link.target.data.id))
       const tension = 0.35 + edgeRand() * 0.15
-      // sagFraction: both CPs arc in the same perpendicular direction (catenary sag),
-      // proportional to edge length so short and long edges curve equally visibly.
-      const sagFraction = (edgeRand() * 0.18 + 0.06) * (edgeRand() > 0.5 ? 1 : -1)
+      // sagMagnitude: arc height as fraction of edge length (always positive).
+      // sagSign is computed each tick from current angle so it adapts when nodes move.
+      const sagMagnitude = edgeRand() * 0.18 + 0.06
+      const edgeSeed = edgeRand()
       const wobble1 = (edgeRand() - 0.5) * 10
       const wobble2 = (edgeRand() - 0.5) * 10
 
@@ -784,7 +801,7 @@ export class TapestryView {
         const strandOpacity = ringOpacity(s) * 0.4
 
         const path = edgeGroup.append('path')
-          .datum({ link, strandIndex: s, tension, sagFraction, wobble1, wobble2 })
+          .datum({ link, strandIndex: s, tension, sagMagnitude, edgeSeed, wobble1, wobble2 })
           .attr('class', 'tapestry-link')
           .attr('stroke', color)
           .attr('stroke-width', 1)
@@ -977,7 +994,11 @@ export class TapestryView {
       const perpX = -ty
       const perpY = tx
 
-      const sag = dist * d.sagFraction
+      // sagSign flips with angle so curves re-curl naturally when nodes are dragged.
+      // sin(angle*2 + phase) oscillates twice per rotation — each edge has a unique
+      // phase (edgeSeed) so adjacent edges curl in different directions.
+      const sagSign = Math.sin(baseAngle * 2 + d.edgeSeed * Math.PI * 2) >= 0 ? 1 : -1
+      const sag = dist * d.sagMagnitude * sagSign
       const cp1 = {
         x: start.x + tx * dist * d.tension + perpX * (sag + d.wobble1),
         y: start.y + ty * dist * d.tension + perpY * (sag + d.wobble1),
@@ -991,16 +1012,7 @@ export class TapestryView {
     }
 
     // Tick handler
-    const minX_bound = 80 + NODE_RX
-    const minY_bound = 60 + NODE_RY
-
     this.simulation.on('tick', () => {
-      // Constrain within bounds
-      simNodes.forEach(n => {
-        n.x = Math.max(minX_bound, n.x!)
-        n.y = Math.max(minY_bound, n.y!)
-      })
-
       // Set viewBox on first tick only (zoom handles it after)
       if (!svg.attr('viewBox')) {
         const pad = 40
