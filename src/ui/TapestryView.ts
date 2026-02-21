@@ -901,7 +901,7 @@ export class TapestryView {
         .attr('stroke', 'none')
 
       // Fill layers — outer parchment halo, inner punches with color
-      const fillColors = [color, '#EDE8E0']   // i=0 inner=color, i=1 outer=parchment
+      const fillColors = [color, '#C8B8A8']   // i=0 inner=color, i=1 outer=canvas bg
       const fillOpacities = [0.55, 0.25]
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
