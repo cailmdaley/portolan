@@ -879,7 +879,7 @@ export class TapestryView {
     nodeElements.each((d, _i, nodes) => {
       const g = d3Selection.select(nodes[_i])
       const nodeHash = hashString(d.data.id)
-      const paletteColors = ['#2E5252', '#6B3838', '#B4A080']  // verdigris, iron-gall, sand
+      const paletteColors = ['#2E5252', '#6B3838', '#8C9090']  // verdigris, iron-gall, slate
       const color = paletteColors[nodeHash % paletteColors.length]
       const nodeSeed = nodeHash / 1000000
       const isSection = isSectionNode(d.data)
@@ -922,30 +922,42 @@ export class TapestryView {
           .attr('stroke-opacity', ringOpacity(i) * (isCore ? 0.85 : 1))
       }
 
-      // Label
+      // Label — font scales down if text would overflow the ellipse interior
       const name = shortName(d.data.title)
       const words = name.split(' ')
+      const maxTextWidth = rx * 1.7  // usable width inside organic ellipse
+      const charWidth = 0.58          // em per character estimate (EB Garamond)
+
+      const fitSize = (lines: string[], base: number) => {
+        const longest = Math.max(...lines.map(l => l.length))
+        const needed = longest * charWidth * base
+        return needed > maxTextWidth ? Math.max(7, maxTextWidth / (longest * charWidth)) : base
+      }
 
       if (words.length > 2) {
         const mid = Math.ceil(words.length / 2)
+        const line1 = words.slice(0, mid).join(' ')
+        const line2 = words.slice(mid).join(' ')
+        const fs = fitSize([line1, line2], isSection ? 12 : 10.5)
         g.append('text')
           .attr('class', 'tapestry-node-label')
           .attr('y', -4)
           .attr('text-anchor', 'middle')
-          .attr('font-size', isSection ? '11px' : '9.5px')
-          .text(words.slice(0, mid).join(' '))
+          .attr('font-size', `${fs}px`)
+          .text(line1)
         g.append('text')
           .attr('class', 'tapestry-node-label')
-          .attr('y', 8)
+          .attr('y', fs + 2)
           .attr('text-anchor', 'middle')
-          .attr('font-size', isSection ? '11px' : '9.5px')
-          .text(words.slice(mid).join(' '))
+          .attr('font-size', `${fs}px`)
+          .text(line2)
       } else {
+        const fs = fitSize([name], isSection ? 13 : 11)
         g.append('text')
           .attr('class', 'tapestry-node-label')
-          .attr('y', 3)
+          .attr('y', 4)
           .attr('text-anchor', 'middle')
-          .attr('font-size', isSection ? '11.5px' : '10px')
+          .attr('font-size', `${fs}px`)
           .text(name)
       }
 
