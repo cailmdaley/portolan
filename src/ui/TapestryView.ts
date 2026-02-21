@@ -888,6 +888,14 @@ export class TapestryView {
       // Mark section nodes with a CSS class
       if (isSection) g.classed('tapestry-section-node', true)
 
+      // Opaque background — ensures node sits on top of edges visually
+      g.append('ellipse')
+        .attr('rx', rx * 1.1)
+        .attr('ry', ry * 1.1)
+        .attr('fill', '#EDE8E0')
+        .attr('fill-opacity', 0.92)
+        .attr('stroke', 'none')
+
       // Fill layers
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
@@ -967,9 +975,11 @@ export class TapestryView {
           }
         }
 
-        // upstream dots above the ellipse, downstream below
-        renderStrip(upstream, -(ry + 6))
-        renderStrip(downstream, ry + 6)
+        // upstream dots near the top interior, downstream near the bottom interior
+        const upY = words.length > 2 ? -14 : -10
+        const downY = words.length > 2 ? 16 : 13
+        renderStrip(upstream, upY)
+        renderStrip(downstream, downY)
       }
     })
 
