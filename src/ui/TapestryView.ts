@@ -87,8 +87,9 @@ interface EdgeDatum {
   link: SimLink
   strandIndex: number
   tension: number
-  cpOffset1: number
-  cpOffset2: number
+  sagFraction: number  // perpendicular sag as fraction of edge length (catenary-like arc)
+  wobble1: number      // small individual perpendicular variation at cp1 (px)
+  wobble2: number      // small individual perpendicular variation at cp2 (px)
 }
 
 interface ClaimsAnnotation extends BaseAnnotation {
@@ -220,50 +221,6 @@ function isSectionNode(node: TapestryNode): boolean {
   return node.tags.some(t => t === 'tier:1')
 }
 
-/**
- * BFS upward through dependsOn to find the shortest path from nodeId to the
- * nearest section (tier:1) node. Returns a set of edge pairs "source→target"
- * representing the warp trace path, plus the node IDs on the path.
- */
-function computeWarpTrace(
-  nodeId: string,
-  allNodes: TapestryNode[],
-): { nodes: Set<string>; edges: Set<string> } {
-  const nodeMap = new Map(allNodes.map(n => [n.id, n]))
-  const startNode = nodeMap.get(nodeId)
-  if (!startNode || isSectionNode(startNode)) return { nodes: new Set(), edges: new Set() }
-
-  // BFS: each entry is [currentId, pathFromStart]
-  const queue: [string, string[]][] = [[nodeId, [nodeId]]]
-  const visited = new Set<string>([nodeId])
-
-  while (queue.length > 0) {
-    const [current, path] = queue.shift()!
-    const node = nodeMap.get(current)
-    if (!node) continue
-
-    for (const depId of node.dependsOn) {
-      if (visited.has(depId)) continue
-      visited.add(depId)
-      const dep = nodeMap.get(depId)
-      if (!dep) continue
-      const newPath = [...path, depId]
-      if (isSectionNode(dep)) {
-        // Found nearest section — build edge set from the path
-        const nodes = new Set(newPath)
-        const edges = new Set<string>()
-        for (let i = 0; i < newPath.length - 1; i++) {
-          edges.add(`${newPath[i]}→${newPath[i + 1]}`)
-        }
-        return { nodes, edges }
-      }
-      queue.push([depId, newPath])
-    }
-  }
-
-  return { nodes: new Set(), edges: new Set() }
-}
-
 // Saturated dot colors — darker and more intense than the node ring palette
 const DOT_STALENESS_COLORS: Record<string, string> = {
   fresh:        '#215838',  // forest
@@ -275,14 +232,14 @@ function dotStalenessColor(staleness: string): string {
 }
 
 
-/** Return interior (non-section) 1-hop neighbors of a node, with their staleness. */
+/** Return all 1-hop neighbors of a node, with their staleness. */
 function neighborFibers(nodeId: string, allNodes: TapestryNode[]): Array<{ id: string; staleness: TapestryNode['staleness'] }> {
   const neighbors = new Set<string>()
   const node = allNodes.find(n => n.id === nodeId)
   if (node) node.dependsOn.forEach(d => neighbors.add(d))
   allNodes.forEach(n => { if (n.dependsOn.includes(nodeId)) neighbors.add(n.id) })
   return [...neighbors]
-    .filter(id => { const n = allNodes.find(x => x.id === id); return n && !isSectionNode(n) })
+    .filter(id => allNodes.some(x => x.id === id))
     .map(id => { const n = allNodes.find(x => x.id === id)!; return { id, staleness: n.staleness } })
 }
 
@@ -309,8 +266,7 @@ export class TapestryView {
   private staticAssetBase = ''
   private staticDataBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
-  private expandedSections = new Set<string>()
-  private warpTraceEdges = new Set<string>()
+  private expandedNodes = new Set<string>()
   private detailWidth = DETAIL_DEFAULT_WIDTH
   private galleryDetach: (() => void) | null = null
   private preloadCache = new Map<string, HTMLImageElement>()
@@ -509,7 +465,7 @@ export class TapestryView {
   async show(city: City): Promise<void> {
     this.currentCity = city
     this.selectedNodeId = null
-    this.expandedSections.clear()
+    this.expandedNodes.clear()
 
     this.annotationPanel.hidePanel()
     this.annotationPanel.reset()
@@ -800,8 +756,8 @@ export class TapestryView {
     // Background click — collapse to skeleton view
     svg.on('click', (event) => {
       if (event.target === svg.node() || event.target.tagName === 'rect') {
-        if (this.expandedSections.size > 0) {
-          this.expandedSections.clear()
+        if (this.expandedNodes.size > 0) {
+          this.expandedNodes.clear()
           this.updateTierVisibility()
         }
         this.hideDetail()
@@ -817,15 +773,18 @@ export class TapestryView {
     simLinks.forEach(link => {
       const color = stalenessColor(link.target.data.staleness)
       const edgeRand = seededRandom(hashString(link.source.data.id + link.target.data.id))
-      const tension = 0.4 + edgeRand() * 0.1
-      const cpOffset1 = (edgeRand() - 0.5) * 8
-      const cpOffset2 = (edgeRand() - 0.5) * 8
+      const tension = 0.35 + edgeRand() * 0.15
+      // sagFraction: both CPs arc in the same perpendicular direction (catenary sag),
+      // proportional to edge length so short and long edges curve equally visibly.
+      const sagFraction = (edgeRand() * 0.18 + 0.06) * (edgeRand() > 0.5 ? 1 : -1)
+      const wobble1 = (edgeRand() - 0.5) * 10
+      const wobble2 = (edgeRand() - 0.5) * 10
 
       for (let s = 0; s < RING_COUNT; s++) {
         const strandOpacity = ringOpacity(s) * 0.4
 
         const path = edgeGroup.append('path')
-          .datum({ link, strandIndex: s, tension, cpOffset1, cpOffset2 })
+          .datum({ link, strandIndex: s, tension, sagFraction, wobble1, wobble2 })
           .attr('class', 'tapestry-link')
           .attr('stroke', color)
           .attr('stroke-width', 1)
@@ -867,16 +826,16 @@ export class TapestryView {
           d3Selection.select(event.sourceEvent.target.closest('.tapestry-node') as Element)
             .style('cursor', 'grab')
           if (draggedDistance < 5) {
-            if (hasSections && isSectionNode(d.data)) {
-              // Toggle section expansion
-              if (this.expandedSections.has(d.data.id)) {
-                this.expandedSections.delete(d.data.id)
+            // Toggle expansion for any node (persistent — stays open until clicked again)
+            if (hasSections) {
+              if (this.expandedNodes.has(d.data.id)) {
+                this.expandedNodes.delete(d.data.id)
               } else {
-                this.expandedSections.add(d.data.id)
+                this.expandedNodes.add(d.data.id)
               }
               this.updateTierVisibility()
             }
-            // Toggle selection: click the already-selected node to deselect
+            // Sidebar: click the already-selected node to deselect, otherwise select
             if (this.selectedNodeId === d.data.id) {
               this.hideDetail()
             } else {
@@ -950,8 +909,8 @@ export class TapestryView {
           .text(name)
       }
 
-      // Interior fiber dots — pooled at bottom of section node, colored by staleness
-      if (isSection && hasSections) {
+      // Neighbor dots — show 1-hop connections as staleness-colored dots for all nodes
+      if (hasSections) {
         const fibers = neighborFibers(d.data.id, rawNodes)
         if (fibers.length > 0) {
           const MAX_SYMBOLS = 8
@@ -1018,13 +977,14 @@ export class TapestryView {
       const perpX = -ty
       const perpY = tx
 
+      const sag = dist * d.sagFraction
       const cp1 = {
-        x: start.x + tx * dist * d.tension + perpX * d.cpOffset1,
-        y: start.y + ty * dist * d.tension + perpY * d.cpOffset1,
+        x: start.x + tx * dist * d.tension + perpX * (sag + d.wobble1),
+        y: start.y + ty * dist * d.tension + perpY * (sag + d.wobble1),
       }
       const cp2 = {
-        x: end.x - tx * dist * d.tension + perpX * d.cpOffset2,
-        y: end.y - ty * dist * d.tension + perpY * d.cpOffset2,
+        x: end.x - tx * dist * d.tension + perpX * (sag + d.wobble2),
+        y: end.y - ty * dist * d.tension + perpY * (sag + d.wobble2),
       }
 
       pathEl.attr('d', `M${start.x},${start.y} C${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${end.x},${end.y}`)
@@ -1057,7 +1017,7 @@ export class TapestryView {
 
     // Set initial tier visibility — skeleton view if sections exist
     if (hasSections) {
-      this.expandedSections.clear()
+      this.expandedNodes.clear()
       this.updateTierVisibility()
     }
 
@@ -1066,9 +1026,8 @@ export class TapestryView {
   }
 
   /**
-   * Show/hide nodes and edges based on which sections are expanded and which
-   * node is selected. Also computes and stores the warp trace — the shortest
-   * path from the selected node back to its nearest section.
+   * Show/hide nodes and edges based on expandedNodes.
+   * Sections are always visible. Any expanded node reveals its 1-hop neighborhood.
    */
   private updateTierVisibility(): void {
     if (!this.tapestryData) return
@@ -1076,55 +1035,27 @@ export class TapestryView {
     const hasSections = allNodes.some(n => isSectionNode(n))
     if (!hasSections) return
 
-    // Build set of visible node IDs
+    // Sections always visible; expanded nodes reveal their 1-hop neighborhood
     const visible = new Set<string>()
-
-    // Sections are always visible
     allNodes.filter(n => isSectionNode(n)).forEach(n => visible.add(n.id))
 
-    // 1-hop neighbors of expanded sections
-    for (const sectionId of this.expandedSections) {
-      const section = allNodes.find(n => n.id === sectionId)
-      if (!section) continue
-      section.dependsOn.forEach(d => visible.add(d))
-      allNodes.forEach(n => { if (n.dependsOn.includes(sectionId)) visible.add(n.id) })
+    for (const nodeId of this.expandedNodes) {
+      const node = allNodes.find(n => n.id === nodeId)
+      if (!node) continue
+      visible.add(nodeId)
+      node.dependsOn.forEach(d => visible.add(d))
+      allNodes.forEach(n => { if (n.dependsOn.includes(nodeId)) visible.add(n.id) })
     }
 
-    // 1-hop neighborhood of selected node + warp trace back to nearest section
-    this.warpTraceEdges = new Set()
-    if (this.selectedNodeId) {
-      const selected = allNodes.find(n => n.id === this.selectedNodeId)
-      if (selected) {
-        visible.add(this.selectedNodeId)
-        // 1-hop upstream
-        selected.dependsOn.forEach(d => visible.add(d))
-        // 1-hop downstream
-        allNodes.forEach(n => { if (n.dependsOn.includes(this.selectedNodeId!)) visible.add(n.id) })
-        // Warp trace: shortest path back to nearest section
-        const warp = computeWarpTrace(this.selectedNodeId, allNodes)
-        warp.nodes.forEach(id => visible.add(id))
-        this.warpTraceEdges = warp.edges
-      }
-    }
-
-    // Apply visibility to nodes
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
       d3Selection.select(this).style('display', visible.has(d.data.id) ? '' : 'none')
     })
 
-    // Apply visibility to edges; mark warp trace edges
-    const warpEdges = this.warpTraceEdges
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
-      const sourceId = d.link.source.data.id
-      const targetId = d.link.target.data.id
-      const show = visible.has(sourceId) && visible.has(targetId)
-      const isWarp = warpEdges.has(`${sourceId}→${targetId}`)
-      d3Selection.select(this)
-        .style('display', show ? '' : 'none')
-        .classed('warp-trace', isWarp)
+      const show = visible.has(d.link.source.data.id) && visible.has(d.link.target.data.id)
+      d3Selection.select(this).style('display', show ? '' : 'none')
     })
 
-    // Trigger tick to update edge paths for newly visible/hidden nodes
     this.simulation?.alpha(0.05).restart()
   }
 
@@ -1132,7 +1063,6 @@ export class TapestryView {
 
   private selectNode(id: string): void {
     this.selectedNodeId = id
-    this.updateTierVisibility()   // reveal 1-hop neighborhood + warp trace
     this.updateHighlighting()
     this.renderDetailPanel(id)
     this.preloadNeighborArtifacts(id)
@@ -1167,19 +1097,16 @@ export class TapestryView {
         .style('opacity', String(opacity))
     })
 
-    const warpEdges = this.warpTraceEdges
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
       const linkEl = d3Selection.select(this)
       const sourceId = d.link.source.data.id
       const targetId = d.link.target.data.id
       const touchesSelected = sourceId === selectedId || targetId === selectedId
-      const isWarp = warpEdges.has(`${sourceId}→${targetId}`)
-      // Always set stroke to a color — never null (null removes the attribute, defaulting to none)
       const baseColor = stalenessColor(d.link.target.data.staleness)
       linkEl
-        .attr('stroke-opacity', isWarp ? 0.9 : touchesSelected ? 0.75 : 0.3)
-        .attr('stroke', isWarp ? '#9A7B35' : baseColor)
-        .attr('stroke-width', isWarp ? 2 : 1)
+        .attr('stroke-opacity', touchesSelected ? 0.75 : 0.3)
+        .attr('stroke', baseColor)
+        .attr('stroke-width', 1)
     })
   }
 
