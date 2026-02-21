@@ -91,6 +91,10 @@ interface EdgeDatum {
   edgeSeed: number      // 0–1 per-edge value; sets the angle phase for dynamic sag direction
   wobble1: number       // individual CP variation (px)
   wobble2: number       // individual CP variation (px)
+  // Spring-damper physics state (initialized on first updateEdgePath call)
+  sagPos: number        // current sag offset (px)
+  sagVel: number        // current sag velocity (px/s)
+  sagInitialized: boolean
 }
 
 interface ClaimsAnnotation extends BaseAnnotation {
@@ -268,7 +272,6 @@ export class TapestryView {
   private staticDataBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private expandedNodes = new Set<string>()
-  private flutterT = 0
   private flutterRAF: number | null = null
   private flutterTick: (() => void) | null = null
   private detailWidth = DETAIL_DEFAULT_WIDTH
@@ -806,7 +809,7 @@ export class TapestryView {
         const strandOpacity = ringOpacity(s) * 0.4
 
         const path = edgeGroup.append('path')
-          .datum({ link, strandIndex: s, tension, sagMagnitude, edgeSeed, wobble1, wobble2 })
+          .datum({ link, strandIndex: s, tension, sagMagnitude, edgeSeed, wobble1, wobble2, sagPos: 0, sagVel: 0, sagInitialized: false })
           .attr('class', 'tapestry-link')
           .attr('stroke', color)
           .attr('stroke-width', 1)
@@ -1003,19 +1006,50 @@ export class TapestryView {
       // sin(angle*2 + phase) oscillates twice per rotation — each edge has a unique
       // phase (edgeSeed) so adjacent edges curl in different directions.
       const sagSign = Math.sin(baseAngle * 2 + d.edgeSeed * Math.PI * 2) >= 0 ? 1 : -1
-      // Flutter: gentle breathing oscillation, each edge at a unique frequency & phase.
-      // Frequency varies 0.4–0.6 Hz (16–25s period) — slow enough to feel like drifting.
-      const flutter = Math.sin((0.4 + d.edgeSeed * 0.2) * this.flutterT + d.edgeSeed * Math.PI * 2)
-        * dist * d.sagMagnitude * 0.35
-      const sag = dist * d.sagMagnitude * sagSign + flutter
+
+      // Spring-damper physics: targetSag is the geometric equilibrium.
+      const targetSag = dist * d.sagMagnitude * sagSign
+
+      if (!d.sagInitialized) {
+        // Initial ring: offset from target + random velocity kick so edge "rings" into place.
+        d.sagPos = targetSag + (Math.random() - 0.5) * dist * 0.15
+        d.sagVel = (Math.random() - 0.5) * dist * 0.3
+        d.sagInitialized = true
+      }
+
+      // Integrate spring-damper: k=4.0 (stiffness), c=1.2 (damping, ζ≈0.3 → ~3 ring cycles)
+      const dt = 1 / 60
+      const k = 4.0
+      const c = 1.2
+      const noise = (Math.random() - 0.5) * dist * 0.002  // thermal floor keeps edges alive
+      d.sagVel += (-k * (d.sagPos - targetSag) - c * d.sagVel + noise) * dt
+      d.sagPos += d.sagVel * dt
+
       const cp1 = {
-        x: start.x + tx * dist * d.tension + perpX * (sag + d.wobble1),
-        y: start.y + ty * dist * d.tension + perpY * (sag + d.wobble1),
+        x: start.x + tx * dist * d.tension + perpX * (d.sagPos + d.wobble1),
+        y: start.y + ty * dist * d.tension + perpY * (d.sagPos + d.wobble1),
       }
       const cp2 = {
-        x: end.x - tx * dist * d.tension + perpX * (sag + d.wobble2),
-        y: end.y - ty * dist * d.tension + perpY * (sag + d.wobble2),
+        x: end.x - tx * dist * d.tension + perpX * (d.sagPos + d.wobble2),
+        y: end.y - ty * dist * d.tension + perpY * (d.sagPos + d.wobble2),
       }
+
+      // Node-avoidance: repel control points away from non-connected nearby nodes.
+      const REPEL_RADIUS = 80
+      simNodes.forEach(otherNode => {
+        if (otherNode.data.id === d.link.source.data.id) return
+        if (otherNode.data.id === d.link.target.data.id) return
+        const ox = otherNode.x!, oy = otherNode.y!
+        for (const cp of [cp1, cp2]) {
+          const ddx = cp.x - ox, ddy = cp.y - oy
+          const dd = Math.sqrt(ddx * ddx + ddy * ddy)
+          if (dd < REPEL_RADIUS && dd > 0) {
+            const strength = (REPEL_RADIUS - dd) / REPEL_RADIUS * 30
+            cp.x += (ddx / dd) * strength
+            cp.y += (ddy / dd) * strength
+          }
+        }
+      })
 
       pathEl.attr('d', `M${start.x},${start.y} C${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${end.x},${end.y}`)
     }
@@ -1045,7 +1079,7 @@ export class TapestryView {
     // Gentle simulation for fine-tuning
     this.simulation.alpha(0.03).restart()
 
-    // Wire up the flutter tick: update all edge paths with the current flutterT
+    // Wire up the RAF tick: drive spring-damper integration every frame
     this.flutterTick = () => {
       edgePaths.forEach(path => updateEdgePath(path))
     }
@@ -1090,9 +1124,7 @@ export class TapestryView {
 
   private startFlutter(): void {
     if (this.flutterRAF !== null) return
-    const startTime = performance.now()
     const tick = () => {
-      this.flutterT = (performance.now() - startTime) / 1000
       this.flutterTick?.()
       this.flutterRAF = requestAnimationFrame(tick)
     }
@@ -1105,7 +1137,6 @@ export class TapestryView {
       this.flutterRAF = null
     }
     this.flutterTick = null
-    this.flutterT = 0
   }
 
   // ── Node selection ─────────────────────────────────────────────────
