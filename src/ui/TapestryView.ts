@@ -108,6 +108,7 @@ interface ClaimsAnnotation extends BaseAnnotation {
 
 const NODE_RX = 52
 const NODE_RY = 18
+const INTERIOR_DEPTH_NUDGE = 60  // px rightward per hop beyond direct section neighbor
 const RING_SCALES = [1.0, 1.15]
 const RING_COUNT = RING_SCALES.length
 
@@ -700,20 +701,23 @@ export class TapestryView {
       sectionXTarget.set(n.id, width * (i + 1) / (sectionNodesRaw.length + 1))
     })
 
-    // Recursively find the nearest section ancestor's target X for initial placement
-    function nearestSectionX(id: string, visited = new Set<string>()): number {
-      if (visited.has(id)) return width / 2
+    // Recursively find the nearest section ancestor and its depth for initial placement.
+    // Returns { x: sectionX, sectionDepth } — used to compute the depth-nudge offset.
+    function nearestSectionAnchor(id: string, visited = new Set<string>()): { x: number; sectionDepth: number } {
+      if (visited.has(id)) return { x: width / 2, sectionDepth: 0 }
       visited.add(id)
       const node = nodeMap.get(id)
-      if (!node) return width / 2
+      if (!node) return { x: width / 2, sectionDepth: 0 }
       for (const depId of node.dependsOn) {
-        if (sectionXTarget.has(depId)) return sectionXTarget.get(depId)!
+        if (sectionXTarget.has(depId)) {
+          return { x: sectionXTarget.get(depId)!, sectionDepth: depthMap.get(depId) || 0 }
+        }
       }
       for (const depId of node.dependsOn) {
-        const x = nearestSectionX(depId, visited)
-        if (x !== width / 2) return x
+        const anchor = nearestSectionAnchor(depId, visited)
+        if (anchor.x !== width / 2) return anchor
       }
-      return width / 2
+      return { x: width / 2, sectionDepth: 0 }
     }
 
     const simNodes: SimNode[] = rawNodes.map(n => {
@@ -721,12 +725,21 @@ export class TapestryView {
         const x = sectionXTarget.get(n.id) || width / 2
         return { id: n.id, data: n, degree: 0, x, y: height / 2, fx: x, fy: height / 2 }
       }
-      const baseX = hasSections ? nearestSectionX(n.id) : width / 2
-      const jitter = hasSections ? 150 : 200
+      if (hasSections) {
+        const { x: sectionX, sectionDepth } = nearestSectionAnchor(n.id)
+        const nodeDepth = depthMap.get(n.id) || 0
+        // Nudge each additional hop beyond the direct section neighbor rightward
+        const xNudge = Math.max(0, nodeDepth - sectionDepth - 1) * INTERIOR_DEPTH_NUDGE
+        return {
+          id: n.id, data: n, degree: 0,
+          x: sectionX + xNudge + (Math.random() - 0.5) * 50,
+          y: height / 2 + (Math.random() - 0.5) * 160,
+        }
+      }
       return {
         id: n.id, data: n, degree: 0,
-        x: baseX + (Math.random() - 0.5) * jitter,
-        y: height / 2 + (Math.random() - 0.5) * jitter,
+        x: width / 2 + (Math.random() - 0.5) * 200,
+        y: height / 2 + (Math.random() - 0.5) * 200,
       }
     })
 
@@ -978,22 +991,41 @@ export class TapestryView {
       const spreadRange = Math.PI * 0.15
       const angleOffset = (s - 0.5) * spreadRange
 
+      // Direction-aware: exit from the face pointing toward the target,
+      // enter from the face pointing back toward the source.
+      const baseAngle = Math.atan2(
+        link.target.y! - link.source.y!,
+        link.target.x! - link.source.x!,
+      )
+
       const start = ellipsePoint(
         link.source.x!, link.source.y!,
         NODE_RX * ringScale, NODE_RY * ringScale,
-        angleOffset,
+        baseAngle + angleOffset,
       )
       const end = ellipsePoint(
         link.target.x!, link.target.y!,
         NODE_RX * ringScale, NODE_RY * ringScale,
-        Math.PI + angleOffset,
+        baseAngle + Math.PI + angleOffset,
       )
 
       const dx = end.x - start.x
       const dy = end.y - start.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      // Unit vector along the connection, and its perpendicular (for organic offset)
+      const tx = dist > 0 ? dx / dist : 1
+      const ty = dist > 0 ? dy / dist : 0
+      const perpX = -ty
+      const perpY = tx
 
-      const cp1 = { x: start.x + dx * d.tension, y: start.y + dy * 0.1 + d.cpOffset1 }
-      const cp2 = { x: end.x - dx * d.tension, y: end.y - dy * 0.1 + d.cpOffset2 }
+      const cp1 = {
+        x: start.x + tx * dist * d.tension + perpX * d.cpOffset1,
+        y: start.y + ty * dist * d.tension + perpY * d.cpOffset1,
+      }
+      const cp2 = {
+        x: end.x - tx * dist * d.tension + perpX * d.cpOffset2,
+        y: end.y - ty * dist * d.tension + perpY * d.cpOffset2,
+      }
 
       pathEl.attr('d', `M${start.x},${start.y} C${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${end.x},${end.y}`)
     }
