@@ -3161,6 +3161,12 @@
         font-size: 0.88em;
         color: var(--ink-body);
       }
+      .file-viewer-markdown .config-resolved,
+      .file-viewer-markdown .md-inline-code[title] {
+        color: var(--ui-teal);
+      }
+      .file-viewer-markdown .config-resolved { font-weight: 500; }
+      .file-viewer-markdown .md-inline-code[title] { text-decoration: underline dotted; }
 
       .file-viewer-markdown pre {
         background: rgba(255, 255, 255, 0.4);
@@ -4843,17 +4849,19 @@
         opacity: 0.85;
       }
 
-      /* Footer (send all) */
+      /* Footer (send all / file as fiber) */
       .ann-panel-footer {
         flex-shrink: 0;
         border-top: 1px solid var(--ui-border);
         padding: 8px 12px;
+        display: flex;
+        gap: 6px;
       }
       .ann-panel-footer:empty {
         display: none;
       }
       .ann-panel-footer .ann-footer-btn {
-        width: 100%;
+        flex: 1;
         padding: 6px 10px;
         font-size: 12px;
         color: var(--gold, var(--ui-gold));
@@ -4862,6 +4870,7 @@
         border-radius: 3px;
         cursor: pointer;
         transition: all 150ms;
+        white-space: nowrap;
       }
       .ann-panel-footer .ann-footer-btn:hover {
         background: rgba(154, 123, 53, 0.15);
@@ -5037,6 +5046,7 @@
         flex: 1;
         display: flex;
         min-width: 0;
+        position: relative;
       }
 
       .tapestry-dag-wrapper {
@@ -5194,16 +5204,20 @@
       /* ── Sidebar (fiber list + detail) ── */
 
       .tapestry-sidebar {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
         width: 20vw;
         min-width: 200px;
-        flex-shrink: 0;
         border-left: 1px solid var(--ui-border);
         background: var(--ui-dark-elevated);
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        position: relative;
         transition: width 200ms ease;
+        z-index: 10;
+        box-shadow: -3px 0 12px rgba(0, 0, 0, 0.18);
       }
 
       .tapestry-sidebar.expanded {
@@ -5333,12 +5347,47 @@
         color: var(--ui-border);
       }
 
-      .tapestry-detail-reason {
+      .tapestry-detail-outcome {
         font-size: 0.82rem;
-        color: var(--ui-text-muted);
+        color: var(--ui-text);
         margin-bottom: 0.6rem;
         padding-bottom: 0.6rem;
         border-bottom: 1px solid var(--ui-border);
+        line-height: 1.45;
+      }
+      .tapestry-detail-outcome p { margin: 0.2rem 0; }
+      .tapestry-detail-outcome p:first-of-type { display: inline; }
+      .outcome-label {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--ui-text-muted);
+        margin-right: 0.4em;
+      }
+      .tapestry-detail-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        margin-bottom: 0.5rem;
+      }
+      .fiber-tag {
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        color: var(--ui-text-muted);
+        background: var(--ui-dark-surface);
+        padding: 0.1rem 0.4rem;
+        border-radius: 3px;
+      }
+      .kind-badge {
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        color: var(--ui-text-muted);
+        background: var(--ui-dark-surface);
+        padding: 0.1rem 0.35rem;
+        border-radius: 3px;
+        text-transform: lowercase;
+        flex-shrink: 0;
       }
 
       /* ── Detail panel ── */
@@ -5376,17 +5425,17 @@
 
       .tapestry-detail-header {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
-        padding: 0.6rem 0.8rem;
-        border-bottom: 1px solid var(--ui-border);
+        padding: 0.6rem 0.8rem 0.2rem;
         flex-shrink: 0;
       }
 
       .tapestry-detail-title {
         display: flex;
-        align-items: center;
-        gap: 0.4rem;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0.3rem 0.4rem;
         min-width: 0;
       }
 
@@ -5400,21 +5449,6 @@
         font-size: 0.85rem;
         font-weight: 500;
         color: var(--ui-text);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .detail-status {
-        font-family: var(--font-mono);
-        font-size: 0.65rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        padding: 0.15rem 0.4rem;
-        border-radius: 2px;
-        background: var(--ui-dark-surface);
-        color: var(--ui-text-muted);
-        flex-shrink: 0;
       }
 
       .tapestry-detail-close {
@@ -5432,6 +5466,56 @@
         color: var(--ui-text);
       }
 
+      .tapestry-detail-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.2rem 0.5rem;
+        padding: 0 0.8rem 0.5rem;
+        font: 0.7rem/1.2 var(--font-mono);
+        color: var(--ui-text-muted);
+        border-bottom: 1px solid var(--ui-border);
+        flex-shrink: 0;
+      }
+
+      .tapestry-detail-meta .detail-status {
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.1rem 0.35rem;
+        border-radius: 2px;
+        background: var(--ui-dark-surface);
+      }
+
+      .tapestry-detail-meta .tapestry-detail-tags {
+        display: contents;
+      }
+
+      .detail-meta-spacer {
+        flex: 1;
+      }
+
+      .tapestry-detail-meta .action {
+        cursor: pointer;
+        transition: color 0.15s;
+        white-space: nowrap;
+        user-select: none;
+        font-size: 0.75rem;
+      }
+
+      .tapestry-detail-meta .action:hover {
+        color: var(--accent-gold);
+      }
+
+      .tapestry-detail-meta .action.primary {
+        color: var(--accent-gold);
+        font-weight: 600;
+      }
+
+      .detail-dates {
+        font-size: 0.75em;
+        color: var(--ui-text-muted);
+      }
+
       .tapestry-detail-content {
         flex: 1;
         overflow-y: auto;
@@ -5440,26 +5524,26 @@
 
       /* Detail: upstream/downstream graph */
       .tapestry-detail-graph {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem;
         padding-bottom: 0.6rem;
         margin-bottom: 0.6rem;
         border-bottom: 1px solid var(--ui-border);
       }
 
-      .tapestry-detail-graph-line {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0.3rem;
-        font-size: 0.8rem;
-        padding: 0.15rem 0;
+      .graph-arrow {
+        color: var(--ui-text-muted);
+        font-size: 0.75rem;
+        opacity: 0.6;
       }
 
-      .tapestry-detail-graph-line .graph-label {
+      .graph-sep {
         color: var(--ui-text-muted);
-        font-style: italic;
-        font-family: var(--font-main);
         font-size: 0.75rem;
-        min-width: 5.5em;
+        opacity: 0.4;
+        margin: 0 0.15rem;
       }
 
       .dep-tag {
@@ -5554,9 +5638,22 @@
         padding: 0.1rem 0.25rem;
         border-radius: 2px;
       }
-      .config-resolved {
+      .config-resolved, .tapestry-detail-body .config-resolved {
         color: var(--ui-teal);
         font-weight: 500;
+      }
+      /* Inline code path links — clickable file references */
+      .md-inline-code {
+        font-family: var(--font-mono);
+        font-size: 0.85em;
+        background: rgba(0, 0, 0, 0.05);
+        padding: 0.1rem 0.25rem;
+        border-radius: 2px;
+      }
+      .md-inline-code[title],
+      .tapestry-detail-body .md-inline-code[title] {
+        color: var(--ui-teal);
+        text-decoration: underline dotted;
       }
       .tapestry-detail-body pre {
         background: rgba(255, 255, 255, 0.35);
