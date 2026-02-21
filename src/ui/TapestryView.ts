@@ -237,15 +237,21 @@ function dotStalenessColor(staleness: string): string {
 }
 
 
-/** Return all 1-hop neighbors of a node, with their staleness. */
-function neighborFibers(nodeId: string, allNodes: TapestryNode[]): Array<{ id: string; staleness: TapestryNode['staleness'] }> {
-  const neighbors = new Set<string>()
+/** Return upstream and downstream 1-hop neighbors separately, with their staleness. */
+function splitNeighborFibers(nodeId: string, allNodes: TapestryNode[]): {
+  upstream: Array<{ id: string; staleness: TapestryNode['staleness'] }>
+  downstream: Array<{ id: string; staleness: TapestryNode['staleness'] }>
+} {
   const node = allNodes.find(n => n.id === nodeId)
-  if (node) node.dependsOn.forEach(d => neighbors.add(d))
-  allNodes.forEach(n => { if (n.dependsOn.includes(nodeId)) neighbors.add(n.id) })
-  return [...neighbors]
-    .filter(id => allNodes.some(x => x.id === id))
-    .map(id => { const n = allNodes.find(x => x.id === id)!; return { id, staleness: n.staleness } })
+  const toFiber = (id: string) => {
+    const n = allNodes.find(x => x.id === id)
+    return n ? { id, staleness: n.staleness } : null
+  }
+  const upstream = (node?.dependsOn ?? []).map(toFiber).filter(Boolean) as Array<{ id: string; staleness: TapestryNode['staleness'] }>
+  const downstream = allNodes
+    .filter(n => n.dependsOn.includes(nodeId) && n.id !== nodeId)
+    .map(n => ({ id: n.id, staleness: n.staleness }))
+  return { upstream, downstream }
 }
 
 // ── TapestryView ──────────────────────────────────────────────────────
@@ -934,34 +940,36 @@ export class TapestryView {
           .text(name)
       }
 
-      // Neighbor dots — show 1-hop connections as staleness-colored dots for all nodes
+      // Neighbor dots — upstream above the node, downstream below, all nodes
       if (hasSections) {
-        const fibers = neighborFibers(d.data.id, rawNodes)
-        if (fibers.length > 0) {
-          const MAX_SYMBOLS = 8
+        const { upstream, downstream } = splitNeighborFibers(d.data.id, rawNodes)
+        const MAX_SYMBOLS = 6
+
+        const renderStrip = (fibers: Array<{ id: string; staleness: TapestryNode['staleness'] }>, y: number) => {
+          if (fibers.length === 0) return
           const shown = fibers.slice(0, MAX_SYMBOLS)
           const overflow = fibers.length - MAX_SYMBOLS
-          const stripY = words.length > 2 ? 22 : 18
-
           const strip = g.append('text')
-            .attr('y', stripY)
+            .attr('y', y)
             .attr('text-anchor', 'middle')
-            .attr('font-size', '10px')
+            .attr('font-size', '9px')
             .attr('letter-spacing', '2')
-
           shown.forEach(f => {
             strip.append('tspan')
               .attr('fill', dotStalenessColor(f.staleness))
               .text(f.staleness === 'no-evidence' ? '○' : '●')
           })
-
           if (overflow > 0) {
             strip.append('tspan')
               .attr('fill', '#7A7368')
-              .attr('font-size', '8px')
+              .attr('font-size', '7px')
               .text(` +${overflow}`)
           }
         }
+
+        // upstream dots above the ellipse, downstream below
+        renderStrip(upstream, -(ry + 6))
+        renderStrip(downstream, ry + 6)
       }
     })
 
