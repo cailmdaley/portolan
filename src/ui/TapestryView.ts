@@ -219,6 +219,50 @@ function isSectionNode(node: TapestryNode): boolean {
   return node.tags.some(t => t === 'tier:1')
 }
 
+/**
+ * BFS upward through dependsOn to find the shortest path from nodeId to the
+ * nearest section (tier:1) node. Returns a set of edge pairs "source→target"
+ * representing the warp trace path, plus the node IDs on the path.
+ */
+function computeWarpTrace(
+  nodeId: string,
+  allNodes: TapestryNode[],
+): { nodes: Set<string>; edges: Set<string> } {
+  const nodeMap = new Map(allNodes.map(n => [n.id, n]))
+  const startNode = nodeMap.get(nodeId)
+  if (!startNode || isSectionNode(startNode)) return { nodes: new Set(), edges: new Set() }
+
+  // BFS: each entry is [currentId, pathFromStart]
+  const queue: [string, string[]][] = [[nodeId, [nodeId]]]
+  const visited = new Set<string>([nodeId])
+
+  while (queue.length > 0) {
+    const [current, path] = queue.shift()!
+    const node = nodeMap.get(current)
+    if (!node) continue
+
+    for (const depId of node.dependsOn) {
+      if (visited.has(depId)) continue
+      visited.add(depId)
+      const dep = nodeMap.get(depId)
+      if (!dep) continue
+      const newPath = [...path, depId]
+      if (isSectionNode(dep)) {
+        // Found nearest section — build edge set from the path
+        const nodes = new Set(newPath)
+        const edges = new Set<string>()
+        for (let i = 0; i < newPath.length - 1; i++) {
+          edges.add(`${newPath[i]}→${newPath[i + 1]}`)
+        }
+        return { nodes, edges }
+      }
+      queue.push([depId, newPath])
+    }
+  }
+
+  return { nodes: new Set(), edges: new Set() }
+}
+
 // Saturated dot colors — darker and more intense than the node ring palette
 const DOT_STALENESS_COLORS: Record<string, string> = {
   fresh:        '#215838',  // forest
@@ -265,6 +309,7 @@ export class TapestryView {
   private staticDataBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private expandedSections = new Set<string>()
+  private warpTraceEdges = new Set<string>()
   private detailWidth = DETAIL_DEFAULT_WIDTH
   private galleryDetach: (() => void) | null = null
   private preloadCache = new Map<string, HTMLImageElement>()
@@ -823,14 +868,9 @@ export class TapestryView {
         // Section nodes (and all nodes when no sections): pin X
         n.fx = n.x
       } else {
-        // Interior nodes: snap X to nearest section parent so settling starts
-        // from a sensible position, then release fx so they can float
-        const sectionParentX = n.data.dependsOn
-          .map(id => simNodeMap.get(id))
-          .filter((p): p is SimNode => !!p && isSectionNode(p.data))
-          .map(p => p.x!)[0]
-        if (sectionParentX !== undefined) n.x = sectionParentX
-        // fx remains undefined — interior nodes float in X
+        // Interior nodes: keep burn-in X position, just release fx so they float.
+        // The link force will pull them toward their pinned section parent's X column.
+        // No snap needed — the burn-in already placed them near their section.
       }
     })
 
@@ -927,7 +967,12 @@ export class TapestryView {
               }
               this.updateTierVisibility()
             }
-            this.selectNode(d.data.id)
+            // Toggle selection: click the already-selected node to deselect
+            if (this.selectedNodeId === d.data.id) {
+              this.hideDetail()
+            } else {
+              this.selectNode(d.data.id)
+            }
           }
         }))
 
@@ -1097,7 +1142,11 @@ export class TapestryView {
     this.simulation.alpha(0.03).restart()
   }
 
-  /** Show/hide nodes and edges based on which sections are expanded. */
+  /**
+   * Show/hide nodes and edges based on which sections are expanded and which
+   * node is selected. Also computes and stores the warp trace — the shortest
+   * path from the selected node back to its nearest section.
+   */
   private updateTierVisibility(): void {
     if (!this.tapestryData) return
     const allNodes = this.tapestryData.nodes
@@ -1110,28 +1159,46 @@ export class TapestryView {
     // Sections are always visible
     allNodes.filter(n => isSectionNode(n)).forEach(n => visible.add(n.id))
 
-    // Add 1-hop neighbors of expanded sections
+    // 1-hop neighbors of expanded sections
     for (const sectionId of this.expandedSections) {
       const section = allNodes.find(n => n.id === sectionId)
       if (!section) continue
-      // Direct dependencies (upstream)
       section.dependsOn.forEach(d => visible.add(d))
-      // Direct dependents (downstream)
       allNodes.forEach(n => { if (n.dependsOn.includes(sectionId)) visible.add(n.id) })
+    }
+
+    // 1-hop neighborhood of selected node + warp trace back to nearest section
+    this.warpTraceEdges = new Set()
+    if (this.selectedNodeId) {
+      const selected = allNodes.find(n => n.id === this.selectedNodeId)
+      if (selected) {
+        visible.add(this.selectedNodeId)
+        // 1-hop upstream
+        selected.dependsOn.forEach(d => visible.add(d))
+        // 1-hop downstream
+        allNodes.forEach(n => { if (n.dependsOn.includes(this.selectedNodeId!)) visible.add(n.id) })
+        // Warp trace: shortest path back to nearest section
+        const warp = computeWarpTrace(this.selectedNodeId, allNodes)
+        warp.nodes.forEach(id => visible.add(id))
+        this.warpTraceEdges = warp.edges
+      }
     }
 
     // Apply visibility to nodes
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
-      const show = visible.has(d.data.id)
-      d3Selection.select(this)
-        .style('display', show ? '' : 'none')
+      d3Selection.select(this).style('display', visible.has(d.data.id) ? '' : 'none')
     })
 
-    // Apply visibility to edges — show only if both endpoints visible
+    // Apply visibility to edges; mark warp trace edges
+    const warpEdges = this.warpTraceEdges
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
-      const show = visible.has(d.link.source.data.id) && visible.has(d.link.target.data.id)
+      const sourceId = d.link.source.data.id
+      const targetId = d.link.target.data.id
+      const show = visible.has(sourceId) && visible.has(targetId)
+      const isWarp = warpEdges.has(`${sourceId}→${targetId}`)
       d3Selection.select(this)
         .style('display', show ? '' : 'none')
+        .classed('warp-trace', isWarp)
     })
 
     // Wake simulation so newly visible interior nodes can settle in Y
@@ -1142,6 +1209,7 @@ export class TapestryView {
 
   private selectNode(id: string): void {
     this.selectedNodeId = id
+    this.updateTierVisibility()   // reveal 1-hop neighborhood + warp trace
     this.updateHighlighting()
     this.renderDetailPanel(id)
     this.preloadNeighborArtifacts(id)
@@ -1176,12 +1244,19 @@ export class TapestryView {
         .style('opacity', String(opacity))
     })
 
+    const warpEdges = this.warpTraceEdges
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
       const linkEl = d3Selection.select(this)
       const sourceId = d.link.source.data.id
       const targetId = d.link.target.data.id
       const touchesSelected = sourceId === selectedId || targetId === selectedId
-      linkEl.attr('stroke-opacity', touchesSelected ? 0.75 : 0.3)
+      const isWarp = warpEdges.has(`${sourceId}→${targetId}`)
+      // Always set stroke to a color — never null (null removes the attribute, defaulting to none)
+      const baseColor = stalenessColor(d.link.target.data.staleness)
+      linkEl
+        .attr('stroke-opacity', isWarp ? 0.9 : touchesSelected ? 0.75 : 0.3)
+        .attr('stroke', isWarp ? '#9A7B35' : baseColor)
+        .attr('stroke-width', isWarp ? 2 : 1)
     })
   }
 
@@ -1697,12 +1772,19 @@ export class TapestryView {
     if (!this.staticMode) this.annotationPanel.hidePanel()
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
 
+    // Restore visibility to skeleton + expanded sections (clears selected neighborhood)
+    this.updateTierVisibility()
+
     // Reset node highlighting
     d3Selection.selectAll('.tapestry-node')
       .classed('selected', false)
       .style('opacity', 1)
-    d3Selection.selectAll('.tapestry-link')
-      .attr('stroke-opacity', 0.3)
+    d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
+      d3Selection.select(this)
+        .attr('stroke-opacity', 0.3)
+        .attr('stroke', stalenessColor(d.link.target.data.staleness))
+        .attr('stroke-width', 1)
+    })
   }
 
   /** Navigate to a fiber: select in DAG if it's a rule fiber, otherwise show in sidebar detail. */
