@@ -1037,10 +1037,10 @@ export class TapestryView {
         d.sagInitialized = true
       }
 
-      // Integrate spring-damper: k=4.0 (stiffness), c=1.2 (damping, ζ≈0.3 → ~3 ring cycles)
+      // Integrate spring-damper: k=4.0 (stiffness), c=0.5 (damping, ζ≈0.12 → longer ringing)
       const dt = 1 / 60
       const k = 4.0
-      const c = 1.2
+      const c = 0.5
       const noise = (Math.random() - 0.5) * dist * 0.002  // thermal floor keeps edges alive
       d.sagVel += (-k * (d.sagPos - targetSag) - c * d.sagVel + noise) * dt
       d.sagPos += d.sagVel * dt
