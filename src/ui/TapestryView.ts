@@ -268,6 +268,9 @@ export class TapestryView {
   private staticDataBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private expandedNodes = new Set<string>()
+  private flutterT = 0
+  private flutterRAF: number | null = null
+  private flutterTick: (() => void) | null = null
   private detailWidth = DETAIL_DEFAULT_WIDTH
   private galleryDetach: (() => void) | null = null
   private preloadCache = new Map<string, HTMLImageElement>()
@@ -512,6 +515,8 @@ export class TapestryView {
       this.simulation.stop()
       this.simulation = null
     }
+
+    this.stopFlutter()
 
     setTimeout(() => {
       if (!this.isVisible()) {
@@ -998,7 +1003,11 @@ export class TapestryView {
       // sin(angle*2 + phase) oscillates twice per rotation — each edge has a unique
       // phase (edgeSeed) so adjacent edges curl in different directions.
       const sagSign = Math.sin(baseAngle * 2 + d.edgeSeed * Math.PI * 2) >= 0 ? 1 : -1
-      const sag = dist * d.sagMagnitude * sagSign
+      // Flutter: gentle breathing oscillation, each edge at a unique frequency & phase.
+      // Frequency varies 0.4–0.6 Hz (16–25s period) — slow enough to feel like drifting.
+      const flutter = Math.sin((0.4 + d.edgeSeed * 0.2) * this.flutterT + d.edgeSeed * Math.PI * 2)
+        * dist * d.sagMagnitude * 0.35
+      const sag = dist * d.sagMagnitude * sagSign + flutter
       const cp1 = {
         x: start.x + tx * dist * d.tension + perpX * (sag + d.wobble1),
         y: start.y + ty * dist * d.tension + perpY * (sag + d.wobble1),
@@ -1035,6 +1044,12 @@ export class TapestryView {
 
     // Gentle simulation for fine-tuning
     this.simulation.alpha(0.03).restart()
+
+    // Wire up the flutter tick: update all edge paths with the current flutterT
+    this.flutterTick = () => {
+      edgePaths.forEach(path => updateEdgePath(path))
+    }
+    this.startFlutter()
   }
 
   /**
@@ -1069,6 +1084,28 @@ export class TapestryView {
     })
 
     this.simulation?.alpha(0.05).restart()
+  }
+
+  // ── Flutter animation ──────────────────────────────────────────────
+
+  private startFlutter(): void {
+    if (this.flutterRAF !== null) return
+    const startTime = performance.now()
+    const tick = () => {
+      this.flutterT = (performance.now() - startTime) / 1000
+      this.flutterTick?.()
+      this.flutterRAF = requestAnimationFrame(tick)
+    }
+    this.flutterRAF = requestAnimationFrame(tick)
+  }
+
+  private stopFlutter(): void {
+    if (this.flutterRAF !== null) {
+      cancelAnimationFrame(this.flutterRAF)
+      this.flutterRAF = null
+    }
+    this.flutterTick = null
+    this.flutterT = 0
   }
 
   // ── Node selection ─────────────────────────────────────────────────
