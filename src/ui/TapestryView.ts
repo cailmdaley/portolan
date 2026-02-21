@@ -826,6 +826,10 @@ export class TapestryView {
       }
     })
 
+    // Knockout layer — sits between edges and node visuals, always fully opaque
+    // so edges are hidden behind nodes regardless of node highlighting opacity
+    const knockoutGroup = rootGroup.append('g').attr('class', 'tapestry-knockouts')
+
     // Draw nodes
     const nodeGroup = rootGroup.append('g').attr('class', 'tapestry-nodes')
     let draggedDistance = 0
@@ -893,16 +897,18 @@ export class TapestryView {
       // Mark section nodes with a CSS class
       if (isSection) g.classed('tapestry-section-node', true)
 
-      // Canvas knockout on inner shape — hides edges passing through
-      g.append('path')
+      // Knockout in separate layer — unaffected by node group opacity changes
+      knockoutGroup.append('path')
+        .datum(d)
+        .attr('class', 'tapestry-knockout')
         .attr('d', organicEllipse(rx, ry, nodeSeed, 1.0))
-        .attr('fill', '#EDE8E0')
+        .attr('fill', '#E8DDD0')
         .attr('fill-opacity', 1.0)
         .attr('stroke', 'none')
 
       // Fill layers — outer = transparent node color, inner punches with full color
       const fillColors = [color, color]
-      const fillOpacities = [0.55, 0.12]
+      const fillOpacities = [0.55, 0.18]
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
         g.append('path')
@@ -1105,6 +1111,8 @@ export class TapestryView {
       }
 
       nodeElements.attr('transform', d => `translate(${d.x}, ${d.y})`)
+      knockoutGroup.selectAll<SVGPathElement, SimNode>('.tapestry-knockout')
+        .attr('transform', d => `translate(${d.x}, ${d.y})`)
       edgePaths.forEach(path => updateEdgePath(path))
     })
 
@@ -1147,6 +1155,10 @@ export class TapestryView {
     }
 
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
+      d3Selection.select(this).style('display', visible.has(d.data.id) ? '' : 'none')
+    })
+
+    d3Selection.selectAll<SVGPathElement, SimNode>('.tapestry-knockout').each(function (d) {
       d3Selection.select(this).style('display', visible.has(d.data.id) ? '' : 'none')
     })
 
