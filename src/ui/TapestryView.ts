@@ -278,6 +278,8 @@ export class TapestryView {
   private staticDataBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private expandedNodes = new Set<string>()
+  private visibleNodes = new Set<string>()  // tracks which nodes are fully visible (for animation)
+  private tapestrysvg: d3Selection.Selection<SVGSVGElement, unknown, null, undefined> | null = null
   private flutterRAF: number | null = null
   private flutterTick: (() => void) | null = null
   private detailWidth = DETAIL_DEFAULT_WIDTH
@@ -479,6 +481,7 @@ export class TapestryView {
     this.currentCity = city
     this.selectedNodeId = null
     this.expandedNodes.clear()
+    this.visibleNodes.clear()
 
     this.annotationPanel.hidePanel()
     this.annotationPanel.reset()
@@ -772,7 +775,16 @@ export class TapestryView {
     // Create SVG
     const svg = d3Selection.select(this.dagContainer)
       .append('svg')
-      .attr('class', 'tapestry-svg')
+      .attr('class', 'tapestry-svg') as d3Selection.Selection<SVGSVGElement, unknown, null, undefined>
+
+    this.tapestrysvg = svg
+
+    // SVG defs: fog blur filter for ghost nodes
+    const defs = svg.append('defs')
+    const fogFilter = defs.append('filter')
+      .attr('id', 'fog-blur')
+      .attr('x', '-20%').attr('y', '-20%').attr('width', '140%').attr('height', '140%')
+    fogFilter.append('feGaussianBlur').attr('in', 'SourceGraphic').attr('stdDeviation', '2')
 
     // Zoom behavior
     const zoomBehavior = d3Zoom.zoom<SVGSVGElement, unknown>()
@@ -788,6 +800,7 @@ export class TapestryView {
       if (event.target === svg.node() || event.target.tagName === 'rect') {
         if (this.expandedNodes.size > 0) {
           this.expandedNodes.clear()
+          this.visibleNodes.clear()
           this.updateTierVisibility()
         }
         this.hideDetail()
@@ -866,12 +879,13 @@ export class TapestryView {
           if (draggedDistance < 5) {
             // Toggle expansion for any node (persistent — stays open until clicked again)
             if (hasSections) {
-              if (this.expandedNodes.has(d.data.id)) {
-                this.expandedNodes.delete(d.data.id)
-              } else {
+              const expanding = !this.expandedNodes.has(d.data.id)
+              if (expanding) {
                 this.expandedNodes.add(d.data.id)
+              } else {
+                this.expandedNodes.delete(d.data.id)
               }
-              this.updateTierVisibility()
+              this.updateTierVisibility(expanding)
             }
             // Sidebar: click the already-selected node to deselect, otherwise select
             if (this.selectedNodeId === d.data.id) {
@@ -1000,7 +1014,7 @@ export class TapestryView {
 
         // upstream dots near the top interior, downstream near the bottom interior
         const upY = words.length > 2 ? -14 : -10
-        const downY = words.length > 2 ? 16 : 13
+        const downY = words.length > 2 ? 19 : 16
         renderStrip(upstream, upY)
         renderStrip(downstream, downY)
       }
@@ -1119,6 +1133,7 @@ export class TapestryView {
     // Set initial tier visibility — skeleton view if sections exist
     if (hasSections) {
       this.expandedNodes.clear()
+      this.visibleNodes.clear()
       this.updateTierVisibility()
     }
 
@@ -1136,7 +1151,7 @@ export class TapestryView {
    * Show/hide nodes and edges based on expandedNodes.
    * Sections are always visible. Any expanded node reveals its 1-hop neighborhood.
    */
-  private updateTierVisibility(): void {
+  private updateTierVisibility(animate = false): void {
     if (!this.tapestryData) return
     const allNodes = this.tapestryData.nodes
     const hasSections = allNodes.some(n => isSectionNode(n))
@@ -1154,20 +1169,124 @@ export class TapestryView {
       allNodes.forEach(n => { if (n.dependsOn.includes(nodeId)) visible.add(n.id) })
     }
 
+    // Detect nodes newly becoming visible this call
+    const newlyVisible = new Set<string>()
+    for (const id of visible) {
+      if (!this.visibleNodes.has(id)) newlyVisible.add(id)
+    }
+    this.visibleNodes = new Set(visible)
+
+    // Fog ghost: nodes not in visible set remain rendered but faint and non-interactive
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
-      d3Selection.select(this).style('display', visible.has(d.data.id) ? '' : 'none')
+      const el = d3Selection.select(this)
+      if (visible.has(d.data.id)) {
+        el.style('display', '')
+          .style('pointer-events', '')
+          .style('filter', '')
+          // Newly visible nodes start transparent so they can animate in
+          if (newlyVisible.has(d.data.id) && animate) {
+            el.style('opacity', '0')
+          }
+      } else {
+        // Ghost: very faint, blurred, not interactive
+        el.style('display', '')
+          .style('opacity', '0.07')
+          .style('pointer-events', 'none')
+          .style('filter', 'url(#fog-blur)')
+      }
     })
 
     d3Selection.selectAll<SVGPathElement, SimNode>('.tapestry-knockout').each(function (d) {
       d3Selection.select(this).style('display', visible.has(d.data.id) ? '' : 'none')
     })
 
+    // Edges: full display when both endpoints visible; ghost when either is in fog
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
-      const show = visible.has(d.link.source.data.id) && visible.has(d.link.target.data.id)
-      d3Selection.select(this).style('display', show ? '' : 'none')
+      const el = d3Selection.select(this)
+      const bothVisible = visible.has(d.link.source.data.id) && visible.has(d.link.target.data.id)
+      if (bothVisible) {
+        el.style('display', '').style('opacity', null)
+      } else {
+        el.style('display', '').style('opacity', '0.04')
+      }
     })
 
+    if (animate && newlyVisible.size > 0) {
+      this.revealNodes(newlyVisible)
+    }
+
     this.simulation?.alpha(0.05).restart()
+  }
+
+  /** Animate nodes emerging from fog: edge pulse travels outward, nodes fade in on arrival. */
+  private revealNodes(newlyVisible: Set<string>): void {
+    if (!this.tapestrysvg) return
+
+    const PULSE_DURATION = 500   // ms for edge pulse travel
+    const FADE_DURATION = 350    // ms for node fade-in
+
+    const fadeNodeIn = (nodeId: string) => {
+      const nodeEl = d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node')
+        .filter(nd => nd.data.id === nodeId)
+        .nodes()[0] as SVGGElement | undefined
+      if (!nodeEl) return
+      const start = performance.now()
+      const tick = (now: number) => {
+        const t = Math.min((now - start) / FADE_DURATION, 1)
+        nodeEl.style.opacity = String(t)
+        if (t < 1) requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+    }
+
+    let i = 0
+    for (const nodeId of newlyVisible) {
+      const delay = i * 50
+      i++
+
+      // Find a connecting edge from an already-visible node into this newly-visible one
+      let foundEdge = false
+      d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link')
+        .filter(d =>
+          (d.link.target.data.id === nodeId && !newlyVisible.has(d.link.source.data.id)) ||
+          (d.link.source.data.id === nodeId && !newlyVisible.has(d.link.target.data.id))
+        )
+        .each((_d, ei, paths) => {
+          if (ei > 0 || foundEdge) return
+          foundEdge = true
+          const pathEl = paths[0] as SVGPathElement
+          const totalLength = pathEl.getTotalLength()
+          if (totalLength < 1) { setTimeout(() => fadeNodeIn(nodeId), delay); return }
+
+          const svg = this.tapestrysvg!
+          const pulse = svg.select<SVGGElement>('g.tapestry-nodes').append('circle')
+            .attr('r', 4)
+            .attr('fill', '#9A7B35')
+            .attr('opacity', 0.9)
+            .attr('pointer-events', 'none')
+            .style('filter', 'drop-shadow(0 0 5px #9A7B3580)')
+
+          const startTime = performance.now() + delay
+          const animPulse = (now: number) => {
+            if (now < startTime) { requestAnimationFrame(animPulse); return }
+            const elapsed = now - startTime
+            const t = Math.min(elapsed / PULSE_DURATION, 1)
+            const pt = pathEl.getPointAtLength(t * totalLength)
+            pulse.attr('cx', pt.x).attr('cy', pt.y).attr('opacity', String(0.9 * (1 - t * 0.2)))
+            if (t < 1) {
+              requestAnimationFrame(animPulse)
+            } else {
+              pulse.remove()
+              fadeNodeIn(nodeId)
+            }
+          }
+          requestAnimationFrame(animPulse)
+        })
+
+      if (!foundEdge) {
+        setTimeout(() => fadeNodeIn(nodeId), delay)
+      }
+    }
   }
 
   // ── Flutter animation ──────────────────────────────────────────────
@@ -1214,8 +1333,11 @@ export class TapestryView {
       }
     })
 
+    const visibleNodes = this.visibleNodes
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
       const el = d3Selection.select(this)
+      // Don't override opacity for fog (non-visible) nodes
+      if (!visibleNodes.has(d.data.id)) return
       const isSelected = d.data.id === selectedId
       const isConnected = connectedNodes.has(d.data.id)
 
@@ -1755,10 +1877,15 @@ export class TapestryView {
     // Restore visibility to skeleton + expanded sections (clears selected neighborhood)
     this.updateTierVisibility()
 
-    // Reset node highlighting
-    d3Selection.selectAll('.tapestry-node')
+    // Reset node highlighting (skip fog nodes — their opacity is managed by updateTierVisibility)
+    const visibleNodes = this.visibleNodes
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node')
       .classed('selected', false)
-      .style('opacity', 1)
+      .each(function (d) {
+        if (visibleNodes.has(d.data.id)) {
+          d3Selection.select(this).style('opacity', '1')
+        }
+      })
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
       d3Selection.select(this)
         .attr('stroke-opacity', 0.3)
