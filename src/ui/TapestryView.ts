@@ -879,7 +879,7 @@ export class TapestryView {
     nodeElements.each((d, _i, nodes) => {
       const g = d3Selection.select(nodes[_i])
       const nodeHash = hashString(d.data.id)
-      const paletteColors = ['#2E5252', '#6B3838', '#3D3830']  // verdigris, iron-gall, sepia
+      const paletteColors = ['#2E5252', '#6B3838', '#1E1A14']  // verdigris, iron-gall, sepia
       const color = paletteColors[nodeHash % paletteColors.length]
       const nodeSeed = nodeHash / 1000000
       const isSection = isSectionNode(d.data)
@@ -890,8 +890,15 @@ export class TapestryView {
       // Mark section nodes with a CSS class
       if (isSection) g.classed('tapestry-section-node', true)
 
+      // Canvas knockout on inner shape — hides edges passing through
+      g.append('path')
+        .attr('d', organicEllipse(rx, ry, nodeSeed, 1.0))
+        .attr('fill', '#C8B8A8')
+        .attr('fill-opacity', 1.0)
+        .attr('stroke', 'none')
+
       // Fill layers — outer fades, inner punches
-      const fillOpacities = [0.18, 0.55]
+      const fillOpacities = [0.08, 0.55]
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
         g.append('path')
