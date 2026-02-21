@@ -467,7 +467,8 @@ export class CityManager {
 
     const hasWorkflowConfig = existsSync(resolve(city.path, 'workflow/config'));
     const hasResultsClaims = existsSync(resolve(city.path, 'results/claims'));
-    return hasWorkflowConfig || hasResultsClaims;
+    const hasFelt = existsSync(resolve(city.path, '.felt'));
+    return hasWorkflowConfig || hasResultsClaims || hasFelt;
   }
 
   /**
