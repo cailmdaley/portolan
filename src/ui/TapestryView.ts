@@ -888,23 +888,15 @@ export class TapestryView {
       // Mark section nodes with a CSS class
       if (isSection) g.classed('tapestry-section-node', true)
 
-      // Opaque background — ensures node sits on top of edges visually
-      g.append('ellipse')
-        .attr('rx', rx * 1.1)
-        .attr('ry', ry * 1.1)
-        .attr('fill', '#EDE8E0')
-        .attr('fill-opacity', 0.92)
-        .attr('stroke', 'none')
-
-      // Fill layers
+      // Fill layers: inner ring nearly opaque (blocks edges), outer ring translucent halo
+      const fillOpacities = [0.93, 0.10]
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
-        const fillOpacity = 0.12 + (RING_COUNT - 1 - i) * 0.06
         g.append('path')
           .attr('class', 'tapestry-node-fill')
           .attr('d', organicEllipse(rx, ry, nodeSeed + i * 0.1, scale))
           .attr('fill', color)
-          .attr('fill-opacity', fillOpacity)
+          .attr('fill-opacity', fillOpacities[i])
           .attr('stroke', 'none')
       }
 
