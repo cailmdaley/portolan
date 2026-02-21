@@ -896,13 +896,13 @@ export class TapestryView {
       // Canvas knockout on inner shape — hides edges passing through
       g.append('path')
         .attr('d', organicEllipse(rx, ry, nodeSeed, 1.0))
-        .attr('fill', '#C8B8A8')
+        .attr('fill', '#EDE8E0')
         .attr('fill-opacity', 1.0)
         .attr('stroke', 'none')
 
-      // Fill layers — outer parchment halo, inner punches with color
-      const fillColors = [color, '#C8B8A8']   // i=0 inner=color, i=1 outer=canvas bg
-      const fillOpacities = [0.55, 0.25]
+      // Fill layers — outer = transparent node color, inner punches with full color
+      const fillColors = [color, color]
+      const fillOpacities = [0.55, 0.12]
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
         g.append('path')
