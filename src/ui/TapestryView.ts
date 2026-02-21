@@ -900,14 +900,15 @@ export class TapestryView {
         .attr('fill-opacity', 1.0)
         .attr('stroke', 'none')
 
-      // Fill layers — outer fades, inner punches
-      const fillOpacities = [0.08, 0.55]
+      // Fill layers — outer parchment halo, inner punches with color
+      const fillColors = ['#EDE8E0', color]
+      const fillOpacities = [0.25, 0.55]
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
         g.append('path')
           .attr('class', 'tapestry-node-fill')
           .attr('d', organicEllipse(rx, ry, nodeSeed + i * 0.1, scale))
-          .attr('fill', color)
+          .attr('fill', fillColors[i])
           .attr('fill-opacity', fillOpacities[i])
           .attr('stroke', 'none')
       }
