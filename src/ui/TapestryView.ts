@@ -113,7 +113,7 @@ interface ClaimsAnnotation extends BaseAnnotation {
 // ── Constants ────────────────────────────────────────────────────────
 
 const NODE_RX = 52
-const NODE_RY = 18
+const NODE_RY = 21
 const INTERIOR_DEPTH_NUDGE = 60  // px rightward per hop beyond direct section neighbor
 const RING_SCALES = [1.0, 1.15]
 const RING_COUNT = RING_SCALES.length
@@ -885,7 +885,7 @@ export class TapestryView {
               } else {
                 this.expandedNodes.delete(d.data.id)
               }
-              this.updateTierVisibility(expanding)
+              this.updateTierVisibility(expanding, {x: d.x ?? 0, y: d.y ?? 0})
             }
             // Sidebar: click the already-selected node to deselect, otherwise select
             if (this.selectedNodeId === d.data.id) {
@@ -946,11 +946,12 @@ export class TapestryView {
           .attr('stroke-opacity', ringOpacity(i) * (isCore ? 0.85 : 1))
       }
 
-      // Label — font scales down if text would overflow the ellipse interior
+      // Label — split into 2 lines when that gives a larger font than single-line
       const name = shortName(d.data.title)
       const words = name.split(' ')
       const maxTextWidth = rx * 1.7  // usable width inside organic ellipse
       const charWidth = 0.58          // em per character estimate (EB Garamond)
+      const baseFs = isSection ? 16 : 14
 
       const fitSize = (lines: string[], base: number) => {
         const longest = Math.max(...lines.map(l => l.length))
@@ -958,35 +959,49 @@ export class TapestryView {
         return needed > maxTextWidth ? Math.max(7, maxTextWidth / (longest * charWidth)) : base
       }
 
-      if (words.length > 2) {
-        const mid = Math.ceil(words.length / 2)
-        const line1 = words.slice(0, mid).join(' ')
-        const line2 = words.slice(mid).join(' ')
-        const fs = fitSize([line1, line2], isSection ? 15 : 14)
-        g.append('text')
-          .attr('class', 'tapestry-node-label')
-          .attr('y', -4)
-          .attr('text-anchor', 'middle')
-          .attr('font-size', `${fs}px`)
-          .text(line1)
-        g.append('text')
-          .attr('class', 'tapestry-node-label')
-          .attr('y', fs + 2)
-          .attr('text-anchor', 'middle')
-          .attr('font-size', `${fs}px`)
-          .text(line2)
+      let lines: string[]
+      let textFs: number
+
+      if (words.length <= 1) {
+        lines = [name]
+        textFs = fitSize(lines, baseFs)
+      } else if (words.length === 2) {
+        // Try single vs split — whichever gives a noticeably larger font wins
+        const fsSingle = fitSize([name], baseFs)
+        const fsSplit = fitSize([words[0], words[1]], baseFs)
+        lines = fsSplit > fsSingle * 1.05 ? [words[0], words[1]] : [name]
+        textFs = lines.length > 1 ? fsSplit : fsSingle
       } else {
-        const fs = fitSize([name], isSection ? 16 : 14)
-        g.append('text')
-          .attr('class', 'tapestry-node-label')
-          .attr('y', 4)
-          .attr('text-anchor', 'middle')
-          .attr('font-size', `${fs}px`)
-          .text(name)
+        const mid = Math.ceil(words.length / 2)
+        lines = [words.slice(0, mid).join(' '), words.slice(mid).join(' ')]
+        textFs = fitSize(lines, baseFs)
       }
 
-      // Neighbor dots — upstream above the node, downstream below, all nodes
-      if (hasSections) {
+      const lineHeight = textFs * 1.1  // tight: 1.1× instead of ~1.4×
+      if (lines.length === 1) {
+        g.append('text')
+          .attr('class', 'tapestry-node-label')
+          .attr('y', textFs * 0.35)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', `${textFs}px`)
+          .text(lines[0])
+      } else {
+        g.append('text')
+          .attr('class', 'tapestry-node-label')
+          .attr('y', -lineHeight * 0.5 + textFs * 0.35)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', `${textFs}px`)
+          .text(lines[0])
+        g.append('text')
+          .attr('class', 'tapestry-node-label')
+          .attr('y', lineHeight * 0.5 + textFs * 0.35)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', `${textFs}px`)
+          .text(lines[1])
+      }
+
+      // Neighbor dots — section nodes only, near ellipse edges
+      if (hasSections && isSection) {
         const { upstream, downstream } = splitNeighborFibers(d.data.id, rawNodes)
         const MAX_SYMBOLS = 6
 
@@ -1012,11 +1027,8 @@ export class TapestryView {
           }
         }
 
-        // upstream dots near the top interior, downstream near the bottom interior
-        const upY = words.length > 2 ? -14 : -10
-        const downY = words.length > 2 ? 19 : 16
-        renderStrip(upstream, upY)
-        renderStrip(downstream, downY)
+        renderStrip(upstream, -(ry - 5))
+        renderStrip(downstream, ry - 4)
       }
     })
 
@@ -1151,7 +1163,7 @@ export class TapestryView {
    * Show/hide nodes and edges based on expandedNodes.
    * Sections are always visible. Any expanded node reveals its 1-hop neighborhood.
    */
-  private updateTierVisibility(animate = false): void {
+  private updateTierVisibility(animate = false, center?: {x: number, y: number}): void {
     if (!this.tapestryData) return
     const allNodes = this.tapestryData.nodes
     const hasSections = allNodes.some(n => isSectionNode(n))
@@ -1211,19 +1223,45 @@ export class TapestryView {
       }
     })
 
-    if (animate && newlyVisible.size > 0) {
-      this.revealNodes(newlyVisible)
+    if (animate && newlyVisible.size > 0 && center) {
+      this.revealNodesRadial(center, newlyVisible)
     }
 
     this.simulation?.alpha(0.05).restart()
   }
 
-  /** Animate nodes emerging from fog: edge pulse travels outward, nodes fade in on arrival. */
-  private revealNodes(newlyVisible: Set<string>): void {
-    if (!this.tapestrysvg) return
+  /** Animate nodes emerging from fog: expanding radial wave from center reveals nodes as it passes. */
+  private revealNodesRadial(center: {x: number, y: number}, newlyVisible: Set<string>): void {
+    if (!this.tapestrysvg || newlyVisible.size === 0) return
 
-    const PULSE_DURATION = 500   // ms for edge pulse travel
-    const FADE_DURATION = 350    // ms for node fade-in
+    const EXPAND_SPEED = 260   // px/s
+    const FADE_DURATION = 280  // ms for each node to fade in
+
+    // Pre-compute distances from center to each newly-visible node (via DOM data)
+    const distances = new Map<string, number>()
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(d => {
+      if (newlyVisible.has(d.data.id)) {
+        const dx = (d.x ?? 0) - center.x
+        const dy = (d.y ?? 0) - center.y
+        distances.set(d.data.id, Math.sqrt(dx * dx + dy * dy))
+      }
+    })
+
+    const maxDist = distances.size > 0 ? Math.max(...distances.values()) : 0
+
+    // Expanding ring drawn in edges layer (behind nodes)
+    const ring = this.tapestrysvg.select<SVGGElement>('g.tapestry-edges')
+      .append('circle')
+      .attr('cx', center.x)
+      .attr('cy', center.y)
+      .attr('r', 0)
+      .attr('fill', 'none')
+      .attr('stroke', '#9A7B35')
+      .attr('stroke-width', 1.5)
+      .attr('opacity', 0.5)
+      .attr('pointer-events', 'none')
+
+    const triggered = new Set<string>()
 
     const fadeNodeIn = (nodeId: string) => {
       const nodeEl = d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node')
@@ -1239,54 +1277,30 @@ export class TapestryView {
       requestAnimationFrame(tick)
     }
 
-    let i = 0
-    for (const nodeId of newlyVisible) {
-      const delay = i * 50
-      i++
+    const totalDuration = (maxDist / EXPAND_SPEED) * 1000 + FADE_DURATION
+    const start = performance.now()
 
-      // Find a connecting edge from an already-visible node into this newly-visible one
-      let foundEdge = false
-      d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link')
-        .filter(d =>
-          (d.link.target.data.id === nodeId && !newlyVisible.has(d.link.source.data.id)) ||
-          (d.link.source.data.id === nodeId && !newlyVisible.has(d.link.target.data.id))
-        )
-        .each((_d, ei, paths) => {
-          if (ei > 0 || foundEdge) return
-          foundEdge = true
-          const pathEl = paths[0] as SVGPathElement
-          const totalLength = pathEl.getTotalLength()
-          if (totalLength < 1) { setTimeout(() => fadeNodeIn(nodeId), delay); return }
+    const tick = (now: number) => {
+      const elapsed = now - start
+      const currentRadius = (elapsed / 1000) * EXPAND_SPEED
+      // Ring fades as it passes the outermost node
+      const ringOpacity = Math.max(0, 0.5 * (1 - Math.max(0, currentRadius - maxDist * 0.7) / (maxDist * 0.5 + 1)))
+      ring.attr('r', currentRadius).attr('opacity', ringOpacity)
 
-          const svg = this.tapestrysvg!
-          const pulse = svg.select<SVGGElement>('g.tapestry-nodes').append('circle')
-            .attr('r', 4)
-            .attr('fill', '#9A7B35')
-            .attr('opacity', 0.9)
-            .attr('pointer-events', 'none')
-            .style('filter', 'drop-shadow(0 0 5px #9A7B3580)')
+      for (const [nodeId, dist] of distances) {
+        if (!triggered.has(nodeId) && currentRadius >= dist) {
+          triggered.add(nodeId)
+          fadeNodeIn(nodeId)
+        }
+      }
 
-          const startTime = performance.now() + delay
-          const animPulse = (now: number) => {
-            if (now < startTime) { requestAnimationFrame(animPulse); return }
-            const elapsed = now - startTime
-            const t = Math.min(elapsed / PULSE_DURATION, 1)
-            const pt = pathEl.getPointAtLength(t * totalLength)
-            pulse.attr('cx', pt.x).attr('cy', pt.y).attr('opacity', String(0.9 * (1 - t * 0.2)))
-            if (t < 1) {
-              requestAnimationFrame(animPulse)
-            } else {
-              pulse.remove()
-              fadeNodeIn(nodeId)
-            }
-          }
-          requestAnimationFrame(animPulse)
-        })
-
-      if (!foundEdge) {
-        setTimeout(() => fadeNodeIn(nodeId), delay)
+      if (elapsed < totalDuration) {
+        requestAnimationFrame(tick)
+      } else {
+        ring.remove()
       }
     }
+    requestAnimationFrame(tick)
   }
 
   // ── Flutter animation ──────────────────────────────────────────────
