@@ -661,11 +661,7 @@ export class TapestryView {
     const width = Math.max(containerRect.width || 800, 800)
     const height = Math.max(containerRect.height || 600, 600)
 
-    // Build simulation nodes with tier-based initial positions
-    const tierCounts: Record<number, number> = {}
-    const tierIndices: Record<number, number> = {}
-
-    // Compute tiers from dependency depth
+    // Compute DAG depth for each node (used for section ordering and display)
     const depthMap = new Map<string, number>()
     const nodeMap = new Map(rawNodes.map(n => [n.id, n]))
 
@@ -685,28 +681,52 @@ export class TapestryView {
     }
 
     rawNodes.forEach(n => computeDepth(n.id))
-    const maxTier = Math.max(...Array.from(depthMap.values()), 0)
 
-    rawNodes.forEach(n => {
-      const tier = depthMap.get(n.id) || 0
-      tierCounts[tier] = (tierCounts[tier] || 0) + 1
+    // ── Section layout: deterministic positions by topological order ──
+    // Sections are sorted by DAG depth (tie-broken by ID for determinism) and
+    // assigned evenly-spaced X positions. They're pinned (fx/fy) from the start
+    // so they don't move during burn-in — interior nodes settle around them.
+    const hasSections = rawNodes.some(n => isSectionNode(n))
+    const sectionNodesRaw = rawNodes
+      .filter(n => isSectionNode(n))
+      .sort((a, b) => {
+        const da = depthMap.get(a.id) || 0
+        const db = depthMap.get(b.id) || 0
+        return da !== db ? da - db : a.id.localeCompare(b.id)
+      })
+
+    const sectionXTarget = new Map<string, number>()
+    sectionNodesRaw.forEach((n, i) => {
+      sectionXTarget.set(n.id, width * (i + 1) / (sectionNodesRaw.length + 1))
     })
 
+    // Recursively find the nearest section ancestor's target X for initial placement
+    function nearestSectionX(id: string, visited = new Set<string>()): number {
+      if (visited.has(id)) return width / 2
+      visited.add(id)
+      const node = nodeMap.get(id)
+      if (!node) return width / 2
+      for (const depId of node.dependsOn) {
+        if (sectionXTarget.has(depId)) return sectionXTarget.get(depId)!
+      }
+      for (const depId of node.dependsOn) {
+        const x = nearestSectionX(depId, visited)
+        if (x !== width / 2) return x
+      }
+      return width / 2
+    }
+
     const simNodes: SimNode[] = rawNodes.map(n => {
-      const tier = depthMap.get(n.id) || 0
-      tierIndices[tier] = tierIndices[tier] || 0
-      const indexInTier = tierIndices[tier]++
-      const countInTier = tierCounts[tier]
-
-      const tierSpacing = width / (maxTier + 2)
-      const verticalSpacing = height / (countInTier + 1)
-
+      if (hasSections && isSectionNode(n)) {
+        const x = sectionXTarget.get(n.id) || width / 2
+        return { id: n.id, data: n, degree: 0, x, y: height / 2, fx: x, fy: height / 2 }
+      }
+      const baseX = hasSections ? nearestSectionX(n.id) : width / 2
+      const jitter = hasSections ? 150 : 200
       return {
-        id: n.id,
-        data: n,
-        degree: 0,
-        x: tierSpacing * (tier + 1),
-        y: verticalSpacing * (indexInTier + 1),
+        id: n.id, data: n, degree: 0,
+        x: baseX + (Math.random() - 0.5) * jitter,
+        y: height / 2 + (Math.random() - 0.5) * jitter,
       }
     })
 
@@ -725,154 +745,30 @@ export class TapestryView {
       link.target.degree++
     })
 
-    // ── Branch separation: compute ancestry for Y-divergence force ──
-    // For each node, collect the full set of ancestors (all upstream nodes).
-    // Two nodes are "independent" if neither is an ancestor of the other.
-    // The branching distance is how far back their nearest common ancestor is.
-    const ancestors = new Map<string, Set<string>>()
-
-    function getAncestors(id: string, visited = new Set<string>()): Set<string> {
-      if (ancestors.has(id)) return ancestors.get(id)!
-      if (visited.has(id)) return new Set()
-      visited.add(id)
-      const node = nodeMap.get(id)
-      const result = new Set<string>()
-      if (node) {
-        for (const dep of node.dependsOn) {
-          result.add(dep)
-          for (const a of getAncestors(dep, visited)) result.add(a)
-        }
-      }
-      ancestors.set(id, result)
-      return result
-    }
-    rawNodes.forEach(n => getAncestors(n.id))
-
-    // Nearest common ancestor depth for two nodes (max depth among shared ancestors, -1 if none)
-    function ncaDepth(idA: string, idB: string): number {
-      const aAnc = ancestors.get(idA)!
-      const bAnc = ancestors.get(idB)!
-      let best = -1
-      for (const a of aAnc) {
-        if (bAnc.has(a)) {
-          const d = depthMap.get(a) || 0
-          if (d > best) best = d
-        }
-      }
-      return best
-    }
-
-    // Custom force: push independent branches apart in Y.
-    // Acts as a structural force — sets branch layout early, then fades.
-    const BRANCH_SEP_STRENGTH = 3.0
-    const BRANCH_MIN_Y_SEP = 2 * NODE_RY + 50
-
-    function branchSeparationForce(alpha: number): void {
-      for (let i = 0; i < simNodes.length; i++) {
-        for (let j = i + 1; j < simNodes.length; j++) {
-          const a = simNodes[i]
-          const b = simNodes[j]
-
-          // Skip if one is ancestor of the other (same branch)
-          const aAnc = ancestors.get(a.id)!
-          const bAnc = ancestors.get(b.id)!
-          if (aAnc.has(b.id) || bAnc.has(a.id)) continue
-
-          // Only affect nodes at similar X positions (within ~3 tiers)
-          const xDist = Math.abs(a.x! - b.x!)
-          if (xDist > minSeparation * 3) continue
-
-          const dy = b.y! - a.y!
-          const absDy = Math.abs(dy)
-          if (absDy > BRANCH_MIN_Y_SEP * 4) continue
-
-          // Branch distance: how far each node is from their NCA
-          const nca = ncaDepth(a.id, b.id)
-          const depthA = depthMap.get(a.id) || 0
-          const depthB = depthMap.get(b.id) || 0
-          const branchDist = nca >= 0
-            ? Math.min(depthA - nca, depthB - nca)
-            : Math.max(depthA, depthB) + 1
-
-          // Scale: ramps quickly from split point, full strength by distance 3
-          const scale = Math.min(branchDist, 3) / 3
-          const force = BRANCH_SEP_STRENGTH * scale * alpha
-
-          // Push apart in Y — position-based for overlap, velocity-based otherwise
-          if (absDy < BRANCH_MIN_Y_SEP) {
-            const push = force * (BRANCH_MIN_Y_SEP - absDy)
-            const sign = dy >= 0 ? 1 : -1
-            // Direct position nudge for strong structural effect
-            b.y! += sign * push * 0.3
-            a.y! -= sign * push * 0.3
-            b.vy! += sign * push * 0.2
-            a.vy! -= sign * push * 0.2
-          }
-        }
-      }
-    }
-
-    // Force simulation
+    // Force simulation: sections are already pinned (fx/fy set); interior nodes
+    // settle freely via link + repulsion + collide. No manual X constraints.
     this.simulation = d3Force.forceSimulation<SimNode>(simNodes)
       .force('link', d3Force.forceLink<SimNode, SimLink>(simLinks)
         .id(d => d.id)
         .distance(140)
-        .strength(link => {
-          const tgt = (link.target as SimNode).degree || 1
-          const src = (link.source as SimNode).degree || 1
-          return Math.max(0.4, 1.5 / Math.max(tgt, src))
-        }))
-      .force('charge', d3Force.forceManyBody().strength(-500).distanceMax(400))
-      .force('collide', d3Force.forceCollide<SimNode>().radius(60).strength(0.9))
-      .force('branchSeparation', branchSeparationForce)
-      .force('x', d3Force.forceX(width / 2).strength(0.015))
-      .force('y', d3Force.forceY(height / 2).strength(0.03))
+        .strength(0.7))
+      .force('charge', d3Force.forceManyBody().strength(-500).distanceMax(600))
+      .force('collide', d3Force.forceCollide<SimNode>().radius(65).strength(0.9))
+      .force('y', d3Force.forceY(height / 2).strength(0.02))
       .alphaDecay(0.012)
-      .velocityDecay(0.8)
+      .velocityDecay(0.75)
       .stop()
-
-    // Pre-run simulation
-    const visualGap = 60
-    const minSeparation = 2 * NODE_RX + visualGap
 
     for (let i = 0; i < SIMULATION_TICKS; i++) {
       this.simulation.tick()
-      for (let iter = 0; iter < 3; iter++) {
-        simLinks.forEach(link => {
-          const minX = link.source.x! + minSeparation
-          if (link.target.x! < minX) {
-            const diff = minX - link.target.x!
-            link.target.x! += diff * 0.5
-            link.source.x! -= diff * 0.5
-          }
-        })
-      }
     }
 
-    // Remove structural forces after burn-in — interactive dragging should
-    // only use gentle link/charge/collide, not the layout forces.
-    this.simulation.force('branchSeparation', null)
-    this.simulation.force('x', null)
+    // Freeze all nodes after burn-in: positions are pre-computed and stable.
+    // Sections were pinned from the start; interior nodes are frozen now.
     this.simulation.force('y', null)
     this.simulation.alphaDecay(0.05)
     this.simulation.velocityDecay(0.9)
-
-    // After burn-in: pin X for section nodes; interior nodes float.
-    // Section nodes maintain the left-to-right DAG ordering.
-    // Interior nodes are freed in X — the link force pulls them toward their
-    // pinned section parents, so they naturally branch vertically (in Y)
-    // around the section's X column rather than extending the horizontal flow.
-    const hasSectionsEarly = rawNodes.some(n => isSectionNode(n))
-    simNodes.forEach(n => {
-      if (!hasSectionsEarly || isSectionNode(n.data)) {
-        // Section nodes (and all nodes when no sections): pin X
-        n.fx = n.x
-      } else {
-        // Interior nodes: keep burn-in X position, just release fx so they float.
-        // The link force will pull them toward their pinned section parent's X column.
-        // No snap needed — the burn-in already placed them near their section.
-      }
-    })
+    simNodes.forEach(n => { n.fx = n.x; n.fy = n.y })
 
     // Create SVG
     const svg = d3Selection.select(this.dagContainer)
@@ -952,9 +848,9 @@ export class TapestryView {
         })
         .on('end', (event, d) => {
           if (!event.active) this.simulation?.alphaTarget(0)
-          // Keep X pinned where user left it, release Y to settle
+          // Freeze where user dropped it
           d.fx = d.x
-          d.fy = null
+          d.fy = d.y
           d3Selection.select(event.sourceEvent.target.closest('.tapestry-node') as Element)
             .style('cursor', 'grab')
           if (draggedDistance < 5) {
@@ -975,9 +871,6 @@ export class TapestryView {
             }
           }
         }))
-
-    // Detect if tapestry has any section nodes (tier:1)
-    const hasSections = rawNodes.some(n => isSectionNode(n))
 
     // Build node visuals
     nodeElements.each((d, _i, nodes) => {
@@ -1110,8 +1003,6 @@ export class TapestryView {
     const minY_bound = 60 + NODE_RY
 
     this.simulation.on('tick', () => {
-      // DAG X-constraint disabled post burn-in (X positions are pinned via fx)
-
       // Constrain within bounds
       simNodes.forEach(n => {
         n.x = Math.max(minX_bound, n.x!)
@@ -1201,7 +1092,7 @@ export class TapestryView {
         .classed('warp-trace', isWarp)
     })
 
-    // Wake simulation so newly visible interior nodes can settle in Y
+    // Trigger tick to update edge paths for newly visible/hidden nodes
     this.simulation?.alpha(0.05).restart()
   }
 
