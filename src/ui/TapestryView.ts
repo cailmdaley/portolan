@@ -1200,10 +1200,10 @@ export class TapestryView {
             el.style('opacity', '0')
           }
       } else {
-        // Ghost: very faint, blurred, not interactive
+        // Ghost: very faint, blurred — still interactive (direct click reveals neighborhood)
         el.style('display', '')
           .style('opacity', '0.07')
-          .style('pointer-events', 'none')
+          .style('pointer-events', '')
           .style('filter', 'url(#fog-blur)')
       }
     })
@@ -1230,20 +1230,23 @@ export class TapestryView {
     this.simulation?.alpha(0.05).restart()
   }
 
-  /** Animate nodes emerging from fog: expanding radial wave from center reveals nodes as it passes. */
+  /** Animate nodes emerging from fog: continuous opacity field — opacity = f(waveRadius − dist). */
   private revealNodesRadial(center: {x: number, y: number}, newlyVisible: Set<string>): void {
     if (!this.tapestrysvg || newlyVisible.size === 0) return
 
-    const EXPAND_SPEED = 260   // px/s
-    const FADE_DURATION = 280  // ms for each node to fade in
+    const EXPAND_SPEED = 260  // px/s
+    const ROLLOFF = 80        // px — width of the transition zone
+    const FOG_OPACITY = 0.07
 
-    // Pre-compute distances from center to each newly-visible node (via DOM data)
+    // Pre-compute distances and grab DOM elements for every newly-visible node
     const distances = new Map<string, number>()
-    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(d => {
+    const nodeEls = new Map<string, SVGGElement>()
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
       if (newlyVisible.has(d.data.id)) {
         const dx = (d.x ?? 0) - center.x
         const dy = (d.y ?? 0) - center.y
         distances.set(d.data.id, Math.sqrt(dx * dx + dy * dy))
+        nodeEls.set(d.data.id, this)
       }
     })
 
@@ -1261,42 +1264,32 @@ export class TapestryView {
       .attr('opacity', 0.5)
       .attr('pointer-events', 'none')
 
-    const triggered = new Set<string>()
+    // smoothstep: smooth sigmoid over [0, 1]
+    const smoothstep = (t: number) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - 2 * c) }
 
-    const fadeNodeIn = (nodeId: string) => {
-      const nodeEl = d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node')
-        .filter(nd => nd.data.id === nodeId)
-        .nodes()[0] as SVGGElement | undefined
-      if (!nodeEl) return
-      const start = performance.now()
-      const tick = (now: number) => {
-        const t = Math.min((now - start) / FADE_DURATION, 1)
-        nodeEl.style.opacity = String(t)
-        if (t < 1) requestAnimationFrame(tick)
-      }
-      requestAnimationFrame(tick)
-    }
-
-    const totalDuration = (maxDist / EXPAND_SPEED) * 1000 + FADE_DURATION
+    const totalDuration = ((maxDist + ROLLOFF) / EXPAND_SPEED) * 1000
     const start = performance.now()
 
     const tick = (now: number) => {
       const elapsed = now - start
-      const currentRadius = (elapsed / 1000) * EXPAND_SPEED
-      // Ring fades as it passes the outermost node
-      const ringOpacity = Math.max(0, 0.5 * (1 - Math.max(0, currentRadius - maxDist * 0.7) / (maxDist * 0.5 + 1)))
-      ring.attr('r', currentRadius).attr('opacity', ringOpacity)
+      const waveRadius = (elapsed / 1000) * EXPAND_SPEED
 
+      // Ring fades as it expands past the outermost node
+      const ringOpacity = Math.max(0, 0.5 * (1 - Math.max(0, waveRadius - maxDist * 0.7) / (maxDist * 0.5 + 1)))
+      ring.attr('r', waveRadius).attr('opacity', ringOpacity)
+
+      // Continuous field: each node's opacity tracks how far behind the wave it is
       for (const [nodeId, dist] of distances) {
-        if (!triggered.has(nodeId) && currentRadius >= dist) {
-          triggered.add(nodeId)
-          fadeNodeIn(nodeId)
-        }
+        const progress = (waveRadius - dist) / ROLLOFF  // <0: still fog, 0→1: transition, >1: fully visible
+        const opacity = FOG_OPACITY + (1 - FOG_OPACITY) * smoothstep(progress)
+        const el = nodeEls.get(nodeId)
+        if (el) el.style.opacity = String(opacity)
       }
 
       if (elapsed < totalDuration) {
         requestAnimationFrame(tick)
       } else {
+        for (const el of nodeEls.values()) el.style.opacity = '1'
         ring.remove()
       }
     }
