@@ -890,23 +890,15 @@ export class TapestryView {
       // Mark section nodes with a CSS class
       if (isSection) g.classed('tapestry-section-node', true)
 
-      // Canvas-colored knockout — same as background, hides edges without changing apparent opacity
-      g.append('path')
-        .attr('d', organicEllipse(rx, ry, nodeSeed, 1.0))
-        .attr('fill', '#C8B8A8')
-        .attr('fill-opacity', 1.0)
-        .attr('stroke', 'none')
-
-      // Fill layers: subtle colored tint + parchment halo at original low opacities
-      const fillColors = [color, '#EDE8E0']
-      const fillOpacities = [0.18, 0.14]
+      // Fill layers: inner ring original translucent color, outer ring parchment halo
       for (let i = RING_COUNT - 1; i >= 0; i--) {
         const scale = RING_SCALES[i]
+        const isOuter = i === RING_COUNT - 1
         g.append('path')
           .attr('class', 'tapestry-node-fill')
           .attr('d', organicEllipse(rx, ry, nodeSeed + i * 0.1, scale))
-          .attr('fill', fillColors[i])
-          .attr('fill-opacity', fillOpacities[i])
+          .attr('fill', isOuter ? '#EDE8E0' : color)
+          .attr('fill-opacity', isOuter ? 0.14 : 0.12 + (RING_COUNT - 1 - i) * 0.06)
           .attr('stroke', 'none')
       }
 
