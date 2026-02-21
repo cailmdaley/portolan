@@ -812,10 +812,27 @@ export class TapestryView {
     this.simulation.alphaDecay(0.05)
     this.simulation.velocityDecay(0.9)
 
-    // After burn-in: pin X positions so dragging only moves Y.
-    // This prevents both rightward drift (from DAG constraint) and
-    // leftward collapse (from link force without DAG constraint).
-    simNodes.forEach(n => { n.fx = n.x })
+    // After burn-in: pin X for section nodes; interior nodes float.
+    // Section nodes maintain the left-to-right DAG ordering.
+    // Interior nodes are freed in X — the link force pulls them toward their
+    // pinned section parents, so they naturally branch vertically (in Y)
+    // around the section's X column rather than extending the horizontal flow.
+    const hasSectionsEarly = rawNodes.some(n => isSectionNode(n))
+    simNodes.forEach(n => {
+      if (!hasSectionsEarly || isSectionNode(n.data)) {
+        // Section nodes (and all nodes when no sections): pin X
+        n.fx = n.x
+      } else {
+        // Interior nodes: snap X to nearest section parent so settling starts
+        // from a sensible position, then release fx so they can float
+        const sectionParentX = n.data.dependsOn
+          .map(id => simNodeMap.get(id))
+          .filter((p): p is SimNode => !!p && isSectionNode(p.data))
+          .map(p => p.x!)[0]
+        if (sectionParentX !== undefined) n.x = sectionParentX
+        // fx remains undefined — interior nodes float in X
+      }
+    })
 
     // Create SVG
     const svg = d3Selection.select(this.dagContainer)
@@ -1116,6 +1133,9 @@ export class TapestryView {
       d3Selection.select(this)
         .style('display', show ? '' : 'none')
     })
+
+    // Wake simulation so newly visible interior nodes can settle in Y
+    this.simulation?.alpha(0.05).restart()
   }
 
   // ── Node selection ─────────────────────────────────────────────────
