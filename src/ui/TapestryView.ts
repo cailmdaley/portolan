@@ -829,6 +829,7 @@ export class TapestryView {
     // Draw nodes
     const nodeGroup = rootGroup.append('g').attr('class', 'tapestry-nodes')
     let draggedDistance = 0
+    const draggingNodes = new Set<string>()  // nodes currently held by user
 
     const nodeElements = nodeGroup.selectAll<SVGGElement, SimNode>('.tapestry-node')
       .data(simNodes)
@@ -838,6 +839,7 @@ export class TapestryView {
       .call(d3Drag.drag<SVGGElement, SimNode>()
         .on('start', (event, d) => {
           draggedDistance = 0
+          draggingNodes.add(d.data.id)
           if (!event.active) this.simulation?.alphaTarget(0.1).restart()
           d.fx = d.x
           d.fy = d.y
@@ -850,6 +852,7 @@ export class TapestryView {
           d.fy = event.y
         })
         .on('end', (event, d) => {
+          draggingNodes.delete(d.data.id)
           if (!event.active) this.simulation?.alphaTarget(0)
           // Freeze where user dropped it
           d.fx = d.x
@@ -938,7 +941,7 @@ export class TapestryView {
         const mid = Math.ceil(words.length / 2)
         const line1 = words.slice(0, mid).join(' ')
         const line2 = words.slice(mid).join(' ')
-        const fs = fitSize([line1, line2], isSection ? 12 : 10.5)
+        const fs = fitSize([line1, line2], isSection ? 15 : 14)
         g.append('text')
           .attr('class', 'tapestry-node-label')
           .attr('y', -4)
@@ -952,7 +955,7 @@ export class TapestryView {
           .attr('font-size', `${fs}px`)
           .text(line2)
       } else {
-        const fs = fitSize([name], isSection ? 13 : 11)
+        const fs = fitSize([name], isSection ? 16 : 14)
         g.append('text')
           .attr('class', 'tapestry-node-label')
           .attr('y', 4)
@@ -1048,13 +1051,16 @@ export class TapestryView {
         d.sagInitialized = true
       }
 
-      // Integrate spring-damper: k=4.0 (stiffness), c=0.5 (damping, ζ≈0.12 → longer ringing)
-      const dt = 1 / 60
-      const k = 4.0
-      const c = 0.5
-      const noise = (Math.random() - 0.5) * dist * 0.002  // thermal floor keeps edges alive
-      d.sagVel += (-k * (d.sagPos - targetSag) - c * d.sagVel + noise) * dt
-      d.sagPos += d.sagVel * dt
+      // Integrate spring-damper — freeze while endpoint is held, ring free on release
+      const isHeld = draggingNodes.has(link.source.data.id) || draggingNodes.has(link.target.data.id)
+      if (!isHeld) {
+        const dt = 1 / 60
+        const k = 4.0
+        const c = 0.5
+        const noise = (Math.random() - 0.5) * dist * 0.002  // thermal floor keeps edges alive
+        d.sagVel += (-k * (d.sagPos - targetSag) - c * d.sagVel + noise) * dt
+        d.sagPos += d.sagVel * dt
+      }
 
       const cp1 = {
         x: start.x + tx * dist * d.tension + perpX * (d.sagPos + d.wobble1),
