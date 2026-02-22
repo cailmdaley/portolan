@@ -18,4 +18,6 @@ Three staleness states surface dependency health. **Fresh** (teal): this fiber's
 
 Evidence is optional. Planning fibers, decision logs, documentation tapestries — umber dots here mean "no computation," not "something broken."
 
+Uncertainty is metadata, not failure. A fiber that closes with "we don't know — and here's why" does more epistemic work than one that papers over doubt. The umber dot (no evidence) is not a gap — it's honest: this node hasn't been grounded yet. See `.felt/ai-mediated-science-the-2474bfcc.md` for why this matters as AI output accelerates.
+
 **Paper provenance.** See `.felt/paper-provenance-8327b930.md` — fiber outcomes cite specific `.tex` source lines, rendered as clickable links. A result is only as trustworthy as the chain connecting it to its sources.
