@@ -1,7 +1,6 @@
 ---
 title: Artifact lightbox
-tags:
-    - tapestry:portolan
+tags: []
 depends-on:
     - detail-panel-a4d1999b
 created-at: 2026-02-21T19:27:17.602931+01:00

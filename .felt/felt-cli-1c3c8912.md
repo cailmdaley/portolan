@@ -1,7 +1,6 @@
 ---
 title: Felt CLI
-tags:
-    - tapestry:portolan
+tags: []
 depends-on:
     - tapestry-structure-4401c64b
     - felt-concept-7c2e9b0d

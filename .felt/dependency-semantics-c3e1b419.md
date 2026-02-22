@@ -1,8 +1,7 @@
 ---
 title: Dependency semantics
 status: open
-tags:
-    - tapestry:portolan
+tags: []
 depends-on:
     - tapestry-structure-4401c64b
     - fiber-anatomy-0a107df2

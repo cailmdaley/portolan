@@ -17,3 +17,5 @@ What felt resists is the tree. Trees impose a root, enforce parent-child nesting
 Filing a fiber is adding a node. Filing a dependency is adding an edge. The felt grows downward and sideways, in whatever direction the work demands.
 
 The practical consequence is that felt never forces you to decide where something belongs before you understand what it is. In a tree, every piece of knowledge must choose a parent. In felt, a fiber exists first and finds its context through the dependencies you discover. Structure is a trailing indicator of understanding, not a prerequisite for it.
+
+**The `felt` CLI** manages fibers as markdown files in a project's `.felt/` directory. Each fiber is a single `.md` file with YAML frontmatter (title, status, kind, tags, depends-on, outcome) and a markdown body. Core commands: `felt add "Title"` creates a new fiber, `felt edit <id>` modifies frontmatter fields, `felt close <id> -o "outcome"` marks it resolved. `felt ls`, `felt upstream`, `felt downstream` navigate the graph. Because fibers are plain text files, they can be read, grepped, and version-controlled with standard tools — felt is a convenience layer, not a database.

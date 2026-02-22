@@ -1,7 +1,6 @@
 ---
 title: Section expand
-tags:
-    - tapestry:portolan
+tags: []
 depends-on:
     - tapestry-interaction-74c5f450
     - sections-concept-e9d0c47a

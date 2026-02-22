@@ -1,7 +1,6 @@
 ---
 title: Tapestry tags
-tags:
-    - tapestry:portolan
+tags: []
 depends-on:
     - tapestry-structure-4401c64b
 created-at: 2026-02-21T19:11:27.171943+01:00

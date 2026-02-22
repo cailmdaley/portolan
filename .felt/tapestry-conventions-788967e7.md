@@ -30,4 +30,4 @@ Without `evidence.json`, the node renders with no-evidence staleness (umber dot)
 
 **7. File line references.** Any inline code matching `path/to/file.ext:L42` becomes a clickable link in the sidebar — opening that file at that line. Use this in outcomes to anchor claims to exact source locations.
 
-For Snakemake workflows, the snakemake conventions fiber maps these steps onto rule structure directly.
+**Tags.** Fibers enter a tapestry through tags. The `tapestry:<name>` prefix selects fibers into a named view — the suffix becomes the spec name used to locate evidence at `results/claims/{specName}/evidence.json`. The `tier:1` tag marks a fiber as a section node: always visible in skeleton view, rendered at 1.5× scale, X position pinned as a column anchor. A tapestry with no `tier:1` nodes renders as a flat graph; adding them activates the pyramid navigation. Note: YAML list items like `"claim, tapestry:foo"` are a single string — both `FiberReader` and `HttpApi` split on commas to prevent silent tag-matching failures.
