@@ -46,14 +46,15 @@ A fiber belongs to a section's neighborhood if it is **1 hop** from the section 
 
 | Action | Behavior |
 |--------|----------|
-| **Hover any node** | Tooltip with lead paragraph (first 1-2 sentences of body) |
-| **Click any node** | Sidebar shows full detail. 1-hop neighborhood emerges from fog. |
+| **Hover any node (300ms)** | Full radial reveal animation + tooltip (body lead ÷ outcome). Collapses on mouseleave. |
+| **Click any node** | Sidebar shows full detail. 1-hop neighborhood emerges from fog. Expansion permanent. |
 | **Click again** | Node collapses — neighborhood returns to fog. |
 | **Click background** | Sidebar closes. Map returns to skeleton (sections only). |
+| **Click while hovering** | Makes hover-expansion permanent — mouseleave won't collapse. |
 
 Every click reshapes what's visible. The fog holds everything; sections are the trailheads you navigate relative to. Each click is a step. Each step is reversible.
 
-Hover is the scout. Click is the commitment. Sections aren't a special class — they're fibers that happen to be visible on first load.
+Hover is the scout (300ms threshold filters accidental passes). Click is the commitment. Sections aren't a special class — they're fibers that happen to be visible on first load.
 
 ### Three zoom levels (pyramid summaries)
 
@@ -62,7 +63,7 @@ Inspired by [Factory's pyramid summaries](https://factory.strongdm.ai/techniques
 | Level | What you see | Source |
 |-------|-------------|--------|
 | **Label** (2-3 words) | Node in DAG | `shortName(fiber.title)` |
-| **Lead paragraph** (1-2 sentences) | Hover tooltip | First sentences of fiber body |
+| **Lead paragraph** (1-2 sentences) | Hover tooltip (300ms) | First sentences of fiber body + outcome ✓ |
 | **Full detail** | Sidebar panel | Body, outcome, evidence, artifacts |
 
 These levels apply to ALL nodes, not just sections. The section body happens to serve as a summary of its neighborhood — but that's a content convention, not a rendering distinction.
@@ -134,4 +135,3 @@ d3-force simulation runs on ALL nodes at load. Burn-in phase (800 ticks) compute
 ## Open Questions
 
 - **Static export tiering**: Verify that tier:1 tag passes through to static JSON and tiered behavior works in static mode.
-- **Hover tooltip (lead paragraph)**: Not yet implemented — hover shows nothing. The three zoom levels require this to be complete.
