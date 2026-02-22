@@ -207,6 +207,27 @@ function shortName(title: string): string {
   return words.slice(0, 3).join(' ')
 }
 
+/** Extract first 1-2 sentences from a markdown body for hover tooltips. */
+function leadParagraph(body: string): string {
+  if (!body) return ''
+  // Strip markdown headings, code blocks, and leading whitespace
+  const stripped = body
+    .replace(/^#{1,6}\s+.*/gm, '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]+`/g, s => s.slice(1, -1))
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .trim()
+  // Find first non-empty paragraph
+  const firstPara = stripped.split(/\n\n+/).find(p => p.trim().length > 10) ?? stripped
+  // Take up to 2 sentences
+  const sentences = firstPara.match(/[^.!?]*[.!?]+/g) ?? []
+  if (sentences.length >= 2) return sentences.slice(0, 2).join('').trim()
+  if (sentences.length === 1) return sentences[0].trim()
+  return firstPara.slice(0, 160).trim() + (firstPara.length > 160 ? '…' : '')
+}
+
 function stalenessIcon(staleness: Staleness): string {
   if (staleness === 'fresh') return '\u25CF'
   if (staleness === 'stale') return '\u25CC'
@@ -291,6 +312,9 @@ export class TapestryView {
   private bodyEditorView: EditorView | null = null
   private bodyEditorNodeId: string | null = null
 
+  // Hover tooltip
+  private tooltip: HTMLElement | null = null
+
   constructor() {
     this.panel = this.createPanel()
     this.closeBtn = this.panel.querySelector('.tapestry-close')!
@@ -347,6 +371,11 @@ export class TapestryView {
 
     this.setupEventListeners()
     document.body.appendChild(this.panel)
+
+    // Create floating tooltip element
+    this.tooltip = document.createElement('div')
+    this.tooltip.className = 'tapestry-hover-tooltip'
+    document.body.appendChild(this.tooltip)
   }
 
   // ── DOM construction ───────────────────────────────────────────────
@@ -510,6 +539,7 @@ export class TapestryView {
   hide(): void {
     this.panel.classList.remove('visible')
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
+    if (this.tooltip) this.tooltip.style.display = 'none'
     this.currentCity = null
     this.selectedNodeId = null
     this.tapestryData = null
@@ -895,6 +925,25 @@ export class TapestryView {
             }
           }
         }))
+
+    // Hover tooltip — show lead paragraph on mouseenter, hide on mouseleave
+    nodeElements
+      .on('mouseenter', (event: MouseEvent, d: SimNode) => {
+        const lead = leadParagraph(d.data.body)
+        if (!lead || !this.tooltip) return
+        this.tooltip.textContent = lead
+        this.tooltip.style.display = 'block'
+        this.tooltip.style.left = `${event.clientX + 14}px`
+        this.tooltip.style.top = `${event.clientY - 8}px`
+      })
+      .on('mousemove', (event: MouseEvent) => {
+        if (!this.tooltip || this.tooltip.style.display === 'none') return
+        this.tooltip.style.left = `${event.clientX + 14}px`
+        this.tooltip.style.top = `${event.clientY - 8}px`
+      })
+      .on('mouseleave', () => {
+        if (this.tooltip) this.tooltip.style.display = 'none'
+      })
 
     // Build node visuals
     nodeElements.each((d, _i, nodes) => {
