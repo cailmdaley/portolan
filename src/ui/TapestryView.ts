@@ -931,32 +931,34 @@ export class TapestryView {
           }
         }))
 
-    // Hover: full reveal animation after 250ms, collapses on leave (unless clicked to make permanent)
+    // Hover: reveal animation fires immediately; tooltip appears after 250ms
     let hoverExpandedId: string | null = null
-    let hoverTimer: ReturnType<typeof setTimeout> | null = null
+    let tooltipTimer: ReturnType<typeof setTimeout> | null = null
 
     nodeElements
       .on('mouseenter', (event: MouseEvent, d: SimNode) => {
-        // Show tooltip immediately
+        // Reveal animation fires immediately (only if not already expanded)
+        if (hasSections && !this.expandedNodes.has(d.data.id)) {
+          hoverExpandedId = d.data.id
+          this.expandedNodes.add(d.data.id)
+          this.updateTierVisibility(true, {x: d.x ?? 0, y: d.y ?? 0})
+        }
+
+        // Tooltip appears after 250ms
         const lead = leadParagraph(d.data.body)
         const outcome = d.data.outcome?.trim() ?? ''
         if ((lead || outcome) && this.tooltip) {
-          let html = ''
-          if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
-          if (lead && outcome) html += '<hr class="tooltip-divider">'
-          if (outcome) html += `<span class="tooltip-outcome">${escapeHtml(outcome)}</span>`
-          this.tooltip.innerHTML = html
-          this.tooltip.style.display = 'block'
-          this.tooltip.style.left = `${event.clientX + 14}px`
-          this.tooltip.style.top = `${event.clientY - 8}px`
-        }
-
-        // Trigger full reveal animation after 250ms (only if not already expanded)
-        if (hasSections && !this.expandedNodes.has(d.data.id)) {
-          hoverTimer = setTimeout(() => {
-            hoverExpandedId = d.data.id
-            this.expandedNodes.add(d.data.id)
-            this.updateTierVisibility(true, {x: d.x ?? 0, y: d.y ?? 0})
+          const cx = event.clientX, cy = event.clientY
+          tooltipTimer = setTimeout(() => {
+            if (!this.tooltip) return
+            let html = ''
+            if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
+            if (lead && outcome) html += '<hr class="tooltip-divider">'
+            if (outcome) html += `<span class="tooltip-outcome">${escapeHtml(outcome)}</span>`
+            this.tooltip.innerHTML = html
+            this.tooltip.style.display = 'block'
+            this.tooltip.style.left = `${cx + 14}px`
+            this.tooltip.style.top = `${cy - 8}px`
           }, 250)
         }
       })
@@ -966,15 +968,15 @@ export class TapestryView {
         this.tooltip.style.top = `${event.clientY - 8}px`
       })
       .on('mouseleave', (_event: MouseEvent, d: SimNode) => {
-        // Cancel pending hover expand
-        if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null }
+        // Cancel pending tooltip
+        if (tooltipTimer) { clearTimeout(tooltipTimer); tooltipTimer = null }
+        if (this.tooltip) this.tooltip.style.display = 'none'
         // Collapse if this node was hover-expanded (not click-made-permanent)
         if (hasSections && hoverExpandedId === d.data.id) {
           hoverExpandedId = null
           this.expandedNodes.delete(d.data.id)
           this.updateTierVisibility(false, {x: d.x ?? 0, y: d.y ?? 0})
         }
-        if (this.tooltip) this.tooltip.style.display = 'none'
       })
 
     // Build node visuals
