@@ -5208,8 +5208,14 @@
         font-family: var(--font-main);
       }
 
-      .tapestry-search-results .search-result:hover {
+      .tapestry-search-results .search-result:hover,
+      .tapestry-search-results .search-result.search-focused {
         background: var(--ui-dark-surface);
+      }
+
+      .tapestry-search-results .search-result.search-focused {
+        outline: 1px solid var(--ui-teal);
+        outline-offset: -1px;
       }
 
       .tapestry-search-results .search-result-dot {
@@ -5563,25 +5569,27 @@
       /* Detail: upstream/downstream graph */
       .tapestry-detail-graph {
         display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0.25rem;
+        flex-direction: column;
+        gap: 0.3rem;
         padding-bottom: 0.6rem;
         margin-bottom: 0.6rem;
         border-bottom: 1px solid var(--ui-border);
       }
 
-      .graph-arrow {
-        color: var(--ui-text-muted);
-        font-size: 0.75rem;
-        opacity: 0.6;
+      .dep-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem;
       }
 
-      .graph-sep {
+      .dep-dir-label {
+        font-size: 0.68rem;
         color: var(--ui-text-muted);
-        font-size: 0.75rem;
-        opacity: 0.4;
-        margin: 0 0.15rem;
+        opacity: 0.6;
+        font-family: var(--font-mono);
+        min-width: 5.5rem;
+        flex-shrink: 0;
       }
 
       .dep-tag {

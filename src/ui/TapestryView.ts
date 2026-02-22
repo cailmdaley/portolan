@@ -6,6 +6,7 @@ import * as d3Force from 'd3-force'
 import * as d3Selection from 'd3-selection'
 import * as d3Drag from 'd3-drag'
 import * as d3Zoom from 'd3-zoom'
+import 'd3-transition'
 import { EditorState, type Extension } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
@@ -295,8 +296,11 @@ export class TapestryView {
   private staticAssetBase = ''
   private staticDataBase = ''
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
+  private svgEl: d3Selection.Selection<SVGSVGElement, unknown, null, undefined> | null = null
+  private zoomBehavior: d3Zoom.ZoomBehavior<SVGSVGElement, unknown> | null = null
   private expandedNodes = new Set<string>()
   private visibleNodes = new Set<string>()  // tracks which nodes are fully visible (for animation)
+  private searchFocusIdx = -1
   private flutterRAF: number | null = null
   private flutterTick: (() => void) | null = null
   private detailWidth = DETAIL_DEFAULT_WIDTH
@@ -451,8 +455,24 @@ export class TapestryView {
         this.fiberSearchInput.value = ''
         this.searchResults.innerHTML = ''
         this.clearSearchHighlights()
+        this.searchFocusIdx = -1
         this.fiberSearchInput.blur()
         this.renderFiberList()
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const results = this.searchResults.querySelectorAll<HTMLElement>('.search-result')
+        if (results.length === 0) return
+        if (e.key === 'ArrowDown') {
+          this.searchFocusIdx = (this.searchFocusIdx + 1) % results.length
+        } else {
+          this.searchFocusIdx = this.searchFocusIdx <= 0 ? results.length - 1 : this.searchFocusIdx - 1
+        }
+        this.updateSearchFocus()
+      } else if (e.key === 'Enter') {
+        const results = this.searchResults.querySelectorAll<HTMLElement>('.search-result')
+        if (this.searchFocusIdx >= 0 && this.searchFocusIdx < results.length) {
+          results[this.searchFocusIdx].click()
+        }
       }
     })
 
@@ -824,6 +844,8 @@ export class TapestryView {
       })
 
     svg.call(zoomBehavior)
+    this.svgEl = svg
+    this.zoomBehavior = zoomBehavior
 
     // Background click — collapse to skeleton view
     svg.on('click', (event) => {
@@ -1511,19 +1533,31 @@ export class TapestryView {
    * Reveal a node's 1-hop neighborhood (if in fog) then select it.
    * Use this when navigating programmatically (URL hash, search results).
    */
-  private revealAndSelect(id: string, animate = false): void {
+  private revealAndSelect(id: string, animate = false, center = false): void {
     if (!this.visibleNodes.has(id)) {
       this.expandedNodes.add(id)
       // Get simulation position for wave animation center
-      let center: {x: number, y: number} | undefined
+      let waveCenter: {x: number, y: number} | undefined
       if (animate) {
         d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(d => {
-          if (d.data.id === id) center = { x: d.x ?? 0, y: d.y ?? 0 }
+          if (d.data.id === id) waveCenter = { x: d.x ?? 0, y: d.y ?? 0 }
         })
       }
-      this.updateTierVisibility(animate, center)
+      this.updateTierVisibility(animate, waveCenter)
     }
     this.selectNode(id)
+    if (center) setTimeout(() => this.centerOnNode(id), 300)
+  }
+
+  private centerOnNode(id: string): void {
+    if (!this.svgEl || !this.zoomBehavior) return
+    let nodePos: { x: number, y: number } | null = null
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(d => {
+      if (d.data.id === id) nodePos = { x: d.x ?? 0, y: d.y ?? 0 }
+    })
+    if (!nodePos) return
+    this.svgEl.transition().duration(500)
+      .call(this.zoomBehavior.translateTo, (nodePos as {x: number, y: number}).x, (nodePos as {x: number, y: number}).y)
   }
 
   private selectNode(id: string): void {
@@ -1606,13 +1640,13 @@ export class TapestryView {
       return `<span class="dep-tag downstream-tag" data-dep-id="${escapeHtml(d.id)}">${icon} ${escapeHtml(shortName(d.title))}</span>`
     }).join('')
 
-    // Combine upstream and downstream on one line with arrow separators
+    // Upstream / downstream rows with text labels
     let graphHtml = ''
     if (upstreamTags || downstreamTags) {
-      const parts: string[] = []
-      if (upstreamTags) parts.push(`<span class="graph-arrow">\u2190</span>${upstreamTags}`)
-      if (downstreamTags) parts.push(`${downstreamTags}<span class="graph-arrow">\u2192</span>`)
-      graphHtml = `<div class="tapestry-detail-graph">${parts.join('<span class="graph-sep">\u00B7</span>')}</div>`
+      const rows: string[] = []
+      if (upstreamTags) rows.push(`<div class="dep-row"><span class="dep-dir-label">upstream</span>${upstreamTags}</div>`)
+      if (downstreamTags) rows.push(`<div class="dep-row"><span class="dep-dir-label">downstream</span>${downstreamTags}</div>`)
+      graphHtml = `<div class="tapestry-detail-graph">${rows.join('')}</div>`
     }
 
     // Body (markdown) — rendered by default, double-click to edit
@@ -2329,7 +2363,7 @@ export class TapestryView {
     }).join('')
 
     const graphHtml = upstreamTags
-      ? `<div class="tapestry-detail-graph"><span class="graph-arrow">\u2190</span>${upstreamTags}</div>`
+      ? `<div class="tapestry-detail-graph"><div class="dep-row"><span class="dep-dir-label">upstream</span>${upstreamTags}</div></div>`
       : ''
 
     const outcomeHtml = fiber.outcome
@@ -2392,6 +2426,7 @@ export class TapestryView {
     const query = this.fiberSearchInput.value.toLowerCase().trim()
     this.clearSearchHighlights()
     this.searchResults.innerHTML = ''
+    this.searchFocusIdx = -1
 
     if (!query || !this.tapestryData) return
 
@@ -2430,10 +2465,11 @@ export class TapestryView {
           <span class="search-result-match">${escapeHtml(m.context)}</span>
         `
         div.addEventListener('click', () => {
-          this.revealAndSelect(m.node.id, true)
+          this.revealAndSelect(m.node.id, true, true)
           this.fiberSearchInput.value = ''
           this.searchResults.innerHTML = ''
           this.clearSearchHighlights()
+          this.searchFocusIdx = -1
           this.renderFiberList()
         })
         this.searchResults.appendChild(div)
@@ -2443,6 +2479,14 @@ export class TapestryView {
 
   private clearSearchHighlights(): void {
     d3Selection.selectAll('.tapestry-node').classed('search-match', false)
+  }
+
+  private updateSearchFocus(): void {
+    const results = this.searchResults.querySelectorAll<HTMLElement>('.search-result')
+    results.forEach((r, i) => r.classList.toggle('search-focused', i === this.searchFocusIdx))
+    if (this.searchFocusIdx >= 0 && this.searchFocusIdx < results.length) {
+      results[this.searchFocusIdx].scrollIntoView({ block: 'nearest' })
+    }
   }
 
   // ── Annotations ────────────────────────────────────────────────────
