@@ -926,12 +926,27 @@ export class TapestryView {
           }
         }))
 
-    // Hover tooltip — show lead paragraph on mouseenter, hide on mouseleave
+    // Hover tooltip — show lead paragraph + outcome on mouseenter, hide on mouseleave
+    // Also lifts node to full opacity while hovering (preview of revealed state)
     nodeElements
       .on('mouseenter', (event: MouseEvent, d: SimNode) => {
+        // Lift node opacity to full while hovering
+        const el = event.currentTarget as SVGGElement
+        el.dataset.hoverPrevOpacity = el.style.opacity
+        el.style.opacity = '1'
+
+        // Build tooltip content: lead paragraph + outcome (whichever exist)
         const lead = leadParagraph(d.data.body)
-        if (!lead || !this.tooltip) return
-        this.tooltip.textContent = lead
+        const outcome = d.data.outcome?.trim() ?? ''
+        if (!lead && !outcome) return
+        if (!this.tooltip) return
+
+        let html = ''
+        if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
+        if (lead && outcome) html += '<hr class="tooltip-divider">'
+        if (outcome) html += `<span class="tooltip-outcome">${escapeHtml(outcome)}</span>`
+
+        this.tooltip.innerHTML = html
         this.tooltip.style.display = 'block'
         this.tooltip.style.left = `${event.clientX + 14}px`
         this.tooltip.style.top = `${event.clientY - 8}px`
@@ -941,7 +956,11 @@ export class TapestryView {
         this.tooltip.style.left = `${event.clientX + 14}px`
         this.tooltip.style.top = `${event.clientY - 8}px`
       })
-      .on('mouseleave', () => {
+      .on('mouseleave', (event: MouseEvent) => {
+        // Restore prior opacity
+        const el = event.currentTarget as SVGGElement
+        el.style.opacity = el.dataset.hoverPrevOpacity ?? ''
+        delete el.dataset.hoverPrevOpacity
         if (this.tooltip) this.tooltip.style.display = 'none'
       })
 
