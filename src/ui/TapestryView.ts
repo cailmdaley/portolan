@@ -91,10 +91,7 @@ interface EdgeDatum {
   edgeSeed: number      // 0–1 per-edge value; sets the angle phase for dynamic sag direction
   wobble1: number       // individual CP variation (px)
   wobble2: number       // individual CP variation (px)
-  // Spring-damper physics state (initialized on first updateEdgePath call)
-  sagPos: number        // current sag offset (px)
-  sagVel: number        // current sag velocity (px/s)
-  sagInitialized: boolean
+  sagPos: number        // current sag — lags targetSag during drag, snaps when idle
 }
 
 interface ClaimsAnnotation extends BaseAnnotation {
@@ -279,7 +276,6 @@ export class TapestryView {
   private simulation: d3Force.Simulation<SimNode, SimLink> | null = null
   private expandedNodes = new Set<string>()
   private visibleNodes = new Set<string>()  // tracks which nodes are fully visible (for animation)
-  private tapestrysvg: d3Selection.Selection<SVGSVGElement, unknown, null, undefined> | null = null
   private flutterRAF: number | null = null
   private flutterTick: (() => void) | null = null
   private detailWidth = DETAIL_DEFAULT_WIDTH
@@ -740,7 +736,12 @@ export class TapestryView {
         .distance(140)
         .strength(0.7))
       .force('charge', d3Force.forceManyBody().strength(-500).distanceMax(600))
-      .force('collide', d3Force.forceCollide<SimNode>().radius(65).strength(0.9))
+      .force('collide', d3Force.forceCollide<SimNode>()
+        .radius(d => {
+          const scale = isSectionNode(d.data) ? 1.5 : 1.25
+          return NODE_RX * scale + 8  // actual ellipse half-width + padding
+        })
+        .strength(0.9))
       .force('y', d3Force.forceY(height / 2).strength(0.02))
       .alphaDecay(0.012)
       .velocityDecay(0.75)
@@ -776,8 +777,6 @@ export class TapestryView {
     const svg = d3Selection.select(this.dagContainer)
       .append('svg')
       .attr('class', 'tapestry-svg') as d3Selection.Selection<SVGSVGElement, unknown, null, undefined>
-
-    this.tapestrysvg = svg
 
     // SVG defs: fog blur filter for ghost nodes
     const defs = svg.append('defs')
@@ -828,7 +827,7 @@ export class TapestryView {
         const strandOpacity = ringOpacity(s) * 0.4
 
         const path = edgeGroup.append('path')
-          .datum({ link, strandIndex: s, tension, sagMagnitude, edgeSeed, wobble1, wobble2, sagPos: 0, sagVel: 0, sagInitialized: false })
+          .datum({ link, strandIndex: s, tension, sagMagnitude, edgeSeed, wobble1, wobble2, sagPos: 0 })
           .attr('class', 'tapestry-link')
           .attr('stroke', color)
           .attr('stroke-width', 1)
@@ -904,7 +903,7 @@ export class TapestryView {
       const color = paletteColors[nodeHash % paletteColors.length]
       const nodeSeed = nodeHash / 1000000
       const isSection = isSectionNode(d.data)
-      const nodeScale = isSection && hasSections ? 1.5 : 1.0
+      const nodeScale = isSection && hasSections ? 1.5 : 1.25
       const rx = NODE_RX * nodeScale
       const ry = NODE_RY * nodeScale
 
@@ -949,9 +948,10 @@ export class TapestryView {
       // Label — split into 2 lines when that gives a larger font than single-line
       const name = shortName(d.data.title)
       const words = name.split(' ')
-      const maxTextWidth = rx * 1.7  // usable width inside organic ellipse
+      // Sections get a wider text budget (text can extend closer to the ring edges)
+      const maxTextWidth = rx * (isSection ? 2.0 : 1.7)
       const charWidth = 0.58          // em per character estimate (EB Garamond)
-      const baseFs = isSection ? 16 : 14
+      const baseFs = isSection ? 19 : 14
 
       const fitSize = (lines: string[], base: number) => {
         const longest = Math.max(...lines.map(l => l.length))
@@ -1000,10 +1000,26 @@ export class TapestryView {
           .text(lines[1])
       }
 
-      // Neighbor dots — section nodes only, near ellipse edges
-      if (hasSections && isSection) {
+      // Neighbor dots — all nodes in a tiered tapestry, positioned relative to text bounds.
+      if (hasSections) {
         const { upstream, downstream } = splitNeighborFibers(d.data.id, rawNodes)
         const MAX_SYMBOLS = 6
+        const DOT_FS = 9
+        const DOT_GAP_TOP = 0  // dots sit flush against top of text
+        const DOT_GAP_BOT = 2  // slight clearance below
+
+        // Compute text bounds (baseline-relative, SVG y is baseline)
+        const ascent = textFs * 0.7, descent = textFs * 0.25
+        const textTop = lines.length > 1
+          ? (-lineHeight * 0.5 + textFs * 0.35) - ascent   // top of first line
+          : textFs * 0.35 - ascent                          // top of single line
+        const textBottom = lines.length > 1
+          ? (lineHeight * 0.5 + textFs * 0.35) + descent   // bottom of last line
+          : textFs * 0.35 + descent                         // bottom of single line
+
+        // Dot strip y: bottom of upstream = textTop - GAP; top of downstream = textBottom + GAP
+        const upstreamY   = textTop   - DOT_GAP_TOP - DOT_FS * 0.25
+        const downstreamY = textBottom + DOT_GAP_BOT + DOT_FS * 0.7
 
         const renderStrip = (fibers: Array<{ id: string; staleness: TapestryNode['staleness'] }>, y: number) => {
           if (fibers.length === 0) return
@@ -1012,7 +1028,7 @@ export class TapestryView {
           const strip = g.append('text')
             .attr('y', y)
             .attr('text-anchor', 'middle')
-            .attr('font-size', '9px')
+            .attr('font-size', `${DOT_FS}px`)
             .attr('letter-spacing', '2')
           shown.forEach(f => {
             strip.append('tspan')
@@ -1027,8 +1043,8 @@ export class TapestryView {
           }
         }
 
-        renderStrip(upstream, -(ry - 5))
-        renderStrip(downstream, ry - 4)
+        renderStrip(upstream, upstreamY)
+        renderStrip(downstream, downstreamY)
       }
     })
 
@@ -1074,34 +1090,31 @@ export class TapestryView {
       // phase (edgeSeed) so adjacent edges curl in different directions.
       const sagSign = Math.sin(baseAngle * 2 + d.edgeSeed * Math.PI * 2) >= 0 ? 1 : -1
 
-      // Spring-damper physics: targetSag is the geometric equilibrium.
+      // Sag: snaps to geometric equilibrium when idle; lags slightly during drag (inertia).
       const targetSag = dist * d.sagMagnitude * sagSign
-
-      if (!d.sagInitialized) {
-        // Initial ring: offset from target + random velocity kick so edge "rings" into place.
-        d.sagPos = targetSag + (Math.random() - 0.5) * dist * 0.15
-        d.sagVel = (Math.random() - 0.5) * dist * 0.3
-        d.sagInitialized = true
-      }
-
-      // Integrate spring-damper — freeze while endpoint is held, ring free on release
       const isHeld = draggingNodes.has(link.source.data.id) || draggingNodes.has(link.target.data.id)
-      if (!isHeld) {
-        const dt = 1 / 60
-        const k = 4.0
-        const c = 0.5
-        const noise = (Math.random() - 0.5) * dist * 0.002  // thermal floor keeps edges alive
-        d.sagVel += (-k * (d.sagPos - targetSag) - c * d.sagVel + noise) * dt
-        d.sagPos += d.sagVel * dt
+      if (isHeld) {
+        d.sagPos += (targetSag - d.sagPos) * 0.12  // smooth inertial lag while dragging
+      } else {
+        d.sagPos = targetSag  // immediate snap — no motion unless something is moving
       }
+      const sagPos = d.sagPos
+
+      // Compound Bézier biases:
+      //   cp1 (source end) — screen gravity: source.y biases cp1 downward/upward,
+      //     so edges from nodes high on screen bow upward and low nodes bow downward.
+      //   cp2 (target end) — calligraphic flow: lean perpendicular to the edge direction,
+      //     so horizontal edges bow up/down and vertical edges lean left/right.
+      const gravityY = (link.source.y! / 200) * dist * 0.10
+      const leanStrength = dist * 0.07
 
       const cp1 = {
-        x: start.x + tx * dist * d.tension + perpX * (d.sagPos + d.wobble1),
-        y: start.y + ty * dist * d.tension + perpY * (d.sagPos + d.wobble1),
+        x: start.x + tx * dist * d.tension + perpX * (sagPos + d.wobble1),
+        y: start.y + ty * dist * d.tension + perpY * (sagPos + d.wobble1) + gravityY,
       }
       const cp2 = {
-        x: end.x - tx * dist * d.tension + perpX * (d.sagPos + d.wobble2),
-        y: end.y - ty * dist * d.tension + perpY * (d.sagPos + d.wobble2),
+        x: end.x - tx * dist * d.tension + perpX * (sagPos + d.wobble2) + Math.sin(baseAngle) * leanStrength,
+        y: end.y - ty * dist * d.tension + perpY * (sagPos + d.wobble2) - Math.cos(baseAngle) * leanStrength,
       }
 
       // Node-avoidance: repel control points away from non-connected nearby nodes.
@@ -1152,7 +1165,7 @@ export class TapestryView {
     // Gentle simulation for fine-tuning
     this.simulation.alpha(0.03).restart()
 
-    // Wire up the RAF tick: drive spring-damper integration every frame
+    // Wire up the RAF tick: needed for drag inertia (sagPos lerp runs per frame)
     this.flutterTick = () => {
       edgePaths.forEach(path => updateEdgePath(path))
     }
@@ -1181,10 +1194,14 @@ export class TapestryView {
       allNodes.forEach(n => { if (n.dependsOn.includes(nodeId)) visible.add(n.id) })
     }
 
-    // Detect nodes newly becoming visible this call
+    // Detect newly visible and newly fogging nodes this call
     const newlyVisible = new Set<string>()
+    const becomingFog = new Set<string>()
     for (const id of visible) {
       if (!this.visibleNodes.has(id)) newlyVisible.add(id)
+    }
+    for (const id of this.visibleNodes) {
+      if (!visible.has(id)) becomingFog.add(id)
     }
     this.visibleNodes = new Set(visible)
 
@@ -1199,13 +1216,14 @@ export class TapestryView {
           if (newlyVisible.has(d.data.id) && animate) {
             el.style('opacity', '0')
           }
-      } else {
-        // Ghost: very faint, blurred — still interactive (direct click reveals neighborhood)
+      } else if (!becomingFog.has(d.data.id)) {
+        // Already-fog nodes: set state immediately
         el.style('display', '')
-          .style('opacity', '0.07')
+          .style('opacity', '0.09')
           .style('pointer-events', '')
           .style('filter', 'url(#fog-blur)')
       }
+      // becomingFog nodes: leave opacity untouched — collapseNodesRadial animates them
     })
 
     d3Selection.selectAll<SVGPathElement, SimNode>('.tapestry-knockout').each(function (d) {
@@ -1215,82 +1233,191 @@ export class TapestryView {
     // Edges: full display when both endpoints visible; ghost when either is in fog
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
       const el = d3Selection.select(this)
-      const bothVisible = visible.has(d.link.source.data.id) && visible.has(d.link.target.data.id)
-      if (bothVisible) {
+      const srcVisible = visible.has(d.link.source.data.id)
+      const tgtVisible = visible.has(d.link.target.data.id)
+      const srcBecomingFog = becomingFog.has(d.link.source.data.id)
+      const tgtBecomingFog = becomingFog.has(d.link.target.data.id)
+      if (srcVisible && tgtVisible) {
         el.style('display', '').style('opacity', null)
-      } else {
+      } else if (!srcBecomingFog && !tgtBecomingFog) {
+        // Both already-fog: set immediately
         el.style('display', '').style('opacity', '0.04')
       }
+      // Edges touching becomingFog nodes: leave for collapseNodesRadial
     })
 
     if (animate && newlyVisible.size > 0 && center) {
       this.revealNodesRadial(center, newlyVisible)
     }
+    if (becomingFog.size > 0 && center) {
+      this.collapseNodesRadial(center, becomingFog)
+    }
 
     this.simulation?.alpha(0.05).restart()
   }
 
-  /** Animate nodes emerging from fog: continuous opacity field — opacity = f(waveRadius − dist). */
+  /**
+   * Animate nodes + edges emerging from fog. Wave radiates from the nearest section ancestor.
+   * Node opacity is driven by its incoming edge's draw fraction — guaranteed sync regardless of
+   * bezier path curvature vs euclidean distance.
+   */
   private revealNodesRadial(center: {x: number, y: number}, newlyVisible: Set<string>): void {
-    if (!this.tapestrysvg || newlyVisible.size === 0) return
+    if (newlyVisible.size === 0 || !this.tapestryData) return
 
-    const EXPAND_SPEED = 260  // px/s
-    const ROLLOFF = 80        // px — width of the transition zone
-    const FOG_OPACITY = 0.07
+    const EXPAND_SPEED = 420  // px/s
+    const ROLLOFF = 60        // px — fallback transition width for nodes with no incoming edge
+    const FOG_OPACITY = 0.09
+    const smoothstep = (t: number) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - 2 * c) }
 
-    // Pre-compute distances and grab DOM elements for every newly-visible node
-    const distances = new Map<string, number>()
+    // BFS upstream to find nearest tier:1 ancestor — use its position as wave origin
+    const nodeMap = new Map(this.tapestryData.nodes.map(n => [n.id, n]))
+    const simPos = new Map<string, {x: number, y: number}>()
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(d => {
+      simPos.set(d.data.id, { x: d.x ?? 0, y: d.y ?? 0 })
+    })
+    const nearestSection = (startId: string): {x: number, y: number} | null => {
+      const queue = [startId], visited = new Set([startId])
+      while (queue.length > 0) {
+        const id = queue.shift()!
+        const node = nodeMap.get(id)
+        if (!node) continue
+        if (isSectionNode(node)) return simPos.get(id) ?? null
+        for (const dep of node.dependsOn) { if (!visited.has(dep)) { visited.add(dep); queue.push(dep) } }
+      }
+      return null
+    }
+    let waveOrigin = center
+    for (const id of newlyVisible) {
+      const pos = nearestSection(id)
+      if (pos) { waveOrigin = pos; break }
+    }
+
+    // Collect newly-visible node elements (fallback: distance-based opacity for nodes with no incoming edge)
     const nodeEls = new Map<string, SVGGElement>()
+    const nodeDist = new Map<string, number>()
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
       if (newlyVisible.has(d.data.id)) {
-        const dx = (d.x ?? 0) - center.x
-        const dy = (d.y ?? 0) - center.y
-        distances.set(d.data.id, Math.sqrt(dx * dx + dy * dy))
+        const dx = (d.x ?? 0) - waveOrigin.x, dy = (d.y ?? 0) - waveOrigin.y
+        nodeDist.set(d.data.id, Math.sqrt(dx * dx + dy * dy))
         nodeEls.set(d.data.id, this)
       }
     })
 
-    const maxDist = distances.size > 0 ? Math.max(...distances.values()) : 0
+    // Edges: source→target (DAG direction). Fraction spans [dSrc, dTgt] so the edge tip
+    // arrives at the target exactly when that node reaches full opacity (they share the same fraction).
+    // Node opacity = max incoming edge fraction → perfect sync, immune to bezier curvature.
+    interface EdgeReveal { el: SVGPathElement; startDist: number; span: number; targetId: string }
+    const edgeReveals: EdgeReveal[] = []
+    const nodeDrivers = new Map<string, EdgeReveal[]>()  // nodeId → edges that drive its opacity
 
-    // Expanding ring drawn in edges layer (behind nodes)
-    const ring = this.tapestrysvg.select<SVGGElement>('g.tapestry-edges')
-      .append('circle')
-      .attr('cx', center.x)
-      .attr('cy', center.y)
-      .attr('r', 0)
-      .attr('fill', 'none')
-      .attr('stroke', '#9A7B35')
-      .attr('stroke-width', 1.5)
-      .attr('opacity', 0.5)
-      .attr('pointer-events', 'none')
+    d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
+      if (newlyVisible.has(d.link.source.data.id) || newlyVisible.has(d.link.target.data.id)) {
+        const dSrc = Math.sqrt(((d.link.source.x ?? 0) - waveOrigin.x) ** 2 + ((d.link.source.y ?? 0) - waveOrigin.y) ** 2)
+        const dTgt = Math.sqrt(((d.link.target.x ?? 0) - waveOrigin.x) ** 2 + ((d.link.target.y ?? 0) - waveOrigin.y) ** 2)
+        const L = this.getTotalLength()
+        this.style.opacity = ''
+        this.style.strokeDasharray = `0 ${L}`
+        this.style.strokeDashoffset = '0'
+        const reveal: EdgeReveal = { el: this, startDist: dSrc, span: Math.max(dTgt - dSrc, 1), targetId: d.link.target.data.id }
+        edgeReveals.push(reveal)
+        if (newlyVisible.has(d.link.target.data.id)) {
+          if (!nodeDrivers.has(d.link.target.data.id)) nodeDrivers.set(d.link.target.data.id, [])
+          nodeDrivers.get(d.link.target.data.id)!.push(reveal)
+        }
+      }
+    })
 
-    // smoothstep: smooth sigmoid over [0, 1]
-    const smoothstep = (t: number) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - 2 * c) }
-
+    const allDists = [...nodeDist.values(), ...edgeReveals.map(e => e.startDist + e.span)]
+    const maxDist = allDists.length > 0 ? Math.max(...allDists) : 0
     const totalDuration = ((maxDist + ROLLOFF) / EXPAND_SPEED) * 1000
     const start = performance.now()
 
     const tick = (now: number) => {
-      const elapsed = now - start
-      const waveRadius = (elapsed / 1000) * EXPAND_SPEED
+      const waveRadius = ((now - start) / 1000) * EXPAND_SPEED
 
-      // Ring fades as it expands past the outermost node
-      const ringOpacity = Math.max(0, 0.5 * (1 - Math.max(0, waveRadius - maxDist * 0.7) / (maxDist * 0.5 + 1)))
-      ring.attr('r', waveRadius).attr('opacity', ringOpacity)
-
-      // Continuous field: each node's opacity tracks how far behind the wave it is
-      for (const [nodeId, dist] of distances) {
-        const progress = (waveRadius - dist) / ROLLOFF  // <0: still fog, 0→1: transition, >1: fully visible
-        const opacity = FOG_OPACITY + (1 - FOG_OPACITY) * smoothstep(progress)
-        const el = nodeEls.get(nodeId)
-        if (el) el.style.opacity = String(opacity)
+      // Edges: compute fraction and update dasharray (getTotalLength fresh — bezier shape evolves)
+      const fractionOf = new Map<EdgeReveal, number>()
+      for (const reveal of edgeReveals) {
+        const { el, startDist, span } = reveal
+        const fraction = smoothstep((waveRadius - startDist) / span)
+        fractionOf.set(reveal, fraction)
+        const L = el.getTotalLength()
+        el.style.strokeDasharray = `${fraction * L} ${L}`
       }
 
-      if (elapsed < totalDuration) {
+      // Nodes: opacity lags behind incoming edge — starts only when edge is 90% drawn.
+      // This ensures the node appears at the moment the edge visually "arrives".
+      const NODE_LAG = 0.90
+      for (const [nodeId, el] of nodeEls) {
+        const drivers = nodeDrivers.get(nodeId)
+        let fraction: number
+        if (drivers && drivers.length > 0) {
+          const edgeFraction = Math.max(...drivers.map(r => fractionOf.get(r) ?? 0))
+          fraction = smoothstep((edgeFraction - NODE_LAG) / (1 - NODE_LAG))
+        } else {
+          fraction = smoothstep((waveRadius - (nodeDist.get(nodeId) ?? 0)) / ROLLOFF)
+        }
+        el.style.opacity = String(FOG_OPACITY + (1 - FOG_OPACITY) * fraction)
+      }
+
+      if (now - start < totalDuration) {
         requestAnimationFrame(tick)
       } else {
         for (const el of nodeEls.values()) el.style.opacity = '1'
-        ring.remove()
+        for (const { el } of edgeReveals) { el.style.strokeDasharray = ''; el.style.strokeDashoffset = '' }
+      }
+    }
+    requestAnimationFrame(tick)
+  }
+
+  /** Reverse of revealNodesRadial: fade nodes back into fog as a wave contracts inward. */
+  private collapseNodesRadial(_center: {x: number, y: number}, becomingFog: Set<string>): void {
+    if (becomingFog.size === 0) return
+
+    const FADE_DURATION = 380  // ms — slightly slower than reveal for a gentle settling feel
+    const FOG_OPACITY = 0.09
+    const smoothstep = (t: number) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - 2 * c) }
+
+    // Nodes: collect elements and starting opacities
+    const nodeEls = new Map<string, { el: SVGGElement; fromOpacity: number }>()
+    d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
+      if (becomingFog.has(d.data.id)) {
+        const fromOpacity = parseFloat(this.style.opacity || '1')
+        // Apply fog filter immediately (they're fading out so blurriness adds to the effect)
+        this.style.filter = 'url(#fog-blur)'
+        nodeEls.set(d.data.id, { el: this, fromOpacity })
+      }
+    })
+
+    // Edges: fade back to fog opacity
+    const edgeEls: { el: SVGPathElement; fromOpacity: number }[] = []
+    d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
+      if (becomingFog.has(d.link.source.data.id) || becomingFog.has(d.link.target.data.id)) {
+        const fromOpacity = parseFloat(this.style.opacity || '1')
+        // Clear any dasharray from reveal animation
+        this.style.strokeDasharray = ''
+        this.style.strokeDashoffset = ''
+        edgeEls.push({ el: this, fromOpacity })
+      }
+    })
+
+    const start = performance.now()
+    const tick = (now: number) => {
+      const t = smoothstep(Math.min((now - start) / FADE_DURATION, 1))
+
+      for (const { el, fromOpacity } of nodeEls.values()) {
+        el.style.opacity = String(fromOpacity + (FOG_OPACITY - fromOpacity) * t)
+      }
+      for (const { el, fromOpacity } of edgeEls) {
+        el.style.opacity = String(fromOpacity + (0.04 - fromOpacity) * t)
+      }
+
+      if (now - start < FADE_DURATION) {
+        requestAnimationFrame(tick)
+      } else {
+        // Settle to exact fog state
+        for (const { el } of nodeEls.values()) el.style.opacity = String(FOG_OPACITY)
+        for (const { el } of edgeEls) el.style.opacity = '0.04'
       }
     }
     requestAnimationFrame(tick)
