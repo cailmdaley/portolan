@@ -5,6 +5,8 @@ tags:
     - tapestry:bayeux
     - tapestry:portolan
     - tier:1
+depends-on:
+    - tapestry-interaction-74c5f450
 created-at: 2026-02-21T17:17:51.003354+01:00
 outcome: 'Knowledge here is not deposited but revealed: the artifact withholds until you move through it, and what you find depends on where you look. This tapestry is a directed graph of fibers that describes, from inside, what fibers and directed graphs are.'
 ---

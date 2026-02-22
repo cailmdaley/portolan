@@ -5,8 +5,6 @@ tags:
     - tapestry:portolan-nav
     - tapestry:portolan
     - tier:1
-depends-on:
-    - tapestry-introduction-537a6234
 created-at: 2026-02-21T17:18:05.771969+01:00
 outcome: Three gestures unlock the whole chart — hover to scout, click to reveal, click the background to return to open water.
 ---
