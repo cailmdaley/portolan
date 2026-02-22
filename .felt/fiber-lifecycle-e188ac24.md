@@ -4,6 +4,7 @@ tags:
     - tapestry:portolan
 depends-on:
     - tapestry-structure-4401c64b
+    - felt-cli-1c3c8912
 created-at: 2026-02-21T19:11:13.976075+01:00
 outcome: Fibers progress open→active→closed. Outcomes record what was decided and why, linking back through the DAG to explain the reasoning chain.
 ---

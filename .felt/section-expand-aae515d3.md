@@ -4,6 +4,7 @@ tags:
     - tapestry:portolan
 depends-on:
     - tapestry-interaction-74c5f450
+    - sections-concept-e9d0c47a
 created-at: 2026-02-21T19:11:42.281701+01:00
 outcome: Clicking a section node toggles its expansion, revealing 1-hop interior neighbors. Clicking the background collapses all sections back to the skeleton view.
 ---

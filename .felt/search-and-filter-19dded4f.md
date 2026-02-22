@@ -5,6 +5,7 @@ tags:
 depends-on:
     - tapestry-interaction-74c5f450
     - tapestry-tags-0cee7439
+    - url-fragments-4fe425f3
 created-at: 2026-02-21T19:11:50.430239+01:00
 outcome: The search input matches against title, body, kind, and ID. Matching DAG nodes get a highlight class; results appear as a clickable list with staleness-colored dots and context snippets.
 ---

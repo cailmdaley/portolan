@@ -1,5 +1,5 @@
 ---
-title: What is a fiber
+title: Fiber
 tags:
     - tapestry:portolan
 depends-on:
