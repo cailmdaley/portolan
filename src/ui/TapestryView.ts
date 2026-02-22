@@ -1537,45 +1537,6 @@ export class TapestryView {
 
   /** BFS upstream from selectedId to find the nearest tier:1 ancestor.
    *  Returns the set of node IDs and edge keys ("sourceId->targetId") on that path. */
-  private computeWarpTrace(selectedId: string): { nodes: Set<string>; edges: Set<string> } {
-    const result = { nodes: new Set<string>(), edges: new Set<string>() }
-    if (!this.tapestryData) return result
-
-    const nodeMap = new Map(this.tapestryData.nodes.map(n => [n.id, n]))
-    const startNode = nodeMap.get(selectedId)
-    if (!startNode || isSectionNode(startNode)) return result
-
-    const queue: Array<{ id: string; path: string[]; edgePath: string[] }> = [
-      { id: selectedId, path: [selectedId], edgePath: [] }
-    ]
-    const visited = new Set<string>([selectedId])
-
-    while (queue.length > 0) {
-      const { id, path, edgePath } = queue.shift()!
-      const node = nodeMap.get(id)
-      if (!node) continue
-
-      for (const depId of node.dependsOn) {
-        if (visited.has(depId)) continue
-        visited.add(depId)
-
-        const newPath = [...path, depId]
-        const newEdges = [...edgePath, `${depId}->${id}`]
-        const dep = nodeMap.get(depId)
-
-        if (dep && isSectionNode(dep)) {
-          newPath.forEach(n => result.nodes.add(n))
-          newEdges.forEach(e => result.edges.add(e))
-          return result
-        }
-
-        queue.push({ id: depId, path: newPath, edgePath: newEdges })
-      }
-    }
-
-    return result
-  }
-
   private updateHighlighting(): void {
     if (!this.selectedNodeId || !this.tapestryData) return
 
@@ -1590,8 +1551,6 @@ export class TapestryView {
       }
     })
 
-    const warpTrace = this.computeWarpTrace(selectedId)
-
     const visibleNodes = this.visibleNodes
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (d) {
       const el = d3Selection.select(this)
@@ -1599,15 +1558,10 @@ export class TapestryView {
       if (!visibleNodes.has(d.data.id)) return
       const isSelected = d.data.id === selectedId
       const isConnected = connectedNodes.has(d.data.id)
-      const isWarp = warpTrace.nodes.has(d.data.id)
 
-      let opacity = 0.3
-      if (isSelected) opacity = 1.0
-      else if (isWarp) opacity = 0.9
-      else if (isConnected) opacity = 0.7
+      const opacity = isSelected ? 1.0 : isConnected ? 0.7 : 0.3
 
       el.classed('selected', isSelected)
-        .classed('warp-trace', isWarp && !isSelected)
         .style('opacity', String(opacity))
     })
 
@@ -1615,22 +1569,13 @@ export class TapestryView {
       const linkEl = d3Selection.select(this)
       const sourceId = d.link.source.data.id
       const targetId = d.link.target.data.id
-      const edgeKey = `${sourceId}->${targetId}`
       const touchesSelected = sourceId === selectedId || targetId === selectedId
-      const isWarp = warpTrace.edges.has(edgeKey)
       const baseColor = stalenessColor(d.link.target.data.staleness)
 
-      if (isWarp) {
-        linkEl
-          .attr('stroke-opacity', 0.85)
-          .attr('stroke', '#9A7B35')  // gold — warp thread
-          .attr('stroke-width', 2)
-      } else {
-        linkEl
-          .attr('stroke-opacity', touchesSelected ? 0.75 : 0.3)
-          .attr('stroke', baseColor)
-          .attr('stroke-width', 1)
-      }
+      linkEl
+        .attr('stroke-opacity', touchesSelected ? 0.75 : 0.3)
+        .attr('stroke', baseColor)
+        .attr('stroke-width', 1)
     })
   }
 
@@ -2153,7 +2098,6 @@ export class TapestryView {
     const visibleNodes = this.visibleNodes
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node')
       .classed('selected', false)
-      .classed('warp-trace', false)
       .each(function (d) {
         if (visibleNodes.has(d.data.id)) {
           d3Selection.select(this).style('opacity', '1')

@@ -6,5 +6,5 @@ tags:
 depends-on:
     - pyramid-tapestry-tiered-264195af
 created-at: 2026-02-21T20:30:06.490009+01:00
-outcome: selectNode() now calls updateTierVisibility() which adds selected node's 1-hop neighborhood (upstream + downstream) to the visible set, plus warp trace nodes (BFS up dependsOn to nearest section). computeWarpTrace() returns {nodes, edges} — edges stored as 'source→target' strings in warpTraceEdges Set, highlighted gold (#9A7B35, stroke-width 2) in updateHighlighting(). Click selected node again to deselect (toggles in drag handler). Click background collapses to skeleton + expanded sections.
+outcome: Clicking any node adds it to expandedNodes and calls updateTierVisibility(), which reveals the node's 1-hop neighborhood (upstream + downstream dependsOn links). Click the selected node again to deselect (toggles in drag handler). Click background collapses to skeleton. updateHighlighting() dims non-connected nodes to 0.3 opacity, connected nodes to 0.7, selected to 1.0.
 ---

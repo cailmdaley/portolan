@@ -13,4 +13,4 @@ Clicking any node writes `#fiber-id` to the URL using `history.pushState`. The U
 
 This works in both the live tapestry and the static export. The static export is a self-contained directory that deploys to any static host (GitHub Pages, Netlify, S3). Every fiber in a published tapestry is directly linkable — share the URL for a specific finding, a key decision, the vocabulary node. The recipient arrives at the same view you're looking at, fog and all.
 
-URL navigation is how the tapestry becomes a medium for communication, not just a personal navigation tool. The warp trace you see when you open a shared link is the same gold thread the sender saw — the path back to the section, showing exactly where in the argument structure this node lives.
+URL navigation is how the tapestry becomes a medium for communication, not just a personal navigation tool. Share the URL for a specific finding, a key decision, the vocabulary node — the recipient arrives at the same expanded view.
