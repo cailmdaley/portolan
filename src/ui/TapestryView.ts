@@ -598,7 +598,8 @@ export class TapestryView {
     // Try DAG node first, then sidebar fiber
     const node = this.tapestryData.nodes.find(n => n.id === hash)
     if (node) {
-      this.selectNode(hash)
+      // Reveal fog neighborhood without animation (page load — no wave)
+      this.revealAndSelect(hash, false)
       return
     }
 
@@ -1443,6 +1444,25 @@ export class TapestryView {
   }
 
   // ── Node selection ─────────────────────────────────────────────────
+
+  /**
+   * Reveal a node's 1-hop neighborhood (if in fog) then select it.
+   * Use this when navigating programmatically (URL hash, search results).
+   */
+  private revealAndSelect(id: string, animate = false): void {
+    if (!this.visibleNodes.has(id)) {
+      this.expandedNodes.add(id)
+      // Get simulation position for wave animation center
+      let center: {x: number, y: number} | undefined
+      if (animate) {
+        d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(d => {
+          if (d.data.id === id) center = { x: d.x ?? 0, y: d.y ?? 0 }
+        })
+      }
+      this.updateTierVisibility(animate, center)
+    }
+    this.selectNode(id)
+  }
 
   private selectNode(id: string): void {
     this.selectedNodeId = id
@@ -2347,7 +2367,7 @@ export class TapestryView {
           <span class="search-result-match">${escapeHtml(m.context)}</span>
         `
         div.addEventListener('click', () => {
-          this.selectNode(m.node.id)
+          this.revealAndSelect(m.node.id, true)
           this.fiberSearchInput.value = ''
           this.searchResults.innerHTML = ''
           this.clearSearchHighlights()
