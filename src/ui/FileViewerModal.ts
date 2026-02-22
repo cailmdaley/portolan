@@ -16,7 +16,7 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
-import { escapeHtml, showToast, renderMarkdown } from './utils'
+import { escapeHtml, showToast, renderMarkdown, interpolateConfig, STALENESS_COLORS, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 import { AnnotationPanel } from './AnnotationPanel'
 
@@ -192,6 +192,7 @@ export class FileViewerModal {
   private currentPath: string = ''
   private currentOriginId: string = 'local'
   private currentCityPath: string = ''
+  private currentCityId: string = ''
   private editorView: EditorView | null = null
   private isDirty: boolean = false
   private originalContent: string = ''
@@ -518,7 +519,9 @@ export class FileViewerModal {
     originId: string,
     sourceWorkerId?: string,
     navigationContext?: { files: string[]; index: number },
-    cityPath?: string
+    cityPath?: string,
+    cityId?: string,
+    jumpToLine?: number,
   ): Promise<void> {
     // Show loading state
     this.pathEl.textContent = filePath
@@ -534,6 +537,7 @@ export class FileViewerModal {
     this.currentPath = filePath
     this.currentOriginId = originId
     this.currentCityPath = cityPath || ''
+    this.currentCityId = cityId || ''
     this.sourceWorkerId = sourceWorkerId || null
     this.annotations = []
     this.globalComment = ''
@@ -628,6 +632,10 @@ export class FileViewerModal {
       } else {
         // Create CodeMirror editor
         this.createEditor(data.content, data.language)
+        // Scroll to line if requested (e.g. from search results)
+        if (jumpToLine && jumpToLine > 0) {
+          this.scrollToLine(jumpToLine)
+        }
       }
 
       // Update annotation panel
@@ -1056,6 +1064,91 @@ export class FileViewerModal {
       (window as any).Prism.highlightAllUnder(wrapper)
     }
 
+    // Make inline code paths clickable
+    attachInlinePathListeners(wrapper, (relPath, line) => {
+      const fullPath = relPath.startsWith('/') ? relPath : `${this.currentCityPath || dirPath}/${relPath}`
+      this.show(fullPath, this.currentOriginId, undefined, undefined, this.currentCityPath, this.currentCityId, line)
+    })
+
+    // Resolve tapestry data: config, staleness, downstream, artifacts, metrics
+    if (isFiber && this.currentCityId) {
+      fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(this.currentCityId)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (!data) return
+
+          // Config interpolation
+          if (data.config) interpolateConfig(wrapper, data.config)
+
+          // Find matching tapestry node for this fiber
+          const fiberIdMatch = this.currentPath.match(/\.felt\/([^/]+)\.md$/i)
+          const fiberId = fiberIdMatch?.[1]
+          if (!fiberId) return
+
+          const node = (data.nodes || []).find((n: { id: string }) => n.id === fiberId)
+
+          // Staleness color on status span
+          if (node?.staleness) {
+            const statusEl = wrapper.querySelector('.fiber-card-status') as HTMLElement | null
+            if (statusEl) statusEl.style.color = STALENESS_COLORS[node.staleness] || ''
+          }
+
+          // Downstream dependencies (inject after .fiber-card-console)
+          const downstream = data.downstream?.[fiberId] || []
+          if (downstream.length > 0) {
+            const console = wrapper.querySelector('.fiber-card-console')
+            if (console) {
+              const dsHtml = `<div class="fiber-card-downstream">
+                <span class="fiber-card-deps-label">downstream</span>
+                ${downstream.map((d: { id: string; title: string; status: string }) => {
+                  const icon = d.status === 'closed' ? '●' : d.status === 'active' ? '◐' : '○'
+                  const short = d.title.replace(/-[a-f0-9]{8}$/, '').replace(/[-_]/g, ' ').split(' ').slice(0, 3).join(' ')
+                  return `<span class="fiber-card-dep">${icon} ${escapeHtml(short)}</span>`
+                }).join(', ')}
+              </div>`
+              console.insertAdjacentHTML('afterend', dsHtml)
+            }
+          }
+
+          // Artifact gallery (inject after .fiber-card-rule)
+          if (node?.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 0) {
+            const rule = wrapper.querySelector('.fiber-card-rule')
+            if (rule) {
+              const gallery = renderArtifactGallery(
+                node.evidence.artifacts,
+                (path: string) => `${API_BASE}/file-content?path=${encodeURIComponent(path)}&raw=true`,
+              )
+              rule.insertAdjacentHTML('afterend', gallery.html)
+              gallery.attach(wrapper)
+            }
+          }
+
+          // Evidence metrics (inject after .fiber-card-rule, after artifacts)
+          if (node?.evidence?.metrics && Object.keys(node.evidence.metrics).length > 0) {
+            const rule = wrapper.querySelector('.fiber-card-rule')
+            if (rule) {
+              const items: Array<{ key: string; value: string }> = []
+              for (const [key, value] of Object.entries(node.evidence.metrics as Record<string, unknown>)) {
+                if (typeof value === 'object' && value !== null) {
+                  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                    items.push({ key: `${key}.${k}`, value: typeof v === 'number' ? (v as number).toFixed(4) : String(v) })
+                  }
+                } else {
+                  items.push({ key, value: typeof value === 'number' ? (value as number).toFixed(4) : String(value) })
+                }
+              }
+              const metricsHtml = `<div class="tapestry-evidence-section">
+                <div class="tapestry-evidence">${items.map(({ key, value }) =>
+                  `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
+                ).join('')}</div>
+              </div>`
+              rule.insertAdjacentHTML('afterend', metricsHtml)
+            }
+          }
+        })
+        .catch(() => {})
+    }
+
     this.modeLineEl.textContent = 'Double-click to edit'
 
     // Double-click → swap to editor (suppress annotation on dblclick)
@@ -1149,19 +1242,15 @@ export class FileViewerModal {
     const closeReason = fm['close-reason'] || fm.outcome || ''
 
     // Format dates
-    const formatDate = (iso: string) => {
-      try {
-        const d = new Date(iso)
-        return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
-      } catch { return iso }
-    }
+    const formatDate = formatFiberDate
 
     // Status badge color
     const statusClass = `fiber-status-${status}`
 
     // Tags
-    const tagsHtml = tags.length > 0
-      ? `<div class="fiber-card-tags">${tags.map((t: string) =>
+    const displayTags = tags.filter((t: string) => !t.startsWith('tapestry:'))
+    const tagsHtml = displayTags.length > 0
+      ? `<div class="fiber-card-tags">${displayTags.map((t: string) =>
           `<span class="fiber-card-tag">${escapeHtml(t.replace(/^\[|\]$/g, ''))}</span>`
         ).join('')}</div>`
       : ''
@@ -1351,6 +1440,16 @@ export class FileViewerModal {
       this.editorView = null
     }
     this.showRenderedMarkdown(content)
+  }
+
+  private scrollToLine(lineNumber: number): void {
+    if (!this.editorView) return
+    const doc = this.editorView.state.doc
+    const line = doc.line(Math.min(lineNumber, doc.lines))
+    this.editorView.dispatch({
+      selection: { anchor: line.from },
+      effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+    })
   }
 
   private updateModeLine(state: EditorState): void {

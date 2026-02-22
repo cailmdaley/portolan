@@ -42,7 +42,7 @@ export class CityHUD {
   // Callbacks
   private onViewClaims: ((city: City) => void) | null = null
   private onViewPlaygrounds: ((city: City) => void) | null = null
-  private onOpenFile: ((fullPath: string, originId: string, cityPath: string) => void) | null = null
+  private onOpenFile: ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null = null
   private onFocusWorker: ((sessionId: string) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
@@ -315,7 +315,7 @@ export class CityHUD {
     this.onViewPlaygrounds = callback
   }
 
-  setOnOpenFile(callback: (fullPath: string, originId: string, cityPath: string) => void): void {
+  setOnOpenFile(callback: (fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void): void {
     this.onOpenFile = callback
   }
 
@@ -414,7 +414,8 @@ export class CityHUD {
       const item = (e.target as HTMLElement).closest('.hud-search-item') as HTMLElement | null
       if (!item) return
       if (item.dataset.type === 'file') {
-        this.openFile(item.dataset.path)
+        const line = item.dataset.line ? parseInt(item.dataset.line, 10) : undefined
+        this.openFile(item.dataset.path, line)
       } else if (item.dataset.type === 'fiber') {
         this.openFiber(item.dataset.fiberId)
       }
@@ -504,8 +505,9 @@ export class CityHUD {
     for (const r of files) {
       const fileName = r.path.split('/').pop() || r.path
       const lineInfo = r.line !== undefined ? `:${r.line}` : ''
+      const lineAttr = r.line !== undefined ? ` data-line="${r.line}"` : ''
       html += `
-        <li class="hud-search-item hud-fiber-item file" data-type="file" data-path="${escapeHtml(r.fullPath)}">
+        <li class="hud-search-item hud-fiber-item file" data-type="file" data-path="${escapeHtml(r.fullPath)}"${lineAttr}>
           <span class="hud-search-icon">&#xf15c;</span>
           <span class="hud-fiber-title mono">${escapeHtml(fileName)}${lineInfo}</span>
         </li>`
@@ -562,12 +564,12 @@ export class CityHUD {
   private openFiber(fiberId: string | undefined): void {
     if (!fiberId || !this.currentCity || !this.onOpenFile) return
     const feltPath = `${this.currentCity.path}/.felt/${fiberId}.md`
-    this.onOpenFile(feltPath, this.currentCity.originId, this.currentCity.path)
+    this.onOpenFile(feltPath, this.currentCity.originId, this.currentCity.path, this.currentCity.id)
   }
 
-  private openFile(fullPath: string | undefined): void {
+  private openFile(fullPath: string | undefined, line?: number): void {
     if (!fullPath || !this.currentCity || !this.onOpenFile) return
-    this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path)
+    this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path, this.currentCity.id, line)
   }
 
   private attachFiberListeners(): void {
@@ -633,6 +635,7 @@ export class CityHUD {
               type: 'newWorker',
               cityPath: this.currentCity.path,
               name: result.name || undefined,
+              cli: result.cli || undefined,
               chrome: result.chrome || undefined,
               continue: result.continue || undefined,
             }))

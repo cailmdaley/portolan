@@ -2,7 +2,7 @@
  * HttpApi tapestry endpoint tests
  *
  * Tests the /tapestry endpoint that returns the full DAG for TapestryView:
- * - Fibers with rule: tags, edges, evidence, staleness
+ * - Fibers with tapestry: tags, edges, evidence, staleness
  * - /tapestry-asset/* artifact serving
  */
 
@@ -72,7 +72,7 @@ describe('HttpApi — /tapestry endpoint', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns empty DAG when no fibers have rule: tags', async () => {
+  it('returns empty DAG when no fibers have tapestry: tags', async () => {
     writeFiber(FELT_DIR, 'plain-task-abc123', `---
 title: A plain task
 status: open
@@ -89,15 +89,15 @@ Just a task, no rule tag.`);
     expect(res.data.links).toHaveLength(0);
   });
 
-  // ── Fibers with rule: tags ───────────────────────────────────
+  // ── Fibers with tapestry: tags ───────────────────────────────────
 
-  it('returns fibers with rule: tags as nodes', async () => {
+  it('returns fibers with tapestry: tags as nodes', async () => {
     writeFiber(FELT_DIR, 'foundation-abc123', `---
 title: Foundation data
 status: closed
 kind: foundation
 tags:
-    - rule:foundation_data
+    - tapestry:foundation_data
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 closed-at: 2026-01-02T00:00:00Z
@@ -111,7 +111,7 @@ title: Cosebis data vector
 status: open
 kind: claim
 tags:
-    - rule:cosebis_data_vector
+    - tapestry:cosebis_data_vector
 priority: 2
 depends-on:
     - foundation-abc123
@@ -148,7 +148,7 @@ title: Foundation
 status: closed
 kind: foundation
 tags:
-    - rule:f1
+    - tapestry:f1
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
@@ -158,7 +158,7 @@ title: Claim 1
 status: open
 kind: claim
 tags:
-    - rule:c1
+    - tapestry:c1
 depends-on:
     - f1-abc123
 priority: 2
@@ -188,7 +188,7 @@ title: Rule fiber
 status: open
 kind: claim
 tags:
-    - rule:my_claim
+    - tapestry:my_claim
 depends-on:
     - non-rule-abc123
 priority: 2
@@ -210,14 +210,14 @@ title: Test claim
 status: closed
 kind: claim
 tags:
-    - rule:test_claim
+    - tapestry:test_claim
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
 
     writeEvidence(CLAIMS_DIR, 'test_claim', {
       evidence: { pte: 0.22, chi2: 18.5, dof: 20 },
-      artifacts: { figure: 'figure.png' },
+      output: { figure: 'figure.png' },
       generated: '2026-01-15T12:00:00Z',
     });
 
@@ -238,7 +238,7 @@ title: No evidence
 status: open
 kind: claim
 tags:
-    - rule:no_evidence
+    - tapestry:no_evidence
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
@@ -257,7 +257,7 @@ title: Upstream
 status: closed
 kind: foundation
 tags:
-    - rule:upstream
+    - tapestry:upstream
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
@@ -267,7 +267,7 @@ title: Downstream
 status: open
 kind: claim
 tags:
-    - rule:downstream
+    - tapestry:downstream
 depends-on:
     - upstream-abc123
 priority: 2
@@ -301,7 +301,7 @@ title: Upstream
 status: closed
 kind: foundation
 tags:
-    - rule:upstream
+    - tapestry:upstream
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
@@ -311,7 +311,7 @@ title: Downstream
 status: open
 kind: claim
 tags:
-    - rule:downstream
+    - tapestry:downstream
 depends-on:
     - upstream-abc123
 priority: 2
@@ -347,7 +347,7 @@ title: Rule fiber
 status: open
 kind: claim
 tags:
-    - rule:my_claim
+    - tapestry:my_claim
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
@@ -443,7 +443,7 @@ title: Test fiber
 status: open
 kind: claim
 tags:
-    - rule:cosebis
+    - tapestry:cosebis
     - ralph:1
 priority: 2
 created-at: 2026-01-01T00:00:00Z
@@ -453,7 +453,7 @@ Body text.`;
 
     const fiber = parseFiber('test-abc123.md', content);
 
-    expect(fiber.tags).toEqual(['rule:cosebis', 'ralph:1']);
+    expect(fiber.tags).toEqual(['tapestry:cosebis', 'ralph:1']);
   });
 
   it('parses depends-on from YAML list', () => {
@@ -503,7 +503,7 @@ close-reason: Analysis complete
 
     expect(fiber.createdAt).toBe('2026-01-01T00:00:00Z');
     expect(fiber.closedAt).toBe('2026-01-15T12:00:00Z');
-    expect(fiber.reason).toBe('Analysis complete');
+    expect(fiber.outcome).toBe('Analysis complete');
   });
 
   it('extracts body text after frontmatter', () => {
@@ -512,7 +512,7 @@ title: With body
 status: open
 kind: claim
 tags:
-    - rule:test
+    - tapestry:test
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---
@@ -543,16 +543,16 @@ describe('EvidenceReader', () => {
   });
 
   describe('getSpecName', () => {
-    it('extracts spec name from rule: tag', () => {
-      expect(getSpecName(['rule:cosebis_data_vector', 'ralph:1'])).toBe('cosebis_data_vector');
+    it('extracts spec name from tapestry: tag', () => {
+      expect(getSpecName(['tapestry:cosebis_data_vector', 'ralph:1'])).toBe('cosebis_data_vector');
     });
 
-    it('returns undefined when no rule: tag', () => {
+    it('returns undefined when no tapestry: tag', () => {
       expect(getSpecName(['ralph:1', 'other'])).toBeUndefined();
     });
 
-    it('returns first rule: tag', () => {
-      expect(getSpecName(['rule:first', 'rule:second'])).toBe('first');
+    it('returns first tapestry: tag', () => {
+      expect(getSpecName(['tapestry:first', 'tapestry:second'])).toBe('first');
     });
   });
 
@@ -564,7 +564,7 @@ describe('EvidenceReader', () => {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'evidence.json'), JSON.stringify({
         evidence: { pte: 0.3, chi2: 12 },
-        artifacts: { main_plot: 'main_plot.png' },
+        output: { main_plot: 'main_plot.png' },
         generated: '2026-01-10T00:00:00Z',
       }));
 
@@ -578,19 +578,22 @@ describe('EvidenceReader', () => {
       expect(ev!.generated).toBe('2026-01-10T00:00:00Z');
     });
 
-    it('discovers PNG files in evidence directory', async () => {
+    it('only includes image files from output field', async () => {
       const dir = join(CITY, 'results', 'claims', 'with_images');
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'evidence.json'), JSON.stringify({
         evidence: {},
-        artifacts: {},
+        output: { plot: 'plot.png', data: 'data.csv', evidence: 'evidence.json' },
       }));
+      // Extra file in directory should NOT be picked up
       writeFileSync(join(dir, 'extra_plot.png'), 'PNG data');
 
       const ev = await readEvidence(CITY, 'with_images');
 
       expect(ev).not.toBeNull();
-      expect(ev!.artifacts.extra_plot).toBe('extra_plot.png');
+      expect(ev!.artifacts.plot).toBe('plot.png');
+      expect(ev!.artifacts.data).toBeUndefined(); // non-image output excluded
+      expect(ev!.artifacts.extra_plot).toBeUndefined(); // directory file excluded
     });
 
     it('returns null when evidence.json does not exist', async () => {
@@ -605,17 +608,18 @@ describe('EvidenceReader', () => {
       expect(ev).toBeNull();
     });
 
-    it('uses artifact_paths as fallback for artifacts', async () => {
+    it('returns empty artifacts when no output field exists', async () => {
       const dir = join(CITY, 'results', 'claims', 'legacy_spec');
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'evidence.json'), JSON.stringify({
-        evidence: {},
-        artifact_paths: { old_plot: 'old_plot.png' },
+        evidence: { pte: 0.5 },
       }));
 
       const ev = await readEvidence(CITY, 'legacy_spec');
 
-      expect(ev!.artifacts.old_plot).toBe('old_plot.png');
+      expect(ev).not.toBeNull();
+      expect(Object.keys(ev!.artifacts)).toHaveLength(0);
+      expect(ev!.metrics.pte).toBe(0.5);
     });
   });
 

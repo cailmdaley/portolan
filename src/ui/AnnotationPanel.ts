@@ -51,6 +51,9 @@ export interface AnnotationPanelOptions<T extends BaseAnnotation> {
 
   /** Hide the "Send N annotations to worker" footer button. */
   hideFooter?: boolean
+
+  /** Called when annotations are filed as a fiber. Omit to hide the button. */
+  onFileAsFiber?: (annotations: T[]) => Promise<void>
 }
 
 // ── Class ──────────────────────────────────────────────────────────────
@@ -375,12 +378,21 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     }
 
     const count = this.annotations.length
+    const fiberBtn = this.options.onFileAsFiber
+      ? `<button class="ann-footer-btn ann-footer-fiber">File as fiber</button>`
+      : ''
+
     this.footerEl.innerHTML = `
-      <button class="ann-footer-btn">Send ${count} annotation${count === 1 ? '' : 's'} to worker</button>
+      <button class="ann-footer-btn ann-footer-send">Send ${count} annotation${count === 1 ? '' : 's'} to worker</button>
+      ${fiberBtn}
     `
 
-    this.footerEl.querySelector('.ann-footer-btn')?.addEventListener('click', () => {
+    this.footerEl.querySelector('.ann-footer-send')?.addEventListener('click', () => {
       this.showWorkerPickerUI()
+    })
+
+    this.footerEl.querySelector('.ann-footer-fiber')?.addEventListener('click', () => {
+      this.options.onFileAsFiber?.(this.annotations)
     })
   }
 

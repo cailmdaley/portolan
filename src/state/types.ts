@@ -70,6 +70,7 @@ export interface ServerSession {
   cwd: string
   cityId?: string | null
   workerHex?: HexCoord
+  cli?: string  // 'claude' | 'codex'
   status: 'idle' | 'working' | 'offline'
   createdAt: number
   lastActivity: number
@@ -107,6 +108,7 @@ export interface Session {
   tmuxSession: string
   cityId: string | null
   hex: HexCoord | null
+  cli?: string  // 'claude' | 'codex'
   status: 'idle' | 'working'
   originId: string  // 'local' | 'remote-{hostname}'
   lastActivity: number
@@ -139,6 +141,7 @@ export function normalizeSession(session: ServerSession): Session {
     // Map 'offline' to 'idle' for rendering (offline sessions shouldn't appear anyway)
     status: session.status === 'offline' ? 'idle' : session.status,
     originId: session.originId,
+    cli: session.cli,
     lastActivity: session.lastActivity,
   }
 }

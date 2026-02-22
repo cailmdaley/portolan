@@ -79,6 +79,7 @@ export interface NewWorkerMessage {
   name?: string;
   chrome?: boolean;
   continue?: boolean;
+  cli?: string;
 }
 
 export interface PinCityMessage {
@@ -138,7 +139,7 @@ export interface MessageHandlers {
   onFocus(sessionId: string): void;
   onGetFibers(ws: WebSocket, cityId: string): Promise<void>;
   onHandoff(fiberId: string, cityPath: string): void | Promise<void>;
-  onNewWorker(ws: WebSocket, cityPath: string, name?: string, chrome?: boolean, continueSession?: boolean): void;
+  onNewWorker(ws: WebSocket, cityPath: string, name?: string, chrome?: boolean, continueSession?: boolean, cli?: string): void;
   onPinCity(ws: WebSocket, path: string, position: { q: number; r: number }, name?: string): void;
   onUnpinCity(ws: WebSocket, cityId: string): void;
   onConfirmUnpin(ws: WebSocket, cityId: string): void;
@@ -180,7 +181,7 @@ export class MessageRouter {
           break;
 
         case 'newWorker':
-          this.handlers.onNewWorker(ws, message.cityPath, message.name, message.chrome, message.continue);
+          this.handlers.onNewWorker(ws, message.cityPath, message.name, message.chrome, message.continue, message.cli);
           break;
 
         case 'pinCity':

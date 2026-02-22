@@ -803,14 +803,14 @@ describe('HttpApi — claims annotations', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns DAG with nodes, links, and downstream for rule: fibers', async () => {
-      // Set up two rule: fibers with a dependency
+    it('returns DAG with nodes, links, and downstream for tapestry: fibers', async () => {
+      // Set up two tapestry: fibers with a dependency
       writeFiber(TAPESTRY_FELT_DIR, 'fiber-a', `---
 title: Fiber A
 status: active
 kind: spec
 tags:
-  - rule:fiber_a
+  - tapestry:fiber_a
 ---
 Body of fiber A.
 `);
@@ -819,7 +819,7 @@ title: Fiber B
 status: open
 kind: spec
 tags:
-  - rule:fiber_b
+  - tapestry:fiber_b
 depends-on:
   - fiber-a
 ---
@@ -841,7 +841,7 @@ Downstream task.
 
       expect(res.status).toBe(200);
 
-      // Nodes: only rule: fibers (fiber-a, fiber-b), not task-c
+      // Nodes: only tapestry: fibers (fiber-a, fiber-b), not task-c
       expect(res.data.nodes).toHaveLength(2);
       const nodeIds = res.data.nodes.map((n: any) => n.id);
       expect(nodeIds).toContain('fiber-a');
@@ -866,7 +866,7 @@ Downstream task.
       expect(downstreamIds).toContain('task-c');
     });
 
-    it('returns empty DAG when no rule: fibers exist', async () => {
+    it('returns empty DAG when no tapestry: fibers exist', async () => {
       const emptyDir = join(TEST_DIR, 'empty-city');
       const emptyFeltDir = join(emptyDir, '.felt');
       mkdirSync(emptyFeltDir, { recursive: true });

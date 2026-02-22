@@ -14,6 +14,7 @@ import type { WebSocket } from 'ws';
 import type { Session } from './SessionTracker.js';
 import type { Origin } from './OriginManager.js';
 import type { City } from './CityManager.js';
+import { cliProvider, getProvider } from './cli-provider.js';
 
 // ============================================================================
 // Types
@@ -185,9 +186,9 @@ export class KittyIntegration {
    */
   createWorker(
     cityPath: string,
-    options: { sshHost?: string; originDisplayName?: string; customName?: string; chrome?: boolean; continue?: boolean } = {}
+    options: { sshHost?: string; originDisplayName?: string; customName?: string; chrome?: boolean; continue?: boolean; cli?: string } = {}
   ): string {
-    const { sshHost, originDisplayName, customName, chrome, continue: continueSession } = options;
+    const { sshHost, originDisplayName, customName, chrome, continue: continueSession, cli } = options;
     const isRemote = !!sshHost;
     const socket = this.getSocket();
     const escapedCwd = shellEscape(cityPath);
@@ -198,14 +199,13 @@ export class KittyIntegration {
     const tmuxSession = customName ? customName : `${baseName}-${timestamp}`;
     const escapedSession = shellEscape(tmuxSession);
 
-    // Build claude command with optional flags
-    const continueFlag = continueSession ? ' -c' : '';
-    const chromeFlag = chrome ? ' --chrome' : '';
-    const claudeCmd = `claude --dangerously-skip-permissions${continueFlag}${chromeFlag}`;
+    // Build CLI command with optional flags
+    const provider = cli ? getProvider(cli) : cliProvider;
+    const cliCmd = provider.launchCmd({ continue: continueSession, chrome });
 
     if (isRemote) {
       // Remote: create tmux session on remote via SSH
-      const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "${claudeCmd}"'`;
+      const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "${cliCmd}"'`;
       const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
       console.log('[CreateWorker] Creating remote tmux session:', sshCmd);
       execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
@@ -223,7 +223,7 @@ export class KittyIntegration {
       console.log(`[CreateWorker] Launched remote worker: ${tmuxSession} on ${sshHost}:${cityPath}`);
     } else {
       // Local: create tmux session locally
-      const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'zsh -l -c "${claudeCmd}"'`;
+      const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'zsh -l -c "${cliCmd}"'`;
       console.log('[CreateWorker] Creating local tmux session:', tmuxCmd);
       execSync(tmuxCmd, { stdio: 'pipe' });
 
@@ -247,8 +247,8 @@ export class KittyIntegration {
    * Handle new worker request - launch Claude Code in city directory via tmux
    * Supports both local and remote cities
    */
-  newWorker(ws: WebSocket, cityPath: string, customName?: string, chrome?: boolean, continueSession?: boolean): void {
-    console.log('[NewWorker] Starting for path:', cityPath, customName ? `(name: ${customName})` : '', chrome ? '(chrome)' : '', continueSession ? '(-c)' : '');
+  newWorker(ws: WebSocket, cityPath: string, customName?: string, chrome?: boolean, continueSession?: boolean, cli?: string): void {
+    console.log('[NewWorker] Starting for path:', cityPath, customName ? `(name: ${customName})` : '', chrome ? '(chrome)' : '', continueSession ? '(-c)' : '', cli ? `(cli: ${cli})` : '');
 
     // Find the city to determine if it's local or remote
     const city = this.cityLookup.findCityByPath(cityPath);
@@ -284,7 +284,7 @@ export class KittyIntegration {
     }
 
     try {
-      this.createWorker(cityPath, { sshHost, originDisplayName, customName, chrome, continue: continueSession });
+      this.createWorker(cityPath, { sshHost, originDisplayName, customName, chrome, continue: continueSession, cli });
     } catch (error: unknown) {
       const err = error as { message?: string; stderr?: Buffer };
       const errMsg = err.stderr?.toString() || err.message || 'Unknown error';
@@ -314,7 +314,7 @@ export class KittyIntegration {
    * 3. Wait for Claude to start (2 seconds)
    * 4. Send `felt show <fiberId>` as first message via tmux send-keys
    */
-  async handoff(fiberId: string, cityPath: string): Promise<void> {
+  async handoff(fiberId: string, cityPath: string, cli?: string): Promise<void> {
     console.log('[Handoff] Starting for fiber:', fiberId, 'path:', cityPath);
 
     // Find the city to determine if it's local or remote
@@ -335,10 +335,11 @@ export class KittyIntegration {
     const escapedSession = shellEscape(tmuxSession);
 
     try {
+      const provider = cli ? getProvider(cli) : cliProvider;
+      const handoffCmd = provider.launchCmd();
       if (isRemote && sshHost) {
         // Remote: create tmux session on remote via SSH
-        // Start Claude directly (fiber context sent after startup)
-        const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'bash -l -c "felt on ${fiberId} && claude --dangerously-skip-permissions || exec bash"'`;
+        const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} '${provider.remoteShell} -l -c "felt on ${fiberId} && ${handoffCmd} || exec ${provider.remoteShell}"'`;
         const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
         console.log('[Handoff] Creating remote tmux session:', sshCmd);
         execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
@@ -360,7 +361,7 @@ export class KittyIntegration {
       } else {
         // Local: create tmux session
         // Start Claude directly (fiber context sent after startup)
-        const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} 'zsh -l -c "felt on ${fiberId} && claude --dangerously-skip-permissions || exec zsh"'`;
+        const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} '${provider.localShell} -l -c "felt on ${fiberId} && ${handoffCmd} || exec ${provider.localShell}"'`;
         console.log('[Handoff] Creating local tmux session:', tmuxCmd);
         execSync(tmuxCmd, { stdio: 'pipe' });
 

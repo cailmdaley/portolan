@@ -360,7 +360,7 @@ export class ConversationCard {
    * Appends new messages incrementally. PostToolUse hook provides mid-turn
    * updates; Stop provides assistant text at end of turn.
    */
-  handleMessage(sessionId: string | undefined, tmuxSession: string, messages: ConversationMessage[]): void {
+  handleMessage(sessionId: string | undefined, _tmuxSession: string, messages: ConversationMessage[]): void {
     if (this.disposed) return
 
     // Strict sessionId matching only — no tmux fallback.

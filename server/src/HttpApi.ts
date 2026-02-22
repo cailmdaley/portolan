@@ -302,7 +302,7 @@ export class HttpApi {
   /**
    * GET /tapestry?cityId=xxx
    *
-   * Returns the full DAG for TapestryView: fibers with rule: tags,
+   * Returns the full DAG for TapestryView: fibers with tapestry: tags,
    * dependency edges, evidence summary per fiber, staleness flags.
    */
   private async handleTapestry(url: URL, res: ServerResponse): Promise<void> {
@@ -321,9 +321,9 @@ export class HttpApi {
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
     try {
-      // Single read: get all fibers, then partition into rule vs non-rule
+      // Single read: get all fibers, then partition into tapestry vs non-tapestry
       const allFibers = await this.getAllCityFibers(city.path, sshHost);
-      const ruleFibers = allFibers.filter(f => f.tags?.some(t => t.startsWith('rule:')));
+      const ruleFibers = allFibers.filter(f => f.tags?.some(t => t.startsWith('tapestry:') || t.startsWith('rule:')));
       const fiberIds = new Set(ruleFibers.map(f => f.id));
 
       // Build spec name map: fiberId → specName
@@ -364,6 +364,10 @@ export class HttpApi {
           kind: fiber.kind,
           status: fiber.status,
           body: fiber.body,
+          outcome: fiber.outcome || null,
+          tags: fiber.tags || [],
+          createdAt: fiber.createdAt || null,
+          closedAt: fiber.closedAt || null,
           dependsOn: deps,
           specName: specName || null,
           staleness,
@@ -413,7 +417,9 @@ export class HttpApi {
         kind: f.kind,
         tags: f.tags,
         body: f.body,
-        reason: f.reason,
+        outcome: f.outcome || null,
+        createdAt: f.createdAt || null,
+        closedAt: f.closedAt || null,
         dependsOn: f.dependsOn || [],
       }));
 
@@ -454,9 +460,10 @@ export class HttpApi {
       priority: f.priority || 2,
       createdAt: f.created_at || '',
       closedAt: f.closed_at,
-      reason: f.close_reason,
+      outcome: f.outcome || f.close_reason,
       body: f.body,
-      tags: f.tags,
+      // Normalize comma-separated tags: "claim, tapestry:foo" → ["claim", "tapestry:foo"]
+      tags: f.tags?.flatMap((t: string) => t.includes(',') ? t.split(',').map((s: string) => s.trim()).filter(Boolean) : [t]),
       dependsOn: f.depends_on?.map((d: any) => typeof d === 'string' ? d : d.id),
     }));
   }
@@ -470,19 +477,26 @@ export class HttpApi {
     cityPath: string,
     sshHost?: string,
   ): Promise<Record<string, string> | null> {
-    const configPath = `${cityPath}/workflow/config/config.yaml`;
+    // Try candidate config locations in priority order
+    const candidates = [
+      `${cityPath}/config/config.yaml`,
+      `${cityPath}/workflow/config/config.yaml`,
+    ];
 
     try {
-      let content: string;
+      let content: string = '';
       if (sshHost) {
+        const tryPaths = candidates.map(p => `cat ${shellEscape(p)} 2>/dev/null`).join(' || ');
         const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat ${shellEscape(configPath)} 2>/dev/null || echo ''`],
+          'ssh', [sshHost, `${tryPaths} || echo ''`],
           { maxBuffer: 1024 * 1024, timeout: 10000 },
         );
         content = stdout.trim();
       } else {
         const { readFile } = await import('fs/promises');
-        content = await readFile(configPath, 'utf-8');
+        for (const p of candidates) {
+          try { content = await readFile(p, 'utf-8'); break; } catch { /* try next */ }
+        }
       }
 
       if (!content) return null;

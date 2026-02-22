@@ -10,9 +10,9 @@ export interface Fiber {
   priority: number;  // default 2
   createdAt: string; // ISO date from frontmatter
   body?: string;     // markdown body after frontmatter
-  reason?: string;   // close reason from frontmatter
+  outcome?: string;  // outcome from frontmatter (or legacy close-reason)
   closedAt?: string; // ISO date from frontmatter
-  tags?: string[];   // e.g. ["rule:cosebis_data_vector"]
+  tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
 }
 
@@ -142,7 +142,10 @@ export function parseFiber(filename: string, content: string): Fiber {
     return items.map(line => line.replace(/^\s+- /, '').trim().replace(/^["']|["']$/g, ''));
   };
 
-  const tags = getListField('tags');
+  // Normalize tags: split comma-separated values within a single YAML list item
+  // into individual tags. Handles "claim, tapestry:foo" → ["claim", "tapestry:foo"]
+  const rawTags = getListField('tags');
+  const tags = rawTags?.flatMap(t => t.includes(',') ? t.split(',').map(s => s.trim()).filter(Boolean) : [t]);
   const dependsOn = getListField('depends-on');
 
   return {
@@ -153,7 +156,7 @@ export function parseFiber(filename: string, content: string): Fiber {
     priority: parseInt(getField('priority') || '2', 10),
     createdAt: getField('created-at') || getField('created') || '',
     closedAt: getField('closed-at') || getField('closed') || undefined,
-    reason: getField('close-reason') || getField('reason') || undefined,
+    outcome: getField('outcome') || getField('close-reason') || undefined,
     body: body || undefined,
     tags: tags,
     dependsOn: dependsOn,

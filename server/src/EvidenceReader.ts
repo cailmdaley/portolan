@@ -6,7 +6,7 @@
  * Artifacts are PNGs/JPGs in the same directory.
  */
 
-import { readFile, readdir, stat } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import { join } from 'path';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
@@ -17,7 +17,7 @@ const execFileAsync = promisify(execFile);
 export interface Evidence {
   specName: string;
   metrics: Record<string, unknown>;
-  artifacts: Record<string, string>; // name → filename
+  artifacts: Record<string, string>; // output name → filename (images only)
   mtime: number;                     // ms since epoch — evidence.json mtime
   generated: string | null;           // ISO timestamp from evidence.json
 }
@@ -44,38 +44,27 @@ export async function readEvidence(
 
 const IMAGE_RE = /\.(png|jpe?g)$/i;
 
-function mergeImageArtifacts(
-  artifacts: Record<string, string>,
-  filenames: string[],
-): void {
-  for (const f of filenames) {
-    if (IMAGE_RE.test(f)) {
-      const stem = f.replace(/\.[^.]+$/, '');
-      if (!artifacts[stem]) {
-        artifacts[stem] = f;
-      }
-    }
-  }
-}
-
 function buildEvidence(
   specName: string,
   data: Record<string, unknown>,
   mtime: number,
-  artifacts: Record<string, string>,
 ): Evidence {
+  // Artifacts come from the `output` field only — these are the rule's
+  // declared outputs. Directory scans are no longer used.
+  const output = (data.output || {}) as Record<string, string | string[]>;
+  const artifacts: Record<string, string> = {};
+  for (const [key, val] of Object.entries(output)) {
+    if (typeof val === 'string' && IMAGE_RE.test(val)) {
+      artifacts[key] = val;
+    }
+  }
+
   return {
     specName,
     metrics: (data.evidence as Record<string, unknown>) || {},
     artifacts,
     mtime,
     generated: (data.generated as string) ?? null,
-  };
-}
-
-function parseArtifactsFromData(data: Record<string, unknown>): Record<string, string> {
-  return {
-    ...((data.artifact_paths || data.artifacts || {}) as Record<string, string>),
   };
 }
 
@@ -92,15 +81,8 @@ async function readLocalEvidence(evidenceDir: string, specName: string): Promise
 
   const content = await readFile(evidencePath, 'utf-8');
   const data = JSON.parse(content) as Record<string, unknown>;
-  const artifacts = parseArtifactsFromData(data);
 
-  try {
-    mergeImageArtifacts(artifacts, await readdir(evidenceDir));
-  } catch {
-    // directory listing failed — use what we have
-  }
-
-  return buildEvidence(specName, data, mtime, artifacts);
+  return buildEvidence(specName, data, mtime);
 }
 
 async function readRemoteEvidence(
@@ -109,11 +91,9 @@ async function readRemoteEvidence(
   specName: string,
 ): Promise<Evidence | null> {
   const escapedPath = shellEscape(evidenceDir + '/evidence.json');
-  const escapedDir = shellEscape(evidenceDir);
   const cmd = [
     `stat -c '%Y' ${escapedPath} 2>/dev/null || stat -f '%m' ${escapedPath} 2>/dev/null`,
     `cat ${escapedPath}`,
-    `ls ${escapedDir}/*.png ${escapedDir}/*.jpg 2>/dev/null || true`,
   ].join(' && echo "---SEPARATOR---" && ');
 
   const { stdout } = await execFileAsync(
@@ -128,16 +108,8 @@ async function readRemoteEvidence(
   if (isNaN(mtime)) return null;
 
   const data = JSON.parse(parts[1].trim()) as Record<string, unknown>;
-  const artifacts = parseArtifactsFromData(data);
 
-  if (parts[2]) {
-    const filenames = parts[2].trim().split('\n')
-      .filter(Boolean)
-      .map(f => f.split('/').pop()!);
-    mergeImageArtifacts(artifacts, filenames);
-  }
-
-  return buildEvidence(specName, data, mtime, artifacts);
+  return buildEvidence(specName, data, mtime);
 }
 
 /**
@@ -155,15 +127,12 @@ export async function readEvidenceBatch(
   // Build a shell loop that emits delimited blocks per spec
   const claimsDir = shellEscape(`${cityPath}/results/claims`);
   const perSpec = specNames.map(spec => {
-    const dir = `${claimsDir}/${shellEscape(spec)}`;
-    const ej = `${dir}/evidence.json`;
+    const ej = `${claimsDir}/${shellEscape(spec)}/evidence.json`;
     return [
       `echo "===SPEC:${spec}==="`,
       `stat -c '%Y' ${ej} 2>/dev/null || stat -f '%m' ${ej} 2>/dev/null || echo 'NO_STAT'`,
       `echo "---SEP---"`,
       `cat ${ej} 2>/dev/null || echo 'NO_FILE'`,
-      `echo "---SEP---"`,
-      `ls ${dir}/*.png ${dir}/*.jpg 2>/dev/null || true`,
     ].join(' && ');
   }).join(' && ');
 
@@ -183,7 +152,6 @@ export async function readEvidenceBatch(
 
       const mtimeStr = (parts[0] || '').trim();
       const jsonStr = (parts[1] || '').trim();
-      const fileList = (parts[2] || '').trim();
 
       if (mtimeStr === 'NO_STAT' || jsonStr === 'NO_FILE') {
         results.set(specName, null);
@@ -198,14 +166,7 @@ export async function readEvidenceBatch(
 
       try {
         const data = JSON.parse(jsonStr) as Record<string, unknown>;
-        const artifacts = parseArtifactsFromData(data);
-        if (fileList) {
-          mergeImageArtifacts(
-            artifacts,
-            fileList.split('\n').filter(Boolean).map(f => f.split('/').pop()!),
-          );
-        }
-        results.set(specName, buildEvidence(specName, data, mtime, artifacts));
+        results.set(specName, buildEvidence(specName, data, mtime));
       } catch {
         results.set(specName, null);
       }
@@ -221,14 +182,14 @@ export async function readEvidenceBatch(
 }
 
 /**
- * Extract the spec name from a fiber's rule: tag.
- * e.g., "rule:cosebis_data_vector" → "cosebis_data_vector"
+ * Extract the spec name from a fiber's tapestry: tag.
+ * e.g., "tapestry:cosebis_data_vector" → "cosebis_data_vector"
+ * Also accepts legacy "rule:" prefix for backwards compatibility.
  */
 export function getSpecName(tags: string[]): string | undefined {
   for (const tag of tags) {
-    if (tag.startsWith('rule:')) {
-      return tag.slice(5);
-    }
+    if (tag.startsWith('tapestry:')) return tag.slice(9);
+    if (tag.startsWith('rule:')) return tag.slice(5);
   }
   return undefined;
 }

@@ -4,12 +4,14 @@ export interface NewWorkerOptions {
   name: string
   chrome: boolean
   continue: boolean
+  cli: string  // 'claude' | 'codex'
 }
 
 export class NewWorkerDialog {
   private overlay: HTMLElement
   private dialog: HTMLElement
   private nameInput: HTMLInputElement
+  private cliSelect: HTMLSelectElement
   private chromeCheckbox: HTMLInputElement
   private continueCheckbox: HTMLInputElement
   private resolvePromise: ((result: NewWorkerOptions | null) => void) | null = null
@@ -19,6 +21,7 @@ export class NewWorkerDialog {
     this.overlay = this.createOverlay()
     this.dialog = this.createDialog()
     this.nameInput = this.dialog.querySelector('.worker-name-input') as HTMLInputElement
+    this.cliSelect = this.dialog.querySelector('.cli-select') as HTMLSelectElement
     this.chromeCheckbox = this.dialog.querySelector('.chrome-checkbox') as HTMLInputElement
     this.continueCheckbox = this.dialog.querySelector('.continue-checkbox') as HTMLInputElement
 
@@ -95,6 +98,32 @@ export class NewWorkerDialog {
           outline: none;
           transition: border-color 0.15s;
         " />
+      </div>
+
+      <div style="margin-bottom: 16px;">
+        <label style="
+          display: block;
+          margin-bottom: 6px;
+          font-size: 14px;
+          color: var(--text-muted, #7A7368);
+        ">CLI</label>
+        <select class="cli-select" style="
+          width: 100%;
+          padding: 10px 12px;
+          font-family: inherit;
+          font-size: 15px;
+          border: 1px solid var(--border, #8B7355);
+          border-radius: 4px;
+          background: var(--bg-elevated, #FAF8F5);
+          color: var(--text-primary, #2E2A26);
+          box-sizing: border-box;
+          outline: none;
+          cursor: pointer;
+          transition: border-color 0.15s;
+        ">
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
       </div>
 
       <div style="margin-bottom: 16px;">
@@ -262,6 +291,7 @@ export class NewWorkerDialog {
 
     // Reset form
     this.nameInput.value = ''
+    this.cliSelect.value = 'claude'
     this.continueCheckbox.checked = false
     this.chromeCheckbox.checked = false
     const resetCheckboxVisual = (className: string) => {
@@ -292,6 +322,7 @@ export class NewWorkerDialog {
   private confirm(): void {
     const result: NewWorkerOptions = {
       name: this.nameInput.value.trim(),
+      cli: this.cliSelect.value,
       chrome: this.chromeCheckbox.checked,
       continue: this.continueCheckbox.checked,
     }

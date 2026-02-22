@@ -161,7 +161,7 @@ const fileViewerModal = new FileViewerModal()
 // Wire up file click from conversation cards to file viewer
 zoneRenderer.setCardFileClickHandler((fullPath, originId, workerId) => {
   const city = findBestMatchingCity(originId, fullPath)
-  fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path)
+  fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path, city?.id)
 })
 
 // Wire up worker lookup for send-to-worker feature
@@ -176,8 +176,8 @@ fileViewerModal.setOnGetWorkers(async (originId: string, path: string) => {
 })
 
 // Wire up file search click from city panel to file viewer
-cityPanel.setOnOpenFile((fullPath, originId, cityPath) => {
-  fileViewerModal.show(fullPath, originId, undefined, undefined, cityPath)
+cityPanel.setOnOpenFile((fullPath, originId, cityPath, cityId, line) => {
+  fileViewerModal.show(fullPath, originId, undefined, undefined, cityPath, cityId, line)
 })
 
 // Setup context menu
@@ -249,8 +249,8 @@ function getCityWorkers(city: City): { id: string; name: string; tmuxSession: st
 tapestryView.setOnGetWorkers(getCityWorkers)
 
 // Wire up file navigation from tapestry view — open files in file viewer
-tapestryView.setOnOpenFile((filePath, city) => {
-  fileViewerModal.show(filePath, city.originId, undefined, undefined, city.path)
+tapestryView.setOnOpenFile((filePath, city, line) => {
+  fileViewerModal.show(filePath, city.originId, undefined, undefined, city.path, city.id, line)
 })
 
 // Setup playground viewer
@@ -791,6 +791,7 @@ async function promptNewWorker(city: City): Promise<void> {
       type: 'newWorker',
       cityPath: city.path,
       name: result.name || undefined,  // undefined if empty (will auto-generate)
+      cli: result.cli || undefined,  // 'claude' | 'codex'
       chrome: result.chrome || undefined,  // only send if true
       continue: result.continue || undefined,  // only send if true
     }))

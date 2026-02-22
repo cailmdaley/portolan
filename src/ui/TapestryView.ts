@@ -931,26 +931,19 @@ export class TapestryView {
           }
         }))
 
-    // Hover: both reveal animation and tooltip fire after 300ms
+    // Hover: tooltip only — no reveal animation
     const HOVER_DELAY = 300
-    let hoverExpandedId: string | null = null
     let hoverTimer: ReturnType<typeof setTimeout> | null = null
 
     nodeElements
       .on('mouseenter', (event: MouseEvent, d: SimNode) => {
         const cx = event.clientX, cy = event.clientY
         hoverTimer = setTimeout(() => {
-          // Reveal animation
-          if (hasSections && !this.expandedNodes.has(d.data.id)) {
-            hoverExpandedId = d.data.id
-            this.expandedNodes.add(d.data.id)
-            this.updateTierVisibility(true, {x: d.x ?? 0, y: d.y ?? 0})
-          }
-          // Tooltip
           const lead = leadParagraph(d.data.body)
           const outcome = d.data.outcome?.trim() ?? ''
-          if ((lead || outcome) && this.tooltip) {
-            let html = ''
+          if (this.tooltip) {
+            let html = `<span class="tooltip-title">${escapeHtml(d.data.title)}</span>`
+            if (lead || outcome) html += '<hr class="tooltip-divider">'
             if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
             if (lead && outcome) html += '<hr class="tooltip-divider">'
             if (outcome) html += `<span class="tooltip-outcome">${escapeHtml(outcome)}</span>`
@@ -966,15 +959,9 @@ export class TapestryView {
         this.tooltip.style.left = `${event.clientX + 14}px`
         this.tooltip.style.top = `${event.clientY - 8}px`
       })
-      .on('mouseleave', (_event: MouseEvent, d: SimNode) => {
+      .on('mouseleave', () => {
         if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null }
         if (this.tooltip) this.tooltip.style.display = 'none'
-        // Collapse if this node was hover-expanded (not click-made-permanent)
-        if (hasSections && hoverExpandedId === d.data.id) {
-          hoverExpandedId = null
-          this.expandedNodes.delete(d.data.id)
-          this.updateTierVisibility(false, {x: d.x ?? 0, y: d.y ?? 0})
-        }
       })
 
     // Build node visuals

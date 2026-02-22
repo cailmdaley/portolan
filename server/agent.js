@@ -44,6 +44,11 @@ const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLA
 const CONVERSATION_POLL_INTERVAL = 30000;  // Fallback polling every 30s (hooks are primary)
 const HOOK_SERVER_PORT = 4005;  // HTTP server for receiving hook POSTs
 
+// CLI provider detection — detect both claude and codex simultaneously
+const ALL_CLI_PROCESS_NAMES = ['claude', 'codex'];
+function isCliProcess(comm) { return ALL_CLI_PROCESS_NAMES.some(n => comm.includes(n)); }
+function pgrepPattern() { return ALL_CLI_PROCESS_NAMES.join('\\|'); }
+
 // ============================================================================
 // State
 // ============================================================================
@@ -239,30 +244,64 @@ async function discoverSessions() {
             return [];
         }
 
-        // Check which panes have claude running (as process itself or child)
+        // Check which panes have a CLI running (claude or codex, as process itself or child)
         // NOTE: Detection logic duplicated in src/SessionTracker.ts — keep in sync
         const claudeSessionsBasic = [];
 
         for (const { tmuxSession, cwd, panePid } of paneData) {
             try {
-                // Check if pane process ITSELF is claude (when zsh -c execs into claude)
+                // Check if pane process ITSELF is a CLI (when zsh -c execs into claude/codex)
                 const { stdout: paneComm } = await execAsync(
                     `ps -o comm= -p ${panePid} 2>/dev/null || true`,
                     { timeout: 2000 }
                 );
-                if (paneComm.trim().includes('claude')) {
+                if (isCliProcess(paneComm.trim())) {
+                    claudeSessionsBasic.push({ tmuxSession, cwd });
+                    continue;
+                }
+                // Check full args for cases like "node .../bin/codex" on Linux
+                const { stdout: paneArgs } = await execAsync(
+                    `ps -o args= -p ${panePid} 2>/dev/null || true`,
+                    { timeout: 2000 }
+                );
+                if (paneArgs.trim() && isCliProcess(paneArgs.trim())) {
                     claudeSessionsBasic.push({ tmuxSession, cwd });
                     continue;
                 }
 
-                // Also check children (for cases where shell doesn't exec)
-                // Use -x for exact process name match (not -f which matches full command line)
-                const { stdout: pgrepOut } = await execAsync(
-                    `pgrep -P ${panePid} -x claude 2>/dev/null || true`,
-                    { timeout: 2000 }
-                );
-                if (pgrepOut.trim()) {
+                // BFS through descendants (up to depth 4) to handle deep chains
+                // e.g. bash → python3 → MainThread → codex (ralph-launched sessions)
+                let found = false;
+                let frontier = [panePid];
+                for (let depth = 0; depth < 4 && !found; depth++) {
+                    const nextFrontier = [];
+                    for (const pid of frontier) {
+                        const { stdout: childPidsOut } = await execAsync(
+                            `pgrep -P ${pid} 2>/dev/null || true`,
+                            { timeout: 2000 }
+                        );
+                        for (const candidatePid of childPidsOut.trim().split('\n').filter(Boolean)) {
+                            try {
+                                const { stdout: childComm } = await execAsync(
+                                    `ps -o comm= -p ${candidatePid} 2>/dev/null || true`,
+                                    { timeout: 2000 }
+                                );
+                                if (isCliProcess(childComm.trim())) { found = true; break; }
+                                const { stdout: childArgs } = await execAsync(
+                                    `ps -o args= -p ${candidatePid} 2>/dev/null || true`,
+                                    { timeout: 2000 }
+                                );
+                                if (isCliProcess(childArgs.trim())) { found = true; break; }
+                                nextFrontier.push(candidatePid);
+                            } catch { /* skip */ }
+                        }
+                        if (found) break;
+                    }
+                    frontier = nextFrontier;
+                }
+                if (found) {
                     claudeSessionsBasic.push({ tmuxSession, cwd });
+                    continue;
                 }
             } catch {
                 // Ignore errors from pgrep
@@ -304,7 +343,7 @@ async function pollSessions() {
             type: 'agent_sessions_update',
             payload: { sessions },
         }));
-        debug(`Sent ${sessions.length} sessions to server`);
+        debug(`Sent ${sessions.length} sessions to server: ${sessions.map(s => s.tmuxSession).join(', ')}`);
     }
 }
 
@@ -585,21 +624,46 @@ async function detectTranscriptForSession(tmuxSession, cwd) {
         const panePid = paneInfo.trim().split('\n')[0];
         if (!panePid) return null;
 
-        // Find the Claude process PID
+        // Find the CLI process PID (claude or codex)
         let claudePid = null;
 
-        // Check if pane process is claude
+        // Check if pane process is a CLI
         const { stdout: paneComm } = await execAsync(
             `ps -o comm= -p ${panePid} 2>/dev/null || true`
         );
-        if (paneComm.trim().includes('claude')) {
+        if (isCliProcess(paneComm.trim())) {
             claudePid = panePid;
         } else {
-            // Check children (use -x for exact process name match)
-            const { stdout: pgrepOut } = await execAsync(
-                `pgrep -P ${panePid} -x claude 2>/dev/null || true`
+            // Check full args (codex on Linux runs as "node .../bin/codex")
+            const { stdout: paneArgs } = await execAsync(
+                `ps -o args= -p ${panePid} 2>/dev/null || true`
             );
-            claudePid = pgrepOut.trim().split('\n')[0] || null;
+            if (paneArgs.trim() && isCliProcess(paneArgs.trim())) {
+                claudePid = panePid;
+            } else {
+                // Check children by name first, then by args
+                const { stdout: pgrepOut } = await execAsync(
+                    `pgrep -P ${panePid} -x ${pgrepPattern()} 2>/dev/null || true`
+                );
+                claudePid = pgrepOut.trim().split('\n')[0] || null;
+
+                if (!claudePid) {
+                    const { stdout: childPids } = await execAsync(
+                        `pgrep -P ${panePid} 2>/dev/null || true`
+                    );
+                    for (const candidatePid of childPids.trim().split('\n').filter(Boolean)) {
+                        try {
+                            const { stdout: childArgs } = await execAsync(
+                                `ps -o args= -p ${candidatePid} 2>/dev/null || true`
+                            );
+                            if (isCliProcess(childArgs.trim())) {
+                                claudePid = candidatePid;
+                                break;
+                            }
+                        } catch { /* skip */ }
+                    }
+                }
+            }
         }
 
         if (!claudePid) return null;
@@ -839,6 +903,11 @@ function buildSpecificSshHost(baseSshHost) {
 
     const nodeMatch = ORIGIN_NAME.match(/^(login\d+)\./);
     if (nodeMatch) {
+        // Don't double-append if baseSshHost already ends with this login node
+        if (baseSshHost.endsWith(`-${nodeMatch[1]}`)) {
+            log(`SSH host already specific: ${baseSshHost}`);
+            return baseSshHost;
+        }
         const specificHost = `${baseSshHost}-${nodeMatch[1]}`;
         log(`Using specific node SSH host: ${specificHost} (from ${ORIGIN_NAME})`);
         return specificHost;

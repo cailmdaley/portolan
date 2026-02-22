@@ -545,7 +545,15 @@ function handleAgentSessionsUpdate(
   buildState().then(broadcast);
 }
 
-function handleAgentDisconnect(originId: string): void {
+function reconnectTunnel(sshHost: string): void {
+  console.log(`Reconnecting SSH tunnel to ${sshHost}...`);
+  execFile('ssh', ['-fN', sshHost], (err) => {
+    if (err) console.error(`SSH tunnel reconnect to ${sshHost} failed:`, err.message);
+    else console.log(`SSH tunnel to ${sshHost} re-established`);
+  });
+}
+
+function handleAgentDisconnect(originId: string, sshHost?: string): void {
   const originSessionsMap = remoteSessions.get(originId);
   if (!originSessionsMap) return;
 
@@ -579,6 +587,8 @@ function handleAgentDisconnect(originId: string): void {
     remoteSessions.delete(originId);
     rebuildCities();
     buildState().then(broadcast);
+
+    if (sshHost) reconnectTunnel(sshHost);
   }
 }
 
@@ -622,7 +632,7 @@ async function getRemoteFibers(
   sshHost: string,
   cityPath: string,
   status: 'open' | 'closed'
-): Promise<Array<{ id: string; title: string; kind: string; status: string; body?: string; reason?: string }>> {
+): Promise<Array<{ id: string; title: string; kind: string; status: string; body?: string; outcome?: string }>> {
   const escapedPath = shellEscape(cityPath);
   const statusFlag = status === 'open' ? '-s open' : '-s closed';
   const recentFlag = status === 'closed' ? '--recent 5' : '';
@@ -639,7 +649,7 @@ async function getRemoteFibers(
       kind: f.kind || 'task',
       status: f.status || status,
       body: f.body || undefined,
-      reason: f.close_reason || undefined,
+      outcome: f.outcome || f.close_reason || undefined,
     }));
   } catch (error) {
     console.error(`Failed to get remote fibers from ${sshHost}:${cityPath}:`, error);
@@ -980,7 +990,7 @@ const messageRouter = new MessageRouter({
   onFocus: (sessionId) => kitty.focusSession(sessionId),
   onGetFibers: handleGetFibers,
   onHandoff: (fiberId, cityPath) => kitty.handoff(fiberId, cityPath),
-  onNewWorker: (ws, cityPath, name, chrome, continueSession) => kitty.newWorker(ws, cityPath, name, chrome, continueSession),
+  onNewWorker: (ws, cityPath, name, chrome, continueSession, cli) => kitty.newWorker(ws, cityPath, name, chrome, continueSession, cli),
   onPinCity: handlePinCity,
   onUnpinCity: handleUnpinCity,
   onConfirmUnpin: performUnpin,
@@ -1110,7 +1120,7 @@ wss.on('connection', async (ws, req) => {
     ws.on('close', () => {
       const disconnectedOrigin = originManager.handleDisconnect(ws);
       if (disconnectedOrigin) {
-        handleAgentDisconnect(disconnectedOrigin.id);
+        handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
         broadcast({ ...lastBroadcastState!, origins: originManager.getOrigins() });
       }
       console.log(`Agent disconnected: ${originName}`);

@@ -31,7 +31,7 @@ A reader enters, sees the shape of the argument at a glance, then drills into th
 - Reveal animation: radial wave from nearest section ancestor ✓
 - Search input matches all fibers; clicking a result reveals it from fog ✓
 - URL fragments (`#fiber-id`) work — opening a URL auto-expands the containing section ✓
-- Static export carries tiering metadata; static mode has the same drill-down behavior (to verify)
+- Static export carries tiering metadata; static mode has the same drill-down behavior ✓
 - Existing features (staleness coloring, detail panel, annotation, body editing, artifact lightbox) work unchanged within expanded sections ✓
 
 ### What "section" means
@@ -46,7 +46,7 @@ A fiber belongs to a section's neighborhood if it is **1 hop** from the section 
 
 | Action | Behavior |
 |--------|----------|
-| **Hover any node (300ms)** | Full radial reveal animation + tooltip (body lead ÷ outcome). Collapses on mouseleave. |
+| **Hover any node (300ms)** | Tooltip: title (bold) + divider + body lead + divider + outcome. No reveal. |
 | **Click any node** | Sidebar shows full detail. 1-hop neighborhood emerges from fog. Expansion permanent. |
 | **Click again** | Node collapses — neighborhood returns to fog. |
 | **Click background** | Sidebar closes. Map returns to skeleton (sections only). |
@@ -134,4 +134,4 @@ d3-force simulation runs on ALL nodes at load. Burn-in phase (800 ticks) compute
 
 ## Open Questions
 
-- **Static export tiering**: Verify that tier:1 tag passes through to static JSON and tiered behavior works in static mode.
+- **Tapestry skill + snakemake skill**: Update to describe the pyramid model (fog, tier:1, interaction conventions) so future sessions building tapestries use the right patterns. Planned for next ralph iteration.

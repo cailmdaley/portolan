@@ -41,6 +41,30 @@ renderer.image = ({ href, text: alt }: { href: string; text?: string }) => {
 
 marked.use({ renderer })
 
+// GFM del rule matches ~text~ (single tilde) as well as ~~text~~ (double).
+// Tilde is common as an approximation sign (~2 days), so escape lone tildes
+// before parsing — but only outside code spans and fenced code blocks.
+marked.use({
+  hooks: {
+    preprocess(src: string): string {
+      // Split on code regions (fenced blocks or backtick spans) and only
+      // process the non-code segments.
+      const CODE_REGION = /(```[\s\S]*?```|`[^`]*`)/g
+      const parts = src.split(CODE_REGION)
+      return parts.map((part, i) => {
+        // Odd indices are the captured code regions — leave untouched
+        if (i % 2 === 1) return part
+        // Even indices are plain text — escape lone tildes
+        return part.replace(/~+/g, (m) => {
+          const pairs = Math.floor(m.length / 2)
+          const rem = m.length % 2
+          return '~~'.repeat(pairs) + (rem ? '&#126;' : '')
+        })
+      }).join('')
+    },
+  },
+})
+
 /**
  * Escape HTML to prevent XSS
  */
@@ -95,6 +119,56 @@ export function renderMarkdown(text: string, opts?: RenderMarkdownOptions): stri
 }
 
 /**
+ * Resolve config[key] / config.x.y / config.yaml: x.y references in rendered markdown.
+ * Appends " = value" annotations to matching inline code elements.
+ */
+export function interpolateConfig(container: HTMLElement, config: Record<string, string>): void {
+  container.querySelectorAll<HTMLElement>('p code, td code, li code, h1 code, h2 code, h3 code').forEach(code => {
+    const text = code.textContent?.trim() || ''
+    const key = text
+      .replace(/^config\.yaml:\s*/, '')
+      .replace(/^config\[["']?/, '').replace(/["']?\]$/, '')
+      .replace(/["']?\]\[["']?/g, '.')
+      .replace(/^config\./, '')
+    const value = config[key]
+    if (value !== undefined) {
+      const display = value.length > 60 ? value.slice(0, 57) + '...' : value
+      code.textContent = display
+      code.classList.add('config-resolved')
+      code.title = key  // hover shows original key
+    }
+  })
+}
+
+// Matches inline code that looks like a file path, e.g. server/src/index.ts or ./foo/bar.py:42
+// Must have a path separator or leading ./ and a file extension, optional :linenum suffix.
+const INLINE_PATH_RE = /^(?:\.{0,2}\/)?[\w.\-/]+\/[\w.\-]+\.[a-zA-Z]{1,10}(?::(\d+))?$|^\.\/[\w.\-/]+\.[a-zA-Z]{1,10}(?::(\d+))?$/
+
+/**
+ * Find inline <code> elements whose text looks like a file path and make them clickable.
+ * `openFile(path, line)` is called with the resolved relative path and optional line number.
+ */
+export function attachInlinePathListeners(
+  container: HTMLElement,
+  openFile: (path: string, line?: number) => void,
+): void {
+  container.querySelectorAll<HTMLElement>('code.md-inline-code').forEach(code => {
+    const text = code.textContent?.trim() || ''
+    const m = text.match(/^(.*?)(?::(\d+))?$/)
+    if (!m || !INLINE_PATH_RE.test(text)) return
+    const path = m[1]
+    const line = m[2] ? parseInt(m[2], 10) : undefined
+    code.style.cursor = 'pointer'
+    code.title = line ? `Open ${path} at line ${line}` : `Open ${path}`
+    code.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      openFile(path, line)
+    })
+  })
+}
+
+/**
  * Apply Prism syntax highlighting to code blocks in a container
  * Call after inserting markdown HTML into the DOM
  */
@@ -125,6 +199,93 @@ export function formatTimeAgo(timestamp: number): string {
   if (diffDays < 7) return `${diffDays}d ago`
 
   return new Date(timestamp).toLocaleDateString()
+}
+
+/** Staleness → color map, shared between TapestryView and FileViewerModal. */
+export const STALENESS_COLORS: Record<string, string> = {
+  'fresh': '#5A7B7B',
+  'stale': '#A87070',
+  'no-evidence': '#7A7368',
+}
+
+/**
+ * Format an ISO date string as "20 Feb 2026".
+ */
+export function formatFiberDate(iso: string | null | undefined): string {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  } catch { return iso }
+}
+
+/**
+ * Render an artifact gallery with ← → navigation.
+ * Returns { html, attach(container), detach() }.
+ * - `html`: the `.tapestry-artifact-viewer` HTML string to inject
+ * - `attach(container)`: binds click + keyboard nav inside container
+ * - `detach()`: removes the keyboard listener
+ */
+export function renderArtifactGallery(
+  artifacts: Record<string, string>,
+  buildUrl: (path: string) => string,
+): { html: string; attach: (container: HTMLElement) => void; detach: () => void } {
+  const entries = Object.entries(artifacts)
+  if (entries.length === 0) return { html: '', attach: () => {}, detach: () => {} }
+
+  let currentIndex = 0
+  const hasMultiple = entries.length > 1
+
+  const [name0, path0] = entries[0]
+  const html = `
+    <div class="tapestry-artifact-viewer">
+      ${hasMultiple ? `<span class="artifact-nav" data-delta="-1">\u2190</span>` : ''}
+      <div class="tapestry-artifact">
+        <span class="artifact-label">${escapeHtml(name0)}${hasMultiple ? ` (1/${entries.length})` : ''}</span>
+        <img src="${escapeHtml(buildUrl(path0))}" alt="${escapeHtml(name0)}" data-artifact-name="${escapeHtml(name0)}" loading="lazy" />
+      </div>
+      ${hasMultiple ? `<span class="artifact-nav" data-delta="1">\u2192</span>` : ''}
+    </div>`
+
+  const updateImg = (container: HTMLElement) => {
+    const [name, path] = entries[currentIndex]
+    const img = container.querySelector('.tapestry-artifact img') as HTMLImageElement | null
+    if (img) { img.src = buildUrl(path); img.alt = name; img.dataset.artifactName = name }
+    const label = container.querySelector('.artifact-label')
+    if (label) label.textContent = `${name}${hasMultiple ? ` (${currentIndex + 1}/${entries.length})` : ''}`
+  }
+
+  let keyHandler: ((e: KeyboardEvent) => void) | null = null
+
+  const attach = (container: HTMLElement) => {
+    container.querySelectorAll('.artifact-nav').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const delta = parseInt((btn as HTMLElement).dataset.delta || '0')
+        currentIndex = (currentIndex + delta + entries.length) % entries.length
+        updateImg(container)
+      })
+    })
+
+    if (hasMultiple) {
+      keyHandler = (e: KeyboardEvent) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+        e.preventDefault()
+        const delta = e.key === 'ArrowLeft' ? -1 : 1
+        currentIndex = (currentIndex + delta + entries.length) % entries.length
+        updateImg(container)
+      }
+      document.addEventListener('keydown', keyHandler)
+    }
+  }
+
+  const detach = () => {
+    if (keyHandler) {
+      document.removeEventListener('keydown', keyHandler)
+      keyHandler = null
+    }
+  }
+
+  return { html, attach, detach }
 }
 
 /**

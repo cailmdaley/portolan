@@ -121,15 +121,21 @@ async function main() {
     }
   }
 
-  // Download linked files and rewrite body links
+  // Download linked files and rewrite body + outcome links (nodes + sidebar fibers)
+  const allItems = [...data.nodes, ...(data.fibers || [])]
   let fileCount = 0
-  for (const node of data.nodes) {
-    if (!node.body) continue
-    const linkedFiles = findLinkedFiles(node.body)
-    if (linkedFiles.length === 0) continue
+  for (const node of allItems) {
+    const textFields = [node.body, node.outcome].filter(Boolean) as string[]
+    if (textFields.length === 0) continue
+
+    const allLinks = new Set<string>()
+    for (const text of textFields) {
+      for (const href of findLinkedFiles(text)) allLinks.add(href)
+    }
+    if (allLinks.size === 0) continue
 
     const rewriteMap = new Map<string, string>()
-    for (const href of linkedFiles) {
+    for (const href of allLinks) {
       const filename = href.split('/').pop() || ''
       const outDir = path.join(OUT_DIR, 'files')
       const outPath = path.join(outDir, filename)
@@ -149,7 +155,8 @@ async function main() {
     }
 
     if (rewriteMap.size > 0) {
-      node.body = rewriteLinks(node.body, rewriteMap)
+      if (node.body) node.body = rewriteLinks(node.body, rewriteMap)
+      if (node.outcome) node.outcome = rewriteLinks(node.outcome, rewriteMap)
     }
   }
 

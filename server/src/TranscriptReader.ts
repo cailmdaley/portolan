@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { isCliProcess, pgrepPattern } from './cli-provider.js';
 
 const execAsync = promisify(exec);
 
@@ -138,21 +139,46 @@ export class TranscriptReader {
       const panePid = paneInfo.trim().split('\n')[0];
       if (!panePid) return null;
 
-      // Find the Claude process PID (either the pane process or a child)
+      // Find the CLI process PID (claude or codex — either pane process or a child)
       let claudePid: string | null = null;
 
-      // Check if pane process is claude
+      // Check if pane process is a CLI
       const { stdout: paneComm } = await execAsync(
         `ps -o comm= -p ${panePid} 2>/dev/null || true`
       );
-      if (paneComm.trim().includes('claude')) {
+      if (isCliProcess(paneComm.trim())) {
         claudePid = panePid;
       } else {
-        // Check children (use -x for exact process name match)
-        const { stdout: pgrepOut } = await execAsync(
-          `pgrep -P ${panePid} -x claude 2>/dev/null || true`
+        // Check full args (codex on Linux runs as "node .../bin/codex")
+        const { stdout: paneArgs } = await execAsync(
+          `ps -o args= -p ${panePid} 2>/dev/null || true`
         );
-        claudePid = pgrepOut.trim().split('\n')[0] || null;
+        if (paneArgs.trim() && isCliProcess(paneArgs.trim())) {
+          claudePid = panePid;
+        } else {
+          // Check children by name first, then by args
+          const { stdout: pgrepOut } = await execAsync(
+            `pgrep -P ${panePid} -x ${pgrepPattern()} 2>/dev/null || true`
+          );
+          claudePid = pgrepOut.trim().split('\n')[0] || null;
+
+          if (!claudePid) {
+            const { stdout: childPids } = await execAsync(
+              `pgrep -P ${panePid} 2>/dev/null || true`
+            );
+            for (const candidatePid of childPids.trim().split('\n').filter(Boolean)) {
+              try {
+                const { stdout: childArgs } = await execAsync(
+                  `ps -o args= -p ${candidatePid} 2>/dev/null || true`
+                );
+                if (isCliProcess(childArgs.trim())) {
+                  claudePid = candidatePid;
+                  break;
+                }
+              } catch { /* skip */ }
+            }
+          }
+        }
       }
 
       if (!claudePid) return null;

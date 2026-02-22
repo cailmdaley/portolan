@@ -1,6 +1,6 @@
 # portolan-v2
 
-Spatial map for Claude sessions. Click to go there.
+Spatial map for Claude sessions. Click to go there. **This repo is local-only (no git remote).** The `docs/` subdirectory is a separate repo (`cailmdaley/tapestries`) — that's the only thing that pushes.
 
 ## Core Concepts
 
@@ -25,18 +25,13 @@ Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-so
 Deployed to `cailmdaley.github.io/tapestries/` from repo `cailmdaley/tapestries` (Pages serves root of `main`).
 
 ```bash
-# 1. Build + export (order matters: build first, export second)
-npm run build:static                        # Vite → docs/
-npx tsx scripts/export-tapestry.ts pure-eb   # Data + artifacts → docs/data/
-
-# 2. Verify locally
-npx serve docs
-
-# 3. Push docs/ to tapestries repo
-cd docs && git add -A && git commit -m "Update tapestry" && git push && cd ..
+./scripts/publish-tapestry.sh cmbx pure_eb   # build, export, commit, push
+./scripts/publish-tapestry.sh                 # all cities in manifest
+./scripts/publish-tapestry.sh cmbx --force    # re-download all artifacts
+npx serve docs                                # verify locally before pushing
 ```
 
-The `docs/` directory is a separate git repo (remote: `cailmdaley/tapestries`). Build overwrites `index.html`/`assets/` but preserves `data/` (`emptyOutDir: false`). Export adds/updates `data/tapestry.json` and artifact images.
+The `docs/` directory is a separate git repo (remote: `cailmdaley/tapestries`). Build overwrites `index.html`/`assets/` but preserves `data/` (`emptyOutDir: false`). Export adds/updates `data/tapestry.json` and artifact images. Shareable URLs: clicking a node sets `#fiber-id` in the URL; opening that URL auto-selects the node.
 
 ## Architecture
 
@@ -81,15 +76,6 @@ Labels use 3-slice banners (parchment for cities, leather for workers).
 
 This is navigation, not interaction. ~6,200 LOC vs original's 14,000.
 
-## Hex Geometry
-
-Pointy-top orientation. All hex angles need `-π/2` offset:
-```typescript
-const angle = (Math.PI / 3) * i - Math.PI / 2  // correct
-```
-
-Reference: [Red Blob Games](https://www.redblobgames.com/grids/hexagons/)
-
 ## Debugging
 
 ```bash
@@ -105,77 +91,63 @@ Conversation capture: hooks POST to `/hook/message`, ConversationCache stores by
 
 ## Troubleshooting: Remote Workers Missing
 
-Remote workers require an SSH tunnel (`RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`).
-
-**Common failure:** SSH ControlMaster keeps a tunnel-less master alive. The tunnel is only established by the *master* connection — if it was created before the config had RemoteForward, or if the tunnel died, new SSH connections reuse the broken master.
-
-**Diagnose:**
-```bash
-ssh -T remote-host "curl -s http://localhost:4004/"   # should print "Portolan server running"
-```
-
-**Fix:**
-```bash
-ssh -O exit remote-host                               # kill stale master
-ssh remote-host                                       # fresh connection with tunnel
-ssh -T remote-host "tmux kill-session -t portolan-agent; tmux new-session -d -s portolan-agent 'node ~/bin/portolan-agent.js connect --ssh-host=remote-host'"
-```
-
-If tunnel still fails after ControlMaster reset (`remote forward failure for: listen 4004`), the old sshd child is still holding the port on the remote. Fix: `ssh remote-host "fuser -k 4004/tcp"`, then reconnect. See fiber `gotcha-ssh-remoteforward-port-3c440457`.
+Requires `RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`. Common failure: stale ControlMaster without tunnel.
+Diagnose: `ssh -T remote-host "curl -s http://localhost:4004/"`. Fix: `ssh -O exit remote-host && ssh remote-host`.
+Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-remoteforward-port-3c440457`.
 
 ## Remote Conversation Hooks
 
-For real-time conversation updates on remote workers, install the hook script and configure it to POST to the agent's local hook server (port 4005).
-
-**Setup on remote machine:**
-1. Copy hook script: `scp ~/loom/hooks/portolan-conversation-hook.sh remote:~/bin/`
-2. Add to shell profile: `export PORTOLAN_URL=http://127.0.0.1:4005`
-3. Configure Claude Code hooks in `~/.claude/settings.json`:
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": ["~/bin/portolan-conversation-hook.sh"],
-    "PostToolUse": ["~/bin/portolan-conversation-hook.sh"],
-    "Stop": ["~/bin/portolan-conversation-hook.sh"]
-  }
-}
-```
-
-The agent receives hook POSTs on port 4005 and forwards them via WebSocket to the portolan server. Without hooks, the agent falls back to polling transcripts.
+`scp ~/loom/hooks/portolan-conversation-hook.sh remote:~/bin/` + add `PORTOLAN_URL=http://127.0.0.1:4005` to shell profile + configure `UserPromptSubmit`/`PostToolUse`/`Stop` hooks in `~/.claude/settings.json`. Agent (port 4005) forwards to portolan via WS. Without hooks, falls back to polling transcripts. See fiber `portolan-remote-agent-setup-ssh-b7ce007f`.
 
 ## Gotchas
 
-**Claude native build breaks silently on remote machines.** Claude exits cleanly (exit 0) ~2s after startup — no error message. Debug log (`--debug-file`) shows normal init through OAuth check, then `Released PID lock` and exit. Existing interactive sessions keep working; only new launches fail. Fix: `claude doctor` or `claude install` on the remote. Recurs after auto-updates. See fiber `gotcha-claude-code-native-build-61c642e8`.
+**Claude native build breaks silently on remote.** Silent exit 0 ~2s after launch. Fix: `claude doctor`. See fiber `gotcha-claude-code-native-build-61c642e8`.
 
-**Force Touch events are additive.** `webkitmouseforcedown` fires *in addition to* normal mouse events — the `click` still fires on release. Suppress with capture-phase listener + flag. See `main.ts:451-478`.
+**CSS context rules override class selectors.** `.tapestry-detail-body code` beats bare `.config-resolved`. Fix: qualify selector. See fiber `css-specificity-gotcha-context-782f26f4`.
 
-**Vite HMR stacks constructor listeners.** Document-level listeners added in constructors accumulate across hot reloads. Add listeners dynamically (in show/hide) with stored references for cleanup.
+**Force Touch is additive.** `webkitmouseforcedown` + `click` both fire. Suppress with capture-phase flag. See `main.ts:451-478`.
 
-**Event handler order matters.** `stopImmediatePropagation` only blocks handlers registered *after* yours. Earlier handlers still fire. See fiber `pattern-event-handler-d26b6bae`.
+**Vite HMR stacks constructor listeners.** Add doc-level listeners in show/hide, not constructors.
 
-**`kill $PPID` doesn't trigger Claude Code Stop hook.** Ralph loops exit via SIGTERM, which bypasses the Stop hook entirely. The conversation hook works around this by scanning recent transcripts on UserPromptSubmit to capture any missed assistant content.
+**Event handler order.** `stopImmediatePropagation` only blocks later-registered handlers. See fiber `pattern-event-handler-d26b6bae`.
 
-**tmuxSession prefix for remote conversations.** ConversationCache and WebSocket broadcasts use `originId/tmuxSession` (e.g., `remote-c02/test`). But Session objects from state have unprefixed `tmuxSession` (`test`). Client code must build the prefixed key when matching. See `ConversationCard.prefixedTmuxSession`. Server-side: `handleHookMessage` auto-detects remote hooks (via SSH tunnel) and prefixes tmuxSession before storing — no `PORTOLAN_URL` config needed on remotes.
+**`kill $PPID` skips Stop hook.** SIGTERM bypasses it. UserPromptSubmit scans transcripts to recover.
 
-**Don't normalize conversation timestamps.** Millisecond precision distinguishes content blocks within the same second (thinking at .389Z vs text at .545Z). Stripping ms causes silent message loss. Use exact timestamps for dedup; toolUseId handles cross-source overlap. See fiber `gotcha-ms-precision-timestamps-9b21c263`.
+**tmuxSession prefix for remote.** Cache/WS use `originId/session`; Session objects are unprefixed. Use `ConversationCard.prefixedTmuxSession`. Server auto-prefixes on remote hook detect.
 
-**Conversation lookup: sessionId only, no tmux aggregation.** `resolveConversationMessages` uses `getMessages(sessionId)` exclusively — tmux aggregation removed because it caused cross-contamination between sessions after disconnects. `ConversationCard.handleMessage()` matches by sessionId only (no tmux fallback). On WebSocket reconnect, all open cards re-fetch from server to recover missed messages. See fibers `conversation-session-isolation-dbb8aa40`, `conversationcard-tmux-match-f7c8fc8f`.
+**Don't strip ms from timestamps.** Precision deduplicates same-second blocks. See fiber `gotcha-ms-precision-timestamps-9b21c263`.
 
-**Mid-turn text needs PostToolUse transcript scan.** Stop fires once at END of turn. PostToolUse fires per tool call but only sends tool_use + tool_result. Assistant text between tool uses has no delivery path unless PostToolUse also scans the transcript tail. The hook filters transcript to text/thinking only (tool_use comes from payload). See fiber `mid-turn-assistant-text-needs-3ab050e3`.
+**Conversation lookup: sessionId only.** No tmux aggregation — causes cross-contamination. Cards re-fetch on WS reconnect. See fibers `conversation-session-isolation-dbb8aa40`, `conversationcard-tmux-match-f7c8fc8f`.
 
-**ConversationCache dedup must check within batch.** `addMessages()` deduplicates against existing cache but also needs to track seen items within the incoming batch itself, or transcript-extracted and payload messages in the same POST create duplicates. See fiber `gotcha-conversationcache-dedup-94a66c7c`.
+**Mid-turn text needs PostToolUse transcript scan.** Stop is end-of-turn only; text between tool uses needs hook to scan tail. See fiber `mid-turn-assistant-text-needs-3ab050e3`.
 
-**Card header drag blocks bringToFront.** `startDrag` on the card header calls `stopPropagation()`, which prevents the card-level mousedown listener from firing `onBringToFront`. Fix: call `onBringToFront()` directly in startDrag. See fiber `gotcha-card-header-drag-28ae4165`.
+**ConversationCache dedup within batch.** Track seen within incoming batch too, not just vs cache. See fiber `gotcha-conversationcache-dedup-94a66c7c`.
 
-**SSH commands: never double-quote-wrap user content.** `execAsync(\`ssh host "cmd '${userArg}'"\`)` is vulnerable — double quotes in `userArg` break out of wrapping. Use `execFileAsync('ssh', [host, cmd])` to bypass local shell entirely, and `shellEscape()` (from KittyIntegration) for quoting within the remote command string. All SSH handlers now follow this pattern. See fiber `gotcha-ssh-double-quote-810f6df9`.
+**Card header drag blocks bringToFront.** Call `onBringToFront()` directly in `startDrag`. See fiber `gotcha-card-header-drag-28ae4165`.
 
-**felt depends_on is objects, not strings.** `felt ls --json` emits `depends_on: [{id: "..."}]` (Dependency objects with optional label), not bare string arrays. `getAllCityFibers` must extract `.id` from each entry. See fiber `portolan-depends-on-mapping-6e692fcf`.
+**SSH: use `execFileAsync` not shell interpolation.** String wrapping is injection-vulnerable. Use `shellEscape()` for remote args. See fiber `gotcha-ssh-double-quote-810f6df9`.
 
-**Stop hook fires before transcript flush.** The Stop hook and the final assistant text write happen in the same sub-second. The hook's `tail|jq` reads a stale transcript missing the last entry. Fix: `sleep 0.3` at the top of the Stop handler. While the hook sleeps, Claude Code's event loop flushes the pending write. See fiber `gotcha-stop-hook-transcript-c50e76c0`.
+**Codex process name is "node" on Linux.** Check `ps -o args=` fallback. macOS is `codex`. See fiber `gotcha-codex-process-name-is-09e0e1b9`.
 
-**Subagent transcripts bleed into parent conversation.** Task tool subagents write to `.../subagents/agent-<id>.jsonl`. The UserPromptSubmit scan (`find *.jsonl`) recurses into this directory, and subagent Stop hooks fire with the subagent's transcript_path but the parent's session_id. Fix: `-not -path "*/subagents/*"` in find, and `case */subagents/*` skip in Stop handler. See fiber `gotcha-subagent-transcripts-8975ca25`.
+**Ralph launches codex 3+ levels deep.** `bash→python3→MainThread→codex` — single-level `pgrep -P` misses it. BFS up to depth 4 in `agent.js` and `SessionTracker.ts`. See fiber `bfs-descendant-search-for-cli-ae31b2f9`.
 
-**Parallel SSH calls exhaust ControlMaster connections.** 20+ concurrent `execFileAsync('ssh', ...)` calls cause silent failures — half return errors, caught and swallowed as null. Fix: batch into a single SSH command with delimited output. See `readEvidenceBatch()` in EvidenceReader.ts. See fiber `batch-ssh-evidence-reads-to-bf8c0096`.
+**Candide: node not in PATH for non-interactive SSH.** Use full path `/home/cdaley/.nvm/versions/node/v24.13.1/bin/node` when running via nohup/SSH. Candide tmux is 2.7 — `allow-passthrough` and `terminal-features` require 3.3+, wrapped in `if-shell` guards. See fiber `candide-tmux-2-7-incompatible-53b9eae6`.
+
+**SSH remote shell expansion.** `ssh host "kill $(pgrep ...)"` expands `$()` locally — sends local PIDs to the remote. Always use single quotes: `ssh host 'kill $(pgrep ...)'`. See fiber `gotcha-ssh-double-quote-shell-11b71ed1`.
+
+**felt `depends_on` is objects.** `[{id: "..."}]` not strings. Extract `.id`. See fiber `portolan-depends-on-mapping-6e692fcf`.
+
+**Stop hook fires before transcript flush.** `sleep 0.3` in Stop handler lets the write catch up. See fiber `gotcha-stop-hook-transcript-c50e76c0`.
+
+**Subagent transcripts bleed.** Exclude `*/subagents/*` in find + Stop handler. See fiber `gotcha-subagent-transcripts-8975ca25`.
+
+**Comma-separated felt tags break matching.** Split on `,` in FiberReader + HttpApi. See fiber `comma-separated-tags-silently-13451ba9`.
+
+**Evidence artifacts: `output` field only.** No dir scan, no legacy fields. See fiber `evidence-artifacts-only-render-4349fadf`.
+
+**Agent `--ssh-host`: always the base name.** `buildSpecificSshHost` appends login node; doubled if already specific. See fiber `gotcha-agent-ssh-host-must-be-fdd3b94c`.
+
+**Parallel SSH exhausts ControlMaster.** Batch into single SSH call with delimited output. See `readEvidenceBatch()`. See fiber `batch-ssh-evidence-reads-to-bf8c0096`.
 
 ## Deep Dives
 
@@ -195,10 +167,13 @@ Fibers in `.felt/` provide detail beyond this overview.
 | Claims Annotation | `.felt/claims-annotation-inline-bba0fc30.md` |
 | Claims Side Panel | `.felt/claims-annotation-side-panel-f290eeb2.md` |
 | Tapestry Endpoint | `.felt/tapestry-endpoint-returns-full-2a1e18b5.md` |
-| Tapestry rule: tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
+| Tapestry tags | `.felt/rule-tag-replaces-spec-tag-for-b03b4699.md` |
 | Tapestry DAG spec | `.felt/absorb-claims-dashboard-into-ed04e0e9.md` |
 | Config Interpolation | `.felt/config-value-interpolation-in-e3a39852.md` |
 | SSH Batch Evidence | `.felt/batch-ssh-evidence-reads-to-bf8c0096.md` |
+| Comma Tag Bug | `.felt/comma-separated-tags-silently-13451ba9.md` |
+| Artifact Array Crash | `.felt/array-artifact-values-crash-ad036e78.md` |
+| SSH Stability | `.felt/ssh-stability-controlmaster-5e3ed591.md` |
 | Static Tapestry | `.felt/static-rhizome-dashboard-on-13a8fbc4.md` |
 | Fiber Sidebar | `.felt/tapestry-fiber-sidebar-ec45c86b.md` |
 | Rendered Markdown | `.felt/rendered-markdown-by-default-6cb4d4f3.md` |
