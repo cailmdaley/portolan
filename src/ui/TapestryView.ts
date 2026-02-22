@@ -7,6 +7,7 @@ import * as d3Selection from 'd3-selection'
 import * as d3Drag from 'd3-drag'
 import * as d3Zoom from 'd3-zoom'
 import 'd3-transition'
+import { easeCubicInOut } from 'd3-ease'
 import { EditorState, type Extension } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
@@ -943,6 +944,7 @@ export class TapestryView {
               this.hideDetail()
             } else {
               this.selectNode(d.data.id)
+              setTimeout(() => this.centerOnNode(d.data.id), 50)
             }
           }
         }))
@@ -1556,8 +1558,19 @@ export class TapestryView {
       if (d.data.id === id) nodePos = { x: d.x ?? 0, y: d.y ?? 0 }
     })
     if (!nodePos) return
-    this.svgEl.transition().duration(500)
-      .call(this.zoomBehavior.translateTo, (nodePos as {x: number, y: number}).x, (nodePos as {x: number, y: number}).y)
+    // Compute visible center: full viewport minus sidebar width when open
+    const svgRect = (this.svgEl.node() as SVGElement).getBoundingClientRect()
+    const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement | null
+    const sidebarW = (sidebar?.classList.contains('expanded') ? sidebar.getBoundingClientRect().width : 0)
+    const visibleCenterX = (svgRect.width - sidebarW) / 2
+    const visibleCenterY = svgRect.height / 2
+    this.svgEl.transition().duration(700).ease(easeCubicInOut)
+      .call(
+        this.zoomBehavior.translateTo,
+        (nodePos as {x: number, y: number}).x,
+        (nodePos as {x: number, y: number}).y,
+        [visibleCenterX, visibleCenterY],
+      )
   }
 
   private selectNode(id: string): void {
