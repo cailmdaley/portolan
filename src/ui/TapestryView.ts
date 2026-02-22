@@ -853,10 +853,13 @@ export class TapestryView {
       if (event.target === svg.node() || event.target.tagName === 'rect') {
         if (this.expandedNodes.size > 0) {
           this.expandedNodes.clear()
-          this.visibleNodes.clear()
-          this.updateTierVisibility()
+          // Don't clear visibleNodes first — let updateTierVisibility detect becomingFog
+          // so collapseNodesRadial can animate them back to fog (center unused in collapse)
+          this.updateTierVisibility(false, { x: 0, y: 0 })
+          this.hideDetail(true)  // skip redundant updateTierVisibility — collapse animation is running
+        } else {
+          this.hideDetail()
         }
-        this.hideDetail()
       }
     })
 
@@ -930,6 +933,10 @@ export class TapestryView {
           d3Selection.select(event.sourceEvent.target.closest('.tapestry-node') as Element)
             .style('cursor', 'grab')
           if (draggedDistance < 5) {
+            // Click: clear hover tooltip and cancel any pending hover timer
+            if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null }
+            if (this.tooltip) this.tooltip.style.display = 'none'
+
             if (hasSections) {
               const expanding = !this.expandedNodes.has(d.data.id)
               if (expanding) {
@@ -2127,7 +2134,7 @@ export class TapestryView {
     }
   }
 
-  private hideDetail(): void {
+  private hideDetail(skipVisibilityUpdate = false): void {
     if (this.detailKeyHandler) {
       document.removeEventListener('keydown', this.detailKeyHandler)
       this.detailKeyHandler = null
@@ -2144,7 +2151,8 @@ export class TapestryView {
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
 
     // Restore visibility to skeleton + expanded sections (clears selected neighborhood)
-    this.updateTierVisibility()
+    // Skip when caller already ran updateTierVisibility (e.g. collapse-all animation in progress)
+    if (!skipVisibilityUpdate) this.updateTierVisibility()
 
     // Reset node highlighting (skip fog nodes — their opacity is managed by updateTierVisibility)
     const visibleNodes = this.visibleNodes
