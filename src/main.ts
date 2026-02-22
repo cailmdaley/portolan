@@ -489,6 +489,13 @@ function handleMessage(message: ServerMessage): void {
         sessions.length, 'sessions,', sessions.filter(s => s.cityId).length, 'with cityId')
       const pos = hexGrid.axialToCartesian(targetCity.hex)
       camera.focusAndZoom(pos, 6, 0.95)
+
+      // Restore tapestry from URL — if ?city= is set, auto-open the tapestry
+      const urlCityId = new URLSearchParams(window.location.search).get('city')
+      if (urlCityId) {
+        const urlCity = cities.find(c => c.id === urlCityId)
+        if (urlCity) tapestryView.show(urlCity)
+      }
     }
   }
 }

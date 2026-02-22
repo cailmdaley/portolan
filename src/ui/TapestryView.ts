@@ -529,9 +529,18 @@ export class TapestryView {
     this.expandedNodes.clear()
     this.visibleNodes.clear()
 
+    // Save the incoming hash before hideDetail() clears it
+    const incomingHash = window.location.hash
+
     this.annotationPanel.hidePanel()
     this.annotationPanel.reset()
     this.hideDetail()
+
+    // Persist city in URL (and restore hash that hideDetail cleared)
+    const url = new URL(window.location.href)
+    url.searchParams.set('city', city.id)
+    url.hash = incomingHash
+    window.history.replaceState(null, '', url.toString())
 
     this.loadingIndicator.style.display = 'flex'
     this.loadingIndicator.textContent = 'Loading tapestry\u2026'
@@ -550,6 +559,7 @@ export class TapestryView {
       this.loadingIndicator.style.display = 'none'
       this.renderDAG()
       this.renderFiberList()
+      this.selectFromHash()
     } catch (err) {
       this.loadingIndicator.textContent = 'Failed to load tapestry'
       this.loadingIndicator.classList.add('error')
@@ -561,6 +571,13 @@ export class TapestryView {
     this.panel.classList.remove('visible')
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
     if (this.tooltip) this.tooltip.style.display = 'none'
+
+    // Clear city from URL
+    const url = new URL(window.location.href)
+    url.searchParams.delete('city')
+    url.hash = ''
+    window.history.replaceState(null, '', url.toString())
+
     this.currentCity = null
     this.selectedNodeId = null
     this.tapestryData = null
@@ -649,8 +666,8 @@ export class TapestryView {
     // Try DAG node first, then sidebar fiber
     const node = this.tapestryData.nodes.find(n => n.id === hash)
     if (node) {
-      // Reveal fog neighborhood without animation (page load — no wave)
-      this.revealAndSelect(hash, false)
+      // Reveal fog neighborhood without animation (page load — no wave), but center
+      this.revealAndSelect(hash, false, true)
       return
     }
 
@@ -2177,6 +2194,7 @@ export class TapestryView {
     const dagNode = this.tapestryData.nodes.find(n => n.id === fiberId)
     if (dagNode) {
       this.selectNode(fiberId)
+      setTimeout(() => this.centerOnNode(fiberId), 50)
     } else if (this.tapestryData.fibers?.find(f => f.id === fiberId)) {
       this.selectFiber(fiberId)
     } else {
