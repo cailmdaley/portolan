@@ -907,15 +907,20 @@ export class TapestryView {
           d3Selection.select(event.sourceEvent.target.closest('.tapestry-node') as Element)
             .style('cursor', 'grab')
           if (draggedDistance < 5) {
-            // Toggle expansion for any node (persistent — stays open until clicked again)
             if (hasSections) {
-              const expanding = !this.expandedNodes.has(d.data.id)
-              if (expanding) {
-                this.expandedNodes.add(d.data.id)
+              if (hoverExpandedId === d.data.id) {
+                // Click on a hover-expanded node → make it permanently expanded
+                hoverExpandedId = null
               } else {
-                this.expandedNodes.delete(d.data.id)
+                // Normal toggle
+                const expanding = !this.expandedNodes.has(d.data.id)
+                if (expanding) {
+                  this.expandedNodes.add(d.data.id)
+                } else {
+                  this.expandedNodes.delete(d.data.id)
+                }
+                this.updateTierVisibility(expanding, {x: d.x ?? 0, y: d.y ?? 0})
               }
-              this.updateTierVisibility(expanding, {x: d.x ?? 0, y: d.y ?? 0})
             }
             // Sidebar: click the already-selected node to deselect, otherwise select
             if (this.selectedNodeId === d.data.id) {
@@ -926,45 +931,49 @@ export class TapestryView {
           }
         }))
 
-    // Hover tooltip — show lead paragraph + outcome on mouseenter, hide on mouseleave
-    // Also lifts node to full opacity while hovering (preview of revealed state)
+    // Hover: full reveal animation after 250ms, collapses on leave (unless clicked to make permanent)
+    let hoverExpandedId: string | null = null
+    let hoverTimer: ReturnType<typeof setTimeout> | null = null
+
     nodeElements
       .on('mouseenter', (event: MouseEvent, d: SimNode) => {
-        // Lift node opacity to full and remove blur while hovering
-        const el = event.currentTarget as SVGGElement
-        el.dataset.hoverPrevOpacity = el.style.opacity
-        el.dataset.hoverPrevFilter = el.style.filter
-        el.style.opacity = '1'
-        el.style.filter = ''
-
-        // Build tooltip content: lead paragraph + outcome (whichever exist)
+        // Show tooltip immediately
         const lead = leadParagraph(d.data.body)
         const outcome = d.data.outcome?.trim() ?? ''
-        if (!lead && !outcome) return
-        if (!this.tooltip) return
+        if ((lead || outcome) && this.tooltip) {
+          let html = ''
+          if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
+          if (lead && outcome) html += '<hr class="tooltip-divider">'
+          if (outcome) html += `<span class="tooltip-outcome">${escapeHtml(outcome)}</span>`
+          this.tooltip.innerHTML = html
+          this.tooltip.style.display = 'block'
+          this.tooltip.style.left = `${event.clientX + 14}px`
+          this.tooltip.style.top = `${event.clientY - 8}px`
+        }
 
-        let html = ''
-        if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
-        if (lead && outcome) html += '<hr class="tooltip-divider">'
-        if (outcome) html += `<span class="tooltip-outcome">${escapeHtml(outcome)}</span>`
-
-        this.tooltip.innerHTML = html
-        this.tooltip.style.display = 'block'
-        this.tooltip.style.left = `${event.clientX + 14}px`
-        this.tooltip.style.top = `${event.clientY - 8}px`
+        // Trigger full reveal animation after 250ms (only if not already expanded)
+        if (hasSections && !this.expandedNodes.has(d.data.id)) {
+          hoverTimer = setTimeout(() => {
+            hoverExpandedId = d.data.id
+            this.expandedNodes.add(d.data.id)
+            this.updateTierVisibility(true, {x: d.x ?? 0, y: d.y ?? 0})
+          }, 250)
+        }
       })
       .on('mousemove', (event: MouseEvent) => {
         if (!this.tooltip || this.tooltip.style.display === 'none') return
         this.tooltip.style.left = `${event.clientX + 14}px`
         this.tooltip.style.top = `${event.clientY - 8}px`
       })
-      .on('mouseleave', (event: MouseEvent) => {
-        // Restore prior opacity and filter
-        const el = event.currentTarget as SVGGElement
-        el.style.opacity = el.dataset.hoverPrevOpacity ?? ''
-        el.style.filter = el.dataset.hoverPrevFilter ?? ''
-        delete el.dataset.hoverPrevOpacity
-        delete el.dataset.hoverPrevFilter
+      .on('mouseleave', (_event: MouseEvent, d: SimNode) => {
+        // Cancel pending hover expand
+        if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null }
+        // Collapse if this node was hover-expanded (not click-made-permanent)
+        if (hasSections && hoverExpandedId === d.data.id) {
+          hoverExpandedId = null
+          this.expandedNodes.delete(d.data.id)
+          this.updateTierVisibility(false, {x: d.x ?? 0, y: d.y ?? 0})
+        }
         if (this.tooltip) this.tooltip.style.display = 'none'
       })
 
