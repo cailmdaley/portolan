@@ -50,7 +50,7 @@ A fiber belongs to a section's neighborhood if it is **1 hop** from the section 
 | **Click any node** | Sidebar shows full detail. 1-hop neighborhood emerges from fog. Expansion permanent. |
 | **Click again** | Node collapses — neighborhood returns to fog. |
 | **Click background** | Sidebar closes. Map returns to skeleton (sections only). |
-| **Click while hovering** | Makes hover-expansion permanent — mouseleave won't collapse. |
+| **Click while hovering** | Selects node and opens sidebar; hover tooltip clears. |
 
 Every click reshapes what's visible. The fog holds everything; sections are the trailheads you navigate relative to. Each click is a step. Each step is reversible.
 
@@ -98,7 +98,7 @@ These aren't schema changes — they're patterns that make the tapestry more use
 
 | File | Role |
 |------|------|
-| `src/ui/TapestryView.ts` | DAG rendering, node selection, fog/reveal, all interactions (~2700 LOC) |
+| `src/ui/TapestryView.ts` | DAG rendering, node selection, fog/reveal, all interactions (~2830 LOC) |
 | `src/ui/utils.ts` | Shared rendering utilities (markdown, staleness colors, artifact gallery) |
 | `server/src/HttpApi.ts` | `/tapestry` endpoint — builds TapestryResponse from fibers + evidence |
 | `server/src/FiberReader.ts` | Parses `.felt/*.md` fibers, extracts metadata |
@@ -130,8 +130,5 @@ d3-force simulation runs on ALL nodes at load. Burn-in phase (800 ticks) compute
 
 ## Test Tapestry
 
-11 fibers in portolan `.felt/` tagged `tapestry:portolan`. 5 tier:1 sections (Introduction, Structure, Rendering, Interaction, Evidence). 6 interior fibers (Fiber anatomy, Dependency semantics, Staleness computation, Force-directed layout, Organic shapes, URL fragments). Serves as test fixture, tutorial, and example simultaneously.
+22 fibers in portolan `.felt/` tagged `tapestry:portolan`. 5 tier:1 sections (The Tapestry, Fibers, The Map, Navigation, Evidence). 17 interior fibers covering fiber anatomy, DAG semantics, staleness, layout, interaction, evidence, and the vocabulary of the system. Serves as test fixture, tutorial, and example simultaneously — this tapestry is about itself.
 
-## Open Questions
-
-- **Tapestry skill + snakemake skill**: Update to describe the pyramid model (fog, tier:1, interaction conventions) so future sessions building tapestries use the right patterns. Planned for next ralph iteration.

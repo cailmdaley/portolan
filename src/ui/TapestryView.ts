@@ -908,19 +908,13 @@ export class TapestryView {
             .style('cursor', 'grab')
           if (draggedDistance < 5) {
             if (hasSections) {
-              if (hoverExpandedId === d.data.id) {
-                // Click on a hover-expanded node → make it permanently expanded
-                hoverExpandedId = null
+              const expanding = !this.expandedNodes.has(d.data.id)
+              if (expanding) {
+                this.expandedNodes.add(d.data.id)
               } else {
-                // Normal toggle
-                const expanding = !this.expandedNodes.has(d.data.id)
-                if (expanding) {
-                  this.expandedNodes.add(d.data.id)
-                } else {
-                  this.expandedNodes.delete(d.data.id)
-                }
-                this.updateTierVisibility(expanding, {x: d.x ?? 0, y: d.y ?? 0})
+                this.expandedNodes.delete(d.data.id)
               }
+              this.updateTierVisibility(expanding, {x: d.x ?? 0, y: d.y ?? 0})
             }
             // Sidebar: click the already-selected node to deselect, otherwise select
             if (this.selectedNodeId === d.data.id) {
