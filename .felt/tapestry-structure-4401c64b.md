@@ -6,6 +6,7 @@ tags:
     - tapestry:portolan
 depends-on:
     - tapestry-introduction-537a6234
+    - felt-concept-7c2e9b0d
 created-at: 2026-02-21T17:17:55.808352+01:00
 outcome: 'A fiber''s outcome is not a summary — it is evidence. The DAG turns outcomes into a causal record: walk upstream from any decision and you reconstruct the reasoning that produced it.'
 ---

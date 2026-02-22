@@ -5,11 +5,14 @@ tags:
 depends-on:
     - tapestry-introduction-537a6234
     - tapestry-structure-4401c64b
+    - felt-concept-7c2e9b0d
 created-at: 2026-02-22T05:00:00+01:00
 outcome: The tapestry is a temporary legibility imposed on smooth space — a force-directed layout of one city's felt that reveals structure through interaction without claiming that structure is final.
 ---
 
 A tapestry is not the felt. It is a rendering of the felt for a specific city — a project directory, a region of concern — laid out as a force-directed DAG and made navigable. Nodes are fibers; edges are dependencies; gravity clusters related fibers together; staleness bleeds into color. The tapestry is the view from outside the graph looking in, which is precisely what is useful when you need to orient.
+
+The felt accumulates; the tapestry interprets. A tapestry is an argument about which relationships matter for a given project, made visible through layout and interaction. Two researchers looking at the same felt could build different tapestries — emphasizing different dependencies, different sections, different entry points. The felt is the shared ground; the tapestry is the individual reading.
 
 The rendering is interactive by design. Most of the graph is fog on first load — visible as ghost nodes but unreadable. Sections (tier:1) anchor the space. Clicking a node reveals its immediate neighborhood, pulling it and its one-hop connections out of the fog. Clicking again collapses them. The fog is not a hiding mechanism but a compression: it lets you hold the shape of the whole graph in view while drilling into the part you need. The graph never lies to you about its full extent.
 

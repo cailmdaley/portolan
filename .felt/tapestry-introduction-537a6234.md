@@ -5,8 +5,6 @@ tags:
     - tapestry:bayeux
     - tapestry:portolan
     - tier:1
-depends-on:
-    - tapestry-interaction-74c5f450
 created-at: 2026-02-21T17:17:51.003354+01:00
 outcome: 'Knowledge here is not deposited but revealed: the artifact withholds until you move through it, and what you find depends on where you look. This tapestry is a directed graph of fibers that describes, from inside, what fibers and directed graphs are.'
 ---
@@ -17,6 +15,6 @@ This is the same thing, made of clicks instead of steps.
 
 A tapestry here is a directed acyclic graph. Nodes are fibers — concerns, decisions, open questions — and edges are dependencies, the acknowledgment that one thing rests on another. The graph has depth: upstream fibers explain why downstream ones exist. You can trace any node back to its reasons.
 
-What you're looking at now is self-referential. This tapestry documents itself — its own structure, its own navigation, the computation underneath. The node you're reading is a fiber in the graph it describes. The five sections ahead are waypoints: what fibers are, how the layout works, how you move through it, how evidence attaches to nodes, and what makes a claim.
+The node you are reading right now is a fiber. It has a body (this text), an outcome (below), a dependency on Click Me (the edge that brought you here), and a tag that places it in this graph. You are not reading documentation about the system. You are inside it.
 
-It does not summarize. It withholds, then reveals.
+The three sections ahead are waypoints: what fibers are, how you move through the tapestry, and how evidence grounds claims. It does not summarize. It withholds, then reveals.
