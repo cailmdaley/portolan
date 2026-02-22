@@ -1,10 +1,12 @@
 ---
 title: What should node ring color encode? Alternatives to staleness
+status: closed
 tags:
     - portolan
     - question
 depends-on:
     - pyramid-tapestry-tiered-264195af
 created-at: 2026-02-22T06:44:03.118857+01:00
-outcome: 'Open. Staleness (fresh/stale/no-evidence) makes sense for computational tapestries where snakemake rules generate evidence.json with real timestamps. For documentation tapestries, timestamps are manual and color variation is arbitrary. Alternatives considered: (1) kind-based — decision=amber, question=cool, spec=neutral; (2) age/recency of fiber body edit — recently edited = warmer; (3) connection density — high-degree nodes more saturated; (4) keep staleness but neutral for no-evidence nodes (current behavior). User preference: staleness should be 1-hop only (already the case). Dot strips: currently show staleness of 1-hop neighbors — could instead show just count (monochrome), or kind-based color.'
+closed-at: 2026-02-22T07:19:37.87926+01:00
+outcome: 'Keep staleness. For computational tapestries (snakemake evidence), staleness is the right signal — teal=fresh, red=stale, gray=no-evidence. For documentation tapestries (like portolan self-reference), all nodes render gray, which is correct and honest: they have no evidence and shouldn''t pretend otherwise. Kind-based and age-based alternatives considered but rejected — they add complexity without carrying meaningful signal about whether analysis needs revisiting. Dot strips on section nodes continue to show staleness of 1-hop neighbors (monochrome darker variants). Decision: staleness stays as primary color encoding.'
 ---

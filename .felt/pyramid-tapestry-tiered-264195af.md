@@ -130,7 +130,7 @@ d3-force simulation runs on ALL nodes at load. Burn-in phase (800 ticks) compute
 
 ## Test Tapestry
 
-22 nodes tagged `tapestry:portolan`. 3 tier:1 sections: **The Tapestry** (entry, Bayeux metaphor, self-referential), **Click Me** (interaction model), **Evidence** (staleness, provenance, AI-mediated science). Interior fibers cover: fiber anatomy, dependency semantics, staleness computation, felt CLI, lifecycle, tapestry tags, fog, outcomes, sections concept, felt concept, search, URL fragments, section expand, detail panel, artifact lightbox, paper provenance, AI-mediated science. Serves as test fixture, tutorial, and philosophical statement simultaneously — this tapestry is about itself.
+19 nodes tagged `tapestry:portolan`, 26 edges. 3 tier:1 sections: **The Tapestry** (entry, Bayeux metaphor, self-referential), **Click Me** (interaction model), **Conventions & Evidence** (staleness, provenance, AI-mediated science). Interior fibers cover: fiber anatomy, staleness computation, lifecycle, felt concept, fog, outcomes, sections concept, search, URL fragments, detail panel, tapestry conventions, snakemake conventions, paper provenance, AI-mediated science, evidence structure, Fibers hub. Serves as test fixture, tutorial, and philosophical statement simultaneously — this tapestry is about itself.
 
 Key design principles settled this session: revelation is pure presentation (simulation runs on all nodes; fog is CSS only); centering is sidebar-aware (translateTo with visible-area viewport point); each concept appears exactly once (deduplication via merges); "Structure is a trailing indicator of understanding, not a prerequisite for it."
 
