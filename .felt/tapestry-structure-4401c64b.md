@@ -21,6 +21,6 @@ Fibers resist the impulse to grow. A fiber that touches three concerns should be
 
 The body holds what you knew when you filed it. The outcome holds what you know when you close it. The edges hold the causal chain. Together they form a unit that can be understood in isolation, navigated in context, and composed into larger structures without losing coherence.
 
-Fibers are plain markdown files in `.felt/` with YAML frontmatter. The `felt` CLI manages them: `felt "Research X"` opens one, `felt edit <id> -s closed -o "..."` closes it with an outcome. A fiber worth closing is worth filing; even a one-sentence decision leaves a node the DAG can point to. This tapestry has 22 fibers, 3 sections, and 34 dependency edges — a small graph, but every edge represents a real dependency in how the system was built.
+Fibers are plain markdown files in `.felt/` with YAML frontmatter. The `felt` CLI manages them: `felt "Research X"` opens one, `felt edit <id> -s closed -o "..."` closes it with an outcome. A fiber worth closing is worth filing; even a one-sentence decision leaves a node the DAG can point to. This tapestry has 24 fibers, 3 sections, and 36 dependency edges — a small graph, but every edge represents a real dependency in how the system was built.
 
 The nodes ahead explore this from different angles: anatomy, dependency semantics, lifecycle, CLI, and tags. Each is a lens on the same underlying structure — fibers as the atomic unit of recorded reasoning.
