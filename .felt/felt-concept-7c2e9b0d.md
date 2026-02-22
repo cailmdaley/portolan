@@ -3,7 +3,7 @@ title: Felt
 tags:
     - tapestry:portolan
 depends-on:
-    - vocabulary-c735cd73
+    - tapestry-introduction-537a6234
 created-at: 2026-02-22T05:00:00+01:00
 outcome: 'Felt is smooth space made of dependencies: the DAG structure emerges from what you file, not from a schema imposed in advance, and any point connects to any other without having to pass through a root.'
 ---

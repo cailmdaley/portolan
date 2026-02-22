@@ -3,9 +3,9 @@ title: Sections
 tags:
     - tapestry:portolan
 depends-on:
-    - vocabulary-c735cd73
+    - tapestry-introduction-537a6234
 created-at: 2026-02-22T05:00:00+01:00
-outcome: 'Sections are the one concession to tree-thinking in a rhizomatic system — visible on load as navigational anchors, not as ontological categories, and useful precisely because they make no claim about what must belong under them.'
+outcome: Sections are the one concession to tree-thinking in a rhizomatic system — visible on load as navigational anchors, not as ontological categories, and useful precisely because they make no claim about what must belong under them.
 ---
 
 Sections are fibers tagged `tier:1`. In the tapestry they appear on first load, before any clicking, as the visible skeleton of the analysis. Everything else is fog. The sections are the starting points — not because they are most important, but because orientation requires somewhere to begin.

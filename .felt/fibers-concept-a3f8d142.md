@@ -3,7 +3,7 @@ title: Fibers
 tags:
     - tapestry:portolan
 depends-on:
-    - vocabulary-c735cd73
+    - tapestry-introduction-537a6234
 created-at: 2026-02-22T05:00:00+01:00
 outcome: 'A fiber earns its name by being one thing: body for context, outcome for conclusion, edges for accountability — the smallest unit that can carry both what happened and why it mattered.'
 ---

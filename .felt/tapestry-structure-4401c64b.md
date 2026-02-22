@@ -8,7 +8,7 @@ tags:
 depends-on:
     - tapestry-introduction-537a6234
 created-at: 2026-02-21T17:17:55.808352+01:00
-outcome: A fiber's outcome is not a summary — it is evidence. The DAG turns outcomes into a causal record: walk upstream from any decision and you reconstruct the reasoning that produced it.
+outcome: "A fiber's outcome is not a summary — it is evidence. The DAG turns outcomes into a causal record: walk upstream from any decision and you reconstruct the reasoning that produced it."
 ---
 
 A fiber is not a note. A note is a container for information. A fiber is a commitment to one concern — a question, a decision, a task — that has a beginning, a resolution, and a place in a larger structure. That structure is a directed acyclic graph: fibers depend on other fibers, and those dependencies carry meaning. If A depends on B, it means A's reasoning rests on B's outcome. The graph is not organizational; it is causal.

@@ -141,8 +141,8 @@ export function interpolateConfig(container: HTMLElement, config: Record<string,
 }
 
 // Matches inline code that looks like a file path, e.g. server/src/index.ts or ./foo/bar.py:42
-// Must have a path separator or leading ./ and a file extension, optional :linenum suffix.
-const INLINE_PATH_RE = /^(?:\.{0,2}\/)?[\w.\-/]+\/[\w.\-]+\.[a-zA-Z]{1,10}(?::(\d+))?$|^\.\/[\w.\-/]+\.[a-zA-Z]{1,10}(?::(\d+))?$/
+// Also accepts :L42 or :L42-55 (GitHub-style line range) — both colon-digit and colon-L-digit forms work.
+const INLINE_PATH_RE = /^(?:\.{0,2}\/)?[\w.\-/]+\/[\w.\-]+\.[a-zA-Z]{1,10}(?::L?\d+(?:-\d+)?)?$|^\.\/[\w.\-/]+\.[a-zA-Z]{1,10}(?::L?\d+(?:-\d+)?)?$/
 
 /**
  * Find inline <code> elements whose text looks like a file path and make them clickable.
@@ -154,7 +154,7 @@ export function attachInlinePathListeners(
 ): void {
   container.querySelectorAll<HTMLElement>('code.md-inline-code').forEach(code => {
     const text = code.textContent?.trim() || ''
-    const m = text.match(/^(.*?)(?::(\d+))?$/)
+    const m = text.match(/^(.*?)(?::L?(\d+)(?:-\d+)?)?$/)
     if (!m || !INLINE_PATH_RE.test(text)) return
     const path = m[1]
     const line = m[2] ? parseInt(m[2], 10) : undefined

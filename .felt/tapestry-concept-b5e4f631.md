@@ -3,9 +3,9 @@ title: Tapestry
 tags:
     - tapestry:portolan
 depends-on:
-    - vocabulary-c735cd73
+    - tapestry-introduction-537a6234
 created-at: 2026-02-22T05:00:00+01:00
-outcome: 'The tapestry is a temporary legibility imposed on smooth space — a force-directed layout of one city''s felt that reveals structure through interaction without claiming that structure is final.'
+outcome: The tapestry is a temporary legibility imposed on smooth space — a force-directed layout of one city's felt that reveals structure through interaction without claiming that structure is final.
 ---
 
 A tapestry is not the felt. It is a rendering of the felt for a specific city — a project directory, a region of concern — laid out as a force-directed DAG and made navigable. Nodes are fibers; edges are dependencies; gravity clusters related fibers together; staleness bleeds into color. The tapestry is the view from outside the graph looking in, which is precisely what is useful when you need to orient.

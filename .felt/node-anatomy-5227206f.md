@@ -1,7 +1,5 @@
 ---
 title: Node anatomy
-tags:
-    - tapestry:portolan
 depends-on:
     - organic-shapes-009130ed
 created-at: 2026-02-21T19:27:11.602931+01:00

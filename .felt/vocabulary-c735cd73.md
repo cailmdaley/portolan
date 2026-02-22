@@ -1,7 +1,5 @@
 ---
 title: Vocabulary
-tags:
-    - tapestry:portolan
 depends-on:
     - tapestry-introduction-537a6234
 created-at: 2026-02-21T20:06:16.373088+01:00

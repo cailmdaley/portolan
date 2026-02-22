@@ -1,8 +1,6 @@
 ---
 title: Organic shapes
 status: open
-tags:
-    - tapestry:portolan
 depends-on:
     - tapestry-rendering-0a402a96
 created-at: 2026-02-21T17:18:41.447033+01:00

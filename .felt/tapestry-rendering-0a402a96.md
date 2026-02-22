@@ -1,10 +1,6 @@
 ---
 title: The Map
 status: open
-tags:
-    - tapestry:portolan-map
-    - tapestry:portolan
-    - tier:1
 depends-on:
     - tapestry-structure-4401c64b
 created-at: 2026-02-21T17:18:00.759865+01:00
