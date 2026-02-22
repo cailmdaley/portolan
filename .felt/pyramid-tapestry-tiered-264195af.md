@@ -9,7 +9,7 @@ created-at: 2026-02-21T14:24:07.308205+01:00
 
 ## Vocabulary
 
-See fiber `vocabulary-c735cd73` (Vocabulary) in the portolan tapestry for the canonical definitions. Short version: **fibers** are atomic concerns; **felt** is the rhizomatic substrate (Deleuzian smooth space); **tapestry** is the visualization where meaning-making happens; **sections** (tier:1) are waypoints not categories. **Fog** is the state of unrevealed nodes: present but not legible, like stitchwork too fine to see from a distance.
+See `.felt/tapestry-introduction-537a6234.md` (The Tapestry) for the canonical entry point. Short version: **fibers** are atomic concerns; **felt** is the rhizomatic substrate (Deleuzian smooth space); **tapestry** is the visualization where meaning-making happens; **sections** (tier:1) are waypoints not categories. **Fog** is the state of unrevealed nodes: present but not legible, like stitchwork too fine to see from a distance. See `.felt/fog-240e90b9.md` — revelation is pure presentation, not computation.
 
 ## Nature of this Constitution
 
@@ -88,7 +88,7 @@ Everything is on the table. This may touch rendering, server endpoints, fiber co
 
 These aren't schema changes — they're patterns that make the tapestry more useful. Encourage but don't enforce.
 
-- **Paper provenance.** Download arXiv `.tex` source to `results/references/`. Fiber outcomes cite specific lines: `results/references/smith2024.tex:L42-55`. The tapestry renders these as clickable links. Most of ASP's evidence system for almost nothing.
+- **Paper provenance.** Download arXiv `.tex` source to `results/references/`. Fiber outcomes cite specific lines: `results/references/2601.10038.tex:L79`. The tapestry renders these as clickable links (accepts `:L42` and `:L42-55`). See `.felt/paper-provenance-8327b930.md`. Example: `results/references/2601.10038.tex` is downloaded; L79 is the Midgley/plumbing passage.
 - **Decision alternatives.** Decision fibers (`kind: decision`) note what was considered, not just what was chosen. "Chose X because Y; also considered A (too slow) and B (wrong assumptions)." Makes the DAG auditable.
 - **Edge annotations.** `depends_on` edges can carry text explaining *why* the dependency exists. Convention exists in felt but is underused — the tapestry could render edge labels on hover.
 
@@ -130,5 +130,7 @@ d3-force simulation runs on ALL nodes at load. Burn-in phase (800 ticks) compute
 
 ## Test Tapestry
 
-22 fibers in portolan `.felt/` tagged `tapestry:portolan`. 5 tier:1 sections (The Tapestry, Fibers, The Map, Navigation, Evidence). 17 interior fibers covering fiber anatomy, DAG semantics, staleness, layout, interaction, evidence, and the vocabulary of the system. Serves as test fixture, tutorial, and example simultaneously — this tapestry is about itself.
+22 nodes tagged `tapestry:portolan`. 3 tier:1 sections: **The Tapestry** (entry, Bayeux metaphor, self-referential), **Click Me** (interaction model), **Evidence** (staleness, provenance, AI-mediated science). Interior fibers cover: fiber anatomy, dependency semantics, staleness computation, felt CLI, lifecycle, tapestry tags, fog, outcomes, sections concept, felt concept, search, URL fragments, section expand, detail panel, artifact lightbox, paper provenance, AI-mediated science. Serves as test fixture, tutorial, and philosophical statement simultaneously — this tapestry is about itself.
+
+Key design principles settled this session: revelation is pure presentation (simulation runs on all nodes; fog is CSS only); centering is sidebar-aware (translateTo with visible-area viewport point); each concept appears exactly once (deduplication via merges); "Structure is a trailing indicator of understanding, not a prerequisite for it."
 
