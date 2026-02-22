@@ -2,8 +2,11 @@
 title: The Tapestry
 status: open
 tags:
+    - tapestry:bayeux
     - tapestry:portolan
     - tier:1
+depends-on:
+    - tapestry-interaction-74c5f450
 created-at: 2026-02-21T17:17:51.003354+01:00
 outcome: A tapestry is a directed acyclic graph of fibers — concerns, decisions, questions — stitched together by dependency edges. This tapestry is about itself.
 ---

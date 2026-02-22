@@ -1,15 +1,18 @@
 ---
-title: Navigation
+title: Click Me
 status: open
 tags:
     - tapestry:portolan
     - tier:1
-depends-on:
-    - tapestry-rendering-0a402a96
 created-at: 2026-02-21T17:18:05.771969+01:00
-outcome: 'The tapestry offers three zoom levels: the skeleton, the neighborhood, and the full detail. You move between them one click at a time, and every step is reversible.'
+outcome: Click any node to reveal its neighborhood. Hover for a preview. Click background to return to the skeleton. Every step is reversible.
 ---
 
-Hover over any node for 300ms to preview its content — title in bold, first paragraph, then the outcome. This is the scout: you're reading without committing. Click to commit: the node's immediate neighborhood emerges from the fog and the sidebar opens with full detail — body, outcome, evidence, artifacts. Click the same node again to collapse it back to fog. Click the canvas background to return to the skeleton.
+You're looking at a tapestry — a directed graph of interconnected notes called fibers. This one is about itself.
 
-URL fragments make navigation shareable: clicking any node writes `#fiber-id` to the address bar. Share the URL and the recipient arrives at exactly that node. This tapestry is published as a static site — every fiber is directly linkable. Search (in the sidebar) filters all fibers, not just visible ones, and clicking a result reveals it from fog.
+**Try it:** click any of the five sections visible now. The nodes inside will emerge from the fog. Click one of those to see its full detail in the sidebar. Click the background to return here.
+
+**Hover** over any node for 300ms to preview its content — title in bold, a lead paragraph, then the outcome. The scout. **Click** to commit: the neighborhood emerges and the sidebar opens with full detail — body, outcome, artifacts. **Click again** to collapse back to fog. **Click the background** to return to this skeleton view.
+
+Search (bottom of the sidebar) finds any fiber in the tapestry, even fogged ones. Clicking a result reveals it. Every node has a shareable URL — click a node, copy the address bar.
+
