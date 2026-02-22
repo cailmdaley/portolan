@@ -1397,19 +1397,24 @@ export class TapestryView {
     const edgeReveals: EdgeReveal[] = []
     const nodeDrivers = new Map<string, EdgeReveal[]>()  // nodeId → edges that drive its opacity
 
+    const visibleNodesSnap = this.visibleNodes
     d3Selection.selectAll<SVGPathElement, EdgeDatum>('.tapestry-link').each(function (d) {
-      if (newlyVisible.has(d.link.source.data.id) || newlyVisible.has(d.link.target.data.id)) {
+      const srcId = d.link.source.data.id
+      const tgtId = d.link.target.data.id
+      // Only reveal edges where BOTH endpoints are (or will be) visible — prevents
+      // edges to still-fogged nodes from showing during a partial reveal.
+      if ((newlyVisible.has(srcId) || newlyVisible.has(tgtId)) && visibleNodesSnap.has(srcId) && visibleNodesSnap.has(tgtId)) {
         const dSrc = Math.sqrt(((d.link.source.x ?? 0) - waveOrigin.x) ** 2 + ((d.link.source.y ?? 0) - waveOrigin.y) ** 2)
         const dTgt = Math.sqrt(((d.link.target.x ?? 0) - waveOrigin.x) ** 2 + ((d.link.target.y ?? 0) - waveOrigin.y) ** 2)
         const L = this.getTotalLength()
         this.style.opacity = ''
         this.style.strokeDasharray = `0 ${L}`
         this.style.strokeDashoffset = '0'
-        const reveal: EdgeReveal = { el: this, startDist: dSrc, span: Math.max(dTgt - dSrc, 1), targetId: d.link.target.data.id }
+        const reveal: EdgeReveal = { el: this, startDist: dSrc, span: Math.max(dTgt - dSrc, 1), targetId: tgtId }
         edgeReveals.push(reveal)
-        if (newlyVisible.has(d.link.target.data.id)) {
-          if (!nodeDrivers.has(d.link.target.data.id)) nodeDrivers.set(d.link.target.data.id, [])
-          nodeDrivers.get(d.link.target.data.id)!.push(reveal)
+        if (newlyVisible.has(tgtId)) {
+          if (!nodeDrivers.has(tgtId)) nodeDrivers.set(tgtId, [])
+          nodeDrivers.get(tgtId)!.push(reveal)
         }
       }
     })
