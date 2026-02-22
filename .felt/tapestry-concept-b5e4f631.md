@@ -1,11 +1,5 @@
 ---
 title: Tapestry
-tags:
-    - tapestry:portolan
-depends-on:
-    - tapestry-introduction-537a6234
-    - tapestry-structure-4401c64b
-    - felt-concept-7c2e9b0d
 created-at: 2026-02-22T05:00:00+01:00
 outcome: The tapestry is a temporary legibility imposed on smooth space — a force-directed layout of one city's felt that reveals structure through interaction without claiming that structure is final.
 ---

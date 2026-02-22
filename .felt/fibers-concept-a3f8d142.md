@@ -1,9 +1,5 @@
 ---
 title: Fiber
-tags:
-    - tapestry:portolan
-depends-on:
-    - tapestry-structure-4401c64b
 created-at: 2026-02-22T05:00:00+01:00
 outcome: 'A fiber earns its name by being one thing: body for context, outcome for conclusion, edges for accountability — the smallest unit that can carry both what happened and why it mattered.'
 ---

@@ -4,7 +4,6 @@ tags:
     - tapestry:portolan
 depends-on:
     - tapestry-structure-4401c64b
-    - fibers-concept-a3f8d142
 created-at: 2026-02-22T05:56:10.793549+01:00
 outcome: The outcome is the interface between fibers. A downstream node reads the upstream outcome, not the upstream body. The graph is a chain of conclusions, not a chain of investigations.
 ---
