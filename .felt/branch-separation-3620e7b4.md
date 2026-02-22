@@ -1,7 +1,5 @@
 ---
 title: Branch separation
-tags:
-    - tapestry:portolan
 depends-on:
     - force-directed-layout-6d126304
 created-at: 2026-02-21T19:27:09.602931+01:00

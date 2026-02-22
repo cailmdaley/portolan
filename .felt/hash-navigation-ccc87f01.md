@@ -1,7 +1,5 @@
 ---
 title: Hash navigation
-tags:
-    - tapestry:portolan
 depends-on:
     - url-fragments-4fe425f3
 created-at: 2026-02-21T19:27:15.602931+01:00

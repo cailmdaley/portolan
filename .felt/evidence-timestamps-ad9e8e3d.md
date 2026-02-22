@@ -1,7 +1,5 @@
 ---
 title: Evidence timestamps
-tags:
-    - tapestry:portolan
 depends-on:
     - staleness-computation-ae36c717
     - evidence-structure-df23b4ae

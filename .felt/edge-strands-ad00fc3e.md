@@ -1,7 +1,5 @@
 ---
 title: Edge strands
-tags:
-    - tapestry:portolan
 depends-on:
     - tapestry-rendering-0a402a96
 created-at: 2026-02-21T19:11:37.463757+01:00

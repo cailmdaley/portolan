@@ -3,7 +3,7 @@ title: Felt CLI
 tags:
     - tapestry:portolan
 depends-on:
-    - tapestry-introduction-537a6234
+    - tapestry-structure-4401c64b
 created-at: 2026-02-21T19:11:18.430866+01:00
 outcome: The felt CLI creates, edits, comments on, and queries fibers. It writes markdown files to .felt/ with YAML frontmatter — the DAG is just a directory of plain text.
 ---

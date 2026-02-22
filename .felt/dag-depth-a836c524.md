@@ -1,7 +1,5 @@
 ---
 title: DAG depth
-tags:
-    - tapestry:portolan
 depends-on:
     - tapestry-structure-4401c64b
 created-at: 2026-02-21T19:11:22.995121+01:00

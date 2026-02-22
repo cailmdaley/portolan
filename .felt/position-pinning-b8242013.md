@@ -1,7 +1,5 @@
 ---
 title: Position pinning
-tags:
-    - tapestry:portolan
 depends-on:
     - burn-in-phase-a0859c3f
 created-at: 2026-02-21T19:27:07.602931+01:00
