@@ -2,6 +2,7 @@
 title: The Map
 status: open
 tags:
+    - tapestry:portolan-map
     - tapestry:portolan
     - tier:1
 depends-on:

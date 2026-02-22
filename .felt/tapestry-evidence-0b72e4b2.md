@@ -2,16 +2,21 @@
 title: Evidence
 status: open
 tags:
+    - tapestry:portolan-evidence
     - tapestry:portolan
     - tier:1
 depends-on:
     - tapestry-structure-4401c64b
 created-at: 2026-02-21T17:18:11.04978+01:00
-outcome: 'Fibers can connect to computation: a results directory with evidence.json holding metrics, timestamps, and artifact images. Staleness is determined by comparing evidence modification times across the dependency graph.'
+outcome: 'Evidence is traceability: every claim in a fiber outcome can be traced to a specific line in the source that produced it — computation or text.'
 ---
 
-Evidence lives at `results/claims/{specName}/evidence.json`, where the spec name comes from the fiber's `tapestry:` tag suffix. The JSON file contains an `evidence` object (flat dictionary of metrics), an `output` object (artifact filenames), and a `generated` timestamp. Evidence can come from any pipeline — snakemake rules, analysis scripts, notebooks — as long as they write this file.
+Evidence lives at `results/claims/{specName}/evidence.json`, where the spec name is the suffix of the fiber's `tapestry:` tag. The JSON holds an `evidence` object (metrics, provenance, any flat key-value context), an `output` object (artifact image filenames rendered in the sidebar), and a `generated` timestamp.
 
-Three staleness states: **fresh** (teal) means this fiber's evidence was generated after all its dependencies'. **Stale** (wine) means at least one upstream dependency has newer evidence — the computation may be out of date. **No evidence** (umber) means no evidence.json was found. Staleness propagates: a stale ancestor makes everything downstream stale. The colors surface this dependency health at a glance.
+Three staleness states surface dependency health. **Fresh** (teal): this fiber's evidence postdates all its dependencies'. **Stale** (wine): at least one upstream dependency has newer evidence — the computation may be out of date. **No evidence** (umber): no `evidence.json` found. Staleness propagates through the DAG. A stale ancestor makes everything downstream stale.
 
-Evidence is optional. Fibers without evidence still render, still link, still hold their bodies and outcomes. The evidence layer is for research tapestries where computation is the substance: analysis pipelines, experiment results, model outputs. For planning tapestries, decision logs, or documentation tapestries like this one, evidence is absent by design — the umber dots mean 'no computation here,' not 'something is broken.'
+Evidence is optional. Planning fibers, decision logs, documentation tapestries — umber dots here mean "no computation," not "something broken."
+
+**Paper provenance.** ArXiv papers go in `results/references/`. Fiber outcomes cite specific lines: `results/references/2601.10038.pdf:L23-29`. The tapestry renders these as clickable links that open the PDF at that line.
+
+This fiber is its own example. Ting, Curtis-Trudel & Yao (arXiv:2601.10038) open with Mary Midgley's remark that philosophy is like plumbing — you don't notice it until things start to smell funny. Their point: as AI transforms astronomy, scientists are beginning to notice. The same is true of provenance. A result is only as trustworthy as the chain connecting it to its sources. `results/references/2601.10038.pdf:L23-29` is that chain made visible — one click from the claim to the sentence that grounds it.

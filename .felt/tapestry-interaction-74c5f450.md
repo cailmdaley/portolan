@@ -2,17 +2,17 @@
 title: Click Me
 status: open
 tags:
+    - tapestry:portolan-nav
     - tapestry:portolan
     - tier:1
 created-at: 2026-02-21T17:18:05.771969+01:00
-outcome: Click any node to reveal its neighborhood. Hover for a preview. Click background to return to the skeleton. Every step is reversible.
+outcome: Three gestures unlock the whole chart — hover to scout, click to reveal, click the background to return to open water.
 ---
 
-You're looking at a tapestry — a directed graph of interconnected notes called fibers. This one is about itself.
+You're looking at a tapestry — a navigational chart of interconnected notes called fibers. This one maps itself.
 
-**Try it:** click any of the five sections visible now. The nodes inside will emerge from the fog. Click one of those to see its full detail in the sidebar. Click the background to return here.
+Five sections are visible now, the skeleton of the whole. **Click any section** and its nodes emerge from the fog. **Click a node** to open it in full in the sidebar — body, outcome, artifacts. **Click the background** to fold everything back and return to open water.
 
-**Hover** over any node for 300ms to preview its content — title in bold, a lead paragraph, then the outcome. The scout. **Click** to commit: the neighborhood emerges and the sidebar opens with full detail — body, outcome, artifacts. **Click again** to collapse back to fog. **Click the background** to return to this skeleton view.
+**Hover** any node for 300ms to scout it: title, a lead paragraph, the outcome. No commitment. **Click** to commit: the neighborhood surfaces and the sidebar opens. **Click again** to re-submerge it. Everything is reversible.
 
-Search (bottom of the sidebar) finds any fiber in the tapestry, even fogged ones. Clicking a result reveals it. Every node has a shareable URL — click a node, copy the address bar.
-
+Search (bottom of the sidebar) reaches any fiber in the tapestry, even fogged ones. Every node has a shareable URL — click a node, copy the address bar.

@@ -5,14 +5,15 @@ tags:
 depends-on:
     - tapestry-introduction-537a6234
 created-at: 2026-02-21T20:06:16.373088+01:00
-outcome: 'Four terms: fibers (atomic concerns), felt (the substrate), tapestry (the visualization), sections (waypoints). Philosophically Deleuzian — smooth space that accepts temporary structure for legibility without being organized by it.'
+outcome: 'Four terms with their own subfibers: fibers (atomic concerns with body and outcome), felt (the rhizomatic substrate), tapestry (the city-scoped visualization), sections (navigational anchors, the one concession to tree-thinking).'
 ---
 
-**Fibers** are the atomic unit — individual concerns: tasks, decisions, questions, specs, observations. A fiber can be a one-sentence decision or a multi-paragraph investigation. Fibers connect to each other via dependency edges, forming a directed acyclic graph. The direction encodes meaning: A depends on B means B is a prerequisite or foundation for A. The body holds context; the outcome holds the conclusion.
+Four terms carry the system. Each has a dedicated fiber with fuller treatment — what follows is the map, not the territory.
 
-**Felt** is what you get when fibers accumulate. In material terms, felt is a non-woven textile — fibers compressed together with no fixed orientation, no privileged axis, no warp or weft. This is intentional: the metaphor is Deleuzian. The felt is smooth space, rhizomatic, connecting any point to any other point without predetermined hierarchy. It resists the arborescent impulse to organize everything into trees. The DAG structure that emerges is a property of the dependencies you file, not a schema imposed from outside.
+**Fibers** are the atomic unit: a concern with a body and an outcome. The outcome is load-bearing — it carries the conclusion forward into whatever depends on it. See `fibers-concept-a3f8d142`.
 
-**Tapestry** is the visualization of the felt, produced for a specific city (project directory). It renders the fiber graph as a force-directed DAG — nodes for fibers, edges for dependencies, staleness encoded in color. The tapestry is where meaning-making happens: you can see the shape of an analysis at a glance, drill into regions, trace how conclusions depend on evidence. It imposes temporary structure on the smooth space of the felt — useful for inspection and communication, without claiming to be the final word on how the fibers relate.
+**Felt** is what fibers accumulate into. Non-woven, rhizomatic, no privileged axis — the DAG structure emerges from the dependencies you file, not from a schema imposed in advance. See `felt-concept-7c2e9b0d`.
 
-**Sections** (fibers tagged `tier:1`) are waypoints in the tapestry, not categories. They appear on first load as the skeleton of the analysis. They're modeled loosely on paper sections — Introduction, Methods, Results — but the metaphor isn't mandatory. What matters is that sections are visible anchors you navigate relative to. Clicking a section reveals its immediate neighborhood; sections link to each other in the DAG as the spine of the analysis. They're the one concession to tree-thinking in an otherwise rhizomatic system.
+**Tapestry** is the visualization of a city's felt — force-directed, fog-and-reveal, staleness in color. Temporary legibility imposed on smooth space. See `tapestry-concept-b5e4f631`.
 
+**Sections** (fibers tagged `tier:1`) are waypoints, not categories. Visible on load as navigational anchors; the one concession to tree-thinking in a rhizomatic system. See `sections-concept-e9d0c47a`.
