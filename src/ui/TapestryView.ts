@@ -930,10 +930,12 @@ export class TapestryView {
     // Also lifts node to full opacity while hovering (preview of revealed state)
     nodeElements
       .on('mouseenter', (event: MouseEvent, d: SimNode) => {
-        // Lift node opacity to full while hovering
+        // Lift node opacity to full and remove blur while hovering
         const el = event.currentTarget as SVGGElement
         el.dataset.hoverPrevOpacity = el.style.opacity
+        el.dataset.hoverPrevFilter = el.style.filter
         el.style.opacity = '1'
+        el.style.filter = ''
 
         // Build tooltip content: lead paragraph + outcome (whichever exist)
         const lead = leadParagraph(d.data.body)
@@ -957,10 +959,12 @@ export class TapestryView {
         this.tooltip.style.top = `${event.clientY - 8}px`
       })
       .on('mouseleave', (event: MouseEvent) => {
-        // Restore prior opacity
+        // Restore prior opacity and filter
         const el = event.currentTarget as SVGGElement
         el.style.opacity = el.dataset.hoverPrevOpacity ?? ''
+        el.style.filter = el.dataset.hoverPrevFilter ?? ''
         delete el.dataset.hoverPrevOpacity
+        delete el.dataset.hoverPrevFilter
         if (this.tooltip) this.tooltip.style.display = 'none'
       })
 
