@@ -163,7 +163,7 @@ async function main() {
       const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : ''
       const base = filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename
       // Namespace by node ID to avoid collisions between fibers with identically-named files
-      const uniqueName = nodeId ? `${base}-${nodeId.slice(0, 8)}${ext}` : filename
+      const uniqueName = nodeId ? `${base}-${nodeId.slice(-8)}${ext}` : filename
       const outDir = path.join(OUT_DIR, 'files')
       const outPath = path.join(outDir, uniqueName)
 
