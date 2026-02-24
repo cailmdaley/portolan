@@ -160,10 +160,8 @@ async function main() {
     const nodeId: string = node.id || node.fiberId || ''
     for (const href of allLinks) {
       const filename = href.split('/').pop() || ''
-      const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : ''
-      const base = filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename
-      // Namespace by node ID to avoid collisions between fibers with identically-named files
-      const uniqueName = nodeId ? `${base}-${nodeId.slice(-8)}${ext}` : filename
+      // Encode the full path as the filename to guarantee uniqueness
+      const uniqueName = href.replace(/^\.{0,2}\//, '').replace(/\//g, '_')
       const outDir = path.join(OUT_DIR, 'files')
       const outPath = path.join(outDir, uniqueName)
 
