@@ -8,15 +8,18 @@ import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 
 const force = process.argv.includes('--force')
-const cityArg = process.argv.filter(a => !a.startsWith('--'))[2]
+const asIdx = process.argv.indexOf('--as')
+const exportName = asIdx !== -1 ? process.argv[asIdx + 1] : null
+const cityArg = process.argv.filter(a => !a.startsWith('--') && a !== exportName)[2]
 if (!cityArg) {
-  console.error('Usage: npx tsx scripts/export-tapestry.ts <cityName|cityId> [--force]')
+  console.error('Usage: npx tsx scripts/export-tapestry.ts <cityName|cityId> [--force] [--as <name>]')
   process.exit(1)
 }
+const outputName = exportName || cityArg
 
 const API_BASE = process.env.PORTOLAN_URL || 'http://localhost:4004'
 const BASE_OUT = path.resolve(import.meta.dirname, '..', 'docs', 'data')
-const OUT_DIR = path.join(BASE_OUT, cityArg)
+const OUT_DIR = path.join(BASE_OUT, outputName)
 
 interface CityInfo {
   id: string
@@ -46,15 +49,26 @@ function resolveCity(nameOrId: string): CityInfo {
 
 /** Find non-URL, non-.md links in markdown body text. */
 function findLinkedFiles(body: string): string[] {
-  const linkRe = /\[[^\]]+\]\(([^)]+)\)/g
   const files: string[] = []
-  let m
-  while ((m = linkRe.exec(body)) !== null) {
-    const href = m[1]
-    if (/^https?:\/\//.test(href)) continue
-    if (/\.md$/.test(href)) continue
+  const add = (href: string) => {
+    if (/^https?:\/\//.test(href)) return
+    if (/\.md$/.test(href)) return
     if (!files.includes(href)) files.push(href)
   }
+
+  // Markdown links: [text](path)
+  const linkRe = /\[[^\]]+\]\(([^)]+)\)/g
+  let m
+  while ((m = linkRe.exec(body)) !== null) add(m[1])
+
+  // Inline code file references: `path/to/file.ext` or `path/to/file.ext:L42`
+  const codeRe = /`((?:\.{0,2}\/)?[\w.\-/]+\/[\w.\-]+\.[a-zA-Z]{1,10}(?::L?\d+(?:-\d+)?)?)`/g
+  while ((m = codeRe.exec(body)) !== null) {
+    // Strip line reference for the file path
+    const path = m[1].replace(/:L?\d+(?:-\d+)?$/, '')
+    add(path)
+  }
+
   return files
 }
 
@@ -76,10 +90,18 @@ function downloadFile(city: CityInfo, relativePath: string, outPath: string): bo
 
 /** Rewrite local file links in body to point to exported paths. */
 function rewriteLinks(body: string, rewriteMap: Map<string, string>): string {
-  return body.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, href) => {
+  // Rewrite markdown links
+  let result = body.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, href) => {
     const rewritten = rewriteMap.get(href)
     return rewritten ? `[${text}](${rewritten})` : _match
   })
+  // Rewrite inline code file references: `path/to/file.ext:L42` → `rewritten/file.ext:L42`
+  result = result.replace(/`((?:\.{0,2}\/)?[\w.\-/]+\/[\w.\-]+\.[a-zA-Z]{1,10})((?::L?\d+(?:-\d+)?)?)`/g,
+    (_match, filePath, lineSuffix) => {
+      const rewritten = rewriteMap.get(filePath)
+      return rewritten ? `\`${rewritten}${lineSuffix}\`` : _match
+    })
+  return result
 }
 
 const city = resolveCity(cityArg)
@@ -135,20 +157,25 @@ async function main() {
     if (allLinks.size === 0) continue
 
     const rewriteMap = new Map<string, string>()
+    const nodeId: string = node.id || node.fiberId || ''
     for (const href of allLinks) {
       const filename = href.split('/').pop() || ''
+      const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : ''
+      const base = filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename
+      // Namespace by node ID to avoid collisions between fibers with identically-named files
+      const uniqueName = nodeId ? `${base}-${nodeId.slice(0, 8)}${ext}` : filename
       const outDir = path.join(OUT_DIR, 'files')
-      const outPath = path.join(outDir, filename)
+      const outPath = path.join(outDir, uniqueName)
 
       if (!force && fs.existsSync(outPath)) {
-        rewriteMap.set(href, `${cityArg}/files/${filename}`)
+        rewriteMap.set(href, `${outputName}/files/${uniqueName}`)
         continue
       }
 
       if (downloadFile(city, href, outPath)) {
-        rewriteMap.set(href, `${cityArg}/files/${filename}`)
+        rewriteMap.set(href, `${outputName}/files/${uniqueName}`)
         fileCount++
-        console.log(`  ↓ ${href}`)
+        console.log(`  ↓ ${href} → ${uniqueName}`)
       } else {
         console.warn(`  ⚠ ${href}: download failed`)
       }
@@ -170,12 +197,12 @@ async function main() {
   if (fs.existsSync(manifestPath)) {
     try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) } catch {}
   }
-  const entry = { name: cityArg, nodeCount: data.nodes.length, updated: new Date().toISOString() }
-  const idx = manifest.findIndex(m => m.name === cityArg)
+  const entry = { name: outputName, nodeCount: data.nodes.length, updated: new Date().toISOString() }
+  const idx = manifest.findIndex(m => m.name === outputName)
   if (idx >= 0) manifest[idx] = entry; else manifest.push(entry)
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
 
-  console.log(`Exported: ${data.nodes.length} nodes, ${artifactCount} artifacts, ${fileCount} files → docs/data/${cityArg}/`)
+  console.log(`Exported: ${data.nodes.length} nodes, ${artifactCount} artifacts, ${fileCount} files → docs/data/${outputName}/`)
 }
 
 main().catch(err => {
