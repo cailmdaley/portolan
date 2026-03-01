@@ -1,37 +1,100 @@
 import { TapestryView } from '../ui/TapestryView'
 import type { TapestryResponse } from '../ui/TapestryView'
 
-// Extract city name from path: /tapestries/pure-eb/ → "pure-eb"
-const pathSegments = window.location.pathname.split('/').filter(Boolean)
-// On GitHub Pages, first segment is repo name "tapestries", second is city
-const cityName = pathSegments.length >= 2 ? pathSegments[pathSegments.length - 1] : null
+interface StaticRuntime {
+  view: TapestryView | null
+  fetchAbortController: AbortController | null
+  popstateHandler: (() => void) | null
+  activeRequestId: number
+  disposed: boolean
+}
 
-if (!cityName) {
-  // Landing page: list available tapestries
-  showLanding()
-} else {
+const runtime: StaticRuntime = {
+  view: null,
+  fetchAbortController: null,
+  popstateHandler: null,
+  activeRequestId: 0,
+  disposed: false,
+}
+
+function detachPopstateHandler(): void {
+  if (!runtime.popstateHandler) return
+  window.removeEventListener('popstate', runtime.popstateHandler)
+  runtime.popstateHandler = null
+}
+
+function attachPopstateHandler(view: TapestryView): void {
+  detachPopstateHandler()
+  const handler = () => {
+    if (window.location.hash) {
+      view.selectFromHash()
+    }
+  }
+  runtime.popstateHandler = handler
+  window.addEventListener('popstate', handler)
+}
+
+function clearDataRequest(): void {
+  if (!runtime.fetchAbortController) return
+  runtime.fetchAbortController.abort()
+  runtime.fetchAbortController = null
+}
+
+function isCurrentRequest(requestId: number): boolean {
+  return !runtime.disposed && runtime.activeRequestId === requestId
+}
+
+function cleanupRuntime(): void {
+  if (runtime.disposed) return
+  runtime.disposed = true
+
+  clearDataRequest()
+  detachPopstateHandler()
+  runtime.view?.dispose()
+  runtime.view = null
+
+  window.removeEventListener('beforeunload', cleanupRuntime)
+}
+
+function bootstrap(): void {
+  // Extract city name from path: /tapestries/pure-eb/ -> "pure-eb"
+  const pathSegments = window.location.pathname.split('/').filter(Boolean)
+  // On GitHub Pages, first segment is repo name "tapestries", second is city.
+  const cityName = pathSegments.length >= 2 ? pathSegments[pathSegments.length - 1] : null
+
+  if (!cityName) {
+    showLanding()
+    return
+  }
+
   const view = new TapestryView()
-  // Data is at /tapestries/data/{city}/tapestry.json — use absolute path from base
+  runtime.view = view
+
+  // Data is at /tapestries/data/{city}/tapestry.json - use absolute path from base.
   const basePath = pathSegments.slice(0, -1).join('/')
   const dataUrl = `/${basePath}/data/${cityName}/tapestry.json`
+  const requestId = ++runtime.activeRequestId
+  const controller = new AbortController()
 
-  fetch(dataUrl)
+  clearDataRequest()
+  runtime.fetchAbortController = controller
+
+  fetch(dataUrl, { signal: controller.signal })
     .then(r => {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
       return r.json()
     })
     .then((data: TapestryResponse) => {
+      if (!isCurrentRequest(requestId)) return
+
       const assetBase = `/${basePath}/data/${cityName}/claims`
       view.showStatic(data, cityName, assetBase)
-
-      // Browser back/forward navigates between selected nodes
-      window.addEventListener('popstate', () => {
-        if (window.location.hash) {
-          view.selectFromHash()
-        }
-      })
+      attachPopstateHandler(view)
     })
     .catch(err => {
+      if (!isCurrentRequest(requestId)) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
+
       console.error('Failed to load tapestry data:', err)
       view.showStatic(
         { nodes: [], links: [], downstream: {}, config: null },
@@ -53,6 +116,20 @@ if (!cityName) {
         </div>`
       }
     })
+    .finally(() => {
+      if (isCurrentRequest(requestId)) {
+        runtime.fetchAbortController = null
+      }
+    })
+}
+
+window.addEventListener('beforeunload', cleanupRuntime)
+bootstrap()
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    cleanupRuntime()
+  })
 }
 
 function showLanding() {
