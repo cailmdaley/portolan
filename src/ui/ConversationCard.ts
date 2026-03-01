@@ -29,6 +29,10 @@ export class ConversationCard {
   private loadingState: 'loading' | 'loaded' | 'error' = 'loading'
   private errorMessage = ''
   private fetchTimeout: ReturnType<typeof setTimeout> | null = null
+  private fetchRequestId = 0
+  private fetchAbortController: AbortController | null = null
+  private sendAbortController: AbortController | null = null
+  private inputPlaceholderResetTimeout: ReturnType<typeof setTimeout> | null = null
 
   // Clickable tools for file viewer
   private readonly clickableTools = ['Read', 'Write', 'Edit']
@@ -273,12 +277,15 @@ export class ConversationCard {
     this.isSending = true
     sendBtn.textContent = '...'
     input.disabled = true
+    const sendController = new AbortController()
+    this.sendAbortController = sendController
 
     try {
       const response = await fetch('http://localhost:4004/send-message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: this.session.id, message }),
+        signal: sendController.signal,
       })
 
       if (!response.ok) {
@@ -290,11 +297,30 @@ export class ConversationCard {
       input.style.height = 'auto'
       await this.fetchConversation()
     } catch (error) {
+      if (this.isAbortError(error)) {
+        return
+      }
+
       console.error('Failed to send message:', error)
+      this.clearInputPlaceholderResetTimeout()
       const originalPlaceholder = input.placeholder
       input.placeholder = `Error: ${error instanceof Error ? error.message : 'Failed to send'}`
-      setTimeout(() => { input.placeholder = originalPlaceholder }, 3000)
+      this.inputPlaceholderResetTimeout = setTimeout(() => {
+        if (this.disposed || this.chatInputEl !== input) {
+          return
+        }
+        input.placeholder = originalPlaceholder
+        this.inputPlaceholderResetTimeout = null
+      }, 3000)
     } finally {
+      if (this.sendAbortController === sendController) {
+        this.sendAbortController = null
+      }
+
+      if (this.disposed || this.chatInputEl !== input) {
+        return
+      }
+
       this.isSending = false
       sendBtn.textContent = '↩'
       input.disabled = false
@@ -305,16 +331,21 @@ export class ConversationCard {
   private async fetchConversation(): Promise<void> {
     if (this.disposed) return
 
+    this.cancelInFlightFetch()
+    const requestId = ++this.fetchRequestId
+    const fetchController = new AbortController()
+    this.fetchAbortController = fetchController
+    let timedOut = false
+
     this.loadingState = 'loading'
     this.renderContent()
 
     // Set timeout for loading
     const TIMEOUT_MS = 5000
     this.fetchTimeout = setTimeout(() => {
-      if (this.loadingState === 'loading') {
-        this.loadingState = 'error'
-        this.errorMessage = 'Request timed out'
-        this.renderContent()
+      if (!this.disposed && this.fetchRequestId === requestId && this.fetchAbortController === fetchController) {
+        timedOut = true
+        fetchController.abort()
       }
     }, TIMEOUT_MS)
 
@@ -324,27 +355,38 @@ export class ConversationCard {
       url.searchParams.set('tmuxSession', this.session.tmuxSession)
       url.searchParams.set('limit', '100')
 
-      const response = await fetch(url.toString())
+      const response = await fetch(url.toString(), { signal: fetchController.signal })
 
-      if (this.disposed) return
+      if (this.disposed || this.fetchRequestId !== requestId || this.fetchAbortController !== fetchController) return
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
 
       const data = await response.json()
+      if (this.disposed || this.fetchRequestId !== requestId || this.fetchAbortController !== fetchController) return
       this.clearFetchTimeout()
 
       this.conversation = Array.isArray(data.messages) ? data.messages : []
       this.loadingState = 'loaded'
       this.renderContent()
     } catch (error) {
-      if (this.disposed) return
+      if (this.disposed || this.fetchRequestId !== requestId || this.fetchAbortController !== fetchController) return
       this.clearFetchTimeout()
 
+      if (this.isAbortError(error) && !timedOut) {
+        return
+      }
+
       this.loadingState = 'error'
-      this.errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      this.errorMessage = timedOut
+        ? 'Request timed out'
+        : (error instanceof Error ? error.message : 'Unknown error')
       this.renderContent()
+    } finally {
+      if (this.fetchRequestId === requestId && this.fetchAbortController === fetchController) {
+        this.fetchAbortController = null
+      }
     }
   }
 
@@ -353,6 +395,32 @@ export class ConversationCard {
       clearTimeout(this.fetchTimeout)
       this.fetchTimeout = null
     }
+  }
+
+  private clearInputPlaceholderResetTimeout(): void {
+    if (this.inputPlaceholderResetTimeout) {
+      clearTimeout(this.inputPlaceholderResetTimeout)
+      this.inputPlaceholderResetTimeout = null
+    }
+  }
+
+  private cancelInFlightFetch(): void {
+    this.clearFetchTimeout()
+    if (this.fetchAbortController) {
+      this.fetchAbortController.abort()
+      this.fetchAbortController = null
+    }
+  }
+
+  private cancelInFlightSend(): void {
+    if (this.sendAbortController) {
+      this.sendAbortController.abort()
+      this.sendAbortController = null
+    }
+  }
+
+  private isAbortError(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError'
   }
 
   /**
@@ -863,7 +931,10 @@ export class ConversationCard {
 
   dispose(): void {
     this.disposed = true
-    this.clearFetchTimeout()
+    this.cancelInFlightFetch()
+    this.cancelInFlightSend()
+    this.clearInputPlaceholderResetTimeout()
+    this.isSending = false
     // Clean up drag/resize listeners
     document.removeEventListener('mousemove', this.onDrag)
     document.removeEventListener('mouseup', this.stopDrag)
