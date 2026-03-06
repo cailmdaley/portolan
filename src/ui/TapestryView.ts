@@ -13,10 +13,12 @@ import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { markdown } from '@codemirror/lang-markdown'
 import { vim } from '@replit/codemirror-vim'
 import type { City } from '../state/types'
-import { escapeHtml, renderMarkdown, highlightCodeBlocks, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery, attachInlinePathListeners, renderPdfAllPages } from './utils'
+import { escapeHtml, renderMarkdown, highlightCodeBlocks, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 import { AnnotationPanel } from './AnnotationPanel'
 import type { TapestryNode, TapestryFiber, TapestryResponse, SimNode, SimLink, SVGPathSelection, EdgeDatum, ClaimsAnnotation } from './tapestry-types'
+import { TapestryStaticFileModal } from './TapestryStaticFileModal'
+import { TapestryArtifactLightbox } from './TapestryArtifactLightbox'
 import {
   NODE_RX, NODE_RY, INTERIOR_DEPTH_NUDGE, RING_SCALES, RING_COUNT, SIMULATION_TICKS,
   stalenessColor, dotStalenessColor, stalenessIcon, statusIcon, isSectionNode,
@@ -78,9 +80,12 @@ export class TapestryView {
   private dataFetchAbortController: AbortController | null = null
   private dataRequestId = 0
   private transientFrameIds = new Set<number>()
-  private staticFileModal: HTMLElement | null = null
-  private staticFileModalKeyHandler: ((e: KeyboardEvent) => void) | null = null
-  private lightboxCleanup: (() => void) | null = null
+  private staticFileModal: TapestryStaticFileModal | null = null
+  private lightbox = new TapestryArtifactLightbox(
+    (specName, filePath) => this.artifactUrl(specName, filePath),
+    (node, artifactName, x, y) => this.promptImageAnnotation(node, artifactName, x, y),
+    () => this.staticMode,
+  )
   private disposed = false
 
   // HMR-safe listener refs
@@ -352,13 +357,6 @@ export class TapestryView {
     }
   }
 
-  private closeActiveLightbox(): void {
-    if (!this.lightboxCleanup) return
-    const close = this.lightboxCleanup
-    this.lightboxCleanup = null
-    close()
-  }
-
   // ── Public API ─────────────────────────────────────────────────────
 
   async show(city: City): Promise<void> {
@@ -423,7 +421,7 @@ export class TapestryView {
     this.clearHideCleanupTimeout()
     this.cancelTransientFrames()
     this.hideDetail(true)
-    this.closeStaticFileModal()
+    this.staticFileModal?.close()
     this.clearPreloadCache()
 
     this.panel.classList.remove('visible')
@@ -511,9 +509,9 @@ export class TapestryView {
       hasEscapeHandler: this.escapeHandler !== null,
       hasArtifactClickHandler: this.artifactClickHandler !== null,
       hasGalleryDetach: this.galleryDetach !== null,
-      hasStaticFileModal: this.staticFileModal !== null,
-      hasStaticFileModalKeyHandler: this.staticFileModalKeyHandler !== null,
-      hasLightboxCleanup: this.lightboxCleanup !== null,
+      hasStaticFileModal: this.staticFileModal?.isOpen() ?? false,
+      hasStaticFileModalKeyHandler: this.staticFileModal?.isOpen() ?? false,
+      hasLightboxCleanup: this.lightbox.isOpen(),
       hasTooltip: this.tooltip !== null,
     }
   }
@@ -522,7 +520,7 @@ export class TapestryView {
     this.disposed = true
     this.hide()
     this.clearHideCleanupTimeout()
-    this.closeStaticFileModal()
+    this.staticFileModal?.close()
     if (this.tooltip) {
       this.tooltip.remove()
       this.tooltip = null
@@ -549,6 +547,7 @@ export class TapestryView {
     this.staticAssetBase = assetBase
     // Derive data base from asset base: /tapestries/data/city/claims → /tapestries/data
     this.staticDataBase = assetBase.replace(/\/[^/]+\/claims$/, '')
+    this.staticFileModal = new TapestryStaticFileModal(this.staticDataBase)
     this.tapestryData = data
     this.selectedNodeId = null
 
@@ -1778,7 +1777,7 @@ export class TapestryView {
       if (!media) return
       e.preventDefault()
       e.stopPropagation()
-      this.openLightbox(media, node)
+      this.lightbox.open(media, node)
     }
     this.detailPanel.addEventListener('click', this.artifactClickHandler)
 
@@ -1815,7 +1814,7 @@ export class TapestryView {
         }
         // In static mode, open exported files in viewer
         if (this.staticMode) {
-          this.openStaticFile(href)
+          this.staticFileModal?.open(href)
           return
         }
         // Everything else (file paths, fiber files) → file viewer
@@ -2116,7 +2115,7 @@ export class TapestryView {
 
   private hideDetail(skipVisibilityUpdate = false): void {
     this.cleanupDetailBindings()
-    this.closeActiveLightbox()
+    this.lightbox.close()
     this.destroyBodyEditor()
     this.detailPanel.classList.add('hidden')
     this.fiberListEl.classList.remove('hidden')
@@ -2166,144 +2165,12 @@ export class TapestryView {
   /** Open a file path in the file viewer, resolving relative to city root. */
   private openFileFromLink(href: string, line?: number): void {
     if (this.staticMode) {
-      this.openStaticFile(href, line)
+      this.staticFileModal?.open(href, line)
       return
     }
     if (!this.onOpenFile || !this.currentCity) return
     const path = href.startsWith('/') ? href : `${this.currentCity.path}/${href}`
     this.onOpenFile(path, this.currentCity, line)
-  }
-
-  private closeStaticFileModal(): void {
-    if (this.staticFileModalKeyHandler) {
-      document.removeEventListener('keydown', this.staticFileModalKeyHandler)
-      this.staticFileModalKeyHandler = null
-    }
-    if (this.staticFileModal) {
-      this.staticFileModal.remove()
-      this.staticFileModal = null
-      return
-    }
-    document.querySelector('.tapestry-file-modal')?.remove()
-  }
-
-  /** Lightweight file viewer for static (GitHub Pages) mode. */
-  private async openStaticFile(href: string, line?: number): Promise<void> {
-    if (!this.staticDataBase) return
-
-    // Resolve URL: href is already rewritten to "{city}/files/{filename}" by export
-    const filename = href.split('/').pop() || ''
-    const ext = filename.split('.').pop()?.toLowerCase() || ''
-    const url = `${this.staticDataBase}/${href}`
-
-    // Create or reuse modal
-    if (!this.staticFileModal || !document.body.contains(this.staticFileModal)) {
-      const modal = document.createElement('div')
-      modal.className = 'tapestry-file-modal'
-      modal.innerHTML = `
-        <div class="tapestry-file-backdrop"></div>
-        <div class="tapestry-file-content">
-          <div class="tapestry-file-resize tapestry-file-resize-left"></div>
-          <div class="tapestry-file-resize tapestry-file-resize-right"></div>
-          <div class="tapestry-file-header">
-            <span class="tapestry-file-title"></span>
-            <button class="tapestry-file-close">&times;</button>
-          </div>
-          <div class="tapestry-file-body"></div>
-        </div>
-      `
-      document.body.appendChild(modal)
-      this.staticFileModal = modal
-      modal.querySelector('.tapestry-file-backdrop')!.addEventListener('click', () => this.closeStaticFileModal())
-      modal.querySelector('.tapestry-file-close')!.addEventListener('click', () => this.closeStaticFileModal())
-      this.staticFileModalKeyHandler = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') this.closeStaticFileModal()
-      }
-      document.addEventListener('keydown', this.staticFileModalKeyHandler)
-
-      // Horizontal resize — 2× multiplier because flex-centering shifts the box by half
-      const content = modal.querySelector('.tapestry-file-content') as HTMLElement
-      const addResizeHandle = (handle: Element, direction: 1 | -1) => {
-        handle.addEventListener('mousedown', (e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          const startX = (e as MouseEvent).clientX
-          const startWidth = content.getBoundingClientRect().width
-          content.style.transition = 'none'
-          const onMove = (ev: MouseEvent) => {
-            const delta = (ev.clientX - startX) * direction * 2
-            const maxW = window.innerWidth * 0.95
-            content.style.width = `${Math.max(400, Math.min(maxW, startWidth + delta))}px`
-          }
-          const onUp = () => {
-            content.style.transition = ''
-            document.removeEventListener('mousemove', onMove)
-            document.removeEventListener('mouseup', onUp)
-          }
-          document.addEventListener('mousemove', onMove)
-          document.addEventListener('mouseup', onUp)
-        })
-      }
-      addResizeHandle(modal.querySelector('.tapestry-file-resize-right')!, 1)
-      addResizeHandle(modal.querySelector('.tapestry-file-resize-left')!, -1)
-    }
-    const modal = this.staticFileModal
-    if (!modal) return
-
-    const titleEl = modal.querySelector('.tapestry-file-title') as HTMLElement
-    const bodyEl = modal.querySelector('.tapestry-file-body') as HTMLElement
-    titleEl.textContent = filename + (line ? `:${line}` : '')
-    bodyEl.innerHTML = '<div style="padding:1rem;color:var(--ui-text-muted)">Loading\u2026</div>'
-
-    if (ext === 'pdf') {
-      bodyEl.innerHTML = `<iframe src="${url}" style="width:100%;height:100%;border:none;"></iframe>`
-    } else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
-      bodyEl.innerHTML = `<img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;margin:auto;display:block;" />`
-    } else {
-      // Text-based: fetch and render
-      try {
-        const resp = await fetch(url)
-        if (!resp.ok) throw new Error(`${resp.status}`)
-        const text = await resp.text()
-
-        if (ext === 'md') {
-          bodyEl.innerHTML = `<div class="tapestry-file-markdown">${renderMarkdown(text)}</div>`
-          highlightCodeBlocks(bodyEl)
-        } else {
-          // Source code with line numbers
-          // Map extension to Prism language
-          const langMap: Record<string, string> = {
-            tex: 'latex', py: 'python', ts: 'typescript', js: 'javascript',
-            sh: 'bash', yaml: 'yaml', yml: 'yaml', json: 'json', toml: 'toml',
-          }
-          const lang = langMap[ext] || ext
-
-          const lines = text.split('\n')
-          const html = lines.map((l, i) => {
-            const num = i + 1
-            const highlight = line && num === line ? ' class="highlighted-line"' : ''
-            return `<tr${highlight}><td class="line-num">${num}</td><td class="line-content">${escapeHtml(l)}</td></tr>`
-          }).join('')
-          bodyEl.innerHTML = `<div class="tapestry-file-code" data-lang="${escapeHtml(lang)}"><table>${html}</table></div>`
-
-          // Prism syntax highlighting per cell
-          const P = (window as unknown as { Prism?: { highlight: (code: string, grammar: unknown, language: string) => string; languages: Record<string, unknown> } }).Prism
-          if (P?.languages[lang]) {
-            bodyEl.querySelectorAll<HTMLElement>('.line-content').forEach(cell => {
-              cell.innerHTML = P.highlight(cell.textContent || '', P.languages[lang], lang)
-            })
-          }
-
-          // Scroll to line
-          if (line) {
-            const highlighted = bodyEl.querySelector('.highlighted-line')
-            highlighted?.scrollIntoView({ block: 'center' })
-          }
-        }
-      } catch (err) {
-        bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">Could not load file: ${escapeHtml(filename)}</div>`
-      }
-    }
   }
 
   /** Extract a fiber ID from a link href (e.g. ".felt/some-fiber-id.md" or just "some-fiber-id"). */
@@ -2324,117 +2191,6 @@ export class TapestryView {
     const config = this.tapestryData?.config
     if (!config) return
     interpolateConfig(container, config)
-  }
-
-  // ── Lightbox ───────────────────────────────────────────────────────
-
-  private openLightbox(mediaEl: HTMLElement, node: TapestryNode): void {
-    const entries = artifactEntries(node.evidence?.artifacts || {})
-    if (entries.length === 0) return
-
-    this.closeActiveLightbox()
-
-    const lightbox = document.createElement('div')
-    lightbox.className = 'tapestry-lightbox'
-
-    const createMediaElement = (name: string, path: string): HTMLElement => {
-      const url = this.artifactUrl(node.specName || '', path)
-      if (isPdfArtifact(path)) {
-        const container = document.createElement('div')
-        container.className = 'tapestry-lightbox-pdf'
-        container.dataset.artifactName = name
-        container.dataset.artifactType = 'pdf'
-        container.addEventListener('click', (e) => e.stopPropagation())
-        renderPdfAllPages(url, container)
-        return container
-      }
-      const image = document.createElement('img')
-      image.src = url
-      image.alt = name
-      image.dataset.artifactName = name
-      image.dataset.artifactType = 'image'
-      return image
-    }
-
-    const selectedName = mediaEl.dataset.artifactName || ''
-    let plotIndex = entries.findIndex(([name]) => name === selectedName)
-    if (plotIndex < 0) {
-      const triggerSrc = (mediaEl instanceof HTMLImageElement || mediaEl instanceof HTMLIFrameElement) ? mediaEl.src : ''
-      plotIndex = entries.findIndex(([, p]) => this.artifactUrl(node.specName || '', p) === triggerSrc)
-    }
-    if (plotIndex < 0) plotIndex = 0
-    let [name, path] = entries[plotIndex]
-    let bigMedia = createMediaElement(name, path)
-
-    let labelEl: HTMLElement | null = null
-    const updateLabel = () => {
-      if (!labelEl) return
-      const [name] = entries[plotIndex]
-      labelEl.textContent = `${name} (${plotIndex + 1}/${entries.length})`
-    }
-    if (entries.length > 1) {
-      labelEl = document.createElement('span')
-      labelEl.className = 'tapestry-lightbox-label'
-      updateLabel()
-    }
-
-    const closeBtn = document.createElement('button')
-    closeBtn.className = 'tapestry-lightbox-close'
-    closeBtn.textContent = '\u00D7'
-
-    lightbox.appendChild(bigMedia)
-    if (labelEl) lightbox.appendChild(labelEl)
-    lightbox.appendChild(closeBtn)
-
-    const bindImageAnnotation = () => {
-      if (this.staticMode || !(bigMedia instanceof HTMLImageElement)) return
-      bigMedia.addEventListener('click', (e) => {
-        e.stopPropagation()
-        const rect = bigMedia.getBoundingClientRect()
-        const x = ((e.clientX - rect.left) / rect.width) * 100
-        const y = ((e.clientY - rect.top) / rect.height) * 100
-        this.promptImageAnnotation(node, bigMedia.dataset.artifactName || '', x, y)
-        close()
-      })
-    }
-
-    const navigate = (delta: number) => {
-      plotIndex = (plotIndex + delta + entries.length) % entries.length
-      const [name, path] = entries[plotIndex]
-      const nextMedia = createMediaElement(name, path)
-      bigMedia.replaceWith(nextMedia)
-      bigMedia = nextMedia
-      bindImageAnnotation()
-      updateLabel()
-    }
-
-    const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { close(); return }
-      if (entries.length <= 1) return
-      if (e.key === 'ArrowLeft') { e.preventDefault(); navigate(-1) }
-      if (e.key === 'ArrowRight') { e.preventDefault(); navigate(1) }
-    }
-    let closed = false
-    const close = () => {
-      if (closed) return
-      closed = true
-      document.removeEventListener('keydown', keyHandler)
-      if (this.lightboxCleanup === close) {
-        this.lightboxCleanup = null
-      }
-      lightbox.remove()
-    }
-    this.lightboxCleanup = close
-    closeBtn.addEventListener('click', close)
-    lightbox.addEventListener('click', (e) => {
-      if (e.target === lightbox) close()
-    })
-
-    bindImageAnnotation()
-
-    document.addEventListener('keydown', keyHandler)
-
-    document.body.appendChild(lightbox)
   }
 
   // ── Fiber sidebar ──────────────────────────────────────────────────
