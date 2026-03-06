@@ -6,19 +6,14 @@ import * as d3Drag from 'd3-drag'
 import * as d3Zoom from 'd3-zoom'
 import 'd3-transition'
 import { easeCubicInOut } from 'd3-ease'
-import { EditorState, type Extension } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
-import { markdown } from '@codemirror/lang-markdown'
-import { vim } from '@replit/codemirror-vim'
 import type { City } from '../state/types'
-import { escapeHtml, renderMarkdown, highlightCodeBlocks, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
+import { escapeHtml, renderMarkdown, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 import { AnnotationPanel } from './AnnotationPanel'
 import type { TapestryNode, TapestryFiber, TapestryResponse, SimNode, SimLink, SVGPathSelection, EdgeDatum, ClaimsAnnotation } from './tapestry-types'
 import { TapestryStaticFileModal } from './TapestryStaticFileModal'
 import { TapestryArtifactLightbox } from './TapestryArtifactLightbox'
+import { TapestryDetailBody } from './TapestryDetailBody'
 import {
   NODE_RX, NODE_RY, INTERIOR_DEPTH_NUDGE, RING_SCALES, RING_COUNT, SIMULATION_TICKS,
   stalenessColor, dotStalenessColor, stalenessIcon, statusIcon, isSectionNode,
@@ -86,16 +81,13 @@ export class TapestryView {
     (node, artifactName, x, y) => this.promptImageAnnotation(node, artifactName, x, y),
     () => this.staticMode,
   )
+  private detailBody = new TapestryDetailBody()
   private disposed = false
 
   // HMR-safe listener refs
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private onGetWorkers: ((city: City) => WorkerInfo[]) | null = null
   private onOpenFile: ((path: string, city: City, line?: number) => void) | null = null
-
-  // Inline markdown editor state
-  private bodyEditorView: EditorView | null = null
-  private bodyEditorNodeId: string | null = null
 
   // Hover tooltip
   private tooltip: HTMLElement | null = null
@@ -213,8 +205,8 @@ export class TapestryView {
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.isVisible()) {
         // If editing body, exit edit mode (discard changes)
-        if (this.bodyEditorView) {
-          const node = this.tapestryData?.nodes.find(n => n.id === this.bodyEditorNodeId)
+        if (this.detailBody.isEditing()) {
+          const node = this.tapestryData?.nodes.find(n => n.id === this.detailBody.getEditingNodeId())
           if (node) this.exitBodyEditMode(node)
           return
         }
@@ -1585,8 +1577,7 @@ export class TapestryView {
     const node = this.tapestryData.nodes.find(n => n.id === nodeId)
     if (!node) return
 
-    // Clean up any active body editor
-    this.destroyBodyEditor()
+    this.detailBody.destroy()
 
     const downstream = this.tapestryData.downstream[nodeId] || []
     const nodeColor = stalenessColor(node.staleness)
@@ -1619,7 +1610,7 @@ export class TapestryView {
       ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
       : undefined
     const bodyHtml = node.body
-      ? `<div class="tapestry-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}">${renderMarkdown(node.body, mdOpts)}</div>`
+      ? `<div class="tapestry-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}"></div>`
       : ''
 
     // Evidence metrics — flatten nested objects into key.subkey pairs
@@ -1704,11 +1695,7 @@ export class TapestryView {
 
     // Highlight code blocks and interpolate config values in body
     const bodyContainer = this.detailPanel.querySelector('.tapestry-detail-body')
-    if (bodyContainer) {
-      highlightCodeBlocks(bodyContainer as HTMLElement)
-      this.interpolateConfig(bodyContainer as HTMLElement)
-      attachInlinePathListeners(bodyContainer as HTMLElement, (path, line) => this.openFileFromLink(path, line))
-    }
+    if (bodyContainer && node.body) this.renderDetailBody(bodyContainer as HTMLElement, node.body)
 
     // Bind detail panel events
     this.bindDetailEvents(node)
@@ -1950,13 +1937,20 @@ export class TapestryView {
 
   // ── Inline markdown editing ──────────────────────────────────────────
 
+  private renderDetailBody(container: HTMLElement, body: string): void {
+    this.detailBody.render({
+      container,
+      body,
+      city: this.currentCity,
+      interpolateConfig: (bodyEl) => this.interpolateConfig(bodyEl),
+      openFileFromLink: (path, line) => this.openFileFromLink(path, line),
+    })
+  }
+
   private enterBodyEditMode(node: TapestryNode): void {
     if (!node.body || !this.currentCity) return
     const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
     if (!bodyEl) return
-
-    // Destroy any previous editor
-    this.destroyBodyEditor()
 
     // Swap meta actions to Save/Discard
     this.setMetaActions(`
@@ -1967,124 +1961,25 @@ export class TapestryView {
       '.detail-action-discard': () => this.exitBodyEditMode(node),
     })
 
-    // Fade out rendered markdown, replace with editor
-    bodyEl.classList.add('editing')
-    bodyEl.innerHTML = ''
-
-    const editorTheme = EditorView.theme({
-      '&': {
-        fontSize: '0.85rem',
-        fontFamily: 'var(--font-mono)',
-        background: 'transparent',
-        maxHeight: '100%',
-      },
-      '.cm-content': {
-        fontFamily: 'var(--font-mono)',
-        caretColor: 'var(--ui-gold)',
-        padding: '0',
-      },
-      '.cm-gutters': {
-        background: 'transparent',
-        border: 'none',
-        color: 'var(--ui-text-muted)',
-      },
-      '.cm-activeLine': {
-        background: 'rgba(154, 123, 53, 0.06)',
-      },
-      '.cm-cursor': {
-        borderLeftColor: 'var(--ui-gold)',
-      },
-      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
-        background: 'rgba(90, 123, 123, 0.2) !important',
-      },
-      '.cm-line': {
-        padding: '0 0.2rem',
-      },
+    this.detailBody.enterEditMode({
+      container: bodyEl as HTMLElement,
+      node,
+      city: this.currentCity,
+      onSave: () => { void this.saveBodyAndExit(node) },
     })
-
-    const extensions: Extension[] = [
-      vim(),
-      lineNumbers(),
-      history(),
-      drawSelection(),
-      EditorView.lineWrapping,
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      highlightActiveLine(),
-      keymap.of([
-        ...defaultKeymap,
-        ...historyKeymap,
-        { key: 'Mod-s', run: () => { this.saveBodyAndExit(node); return true } },
-      ]),
-      markdown(),
-      editorTheme,
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          bodyEl.classList.toggle('dirty', update.state.doc.toString() !== node.body)
-        }
-      }),
-    ]
-
-    const state = EditorState.create({
-      doc: node.body,
-      extensions,
-    })
-
-    this.bodyEditorView = new EditorView({ state, parent: bodyEl })
-    this.bodyEditorNodeId = node.id
-
-    // Focus editor
-    this.bodyEditorView.focus()
   }
 
   private async saveBodyAndExit(node: TapestryNode): Promise<void> {
-    if (!this.bodyEditorView || !this.currentCity) return
-
-    const newContent = this.bodyEditorView.state.doc.toString()
-    const filePath = `${this.currentCity.path}/.felt/${node.id}.md`
-
-    try {
-      // Read existing file, replace body section
-      const response = await fetch(
-        `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(this.currentCity.originId)}`
-      )
-      if (!response.ok) throw new Error('Failed to read fiber file')
-      const data = await response.json()
-      const existingContent: string = data.content
-
-      // Fiber files have YAML frontmatter then body. Replace everything after frontmatter.
-      const fmEnd = existingContent.indexOf('\n---\n')
-      let updatedContent: string
-      if (fmEnd >= 0) {
-        const frontmatter = existingContent.slice(0, fmEnd + 5) // include \n---\n
-        updatedContent = frontmatter + '\n' + newContent
-      } else {
-        updatedContent = newContent
-      }
-
-      const saveResponse = await fetch(`${API_BASE}/save-file`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: filePath,
-          content: updatedContent,
-          originId: this.currentCity.originId,
-        }),
-      })
-      if (!saveResponse.ok) throw new Error('Failed to save fiber file')
-
-      // Update node body in local data
-      node.body = newContent
-      showToast('Saved', 'success', 1500)
-    } catch (error: any) {
-      showToast(`Save failed: ${error.message}`, 'error')
-      return // Stay in edit mode on failure
-    }
+    if (!this.currentCity) return
+    const newContent = await this.detailBody.save(node, this.currentCity)
+    if (newContent === null) return
+    node.body = newContent
 
     this.exitBodyEditMode(node)
   }
 
   private exitBodyEditMode(node: TapestryNode): void {
-    this.destroyBodyEditor()
+    this.detailBody.destroy()
 
     // Restore meta actions to default (Refresh)
     this.setMetaActions(
@@ -2094,29 +1989,14 @@ export class TapestryView {
 
     const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
     if (bodyEl) {
-      bodyEl.classList.remove('editing', 'dirty')
-      const mdOpts = this.currentCity
-        ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
-        : undefined
-      bodyEl.innerHTML = renderMarkdown(node.body, mdOpts)
-      highlightCodeBlocks(bodyEl as HTMLElement)
-      this.interpolateConfig(bodyEl as HTMLElement)
-      attachInlinePathListeners(bodyEl as HTMLElement, (path, line) => this.openFileFromLink(path, line))
-    }
-  }
-
-  private destroyBodyEditor(): void {
-    if (this.bodyEditorView) {
-      this.bodyEditorView.destroy()
-      this.bodyEditorView = null
-      this.bodyEditorNodeId = null
+      this.renderDetailBody(bodyEl as HTMLElement, node.body)
     }
   }
 
   private hideDetail(skipVisibilityUpdate = false): void {
     this.cleanupDetailBindings()
     this.lightbox.close()
-    this.destroyBodyEditor()
+    this.detailBody.destroy()
     this.detailPanel.classList.add('hidden')
     this.fiberListEl.classList.remove('hidden')
     const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement
@@ -2278,13 +2158,13 @@ export class TapestryView {
 
     this.selectedNodeId = fiberId
     this.pushHash(fiberId)
-    this.destroyBodyEditor()
+    this.detailBody.destroy()
 
     const mdOpts = this.currentCity
       ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
       : undefined
     const bodyHtml = fiber.body
-      ? `<div class="tapestry-detail-body">${renderMarkdown(fiber.body, mdOpts)}</div>`
+      ? '<div class="tapestry-detail-body"></div>'
       : ''
 
     // Upstream tags
@@ -2335,11 +2215,7 @@ export class TapestryView {
 
     // Highlight code blocks
     const bodyContainer = this.detailPanel.querySelector('.tapestry-detail-body')
-    if (bodyContainer) {
-      highlightCodeBlocks(bodyContainer as HTMLElement)
-      this.interpolateConfig(bodyContainer as HTMLElement)
-      attachInlinePathListeners(bodyContainer as HTMLElement, (path, line) => this.openFileFromLink(path, line))
-    }
+    if (bodyContainer && fiber.body) this.renderDetailBody(bodyContainer as HTMLElement, fiber.body)
 
     // Bind events
     this.detailPanel.querySelector('.tapestry-detail-close')?.addEventListener('click', () => this.hideDetail())
