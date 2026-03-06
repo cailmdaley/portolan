@@ -142,6 +142,6 @@ export const PALETTE = {
   cityDormant: 0x8a8070,   // Muted — dormant cities
   workerIdle: 0x7a7368,    // Muted — idle workers
   workerActive: 0x5a7b7b,  // Teal — working
-  selection: 0xc4a86a,     // Gold highlight ring
+  gridEdge: 0x6b5b4b,     // Warm brown — hex grid edges
 } as const
 

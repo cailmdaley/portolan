@@ -24,13 +24,19 @@ import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
 import { WorkerSwarm } from './WorkerSwarm'
-import type { City, Session, HexCoord, ConversationMessage } from '../state/types'
+import type { City, Session, HexCoord } from '../state/types'
 import { PALETTE } from '../state/types'
-import { ConversationCard } from '../ui/ConversationCard'
 
 interface Activity {
   tool: string
   summary?: string
+  timestamp: number
+}
+
+interface RecentFileTooltipEntry {
+  toolName: string
+  fullPath: string
+  basename: string
   timestamp: number
 }
 
@@ -40,7 +46,9 @@ interface HexMeshData {
   type: 'city' | 'worker' | 'empty'
   entityId?: string
   entityName?: string  // Worker name for tooltip
+  originId?: string
   tmuxSession?: string  // For workers - to route activity events
+  activitySessionKey?: string  // Stable key: originId:tmuxSession
   status?: 'idle' | 'working'  // Worker status for swarm activity
   activityMesh?: Mesh  // Activity ground decal
   labelObject?: CSS2DObject  // HTML label (CSS2D for OpenType features)
@@ -55,7 +63,6 @@ export class ZoneRenderer {
   private hexMeshes: Map<string, HexMeshData> = new Map()
   private groundPlane: Mesh | null = null
   private rhumbLinesGroup: Group | null = null
-  private selectionRing: Group | null = null
 
   // Hex geometry settings
   private readonly hexHeight = 0.15
@@ -73,11 +80,13 @@ export class ZoneRenderer {
   // Callback for worker label clicks (since CSS2D labels need direct handlers)
   private onWorkerClick: ((workerId: string, tmuxSession: string) => void) | null = null
   private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
+  private onWorkerLabelHover: ((workerId: string, tmuxSession: string, anchor: { x: number; y: number }) => void) | null = null
+  private onWorkerLabelHoverEnd: (() => void) | null = null
 
   // Callback for city label clicks (needed for remote cities without sprites)
   private onCityLabelClick: ((cityId: string) => void) | null = null
 
-  // Label drag state (for dragging swarm via label when card is closed)
+  // Label drag state (for dragging worker swarm via label)
   private labelDrag: {
     workerId: string
     startX: number
@@ -85,6 +94,8 @@ export class ZoneRenderer {
     moved: boolean  // Track if mouse moved (to distinguish click from drag)
     labelEl: HTMLElement  // Store element for cursor reset
   } | null = null
+  private labelDragListenersAttached = false
+  private labelDragResetTimeoutId: number | null = null
 
   // Track city positions for rhumb line avoidance
   private lastCityPositions: string = ''
@@ -101,16 +112,25 @@ export class ZoneRenderer {
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
   private lastAnimateTime: number = 0  // For delta time calculation
 
-  // Conversation cards - map-pinned worker conversations
-  private conversationCards: Map<string, ConversationCard> = new Map()  // workerId -> card
-  private onCardFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
-  private topZIndex = 1000  // Track highest z-index for bringing cards to front (must be >> CSS2DRenderer's depth values)
-  private lastFocusedCardId: string | null = null  // Most recently focused card
+  // Worker file tooltip
+  private onWorkerFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
+  private workerFileTooltipEl: HTMLDivElement
+  private workerFileTooltipHoverTimerId: number | null = null
+  private workerFileTooltipHideTimerId: number | null = null
+  private workerFileTooltipRequestId = 0
+  private workerFileTooltipTargetWorkerId: string | null = null
+  private workerFileTooltipHovered = false
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
+    this.workerFileTooltipEl = document.createElement('div')
+    this.workerFileTooltipEl.className = 'worker-file-tooltip'
+    this.workerFileTooltipEl.style.display = 'none'
+    this.workerFileTooltipEl.addEventListener('mouseenter', this.onWorkerFileTooltipMouseEnter)
+    this.workerFileTooltipEl.addEventListener('mouseleave', this.onWorkerFileTooltipMouseLeave)
+    document.body.appendChild(this.workerFileTooltipEl)
     this.createGroundPlane()
 
     // Re-render city when its custom sprite finishes loading
@@ -123,18 +143,37 @@ export class ZoneRenderer {
     })
   }
 
-  /**
-   * Set callback for worker label clicks
-   */
+  private getActivitySessionKey(originId: string, tmuxSession: string): string {
+    return `${originId}:${tmuxSession}`
+  }
+
+  private onWorkerFileTooltipMouseEnter = (): void => {
+    this.workerFileTooltipHovered = true
+    this.clearWorkerTooltipHideTimer()
+  }
+
+  private onWorkerFileTooltipMouseLeave = (): void => {
+    this.workerFileTooltipHovered = false
+    this.hideWorkerFileTooltip()
+  }
+
   setWorkerClickHandler(onClick: (workerId: string, tmuxSession: string) => void): void {
     this.onWorkerClick = onClick
   }
 
-  /**
-   * Set callback for worker label double-clicks
-   */
   setWorkerDblClickHandler(onDblClick: (workerId: string, tmuxSession: string) => void): void {
     this.onWorkerDblClick = onDblClick
+  }
+
+  /**
+   * Set callbacks for worker label hover (triggers file tooltip from label, not just bird)
+   */
+  setWorkerLabelHoverHandlers(
+    onHover: (workerId: string, tmuxSession: string, anchor: { x: number; y: number }) => void,
+    onHoverEnd: () => void
+  ): void {
+    this.onWorkerLabelHover = onHover
+    this.onWorkerLabelHoverEnd = onHoverEnd
   }
 
   /**
@@ -152,12 +191,13 @@ export class ZoneRenderer {
   }
 
   /**
-   * Setup drag handlers for a worker label (allows dragging swarm when card is closed)
+   * Setup drag handlers for a worker label
    */
   private setupLabelDrag(labelEl: HTMLElement, workerId: string): void {
     labelEl.addEventListener('mousedown', (e) => {
       e.preventDefault()
       e.stopPropagation()
+      this.cancelActiveLabelDrag()
 
       this.labelDrag = {
         workerId,
@@ -172,13 +212,12 @@ export class ZoneRenderer {
       labelEl.style.cursor = birdCursor
       document.body.style.cursor = birdCursor
 
-      document.addEventListener('mousemove', this.onLabelDrag)
-      document.addEventListener('mouseup', this.stopLabelDrag)
+      this.attachLabelDragListeners()
     })
   }
 
   /**
-   * Setup click handlers for a worker label (click opens card, dblclick focuses terminal)
+   * Setup click handlers for a worker label
    */
   private setupLabelClickHandlers(labelEl: HTMLElement, workerId: string, tmuxSession: string): void {
     labelEl.addEventListener('click', (e) => {
@@ -192,6 +231,15 @@ export class ZoneRenderer {
     labelEl.addEventListener('dblclick', (e) => {
       e.stopPropagation()
       if (this.onWorkerDblClick) this.onWorkerDblClick(workerId, tmuxSession)
+    })
+    labelEl.addEventListener('mouseenter', () => {
+      if (this.onWorkerLabelHover) {
+        const rect = labelEl.getBoundingClientRect()
+        this.onWorkerLabelHover(workerId, tmuxSession, { x: rect.left + rect.width / 2, y: rect.top })
+      }
+    })
+    labelEl.addEventListener('mouseleave', () => {
+      if (this.onWorkerLabelHoverEnd) this.onWorkerLabelHoverEnd()
     })
   }
 
@@ -239,23 +287,60 @@ export class ZoneRenderer {
     this.screenToWorldConverter = converter
   }
 
-  private stopLabelDrag = (): void => {
-    // Reset cursors
+  private clearLabelDragResetTimeout(): void {
+    if (this.labelDragResetTimeoutId !== null) {
+      window.clearTimeout(this.labelDragResetTimeoutId)
+      this.labelDragResetTimeoutId = null
+    }
+  }
+
+  private attachLabelDragListeners(): void {
+    if (this.labelDragListenersAttached) return
+    document.addEventListener('mousemove', this.onLabelDrag)
+    document.addEventListener('mouseup', this.stopLabelDrag)
+    this.labelDragListenersAttached = true
+  }
+
+  private detachLabelDragListeners(): void {
+    if (!this.labelDragListenersAttached) return
+    document.removeEventListener('mousemove', this.onLabelDrag)
+    document.removeEventListener('mouseup', this.stopLabelDrag)
+    this.labelDragListenersAttached = false
+  }
+
+  private cancelActiveLabelDrag(): void {
+    this.clearLabelDragResetTimeout()
     if (this.labelDrag?.labelEl) {
       this.labelDrag.labelEl.style.cursor = 'grab'
     }
+    this.labelDrag = null
     document.body.style.cursor = ''
+    this.detachLabelDragListeners()
+  }
+
+  private stopLabelDrag = (): void => {
+    if (!this.labelDrag) {
+      this.detachLabelDragListeners()
+      document.body.style.cursor = ''
+      return
+    }
+
+    // Reset cursors
+    if (this.labelDrag.labelEl) {
+      this.labelDrag.labelEl.style.cursor = 'grab'
+    }
+    document.body.style.cursor = ''
+    this.detachLabelDragListeners()
+    this.clearLabelDragResetTimeout()
 
     // Keep labelDrag briefly so click handler can check if we moved
     const drag = this.labelDrag
-    setTimeout(() => {
+    this.labelDragResetTimeoutId = window.setTimeout(() => {
       if (this.labelDrag === drag) {
         this.labelDrag = null
       }
+      this.labelDragResetTimeoutId = null
     }, 10)
-
-    document.removeEventListener('mousemove', this.onLabelDrag)
-    document.removeEventListener('mouseup', this.stopLabelDrag)
   }
 
   /**
@@ -268,6 +353,7 @@ export class ZoneRenderer {
 
     // Find the label element to update its cursor
     const labelEl = swarm.getLabel()?.element as HTMLElement | undefined
+    this.cancelActiveLabelDrag()
 
     this.labelDrag = {
       workerId,
@@ -281,8 +367,7 @@ export class ZoneRenderer {
     document.body.style.cursor = birdCursor
     if (labelEl) labelEl.style.cursor = birdCursor
 
-    document.addEventListener('mousemove', this.onLabelDrag)
-    document.addEventListener('mouseup', this.stopLabelDrag)
+    this.attachLabelDragListeners()
 
     return true
   }
@@ -310,7 +395,7 @@ export class ZoneRenderer {
   }
 
   /**
-   * Get or create a worker swarm, loading saved offset if new
+   * Get or create a worker swarm
    */
   private getOrCreateSwarm(workerId: string, tmuxSession: string): WorkerSwarm {
     const existing = this.workerSwarms.get(workerId)
@@ -318,13 +403,6 @@ export class ZoneRenderer {
 
     const swarm = new WorkerSwarm(workerId, tmuxSession)
     this.workerSwarms.set(workerId, swarm)
-
-    const savedOffset = this.loadSwarmOffset(workerId)
-    if (savedOffset) {
-      swarm.userOffset.x = savedOffset.x
-      swarm.userOffset.z = savedOffset.z
-    }
-
     return swarm
   }
 
@@ -448,7 +526,7 @@ export class ZoneRenderer {
 
     const geometry = new BufferGeometry().setFromPoints(points)
     const material = new LineBasicMaterial({
-      color: 0x6B5B4B,  // Warm brown
+      color: PALETTE.gridEdge,
       transparent: true,
       opacity,
     })
@@ -644,7 +722,9 @@ export class ZoneRenderer {
       type: 'worker',
       entityId: session.id,
       entityName: session.name,
+      originId: session.originId,
       tmuxSession: session.tmuxSession,
+      activitySessionKey: this.getActivitySessionKey(session.originId, session.tmuxSession),
       status: session.status,
       labelObject,
     })
@@ -758,12 +838,14 @@ export class ZoneRenderer {
       }
     }
 
-    // Close conversation cards for workers that no longer exist
     const currentWorkerIds = new Set(sessions.map(s => s.id))
-    for (const workerId of this.conversationCards.keys()) {
-      if (!currentWorkerIds.has(workerId)) {
-        this.closeConversationCard(workerId)
-      }
+
+    // If the hovered worker disappears, drop tooltip state immediately.
+    if (
+      this.workerFileTooltipTargetWorkerId &&
+      !currentWorkerIds.has(this.workerFileTooltipTargetWorkerId)
+    ) {
+      this.hideWorkerFileTooltip()
     }
 
     // Dispose swarms for workers that no longer exist
@@ -779,10 +861,6 @@ export class ZoneRenderer {
 
     // Update signature cache (removes old, adds new)
     this.lastCitySignatures = newSignatures
-  }
-
-  getHexAtPosition(x: number, z: number): HexCoord {
-    return this.hexGrid.cartesianToHex(x, z)
   }
 
   /**
@@ -851,84 +929,6 @@ export class ZoneRenderer {
   }
 
   /**
-   * Create a ring shape (hex with hex hole)
-   */
-  private createRingShape(outerScale: number, innerScale: number): Shape {
-    const outerR = this.hexGrid.hexRadius * outerScale
-    const innerR = this.hexGrid.hexRadius * innerScale
-
-    // Outer hex (pointy-top to match grid)
-    const shape = new Shape()
-    for (let i = 0; i < 6; i++) {
-      const angle = (Math.PI / 3) * i - Math.PI / 2
-      const x = outerR * Math.cos(angle)
-      const y = outerR * Math.sin(angle)
-      if (i === 0) {
-        shape.moveTo(x, y)
-      } else {
-        shape.lineTo(x, y)
-      }
-    }
-    shape.closePath()
-
-    // Inner hex hole (counter-clockwise for hole, pointy-top)
-    const hole = new Shape()
-    for (let i = 5; i >= 0; i--) {
-      const angle = (Math.PI / 3) * i - Math.PI / 2
-      const x = innerR * Math.cos(angle)
-      const y = innerR * Math.sin(angle)
-      if (i === 5) {
-        hole.moveTo(x, y)
-      } else {
-        hole.lineTo(x, y)
-      }
-    }
-    hole.closePath()
-    shape.holes.push(hole)
-
-    return shape
-  }
-
-  /**
-   * Set selection highlight on a hex
-   */
-  setSelection(hex: HexCoord | null): void {
-    // Remove and dispose existing selection ring
-    if (this.selectionRing) {
-      this.disposeObject(this.selectionRing)
-      this.scene.remove(this.selectionRing)
-      this.selectionRing = null
-    }
-
-    if (!hex) return
-
-    const group = new Group()
-    const pos = this.hexGrid.axialToCartesian(hex)
-
-    // Create ring (gold highlight - Porch Morning)
-    const ringShape = this.createRingShape(1.12, 0.92)
-    const ringGeometry = new ExtrudeGeometry(ringShape, {
-      depth: 0.08,
-      bevelEnabled: false,
-    })
-    const ringMaterial = new MeshStandardMaterial({
-      color: PALETTE.selection,
-      roughness: 0.6,
-      metalness: 0.2,
-      transparent: true,
-      opacity: 0.8,
-    })
-    const ringMesh = new Mesh(ringGeometry, ringMaterial)
-    ringMesh.rotation.x = -Math.PI / 2
-    ringMesh.position.y = 0.25 // Above other hexes
-    group.add(ringMesh)
-
-    group.position.set(pos.x, 0, pos.z)
-    this.scene.add(group)
-    this.selectionRing = group
-  }
-
-  /**
    * Animate and update zoom-based label visibility
    */
   animate(cameraDistance?: number): void {
@@ -937,17 +937,18 @@ export class ZoneRenderer {
     const deltaTime = this.lastAnimateTime === 0 ? 1 / 60 : Math.min((now - this.lastAnimateTime) / 1000, 0.1)
     this.lastAnimateTime = now
 
-    // Scale labels and cards: only update when camera distance actually changed
+    // Scale labels: only update when camera distance actually changed
     if (cameraDistance !== undefined && cameraDistance !== this.lastCameraDistance) {
       this.lastCameraDistance = cameraDistance
 
-      const scale = this.calculateCardScale(cameraDistance)
+      const scale = cameraDistance <= 8 ? 1.0 : 8 / cameraDistance
       const cityFontSize = Math.round(28 * scale)   // City base: 28px
       const workerFontSize = Math.round(18 * scale) // Worker base: 18px
 
       // Only update DOM if font sizes actually changed
       if (cityFontSize !== this.lastFontSizes.city || workerFontSize !== this.lastFontSizes.worker) {
-        this.lastFontSizes = { city: cityFontSize, worker: workerFontSize }
+        this.lastFontSizes.city = cityFontSize
+        this.lastFontSizes.worker = workerFontSize
 
         for (const [, data] of this.hexMeshes) {
           if (data.type === 'city') {
@@ -962,16 +963,6 @@ export class ZoneRenderer {
           }
         }
       }
-
-      // Scale conversation cards with zoom
-      for (const card of this.conversationCards.values()) {
-        card.setScale(scale)
-      }
-    }
-
-    // Update card viewport clamping every frame (wrapper position changes with panning)
-    for (const card of this.conversationCards.values()) {
-      card.updateViewportClamp()
     }
 
     // Update all worker swarms (they handle their own animation)
@@ -1051,9 +1042,9 @@ export class ZoneRenderer {
   /**
    * Update activity display for a worker by tmux session
    */
-  updateWorkerActivity(tmuxSession: string, activities: Activity[]): void {
+  updateWorkerActivity(activitySessionKey: string, activities: Activity[]): void {
     const workerData = Array.from(this.hexMeshes.values()).find(
-      data => data.type === 'worker' && data.tmuxSession === tmuxSession && data.activityMesh
+      data => data.type === 'worker' && data.activitySessionKey === activitySessionKey && data.activityMesh
     )
     if (!workerData) return
 
@@ -1110,79 +1101,83 @@ export class ZoneRenderer {
     return counts
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // CONVERSATION CARDS - Map-pinned worker conversations
-  // ═══════════════════════════════════════════════════════════
+  getRuntimeStats(): {
+    hexMeshCount: number
+    workerSwarmCount: number
+    hasGroundPlane: boolean
+    hasRhumbLinesGroup: boolean
+    labelDragActive: boolean
+    labelDragListenersAttached: boolean
+    labelDragResetTimeoutPending: boolean
+    tooltipVisible: boolean
+    tooltipHoverTimerPending: boolean
+    tooltipTargetWorkerId: string | null
+    citySignatureCount: number
+    currentCityCount: number
+    currentWorkersByCityCount: number
+  } {
+    return {
+      hexMeshCount: this.hexMeshes.size,
+      workerSwarmCount: this.workerSwarms.size,
+      hasGroundPlane: this.groundPlane !== null,
+      hasRhumbLinesGroup: this.rhumbLinesGroup !== null,
+      labelDragActive: this.labelDrag !== null,
+      labelDragListenersAttached: this.labelDragListenersAttached,
+      labelDragResetTimeoutPending: this.labelDragResetTimeoutId !== null,
+      tooltipVisible: this.workerFileTooltipEl.style.display !== 'none',
+      tooltipHoverTimerPending: this.workerFileTooltipHoverTimerId !== null,
+      tooltipTargetWorkerId: this.workerFileTooltipTargetWorkerId,
+      citySignatureCount: this.lastCitySignatures.size,
+      currentCityCount: this.currentCities.size,
+      currentWorkersByCityCount: this.currentWorkersByCity.size,
+    }
+  }
 
-  /**
-   * Set callback for file clicks in conversation cards
-   */
-  setCardFileClickHandler(handler: (fullPath: string, originId: string, workerId: string) => void): void {
-    this.onCardFileClick = handler
+  setWorkerFileClickHandler(handler: (fullPath: string, originId: string, workerId: string) => void): void {
+    this.onWorkerFileClick = handler
   }
 
   /**
-   * Open a conversation card for a worker
-   * @param session The worker session to show conversation for
-   * @returns The created card, or existing card if already open
+   * Update worker hover target for file tooltip display.
+   * Tooltip appears after a 300ms hover delay.
    */
-  async openConversationCard(session: Session): Promise<ConversationCard | null> {
-    // Check if card already exists - bring to front if so
-    const existing = this.conversationCards.get(session.id)
-    if (existing) {
-      this.bringCardToFront(session.id)
-      return existing
+  updateWorkerFileHover(session: Session | null, anchor: { x: number; y: number } | null): void {
+    if (!session || !anchor) {
+      this.workerFileTooltipTargetWorkerId = null
+      this.clearWorkerTooltipHoverTimer()
+      this.scheduleWorkerTooltipHide()
+      return
     }
 
-    // Find the worker's swarm - card attaches to it
-    const swarm = this.workerSwarms.get(session.id)
-    if (!swarm) {
-      console.warn(`Cannot find swarm for worker ${session.id}`)
-      return null
+    if (this.workerFileTooltipTargetWorkerId === session.id) {
+      if (this.workerFileTooltipHoverTimerId !== null) return
+      if (this.workerFileTooltipEl.style.display !== 'none') return
     }
 
-    // Ensure card states are loaded from server (cached after first call)
-    await this.ensureWorkerStatesLoaded()
+    this.hideWorkerFileTooltip(false)
+    this.workerFileTooltipTargetWorkerId = session.id
+    this.clearWorkerTooltipHideTimer()
+    this.clearWorkerTooltipHoverTimer()
 
-    // Load saved position if available
-    const savedState = this.loadCardState(session.id)
+    const hoverAnchor = { x: anchor.x, y: anchor.y }
+    this.workerFileTooltipHoverTimerId = window.setTimeout(() => {
+      this.workerFileTooltipHoverTimerId = null
+      if (this.workerFileTooltipTargetWorkerId !== session.id) return
+      void this.showWorkerFileTooltip(session, hoverAnchor)
+    }, 300)
+  }
 
-    // Create card with saved size
-    const card = new ConversationCard(session, {
-      onClose: () => this.closeConversationCard(session.id),
-      onFileClick: this.onCardFileClick ?? undefined,
-      onDoubleClick: () => {
-        if (this.onWorkerDblClick) {
-          this.onWorkerDblClick(session.id, session.tmuxSession)
-        }
-      },
-      onBringToFront: () => this.bringCardToFront(session.id),
-      onSwarmDrag: (dx: number, dz: number) => this.moveSwarm(session.id, dx, dz),
-      initialSize: savedState?.size,
-    })
-
-    // Position card just above swarm - card bottom will be at this anchor point
-    card.object.position.set(0, 0.7, 0)
-
-    // Hide label - card header takes its place
-    swarm.hideLabel()
-
-    // Add to swarm group so it moves with swarm
-    swarm.addChild(card.object)
-    this.conversationCards.set(session.id, card)
-
-    // Set initial z-index and track as most recent
-    this.topZIndex++
-    card.setZIndex(this.topZIndex)
-    this.lastFocusedCardId = session.id
-
-    // Apply current scale
-    if (this.lastCameraDistance > 0) {
-      const scale = this.calculateCardScale(this.lastCameraDistance)
-      card.setScale(scale)
+  /**
+   * Explicitly clear worker hover state.
+   */
+  clearWorkerFileHover(force = false): void {
+    this.workerFileTooltipTargetWorkerId = null
+    this.clearWorkerTooltipHoverTimer()
+    if (force) {
+      this.hideWorkerFileTooltip()
+      return
     }
-
-    return card
+    this.scheduleWorkerTooltipHide()
   }
 
   /**
@@ -1199,255 +1194,190 @@ export class ZoneRenderer {
   }
 
   /**
-   * Move a worker's swarm (and everything attached: label, card) by offset
+   * Fetch and display the tooltip entries for the hovered worker.
    */
-  private moveSwarm(workerId: string, dx: number, dz: number): void {
-    const swarm = this.workerSwarms.get(workerId)
-    if (!swarm) return
+  private async showWorkerFileTooltip(session: Session, anchor: { x: number; y: number }): Promise<void> {
+    const requestId = ++this.workerFileTooltipRequestId
 
-    // Update user offset (persisted between renders)
-    swarm.userOffset.x += dx
-    swarm.userOffset.z += dz
-
-    // Update swarm group position
-    swarm.group.position.x += dx
-    swarm.group.position.z += dz
-
-    // Persist the offset
-    this.saveSwarmOffset(workerId, { x: swarm.userOffset.x, z: swarm.userOffset.z })
-  }
-
-  /**
-   * Bring a card to front (highest z-index)
-   */
-  private bringCardToFront(workerId: string): void {
-    const card = this.conversationCards.get(workerId)
-    if (!card) return
-
-    this.topZIndex++
-    card.setZIndex(this.topZIndex)
-    this.lastFocusedCardId = workerId
-  }
-
-  /**
-   * Reapply card z-indexes after CSS2DRenderer (which overwrites them on each render)
-   * Call this AFTER labelRenderer.render() in the animation loop
-   */
-  reapplyCardZIndexes(): void {
-    for (const card of this.conversationCards.values()) {
-      const wrapper = card.object.element
-      const savedZIndex = wrapper.dataset.portolanZIndex || '1000'
-      wrapper.style.setProperty('z-index', savedZIndex, 'important')
-    }
-  }
-
-  /**
-   * Close the most recently focused card
-   * @returns true if a card was closed, false if no cards are open
-   */
-  closeMostRecentCard(): boolean {
-    // Try focused card first, then fall back to any card
-    const cardId = this.lastFocusedCardId && this.conversationCards.has(this.lastFocusedCardId)
-      ? this.lastFocusedCardId
-      : this.conversationCards.keys().next().value
-
-    if (cardId) {
-      this.closeConversationCard(cardId)
-      return true
-    }
-    return false
-  }
-
-  /**
-   * Minimize the most recently focused card
-   * @returns true if a card was minimized, false if no cards are open
-   */
-  minimizeMostRecentCard(): boolean {
-    // Try last focused card first
-    const focusedCard = this.lastFocusedCardId
-      ? this.conversationCards.get(this.lastFocusedCardId)
-      : null
-
-    if (focusedCard && !focusedCard.minimized) {
-      focusedCard.minimize()
-      return true
-    }
-
-    // Fall back to any non-minimized card
-    for (const card of this.conversationCards.values()) {
-      if (!card.minimized) {
-        card.minimize()
-        return true
-      }
-    }
-
-    return false
-  }
-
-  /**
-   * Close a conversation card
-   */
-  closeConversationCard(workerId: string): void {
-    const card = this.conversationCards.get(workerId)
-    if (!card) return
-
-    // Save card state before closing
-    this.saveCardState(workerId, card)
-
-    // Remove from swarm group (card is child of swarm, not scene)
-    const swarm = this.workerSwarms.get(workerId)
-    if (swarm) {
-      swarm.removeChild(card.object)
-      // Show the label again
-      swarm.showLabel()
-    } else {
-      // Fallback: remove from scene if swarm not found
-      this.scene.remove(card.object)
-    }
-
-    card.dispose()
-    this.conversationCards.delete(workerId)
-
-    // Clear lastFocusedCardId if this was the focused card
-    if (this.lastFocusedCardId === workerId) {
-      this.lastFocusedCardId = null
-    }
-  }
-
-  /**
-   * Close all conversation cards
-   */
-  closeAllConversationCards(): void {
-    for (const workerId of this.conversationCards.keys()) {
-      this.closeConversationCard(workerId)
-    }
-  }
-
-  /**
-   * Check if a conversation card is open for a worker
-   */
-  hasConversationCard(workerId: string): boolean {
-    return this.conversationCards.has(workerId)
-  }
-
-  /**
-   * Handle WebSocket conversation update for cards
-   * The tmuxSession from server is prefixed for remote sessions: "originId/tmuxSession"
-   */
-  handleConversationMessage(sessionId: string | undefined, tmuxSession: string, messages: ConversationMessage[]): void {
-    for (const card of this.conversationCards.values()) {
-      card.handleMessage(sessionId, tmuxSession, messages)
-    }
-  }
-
-  /**
-   * Re-fetch conversations for all open cards (called on WebSocket reconnect)
-   */
-  refetchAllConversations(): void {
-    for (const card of this.conversationCards.values()) {
-      card.refetch()
-    }
-  }
-
-  /** Scale factor for camera distance (below threshold: 1.0, above: shrinks proportionally) */
-  private readonly SCALE_THRESHOLD = 8  // Cards reach full size at this distance
-
-  private calculateCardScale(cameraDistance: number): number {
-    if (cameraDistance <= this.SCALE_THRESHOLD) return 1.0
-    return this.SCALE_THRESHOLD / cameraDistance
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // CARD STATE PERSISTENCE (server-side via ~/.portolan/card-states.json)
-  // ═══════════════════════════════════════════════════════════
-
-  // Cache loaded states to avoid repeated fetches
-  private workerStateCache: Map<string, { size?: { width: number; height: number }; swarmOffset?: { x: number; z: number } }> = new Map()
-  private workerStateCacheLoaded = false
-
-  /**
-   * Save card size to server
-   */
-  private saveCardState(workerId: string, card: ConversationCard): void {
-    const size = card.getSize()
-    const existing = this.workerStateCache.get(workerId)
-
-    // Update cache immediately (preserve swarmOffset)
-    this.workerStateCache.set(workerId, { ...existing, size })
-
-    // Fire and forget - don't await
-    fetch(`http://localhost:4004/card-state/${encodeURIComponent(workerId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ size }),
-    }).catch(() => {
-      // Ignore save errors
-    })
-  }
-
-  /**
-   * Save swarm position to server
-   */
-  private saveSwarmOffset(workerId: string, swarmOffset: { x: number; z: number }): void {
-    const existing = this.workerStateCache.get(workerId)
-
-    // Update cache immediately (preserve size)
-    this.workerStateCache.set(workerId, { ...existing, swarmOffset })
-
-    // Fire and forget - don't await
-    fetch(`http://localhost:4004/card-state/${encodeURIComponent(workerId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ swarmOffset }),
-    }).catch(() => {
-      // Ignore save errors
-    })
-  }
-
-  /**
-   * Load saved card state from cache
-   */
-  private loadCardState(workerId: string): { size?: { width: number; height: number } } | null {
-    return this.workerStateCache.get(workerId) ?? null
-  }
-
-  /**
-   * Load saved swarm offset from cache
-   */
-  private loadSwarmOffset(workerId: string): { x: number; z: number } | null {
-    return this.workerStateCache.get(workerId)?.swarmOffset ?? null
-  }
-
-  /**
-   * Preload all worker states from server into cache.
-   * Called early to have swarm positions ready when rendering.
-   */
-  async ensureWorkerStatesLoaded(): Promise<void> {
-    if (this.workerStateCacheLoaded) return
+    const headerEl = document.createElement('div')
+    headerEl.className = 'worker-file-tooltip-header'
+    headerEl.textContent = session.name
+    const loadingEl = document.createElement('div')
+    loadingEl.className = 'worker-file-tooltip-empty'
+    loadingEl.textContent = 'Loading recent files...'
+    this.workerFileTooltipEl.replaceChildren(headerEl, loadingEl)
+    this.workerFileTooltipEl.style.display = 'block'
+    this.positionWorkerFileTooltip(anchor)
 
     try {
-      const response = await fetch('http://localhost:4004/card-states')
-      if (response.ok) {
-        const data = await response.json()
-        for (const state of data.states || []) {
-          this.workerStateCache.set(state.workerId, {
-            size: state.size,
-            swarmOffset: state.swarmOffset,
-          })
-        }
+      const response = await fetch(
+        `http://${window.location.hostname}:4004/recent-files?sessionId=${encodeURIComponent(session.id)}&limit=5`
+      )
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
       }
+      const data = await response.json() as { files?: RecentFileTooltipEntry[] }
+      const files = Array.isArray(data.files)
+        ? data.files.filter((entry): entry is RecentFileTooltipEntry =>
+          !!entry &&
+          typeof entry.fullPath === 'string' &&
+          typeof entry.basename === 'string' &&
+          typeof entry.toolName === 'string'
+        )
+        : []
+
+      if (requestId !== this.workerFileTooltipRequestId || this.workerFileTooltipTargetWorkerId !== session.id) {
+        return
+      }
+      this.renderWorkerFileTooltip(session, files, anchor)
     } catch {
-      // Ignore load errors - will use defaults
+      if (requestId !== this.workerFileTooltipRequestId || this.workerFileTooltipTargetWorkerId !== session.id) {
+        return
+      }
+      this.renderWorkerFileTooltip(session, [], anchor, 'Failed to load recent files')
     }
-    this.workerStateCacheLoaded = true
+  }
+
+  private renderWorkerFileTooltip(
+    session: Session,
+    files: RecentFileTooltipEntry[],
+    anchor: { x: number; y: number },
+    errorMessage?: string
+  ): void {
+    const headerEl = document.createElement('div')
+    headerEl.className = 'worker-file-tooltip-header'
+    headerEl.textContent = session.name
+    this.workerFileTooltipEl.replaceChildren(headerEl)
+
+    if (errorMessage) {
+      const errorEl = document.createElement('div')
+      errorEl.className = 'worker-file-tooltip-empty error'
+      errorEl.textContent = errorMessage
+      this.workerFileTooltipEl.appendChild(errorEl)
+    } else if (files.length === 0) {
+      const emptyEl = document.createElement('div')
+      emptyEl.className = 'worker-file-tooltip-empty'
+      emptyEl.textContent = 'No recent file touches'
+      this.workerFileTooltipEl.appendChild(emptyEl)
+    } else {
+      const listEl = document.createElement('div')
+      listEl.className = 'worker-file-tooltip-list'
+      for (const entry of files.slice(0, 5)) {
+        listEl.appendChild(this.createWorkerFileTooltipItem(session, entry))
+      }
+      this.workerFileTooltipEl.appendChild(listEl)
+    }
+
+    this.workerFileTooltipEl.style.display = 'block'
+    this.positionWorkerFileTooltip(anchor)
+  }
+
+  private createWorkerFileTooltipItem(session: Session, entry: RecentFileTooltipEntry): HTMLButtonElement {
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = 'worker-file-tooltip-item'
+    item.title = entry.fullPath
+
+    const basenameEl = document.createElement('span')
+    basenameEl.className = 'worker-file-tooltip-basename'
+    basenameEl.textContent = entry.basename
+
+    const metaEl = document.createElement('span')
+    metaEl.className = 'worker-file-tooltip-meta'
+    metaEl.textContent = entry.toolName
+
+    const pathEl = document.createElement('span')
+    pathEl.className = 'worker-file-tooltip-path'
+    pathEl.textContent = entry.fullPath
+
+    item.appendChild(basenameEl)
+    item.appendChild(metaEl)
+    item.appendChild(pathEl)
+
+    item.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      this.onWorkerFileClick?.(entry.fullPath, session.originId, session.id)
+      this.hideWorkerFileTooltip()
+    })
+
+    return item
+  }
+
+  private positionWorkerFileTooltip(anchor: { x: number; y: number }): void {
+    const margin = 12
+    const rect = this.workerFileTooltipEl.getBoundingClientRect()
+
+    let left = anchor.x + 14
+    let top = anchor.y - rect.height - 14
+    if (top < margin) {
+      top = anchor.y + 14
+    }
+    if (left + rect.width > window.innerWidth - margin) {
+      left = window.innerWidth - rect.width - margin
+    }
+    if (left < margin) {
+      left = margin
+    }
+    if (top + rect.height > window.innerHeight - margin) {
+      top = window.innerHeight - rect.height - margin
+    }
+    if (top < margin) {
+      top = margin
+    }
+
+    this.workerFileTooltipEl.style.left = `${Math.round(left)}px`
+    this.workerFileTooltipEl.style.top = `${Math.round(top)}px`
+  }
+
+  private clearWorkerTooltipHoverTimer(): void {
+    if (this.workerFileTooltipHoverTimerId !== null) {
+      window.clearTimeout(this.workerFileTooltipHoverTimerId)
+      this.workerFileTooltipHoverTimerId = null
+    }
+  }
+
+  private clearWorkerTooltipHideTimer(): void {
+    if (this.workerFileTooltipHideTimerId !== null) {
+      window.clearTimeout(this.workerFileTooltipHideTimerId)
+      this.workerFileTooltipHideTimerId = null
+    }
+  }
+
+  private scheduleWorkerTooltipHide(): void {
+    if (this.workerFileTooltipEl.style.display === 'none') return
+    if (this.workerFileTooltipHovered) return
+
+    this.clearWorkerTooltipHideTimer()
+    this.workerFileTooltipHideTimerId = window.setTimeout(() => {
+      this.workerFileTooltipHideTimerId = null
+      if (this.workerFileTooltipHovered) return
+      this.hideWorkerFileTooltip()
+    }, 120)
+  }
+
+  private hideWorkerFileTooltip(resetTarget = true): void {
+    this.clearWorkerTooltipHoverTimer()
+    this.clearWorkerTooltipHideTimer()
+    this.workerFileTooltipRequestId++
+    this.workerFileTooltipHovered = false
+    this.workerFileTooltipEl.style.display = 'none'
+    this.workerFileTooltipEl.replaceChildren()
+    if (resetTarget) {
+      this.workerFileTooltipTargetWorkerId = null
+    }
   }
 
   /**
    * Dispose all resources (call before recreating during HMR)
    */
   dispose(): void {
-    // Close all conversation cards
-    this.closeAllConversationCards()
+    this.cancelActiveLabelDrag()
+    this.clearWorkerTooltipHoverTimer()
+    this.clearWorkerTooltipHideTimer()
+    this.workerFileTooltipEl.removeEventListener('mouseenter', this.onWorkerFileTooltipMouseEnter)
+    this.workerFileTooltipEl.removeEventListener('mouseleave', this.onWorkerFileTooltipMouseLeave)
+    this.workerFileTooltipEl.remove()
 
     // Remove and dispose all hex meshes
     for (const key of this.hexMeshes.keys()) {
@@ -1458,7 +1388,6 @@ export class ZoneRenderer {
     const sceneObjects: Array<{ ref: Mesh | Group | null; clear: () => void }> = [
       { ref: this.groundPlane, clear: () => { this.groundPlane = null } },
       { ref: this.rhumbLinesGroup, clear: () => { this.rhumbLinesGroup = null } },
-      { ref: this.selectionRing, clear: () => { this.selectionRing = null } },
     ]
     for (const { ref, clear } of sceneObjects) {
       if (ref) {
@@ -1474,5 +1403,11 @@ export class ZoneRenderer {
       swarm.dispose()
     }
     this.workerSwarms.clear()
+
+    this.onWorkerClick = null
+    this.onWorkerDblClick = null
+    this.onCityLabelClick = null
+    this.onWorkerFileClick = null
+    this.screenToWorldConverter = null
   }
 }

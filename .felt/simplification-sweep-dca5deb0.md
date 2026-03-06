@@ -80,7 +80,7 @@ Frontend — render (ordered by size):
 - [x] `src/render/Camera.ts` (364) — clean
 - [x] `src/render/RhumbLines.ts` (387) — clean, geometry code
 - [x] `src/render/WorkerSwarm.ts` (448) — clean, noise + particle sim
-- [ ] `src/render/ZoneRenderer.ts` (1507) — not yet read
+- [x] `src/render/ZoneRenderer.ts` (1413) — removed dead code (setSelection, createRingShape, getHexAtPosition: -94 LOC), moved hardcoded color to PALETTE.gridEdge, fixed per-change object allocation in animate()
 
 Frontend — UI (ordered by size):
 
