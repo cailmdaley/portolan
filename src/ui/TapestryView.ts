@@ -1,6 +1,4 @@
 // TapestryView — native DAG visualization for fibers.
-// D3 force-directed layout with organic node shapes, staleness coloring,
-// fiber detail panel, and annotation support.
 
 import * as d3Force from 'd3-force'
 import * as d3Selection from 'd3-selection'
@@ -15,264 +13,32 @@ import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { markdown } from '@codemirror/lang-markdown'
 import { vim } from '@replit/codemirror-vim'
 import type { City } from '../state/types'
-import { escapeHtml, renderMarkdown, highlightCodeBlocks, interpolateConfig, showToast, STALENESS_COLORS, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
+import { escapeHtml, renderMarkdown, highlightCodeBlocks, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery, attachInlinePathListeners, renderPdfAllPages } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
-import { AnnotationPanel, type BaseAnnotation } from './AnnotationPanel'
+import { AnnotationPanel } from './AnnotationPanel'
+import type { TapestryNode, TapestryFiber, TapestryResponse, SimNode, SimLink, SVGPathSelection, EdgeDatum, ClaimsAnnotation } from './tapestry-types'
+import {
+  NODE_RX, NODE_RY, INTERIOR_DEPTH_NUDGE, RING_SCALES, RING_COUNT, SIMULATION_TICKS,
+  stalenessColor, dotStalenessColor, stalenessIcon, statusIcon, isSectionNode,
+  artifactEntries, isPdfArtifact,
+  hashString, seededRandom, organicEllipse, ringOpacity, ellipsePoint,
+  shortName, leadParagraph, splitNeighborFibers,
+} from './tapestry-helpers'
+
+export type { TapestryResponse } from './tapestry-types'
 
 const API_BASE = `http://${window.location.hostname}:4004`
-
-// ── Types ────────────────────────────────────────────────────────────
-
-interface TapestryNode {
-  id: string
-  title: string
-  kind: string
-  status: string
-  body: string
-  outcome: string | null
-  tags: string[]
-  createdAt: string | null
-  closedAt: string | null
-  dependsOn: string[]
-  specName: string | null
-  staleness: 'fresh' | 'stale' | 'no-evidence'
-  evidence: {
-    metrics: Record<string, unknown>
-    artifacts: Record<string, string>
-    mtime: number
-    generated: string | null
-  } | null
-}
-
-interface TapestryLink {
-  source: string
-  target: string
-}
-
-interface TapestryFiber {
-  id: string
-  title: string
-  status: string
-  kind: string
-  tags?: string[]
-  body?: string
-  outcome?: string | null
-  createdAt?: string | null
-  closedAt?: string | null
-  dependsOn: string[]
-}
-
-export interface TapestryResponse {
-  nodes: TapestryNode[]
-  links: TapestryLink[]
-  downstream: Record<string, Array<{ id: string; title: string; status: string; kind: string }>>
-  config: Record<string, string> | null
-  fibers?: TapestryFiber[]
-}
-
-/** D3 simulation node with position. */
-interface SimNode extends d3Force.SimulationNodeDatum {
-  id: string
-  data: TapestryNode
-  degree: number
-}
-
-/** D3 simulation link with resolved node references. */
-interface SimLink extends d3Force.SimulationLinkDatum<SimNode> {
-  source: SimNode
-  target: SimNode
-}
-
-type SVGPathSelection = d3Selection.Selection<SVGPathElement, unknown, null, undefined>
-
-interface EdgeDatum {
-  link: SimLink
-  strandIndex: number
-  tension: number
-  sagMagnitude: number  // sag as fraction of edge length (always positive)
-  edgeSeed: number      // 0–1 per-edge value; sets the angle phase for dynamic sag direction
-  wobble1: number       // individual CP variation (px)
-  wobble2: number       // individual CP variation (px)
-  sagPos: number        // current sag — lags targetSag during drag, snaps when idle
-}
-
-interface ClaimsAnnotation extends BaseAnnotation {
-  claimId: string
-  claimTitle?: string
-  selectedText?: string
-  artifact?: string
-  x?: number
-  y?: number
-  line?: number
-  endLine?: number
-  filePath?: string
-  isImageAnnotation?: boolean
-}
-
-// ── Constants ────────────────────────────────────────────────────────
-
-const NODE_RX = 52
-const NODE_RY = 21
-const INTERIOR_DEPTH_NUDGE = 60  // px rightward per hop beyond direct section neighbor
-const RING_SCALES = [1.0, 1.15]
-const RING_COUNT = RING_SCALES.length
 
 const DETAIL_DEFAULT_WIDTH = 420
 const DETAIL_MIN_WIDTH = 280
 const DETAIL_MAX_WIDTH = 800
-const SIMULATION_TICKS = 800
+const PRELOAD_CACHE_LIMIT = 64
 const SEARCH_SNIPPET_CONTEXT = 15
 const TEXT_SELECTION_TRUNCATION = 60
 const POPOVER_WIDTH = 280
 const POPOVER_HEIGHT = 160
 const POPOVER_MARGIN = 8
 const PREVIEW_TRUNCATION = 80
-
-type Staleness = TapestryNode['staleness']
-
-function stalenessColor(staleness: Staleness): string {
-  return STALENESS_COLORS[staleness] || STALENESS_COLORS['no-evidence']
-}
-
-/** Return artifact entries as [name, path] pairs. */
-function imageArtifacts(artifacts: Record<string, string>): [string, string][] {
-  return Object.entries(artifacts)
-}
-
-// ── Procedural helpers ───────────────────────────────────────────────
-
-function hashString(str: string): number {
-  let hash = 0
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash) + str.charCodeAt(i)
-    hash = hash & hash
-  }
-  return Math.abs(hash)
-}
-
-function seededRandom(seed: number): () => number {
-  let s = seed
-  return () => {
-    s = (s * 1103515245 + 12345) & 0x7fffffff
-    return s / 0x7fffffff
-  }
-}
-
-function noise2D(x: number, y: number, seed: number): number {
-  const s = seed * 1000
-  return (
-    Math.sin(x * 1.7 + y * 2.3 + s) * 0.4 +
-    Math.sin(x * 3.1 - y * 1.1 + s * 1.3) * 0.35 +
-    Math.sin(x * 0.9 + y * 4.1 + s * 0.7) * 0.25
-  )
-}
-
-function organicEllipse(rx: number, ry: number, seed: number, scale = 1): string {
-  const points = 64
-  const resolution = 0.08
-  const amplitude = 0.07
-
-  const coords: Array<{ x: number; y: number }> = []
-  for (let i = 0; i < points; i++) {
-    const theta = (i / points) * Math.PI * 2
-    const baseX = rx * scale * Math.cos(theta)
-    const baseY = ry * scale * Math.sin(theta)
-    const n = noise2D(baseX * resolution, baseY * resolution, seed)
-    coords.push({
-      x: baseX * (1 + n * amplitude),
-      y: baseY * (1 + n * amplitude),
-    })
-  }
-
-  let d = `M${coords[0].x},${coords[0].y}`
-  for (let i = 1; i < points; i++) {
-    d += ` L${coords[i].x},${coords[i].y}`
-  }
-  d += ' Z'
-  return d
-}
-
-function ringOpacity(index: number): number {
-  return 0.9 * (1 - index / (RING_SCALES.length * 3))
-}
-
-function ellipsePoint(cx: number, cy: number, rx: number, ry: number, theta: number): { x: number; y: number } {
-  return {
-    x: cx + rx * Math.cos(theta),
-    y: cy + ry * Math.sin(theta),
-  }
-}
-
-function shortName(title: string): string {
-  const clean = title.replace(/-[a-f0-9]{8}$/, '')
-  const words = clean.replace(/[-_]/g, ' ').split(' ').filter(w => w)
-  return words.slice(0, 3).join(' ')
-}
-
-/** Extract first 1-2 sentences from a markdown body for hover tooltips. */
-function leadParagraph(body: string): string {
-  if (!body) return ''
-  // Strip markdown headings, code blocks, and leading whitespace
-  const stripped = body
-    .replace(/^#{1,6}\s+.*/gm, '')
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/`[^`]+`/g, s => s.slice(1, -1))
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .trim()
-  // Find first non-empty paragraph
-  const firstPara = stripped.split(/\n\n+/).find(p => p.trim().length > 10) ?? stripped
-  // Take up to 2 sentences
-  const sentences = firstPara.match(/[^.!?]*[.!?]+/g) ?? []
-  if (sentences.length >= 2) return sentences.slice(0, 2).join('').trim()
-  if (sentences.length === 1) return sentences[0].trim()
-  return firstPara.slice(0, 160).trim() + (firstPara.length > 160 ? '…' : '')
-}
-
-function stalenessIcon(staleness: Staleness): string {
-  if (staleness === 'fresh') return '\u25CF'
-  if (staleness === 'stale') return '\u25CC'
-  return '\u25CB'
-}
-
-function statusIcon(status: string): string {
-  if (status === 'closed') return '\u25CF'
-  if (status === 'active') return '\u25D0'
-  return '\u25CB'
-}
-
-function isSectionNode(node: TapestryNode): boolean {
-  return node.tags.some(t => t === 'tier:1')
-}
-
-// Saturated dot colors — darker and more intense than the node ring palette
-const DOT_STALENESS_COLORS: Record<string, string> = {
-  fresh:        '#215838',  // forest
-  stale:        '#74232e',  // wine
-  'no-evidence': '#443e38', // umber
-}
-function dotStalenessColor(staleness: string): string {
-  return DOT_STALENESS_COLORS[staleness] ?? DOT_STALENESS_COLORS['no-evidence']
-}
-
-
-/** Return upstream and downstream 1-hop neighbors separately, with their staleness. */
-function splitNeighborFibers(nodeId: string, allNodes: TapestryNode[]): {
-  upstream: Array<{ id: string; staleness: TapestryNode['staleness'] }>
-  downstream: Array<{ id: string; staleness: TapestryNode['staleness'] }>
-} {
-  const node = allNodes.find(n => n.id === nodeId)
-  const toFiber = (id: string) => {
-    const n = allNodes.find(x => x.id === id)
-    return n ? { id, staleness: n.staleness } : null
-  }
-  const upstream = (node?.dependsOn ?? []).map(toFiber).filter(Boolean) as Array<{ id: string; staleness: TapestryNode['staleness'] }>
-  const downstream = allNodes
-    .filter(n => n.dependsOn.includes(nodeId) && n.id !== nodeId)
-    .map(n => ({ id: n.id, staleness: n.staleness }))
-  return { upstream, downstream }
-}
 
 // ── TapestryView ──────────────────────────────────────────────────────
 
@@ -306,7 +72,16 @@ export class TapestryView {
   private flutterTick: (() => void) | null = null
   private detailWidth = DETAIL_DEFAULT_WIDTH
   private galleryDetach: (() => void) | null = null
+  private artifactClickHandler: ((e: MouseEvent) => void) | null = null
   private preloadCache = new Map<string, HTMLImageElement>()
+  private hideCleanupTimeout: ReturnType<typeof setTimeout> | null = null
+  private dataFetchAbortController: AbortController | null = null
+  private dataRequestId = 0
+  private transientFrameIds = new Set<number>()
+  private staticFileModal: HTMLElement | null = null
+  private staticFileModalKeyHandler: ((e: KeyboardEvent) => void) | null = null
+  private lightboxCleanup: (() => void) | null = null
+  private disposed = false
 
   // HMR-safe listener refs
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -487,7 +262,8 @@ export class TapestryView {
         const startX = (e as MouseEvent).clientX
         const startWidth = sidebar.getBoundingClientRect().width
         const onMove = (ev: MouseEvent) => {
-          const newWidth = Math.max(300, Math.min(800, startWidth - (ev.clientX - startX)))
+          const maxWidth = window.innerWidth * 0.85
+          const newWidth = Math.max(300, Math.min(maxWidth, startWidth - (ev.clientX - startX)))
           sidebar.style.width = `${newWidth}px`
         }
         const onUp = () => {
@@ -521,9 +297,75 @@ export class TapestryView {
     })
   }
 
+  private beginDataRequest(): { requestId: number; signal: AbortSignal } {
+    this.dataFetchAbortController?.abort()
+    const controller = new AbortController()
+    this.dataFetchAbortController = controller
+    const requestId = ++this.dataRequestId
+    return { requestId, signal: controller.signal }
+  }
+
+  private isCurrentDataRequest(requestId: number): boolean {
+    return !this.disposed && requestId === this.dataRequestId
+  }
+
+  private clearDataRequest(): void {
+    this.dataFetchAbortController?.abort()
+    this.dataFetchAbortController = null
+  }
+
+  private clearHideCleanupTimeout(): void {
+    if (this.hideCleanupTimeout) {
+      clearTimeout(this.hideCleanupTimeout)
+      this.hideCleanupTimeout = null
+    }
+  }
+
+  private requestTransientFrame(callback: FrameRequestCallback): number {
+    const frameId = requestAnimationFrame((timestamp) => {
+      this.transientFrameIds.delete(frameId)
+      callback(timestamp)
+    })
+    this.transientFrameIds.add(frameId)
+    return frameId
+  }
+
+  private cancelTransientFrames(): void {
+    for (const frameId of this.transientFrameIds) {
+      cancelAnimationFrame(frameId)
+    }
+    this.transientFrameIds.clear()
+  }
+
+  private cleanupDetailBindings(): void {
+    if (this.detailKeyHandler) {
+      document.removeEventListener('keydown', this.detailKeyHandler)
+      this.detailKeyHandler = null
+    }
+    if (this.galleryDetach) {
+      this.galleryDetach()
+      this.galleryDetach = null
+    }
+    if (this.artifactClickHandler) {
+      this.detailPanel.removeEventListener('click', this.artifactClickHandler)
+      this.artifactClickHandler = null
+    }
+  }
+
+  private closeActiveLightbox(): void {
+    if (!this.lightboxCleanup) return
+    const close = this.lightboxCleanup
+    this.lightboxCleanup = null
+    close()
+  }
+
   // ── Public API ─────────────────────────────────────────────────────
 
   async show(city: City): Promise<void> {
+    this.disposed = false
+    this.clearHideCleanupTimeout()
+    this.clearPreloadCache()
+
     this.currentCity = city
     this.selectedNodeId = null
     this.expandedNodes.clear()
@@ -552,22 +394,38 @@ export class TapestryView {
     }
     this.panel.classList.add('visible')
 
+    const { requestId, signal } = this.beginDataRequest()
     try {
-      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(city.id)}`)
+      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(city.id)}`, { signal })
       if (!response.ok) throw new Error(await response.text())
-      this.tapestryData = await response.json()
+      const data = await response.json()
+      if (!this.isCurrentDataRequest(requestId)) return
+      this.tapestryData = data
       this.loadingIndicator.style.display = 'none'
       this.renderDAG()
       this.renderFiberList()
       this.selectFromHash()
     } catch (err) {
+      if (!this.isCurrentDataRequest(requestId)) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
       this.loadingIndicator.textContent = 'Failed to load tapestry'
       this.loadingIndicator.classList.add('error')
       console.error('Tapestry fetch failed:', err)
+    } finally {
+      if (this.isCurrentDataRequest(requestId)) {
+        this.dataFetchAbortController = null
+      }
     }
   }
 
   hide(): void {
+    this.clearDataRequest()
+    this.clearHideCleanupTimeout()
+    this.cancelTransientFrames()
+    this.hideDetail(true)
+    this.closeStaticFileModal()
+    this.clearPreloadCache()
+
     this.panel.classList.remove('visible')
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
     if (this.tooltip) this.tooltip.style.display = 'none'
@@ -594,12 +452,13 @@ export class TapestryView {
 
     this.stopFlutter()
 
-    setTimeout(() => {
+    this.hideCleanupTimeout = setTimeout(() => {
       if (!this.isVisible()) {
         this.dagContainer.innerHTML = ''
         this.detailPanel.innerHTML = ''
         this.detailPanel.classList.add('hidden')
       }
+      this.hideCleanupTimeout = null
     }, 300)
   }
 
@@ -607,8 +466,67 @@ export class TapestryView {
     return this.panel.classList.contains('visible')
   }
 
+  getRuntimeStats(): {
+    visible: boolean
+    disposed: boolean
+    staticMode: boolean
+    currentCityId: string | null
+    selectedNodeId: string | null
+    expandedNodeCount: number
+    visibleNodeCount: number
+    hasSimulation: boolean
+    hasSvg: boolean
+    hasZoomBehavior: boolean
+    preloadCacheSize: number
+    transientFrameCount: number
+    hasDataFetchRequest: boolean
+    dataRequestId: number
+    hasHideCleanupTimeout: boolean
+    hasDetailKeyHandler: boolean
+    hasEscapeHandler: boolean
+    hasArtifactClickHandler: boolean
+    hasGalleryDetach: boolean
+    hasStaticFileModal: boolean
+    hasStaticFileModalKeyHandler: boolean
+    hasLightboxCleanup: boolean
+    hasTooltip: boolean
+  } {
+    return {
+      visible: this.isVisible(),
+      disposed: this.disposed,
+      staticMode: this.staticMode,
+      currentCityId: this.currentCity?.id ?? null,
+      selectedNodeId: this.selectedNodeId,
+      expandedNodeCount: this.expandedNodes.size,
+      visibleNodeCount: this.visibleNodes.size,
+      hasSimulation: this.simulation !== null,
+      hasSvg: this.svgEl !== null,
+      hasZoomBehavior: this.zoomBehavior !== null,
+      preloadCacheSize: this.preloadCache.size,
+      transientFrameCount: this.transientFrameIds.size,
+      hasDataFetchRequest: this.dataFetchAbortController !== null,
+      dataRequestId: this.dataRequestId,
+      hasHideCleanupTimeout: this.hideCleanupTimeout !== null,
+      hasDetailKeyHandler: this.detailKeyHandler !== null,
+      hasEscapeHandler: this.escapeHandler !== null,
+      hasArtifactClickHandler: this.artifactClickHandler !== null,
+      hasGalleryDetach: this.galleryDetach !== null,
+      hasStaticFileModal: this.staticFileModal !== null,
+      hasStaticFileModalKeyHandler: this.staticFileModalKeyHandler !== null,
+      hasLightboxCleanup: this.lightboxCleanup !== null,
+      hasTooltip: this.tooltip !== null,
+    }
+  }
+
   dispose(): void {
+    this.disposed = true
     this.hide()
+    this.clearHideCleanupTimeout()
+    this.closeStaticFileModal()
+    if (this.tooltip) {
+      this.tooltip.remove()
+      this.tooltip = null
+    }
     this.panel.remove()
   }
 
@@ -622,6 +540,11 @@ export class TapestryView {
 
   /** Render a static (server-less) view from pre-baked data. */
   showStatic(data: TapestryResponse, _title: string, assetBase = './data/claims'): void {
+    this.disposed = false
+    this.clearHideCleanupTimeout()
+    this.clearDataRequest()
+    this.clearPreloadCache()
+
     this.staticMode = true
     this.staticAssetBase = assetBase
     // Derive data base from asset base: /tapestries/data/city/claims → /tapestries/data
@@ -690,6 +613,7 @@ export class TapestryView {
 
   private renderDAG(): void {
     if (!this.tapestryData) return
+    this.cancelTransientFrames()
 
     const { nodes: rawNodes, links: rawLinks } = this.tapestryData
     if (rawNodes.length === 0) {
@@ -1477,13 +1401,13 @@ export class TapestryView {
       }
 
       if (now - start < totalDuration) {
-        requestAnimationFrame(tick)
+        this.requestTransientFrame(tick)
       } else {
         for (const el of nodeEls.values()) el.style.opacity = '1'
         for (const { el } of edgeReveals) { el.style.strokeDasharray = ''; el.style.strokeDashoffset = '' }
       }
     }
-    requestAnimationFrame(tick)
+    this.requestTransientFrame(tick)
   }
 
   /** Reverse of revealNodesRadial: fade nodes back into fog as a wave contracts inward. */
@@ -1529,14 +1453,14 @@ export class TapestryView {
       }
 
       if (now - start < FADE_DURATION) {
-        requestAnimationFrame(tick)
+        this.requestTransientFrame(tick)
       } else {
         // Settle to exact fog state
         for (const { el } of nodeEls.values()) el.style.opacity = String(FOG_OPACITY)
         for (const { el } of edgeEls) el.style.opacity = '0.04'
       }
     }
-    requestAnimationFrame(tick)
+    this.requestTransientFrame(tick)
   }
 
   // ── Flutter animation ──────────────────────────────────────────────
@@ -1792,15 +1716,8 @@ export class TapestryView {
   }
 
   private bindDetailEvents(node: TapestryNode): void {
-    // Remove stale key handler from previous node selection
-    if (this.detailKeyHandler) {
-      document.removeEventListener('keydown', this.detailKeyHandler)
-      this.detailKeyHandler = null
-    }
-    if (this.galleryDetach) {
-      this.galleryDetach()
-      this.galleryDetach = null
-    }
+    // Remove stale detail-owned handlers from previous node selection.
+    this.cleanupDetailBindings()
 
     // Close button
     this.detailPanel.querySelector('.tapestry-detail-close')?.addEventListener('click', () => {
@@ -1854,12 +1771,16 @@ export class TapestryView {
       this.galleryDetach = gallery.detach
     }
 
-    // Artifact image click → lightbox
-    this.detailPanel.querySelectorAll('.tapestry-artifact img').forEach(img => {
-      img.addEventListener('click', () => {
-        this.openLightbox(img as HTMLImageElement, node)
-      })
-    })
+    // Artifact media click → lightbox (delegated so it survives carousel re-renders)
+    this.artifactClickHandler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      const media = target.closest('.tapestry-artifact img, .tapestry-artifact iframe, .tapestry-artifact .artifact-open-overlay') as HTMLElement | null
+      if (!media) return
+      e.preventDefault()
+      e.stopPropagation()
+      this.openLightbox(media, node)
+    }
+    this.detailPanel.addEventListener('click', this.artifactClickHandler)
 
     // Dependency tag click → navigate to node or open in file viewer
     this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
@@ -1884,18 +1805,17 @@ export class TapestryView {
           window.open(href, '_blank', 'noopener')
           return
         }
-        // Check if it's a rule fiber in the DAG
+        // Check if it's a fiber (DAG node or sidebar fiber)
         const fiberId = this.extractFiberId(href)
         if (fiberId) {
           const dagNode = this.tapestryData?.nodes.find(n => n.id === fiberId)
-          if (dagNode) {
-            this.selectNode(fiberId)
-            return
-          }
+          if (dagNode) { this.selectNode(fiberId); return }
+          const sidebarFiber = this.tapestryData?.fibers?.find(f => f.id === fiberId)
+          if (sidebarFiber) { this.selectFiber(fiberId); return }
         }
-        // In static mode, open exported files using absolute data path
+        // In static mode, open exported files in viewer
         if (this.staticMode) {
-          window.open(`${this.staticDataBase}/${href}`, '_blank', 'noopener')
+          this.openStaticFile(href)
           return
         }
         // Everything else (file paths, fiber files) → file viewer
@@ -1915,7 +1835,38 @@ export class TapestryView {
     }
   }
 
-  /** Preload the first artifact image for upstream/downstream neighbors. */
+  private clearPreloadCache(): void {
+    for (const img of this.preloadCache.values()) {
+      img.onload = null
+      img.onerror = null
+      img.src = ''
+    }
+    this.preloadCache.clear()
+  }
+
+  private touchPreload(url: string): boolean {
+    const existing = this.preloadCache.get(url)
+    if (!existing) return false
+    this.preloadCache.delete(url)
+    this.preloadCache.set(url, existing)
+    return true
+  }
+
+  private prunePreloadCache(): void {
+    while (this.preloadCache.size > PRELOAD_CACHE_LIMIT) {
+      const oldestKey = this.preloadCache.keys().next().value as string | undefined
+      if (!oldestKey) return
+      const img = this.preloadCache.get(oldestKey)
+      if (img) {
+        img.onload = null
+        img.onerror = null
+        img.src = ''
+      }
+      this.preloadCache.delete(oldestKey)
+    }
+  }
+
+  /** Preload the first image artifact for upstream/downstream neighbors. */
   private preloadNeighborArtifacts(nodeId: string): void {
     if (!this.tapestryData) return
     const node = this.tapestryData.nodes.find(n => n.id === nodeId)
@@ -1929,15 +1880,18 @@ export class TapestryView {
     for (const nId of neighborIds) {
       const neighbor = this.tapestryData.nodes.find(n => n.id === nId)
       if (!neighbor?.evidence?.artifacts) continue
-      const entries = imageArtifacts(neighbor.evidence.artifacts)
+      const entries = artifactEntries(neighbor.evidence.artifacts)
       if (entries.length === 0) continue
-      const [, path] = entries[0]
+      const firstImage = entries.find(([, path]) => !isPdfArtifact(path))
+      if (!firstImage) continue
+      const [, path] = firstImage
       const url = this.artifactUrl(neighbor.specName || '', path)
-      if (!this.preloadCache.has(url)) {
-        const img = new Image()
-        img.src = url
-        this.preloadCache.set(url, img)
-      }
+      if (this.touchPreload(url)) continue
+
+      const img = new Image()
+      img.src = url
+      this.preloadCache.set(url, img)
+      this.prunePreloadCache()
     }
   }
 
@@ -1947,10 +1901,13 @@ export class TapestryView {
     if (!this.currentCity) return
     const selectedId = this.selectedNodeId
 
+    const { requestId, signal } = this.beginDataRequest()
     try {
-      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(this.currentCity.id)}`)
+      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(this.currentCity.id)}`, { signal })
       if (!response.ok) throw new Error(await response.text())
-      this.tapestryData = await response.json()
+      const data = await response.json()
+      if (!this.isCurrentDataRequest(requestId)) return
+      this.tapestryData = data
       this.renderDAG()
       this.renderFiberList()
 
@@ -1964,8 +1921,14 @@ export class TapestryView {
 
       showToast('Refreshed', 'success', 1500)
     } catch (err) {
+      if (!this.isCurrentDataRequest(requestId)) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
       showToast('Refresh failed', 'error')
       console.error('Tapestry refresh failed:', err)
+    } finally {
+      if (this.isCurrentDataRequest(requestId)) {
+        this.dataFetchAbortController = null
+      }
     }
   }
 
@@ -2152,10 +2115,8 @@ export class TapestryView {
   }
 
   private hideDetail(skipVisibilityUpdate = false): void {
-    if (this.detailKeyHandler) {
-      document.removeEventListener('keydown', this.detailKeyHandler)
-      this.detailKeyHandler = null
-    }
+    this.cleanupDetailBindings()
+    this.closeActiveLightbox()
     this.destroyBodyEditor()
     this.detailPanel.classList.add('hidden')
     this.fiberListEl.classList.remove('hidden')
@@ -2204,9 +2165,145 @@ export class TapestryView {
 
   /** Open a file path in the file viewer, resolving relative to city root. */
   private openFileFromLink(href: string, line?: number): void {
-    if (this.staticMode || !this.onOpenFile || !this.currentCity) return
+    if (this.staticMode) {
+      this.openStaticFile(href, line)
+      return
+    }
+    if (!this.onOpenFile || !this.currentCity) return
     const path = href.startsWith('/') ? href : `${this.currentCity.path}/${href}`
     this.onOpenFile(path, this.currentCity, line)
+  }
+
+  private closeStaticFileModal(): void {
+    if (this.staticFileModalKeyHandler) {
+      document.removeEventListener('keydown', this.staticFileModalKeyHandler)
+      this.staticFileModalKeyHandler = null
+    }
+    if (this.staticFileModal) {
+      this.staticFileModal.remove()
+      this.staticFileModal = null
+      return
+    }
+    document.querySelector('.tapestry-file-modal')?.remove()
+  }
+
+  /** Lightweight file viewer for static (GitHub Pages) mode. */
+  private async openStaticFile(href: string, line?: number): Promise<void> {
+    if (!this.staticDataBase) return
+
+    // Resolve URL: href is already rewritten to "{city}/files/{filename}" by export
+    const filename = href.split('/').pop() || ''
+    const ext = filename.split('.').pop()?.toLowerCase() || ''
+    const url = `${this.staticDataBase}/${href}`
+
+    // Create or reuse modal
+    if (!this.staticFileModal || !document.body.contains(this.staticFileModal)) {
+      const modal = document.createElement('div')
+      modal.className = 'tapestry-file-modal'
+      modal.innerHTML = `
+        <div class="tapestry-file-backdrop"></div>
+        <div class="tapestry-file-content">
+          <div class="tapestry-file-resize tapestry-file-resize-left"></div>
+          <div class="tapestry-file-resize tapestry-file-resize-right"></div>
+          <div class="tapestry-file-header">
+            <span class="tapestry-file-title"></span>
+            <button class="tapestry-file-close">&times;</button>
+          </div>
+          <div class="tapestry-file-body"></div>
+        </div>
+      `
+      document.body.appendChild(modal)
+      this.staticFileModal = modal
+      modal.querySelector('.tapestry-file-backdrop')!.addEventListener('click', () => this.closeStaticFileModal())
+      modal.querySelector('.tapestry-file-close')!.addEventListener('click', () => this.closeStaticFileModal())
+      this.staticFileModalKeyHandler = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') this.closeStaticFileModal()
+      }
+      document.addEventListener('keydown', this.staticFileModalKeyHandler)
+
+      // Horizontal resize — 2× multiplier because flex-centering shifts the box by half
+      const content = modal.querySelector('.tapestry-file-content') as HTMLElement
+      const addResizeHandle = (handle: Element, direction: 1 | -1) => {
+        handle.addEventListener('mousedown', (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          const startX = (e as MouseEvent).clientX
+          const startWidth = content.getBoundingClientRect().width
+          content.style.transition = 'none'
+          const onMove = (ev: MouseEvent) => {
+            const delta = (ev.clientX - startX) * direction * 2
+            const maxW = window.innerWidth * 0.95
+            content.style.width = `${Math.max(400, Math.min(maxW, startWidth + delta))}px`
+          }
+          const onUp = () => {
+            content.style.transition = ''
+            document.removeEventListener('mousemove', onMove)
+            document.removeEventListener('mouseup', onUp)
+          }
+          document.addEventListener('mousemove', onMove)
+          document.addEventListener('mouseup', onUp)
+        })
+      }
+      addResizeHandle(modal.querySelector('.tapestry-file-resize-right')!, 1)
+      addResizeHandle(modal.querySelector('.tapestry-file-resize-left')!, -1)
+    }
+    const modal = this.staticFileModal
+    if (!modal) return
+
+    const titleEl = modal.querySelector('.tapestry-file-title') as HTMLElement
+    const bodyEl = modal.querySelector('.tapestry-file-body') as HTMLElement
+    titleEl.textContent = filename + (line ? `:${line}` : '')
+    bodyEl.innerHTML = '<div style="padding:1rem;color:var(--ui-text-muted)">Loading\u2026</div>'
+
+    if (ext === 'pdf') {
+      bodyEl.innerHTML = `<iframe src="${url}" style="width:100%;height:100%;border:none;"></iframe>`
+    } else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
+      bodyEl.innerHTML = `<img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;margin:auto;display:block;" />`
+    } else {
+      // Text-based: fetch and render
+      try {
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`${resp.status}`)
+        const text = await resp.text()
+
+        if (ext === 'md') {
+          bodyEl.innerHTML = `<div class="tapestry-file-markdown">${renderMarkdown(text)}</div>`
+          highlightCodeBlocks(bodyEl)
+        } else {
+          // Source code with line numbers
+          // Map extension to Prism language
+          const langMap: Record<string, string> = {
+            tex: 'latex', py: 'python', ts: 'typescript', js: 'javascript',
+            sh: 'bash', yaml: 'yaml', yml: 'yaml', json: 'json', toml: 'toml',
+          }
+          const lang = langMap[ext] || ext
+
+          const lines = text.split('\n')
+          const html = lines.map((l, i) => {
+            const num = i + 1
+            const highlight = line && num === line ? ' class="highlighted-line"' : ''
+            return `<tr${highlight}><td class="line-num">${num}</td><td class="line-content">${escapeHtml(l)}</td></tr>`
+          }).join('')
+          bodyEl.innerHTML = `<div class="tapestry-file-code" data-lang="${escapeHtml(lang)}"><table>${html}</table></div>`
+
+          // Prism syntax highlighting per cell
+          const P = (window as unknown as { Prism?: { highlight: (code: string, grammar: unknown, language: string) => string; languages: Record<string, unknown> } }).Prism
+          if (P?.languages[lang]) {
+            bodyEl.querySelectorAll<HTMLElement>('.line-content').forEach(cell => {
+              cell.innerHTML = P.highlight(cell.textContent || '', P.languages[lang], lang)
+            })
+          }
+
+          // Scroll to line
+          if (line) {
+            const highlighted = bodyEl.querySelector('.highlighted-line')
+            highlighted?.scrollIntoView({ block: 'center' })
+          }
+        }
+      } catch (err) {
+        bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">Could not load file: ${escapeHtml(filename)}</div>`
+      }
+    }
   }
 
   /** Extract a fiber ID from a link href (e.g. ".felt/some-fiber-id.md" or just "some-fiber-id"). */
@@ -2231,19 +2328,43 @@ export class TapestryView {
 
   // ── Lightbox ───────────────────────────────────────────────────────
 
-  private openLightbox(img: HTMLImageElement, node: TapestryNode): void {
-    const entries = imageArtifacts(node.evidence?.artifacts || {})
+  private openLightbox(mediaEl: HTMLElement, node: TapestryNode): void {
+    const entries = artifactEntries(node.evidence?.artifacts || {})
     if (entries.length === 0) return
+
+    this.closeActiveLightbox()
 
     const lightbox = document.createElement('div')
     lightbox.className = 'tapestry-lightbox'
 
-    const bigImg = document.createElement('img')
-    bigImg.src = img.src
-    bigImg.alt = img.alt
+    const createMediaElement = (name: string, path: string): HTMLElement => {
+      const url = this.artifactUrl(node.specName || '', path)
+      if (isPdfArtifact(path)) {
+        const container = document.createElement('div')
+        container.className = 'tapestry-lightbox-pdf'
+        container.dataset.artifactName = name
+        container.dataset.artifactType = 'pdf'
+        container.addEventListener('click', (e) => e.stopPropagation())
+        renderPdfAllPages(url, container)
+        return container
+      }
+      const image = document.createElement('img')
+      image.src = url
+      image.alt = name
+      image.dataset.artifactName = name
+      image.dataset.artifactType = 'image'
+      return image
+    }
 
-    let plotIndex = entries.findIndex(([, p]) => this.artifactUrl(node.specName || '', p) === img.src)
+    const selectedName = mediaEl.dataset.artifactName || ''
+    let plotIndex = entries.findIndex(([name]) => name === selectedName)
+    if (plotIndex < 0) {
+      const triggerSrc = (mediaEl instanceof HTMLImageElement || mediaEl instanceof HTMLIFrameElement) ? mediaEl.src : ''
+      plotIndex = entries.findIndex(([, p]) => this.artifactUrl(node.specName || '', p) === triggerSrc)
+    }
     if (plotIndex < 0) plotIndex = 0
+    let [name, path] = entries[plotIndex]
+    let bigMedia = createMediaElement(name, path)
 
     let labelEl: HTMLElement | null = null
     const updateLabel = () => {
@@ -2261,16 +2382,29 @@ export class TapestryView {
     closeBtn.className = 'tapestry-lightbox-close'
     closeBtn.textContent = '\u00D7'
 
-    lightbox.appendChild(bigImg)
+    lightbox.appendChild(bigMedia)
     if (labelEl) lightbox.appendChild(labelEl)
     lightbox.appendChild(closeBtn)
+
+    const bindImageAnnotation = () => {
+      if (this.staticMode || !(bigMedia instanceof HTMLImageElement)) return
+      bigMedia.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const rect = bigMedia.getBoundingClientRect()
+        const x = ((e.clientX - rect.left) / rect.width) * 100
+        const y = ((e.clientY - rect.top) / rect.height) * 100
+        this.promptImageAnnotation(node, bigMedia.dataset.artifactName || '', x, y)
+        close()
+      })
+    }
 
     const navigate = (delta: number) => {
       plotIndex = (plotIndex + delta + entries.length) % entries.length
       const [name, path] = entries[plotIndex]
-      bigImg.src = this.artifactUrl(node.specName || '', path)
-      bigImg.alt = name
-      bigImg.dataset.artifactName = name
+      const nextMedia = createMediaElement(name, path)
+      bigMedia.replaceWith(nextMedia)
+      bigMedia = nextMedia
+      bindImageAnnotation()
       updateLabel()
     }
 
@@ -2280,26 +2414,23 @@ export class TapestryView {
       if (e.key === 'ArrowLeft') { e.preventDefault(); navigate(-1) }
       if (e.key === 'ArrowRight') { e.preventDefault(); navigate(1) }
     }
+    let closed = false
     const close = () => {
+      if (closed) return
+      closed = true
       document.removeEventListener('keydown', keyHandler)
+      if (this.lightboxCleanup === close) {
+        this.lightboxCleanup = null
+      }
       lightbox.remove()
     }
+    this.lightboxCleanup = close
     closeBtn.addEventListener('click', close)
     lightbox.addEventListener('click', (e) => {
       if (e.target === lightbox) close()
     })
 
-    // Image annotation: click on image to place pin (not in static mode)
-    if (!this.staticMode) {
-      bigImg.addEventListener('click', (e) => {
-        e.stopPropagation()
-        const rect = bigImg.getBoundingClientRect()
-        const x = ((e.clientX - rect.left) / rect.width) * 100
-        const y = ((e.clientY - rect.top) / rect.height) * 100
-        this.promptImageAnnotation(node, bigImg.dataset.artifactName || '', x, y)
-        close()
-      })
-    }
+    bindImageAnnotation()
 
     document.addEventListener('keydown', keyHandler)
 
