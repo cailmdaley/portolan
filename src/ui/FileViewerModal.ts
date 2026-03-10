@@ -1,42 +1,13 @@
-// FileViewerModal.ts - Centered modal for viewing/editing files with CodeMirror + vim
-// Extended with annotation support: selection toolbar, highlights, annotations panel
-// CodeMirror imports
-import { EditorState, type Extension } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
-import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
-import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, foldKeymap } from '@codemirror/language'
-import { javascript } from '@codemirror/lang-javascript'
-import { python } from '@codemirror/lang-python'
-import { markdown } from '@codemirror/lang-markdown'
-import { json } from '@codemirror/lang-json'
-import { css } from '@codemirror/lang-css'
-import { html as htmlLang } from '@codemirror/lang-html'
-import { vim, Vim } from '@replit/codemirror-vim'
+import { Vim } from '@replit/codemirror-vim'
 import { escapeHtml } from './utils'
 import { AnnotationPanel } from './AnnotationPanel'
 import { type WorkerInfo } from './WorkerPicker'
 import {
   type Annotation,
   FileViewerAnnotations,
-  fileViewerAnnotationHighlightField,
 } from './FileViewerAnnotations'
 import { FileViewerMarkdownView } from './FileViewerMarkdownView'
-
-declare const Prism: {
-  highlight: (code: string, grammar: unknown, language: string) => string
-  languages: Record<string, unknown>
-  highlightElement: (el: Element) => void
-}
-
-interface FileContent {
-  content: string
-  language: string
-  path: string
-  type?: 'text' | 'image'
-  url?: string  // For images
-}
+import { type FileContent, FileViewerTextEditor } from './FileViewerTextEditor'
 
 // Image file extensions
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'])
@@ -45,71 +16,6 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.web
 const PDF_EXTENSIONS = new Set(['.pdf'])
 
 const API_BASE = `http://${window.location.hostname}:4004`
-
-// Porch Morning theme for CodeMirror
-const porchMorningTheme = EditorView.theme({
-  '&': {
-    height: '100%',
-    fontSize: '14px',
-    backgroundColor: 'var(--bg-elevated)',
-  },
-  '.cm-content': {
-    fontFamily: 'var(--font-mono)',
-    caretColor: 'var(--text-primary)',
-  },
-  '.cm-cursor': {
-    borderLeftColor: 'var(--text-primary)',
-    borderLeftWidth: '2px',
-  },
-  '.cm-activeLine': {
-    backgroundColor: 'rgba(154, 123, 53, 0.08)',
-  },
-  '.cm-activeLineGutter': {
-    backgroundColor: 'rgba(154, 123, 53, 0.08)',
-  },
-  '.cm-selectionBackground, ::selection': {
-    backgroundColor: 'rgba(90, 123, 123, 0.25) !important',
-  },
-  '.cm-gutters': {
-    backgroundColor: 'var(--bg-card)',
-    color: 'var(--text-muted)',
-    borderRight: '1px solid var(--text-muted)',
-  },
-  '.cm-lineNumbers .cm-gutterElement': {
-    padding: '0 8px',
-  },
-  // Vim cursor styles
-  '.cm-fat-cursor': {
-    backgroundColor: 'rgba(154, 123, 53, 0.7) !important',
-    color: 'white !important',
-  },
-  '&:not(.cm-focused) .cm-fat-cursor': {
-    backgroundColor: 'transparent !important',
-    outline: '1px solid var(--gold)',
-  },
-  // Vim command line
-  '.cm-vim-panel': {
-    fontFamily: 'var(--font-mono)',
-    fontSize: '13px',
-    padding: '4px 8px',
-    backgroundColor: 'var(--bg-card)',
-    borderTop: '1px solid var(--text-muted)',
-  },
-  '.cm-vim-panel input': {
-    fontFamily: 'var(--font-mono)',
-    fontSize: '13px',
-    backgroundColor: 'transparent',
-    border: 'none',
-    outline: 'none',
-    color: 'var(--text-primary)',
-  },
-  // Annotation highlights
-  '.cm-annotation-highlight': {
-    backgroundColor: 'rgba(154, 123, 53, 0.2)',
-    borderBottom: '2px solid var(--gold)',
-    cursor: 'pointer',
-  },
-}, { dark: false })
 
 export class FileViewerModal {
   private backdrop: HTMLElement
@@ -128,15 +34,12 @@ export class FileViewerModal {
   private contentEl: HTMLElement
   private annotationsPanelEl: HTMLElement
   private annotations: FileViewerAnnotations
+  private textEditor: FileViewerTextEditor
   private modeLineEl: HTMLElement
-  private currentContent: FileContent | null = null
   private currentPath: string = ''
   private currentOriginId: string = 'local'
   private currentCityPath: string = ''
   private currentCityId: string = ''
-  private editorView: EditorView | null = null
-  private isDirty: boolean = false
-  private originalContent: string = ''
   private sourceWorkerId: string | null = null
 
   // Navigation state for cycling through files with Up/Down
@@ -185,11 +88,24 @@ export class FileViewerModal {
         currentOriginId: this.currentOriginId,
         currentCityPath: this.currentCityPath,
         sourceWorkerId: this.sourceWorkerId,
-        originalContent: this.originalContent,
-        editorView: this.editorView,
+        originalContent: this.textEditor.getOriginalContent(),
+        editorView: this.textEditor.getEditorView(),
         isVisible: this.isVisible(),
       }),
       scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
+    })
+    this.textEditor = new FileViewerTextEditor({
+      contentEl: this.contentEl,
+      pathEl: this.pathEl,
+      modeLineEl: this.modeLineEl,
+      saveBtn: this.saveBtn,
+      copyBtn: this.copyBtn,
+      downloadBtn: this.downloadBtn,
+      annotations: this.annotations,
+      scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
+      getOriginId: () => this.currentOriginId,
+      isVisible: () => this.isVisible(),
+      onRenderMarkdown: (content) => this.markdownView.show(content),
     })
     this.markdownView = new FileViewerMarkdownView({
       contentEl: this.contentEl,
@@ -205,7 +121,7 @@ export class FileViewerModal {
       onOpenPath: (path, originId, cityPath, cityId, line) => {
         this.show(path, originId, undefined, undefined, cityPath, cityId, line)
       },
-      onEnterEditMode: () => this.enterFileEditMode(),
+      onEnterEditMode: () => this.textEditor.enterMarkdownEditMode(),
     })
 
     this.setupEventListeners()
@@ -265,16 +181,16 @@ export class FileViewerModal {
     })
 
     // Copy button
-    this.copyBtn.addEventListener('click', () => this.copyToClipboard())
+    this.copyBtn.addEventListener('click', () => this.textEditor.copyToClipboard())
 
     // Download button
-    this.downloadBtn.addEventListener('click', () => this.downloadFile())
+    this.downloadBtn.addEventListener('click', () => this.textEditor.download())
 
     // Refresh button
     this.refreshBtn.addEventListener('click', () => this.refresh())
 
     // Save button
-    this.saveBtn.addEventListener('click', () => this.saveFile())
+    this.saveBtn.addEventListener('click', () => this.textEditor.save())
 
     // Document-level handlers are attached in show(), detached in hide()
     // This prevents HMR stacking where old listeners accumulate across hot reloads
@@ -299,13 +215,12 @@ export class FileViewerModal {
       const now = Date.now()
 
       // If editing a markdown file, Escape returns to rendered view
-      if (this.editorView?.hasFocus && !this.markdownView.isActive() && this.isMarkdownFile()) {
+      if (this.textEditor.hasEditorFocus() && !this.markdownView.isActive() && this.textEditor.isMarkdownFile(this.currentPath)) {
         if (now - this.lastEscapeTime < 1000) {
-          // Save if dirty, then exit to rendered view
-          if (this.isDirty) {
-            this.saveFile().then(() => this.exitFileEditMode())
+          if (this.textEditor.getIsDirty()) {
+            this.textEditor.save().then(() => this.textEditor.exitMarkdownEditMode())
           } else {
-            this.exitFileEditMode()
+            this.textEditor.exitMarkdownEditMode()
           }
           e.stopPropagation()
           this.lastEscapeTime = 0
@@ -317,7 +232,7 @@ export class FileViewerModal {
       }
 
       // If editor exists and has focus, use double-Escape
-      if (this.editorView?.hasFocus) {
+      if (this.textEditor.hasEditorFocus()) {
         // Second Escape within 1 second -> close
         if (now - this.lastEscapeTime < 1000) {
           this.tryClose()
@@ -347,7 +262,7 @@ export class FileViewerModal {
       if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
 
       // Don't navigate if editor is focused - let CodeMirror handle cursor movement
-      if (this.editorView?.hasFocus) return
+      if (this.textEditor.hasEditorFocus()) return
 
       e.preventDefault()
       e.stopImmediatePropagation()
@@ -423,7 +338,7 @@ export class FileViewerModal {
 
   private navigateToFile(index: number): void {
     if (index < 0 || index >= this.navigationFiles.length) return
-    if (this.isDirty) {
+    if (this.textEditor.getIsDirty()) {
       if (!confirm('You have unsaved changes. Discard them?')) {
         return
       }
@@ -443,24 +358,21 @@ export class FileViewerModal {
   private setupVimCommands(): void {
     // Register :w command
     Vim.defineEx('write', 'w', () => {
-      this.saveFile()
+      this.textEditor.save()
     })
 
     // Register :q command (with optional ! for force quit)
     Vim.defineEx('quit', 'q', (_cm: unknown, params: { argString?: string }) => {
       if (params.argString === '!') {
-        // :q! - force quit without saving
-        this.isDirty = false
         this.hide()
       } else {
-        // :q - quit with dirty check
         this.tryClose()
       }
     })
 
     // Register :wq command
     Vim.defineEx('wq', 'wq', async () => {
-      await this.saveFile()
+      await this.textEditor.save()
       this.hide()
     })
   }
@@ -495,8 +407,7 @@ export class FileViewerModal {
     this.saveBtn.style.display = 'none'
     this.sendBtn.style.display = 'none'
     this.fiberBtn.style.display = 'none'
-    this.isDirty = false
-    this.originalContent = ''
+    this.textEditor.reset()
     this.currentPath = filePath
     this.currentOriginId = originId
     this.currentCityPath = cityPath || ''
@@ -518,12 +429,6 @@ export class FileViewerModal {
 
     // Reset annotation panel
     this.annotations.reset()
-
-    // Destroy any existing editor
-    if (this.editorView) {
-      this.editorView.destroy()
-      this.editorView = null
-    }
 
     // Hide selection toolbar
     this.annotations.hideSelectionToolbar()
@@ -569,8 +474,7 @@ export class FileViewerModal {
 
       const data: FileContent = await contentResponse.json()
       if (!this.isShowRequestActive(requestId)) return
-      this.currentContent = data
-      this.originalContent = data.content
+      this.textEditor.setCurrentContent(data)
 
       // Load annotations
       if (annotationsResponse.ok) {
@@ -593,13 +497,9 @@ export class FileViewerModal {
       if (isMarkdown) {
         this.markdownView.show(data.content)
       } else {
-        // Create CodeMirror editor
-        this.createEditor(data.content, data.language)
-        // Scroll to line if requested (e.g. from search results)
-        if (jumpToLine && jumpToLine > 0) {
-          this.scrollToLine(jumpToLine)
-        }
+        this.textEditor.showEditor(jumpToLine, !this.skipEditorFocus)
       }
+      this.skipEditorFocus = false
     } catch (error: any) {
       if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
         return
@@ -687,7 +587,7 @@ export class FileViewerModal {
     this.saveBtn.style.display = 'none'
     this.copyBtn.style.display = 'none'
     this.downloadBtn.style.display = 'none'
-    this.currentContent = null  // Can't copy image to clipboard as text
+    this.textEditor.setCurrentContent(null)
 
     try {
       const rawUrl = this.buildRawFileUrl(filePath, originId)
@@ -724,7 +624,7 @@ export class FileViewerModal {
     this.saveBtn.style.display = 'none'
     this.copyBtn.style.display = 'none'
     this.downloadBtn.style.display = 'none'
-    this.currentContent = null  // Can't copy PDF to clipboard as text
+    this.textEditor.setCurrentContent(null)
 
     if (signal.aborted || !this.isShowRequestActive(requestId)) return
 
@@ -735,281 +635,11 @@ export class FileViewerModal {
     this.contentEl.appendChild(container)
   }
 
-  private createEditor(content: string, language: string): void {
-    // Clear content area
-    this.contentEl.innerHTML = ''
-
-    // Get language extension
-    const langExtension = this.getLanguageExtension(language)
-
-    // Build extensions
-    const extensions: Extension[] = [
-      vim(),
-      lineNumbers(),
-      highlightActiveLineGutter(),
-      highlightSpecialChars(),
-      history(),
-      foldGutter(),
-      drawSelection(),
-      EditorView.lineWrapping,
-      EditorState.allowMultipleSelections.of(true),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      bracketMatching(),
-      autocompletion(),
-      highlightActiveLine(),
-      highlightSelectionMatches(),
-      keymap.of([
-        ...defaultKeymap,
-        ...searchKeymap,
-        ...historyKeymap,
-        ...foldKeymap,
-        ...completionKeymap,
-      ]),
-      porchMorningTheme,
-      fileViewerAnnotationHighlightField,
-      // Track changes for dirty state and selection
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          const newContent = update.state.doc.toString()
-          const wasDirty = this.isDirty
-          this.isDirty = newContent !== this.originalContent
-          if (wasDirty !== this.isDirty) {
-            this.updateDirtyIndicator()
-          }
-        }
-        // Update mode line with cursor position
-        this.updateModeLine(update.state)
-
-        // Handle selection changes for toolbar
-        if (update.selectionSet) {
-          this.annotations.handleEditorSelection(update.state)
-        }
-      }),
-    ]
-
-    if (langExtension) {
-      extensions.push(langExtension)
-    }
-
-    // Create editor state
-    const state = EditorState.create({
-      doc: content,
-      extensions,
-    })
-
-    // Create editor view
-    this.editorView = new EditorView({
-      state,
-      parent: this.contentEl,
-    })
-
-    // Apply annotation highlights
-    this.annotations.updateAnnotationHighlights()
-
-    // Update mode line
-    this.updateModeLine(state)
-
-    // Focus the editor (unless navigating via arrow keys)
-    if (!this.skipEditorFocus) {
-      this.editorView.focus()
-    }
-    this.skipEditorFocus = false // Reset flag
-  }
-
-  private getLanguageExtension(language: string): Extension | null {
-    switch (language) {
-      case 'javascript':
-      case 'jsx':
-        return javascript({ jsx: true })
-      case 'typescript':
-      case 'tsx':
-        return javascript({ jsx: true, typescript: true })
-      case 'python':
-        return python()
-      case 'markdown':
-        return markdown()
-      case 'json':
-        return json()
-      case 'css':
-      case 'scss':
-        return css()
-      case 'html':
-      case 'xml':
-        return htmlLang()
-      default:
-        return null
-    }
-  }
-
-  private isMarkdownFile(): boolean {
-    if (!this.currentContent) return false
-    return this.currentContent.language === 'markdown' || /\.(md|markdown)$/i.test(this.currentPath)
-  }
-
-  private enterFileEditMode(): void {
-    if (!this.currentContent) return
-    this.createEditor(this.currentContent.content, this.currentContent.language)
-    this.modeLineEl.textContent = ''
-    if (this.editorView) this.editorView.focus()
-  }
-
-  private exitFileEditMode(): void {
-    if (!this.currentContent) return
-    // Get current editor content (may have been edited)
-    const content = this.editorView?.state.doc.toString() || this.currentContent.content
-    // Update stored content
-    this.currentContent.content = content
-    this.originalContent = content
-    this.isDirty = false
-    this.updateDirtyIndicator()
-    // Destroy editor and show rendered markdown
-    if (this.editorView) {
-      this.editorView.destroy()
-      this.editorView = null
-    }
-    this.markdownView.show(content)
-  }
-
-  private scrollToLine(lineNumber: number): void {
-    if (!this.editorView) return
-    const doc = this.editorView.state.doc
-    const line = doc.line(Math.min(lineNumber, doc.lines))
-    this.editorView.dispatch({
-      selection: { anchor: line.from },
-      effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
-    })
-  }
-
-  private updateModeLine(state: EditorState): void {
-    const pos = state.selection.main.head
-    const line = state.doc.lineAt(pos)
-    const col = pos - line.from + 1
-    this.modeLineEl.textContent = `Ln ${line.number}, Col ${col}`
-  }
-
-  private updateDirtyIndicator(): void {
-    if (this.isDirty) {
-      this.pathEl.classList.add('dirty')
-    } else {
-      this.pathEl.classList.remove('dirty')
-    }
-  }
-
-  private async saveFile(): Promise<void> {
-    if (!this.editorView || !this.currentContent) return
-
-    const content = this.editorView.state.doc.toString()
-
-    try {
-      this.saveBtn.textContent = 'Saving...'
-      this.saveBtn.setAttribute('disabled', 'true')
-
-      const response = await fetch(`${API_BASE}/save-file`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          path: this.currentContent.path,
-          content,
-          originId: this.currentOriginId,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to save file')
-      }
-
-      // Update original content and clear dirty state
-      this.originalContent = content
-      this.isDirty = false
-      this.updateDirtyIndicator()
-
-      this.saveBtn.textContent = 'Saved!'
-      this.scheduleDeferredUiTask(() => {
-        if (!this.modal.classList.contains('visible')) return
-        this.saveBtn.textContent = 'Save'
-        this.saveBtn.removeAttribute('disabled')
-      }, 1500)
-    } catch (error: any) {
-      console.error('Failed to save file:', error)
-      this.saveBtn.textContent = 'Save'
-      this.saveBtn.removeAttribute('disabled')
-      alert(`Failed to save: ${error.message}`)
-    }
-  }
-
-  private getTextContent(): string | null {
-    if (this.editorView) {
-      return this.editorView.state.doc.toString()
-    }
-    if (this.currentContent) {
-      return this.currentContent.content
-    }
-    return null
-  }
-
-  private async copyToClipboard(): Promise<void> {
-    const content = this.getTextContent()
-    if (!content) return
-
-    try {
-      await navigator.clipboard.writeText(content)
-      const originalText = this.copyBtn.textContent
-      this.copyBtn.textContent = 'Copied!'
-      this.scheduleDeferredUiTask(() => {
-        if (!this.modal.classList.contains('visible')) return
-        this.copyBtn.textContent = originalText
-      }, 1500)
-    } catch {
-      // Fallback for older browsers
-      const textarea = document.createElement('textarea')
-      textarea.value = content
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      this.copyBtn.textContent = 'Copied!'
-      this.scheduleDeferredUiTask(() => {
-        if (!this.modal.classList.contains('visible')) return
-        this.copyBtn.textContent = 'Copy'
-      }, 1500)
-    }
-  }
-
-  private downloadFile(): void {
-    const content = this.getTextContent()
-    if (!content) return
-
-    // Get filename from path
-    const filename = this.currentPath.split('/').pop() || 'download.txt'
-
-    // Create blob and download link
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-
-    // Show feedback
-    const originalText = this.downloadBtn.textContent
-    this.downloadBtn.textContent = 'Downloaded!'
-    this.scheduleDeferredUiTask(() => {
-      if (!this.modal.classList.contains('visible')) return
-      this.downloadBtn.textContent = originalText
-    }, 1500)
-  }
-
   private async refresh(): Promise<void> {
-    if (!this.currentContent) return
+    const currentContent = this.textEditor.getCurrentContent()
+    if (!currentContent) return
 
-    // Check for unsaved changes
-    if (this.isDirty) {
+    if (this.textEditor.getIsDirty()) {
       if (!confirm('You have unsaved changes. Refresh anyway?')) {
         return
       }
@@ -1019,14 +649,13 @@ export class FileViewerModal {
     const originalText = this.refreshBtn.textContent
     this.refreshBtn.textContent = '...'
 
-    // Re-fetch the file
-    await this.show(this.currentContent.path, this.currentOriginId, this.sourceWorkerId || undefined)
+    await this.show(currentContent.path, this.currentOriginId, this.sourceWorkerId || undefined)
 
     this.refreshBtn.textContent = originalText
   }
 
   private tryClose(): void {
-    if (this.isDirty) {
+    if (this.textEditor.getIsDirty()) {
       if (!confirm('You have unsaved changes. Discard them?')) {
         return
       }
@@ -1039,21 +668,13 @@ export class FileViewerModal {
     this.markdownView.reset()
     this.clearDeferredUiTasks()
     this.annotations.dispose()
+    this.textEditor.reset()
     this.backdrop.classList.remove('visible')
     this.modal.classList.remove('visible')
-    this.currentContent = null
-    this.isDirty = false
-    this.pathEl.classList.remove('dirty')
     this.sourceWorkerId = null
 
     // Detach document-level handlers to prevent HMR stacking
     this.detachDocumentHandlers()
-
-    // Destroy editor
-    if (this.editorView) {
-      this.editorView.destroy()
-      this.editorView = null
-    }
   }
 
   isVisible(): boolean {
@@ -1083,8 +704,8 @@ export class FileViewerModal {
       visible: this.isVisible(),
       currentPath: this.currentPath || null,
       currentOriginId: this.currentOriginId,
-      hasEditorView: this.editorView !== null,
-      isDirty: this.isDirty,
+      hasEditorView: this.textEditor.hasEditorView(),
+      isDirty: this.textEditor.getIsDirty(),
       markdownRendered: this.markdownView.isActive(),
       annotationCount: annotationStats.annotationCount,
       navigationFileCount: this.navigationFiles.length,
@@ -1104,6 +725,7 @@ export class FileViewerModal {
     this.markdownView.reset()
     this.clearDeferredUiTasks()
     this.annotations.dispose()
+    this.textEditor.destroy()
     this.backdrop.remove()
     this.modal.remove()
   }
