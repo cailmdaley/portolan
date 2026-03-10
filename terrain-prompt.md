@@ -23,7 +23,7 @@ Side 6: faces E  → coastline runs ~90° (N to S, vertical)
 
 ## Camera Reference
 
-- Hexarchy camera: 45° pitch, 45° rotation (viewing from southwest, looking northeast)
+- Portolan camera: 45° pitch, 45° rotation (viewing from southwest, looking northeast)
 - Sunlight matches viewer: from SOUTHWEST (bottom-left of image)
 - Shadows cast toward NORTHEAST (upper-right of image)
 

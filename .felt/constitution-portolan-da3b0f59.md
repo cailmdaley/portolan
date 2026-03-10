@@ -1,9 +1,11 @@
 ---
 title: 'Constitution: Portolan performance, memory, and architecture hardening'
-status: open
+status: closed
 tags:
     - spec
 created-at: 2026-03-01T13:51:04.153516+01:00
+closed-at: 2026-03-01T17:47:32.793631+01:00
+outcome: 'Constitution completed. All downstream hardening fibers are closed (lifecycle ownership, async race guards, bounded caches, raw binary media transport, HUD/update coalescing, remote session churn cleanup, static runtime/HMR hygiene, and runtime diagnostics). Verification evidence this iteration: npm run build passed in repo root; cd server && npm test && npm run build passed (259 tests). Audit probes were rerun for listener/timer surfaces, server map ownership/deletes, binary/raw transport usage, and cache footprints to confirm explicit teardown and bounded ownership patterns across target modules. Remaining validation is runtime stress execution in normal usage loops (file modal cycles, tapestry cycles, sustained activity, remote churn), with diagnostics now in place to observe steady-state behavior.'
 ---
 
 # Constitution: Portolan Performance, Memory, and Architecture Hardening

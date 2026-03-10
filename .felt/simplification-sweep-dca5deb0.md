@@ -6,108 +6,63 @@ tags:
 created-at: 2026-03-06T10:46:31.715433+01:00
 ---
 
-Meditative, file-by-file simplification of the entire portolan codebase. Each iteration picks one source file, reads it with full attention, simplifies it, and verifies nothing broke. Unhurried. Thorough. One at a time.
+Deep simplification of the portolan codebase. Not a checklist — a desired state. Survey reality, find the largest gap, close it.
 
 ## Desired State
 
-Every source file in portolan reads as clearly as it can. Dead code is gone. Redundant abstractions are collapsed. Variable names say what they mean. Nesting is shallow. No line exists without purpose. The codebase is substantially lighter and easier to read — without any behavior change.
+Every source file owns one concern. You can describe what a file does in one sentence without conjunctions. No file exceeds 800 LOC — not because of an arbitrary limit, but because a single concern rarely needs more than that. When a file has section headers (`// === X ===`), those sections have become their own modules.
 
-Megaclasses have been decomposed into focused modules. `TapestryView.ts` (3.2k), `FileViewerModal.ts` (2.3k), `HttpApi.ts` (2k), `ZoneRenderer.ts` (1.5k), `index.ts` (1.5k), and `main.ts` (1.3k) — each has been examined for natural seams and split where it makes the code genuinely clearer. No file should need to be >800 LOC to do its job well.
-
-**Done when:** every file in the manifest has been visited and either simplified or marked as already clean. New files created by decomposition should themselves be clean.
+Dead code is gone. Redundant abstractions are collapsed. Names say what they mean. The codebase does exactly what it does now, with fewer lines and clearer structure.
 
 ## Scope
 
-**Everything is in scope.** Clarity, dead code removal, naming, redundant logic, architectural restructuring, splitting megaclasses, extracting modules, consolidating related code, removing stale comments, simplifying infrastructure and build config.
+Everything is in scope: extracting modules, splitting classes, moving functions, consolidating duplication, renaming, removing dead code. Observable behavior must not change.
 
-**Out of scope:** new features, changing observable behavior. The codebase should do exactly what it does now, just more clearly.
+## Principles
+
+**Do the hard work.** The small files are already clean. What remains is structural — understanding how large files decompose along natural seams. This requires reading, mapping internal structure, and making judgment calls about what belongs together.
+
+**"Well-organized despite its size" is not clean.** Section headers inside a file are evidence that the file contains multiple concerns. They are the seams along which to extract.
+
+**Run /simplify, don't just read.** Invoke the skill and let it analyze. Your judgment plus /simplify's analysis is stronger than either alone.
+
+**One concern per iteration.** Don't try to simplify the whole codebase in one pass. Pick the file with the most to gain, understand it deeply, restructure it, verify, commit. Then survey again with fresh eyes.
 
 ## Method
 
 Each iteration:
 
-1. **Check the manifest** (below) for the next unvisited file.
-2. **Read the file completely.** Sit with it. Understand its role, its imports, its callers.
-3. **Run `/simplify` on it** — directed at that specific file path.
-4. **For files >500 LOC:** consider whether natural seams exist. If the file has multiple concerns, split it. Update imports across the codebase. Add the new files to the manifest.
-5. **Verify:** `cd server && npm test` must pass. Frontend should still build (`npm run build` from root).
-6. **Mark the file done** in the manifest with a one-line note of what changed (or "clean" if nothing).
-7. **Commit** the simplification with message: `simplify: <filename>` (or `simplify: extract <new-module> from <old-file>`).
-
-Work in file-size order — smallest first. Build confidence and momentum before reaching the large files. When you reach files >500 LOC, spend extra time understanding the internal structure before touching anything.
-
-## Skills
-
-Activate `/simplify` before working on each file. Direct it at the specific file path.
+1. **Survey.** Find source files that violate the desired state. `find src server/src -name '*.ts' -o -name '*.js' | xargs wc -l | sort -rn` shows the largest. Read section headers to understand internal structure. Pick the one with the most to gain.
+2. **Read completely.** Map the file's concerns — what are the distinct responsibilities? What would you name each section if it were its own module?
+3. **Invoke `/simplify`** on the file. Follow its analysis.
+4. **Extract.** Create new modules for distinct concerns. Update all imports across the codebase (`grep -r 'from.*oldfile' src/ server/src/`). The original file should become a thin coordinator or disappear entirely.
+5. **Verify.** `cd server && npm test` for server changes. `npm run build` for frontend. Both must pass.
+6. **Commit** with `simplify: <what you did>`.
+7. **Update this fiber** — add a brief note to the log below describing what you found and what you did. This is how the next iteration orients.
 
 ## Evidence
 
 ```bash
-cd server && npm test                    # all tests pass
-npm run build                            # frontend builds clean
-grep -c 'TODO\|FIXME\|HACK' <file>      # should not increase
-wc -l <file>                             # track reduction
+find src server/src -name '*.ts' -o -name '*.js' | xargs wc -l | sort -rn | head -20
+cd server && npm test
+npm run build
 ```
 
-## Manifest
+When no file exceeds ~800 LOC and the largest files each own a single describable concern, the sweep is done.
 
-Server (ordered by size, smallest first):
+## Context
 
-- [x] `server/src/PreviousSessionReconciler.ts` (27) — clean
-- [x] `server/src/activityUtils.ts` (62) — clean
-- [x] `server/src/cli-provider.ts` (80) — clean, all exports used
-- [x] `server/src/RecentFileTracker.ts` (80) — clean
-- [x] `server/src/FiberReader.ts` (164) — clean
-- [x] `server/src/OriginManager.ts` (178) — clean
-- [x] `server/src/MessageRouter.ts` (213) — clean
-- [x] `server/src/EvidenceReader.ts` (226) — clean
-- [x] `server/src/CityPersistence.ts` (229) — clean
-- [x] `server/src/SessionTracker.ts` (298) — clean, BFS detection is inherently complex
-- [x] `server/src/GitStatusManager.ts` (290) — clean, good parallel git commands
-- [x] `server/src/AnnotationPersistence.ts` (326) — clean
-- [x] `server/src/KittyIntegration.ts` (481) — clean, local/remote branching is irreducible
-- [x] `server/src/EventWatcher.ts` (571) — clean, minor activity-building duplication is acceptable
-- [x] `server/src/RemoteWorkingSessionTracker.ts` (86) — clean
-- [x] `server/src/index.ts` (1494) — deduped getAllSessions() to delegate to sessionLookup. Otherwise clean wiring code with clear section organization.
-- [x] `server/src/HttpApi.ts` (2004) — clean, organized with section headers. Splitting would add indirection without clarity gain.
-- [x] `server/agent.js` (689) — removed dead pgrepPattern(). Otherwise clean standalone remote agent.
+The codebase is ~21k LOC across ~40 source files. Files under 500 LOC have been reviewed and are clean. The structural work is in the large files. Key areas of complexity:
 
-Frontend — render (ordered by size):
+- **Server:** `HttpApi.ts` has 49 methods across 13+ endpoints with section headers. `index.ts` mixes WS dispatch, search, and directory browsing.
+- **Frontend UI:** `TapestryView.ts` (3.2k) combines D3 force simulation, fiber detail editing, claims sidebar, and wave reveal animation. `FileViewerModal.ts` (2.3k) combines CodeMirror, PDF rendering, image lightbox, and annotation toolbar.
+- **Render:** `ZoneRenderer.ts` (1.4k) handles hex meshes, city sprites, labels, drag state, and tooltips.
+- **Entry:** `main.ts` (1.3k) wires Three.js setup, WebSocket connection, render loop, and event dispatch.
 
-- [x] `src/render/HexGrid.ts` (92) — clean
-- [x] `src/render/VellumShader.ts` (198) — clean, shader math
-- [x] `src/render/CitySpritesManager.ts` (199) — clean
-- [x] `src/render/Camera.ts` (364) — clean
-- [x] `src/render/RhumbLines.ts` (387) — clean, geometry code
-- [x] `src/render/WorkerSwarm.ts` (448) — clean, noise + particle sim
-- [x] `src/render/ZoneRenderer.ts` (1413) — removed dead code (setSelection, createRingShape, getHexAtPosition: -94 LOC), moved hardcoded color to PALETTE.gridEdge, fixed per-change object allocation in animate()
+## Log
 
-Frontend — UI (ordered by size):
+**Iteration 4 (2026-03-06):** Surveyed all files. TapestryView.ts (3226 LOC) is the largest by far with 13 section headers. Extracted types to `tapestry-types.ts` (91 LOC) and pure helper functions (geometry, staleness, text formatting, neighbor analysis) to `tapestry-helpers.ts` (160 LOC). TapestryView.ts now 2987 LOC. Next targets: the class still has ~10 distinct concerns behind section headers. The biggest remaining extraction opportunities are annotations (~300 LOC), lightbox (~110 LOC), inline markdown editing (~165 LOC), and the static file modal. FileViewerModal.ts (2287) and HttpApi.ts (2004) are the next-largest files.
 
-- [x] `src/ui/hud-types.ts` (24) — clean
-- [x] `src/ui/ViewOverlay.ts` (64) — clean
-- [x] `src/ui/WorkerPicker.ts` (70) — clean
-- [x] `src/ui/ContextMenu.ts` (121) — clean
-- [x] `src/ui/TabbedPlansView.ts` (195) — clean
-- [x] `src/ui/PlaygroundViewer.ts` (241) — clean
-- [x] `src/ui/NewWorkerDialog.ts` (352) — clean, inline CSS is codebase style
-- [x] `src/ui/AnnotationPanel.ts` (427) — clean, well-factored generic
-- [x] `src/ui/CityHUD.ts` (896) — clean, well-organized sidebar HUD with tabs/search/tree/workers
-- [x] `src/ui/utils.ts` (801) — clean, all exports used, coherent utility module
-- [ ] `src/ui/FileViewerModal.ts` (2287) — not yet read
-- [ ] `src/ui/TapestryView.ts` (3226) — not yet read
+**Iteration 5 (2026-03-06):** Stayed on `TapestryView.ts` and extracted two embedded UI subsystems: the static export file viewer to `TapestryStaticFileModal.ts` (167 LOC) and artifact lightbox navigation/annotation to `TapestryArtifactLightbox.ts` (146 LOC). `TapestryView.ts` dropped to 2743 LOC and now delegates those concerns instead of owning their DOM/event lifecycles inline. Verified with `npm run build`. Next seams in the file are the inline markdown editor and the claims annotation workflow; after that, `FileViewerModal.ts` and `HttpApi.ts` remain the largest structural targets.
 
-Entry points & infra:
-
-- [ ] `src/main.ts` (1316) — not yet read in detail
-- [x] `src/state/types.ts` (147) — removed dead ConversationMessage type (12 lines)
-- [x] `vite.config.ts` — clean, minimal
-- [x] `dev.sh` — clean
-
-**Total: 42 files, ~21k LOC. 36 visited, 6 remaining.**
-
-## Iteration 1 Finding
-
-The codebase is already substantially clean. 33 of 42 files examined — all clean or with only the one dead type removed. The remaining 9 unvisited files are the megaclasses (index.ts, agent.js, ZoneRenderer, CityHUD, FileViewerModal, TapestryView, main.ts). HttpApi.ts (2004 LOC) was read in full and found to be well-organized despite its size — splitting would reduce clarity.
-
-The constitution's assumption that megaclasses need decomposition into <800 LOC may not hold. Each large file is a single cohesive concern with clear internal organization. Splitting would trade one large readable file for multiple smaller files requiring cross-file navigation.
+**Iteration 6 (2026-03-06):** Stayed on `TapestryView.ts` because the inline markdown body editor was still a self-contained subsystem embedded in the class. Extracted rendered-body and CodeMirror edit/save lifecycle into `TapestryDetailBody.ts` (166 LOC), including markdown rendering, inline path wiring, dirty tracking, and fiber file persistence. `TapestryView.ts` dropped to 2619 LOC and now coordinates body editing instead of owning editor construction and save logic directly. Verified with `npm run build`. Next seams are the claims annotation workflow inside `TapestryView.ts`, then `FileViewerModal.ts` and `HttpApi.ts`.

@@ -42,12 +42,12 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 ├── OriginManager (remote)    ├── CityHUD (fibers, search)
 ├── FiberReader               ├── TapestryView (D3 DAG)
 ├── EvidenceReader            ├── ContextMenu
-├── ConversationCache         └── main.ts
+├── RecentFileTracker         └── main.ts
 ├── KittyIntegration
 └── index.ts (state, WS)
 ```
 
-Server polls tmux → builds state → broadcasts. Conversation flows via hooks (POST /hook/message → ConversationCache → WebSocket → UI). Browser renders → user clicks → routes to Kitty.
+Server polls tmux → builds state → broadcasts. File touches flow via hooks (POST `/hook/file-touch` → `RecentFileTracker`). Browser renders → user clicks → routes to Kitty.
 
 ## Visual Language
 
@@ -59,8 +59,6 @@ Server polls tmux → builds state → broadcasts. Conversation flows via hooks 
 | Text | #2E2A26 primary, #7A7368 muted |
 | Accents | #9A7B35 gold (cities), #5A7B7B teal (working) |
 | Fonts | EB Garamond (body), JetBrains Mono (code) |
-| Card font | `--card-font-base: 20px` on `.conversation-card`, all child sizes in `em` |
-| Card size | 580×520px default |
 | Workers | InstancedMesh bird sprites (bird.png), heading from velocity |
 
 Labels use 3-slice banners (parchment for cities, leather for workers).
@@ -79,15 +77,13 @@ This is navigation, not interaction. ~6,200 LOC vs original's 14,000.
 ## Debugging
 
 ```bash
-curl http://localhost:4004/debug-transcripts   # session→transcript mappings
-curl http://localhost:4004/hook/health         # conversation hook status per session
+curl http://localhost:4004/debug-runtime       # runtime state and map sizes
+curl 'http://localhost:4004/recent-files?sessionId=X'  # recent file touches for a worker
+curl -s localhost:4004/hook/file-touch -X POST -H 'Content-Type: application/json' \
+  -d '{"session_id":"test","tool_name":"Read","tool_input":{"file_path":"/tmp/test.ts"}}'
 curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
-
-Session-transcript correlation uses `lsof` to detect which transcript file each Claude process has open (via `~/.claude/tasks/{uuid}/`). Mappings persist to `~/.portolan/transcript-mappings.json`.
-
-Conversation capture: hooks POST to `/hook/message`, ConversationCache stores by sessionId and aggregates by tmuxSession. Persistence to `~/.portolan/conversations.json` (50 sessions, 10 msgs each).
 
 ## Troubleshooting: Remote Workers Missing
 
@@ -95,9 +91,18 @@ Requires `RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`. Common failure:
 Diagnose: `ssh -T remote-host "curl -s http://localhost:4004/"`. Fix: `ssh -O exit remote-host && ssh remote-host`.
 Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-remoteforward-port-3c440457`.
 
-## Remote Conversation Hooks
+## Remote File-Touch Hooks
 
-`scp ~/loom/hooks/portolan-conversation-hook.sh remote:~/bin/` + add `PORTOLAN_URL=http://127.0.0.1:4005` to shell profile + configure `UserPromptSubmit`/`PostToolUse`/`Stop` hooks in `~/.claude/settings.json`. Agent (port 4005) forwards to portolan via WS. Without hooks, falls back to polling transcripts. See fiber `portolan-remote-agent-setup-ssh-b7ce007f`.
+Remote workers should post `PostToolUse` events directly to portolan over the existing SSH `RemoteForward`:
+
+```json
+"PostToolUse": [{
+  "matcher": "Read|Write|Edit",
+  "hooks": [{ "type": "http", "url": "http://localhost:4004/hook/file-touch" }]
+}]
+```
+
+No agent-side hook proxy or transcript fallback is required.
 
 ## Gotchas
 
@@ -111,20 +116,6 @@ Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-re
 
 **Event handler order.** `stopImmediatePropagation` only blocks later-registered handlers. See fiber `pattern-event-handler-d26b6bae`.
 
-**`kill $PPID` skips Stop hook.** SIGTERM bypasses it. UserPromptSubmit scans transcripts to recover.
-
-**tmuxSession prefix for remote.** Cache/WS use `originId/session`; Session objects are unprefixed. Use `ConversationCard.prefixedTmuxSession`. Server auto-prefixes on remote hook detect.
-
-**Don't strip ms from timestamps.** Precision deduplicates same-second blocks. See fiber `gotcha-ms-precision-timestamps-9b21c263`.
-
-**Conversation lookup: sessionId only.** No tmux aggregation — causes cross-contamination. Cards re-fetch on WS reconnect. See fibers `conversation-session-isolation-dbb8aa40`, `conversationcard-tmux-match-f7c8fc8f`.
-
-**Mid-turn text needs PostToolUse transcript scan.** Stop is end-of-turn only; text between tool uses needs hook to scan tail. See fiber `mid-turn-assistant-text-needs-3ab050e3`.
-
-**ConversationCache dedup within batch.** Track seen within incoming batch too, not just vs cache. See fiber `gotcha-conversationcache-dedup-94a66c7c`.
-
-**Card header drag blocks bringToFront.** Call `onBringToFront()` directly in `startDrag`. See fiber `gotcha-card-header-drag-28ae4165`.
-
 **SSH: use `execFileAsync` not shell interpolation.** String wrapping is injection-vulnerable. Use `shellEscape()` for remote args. See fiber `gotcha-ssh-double-quote-810f6df9`.
 
 **Codex process name is "node" on Linux.** Check `ps -o args=` fallback. macOS is `codex`. See fiber `gotcha-codex-process-name-is-09e0e1b9`.
@@ -136,10 +127,6 @@ Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-re
 **SSH remote shell expansion.** `ssh host "kill $(pgrep ...)"` expands `$()` locally — sends local PIDs to the remote. Always use single quotes: `ssh host 'kill $(pgrep ...)'`. See fiber `gotcha-ssh-double-quote-shell-11b71ed1`.
 
 **felt `depends_on` is objects.** `[{id: "..."}]` not strings. Extract `.id`. See fiber `portolan-depends-on-mapping-6e692fcf`.
-
-**Stop hook fires before transcript flush.** `sleep 0.3` in Stop handler lets the write catch up. See fiber `gotcha-stop-hook-transcript-c50e76c0`.
-
-**Subagent transcripts bleed.** Exclude `*/subagents/*` in find + Stop handler. See fiber `gotcha-subagent-transcripts-8975ca25`.
 
 **Comma-separated felt tags break matching.** Split on `,` in FiberReader + HttpApi. See fiber `comma-separated-tags-silently-13451ba9`.
 

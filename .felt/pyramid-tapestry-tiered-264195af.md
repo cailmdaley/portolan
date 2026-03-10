@@ -1,10 +1,12 @@
 ---
 title: 'Pyramid tapestry: tiered navigation with section fold-points'
-status: open
+status: closed
 tags:
     - portolan
     - spec
 created-at: 2026-02-21T14:24:07.308205+01:00
+closed-at: 2026-03-06T16:12:06.339762+01:00
+outcome: 'Constitution completed. The tapestry now operates as a tiered reveal system: section fibers tagged tier:1 form the initial skeleton, clicks reveal 1-hop neighborhoods from fog, background click collapses back to skeleton, search and URL fragments reveal hidden nodes correctly, and static export preserves the same drill-down behavior. Existing detail-panel, annotation, evidence, and artifact behaviors remain intact within expanded sections.'
 ---
 
 ## Vocabulary
@@ -133,4 +135,3 @@ d3-force simulation runs on ALL nodes at load. Burn-in phase (800 ticks) compute
 19 nodes tagged `tapestry:portolan`, 26 edges. 3 tier:1 sections: **The Tapestry** (entry, Bayeux metaphor, self-referential), **Click Me** (interaction model), **Conventions & Evidence** (staleness, provenance, AI-mediated science). Interior fibers cover: fiber anatomy, staleness computation, lifecycle, felt concept, fog, outcomes, sections concept, search, URL fragments, detail panel, tapestry conventions, snakemake conventions, paper provenance, AI-mediated science, evidence structure, Fibers hub. Serves as test fixture, tutorial, and philosophical statement simultaneously — this tapestry is about itself.
 
 Key design principles settled this session: revelation is pure presentation (simulation runs on all nodes; fog is CSS only); centering is sidebar-aware (translateTo with visible-area viewport point); each concept appears exactly once (deduplication via merges); "Structure is a trailing indicator of understanding, not a prerequisite for it."
-
