@@ -8,44 +8,11 @@
 
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { exec, execFile, spawn, ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { execFile } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
-import { readdir, stat } from 'fs/promises';
 import { homedir } from 'os';
-import { join, relative, resolve } from 'path';
-
-const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
-
-// Track active file searches for cancellation
-const activeSearches = new Map<string, ChildProcess>();
-
-// Check which search tools are available (cached)
-let hasFd: boolean | null = null;
-let hasRg: boolean | null = null;
-
-async function checkSearchTools(): Promise<void> {
-  if (hasFd === null) {
-    try {
-      await execAsync('which fd');
-      hasFd = true;
-    } catch {
-      hasFd = false;
-    }
-  }
-  if (hasRg === null) {
-    try {
-      await execAsync('which rg');
-      hasRg = true;
-    } catch {
-      hasRg = false;
-    }
-  }
-}
-
-// Initialize on startup
-checkSearchTools();
+import { join } from 'path';
+import { promisify } from 'util';
 
 import { SessionTracker, Session } from './SessionTracker.js';
 import { CityManager, City, SessionInfo } from './CityManager.js';
@@ -61,6 +28,9 @@ import { KittyIntegration, expandHome, shellEscape } from './KittyIntegration.js
 import { MessageRouter, AgentSessionsUpdateMessage, AgentActivityMessage } from './MessageRouter.js';
 import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
 import { reconcilePreviousLocalSessions } from './PreviousSessionReconciler.js';
+import { WorkspaceBrowser } from './WorkspaceBrowser.js';
+
+const execFileAsync = promisify(execFile);
 
 // ============================================================================
 // Types
@@ -240,7 +210,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       connectedRemoteOrigins,
     },
     maps: {
-      activeSearches: activeSearches.size,
+      activeSearches: workspaceBrowser.getActiveSearchCount(),
       remoteSessionOrigins: remoteSessions.size,
       remoteGitStatuses: remoteGitStatuses.size,
       remoteActivities: remoteActivities.size,
@@ -259,6 +229,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
   };
 });
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
+const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
 
 // Callback for creating new workers (used by send-annotations endpoint)
 httpApi.setOnCreateNewWorker(async (cityPath: string, originId: string) => {
@@ -749,419 +720,6 @@ async function getRemoteFibers(
   }
 }
 
-// ============================================================================
-// File Search
-// ============================================================================
-
-interface SearchResult {
-  path: string;        // Relative path from city root
-  fullPath: string;    // Full path for opening
-  line?: number;       // Line number (for content search)
-  match?: string;      // Matching line content (for content search)
-}
-
-interface DirectoryEntry {
-  name: string;
-  type: 'file' | 'dir';
-}
-
-/**
- * Parse search output lines into SearchResult array.
- * Used by both searchLocal and searchRemote.
- */
-function parseSearchResults(
-  stdout: string,
-  cityPath: string,
-  mode: 'filename' | 'content'
-): SearchResult[] {
-  const results: SearchResult[] = [];
-  const lines = stdout.trim().split('\n').filter(Boolean).slice(0, 50);
-
-  for (const line of lines) {
-    if (mode === 'filename') {
-      const relativePath = line.startsWith('./') ? line.slice(2) : line;
-      results.push({
-        path: relativePath,
-        fullPath: `${cityPath}/${relativePath}`,
-      });
-    } else {
-      // rg/grep format: file:line:content or ./file:line:content
-      const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
-      if (match) {
-        results.push({
-          path: match[1],
-          fullPath: `${cityPath}/${match[1]}`,
-          line: parseInt(match[2], 10),
-          match: match[3].trim().slice(0, 100),
-        });
-      }
-    }
-  }
-
-  return results;
-}
-
-function handleSearchFiles(
-  ws: WebSocket,
-  cityId: string,
-  query: string,
-  searchId: string,
-  mode: 'filename' | 'content' = 'filename'
-): void {
-  // Cancel any previous search with the same searchId base (same search session)
-  // searchId format: "cityId-counter-name" or "cityId-counter-content"
-  // Extract base: everything before the last hyphen (name/content suffix)
-  const searchBase = searchId.replace(/-(?:name|content)$/, '');
-  const searchKeyPrefix = `${cityId}:${searchBase}`;
-  for (const [key, proc] of activeSearches) {
-    // Only cancel searches from a previous search session, not parallel name/content searches
-    if (key.startsWith(`${cityId}:`) && !key.startsWith(searchKeyPrefix)) {
-      proc.kill();
-      activeSearches.delete(key);
-    }
-  }
-
-  const city = cityManager.getCityById(cityId);
-  if (!city) {
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: 'City not found' }));
-    return;
-  }
-
-  if (!query.trim()) {
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [] }));
-    return;
-  }
-
-  const searchKey = `${cityId}:${searchId}`;
-
-  if (city.originId === 'local') {
-    searchLocal(ws, city.path, query, searchId, searchKey, mode);
-  } else {
-    const origin = originManager.getOrigin(city.originId);
-    const persistedCity = cityPersistence.getCityById(city.id);
-    const sshHost = origin?.sshHost || persistedCity?.sshHost;
-    if (!sshHost) {
-      ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: 'No SSH host for remote city' }));
-      return;
-    }
-    searchRemote(ws, sshHost, city.path, query, searchId, searchKey, mode);
-  }
-}
-
-function searchLocal(
-  ws: WebSocket,
-  cityPath: string,
-  query: string,
-  searchId: string,
-  searchKey: string,
-  mode: 'filename' | 'content'
-): void {
-  let proc: ChildProcess;
-
-  // Escape query for use in shell/regex (basic escaping)
-  const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-  if (mode === 'filename') {
-    if (hasFd) {
-      // Use fd (fast, --no-ignore to include gitignored files like build/)
-      proc = spawn('fd', [
-        '--type', 'f',
-        '--follow',
-        '--full-path',
-        '--hidden',
-        '--no-ignore',
-        '--exclude', '.git',
-        '--exclude', '.felt',
-        '--exclude', 'node_modules',
-        '--exclude', '__pycache__',
-        '--color', 'never',
-        query
-      ], { cwd: cityPath });
-    } else {
-      // Fallback: find + grep
-      const cmd = `find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o -type f -print 2>/dev/null | grep -i '${safeQuery}' | head -50`;
-      proc = spawn('sh', ['-c', cmd], { cwd: cityPath });
-    }
-  } else {
-    if (hasRg) {
-      // Use rg (fast, --no-ignore to include gitignored files like build/)
-      proc = spawn('rg', [
-        '--line-number',
-        '--no-heading',
-        '--color', 'never',
-        '--max-count', '1',
-        '--follow',
-        '--no-ignore',
-        '--glob', '!.git',
-        '--glob', '!node_modules',
-        '--glob', '!__pycache__',
-        query
-      ], { cwd: cityPath });
-    } else {
-      // Fallback: grep -r
-      const cmd = `grep -Rn --include='*' -I '${safeQuery}' . --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ 2>/dev/null | head -50`;
-      proc = spawn('sh', ['-c', cmd], { cwd: cityPath });
-    }
-  }
-
-  activeSearches.set(searchKey, proc);
-
-  let stdout = '';
-  let timedOut = false;
-  proc.stdout?.on('data', (data) => {
-    stdout += data.toString();
-  });
-
-  // Timeout: kill after 10 seconds and return partial results
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    proc.kill('SIGTERM');
-    console.log(`[Search] Timeout for ${searchKey}, returning partial results`);
-  }, 10000);
-
-  proc.on('close', () => {
-    clearTimeout(timeout);
-    activeSearches.delete(searchKey);
-    const results = parseSearchResults(stdout, cityPath, mode);
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
-  });
-
-  proc.on('error', (error) => {
-    clearTimeout(timeout);
-    activeSearches.delete(searchKey);
-    console.error('Search error:', error);
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
-  });
-}
-
-function searchRemote(
-  ws: WebSocket,
-  sshHost: string,
-  cityPath: string,
-  query: string,
-  searchId: string,
-  searchKey: string,
-  mode: 'filename' | 'content'
-): void {
-  const escapedPath = shellEscape(cityPath);
-  const escapedQuery = shellEscape(query);
-  // Escape for shell and regex (for fallback grep)
-  const safeQuery = query.replace(/[.*+?^${}()|[\]\\'"]/g, '\\$&');
-
-  // Try fd/rg first, fall back to find/grep
-  // Remote machines may or may not have fd/rg installed
-  // --no-ignore to include gitignored files (build/, dist/, etc.)
-  let remoteCmd: string;
-  if (mode === 'filename') {
-    // Try fd, fall back to find+grep
-    remoteCmd = `(fd --type f --follow --full-path --hidden --no-ignore --exclude .git --exclude .felt --exclude node_modules --exclude __pycache__ --color never ${escapedQuery} 2>/dev/null || find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o -type f -print 2>/dev/null | grep -i '${safeQuery}') | head -50`;
-  } else {
-    // Try rg, fall back to grep
-    remoteCmd = `(rg --line-number --no-heading --color never --max-count 1 --follow --no-ignore --glob '!.git' --glob '!node_modules' --glob '!__pycache__' ${escapedQuery} 2>/dev/null || grep -Rn --include='*' -I '${safeQuery}' . --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ 2>/dev/null) | head -50`;
-  }
-
-  const remoteScript = `cd ${escapedPath} && ${remoteCmd}`;
-
-  const proc = spawn('ssh', [sshHost, remoteScript]);
-  activeSearches.set(searchKey, proc);
-
-  let stdout = '';
-  let timedOut = false;
-  proc.stdout?.on('data', (data) => {
-    stdout += data.toString();
-  });
-
-  // Timeout: kill after 15 seconds for remote (slower)
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    proc.kill('SIGTERM');
-    console.log(`[Search] Remote timeout for ${searchKey}, returning partial results`);
-  }, 15000);
-
-  proc.on('close', () => {
-    clearTimeout(timeout);
-    activeSearches.delete(searchKey);
-    const results = parseSearchResults(stdout, cityPath, mode);
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
-  });
-
-  proc.on('error', (error) => {
-    clearTimeout(timeout);
-    activeSearches.delete(searchKey);
-    ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
-  });
-}
-
-// ============================================================================
-// Directory Listing (Files tab)
-// ============================================================================
-
-const NON_GIT_SKIP = new Set(['.git', 'node_modules', '__pycache__', '.DS_Store']);
-const gitRepoCache = new Map<string, boolean>();
-
-function sortDirectoryEntries(entries: DirectoryEntry[]): DirectoryEntry[] {
-  return entries.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-  });
-}
-
-function parseLsName(raw: string): { name: string; type: 'file' | 'dir' } | null {
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed === '.' || trimmed === '..') return null;
-  const last = trimmed.charAt(trimmed.length - 1);
-  const isDir = last === '/';
-  const name = trimmed.replace(/[\\/@*|=]+$/, '');
-  if (!name || NON_GIT_SKIP.has(name)) return null;
-  return { name, type: isDir ? 'dir' : 'file' };
-}
-
-async function isGitRepo(cityPath: string): Promise<boolean> {
-  const cached = gitRepoCache.get(cityPath);
-  if (cached !== undefined) return cached;
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', cityPath, 'rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
-    const result = stdout.trim() === 'true';
-    gitRepoCache.set(cityPath, result);
-    return result;
-  } catch {
-    gitRepoCache.set(cityPath, false);
-    return false;
-  }
-}
-
-async function isIgnoredByGit(cityPath: string, relPath: string): Promise<boolean> {
-  try {
-    await execFileAsync('git', ['-C', cityPath, 'check-ignore', '-q', relPath], { timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readPhysicalDirectoryEntries(targetPath: string): Promise<DirectoryEntry[]> {
-  const dirents = await readdir(targetPath, { withFileTypes: true });
-  const entries: DirectoryEntry[] = [];
-
-  for (const dirent of dirents) {
-    if (NON_GIT_SKIP.has(dirent.name)) continue;
-    if (dirent.isDirectory()) {
-      entries.push({ name: dirent.name, type: 'dir' });
-      continue;
-    }
-    if (dirent.isFile()) {
-      entries.push({ name: dirent.name, type: 'file' });
-      continue;
-    }
-    if (dirent.isSymbolicLink()) {
-      try {
-        const target = await stat(join(targetPath, dirent.name));
-        entries.push({ name: dirent.name, type: target.isDirectory() ? 'dir' : 'file' });
-      } catch {
-        // Broken symlink: keep as file so it can still be inspected.
-        entries.push({ name: dirent.name, type: 'file' });
-      }
-    }
-  }
-
-  return entries;
-}
-
-async function listLocalDirectory(cityPath: string, targetPath: string): Promise<DirectoryEntry[]> {
-  const safeRoot = resolve(cityPath);
-  const safeTarget = resolve(targetPath);
-  const relTarget = relative(safeRoot, safeTarget);
-  if (relTarget.startsWith('..') || relTarget.includes('/../')) {
-    throw new Error('Path is outside city root');
-  }
-
-  const physicalEntries = await readPhysicalDirectoryEntries(safeTarget);
-
-  if (await isGitRepo(cityPath)) {
-    const visible = await Promise.all(
-      physicalEntries.map(async (entry) => {
-        const relPath = relTarget ? `${relTarget}/${entry.name}` : entry.name;
-        return await isIgnoredByGit(cityPath, relPath) ? null : entry;
-      })
-    );
-    return sortDirectoryEntries(visible.filter((entry): entry is DirectoryEntry => Boolean(entry)));
-  }
-
-  return sortDirectoryEntries(physicalEntries);
-}
-
-async function listRemoteDirectory(sshHost: string, targetPath: string): Promise<DirectoryEntry[]> {
-  const escapedPath = shellEscape(targetPath);
-  const fdScript = `cd ${escapedPath} && ((fd --follow --max-depth 1 --type d --color never . | sed 's|^\\./||;s|$|/' && fd --follow --max-depth 1 --type f --type l --color never . | sed 's|^\\./||') 2>/dev/null || true)`;
-  const lsScript = `cd ${escapedPath} && ls -1AF 2>/dev/null`;
-
-  const parseEntries = (stdout: string): DirectoryEntry[] => {
-    const entriesByName = new Map<string, DirectoryEntry>();
-    for (const rawLine of stdout.split('\n')) {
-      const line = rawLine.trim().replace(/^\.\//, '');
-      if (!line || line === '.') continue;
-
-      let parsed: { name: string; type: 'file' | 'dir' } | null = null;
-      if (line.endsWith('/')) {
-        parsed = parseLsName(line);
-      } else {
-        const plainName = line.replace(/[\\/@*|=]+$/, '');
-        if (plainName && !NON_GIT_SKIP.has(plainName)) {
-          parsed = { name: plainName, type: 'file' };
-        }
-      }
-
-      if (!parsed) continue;
-      const existing = entriesByName.get(parsed.name);
-      if (!existing || existing.type === 'file' && parsed.type === 'dir') {
-        entriesByName.set(parsed.name, parsed);
-      }
-    }
-    return sortDirectoryEntries([...entriesByName.values()]);
-  };
-
-  const { stdout: fdStdout } = await execFileAsync('ssh', [sshHost, fdScript], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
-  const fdEntries = parseEntries(fdStdout);
-  if (fdEntries.length > 0) return fdEntries;
-
-  const { stdout: lsStdout } = await execFileAsync('ssh', [sshHost, lsScript], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
-  return parseEntries(lsStdout);
-}
-
-async function handleListDirectory(ws: WebSocket, cityId: string, path: string): Promise<void> {
-  const city = cityManager.getCityById(cityId);
-  if (!city) {
-    ws.send(JSON.stringify({ type: 'directoryListing', cityId, path, entries: [], error: 'City not found' }));
-    return;
-  }
-
-  try {
-    const safePath = resolve(path);
-    const safeCity = resolve(city.path);
-    if (!(safePath === safeCity || safePath.startsWith(`${safeCity}/`))) {
-      throw new Error('Path is outside city root');
-    }
-
-    let entries: DirectoryEntry[] = [];
-    if (city.originId === 'local') {
-      entries = await listLocalDirectory(city.path, safePath);
-    } else {
-      const origin = originManager.getOrigin(city.originId);
-      const persistedCity = cityPersistence.getCityById(city.id);
-      const sshHost = origin?.sshHost || persistedCity?.sshHost;
-      if (!sshHost) {
-        throw new Error('No SSH host for remote city');
-      }
-      entries = await listRemoteDirectory(sshHost, safePath);
-    }
-
-    ws.send(JSON.stringify({ type: 'directoryListing', cityId, path: safePath, entries }));
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Could not read directory';
-    ws.send(JSON.stringify({ type: 'directoryListing', cityId, path, entries: [], error: msg }));
-  }
-}
-
 function handlePinCity(
   ws: WebSocket,
   path: string,
@@ -1266,11 +824,9 @@ const messageRouter = new MessageRouter({
   onUnpinCity: handleUnpinCity,
   onConfirmUnpin: performUnpin,
   onKillWorker: (sessionId) => kitty.killWorker(sessionId),
-  onSearchFiles: handleSearchFiles,
+  onSearchFiles: workspaceBrowser.handleSearchFiles.bind(workspaceBrowser),
   onMoveCity: handleMoveCity,
-  onListDirectory: (ws, cityId, path) => {
-    handleListDirectory(ws, cityId, path);
-  },
+  onListDirectory: workspaceBrowser.handleListDirectory.bind(workspaceBrowser),
 });
 
 // ============================================================================
