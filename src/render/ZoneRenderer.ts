@@ -3,59 +3,25 @@
 import {
   Scene,
   Mesh,
-  MeshStandardMaterial,
   MeshBasicMaterial,
-  Shape,
-  ExtrudeGeometry,
   Group,
-  PlaneGeometry,
-  DoubleSide,
-  CanvasTexture,
-  LineLoop,
   BufferGeometry,
-  LineBasicMaterial,
-  Vector3,
   Object3D,
   Material,
 } from 'three'
-import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './HexGrid'
 import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
-import { WorkerSwarm } from './WorkerSwarm'
+import { ZoneRendererEntities } from './ZoneRendererEntities'
+import type { ZoneRendererActivity } from './ZoneRendererEntities'
 import { ZoneRendererLabelInteractions } from './ZoneRendererLabelInteractions'
 import { ZoneRendererWorkerTooltip } from './ZoneRendererWorkerTooltip'
 import type { City, Session, HexCoord } from '../state/types'
-import { PALETTE } from '../state/types'
-
-interface Activity {
-  tool: string
-  summary?: string
-  timestamp: number
-}
-
-interface HexMeshData {
-  group: Group
-  hex: HexCoord
-  type: 'city' | 'worker' | 'empty'
-  entityId?: string
-  entityName?: string  // Worker name for tooltip
-  originId?: string
-  tmuxSession?: string  // For workers - to route activity events
-  activitySessionKey?: string  // Stable key: originId:tmuxSession
-  status?: 'idle' | 'working'  // Worker status for swarm activity
-  activityMesh?: Mesh  // Activity ground decal
-  labelObject?: CSS2DObject  // HTML label (CSS2D for OpenType features)
-  workerLabels?: CSS2DObject[]  // Worker labels clustered on city sprite
-  cityName?: string  // For toggling label text
-  workerCount?: number  // For toggling label text
-}
 
 export class ZoneRenderer {
   private scene: Scene
   private hexGrid: HexGrid
-  private hexMeshes: Map<string, HexMeshData> = new Map()
   private groundPlane: Mesh | null = null
   private rhumbLinesGroup: Group | null = null
 
@@ -65,9 +31,6 @@ export class ZoneRenderer {
 
   // City sprites manager (nano-banana generated city plans)
   private citySprites: CitySpritesManager
-
-  // Worker swarms (murmuration particles replacing ship sprites)
-  private workerSwarms: Map<string, WorkerSwarm> = new Map()  // workerId -> swarm
 
   // Camera rotation (45° = π/4) - must match Camera.ts
   private readonly cameraRotation = Math.PI / 4
@@ -87,6 +50,7 @@ export class ZoneRenderer {
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
   private lastAnimateTime: number = 0  // For delta time calculation
 
+  private entities: ZoneRendererEntities
   private labelInteractions: ZoneRendererLabelInteractions
   private workerTooltip: ZoneRendererWorkerTooltip
 
@@ -94,7 +58,15 @@ export class ZoneRenderer {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
-    this.labelInteractions = new ZoneRendererLabelInteractions(workerId => this.workerSwarms.get(workerId))
+    this.labelInteractions = new ZoneRendererLabelInteractions(workerId => this.entities.getSwarm(workerId))
+    this.entities = new ZoneRendererEntities(
+      this.scene,
+      this.hexGrid,
+      this.citySprites,
+      this.labelInteractions,
+      this.hexHeight,
+      this.cameraRotation
+    )
     this.workerTooltip = new ZoneRendererWorkerTooltip()
     this.createGroundPlane()
 
@@ -103,7 +75,7 @@ export class ZoneRenderer {
       const city = this.currentCities.get(cityId)
       if (city) {
         const workers = this.currentWorkersByCity.get(cityId) || []
-        this.renderCity(city, workers)
+        this.entities.renderCity(city, workers)
       }
     })
   }
@@ -138,13 +110,6 @@ export class ZoneRenderer {
   }
 
   /**
-   * Get CSS class for worker label based on status
-   */
-  private workerLabelClass(status: 'idle' | 'working'): string {
-    return status === 'working' ? 'worker-label working' : 'worker-label'
-  }
-
-  /**
    * Set the screen-to-world conversion function (from camera)
    */
   setScreenToWorldConverter(converter: (x: number, y: number) => { x: number; z: number }): void {
@@ -164,33 +129,6 @@ export class ZoneRenderer {
    */
   get isDraggingSwarm(): boolean {
     return this.labelInteractions.isDraggingSwarm
-  }
-
-  /**
-   * Convert hex-aligned offset to world XZ coordinates.
-   * For elements rotated 60° to match hex orientation.
-   * +X = right along hex axis, +Y = up along hex axis
-   */
-  private hexToWorld(hexX: number, hexY: number): { x: number; z: number } {
-    const angle = this.cameraRotation + Math.PI / 3  // 45° + 60° = 105°
-    const cos = Math.cos(angle)
-    const sin = Math.sin(angle)
-    return {
-      x: hexX * cos - hexY * sin,
-      z: -hexX * sin - hexY * cos,
-    }
-  }
-
-  /**
-   * Get or create a worker swarm
-   */
-  private getOrCreateSwarm(workerId: string, tmuxSession: string): WorkerSwarm {
-    const existing = this.workerSwarms.get(workerId)
-    if (existing) return existing
-
-    const swarm = new WorkerSwarm(workerId, tmuxSession)
-    this.workerSwarms.set(workerId, swarm)
-    return swarm
   }
 
   /**
@@ -248,290 +186,6 @@ export class ZoneRenderer {
       avoidPositions: cityPositions,
     })
     this.scene.add(this.rhumbLinesGroup)
-  }
-
-  private createHexShape(scale = 1): Shape {
-    const r = this.hexGrid.hexRadius * scale
-    const shape = new Shape()
-
-    // Pointy-top hexagon (matches axialToCartesian spacing)
-    for (let i = 0; i < 6; i++) {
-      const angle = (Math.PI / 3) * i - Math.PI / 2
-      const x = r * Math.cos(angle)
-      const y = r * Math.sin(angle)
-      if (i === 0) {
-        shape.moveTo(x, y)
-      } else {
-        shape.lineTo(x, y)
-      }
-    }
-    shape.closePath()
-
-    return shape
-  }
-
-  private createHexMesh(
-    color: number,
-    scale = 1,
-    height = this.hexHeight
-  ): Mesh {
-    const shape = this.createHexShape(scale)
-    const geometry = new ExtrudeGeometry(shape, {
-      depth: height,
-      bevelEnabled: true,
-      bevelThickness: 0.02,
-      bevelSize: 0.02,
-      bevelSegments: 2,
-    })
-
-    const material = new MeshStandardMaterial({
-      color,
-      roughness: 0.8,
-      metalness: 0.1,
-    })
-
-    const mesh = new Mesh(geometry, material)
-    mesh.rotation.x = -Math.PI / 2
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-
-    return mesh
-  }
-
-  /**
-   * Create a hex edge outline (just the border, no fill)
-   */
-  private createHexEdge(scale = 1, opacity = 0.15): LineLoop {
-    const r = this.hexGrid.hexRadius * scale
-    const points: Vector3[] = []
-
-    // Pointy-top hexagon
-    for (let i = 0; i < 6; i++) {
-      const angle = (Math.PI / 3) * i - Math.PI / 2
-      points.push(new Vector3(r * Math.cos(angle), 0, r * Math.sin(angle)))
-    }
-
-    const geometry = new BufferGeometry().setFromPoints(points)
-    const material = new LineBasicMaterial({
-      color: PALETTE.gridEdge,
-      transparent: true,
-      opacity,
-    })
-
-    return new LineLoop(geometry, material)
-  }
-
-  /**
-   * Add hex grid overlay around a city (3-hex radius)
-   */
-  private addCityHexGrid(group: Group, centerHex: HexCoord): void {
-    const radius = 4  // 4-hex radius around city
-    const hexes = this.hexGrid.getHexesInRadius(centerHex, radius)
-
-    for (const hex of hexes) {
-      const relPos = this.hexGrid.axialToCartesian(hex)
-      const centerPos = this.hexGrid.axialToCartesian(centerHex)
-
-      const edge = this.createHexEdge(0.98, 0.10)
-      edge.position.set(relPos.x - centerPos.x, 0.05, relPos.z - centerPos.z)  // Above sprite
-      group.add(edge)
-    }
-  }
-
-  renderCity(city: City, workers: Session[] = []): void {
-    const key = this.hexGrid.hexKey(city.hex)
-
-    // Remove existing mesh at this position
-    this.removeHex(key)
-
-    const group = new Group()
-    const pos = this.hexGrid.axialToCartesian(city.hex)
-
-    // Light hex grid around city for spatial reference
-    this.addCityHexGrid(group, city.hex)
-
-    // City sprite - nano-banana generated city plan, lying flat on vellum
-    const texture = this.citySprites.getSprite(city)
-
-    if (texture) {
-      // Use a flat plane mesh instead of billboard sprite
-      // With 1 hex = 1 world unit, sprite covers 3 hex radius (7 hexes across)
-      const spriteSize = 6.5  // World units diameter (3 hex radius)
-      const geometry = new PlaneGeometry(spriteSize, spriteSize)
-      const material = new MeshBasicMaterial({
-        map: texture,
-        transparent: true,
-        side: DoubleSide,
-        depthWrite: false,  // Prevent z-fighting with vellum
-      })
-      const cityMesh = new Mesh(geometry, material)
-      cityMesh.rotation.x = -Math.PI / 2  // Lie flat on XZ plane
-      cityMesh.position.y = 0.02  // Just above vellum
-      group.add(cityMesh)
-    } else {
-      // Fallback: small marker while sprites load
-      const fallbackMesh = this.createHexMesh(PALETTE.cityHex, 0.3, 0.05)
-      group.add(fallbackMesh)
-    }
-
-    // City label - above the sprite
-    const labelDiv = document.createElement('div')
-    labelDiv.className = 'city-label'
-    labelDiv.textContent = city.name
-    labelDiv.style.cursor = 'pointer'
-
-    this.labelInteractions.bindCityLabel(labelDiv, city.id)
-
-    const labelObject = new CSS2DObject(labelDiv)
-    labelObject.position.set(0, 1.5, 0)  // Above center
-    group.add(labelObject)
-
-    // Workers as particle swarms positioned around the northern arc of the city
-    // Camera is at +Z looking toward -Z, so "north" (above on screen) is -Z direction
-    const workerLabels: CSS2DObject[] = []
-    const swarmRadius = 3.0  // Distance from city center
-    const arcStart = -Math.PI * 0.75  // Start at -135° (left-back)
-    const arcEnd = -Math.PI * 0.25    // End at -45° (right-back)
-
-    workers.forEach((worker, i) => {
-      // Distribute swarms along the northern arc (above city on screen)
-      const arcSpan = arcEnd - arcStart
-      const angle = workers.length === 1
-        ? -Math.PI * 0.5  // Single worker at center-back (directly away from camera = top)
-        : arcStart + (arcSpan * i / (workers.length - 1))
-
-      const swarmX = Math.cos(angle) * swarmRadius
-      const swarmZ = Math.sin(angle) * swarmRadius
-
-      const swarm = this.getOrCreateSwarm(worker.id, worker.tmuxSession)
-
-      // Position swarm relative to city (including any user offset)
-      swarm.group.position.set(
-        swarmX + swarm.userOffset.x,
-        0,
-        swarmZ + swarm.userOffset.z
-      )
-      swarm.setActivity(worker.status === 'working' ? 1 : 0)
-      group.add(swarm.group)
-
-      // Worker label attached to swarm (moves with swarm)
-      const workerDiv = document.createElement('div')
-      workerDiv.className = this.workerLabelClass(worker.status)
-      workerDiv.textContent = worker.name
-      workerDiv.dataset.workerId = worker.id
-      workerDiv.dataset.tmuxSession = worker.tmuxSession
-      workerDiv.style.cursor = 'grab'
-
-      this.labelInteractions.bindWorkerLabel(workerDiv, worker.id, worker.tmuxSession)
-
-      const workerLabelObj = new CSS2DObject(workerDiv)
-      // Attach label to swarm (positioned relative to swarm, at y=0.45 above particles)
-      swarm.setLabel(workerLabelObj)
-      workerLabels.push(workerLabelObj)
-    })
-
-    group.position.set(pos.x, 0, pos.z)
-    this.scene.add(group)
-
-    this.hexMeshes.set(key, {
-      group, hex: city.hex, type: 'city', entityId: city.id,
-      labelObject, workerLabels,
-      cityName: city.name, workerCount: workers.length
-    })
-  }
-
-  /**
-   * Render an orphan worker (no city) as a particle swarm
-   * These are workers that exist but aren't associated with any city
-   */
-  renderOrphanWorker(session: Session): void {
-    if (!session.hex) return
-
-    const key = this.hexGrid.hexKey(session.hex)
-
-    // Check if worker already exists - just update status
-    const existing = this.hexMeshes.get(key)
-    if (existing && existing.type === 'worker' && existing.entityId === session.id) {
-      // Update swarm activity and label class for status change
-      if (existing.status !== session.status) {
-        if (existing.labelObject) {
-          existing.labelObject.element.className = this.workerLabelClass(session.status)
-        }
-        // Update swarm activity
-        const swarm = this.workerSwarms.get(session.id)
-        swarm?.setActivity(session.status === 'working' ? 1 : 0)
-        existing.status = session.status
-      }
-      return
-    }
-
-    // Remove existing mesh at this position
-    this.removeHex(key)
-
-    const group = new Group()
-    const pos = this.hexGrid.axialToCartesian(session.hex)
-
-    const swarm = this.getOrCreateSwarm(session.id, session.tmuxSession)
-    // Apply user offset to swarm position (orphan workers position relative to hex center)
-    swarm.group.position.set(swarm.userOffset.x, 0, swarm.userOffset.z)
-    swarm.setActivity(session.status === 'working' ? 1 : 0)
-    group.add(swarm.group)
-
-    // Worker label with drag capability
-    const labelDiv = document.createElement('div')
-    labelDiv.className = this.workerLabelClass(session.status)
-    labelDiv.textContent = session.name
-    labelDiv.dataset.workerId = session.id
-    labelDiv.dataset.tmuxSession = session.tmuxSession
-    labelDiv.style.cursor = 'move'
-
-    this.labelInteractions.bindWorkerLabel(labelDiv, session.id, session.tmuxSession)
-
-    const labelObject = new CSS2DObject(labelDiv)
-    labelObject.position.y = 0.6  // Above swarm
-    group.add(labelObject)
-
-    group.position.set(pos.x, 0, pos.z)
-    this.scene.add(group)
-
-    this.hexMeshes.set(key, {
-      group,
-      hex: session.hex,
-      type: 'worker',
-      entityId: session.id,
-      entityName: session.name,
-      originId: session.originId,
-      tmuxSession: session.tmuxSession,
-      activitySessionKey: this.getActivitySessionKey(session.originId, session.tmuxSession),
-      status: session.status,
-      labelObject,
-    })
-  }
-
-  private removeHex(key: string): void {
-    const data = this.hexMeshes.get(key)
-    if (!data) return
-
-    // Clean up CSS2D label DOM elements
-    data.labelObject?.element.remove()
-    data.workerLabels?.forEach(label => label.element.remove())
-
-    // Remove swarms from group before disposing (they may be reused)
-    // Swarm groups have userData.workerId set
-    const swarmsToPreserve: Group[] = []
-    data.group.traverse((child) => {
-      if (child.userData?.workerId && child.parent === data.group) {
-        swarmsToPreserve.push(child as Group)
-      }
-    })
-    for (const swarmGroup of swarmsToPreserve) {
-      data.group.remove(swarmGroup)
-    }
-
-    // Dispose Three.js resources before removing from scene
-    this.disposeObject(data.group)
-    this.scene.remove(data.group)
-    this.hexMeshes.delete(key)
   }
 
   /**
@@ -595,7 +249,7 @@ export class ZoneRenderer {
       newSignatures.set(key, signature)
 
       if (this.lastCitySignatures.get(key) !== signature) {
-        this.renderCity(city, cityWorkers)
+        this.entities.renderCity(city, cityWorkers)
       }
     }
 
@@ -605,16 +259,11 @@ export class ZoneRenderer {
       if (session.hex) {
         const key = this.hexGrid.hexKey(session.hex)
         expectedKeys.add(key)
-        this.renderOrphanWorker(session)
+        this.entities.renderOrphanWorker(session, this.getActivitySessionKey(session.originId, session.tmuxSession))
       }
     }
 
-    // Remove hexes that no longer exist (except empty background hexes)
-    for (const [key, data] of this.hexMeshes) {
-      if (!expectedKeys.has(key) && data.type !== 'empty') {
-        this.removeHex(key)
-      }
-    }
+    this.entities.removeUnexpectedHexes(expectedKeys)
 
     const currentWorkerIds = new Set(sessions.map(s => s.id))
 
@@ -622,15 +271,7 @@ export class ZoneRenderer {
     this.workerTooltip.clearIfWorkerMissing(currentWorkerIds)
 
     // Dispose swarms for workers that no longer exist
-    for (const workerId of this.workerSwarms.keys()) {
-      if (!currentWorkerIds.has(workerId)) {
-        const swarm = this.workerSwarms.get(workerId)
-        if (swarm) {
-          swarm.dispose()
-          this.workerSwarms.delete(workerId)
-        }
-      }
-    }
+    this.entities.clearMissingWorkers(currentWorkerIds)
 
     // Update signature cache (removes old, adds new)
     this.lastCitySignatures = newSignatures
@@ -640,10 +281,7 @@ export class ZoneRenderer {
    * Find entity at a hex position
    */
   getEntityAtHex(hex: HexCoord): { type: 'city' | 'worker' | 'empty'; entityId?: string; entityName?: string } | null {
-    const key = this.hexGrid.hexKey(hex)
-    const data = this.hexMeshes.get(key)
-    if (!data) return null
-    return { type: data.type, entityId: data.entityId, entityName: data.entityName }
+    return this.entities.getEntityAtHex(hex)
   }
 
   /**
@@ -651,20 +289,7 @@ export class ZoneRenderer {
    * City sprites are ~6 world units, so use radius of 3
    */
   getCityAtWorldPos(worldX: number, worldZ: number): { entityId: string } | null {
-    const spriteRadius = 3.25  // 3 hex radius (matches sprite)
-    let nearest: { entityId: string; dist: number } | null = null
-
-    for (const [, data] of this.hexMeshes) {
-      if (data.type === 'city' && data.entityId) {
-        const pos = this.hexGrid.axialToCartesian(data.hex)
-        const dist = Math.sqrt((pos.x - worldX) ** 2 + (pos.z - worldZ) ** 2)
-        if (dist <= spriteRadius && (!nearest || dist < nearest.dist)) {
-          nearest = { entityId: data.entityId, dist }
-        }
-      }
-    }
-
-    return nearest ? { entityId: nearest.entityId } : null
+    return this.entities.getCityAtWorldPos(worldX, worldZ)
   }
 
   /**
@@ -672,33 +297,7 @@ export class ZoneRenderer {
    * Uses swarm hit test for click detection
    */
   getWorkerAtWorldPos(worldX: number, worldZ: number): { workerId: string; tmuxSession: string } | null {
-    let nearestDist = Infinity
-    let nearestWorker: { workerId: string; tmuxSession: string } | null = null
-
-    for (const [, data] of this.hexMeshes) {
-      if (data.type === 'city') {
-        const cityPos = this.hexGrid.axialToCartesian(data.hex)
-        // Check all swarm groups within the city
-        data.group.traverse((child) => {
-          if (child.userData?.workerId) {
-            // Swarm position in world space
-            const swarmWorldX = cityPos.x + child.position.x
-            const swarmWorldZ = cityPos.z + child.position.z
-            const dist = Math.sqrt((swarmWorldX - worldX) ** 2 + (swarmWorldZ - worldZ) ** 2)
-            const hitRadius = 0.8  // Swarm hit radius
-            if (dist <= hitRadius && dist < nearestDist) {
-              nearestDist = dist
-              nearestWorker = {
-                workerId: child.userData.workerId as string,
-                tmuxSession: child.userData.tmuxSession as string,
-              }
-            }
-          }
-        })
-      }
-    }
-
-    return nearestWorker
+    return this.entities.getWorkerAtWorldPos(worldX, worldZ)
   }
 
   /**
@@ -723,116 +322,18 @@ export class ZoneRenderer {
         this.lastFontSizes.city = cityFontSize
         this.lastFontSizes.worker = workerFontSize
 
-        for (const [, data] of this.hexMeshes) {
-          if (data.type === 'city') {
-            if (data.labelObject) {
-              const label = data.labelObject.element as HTMLElement
-              label.style.fontSize = `${cityFontSize}px`
-            }
-            data.workerLabels?.forEach(w => {
-              const el = w.element as HTMLElement
-              el.style.fontSize = `${workerFontSize}px`
-            })
-          }
-        }
+        this.entities.updateLabelFontSizes(cityFontSize, workerFontSize)
       }
     }
 
-    // Update all worker swarms (they handle their own animation)
-    for (const swarm of this.workerSwarms.values()) {
-      if (cameraDistance !== undefined) {
-        swarm.setCameraDistance(cameraDistance)
-      }
-      swarm.update(deltaTime)
-    }
-  }
-
-  /**
-   * Create activity ground decal showing recent tool calls
-   * Returns a flat Mesh that lies on the hex surface
-   */
-  private createActivityDecal(activities: Activity[]): Mesh {
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d')!
-
-    const width = 256
-    const height = 144  // 1.8x taller to fill hex
-    const fontSize = 13
-
-    canvas.width = width * 2
-    canvas.height = height * 2
-    ctx.scale(2, 2)
-
-    // Semi-transparent dark background
-    ctx.fillStyle = 'rgba(26, 24, 22, 0.7)'
-    ctx.roundRect(0, 0, width, height, 4)
-    ctx.fill()
-
-    if (activities.length > 0) {
-      const displayActivities = activities.slice(0, 3)  // Show 3 activities
-      const lineHeight = 24
-      const startY = 18
-      const centerX = width / 2
-
-      displayActivities.forEach((activity, i) => {
-        const y = startY + i * lineHeight
-        const opacity = 1 - i * 0.25  // Fade older entries
-
-        // Build full text line
-        let text = activity.tool
-        if (activity.summary) {
-          const summaryText = activity.summary.length > 18
-            ? activity.summary.slice(0, 15) + '...'
-            : activity.summary
-          text += ` ${summaryText}`
-        }
-
-        // Draw centered
-        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`
-        ctx.textAlign = 'center'
-        ctx.fillStyle = `rgba(201, 162, 39, ${opacity})`
-        ctx.fillText(text, centerX, y)
-      })
-    }
-
-    const texture = new CanvasTexture(canvas)
-    const worldWidth = 1.0
-    const worldHeight = worldWidth * (height / width)  // Maintain aspect ratio
-    const geometry = new PlaneGeometry(worldWidth, worldHeight)
-    const material = new MeshBasicMaterial({
-      map: texture,
-      transparent: true,
-      side: DoubleSide,
-      depthWrite: false,
-    })
-
-    const mesh = new Mesh(geometry, material)
-    mesh.rotation.x = -Math.PI / 2  // Lie flat
-    mesh.rotation.z = Math.PI / 3   // 60° rotation
-    return mesh
+    this.entities.updateSwarmAnimation(deltaTime, cameraDistance)
   }
 
   /**
    * Update activity display for a worker by tmux session
    */
-  updateWorkerActivity(activitySessionKey: string, activities: Activity[]): void {
-    const workerData = Array.from(this.hexMeshes.values()).find(
-      data => data.type === 'worker' && data.activitySessionKey === activitySessionKey && data.activityMesh
-    )
-    if (!workerData) return
-
-    // Dispose old decal resources before removing
-    this.disposeObject(workerData.activityMesh!)
-    workerData.group.remove(workerData.activityMesh!)
-
-    // Create new decal with updated activities
-    const newMesh = this.createActivityDecal(activities)
-    newMesh.position.y = this.hexHeight + 0.08  // Just above hex surface
-    const activityOffset = this.hexToWorld(-0.023, -0.03)
-    newMesh.position.x = activityOffset.x
-    newMesh.position.z = activityOffset.z
-    workerData.group.add(newMesh)
-    workerData.activityMesh = newMesh
+  updateWorkerActivity(activitySessionKey: string, activities: ZoneRendererActivity[]): void {
+    this.entities.updateWorkerActivity(activitySessionKey, activities)
   }
 
   /**
@@ -868,7 +369,7 @@ export class ZoneRenderer {
       geometries,
       materials,
       textures: textureSet.size,
-      hexes: this.hexMeshes.size
+      hexes: this.entities.hexMeshCount
     }
     console.table(counts)
     return counts
@@ -892,8 +393,8 @@ export class ZoneRenderer {
     const tooltipStats = this.workerTooltip.getRuntimeStats()
     const labelInteractionStats = this.labelInteractions.getRuntimeStats()
     return {
-      hexMeshCount: this.hexMeshes.size,
-      workerSwarmCount: this.workerSwarms.size,
+      hexMeshCount: this.entities.hexMeshCount,
+      workerSwarmCount: this.entities.workerSwarmCount,
       hasGroundPlane: this.groundPlane !== null,
       hasRhumbLinesGroup: this.rhumbLinesGroup !== null,
       labelDragActive: labelInteractionStats.active,
@@ -931,13 +432,7 @@ export class ZoneRenderer {
    * Get the world position of a worker's swarm (for camera focus)
    */
   getSwarmWorldPosition(workerId: string): { x: number, z: number } | null {
-    const swarm = this.workerSwarms.get(workerId)
-    if (!swarm) return null
-    // Swarm group is parented to city group — need world position
-    swarm.group.updateWorldMatrix(true, false)
-    const pos = new Vector3()
-    swarm.group.getWorldPosition(pos)
-    return { x: pos.x, z: pos.z }
+    return this.entities.getSwarmWorldPosition(workerId)
   }
 
   /**
@@ -947,10 +442,7 @@ export class ZoneRenderer {
     this.labelInteractions.dispose()
     this.workerTooltip.dispose()
 
-    // Remove and dispose all hex meshes
-    for (const key of this.hexMeshes.keys()) {
-      this.removeHex(key)
-    }
+    this.entities.dispose()
 
     // Dispose scene objects
     const sceneObjects: Array<{ ref: Mesh | Group | null; clear: () => void }> = [
@@ -965,12 +457,7 @@ export class ZoneRenderer {
       }
     }
 
-    // Dispose sprite managers and swarms
+    // Dispose sprite managers
     this.citySprites.dispose()
-    for (const swarm of this.workerSwarms.values()) {
-      swarm.dispose()
-    }
-    this.workerSwarms.clear()
-
   }
 }
