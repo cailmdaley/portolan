@@ -24,19 +24,13 @@ import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
 import { WorkerSwarm } from './WorkerSwarm'
+import { ZoneRendererWorkerTooltip } from './ZoneRendererWorkerTooltip'
 import type { City, Session, HexCoord } from '../state/types'
 import { PALETTE } from '../state/types'
 
 interface Activity {
   tool: string
   summary?: string
-  timestamp: number
-}
-
-interface RecentFileTooltipEntry {
-  toolName: string
-  fullPath: string
-  basename: string
   timestamp: number
 }
 
@@ -112,25 +106,13 @@ export class ZoneRenderer {
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
   private lastAnimateTime: number = 0  // For delta time calculation
 
-  // Worker file tooltip
-  private onWorkerFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
-  private workerFileTooltipEl: HTMLDivElement
-  private workerFileTooltipHoverTimerId: number | null = null
-  private workerFileTooltipHideTimerId: number | null = null
-  private workerFileTooltipRequestId = 0
-  private workerFileTooltipTargetWorkerId: string | null = null
-  private workerFileTooltipHovered = false
+  private workerTooltip: ZoneRendererWorkerTooltip
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
-    this.workerFileTooltipEl = document.createElement('div')
-    this.workerFileTooltipEl.className = 'worker-file-tooltip'
-    this.workerFileTooltipEl.style.display = 'none'
-    this.workerFileTooltipEl.addEventListener('mouseenter', this.onWorkerFileTooltipMouseEnter)
-    this.workerFileTooltipEl.addEventListener('mouseleave', this.onWorkerFileTooltipMouseLeave)
-    document.body.appendChild(this.workerFileTooltipEl)
+    this.workerTooltip = new ZoneRendererWorkerTooltip()
     this.createGroundPlane()
 
     // Re-render city when its custom sprite finishes loading
@@ -145,16 +127,6 @@ export class ZoneRenderer {
 
   private getActivitySessionKey(originId: string, tmuxSession: string): string {
     return `${originId}:${tmuxSession}`
-  }
-
-  private onWorkerFileTooltipMouseEnter = (): void => {
-    this.workerFileTooltipHovered = true
-    this.clearWorkerTooltipHideTimer()
-  }
-
-  private onWorkerFileTooltipMouseLeave = (): void => {
-    this.workerFileTooltipHovered = false
-    this.hideWorkerFileTooltip()
   }
 
   setWorkerClickHandler(onClick: (workerId: string, tmuxSession: string) => void): void {
@@ -841,12 +813,7 @@ export class ZoneRenderer {
     const currentWorkerIds = new Set(sessions.map(s => s.id))
 
     // If the hovered worker disappears, drop tooltip state immediately.
-    if (
-      this.workerFileTooltipTargetWorkerId &&
-      !currentWorkerIds.has(this.workerFileTooltipTargetWorkerId)
-    ) {
-      this.hideWorkerFileTooltip()
-    }
+    this.workerTooltip.clearIfWorkerMissing(currentWorkerIds)
 
     // Dispose swarms for workers that no longer exist
     for (const workerId of this.workerSwarms.keys()) {
@@ -1116,6 +1083,7 @@ export class ZoneRenderer {
     currentCityCount: number
     currentWorkersByCityCount: number
   } {
+    const tooltipStats = this.workerTooltip.getRuntimeStats()
     return {
       hexMeshCount: this.hexMeshes.size,
       workerSwarmCount: this.workerSwarms.size,
@@ -1124,9 +1092,9 @@ export class ZoneRenderer {
       labelDragActive: this.labelDrag !== null,
       labelDragListenersAttached: this.labelDragListenersAttached,
       labelDragResetTimeoutPending: this.labelDragResetTimeoutId !== null,
-      tooltipVisible: this.workerFileTooltipEl.style.display !== 'none',
-      tooltipHoverTimerPending: this.workerFileTooltipHoverTimerId !== null,
-      tooltipTargetWorkerId: this.workerFileTooltipTargetWorkerId,
+      tooltipVisible: tooltipStats.visible,
+      tooltipHoverTimerPending: tooltipStats.hoverTimerPending,
+      tooltipTargetWorkerId: tooltipStats.targetWorkerId,
       citySignatureCount: this.lastCitySignatures.size,
       currentCityCount: this.currentCities.size,
       currentWorkersByCityCount: this.currentWorkersByCity.size,
@@ -1134,7 +1102,7 @@ export class ZoneRenderer {
   }
 
   setWorkerFileClickHandler(handler: (fullPath: string, originId: string, workerId: string) => void): void {
-    this.onWorkerFileClick = handler
+    this.workerTooltip.setWorkerFileClickHandler(handler)
   }
 
   /**
@@ -1142,42 +1110,14 @@ export class ZoneRenderer {
    * Tooltip appears after a 300ms hover delay.
    */
   updateWorkerFileHover(session: Session | null, anchor: { x: number; y: number } | null): void {
-    if (!session || !anchor) {
-      this.workerFileTooltipTargetWorkerId = null
-      this.clearWorkerTooltipHoverTimer()
-      this.scheduleWorkerTooltipHide()
-      return
-    }
-
-    if (this.workerFileTooltipTargetWorkerId === session.id) {
-      if (this.workerFileTooltipHoverTimerId !== null) return
-      if (this.workerFileTooltipEl.style.display !== 'none') return
-    }
-
-    this.hideWorkerFileTooltip(false)
-    this.workerFileTooltipTargetWorkerId = session.id
-    this.clearWorkerTooltipHideTimer()
-    this.clearWorkerTooltipHoverTimer()
-
-    const hoverAnchor = { x: anchor.x, y: anchor.y }
-    this.workerFileTooltipHoverTimerId = window.setTimeout(() => {
-      this.workerFileTooltipHoverTimerId = null
-      if (this.workerFileTooltipTargetWorkerId !== session.id) return
-      void this.showWorkerFileTooltip(session, hoverAnchor)
-    }, 300)
+    this.workerTooltip.updateHover(session, anchor)
   }
 
   /**
    * Explicitly clear worker hover state.
    */
   clearWorkerFileHover(force = false): void {
-    this.workerFileTooltipTargetWorkerId = null
-    this.clearWorkerTooltipHoverTimer()
-    if (force) {
-      this.hideWorkerFileTooltip()
-      return
-    }
-    this.scheduleWorkerTooltipHide()
+    this.workerTooltip.clearHover(force)
   }
 
   /**
@@ -1194,190 +1134,11 @@ export class ZoneRenderer {
   }
 
   /**
-   * Fetch and display the tooltip entries for the hovered worker.
-   */
-  private async showWorkerFileTooltip(session: Session, anchor: { x: number; y: number }): Promise<void> {
-    const requestId = ++this.workerFileTooltipRequestId
-
-    const headerEl = document.createElement('div')
-    headerEl.className = 'worker-file-tooltip-header'
-    headerEl.textContent = session.name
-    const loadingEl = document.createElement('div')
-    loadingEl.className = 'worker-file-tooltip-empty'
-    loadingEl.textContent = 'Loading recent files...'
-    this.workerFileTooltipEl.replaceChildren(headerEl, loadingEl)
-    this.workerFileTooltipEl.style.display = 'block'
-    this.positionWorkerFileTooltip(anchor)
-
-    try {
-      const response = await fetch(
-        `http://${window.location.hostname}:4004/recent-files?sessionId=${encodeURIComponent(session.id)}&limit=5`
-      )
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const data = await response.json() as { files?: RecentFileTooltipEntry[] }
-      const files = Array.isArray(data.files)
-        ? data.files.filter((entry): entry is RecentFileTooltipEntry =>
-          !!entry &&
-          typeof entry.fullPath === 'string' &&
-          typeof entry.basename === 'string' &&
-          typeof entry.toolName === 'string'
-        )
-        : []
-
-      if (requestId !== this.workerFileTooltipRequestId || this.workerFileTooltipTargetWorkerId !== session.id) {
-        return
-      }
-      this.renderWorkerFileTooltip(session, files, anchor)
-    } catch {
-      if (requestId !== this.workerFileTooltipRequestId || this.workerFileTooltipTargetWorkerId !== session.id) {
-        return
-      }
-      this.renderWorkerFileTooltip(session, [], anchor, 'Failed to load recent files')
-    }
-  }
-
-  private renderWorkerFileTooltip(
-    session: Session,
-    files: RecentFileTooltipEntry[],
-    anchor: { x: number; y: number },
-    errorMessage?: string
-  ): void {
-    const headerEl = document.createElement('div')
-    headerEl.className = 'worker-file-tooltip-header'
-    headerEl.textContent = session.name
-    this.workerFileTooltipEl.replaceChildren(headerEl)
-
-    if (errorMessage) {
-      const errorEl = document.createElement('div')
-      errorEl.className = 'worker-file-tooltip-empty error'
-      errorEl.textContent = errorMessage
-      this.workerFileTooltipEl.appendChild(errorEl)
-    } else if (files.length === 0) {
-      const emptyEl = document.createElement('div')
-      emptyEl.className = 'worker-file-tooltip-empty'
-      emptyEl.textContent = 'No recent file touches'
-      this.workerFileTooltipEl.appendChild(emptyEl)
-    } else {
-      const listEl = document.createElement('div')
-      listEl.className = 'worker-file-tooltip-list'
-      for (const entry of files.slice(0, 5)) {
-        listEl.appendChild(this.createWorkerFileTooltipItem(session, entry))
-      }
-      this.workerFileTooltipEl.appendChild(listEl)
-    }
-
-    this.workerFileTooltipEl.style.display = 'block'
-    this.positionWorkerFileTooltip(anchor)
-  }
-
-  private createWorkerFileTooltipItem(session: Session, entry: RecentFileTooltipEntry): HTMLButtonElement {
-    const item = document.createElement('button')
-    item.type = 'button'
-    item.className = 'worker-file-tooltip-item'
-    item.title = entry.fullPath
-
-    const basenameEl = document.createElement('span')
-    basenameEl.className = 'worker-file-tooltip-basename'
-    basenameEl.textContent = entry.basename
-
-    const metaEl = document.createElement('span')
-    metaEl.className = 'worker-file-tooltip-meta'
-    metaEl.textContent = entry.toolName
-
-    const pathEl = document.createElement('span')
-    pathEl.className = 'worker-file-tooltip-path'
-    pathEl.textContent = entry.fullPath
-
-    item.appendChild(basenameEl)
-    item.appendChild(metaEl)
-    item.appendChild(pathEl)
-
-    item.addEventListener('click', (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      this.onWorkerFileClick?.(entry.fullPath, session.originId, session.id)
-      this.hideWorkerFileTooltip()
-    })
-
-    return item
-  }
-
-  private positionWorkerFileTooltip(anchor: { x: number; y: number }): void {
-    const margin = 12
-    const rect = this.workerFileTooltipEl.getBoundingClientRect()
-
-    let left = anchor.x + 14
-    let top = anchor.y - rect.height - 14
-    if (top < margin) {
-      top = anchor.y + 14
-    }
-    if (left + rect.width > window.innerWidth - margin) {
-      left = window.innerWidth - rect.width - margin
-    }
-    if (left < margin) {
-      left = margin
-    }
-    if (top + rect.height > window.innerHeight - margin) {
-      top = window.innerHeight - rect.height - margin
-    }
-    if (top < margin) {
-      top = margin
-    }
-
-    this.workerFileTooltipEl.style.left = `${Math.round(left)}px`
-    this.workerFileTooltipEl.style.top = `${Math.round(top)}px`
-  }
-
-  private clearWorkerTooltipHoverTimer(): void {
-    if (this.workerFileTooltipHoverTimerId !== null) {
-      window.clearTimeout(this.workerFileTooltipHoverTimerId)
-      this.workerFileTooltipHoverTimerId = null
-    }
-  }
-
-  private clearWorkerTooltipHideTimer(): void {
-    if (this.workerFileTooltipHideTimerId !== null) {
-      window.clearTimeout(this.workerFileTooltipHideTimerId)
-      this.workerFileTooltipHideTimerId = null
-    }
-  }
-
-  private scheduleWorkerTooltipHide(): void {
-    if (this.workerFileTooltipEl.style.display === 'none') return
-    if (this.workerFileTooltipHovered) return
-
-    this.clearWorkerTooltipHideTimer()
-    this.workerFileTooltipHideTimerId = window.setTimeout(() => {
-      this.workerFileTooltipHideTimerId = null
-      if (this.workerFileTooltipHovered) return
-      this.hideWorkerFileTooltip()
-    }, 120)
-  }
-
-  private hideWorkerFileTooltip(resetTarget = true): void {
-    this.clearWorkerTooltipHoverTimer()
-    this.clearWorkerTooltipHideTimer()
-    this.workerFileTooltipRequestId++
-    this.workerFileTooltipHovered = false
-    this.workerFileTooltipEl.style.display = 'none'
-    this.workerFileTooltipEl.replaceChildren()
-    if (resetTarget) {
-      this.workerFileTooltipTargetWorkerId = null
-    }
-  }
-
-  /**
    * Dispose all resources (call before recreating during HMR)
    */
   dispose(): void {
     this.cancelActiveLabelDrag()
-    this.clearWorkerTooltipHoverTimer()
-    this.clearWorkerTooltipHideTimer()
-    this.workerFileTooltipEl.removeEventListener('mouseenter', this.onWorkerFileTooltipMouseEnter)
-    this.workerFileTooltipEl.removeEventListener('mouseleave', this.onWorkerFileTooltipMouseLeave)
-    this.workerFileTooltipEl.remove()
+    this.workerTooltip.dispose()
 
     // Remove and dispose all hex meshes
     for (const key of this.hexMeshes.keys()) {
@@ -1407,7 +1168,6 @@ export class ZoneRenderer {
     this.onWorkerClick = null
     this.onWorkerDblClick = null
     this.onCityLabelClick = null
-    this.onWorkerFileClick = null
     this.screenToWorldConverter = null
   }
 }
