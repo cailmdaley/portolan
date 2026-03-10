@@ -24,6 +24,7 @@ import { createVellumPlane } from './VellumShader'
 import { createRhumbLines } from './RhumbLines'
 import { CitySpritesManager } from './CitySpritesManager'
 import { WorkerSwarm } from './WorkerSwarm'
+import { ZoneRendererLabelInteractions } from './ZoneRendererLabelInteractions'
 import { ZoneRendererWorkerTooltip } from './ZoneRendererWorkerTooltip'
 import type { City, Session, HexCoord } from '../state/types'
 import { PALETTE } from '../state/types'
@@ -71,26 +72,6 @@ export class ZoneRenderer {
   // Camera rotation (45° = π/4) - must match Camera.ts
   private readonly cameraRotation = Math.PI / 4
 
-  // Callback for worker label clicks (since CSS2D labels need direct handlers)
-  private onWorkerClick: ((workerId: string, tmuxSession: string) => void) | null = null
-  private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
-  private onWorkerLabelHover: ((workerId: string, tmuxSession: string, anchor: { x: number; y: number }) => void) | null = null
-  private onWorkerLabelHoverEnd: (() => void) | null = null
-
-  // Callback for city label clicks (needed for remote cities without sprites)
-  private onCityLabelClick: ((cityId: string) => void) | null = null
-
-  // Label drag state (for dragging worker swarm via label)
-  private labelDrag: {
-    workerId: string
-    startX: number
-    startY: number
-    moved: boolean  // Track if mouse moved (to distinguish click from drag)
-    labelEl: HTMLElement  // Store element for cursor reset
-  } | null = null
-  private labelDragListenersAttached = false
-  private labelDragResetTimeoutId: number | null = null
-
   // Track city positions for rhumb line avoidance
   private lastCityPositions: string = ''
 
@@ -106,12 +87,14 @@ export class ZoneRenderer {
   private lastFontSizes: { city: number; worker: number } = { city: -1, worker: -1 }
   private lastAnimateTime: number = 0  // For delta time calculation
 
+  private labelInteractions: ZoneRendererLabelInteractions
   private workerTooltip: ZoneRendererWorkerTooltip
 
   constructor(scene: Scene, hexGrid: HexGrid) {
     this.scene = scene
     this.hexGrid = hexGrid
     this.citySprites = new CitySpritesManager()
+    this.labelInteractions = new ZoneRendererLabelInteractions(workerId => this.workerSwarms.get(workerId))
     this.workerTooltip = new ZoneRendererWorkerTooltip()
     this.createGroundPlane()
 
@@ -130,11 +113,11 @@ export class ZoneRenderer {
   }
 
   setWorkerClickHandler(onClick: (workerId: string, tmuxSession: string) => void): void {
-    this.onWorkerClick = onClick
+    this.labelInteractions.setWorkerClickHandler(onClick)
   }
 
   setWorkerDblClickHandler(onDblClick: (workerId: string, tmuxSession: string) => void): void {
-    this.onWorkerDblClick = onDblClick
+    this.labelInteractions.setWorkerDblClickHandler(onDblClick)
   }
 
   /**
@@ -144,15 +127,14 @@ export class ZoneRenderer {
     onHover: (workerId: string, tmuxSession: string, anchor: { x: number; y: number }) => void,
     onHoverEnd: () => void
   ): void {
-    this.onWorkerLabelHover = onHover
-    this.onWorkerLabelHoverEnd = onHoverEnd
+    this.labelInteractions.setWorkerLabelHoverHandlers(onHover, onHoverEnd)
   }
 
   /**
    * Set callback for city label clicks (needed for remote cities without sprites)
    */
   setCityLabelClickHandler(onClick: (cityId: string) => void): void {
-    this.onCityLabelClick = onClick
+    this.labelInteractions.setCityLabelClickHandler(onClick)
   }
 
   /**
@@ -163,156 +145,10 @@ export class ZoneRenderer {
   }
 
   /**
-   * Setup drag handlers for a worker label
-   */
-  private setupLabelDrag(labelEl: HTMLElement, workerId: string): void {
-    labelEl.addEventListener('mousedown', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      this.cancelActiveLabelDrag()
-
-      this.labelDrag = {
-        workerId,
-        startX: e.clientX,
-        startY: e.clientY,
-        moved: false,
-        labelEl,
-      }
-
-      // Set custom grabbing cursor (bird for everything)
-      const birdCursor = 'var(--cursor-bird)'
-      labelEl.style.cursor = birdCursor
-      document.body.style.cursor = birdCursor
-
-      this.attachLabelDragListeners()
-    })
-  }
-
-  /**
-   * Setup click handlers for a worker label
-   */
-  private setupLabelClickHandlers(labelEl: HTMLElement, workerId: string, tmuxSession: string): void {
-    labelEl.addEventListener('click', (e) => {
-      e.stopPropagation()
-      // Don't trigger click if we just finished dragging
-      if (this.labelDrag?.workerId === workerId && this.labelDrag.moved) {
-        return
-      }
-      if (this.onWorkerClick) this.onWorkerClick(workerId, tmuxSession)
-    })
-    labelEl.addEventListener('dblclick', (e) => {
-      e.stopPropagation()
-      if (this.onWorkerDblClick) this.onWorkerDblClick(workerId, tmuxSession)
-    })
-    labelEl.addEventListener('mouseenter', () => {
-      if (this.onWorkerLabelHover) {
-        const rect = labelEl.getBoundingClientRect()
-        this.onWorkerLabelHover(workerId, tmuxSession, { x: rect.left + rect.width / 2, y: rect.top })
-      }
-    })
-    labelEl.addEventListener('mouseleave', () => {
-      if (this.onWorkerLabelHoverEnd) this.onWorkerLabelHoverEnd()
-    })
-  }
-
-  private onLabelDrag = (e: MouseEvent): void => {
-    if (!this.labelDrag) return
-
-    const dx = e.clientX - this.labelDrag.startX
-    const dy = e.clientY - this.labelDrag.startY
-
-    // Only count as "moved" if dragged more than a few pixels (prevents accidental drags)
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-      this.labelDrag.moved = true
-    }
-
-    if (this.labelDrag.moved && this.screenToWorldConverter) {
-      // Convert screen positions to world positions for accurate movement
-      const worldStart = this.screenToWorldConverter(this.labelDrag.startX, this.labelDrag.startY)
-      const worldNow = this.screenToWorldConverter(e.clientX, e.clientY)
-
-      const worldDx = worldNow.x - worldStart.x
-      const worldDz = worldNow.z - worldStart.z
-
-      // Reset drag start to current position for incremental movement
-      this.labelDrag.startX = e.clientX
-      this.labelDrag.startY = e.clientY
-
-      // Move the swarm
-      const swarm = this.workerSwarms.get(this.labelDrag.workerId)
-      if (swarm) {
-        swarm.userOffset.x += worldDx
-        swarm.userOffset.z += worldDz
-        swarm.group.position.x += worldDx
-        swarm.group.position.z += worldDz
-      }
-    }
-  }
-
-  // Screen-to-world converter function (set from main.ts with camera access)
-  private screenToWorldConverter: ((x: number, y: number) => { x: number; z: number }) | null = null
-
-  /**
    * Set the screen-to-world conversion function (from camera)
    */
   setScreenToWorldConverter(converter: (x: number, y: number) => { x: number; z: number }): void {
-    this.screenToWorldConverter = converter
-  }
-
-  private clearLabelDragResetTimeout(): void {
-    if (this.labelDragResetTimeoutId !== null) {
-      window.clearTimeout(this.labelDragResetTimeoutId)
-      this.labelDragResetTimeoutId = null
-    }
-  }
-
-  private attachLabelDragListeners(): void {
-    if (this.labelDragListenersAttached) return
-    document.addEventListener('mousemove', this.onLabelDrag)
-    document.addEventListener('mouseup', this.stopLabelDrag)
-    this.labelDragListenersAttached = true
-  }
-
-  private detachLabelDragListeners(): void {
-    if (!this.labelDragListenersAttached) return
-    document.removeEventListener('mousemove', this.onLabelDrag)
-    document.removeEventListener('mouseup', this.stopLabelDrag)
-    this.labelDragListenersAttached = false
-  }
-
-  private cancelActiveLabelDrag(): void {
-    this.clearLabelDragResetTimeout()
-    if (this.labelDrag?.labelEl) {
-      this.labelDrag.labelEl.style.cursor = 'grab'
-    }
-    this.labelDrag = null
-    document.body.style.cursor = ''
-    this.detachLabelDragListeners()
-  }
-
-  private stopLabelDrag = (): void => {
-    if (!this.labelDrag) {
-      this.detachLabelDragListeners()
-      document.body.style.cursor = ''
-      return
-    }
-
-    // Reset cursors
-    if (this.labelDrag.labelEl) {
-      this.labelDrag.labelEl.style.cursor = 'grab'
-    }
-    document.body.style.cursor = ''
-    this.detachLabelDragListeners()
-    this.clearLabelDragResetTimeout()
-
-    // Keep labelDrag briefly so click handler can check if we moved
-    const drag = this.labelDrag
-    this.labelDragResetTimeoutId = window.setTimeout(() => {
-      if (this.labelDrag === drag) {
-        this.labelDrag = null
-      }
-      this.labelDragResetTimeoutId = null
-    }, 10)
+    this.labelInteractions.setScreenToWorldConverter(converter)
   }
 
   /**
@@ -320,35 +156,14 @@ export class ZoneRenderer {
    * Returns true if swarm found and drag started
    */
   startSwarmDrag(workerId: string, screenX: number, screenY: number): boolean {
-    const swarm = this.workerSwarms.get(workerId)
-    if (!swarm) return false
-
-    // Find the label element to update its cursor
-    const labelEl = swarm.getLabel()?.element as HTMLElement | undefined
-    this.cancelActiveLabelDrag()
-
-    this.labelDrag = {
-      workerId,
-      startX: screenX,
-      startY: screenY,
-      moved: false,
-      labelEl: labelEl || document.createElement('div'),  // Dummy if no label
-    }
-
-    const birdCursor = 'var(--cursor-bird)'
-    document.body.style.cursor = birdCursor
-    if (labelEl) labelEl.style.cursor = birdCursor
-
-    this.attachLabelDragListeners()
-
-    return true
+    return this.labelInteractions.startSwarmDrag(workerId, screenX, screenY)
   }
 
   /**
    * Check if currently dragging a swarm
    */
   get isDraggingSwarm(): boolean {
-    return this.labelDrag !== null && this.labelDrag.moved
+    return this.labelInteractions.isDraggingSwarm
   }
 
   /**
@@ -565,12 +380,7 @@ export class ZoneRenderer {
     labelDiv.textContent = city.name
     labelDiv.style.cursor = 'pointer'
 
-    // Click handler for city label (needed for remote cities without sprites)
-    const cityId = city.id
-    labelDiv.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (this.onCityLabelClick) this.onCityLabelClick(cityId)
-    })
+    this.labelInteractions.bindCityLabel(labelDiv, city.id)
 
     const labelObject = new CSS2DObject(labelDiv)
     labelObject.position.set(0, 1.5, 0)  // Above center
@@ -612,9 +422,7 @@ export class ZoneRenderer {
       workerDiv.dataset.tmuxSession = worker.tmuxSession
       workerDiv.style.cursor = 'grab'
 
-      // Drag to move swarm (via label)
-      this.setupLabelDrag(workerDiv, worker.id)
-      this.setupLabelClickHandlers(workerDiv, worker.id, worker.tmuxSession)
+      this.labelInteractions.bindWorkerLabel(workerDiv, worker.id, worker.tmuxSession)
 
       const workerLabelObj = new CSS2DObject(workerDiv)
       // Attach label to swarm (positioned relative to swarm, at y=0.45 above particles)
@@ -677,9 +485,7 @@ export class ZoneRenderer {
     labelDiv.dataset.tmuxSession = session.tmuxSession
     labelDiv.style.cursor = 'move'
 
-    // Drag to move swarm
-    this.setupLabelDrag(labelDiv, session.id)
-    this.setupLabelClickHandlers(labelDiv, session.id, session.tmuxSession)
+    this.labelInteractions.bindWorkerLabel(labelDiv, session.id, session.tmuxSession)
 
     const labelObject = new CSS2DObject(labelDiv)
     labelObject.position.y = 0.6  // Above swarm
@@ -1084,14 +890,15 @@ export class ZoneRenderer {
     currentWorkersByCityCount: number
   } {
     const tooltipStats = this.workerTooltip.getRuntimeStats()
+    const labelInteractionStats = this.labelInteractions.getRuntimeStats()
     return {
       hexMeshCount: this.hexMeshes.size,
       workerSwarmCount: this.workerSwarms.size,
       hasGroundPlane: this.groundPlane !== null,
       hasRhumbLinesGroup: this.rhumbLinesGroup !== null,
-      labelDragActive: this.labelDrag !== null,
-      labelDragListenersAttached: this.labelDragListenersAttached,
-      labelDragResetTimeoutPending: this.labelDragResetTimeoutId !== null,
+      labelDragActive: labelInteractionStats.active,
+      labelDragListenersAttached: labelInteractionStats.listenersAttached,
+      labelDragResetTimeoutPending: labelInteractionStats.resetTimeoutPending,
       tooltipVisible: tooltipStats.visible,
       tooltipHoverTimerPending: tooltipStats.hoverTimerPending,
       tooltipTargetWorkerId: tooltipStats.targetWorkerId,
@@ -1137,7 +944,7 @@ export class ZoneRenderer {
    * Dispose all resources (call before recreating during HMR)
    */
   dispose(): void {
-    this.cancelActiveLabelDrag()
+    this.labelInteractions.dispose()
     this.workerTooltip.dispose()
 
     // Remove and dispose all hex meshes
@@ -1165,9 +972,5 @@ export class ZoneRenderer {
     }
     this.workerSwarms.clear()
 
-    this.onWorkerClick = null
-    this.onWorkerDblClick = null
-    this.onCityLabelClick = null
-    this.screenToWorldConverter = null
   }
 }
