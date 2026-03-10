@@ -15,6 +15,10 @@ export class PlaygroundViewer {
   private loadingIndicator: HTMLElement
   private playgroundList: HTMLElement
   private playgrounds: PlaygroundInfo[] = []
+  private showRequestId = 0
+  private showAbortController: AbortController | null = null
+  private hideTimeoutId: number | null = null
+  private disposed = false
 
   // Stored listener ref for HMR-safe cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -57,7 +61,39 @@ export class PlaygroundViewer {
     }
   }
 
+  private beginShowRequest(): { requestId: number; signal: AbortSignal } {
+    this.cancelShowRequest()
+    this.showRequestId += 1
+    this.showAbortController = new AbortController()
+    return { requestId: this.showRequestId, signal: this.showAbortController.signal }
+  }
+
+  private isCurrentShowRequest(requestId: number): boolean {
+    return !this.disposed && requestId === this.showRequestId
+  }
+
+  private cancelShowRequest(): void {
+    if (this.showAbortController) {
+      this.showAbortController.abort()
+      this.showAbortController = null
+    }
+  }
+
+  private clearHideTimeout(): void {
+    if (this.hideTimeoutId !== null) {
+      window.clearTimeout(this.hideTimeoutId)
+      this.hideTimeoutId = null
+    }
+  }
+
   async show(city: City): Promise<void> {
+    if (this.disposed) {
+      return
+    }
+
+    this.clearHideTimeout()
+    const { requestId, signal } = this.beginShowRequest()
+
     this.title.textContent = `Playgrounds: ${city.name}`
 
     // Show loading
@@ -74,8 +110,9 @@ export class PlaygroundViewer {
 
     // Fetch list of playgrounds
     try {
-      const res = await fetch(`http://${window.location.hostname}:4004/playground-list?cityId=${encodeURIComponent(city.id)}`)
+      const res = await fetch(`http://${window.location.hostname}:4004/playground-list?cityId=${encodeURIComponent(city.id)}`, { signal })
       const data = await res.json()
+      if (!this.isCurrentShowRequest(requestId) || signal.aborted) return
 
       if (!data.playgrounds || data.playgrounds.length === 0) {
         this.loadingIndicator.textContent = 'No playgrounds found'
@@ -90,10 +127,15 @@ export class PlaygroundViewer {
       this.renderPlaygroundList()
 
       // Load first playground by default
-      this.loadPlayground(this.playgrounds[0])
+      this.loadPlayground(this.playgrounds[0], requestId)
     } catch (err) {
+      if (!this.isCurrentShowRequest(requestId) || signal.aborted) return
       this.loadingIndicator.textContent = 'Failed to load playgrounds'
       console.error('Failed to load playgrounds:', err)
+    } finally {
+      if (this.isCurrentShowRequest(requestId)) {
+        this.showAbortController = null
+      }
     }
   }
 
@@ -108,7 +150,7 @@ export class PlaygroundViewer {
     this.playgroundList.querySelectorAll('.playground-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.getAttribute('data-idx')!, 10)
-        this.loadPlayground(this.playgrounds[idx])
+        this.loadPlayground(this.playgrounds[idx], this.showRequestId)
 
         // Update active state
         this.playgroundList.querySelectorAll('.playground-tab').forEach(b => b.classList.remove('active'))
@@ -117,7 +159,11 @@ export class PlaygroundViewer {
     })
   }
 
-  private loadPlayground(playground: PlaygroundInfo): void {
+  private loadPlayground(playground: PlaygroundInfo, requestId: number): void {
+    if (!this.isCurrentShowRequest(requestId) || !this.isVisible()) {
+      return
+    }
+
     // Show loading
     this.loadingIndicator.style.display = 'flex'
     this.loadingIndicator.textContent = 'Loading playground...'
@@ -128,13 +174,16 @@ export class PlaygroundViewer {
 
     // Hide loading when iframe loads
     this.iframe.onload = () => {
+      if (!this.isCurrentShowRequest(requestId) || !this.isVisible()) return
       this.loadingIndicator.style.display = 'none'
       this.iframe.style.opacity = '1'
     }
   }
 
   hide(): void {
+    this.cancelShowRequest()
     this.panel.classList.remove('visible')
+    this.iframe.onload = null
 
     // Detach escape listener
     if (this.escapeHandler) {
@@ -142,7 +191,15 @@ export class PlaygroundViewer {
     }
 
     // Clear iframe after animation
-    setTimeout(() => {
+    this.clearHideTimeout()
+    if (this.disposed) {
+      this.iframe.src = 'about:blank'
+      this.playgrounds = []
+      return
+    }
+
+    this.hideTimeoutId = window.setTimeout(() => {
+      this.hideTimeoutId = null
       if (!this.isVisible()) {
         this.iframe.src = 'about:blank'
         this.playgrounds = []
@@ -154,7 +211,30 @@ export class PlaygroundViewer {
     return this.panel.classList.contains('visible')
   }
 
+  getRuntimeStats(): {
+    visible: boolean
+    disposed: boolean
+    showRequestId: number
+    hasActiveShowRequest: boolean
+    hasHideTimeout: boolean
+    playgroundCount: number
+    iframeSrc: string
+  } {
+    return {
+      visible: this.isVisible(),
+      disposed: this.disposed,
+      showRequestId: this.showRequestId,
+      hasActiveShowRequest: this.showAbortController !== null,
+      hasHideTimeout: this.hideTimeoutId !== null,
+      playgroundCount: this.playgrounds.length,
+      iframeSrc: this.iframe.getAttribute('src') || '',
+    }
+  }
+
   dispose(): void {
+    if (this.disposed) return
+
+    this.disposed = true
     this.hide()
     this.panel.remove()
   }

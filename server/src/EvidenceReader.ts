@@ -3,7 +3,7 @@
  *
  * Works both locally and via SSH for remote cities.
  * Evidence lives at: {cityPath}/results/claims/{specName}/evidence.json
- * Artifacts are PNGs/JPGs in the same directory.
+ * Artifacts are images and PDFs in the same directory.
  */
 
 import { readFile, stat } from 'fs/promises';
@@ -17,7 +17,7 @@ const execFileAsync = promisify(execFile);
 export interface Evidence {
   specName: string;
   metrics: Record<string, unknown>;
-  artifacts: Record<string, string>; // output name → filename (images only)
+  artifacts: Record<string, string>; // output name → filename (images and PDFs)
   mtime: number;                     // ms since epoch — evidence.json mtime
   generated: string | null;           // ISO timestamp from evidence.json
 }
@@ -42,7 +42,7 @@ export async function readEvidence(
   }
 }
 
-const IMAGE_RE = /\.(png|jpe?g)$/i;
+const ARTIFACT_RE = /\.(png|jpe?g|pdf)$/i;
 
 function buildEvidence(
   specName: string,
@@ -54,7 +54,7 @@ function buildEvidence(
   const output = (data.output || {}) as Record<string, string | string[]>;
   const artifacts: Record<string, string> = {};
   for (const [key, val] of Object.entries(output)) {
-    if (typeof val === 'string' && IMAGE_RE.test(val)) {
+    if (typeof val === 'string' && ARTIFACT_RE.test(val)) {
       artifacts[key] = val;
     }
   }

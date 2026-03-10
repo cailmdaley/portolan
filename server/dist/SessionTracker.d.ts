@@ -14,6 +14,7 @@ export interface Session {
         q: number;
         r: number;
     };
+    cli?: string;
     status: 'idle' | 'working' | 'offline';
     createdAt: number;
     lastActivity: number;

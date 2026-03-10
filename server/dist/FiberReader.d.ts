@@ -6,29 +6,37 @@ export interface Fiber {
     priority: number;
     createdAt: string;
     body?: string;
-    reason?: string;
+    outcome?: string;
     closedAt?: string;
+    tags?: string[];
+    dependsOn?: string[];
 }
 /**
  * Counts open fibers for a city by reading its .felt/ directory.
- *
- * @param cityPath Absolute path to the city directory
- * @returns Number of fibers with status !== 'closed'
  */
 export declare function countOpenFibers(cityPath: string): Promise<number>;
 /**
  * Gets all open fibers for a city.
- *
- * @param cityPath Absolute path to the city directory
- * @returns Array of fibers with status !== 'closed', sorted by active first, then by priority
+ * Returns fibers with status !== 'closed', sorted by active first, then by priority.
  */
 export declare function getOpenFibers(cityPath: string): Promise<Fiber[]>;
 /**
  * Gets recently closed fibers for a city.
- *
- * @param cityPath Absolute path to the city directory
- * @param limit Maximum number of fibers to return
- * @returns Array of closed fibers sorted by closed date descending
  */
 export declare function getRecentlyClosed(cityPath: string, limit: number): Promise<Fiber[]>;
+/**
+ * Gets all fibers (any status) matching a tag prefix.
+ */
+export declare function getFibersByTag(cityPath: string, tagPrefix: string): Promise<Fiber[]>;
+/**
+ * Gets all fibers for a city regardless of status.
+ */
+export declare function getAllFibers(cityPath: string): Promise<Fiber[]>;
+/**
+ * Parse a fiber file into a Fiber object.
+ *
+ * @param filename The filename (e.g., "my-fiber-abc123.md")
+ * @param content File content with YAML frontmatter
+ */
+export declare function parseFiber(filename: string, content: string): Fiber;
 //# sourceMappingURL=FiberReader.d.ts.map

@@ -1,6 +1,6 @@
 # Server Integration Tests
 
-Unit tests for the hexarchy-v2 server components, verifying edge cases from the spec.
+Unit tests for the portolan server components, verifying edge cases from the spec.
 
 ## Test Coverage
 
@@ -52,6 +52,6 @@ npm test -- --coverage # Coverage report
 
 ## Notes
 
-- CityManager tests save/restore real cities to avoid interfering with the user's actual hexarchy state
+- CityManager tests save/restore real cities to avoid interfering with the user's actual portolan state
 - Tests use `/tmp/` paths for isolation
 - SessionTracker tests mock child_process.exec to avoid spawning real tmux processes

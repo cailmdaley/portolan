@@ -54,6 +54,7 @@
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-latex.min.js"></script>
     <style>
       * {
         margin: 0;
@@ -137,6 +138,7 @@
         flex: 1;
         display: flex;
         min-width: 0;
+        position: relative;
       }
       .tapestry-dag-wrapper {
         flex: 1;
@@ -284,18 +286,74 @@
 
       /* ── Sidebar ── */
       .tapestry-sidebar {
-        width: 20vw; min-width: 200px; flex-shrink: 0;
+        position: absolute; right: 0; top: 0; bottom: 0;
+        width: 20vw; min-width: 200px;
         border-left: 1px solid var(--ui-border); background: var(--ui-dark-elevated);
-        display: flex; flex-direction: column; overflow: hidden; position: relative;
-        transition: width 200ms ease;
+        display: flex; flex-direction: column; overflow: hidden;
+        transition: width 200ms ease; z-index: 10;
+        box-shadow: -3px 0 12px rgba(0,0,0,0.18);
       }
-      .tapestry-sidebar.expanded { width: 40vw; min-width: 300px; max-width: 800px; }
+      .tapestry-sidebar.expanded { width: 40vw; min-width: 300px; }
       .tapestry-sidebar-resize {
-        position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
-        cursor: col-resize; z-index: 10; background: transparent; display: none;
+        position: absolute; left: -6px; top: 0; bottom: 0; width: 12px;
+        cursor: col-resize; z-index: 11; display: none; align-items: center; justify-content: center;
       }
-      .tapestry-sidebar.expanded .tapestry-sidebar-resize { display: block; }
-      .tapestry-sidebar-resize:hover, .tapestry-sidebar-resize:active { background: var(--ui-gold); opacity: 0.4; }
+      .tapestry-sidebar-resize::after {
+        content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+        background: var(--ui-border); opacity: 0.5;
+        transition: opacity 150ms, width 150ms, background 150ms; pointer-events: none;
+      }
+      .tapestry-sidebar.expanded .tapestry-sidebar-resize { display: flex; }
+      .tapestry-sidebar-resize:hover::after, .tapestry-sidebar-resize:active::after {
+        width: 2px; background: var(--ui-gold); opacity: 0.6;
+      }
+
+      /* Static file viewer modal */
+      .tapestry-file-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+      .tapestry-file-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); }
+      .tapestry-file-content {
+        position: relative; width: 82vw; height: 88vh; min-width: 400px;
+        background: #EEE8DC; border: 1px solid var(--ui-border); border-radius: 6px;
+        display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      }
+      .tapestry-file-resize {
+        position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 10;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .tapestry-file-resize-left { left: -6px; }
+      .tapestry-file-resize-right { right: -6px; }
+      .tapestry-file-resize::after {
+        content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+        background: var(--ui-border); opacity: 0.5;
+        transition: opacity 150ms, width 150ms, background 150ms; pointer-events: none;
+      }
+      .tapestry-file-resize:hover::after, .tapestry-file-resize:active::after {
+        width: 2px; background: var(--ui-gold); opacity: 0.6;
+      }
+      .tapestry-file-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--ui-border);
+        font-family: var(--font-mono); font-size: 0.8rem; color: var(--ui-text-muted);
+      }
+      .tapestry-file-close { background: none; border: none; color: var(--ui-text-muted); font-size: 1.2rem; cursor: pointer; padding: 0 0.3rem; }
+      .tapestry-file-close:hover { color: var(--ui-text); }
+      .tapestry-file-body { flex: 1; overflow: auto; }
+      .tapestry-file-markdown { padding: 1.2rem 1.5rem; font-family: var(--font-main); font-size: 0.9rem; line-height: 1.6; color: var(--ui-text); }
+      .tapestry-file-markdown h1, .tapestry-file-markdown h2, .tapestry-file-markdown h3 { color: var(--ui-gold); margin-top: 1.5em; }
+      .tapestry-file-code { font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.5; }
+      .tapestry-file-code table { border-collapse: collapse; width: 100%; }
+      .tapestry-file-code .line-num { padding: 0 0.8rem 0 0.6rem; text-align: right; color: var(--ui-text-muted); opacity: 0.4; user-select: none; white-space: nowrap; vertical-align: top; }
+      .tapestry-file-code .line-content { padding: 0 0.6rem; white-space: pre-wrap; word-break: break-all; }
+      .tapestry-file-code .highlighted-line { background: rgba(90,123,123,0.15); }
+      .tapestry-file-code .highlighted-line .line-num { color: var(--ui-teal); opacity: 1; }
+      .tapestry-file-code .token.comment, .tapestry-file-code .token.prolog, .tapestry-file-code .token.doctype { color: var(--ink-faded); font-style: italic; }
+      .tapestry-file-code .token.keyword, .tapestry-file-code .token.selector, .tapestry-file-code .token.important { color: var(--verdigris); font-weight: 600; }
+      .tapestry-file-code .token.string, .tapestry-file-code .token.attr-value, .tapestry-file-code .token.regex { color: #4A6A35; }
+      .tapestry-file-code .token.function, .tapestry-file-code .token.class-name { color: var(--sepia-accent); }
+      .tapestry-file-code .token.number, .tapestry-file-code .token.boolean, .tapestry-file-code .token.constant { color: var(--rust); }
+      .tapestry-file-code .token.operator, .tapestry-file-code .token.punctuation { color: var(--ink-light); }
+      .tapestry-file-code .token.property, .tapestry-file-code .token.tag { color: #5A6B2A; }
+      .tapestry-file-code .token.builtin, .tapestry-file-code .token.symbol { color: var(--sepia-muted); }
       .tapestry-fiber-list { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
       .tapestry-fiber-list.hidden { display: none; }
       .tapestry-fiber-list .tapestry-search { border-top: none; border-bottom: 1px solid var(--ui-border); }
@@ -392,6 +450,11 @@
         color: var(--ui-text-muted); cursor: pointer; transition: all 150ms;
       }
       .dep-tag:hover { border-color: var(--ui-teal); color: var(--ui-teal); }
+      .dep-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; }
+      .dep-dir-label {
+        font-size: 0.68rem; color: var(--ui-text-muted); opacity: 0.6;
+        font-family: var(--font-mono); min-width: 5.5rem; flex-shrink: 0;
+      }
 
       /* Detail: artifact viewer */
       .tapestry-artifact-viewer { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.8rem; }
@@ -400,8 +463,28 @@
         display: block; font-family: var(--font-mono); font-size: 0.65rem;
         color: var(--ui-text-muted); margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em;
       }
-      .tapestry-artifact img { width: 100%; border-radius: 2px; border: 1px solid var(--ui-border); cursor: pointer; transition: border-color 0.2s; }
-      .tapestry-artifact img:hover { border-color: var(--ui-teal); }
+      .tapestry-artifact .artifact-media { width: 100%; border-radius: 2px; border: 1px solid var(--ui-border); transition: border-color 0.2s; overflow: hidden; }
+      .tapestry-artifact .artifact-media:hover { border-color: var(--ui-teal); }
+      .tapestry-artifact .artifact-media.image img { width: 100%; display: block; cursor: pointer; border: none; opacity: 1; transition: opacity 120ms ease; }
+      .tapestry-artifact .artifact-media.image.loading img { opacity: 0; }
+      .tapestry-artifact .artifact-media.pdf {
+        --pdf-aspect-ratio: 0.7727;
+        position: relative;
+        width: 100%;
+        aspect-ratio: var(--pdf-aspect-ratio);
+        margin: 0 auto;
+        background: var(--ui-dark-surface);
+      }
+      .tapestry-artifact .artifact-media.pdf canvas { width: 100%; height: 100%; display: block; background: transparent; opacity: 1; transition: opacity 120ms ease; }
+      .tapestry-artifact .artifact-media.pdf.loading canvas { opacity: 0; }
+      .tapestry-artifact .artifact-open-overlay {
+        position: absolute;
+        inset: 0;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        z-index: 2;
+      }
       .tapestry-artifact-viewer .artifact-nav { font-size: 1.2rem; color: var(--ui-text-muted); cursor: pointer; padding: 0.4rem; user-select: none; }
       .tapestry-artifact-viewer .artifact-nav:hover { color: var(--ui-teal); }
 
@@ -415,11 +498,14 @@
       .tapestry-detail-body li { margin: 0.1rem 0; }
       .tapestry-detail-body code { font-family: var(--font-mono); font-size: 0.8em; background: var(--ui-dark-surface); padding: 0.1rem 0.25rem; border-radius: 2px; }
       .config-resolved { color: var(--ui-teal); font-weight: 500; }
+      /* Inline code path links */
+      .md-inline-code { font-family: var(--font-mono); font-size: 0.85em; background: var(--ui-dark-surface); padding: 0.1rem 0.25rem; border-radius: 2px; }
+      .md-inline-code[title], .tapestry-detail-body .md-inline-code[title] { color: var(--ui-teal); text-decoration: underline dotted; cursor: pointer; }
       .tapestry-detail-body pre { background: var(--ui-dark-surface); border: 1px solid var(--ui-border); border-radius: 3px; padding: 0.5rem 0.7rem; overflow-x: auto; margin: 0.4rem 0; }
       .tapestry-detail-body pre code { background: none; padding: 0; font-size: 0.78rem; line-height: 1.5; }
       .tapestry-detail-body blockquote { border-left: 2px solid var(--ui-teal); padding-left: 0.7rem; margin: 0.4rem 0; color: var(--ui-text-muted); font-style: italic; }
-      .tapestry-detail-body a { color: var(--ui-teal); text-decoration: none; }
-      .tapestry-detail-body a:hover { text-decoration: underline; }
+      .tapestry-detail-body a, .tapestry-detail-body td a, .tapestry-detail-outcome a { color: var(--ui-teal) !important; text-decoration: underline dotted; }
+      .tapestry-detail-body a:hover, .tapestry-detail-body td a:hover, .tapestry-detail-outcome a:hover { text-decoration: underline; }
       .tapestry-detail-body table { width: 100%; border-collapse: collapse; margin: 0.4rem 0; font-size: 0.8rem; }
       .tapestry-detail-body th, .tapestry-detail-body td { padding: 0.3rem 0.5rem; border: 1px solid var(--ui-border); text-align: left; }
       .tapestry-detail-body th { background: var(--ui-dark-surface); font-weight: 600; }
@@ -439,7 +525,10 @@
         position: fixed; inset: 0; background: rgba(0, 0, 0, 0.9);
         z-index: 2000; display: flex; align-items: center; justify-content: center; cursor: pointer;
       }
-      .tapestry-lightbox img { max-width: 95%; max-height: 95%; border-radius: 2px; }
+      .tapestry-lightbox img { max-width: 95%; max-height: 95%; border-radius: 2px; cursor: crosshair; }
+      .tapestry-lightbox iframe { width: min(95vw, 1200px); height: 95vh; border: none; border-radius: 2px; background: white; }
+      .tapestry-lightbox-pdf { width: min(95vw, 1200px); height: 95vh; overflow-y: auto; -webkit-overflow-scrolling: touch; background: white; border-radius: 2px; cursor: default; }
+      .tapestry-lightbox-pdf canvas { display: block; width: 100%; }
       .tapestry-lightbox-close {
         position: absolute; top: 1.5rem; right: 1.5rem; background: none; border: none;
         color: rgba(255,255,255,0.7); font-size: 2rem; cursor: pointer; z-index: 2001;

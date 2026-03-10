@@ -427,7 +427,7 @@ export class WorkerSwarm {
   }
 
   /**
-   * Add an object to the swarm group (e.g., conversation card)
+   * Add an object to the swarm group (e.g., debug overlay)
    */
   addChild(obj: Object3D): void {
     this.group.add(obj)

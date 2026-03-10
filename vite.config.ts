@@ -6,11 +6,11 @@ export default defineConfig({
     hmr: {
       overlay: false
     },
-    // Serve .hexarchy directory for city sprites
+    // Serve .portolan directory for city sprites
     fs: {
-      allow: ['.', '.hexarchy']
+      allow: ['.', '.portolan']
     }
   },
-  // Make .hexarchy accessible as static files
+  // Make .portolan accessible as static files
   publicDir: 'public',
 })

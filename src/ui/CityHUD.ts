@@ -1,9 +1,6 @@
-// CityHUD.ts - Corner-anchored HUD widgets overlaying the map
-// Civ-style: information lives in corners, center stays clear
-
 import type { City, GitStatus, Session } from '../state/types'
 import { escapeHtml, fiberStatusIcon } from './utils'
-import type { Fiber, SearchResult } from './hud-types'
+import type { DirectoryEntry, Fiber, SearchResult } from './hud-types'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 
 interface FibersResponse {
@@ -13,13 +10,24 @@ interface FibersResponse {
   recentlyClosed: Fiber[]
 }
 
+interface DirectoryListingResponse {
+  type: 'directoryListing'
+  cityId: string
+  path: string
+  entries: DirectoryEntry[]
+  error?: string
+}
+
 type FibersCallback = (response: FibersResponse) => void
+
+type HudTab = 'fibers' | 'files'
 
 export class CityHUD {
   private container: HTMLElement
+  private sidebar: HTMLElement
   private headerWidget: HTMLElement
   private fiberList: HTMLElement
-  private fiberWidget: HTMLElement
+  private filesList: HTMLElement
   private searchInput: HTMLInputElement
   private searchClear: HTMLElement
   private searchResultsList: HTMLElement
@@ -28,9 +36,18 @@ export class CityHUD {
   private fibersCallback: FibersCallback | null = null
   private ignoreNextClick = false
 
+  private activeTab: HudTab = 'files'
+
   // Fiber state
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
+
+  // File tree state
+  private directoryCache = new Map<string, DirectoryEntry[]>()
+  private expandedDirs = new Set<string>()
+  private loadingDirs = new Set<string>()
+  private directoryErrors = new Map<string, string>()
+  private inFlightDirectoryRequests = new Set<string>()
 
   // Worker state
   private cityWorkers: Session[] = []
@@ -53,15 +70,17 @@ export class CityHUD {
 
   constructor() {
     this.container = this.createContainer()
+    this.sidebar = this.container.querySelector('.hud-sidebar')!
     this.headerWidget = this.container.querySelector('.hud-header')!
     this.fiberList = this.container.querySelector('.hud-fiber-list')!
-    this.fiberWidget = this.container.querySelector('.hud-fibers')!
+    this.filesList = this.container.querySelector('.hud-file-tree')!
     this.searchInput = this.container.querySelector('.hud-search-input')!
     this.searchClear = this.container.querySelector('.hud-search-clear')!
     this.searchResultsList = this.container.querySelector('.hud-search-results')!
     this.setupEventHandlers()
     this.setupSearch()
     this.setupDelegatedListeners()
+    this.setupTabs()
     document.body.appendChild(this.container)
   }
 
@@ -69,19 +88,35 @@ export class CityHUD {
     const el = document.createElement('div')
     el.id = 'city-hud'
     el.innerHTML = `
-      <div class="hud-header hud-widget hud-top-right">
-        <div class="hud-header-row">
-          <h2 class="hud-city-name"></h2>
-          <div class="hud-actions"></div>
+      <div class="hud-sidebar">
+        <div class="hud-header">
+          <div class="hud-header-row">
+            <h2 class="hud-city-name"></h2>
+            <div class="hud-header-controls">
+              <div class="hud-actions"></div>
+              <button class="hud-close" title="Close">&times;</button>
+            </div>
+          </div>
+          <p class="hud-city-path"></p>
+          <div class="hud-git-detail-content"></div>
+          <div class="hud-header-workers"></div>
         </div>
-        <p class="hud-city-path"></p>
-        <div class="hud-git-detail-content"></div>
-        <div class="hud-header-workers"></div>
-      </div>
-      <div class="hud-fibers hud-widget hud-bottom-right">
-        <h3 class="hud-fibers-heading">Fibers</h3>
-        <ul class="hud-fiber-list"></ul>
-        <ul class="hud-search-results" style="display: none;"></ul>
+
+        <div class="hud-tabbar">
+          <button class="hud-tab" data-tab="fibers">Fibers</button>
+          <button class="hud-tab active" data-tab="files">Files</button>
+        </div>
+
+        <div class="hud-content">
+          <ul class="hud-search-results" style="display: none;"></ul>
+          <div class="hud-pane hud-pane-fibers">
+            <ul class="hud-fiber-list"></ul>
+          </div>
+          <div class="hud-pane hud-pane-files active">
+            <ul class="hud-file-tree"></ul>
+          </div>
+        </div>
+
         <div class="hud-search-bar">
           <input type="text" class="hud-search-input" placeholder="Search files &amp; fibers…" />
           <button class="hud-search-clear" style="display: none;">&times;</button>
@@ -98,29 +133,31 @@ export class CityHUD {
         return
       }
       if (!this.container.classList.contains('visible')) return
+      const path = e.composedPath()
+      if (path.includes(this.container)) return
       const target = e.target as HTMLElement
-      // Don't close if file viewer modal is open
       const fileViewer = document.querySelector('.file-viewer-modal.visible')
       if (fileViewer?.contains(target)) return
       const fileViewerBackdrop = document.querySelector('.file-viewer-backdrop.visible')
       if (fileViewerBackdrop?.contains(target)) return
-      if (!this.container.contains(target)) {
-        this.hide()
-      }
+      this.hide()
     }
 
     this.escapeHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && this.container.classList.contains('visible')) {
-        const fileViewer = document.querySelector('.file-viewer-modal.visible')
-        if (fileViewer) return
-        // Escape collapses search first, then hides HUD
-        if (this.fiberWidget.classList.contains('searching')) {
-          this.collapseSearch()
-          return
-        }
-        this.hide()
+      if (e.key !== 'Escape' || !this.container.classList.contains('visible')) return
+      const fileViewer = document.querySelector('.file-viewer-modal.visible')
+      if (fileViewer) return
+      if (this.searchQuery || this.activeTab === 'fibers' && this.sidebar.classList.contains('searching')) {
+        this.clearSearch()
+        return
       }
+      this.hide()
     }
+
+    this.container.querySelector('.hud-close')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.hide()
+    })
   }
 
   private attachDocumentListeners(): void {
@@ -141,6 +178,37 @@ export class CityHUD {
     }
   }
 
+  private setupTabs(): void {
+    const tabBar = this.container.querySelector('.hud-tabbar')!
+    tabBar.addEventListener('click', (e) => {
+      const tabBtn = (e.target as HTMLElement).closest<HTMLElement>('.hud-tab')
+      if (!tabBtn) return
+      const tab = tabBtn.dataset.tab as HudTab | undefined
+      if (!tab || tab === this.activeTab) return
+      this.switchTab(tab)
+    })
+  }
+
+  private switchTab(tab: HudTab): void {
+    this.activeTab = tab
+
+    for (const btn of this.container.querySelectorAll<HTMLElement>('.hud-tab')) {
+      btn.classList.toggle('active', btn.dataset.tab === tab)
+    }
+    for (const pane of this.container.querySelectorAll<HTMLElement>('.hud-pane')) {
+      const isActive = pane.classList.contains(`hud-pane-${tab}`)
+      pane.classList.toggle('active', isActive)
+      pane.style.display = isActive ? '' : 'none'
+    }
+
+    this.clearSearch()
+    this.searchInput.placeholder = tab === 'fibers' ? 'Search fibers & files…' : 'Search files…'
+
+    if (tab === 'files') {
+      this.ensureRootListing()
+    }
+  }
+
   private renderGitDetail(status?: GitStatus): void {
     const content = this.headerWidget.querySelector('.hud-git-detail-content')!
     if (!status?.isRepo) {
@@ -150,7 +218,6 @@ export class CityHUD {
 
     const rows: string[] = []
 
-    // Branch + remote tracking
     rows.push(`<div class="hud-gd-row">
       <span class="hud-gd-label">branch</span>
       <span class="hud-gd-value hud-gd-branch">${escapeHtml(status.branch)}</span>
@@ -166,7 +233,6 @@ export class CityHUD {
       </div>`)
     }
 
-    // Staged breakdown
     const staged = status.staged
     if (staged.added + staged.modified + staged.deleted > 0) {
       const parts: string[] = []
@@ -179,7 +245,6 @@ export class CityHUD {
       </div>`)
     }
 
-    // Unstaged breakdown
     const unstaged = status.unstaged
     if (unstaged.added + unstaged.modified + unstaged.deleted > 0) {
       const parts: string[] = []
@@ -192,7 +257,6 @@ export class CityHUD {
       </div>`)
     }
 
-    // Untracked
     if (status.untracked > 0) {
       rows.push(`<div class="hud-gd-row">
         <span class="hud-gd-label">untracked</span>
@@ -200,7 +264,6 @@ export class CityHUD {
       </div>`)
     }
 
-    // Diff stats
     if (status.linesAdded > 0 || status.linesRemoved > 0) {
       const parts: string[] = []
       if (status.linesAdded > 0) parts.push(`<span class="hud-git-add">+${status.linesAdded}</span>`)
@@ -211,7 +274,6 @@ export class CityHUD {
       </div>`)
     }
 
-    // Last commit
     if (status.lastCommitMessage) {
       const timeStr = status.lastCommitTime ? this.relativeTime(status.lastCommitTime) : ''
       const msg = status.lastCommitMessage.length > 48
@@ -238,17 +300,13 @@ export class CityHUD {
     return `${days}d ago`
   }
 
-  // ─── Actions ───
-
   private renderActions(city: City): void {
     const buttons: string[] = []
 
-    // Claims — only when city has them
     if (city.hasClaims) {
       buttons.push(`<button class="hud-action-btn hud-action-claims" title="Claims">⚖</button>`)
     }
 
-    // Playgrounds — only when city has them
     if (city.hasPlaygrounds) {
       buttons.push(`<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds">▶</button>`)
     }
@@ -267,29 +325,28 @@ export class CityHUD {
     })
   }
 
-  // ─── Public API ───
-
   show(city: City): void {
+    if (document.querySelector('.tapestry-view.visible')) return
+
     this.currentCity = city
 
-    // Populate merged header widget (top-right)
     this.headerWidget.querySelector('.hud-city-name')!.textContent = city.name
     this.headerWidget.querySelector('.hud-city-path')!.textContent = city.path
     this.renderGitDetail(city.gitStatus)
     this.renderActions(city)
 
-    // Clear state for fresh load
     this.openFibers = []
     this.closedFibers = []
-    this.collapseSearch()
+    this.resetFileTreeState()
 
-    // Ignore the click that triggered show
+    this.activeTab = 'files'
+    this.switchTab('files')
+
     this.ignoreNextClick = true
 
     this.attachDocumentListeners()
     this.container.classList.add('visible')
 
-    // Request fibers
     this.requestFibers(city.id)
   }
 
@@ -297,10 +354,44 @@ export class CityHUD {
     this.container.classList.remove('visible')
     this.currentCity = null
     this.detachDocumentListeners()
+    this.clearSearch()
+    this.resetFileTreeState()
   }
 
   isVisible(): boolean {
     return this.container.classList.contains('visible')
+  }
+
+  getRuntimeStats(): {
+    visible: boolean
+    activeTab: 'fibers' | 'files'
+    currentCityId: string | null
+    openFibers: number
+    closedFibers: number
+    searchQueryLength: number
+    pendingSearchResults: number
+    cityWorkerCount: number
+    directoryCacheEntries: number
+    expandedDirectoryCount: number
+    loadingDirectoryCount: number
+    directoryErrorCount: number
+    inFlightDirectoryRequestCount: number
+  } {
+    return {
+      visible: this.isVisible(),
+      activeTab: this.activeTab,
+      currentCityId: this.currentCity?.id ?? null,
+      openFibers: this.openFibers.length,
+      closedFibers: this.closedFibers.length,
+      searchQueryLength: this.searchQuery.length,
+      pendingSearchResults: this.searchResults.length,
+      cityWorkerCount: this.cityWorkers.length,
+      directoryCacheEntries: this.directoryCache.size,
+      expandedDirectoryCount: this.expandedDirs.size,
+      loadingDirectoryCount: this.loadingDirs.size,
+      directoryErrorCount: this.directoryErrors.size,
+      inFlightDirectoryRequestCount: this.inFlightDirectoryRequests.size,
+    }
   }
 
   setWebSocket(ws: WebSocket): void {
@@ -327,7 +418,6 @@ export class CityHUD {
     this.onFocusWorker = callback
   }
 
-  /** Called from main.ts whenever state updates — filters to current city's workers */
   updateWorkers(sessions: Session[]): void {
     if (!this.currentCity || !this.container.classList.contains('visible')) return
 
@@ -350,34 +440,38 @@ export class CityHUD {
       this.handleSearchResults(response.searchId, response.results, response.error)
       return true
     }
+    if (msg.type === 'directoryListing') {
+      this.handleDirectoryListing(message as DirectoryListingResponse)
+      return true
+    }
     return false
   }
 
   handleSearchResults(searchId: string, results: SearchResult[], error?: string): void {
+    if (!this.searchQuery) return
     const expectedPrefix = `${this.currentCity?.id || ''}-${this.currentSearchId}`
     if (!searchId.startsWith(expectedPrefix)) return
     if (error) {
       console.error('Search error:', error)
       return
     }
-    // Deduplicate and accumulate
     for (const r of results) {
       if (!this.searchResults.some(sr => sr.fullPath === r.fullPath)) {
         this.searchResults.push(r)
       }
     }
-    // Re-render combined results
     this.renderSearchResults()
   }
-
-  // ─── Search ───
 
   private setupSearch(): void {
     this.searchInput.addEventListener('input', () => {
       this.searchQuery = this.searchInput.value.trim()
       this.searchClear.style.display = this.searchInput.value ? 'block' : 'none'
+
       if (!this.searchQuery) {
         this.collapseSearch()
+      } else if (this.activeTab === 'fibers') {
+        this.performSearch()
       }
     })
 
@@ -387,31 +481,50 @@ export class CityHUD {
       }
       if (e.key === 'Escape') {
         e.stopPropagation()
-        this.collapseSearch()
+        this.clearSearch()
         this.searchInput.blur()
       }
     })
 
     this.searchInput.addEventListener('focus', () => {
-      this.fiberWidget.classList.add('search-focused')
+      this.sidebar.classList.add('search-focused')
     })
 
     this.searchInput.addEventListener('blur', () => {
       if (!this.searchQuery) {
-        this.fiberWidget.classList.remove('search-focused')
+        this.sidebar.classList.remove('search-focused')
       }
     })
 
     this.searchClear.addEventListener('click', () => {
-      this.collapseSearch()
+      this.clearSearch()
       this.searchInput.focus()
     })
   }
 
-  /** Event delegation for both fiber list and search results clicks */
   private setupDelegatedListeners(): void {
+    this.fiberList.addEventListener('click', (e) => {
+      const handoff = (e.target as HTMLElement).closest<HTMLElement>('.hud-fiber-handoff')
+      if (handoff) {
+        e.stopPropagation()
+        const fiberId = handoff.dataset.fiberId
+        if (fiberId && this.currentCity && this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            type: 'handoff',
+            fiberId,
+            cityPath: this.currentCity.path,
+          }))
+        }
+        return
+      }
+
+      const item = (e.target as HTMLElement).closest<HTMLElement>('.hud-fiber-item')
+      if (!item) return
+      this.openFiber(item.dataset.fiberId)
+    })
+
     this.searchResultsList.addEventListener('click', (e) => {
-      const item = (e.target as HTMLElement).closest('.hud-search-item') as HTMLElement | null
+      const item = (e.target as HTMLElement).closest<HTMLElement>('.hud-search-item')
       if (!item) return
       if (item.dataset.type === 'file') {
         const line = item.dataset.line ? parseInt(item.dataset.line, 10) : undefined
@@ -420,13 +533,27 @@ export class CityHUD {
         this.openFiber(item.dataset.fiberId)
       }
     })
+
+    this.filesList.addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>('.hud-tree-row')
+      if (!row) return
+      const path = row.dataset.path
+      const type = row.dataset.type
+      if (!path || !type) return
+
+      if (type === 'dir') {
+        this.toggleDirectory(path)
+      } else {
+        this.openFile(path)
+      }
+    })
   }
 
   private performSearch(): void {
     this.searchResults = []
-    this.fiberWidget.classList.add('searching')
-
+    this.sidebar.classList.add('searching')
     this.fiberList.style.display = 'none'
+    this.filesList.style.display = 'none'
     this.searchResultsList.style.display = 'block'
     this.searchResultsList.innerHTML = '<li class="hud-search-loading">Searching…</li>'
 
@@ -440,30 +567,33 @@ export class CityHUD {
         searchId: `${searchId}-name`,
         mode: 'filename',
       }))
-
-      if (this.currentCity.originId === 'local') {
-        this.ws.send(JSON.stringify({
-          type: 'searchFiles',
-          cityId: this.currentCity.id,
-          query: this.searchQuery,
-          searchId: `${searchId}-content`,
-          mode: 'content',
-        }))
-      }
     }
 
-    // Render fiber matches immediately while file results stream in
+    // Render immediately with local fiber results (files arrive async)
     this.renderSearchResults()
   }
 
+  private clearSearch(): void {
+    this.searchQuery = ''
+    this.searchInput.value = ''
+    this.searchClear.style.display = 'none'
+    this.sidebar.classList.remove('search-focused')
+
+    this.collapseSearch()
+    if (this.activeTab === 'files') {
+      this.renderFileTree()
+    }
+  }
+
   private collapseSearch(): void {
-    this.fiberWidget.classList.remove('searching', 'search-focused')
+    this.sidebar.classList.remove('searching')
     this.searchResults = []
     this.searchResultsList.style.display = 'none'
-    this.fiberList.style.display = ''
-    this.searchInput.value = ''
-    this.searchQuery = ''
-    this.searchClear.style.display = 'none'
+    if (this.activeTab === 'files') {
+      this.filesList.style.display = ''
+    } else {
+      this.fiberList.style.display = ''
+    }
   }
 
   private filterFibersLocally(query: string): Fiber[] {
@@ -478,11 +608,10 @@ export class CityHUD {
   }
 
   private renderSearchResults(): void {
-    const files = this.searchResults.slice(0, 15)
-    const fibers = this.filterFibersLocally(this.searchQuery)
+    const fibers = this.activeTab === 'fibers' ? this.filterFibersLocally(this.searchQuery) : []
+    const files = this.activeTab === 'files' ? this.searchResults.slice(0, 20) : []
 
-    // Still waiting for server results -- keep the loading indicator
-    if (files.length === 0 && fibers.length === 0) {
+    if (fibers.length === 0 && files.length === 0) {
       if (this.searchResultsList.querySelector('.hud-search-loading')) return
       this.searchResultsList.innerHTML = '<li class="hud-search-empty">No matches</li>'
       return
@@ -490,8 +619,7 @@ export class CityHUD {
 
     let html = ''
 
-    // Fiber matches first (reuse renderFiberItem markup)
-    for (const f of fibers.slice(0, 5)) {
+    for (const f of fibers.slice(0, 20)) {
       const kind = f.kind || 'task'
       html += `
         <li class="hud-search-item hud-fiber-item ${kind}" data-type="fiber" data-fiber-id="${f.id}">
@@ -501,19 +629,18 @@ export class CityHUD {
         </li>`
     }
 
-    // File matches
     for (const r of files) {
       const fileName = r.path.split('/').pop() || r.path
       const lineInfo = r.line !== undefined ? `:${r.line}` : ''
       const lineAttr = r.line !== undefined ? ` data-line="${r.line}"` : ''
       html += `
         <li class="hud-search-item hud-fiber-item file" data-type="file" data-path="${escapeHtml(r.fullPath)}"${lineAttr}>
-          <span class="hud-search-icon">&#xf15c;</span>
+          <span class="hud-search-icon">▹</span>
           <span class="hud-fiber-title mono">${escapeHtml(fileName)}${lineInfo}</span>
         </li>`
     }
 
-    this.searchResultsList.innerHTML = html || '<li class="hud-search-empty">No matches</li>'
+    this.searchResultsList.innerHTML = html
   }
 
   private requestFibers(cityId: string): void {
@@ -544,8 +671,6 @@ export class CityHUD {
     }
 
     this.fiberList.innerHTML = all.map(f => this.renderFiberItem(f)).join('')
-
-    this.attachFiberListeners()
   }
 
   private renderFiberItem(fiber: Fiber): string {
@@ -561,6 +686,155 @@ export class CityHUD {
     `
   }
 
+  private ensureRootListing(): void {
+    if (!this.currentCity) return
+    const root = this.currentCity.path
+    this.expandedDirs.add(root)
+    if (!this.directoryCache.has(root) && !this.loadingDirs.has(root)) {
+      this.requestDirectoryListing(root)
+    }
+    this.renderFileTree()
+  }
+
+  private resetFileTreeState(): void {
+    this.directoryCache.clear()
+    this.expandedDirs.clear()
+    this.loadingDirs.clear()
+    this.directoryErrors.clear()
+    this.inFlightDirectoryRequests.clear()
+    this.filesList.innerHTML = ''
+  }
+
+  private toggleDirectory(path: string): void {
+    if (this.expandedDirs.has(path)) {
+      this.expandedDirs.delete(path)
+      this.renderFileTree()
+      return
+    }
+
+    this.expandedDirs.add(path)
+    if (!this.directoryCache.has(path) && !this.loadingDirs.has(path)) {
+      this.requestDirectoryListing(path)
+    }
+    this.renderFileTree()
+  }
+
+  private requestDirectoryListing(path: string): void {
+    if (!this.currentCity || !this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    if (this.inFlightDirectoryRequests.has(path)) return
+
+    this.inFlightDirectoryRequests.add(path)
+    this.loadingDirs.add(path)
+    this.directoryErrors.delete(path)
+    this.renderFileTree()
+
+    this.ws.send(JSON.stringify({
+      type: 'listDirectory',
+      cityId: this.currentCity.id,
+      path,
+    }))
+  }
+
+  private handleDirectoryListing(response: DirectoryListingResponse): void {
+    if (!this.currentCity || response.cityId !== this.currentCity.id) return
+
+    this.inFlightDirectoryRequests.delete(response.path)
+    this.loadingDirs.delete(response.path)
+
+    if (response.error) {
+      this.directoryErrors.set(response.path, response.error)
+    } else {
+      this.directoryErrors.delete(response.path)
+      this.directoryCache.set(response.path, response.entries)
+    }
+
+    this.renderFileTree()
+  }
+
+  private renderFileTree(): void {
+    if (!this.currentCity) return
+
+    const root = this.currentCity.path
+    const rootEntries = this.directoryCache.get(root)
+    const rootLoading = this.loadingDirs.has(root)
+
+    if (!this.expandedDirs.has(root)) {
+      this.filesList.innerHTML = '<li class="hud-file-empty">Open Files tab to browse this project.</li>'
+      return
+    }
+
+    if (!rootEntries && rootLoading) {
+      this.filesList.innerHTML = '<li class="hud-file-empty">Loading…</li>'
+      return
+    }
+
+    if (!rootEntries) {
+      this.filesList.innerHTML = '<li class="hud-file-empty">No directory listing available.</li>'
+      return
+    }
+
+    let html = ''
+
+    for (const entry of rootEntries) {
+      html += this.renderTreeNode(root, entry, 0, '')
+    }
+
+    this.filesList.innerHTML = html || '<li class="hud-file-empty">No matching entries.</li>'
+  }
+
+  private renderTreeNode(parentPath: string, entry: DirectoryEntry, depth: number, filter: string): string {
+    const fullPath = `${parentPath.replace(/\/$/, '')}/${entry.name}`
+    const isDir = entry.type === 'dir'
+    const isExpanded = isDir && this.expandedDirs.has(fullPath)
+    const isLoading = isDir && this.loadingDirs.has(fullPath)
+    const error = this.directoryErrors.get(fullPath)
+    const matches = !filter || entry.name.toLowerCase().includes(filter)
+
+    let html = ''
+
+    if (matches) {
+      const arrow = isDir ? (isExpanded ? '▼' : '▶') : '•'
+      html += `
+        <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px">
+          <span class="hud-tree-arrow">${arrow}</span>
+          <span class="hud-tree-name">${escapeHtml(entry.name)}</span>
+        </li>
+      `
+    }
+
+    if (!isDir || !isExpanded) {
+      return html
+    }
+
+    if (isLoading) {
+      html += `
+        <li class="hud-tree-status" style="padding-left: ${(depth + 1) * 16 + 8}px">…</li>
+      `
+      return html
+    }
+
+    if (error) {
+      html += `
+        <li class="hud-tree-status error" style="padding-left: ${(depth + 1) * 16 + 8}px">couldn't read directory</li>
+      `
+      return html
+    }
+
+    const children = this.directoryCache.get(fullPath) || []
+    if (children.length === 0) {
+      html += `
+        <li class="hud-tree-status" style="padding-left: ${(depth + 1) * 16 + 8}px">empty</li>
+      `
+      return html
+    }
+
+    for (const child of children) {
+      html += this.renderTreeNode(fullPath, child, depth + 1, filter)
+    }
+
+    return html
+  }
+
   private openFiber(fiberId: string | undefined): void {
     if (!fiberId || !this.currentCity || !this.onOpenFile) return
     const feltPath = `${this.currentCity.path}/.felt/${fiberId}.md`
@@ -571,33 +845,6 @@ export class CityHUD {
     if (!fullPath || !this.currentCity || !this.onOpenFile) return
     this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path, this.currentCity.id, line)
   }
-
-  private attachFiberListeners(): void {
-    // Click fiber → open .felt/{id}.md in file viewer
-    this.fiberList.querySelectorAll('.hud-fiber-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        if ((e.target as HTMLElement).closest('.hud-fiber-handoff')) return
-        this.openFiber((item as HTMLElement).dataset.fiberId)
-      })
-    })
-
-    // Handoff button → send fiber to worker via WebSocket
-    this.fiberList.querySelectorAll('.hud-fiber-handoff').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        const fiberId = (btn as HTMLElement).dataset.fiberId
-        if (fiberId && this.currentCity && this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({
-            type: 'handoff',
-            fiberId,
-            cityPath: this.currentCity.path,
-          }))
-        }
-      })
-    })
-  }
-
-  // ─── Workers ───
 
   private renderWorkers(): void {
     const container = this.headerWidget.querySelector('.hud-header-workers')!
@@ -610,12 +857,10 @@ export class CityHUD {
         `<span class="hud-worker-dot ${statusClass}">●</span>${escapeHtml(s.name)}</span>`
     })
 
-    // + button at the end
-    chips.push(`<button class="hud-worker-add" title="New Worker">+</button>`)
+    chips.push('<button class="hud-worker-add" title="New Worker">+</button>')
 
     container.innerHTML = parts.concat(chips).join('')
 
-    // Worker chip click → open conversation card
     for (const chip of container.querySelectorAll<HTMLElement>('.hud-worker-chip')) {
       chip.addEventListener('click', (e) => {
         e.stopPropagation()
@@ -624,7 +869,6 @@ export class CityHUD {
       })
     }
 
-    // + button click → new worker dialog
     container.querySelector('.hud-worker-add')?.addEventListener('click', (e) => {
       e.stopPropagation()
       if (this.currentCity && this.newWorkerDialog) {

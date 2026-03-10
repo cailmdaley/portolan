@@ -48,5 +48,21 @@ fi
 git add -A
 SUMMARY=$(git diff --cached --stat | tail -1)
 git commit -m "Update tapestry: ${CITIES[*]}" --quiet
-git push --quiet
+
+# Keep only the last KEEP commits to cap repo size from binary artifacts.
+# Rewrites history by creating an orphan root from the (KEEP)th-oldest commit.
+KEEP=5
+COUNT=$(git rev-list --count HEAD)
+if [ "$COUNT" -gt "$KEEP" ]; then
+  echo "Trimming history to last ${KEEP} commits (was ${COUNT})..."
+  CUTPOINT=$(git rev-list HEAD | sed -n "${KEEP}p")
+  REMOTE_URL=$(git remote get-url origin)
+  git replace --graft "$CUTPOINT"
+  git filter-repo --force --quiet 2>/dev/null
+  git remote add origin "$REMOTE_URL"
+  BRANCH=$(git branch --show-current)
+  git push --force --set-upstream origin "$BRANCH" --quiet
+else
+  git push --quiet
+fi
 echo "Pushed: ${SUMMARY}"

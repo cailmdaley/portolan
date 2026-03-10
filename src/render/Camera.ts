@@ -321,6 +321,20 @@ export class Camera {
   }
 
   /**
+   * Convert world coordinates to screen coordinates (pixels)
+   */
+  worldToScreen(worldX: number, worldY: number, worldZ: number): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect()
+    const world = new Vector3(worldX, worldY, worldZ)
+    world.project(this.camera)
+
+    return {
+      x: ((world.x + 1) / 2) * rect.width + rect.left,
+      y: ((1 - world.y) / 2) * rect.height + rect.top,
+    }
+  }
+
+  /**
    * Handle window resize
    */
   resize(): void {

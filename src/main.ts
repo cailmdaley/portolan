@@ -21,8 +21,62 @@ import { TabbedPlansView } from './ui/TabbedPlansView'
 import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
+import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/utils'
 import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
 import { PALETTE, normalizeCity, normalizeSession } from './state/types'
+
+type DebugRuntimeWindow = Window & {
+  zoneRenderer: ZoneRenderer
+  debugWebGL: () => void
+  debugArtifactCaches: () => void
+  getFrontendRuntimeDiagnostics: () => FrontendRuntimeDiagnostics
+  debugRuntime: () => Promise<{ frontend: FrontendRuntimeDiagnostics; server: unknown | null }>
+}
+
+interface FrontendRuntimeDiagnostics {
+  timestamp: string
+  runtimeDisposed: boolean
+  ws: {
+    state: 'missing' | 'connecting' | 'open' | 'closing' | 'closed'
+    hasReconnectTimeout: boolean
+    hasReceivedInitialState: boolean
+  }
+  world: {
+    cityCount: number
+    sessionCount: number
+    originCount: number
+    selectedHex: HexCoord | null
+  }
+  activity: {
+    streamCount: number
+    bufferedEventCount: number
+    maxBufferedEventsPerStream: number
+    maxPerStreamLimit: number
+    totalEventsReceived: number
+    recentEventsPerMinute: number
+    streamWithMostEvents: string | null
+  }
+  hud: {
+    hasPendingWorkerUpdateFrame: boolean
+    totalWorkerHudUpdates: number
+  }
+  renderer: ReturnType<ZoneRenderer['getRuntimeStats']>
+  webgl: {
+    geometries: number
+    textures: number
+    drawCalls: number
+    triangles: number
+    points: number
+    lines: number
+  }
+  artifactMediaCaches: ReturnType<typeof getArtifactMediaCacheStats>
+  views: {
+    cityHud: ReturnType<CityHUD['getRuntimeStats']>
+    fileViewer: ReturnType<FileViewerModal['getRuntimeStats']>
+    tapestry: ReturnType<TapestryView['getRuntimeStats']>
+    playground: ReturnType<PlaygroundViewer['getRuntimeStats']>
+  }
+}
 
 // Get canvas
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
@@ -94,14 +148,12 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
-// Load worker states early so swarm positions are available when first rendering
-zoneRenderer.ensureWorkerStatesLoaded()
-
 // Expose for debugging:
 //   window.zoneRenderer.debugResourceCounts() - scene traversal counts
 //   window.debugWebGL() - WebGL resource counts from renderer.info
-;(window as unknown as { zoneRenderer: typeof zoneRenderer }).zoneRenderer = zoneRenderer
-;(window as unknown as { debugWebGL: () => void }).debugWebGL = () => {
+const debugWindow = window as unknown as DebugRuntimeWindow
+debugWindow.zoneRenderer = zoneRenderer
+debugWindow.debugWebGL = () => {
   const info = renderer.info
   console.table({
     'Geometries (GPU)': info.memory.geometries,
@@ -112,19 +164,31 @@ zoneRenderer.ensureWorkerStatesLoaded()
     'Lines': info.render.lines,
   })
 }
+debugWindow.debugArtifactCaches = () => {
+  console.table(getArtifactMediaCacheStats())
+}
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
-// Opens map-pinned conversation card instead of side panel
 zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
-  const session = sessions.find(s => s.id === workerId)
-  if (session) {
-    zoneRenderer.openConversationCard(session)
-  }
+  focusKittyTab(workerId)
 })
 
 zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
   focusKittyTab(workerId)
 })
+
+// Wire up worker label hover → file tooltip (same as bird hover but triggered from CSS2D label)
+zoneRenderer.setWorkerLabelHoverHandlers(
+  (workerId, _tmuxSession, anchor) => {
+    const session = sessions.find(s => s.id === workerId)
+    if (session) {
+      zoneRenderer.updateWorkerFileHover(session, anchor)
+    }
+  },
+  () => {
+    zoneRenderer.clearWorkerFileHover()
+  }
+)
 
 // Wire up city label click handler (needed for remote cities without sprites)
 // Uses handleCityClick defined below (after cityPanel initialization)
@@ -141,6 +205,8 @@ const cityPanel = new CityHUD()
 
 // Shared handler for city clicks (used by sprite click and label click)
 function handleCityClick(city: City): void {
+  if (tapestryView.isVisible()) return
+
   selectedHex = city.hex
 
   // Focus on city and zoom to detail level
@@ -158,8 +224,8 @@ function handleCityClick(city: City): void {
 // Setup file viewer modal
 const fileViewerModal = new FileViewerModal()
 
-// Wire up file click from conversation cards to file viewer
-zoneRenderer.setCardFileClickHandler((fullPath, originId, workerId) => {
+// Wire up file click from worker hover tooltip to file viewer
+zoneRenderer.setWorkerFileClickHandler((fullPath, originId, workerId) => {
   const city = findBestMatchingCity(originId, fullPath)
   fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path, city?.id)
 })
@@ -189,12 +255,9 @@ const newWorkerDialog = new NewWorkerDialog()
 // Wire up new worker dialog to city panel
 cityPanel.setNewWorkerDialog(newWorkerDialog)
 
-// Wire up worker click → open conversation card on map
+// Wire up worker click from city HUD
 cityPanel.setOnFocusWorker((sessionId) => {
-  const session = sessions.find(s => s.id === sessionId)
-  if (session) {
-    zoneRenderer.openConversationCard(session)
-  }
+  focusKittyTab(sessionId)
 })
 
 // Setup view switching
@@ -237,6 +300,7 @@ const tapestryView = new TapestryView()
 
 // Wire up View Claims button — uses native TapestryView
 cityPanel.setOnViewClaims((city) => {
+  cityPanel.hide()
   tapestryView.show(city)
 })
 
@@ -268,24 +332,74 @@ let sessions: Session[] = []
 let origins: ServerOrigin[] = []
 let ws: WebSocket | null = null
 let wsCleanedUp = false  // Prevent reconnect on HMR cleanup
+let runtimeDisposed = false
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
+let animationFrameId: number | null = null
+let mockDataTimeout: ReturnType<typeof setTimeout> | null = null
+let workerHudUpdateFrameId: number | null = null
+let hasRuntimeCleanupRun = false
 let hasReceivedInitialState = false  // Track first state for initial camera focus
-// @ts-expect-error Tracked for potential state persistence
 let selectedHex: { q: number; r: number } | null = null
 
 // Move mode: when set, next click will move this city to that hex
 let movingCityId: string | null = null
 
-// Activity stream per tmux session
-const activityBySession = new Map<string, Activity[]>()
+function getActivitySessionKey(originId: string, tmuxSession: string): string {
+  return `${originId}:${tmuxSession}`
+}
+
+// Activity stream per stable activity session key (originId:tmuxSession)
+const activityBySessionKey = new Map<string, Activity[]>()
 const MAX_ACTIVITIES_PER_SESSION = 10
+const ACTIVITY_RATE_WINDOW_MS = 60_000
+const recentActivityEventTimestamps: number[] = []
+let totalActivityEventsReceived = 0
+let totalWorkerHudUpdates = 0
+
+function pruneRecentActivityEvents(now = Date.now()): void {
+  const cutoff = now - ACTIVITY_RATE_WINDOW_MS
+  while (recentActivityEventTimestamps.length > 0 && recentActivityEventTimestamps[0] < cutoff) {
+    recentActivityEventTimestamps.shift()
+  }
+}
+
+function scheduleWorkerHudUpdate(): void {
+  if (!cityPanel.isVisible() || workerHudUpdateFrameId !== null) return
+
+  // Coalesce bursty activity events into at most one HUD rerender per frame.
+  workerHudUpdateFrameId = requestAnimationFrame(() => {
+    workerHudUpdateFrameId = null
+    if (runtimeDisposed) return
+    totalWorkerHudUpdates += 1
+    cityPanel.updateWorkers(sessions)
+  })
+}
 
 // Handle incoming activity event
-function handleActivityEvent(activity: { tmuxSession: string; tool: string; summary?: string; fullPath?: string; timestamp: number }): void {
+function handleActivityEvent(
+  activity: {
+    tmuxSession: string
+    tool: string
+    summary?: string
+    fullPath?: string
+    timestamp: number
+    originId?: string
+    activitySessionKey?: string
+  }
+): void {
+  const activitySessionKey = activity.activitySessionKey
+    ?? (activity.originId ? getActivitySessionKey(activity.originId, activity.tmuxSession) : null)
+  if (!activitySessionKey) return
+
+  totalActivityEventsReceived += 1
+  recentActivityEventTimestamps.push(Date.now())
+  pruneRecentActivityEvents()
+
   // Store activity
-  let activities = activityBySession.get(activity.tmuxSession)
+  let activities = activityBySessionKey.get(activitySessionKey)
   if (!activities) {
     activities = []
-    activityBySession.set(activity.tmuxSession, activities)
+    activityBySessionKey.set(activitySessionKey, activities)
   }
   activities.unshift({
     tool: activity.tool,
@@ -298,22 +412,25 @@ function handleActivityEvent(activity: { tmuxSession: string; tool: string; summ
   }
 
   // Update ZoneRenderer worker marker activity
-  zoneRenderer.updateWorkerActivity(activity.tmuxSession, activities)
+  zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
 
-  // Update HUD worker list (activity text may have changed)
-  cityPanel.updateWorkers(sessions)
+  // Activity stream can be high-frequency; coalesce HUD updates per animation frame.
+  scheduleWorkerHudUpdate()
 }
 
 // Connect to server
 function connectWebSocket(): void {
+  if (wsCleanedUp || runtimeDisposed) return
   const wsUrl = `ws://${window.location.hostname}:4004`
   ws = new WebSocket(wsUrl)
 
   ws.onopen = () => {
     console.log('Connected to portolan server')
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout)
+      reconnectTimeout = null
+    }
     cityPanel.setWebSocket(ws!)
-    // Re-fetch conversations for all open cards (recovers from missed messages during disconnect)
-    zoneRenderer.refetchAllConversations()
   }
 
   ws.onmessage = (event) => {
@@ -321,11 +438,6 @@ function connectWebSocket(): void {
       const message = JSON.parse(event.data)
       // Route to panels that handle specific message types
       if (cityPanel.handleMessage(message)) return
-
-      // Route conversation updates to open cards (by sessionId + tmuxSession)
-      if (message.type === 'conversation' && message.messages) {
-        zoneRenderer.handleConversationMessage(message.sessionId, message.tmuxSession, message.messages)
-      }
 
       handleMessage(message)
     } catch (e) {
@@ -336,7 +448,12 @@ function connectWebSocket(): void {
   ws.onclose = () => {
     if (wsCleanedUp) return  // Don't reconnect on HMR cleanup
     console.log('Disconnected from server, reconnecting...')
-    setTimeout(connectWebSocket, 2000)
+    if (!reconnectTimeout) {
+      reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = null
+        connectWebSocket()
+      }, 2000)
+    }
   }
 
   ws.onerror = (e) => {
@@ -387,6 +504,8 @@ interface ActivityMessage {
     summary?: string
     fullPath?: string
     timestamp: number
+    originId?: string
+    activitySessionKey?: string
   }
 }
 
@@ -448,19 +567,27 @@ function handleMessage(message: ServerMessage): void {
     }
     // Populate activity history from state (backfill on connect)
     if (state.activities) {
-      for (const [tmuxSession, acts] of Object.entries(state.activities)) {
-        activityBySession.set(tmuxSession, acts)
-        zoneRenderer.updateWorkerActivity(tmuxSession, acts)
+      for (const [activitySessionKey, acts] of Object.entries(state.activities)) {
+        activityBySessionKey.set(activitySessionKey, acts)
       }
     }
     // Clean up activities for sessions that no longer exist
-    const currentTmuxSessions = new Set(sessions.map(s => s.tmuxSession))
-    for (const tmuxSession of activityBySession.keys()) {
-      if (!currentTmuxSessions.has(tmuxSession)) {
-        activityBySession.delete(tmuxSession)
+    const currentActivitySessionKeys = new Set(
+      sessions.map(s => getActivitySessionKey(s.originId, s.tmuxSession))
+    )
+    for (const activitySessionKey of activityBySessionKey.keys()) {
+      if (!currentActivitySessionKeys.has(activitySessionKey)) {
+        activityBySessionKey.delete(activitySessionKey)
       }
     }
     zoneRenderer.updateState(cities, sessions)
+    for (const session of sessions) {
+      const activitySessionKey = getActivitySessionKey(session.originId, session.tmuxSession)
+      const activities = activityBySessionKey.get(activitySessionKey)
+      if (activities) {
+        zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
+      }
+    }
 
     // Update HUD worker list if visible
     cityPanel.updateWorkers(sessions)
@@ -494,14 +621,130 @@ function handleMessage(message: ServerMessage): void {
       const urlCityId = new URLSearchParams(window.location.search).get('city')
       if (urlCityId) {
         const urlCity = cities.find(c => c.id === urlCityId)
-        if (urlCity) tapestryView.show(urlCity)
+        if (urlCity) {
+          cityPanel.hide()
+          tapestryView.show(urlCity)
+        }
       }
     }
   }
 }
 
+function getWebSocketState(socket: WebSocket | null): 'missing' | 'connecting' | 'open' | 'closing' | 'closed' {
+  if (!socket) return 'missing'
+  switch (socket.readyState) {
+    case WebSocket.CONNECTING:
+      return 'connecting'
+    case WebSocket.OPEN:
+      return 'open'
+    case WebSocket.CLOSING:
+      return 'closing'
+    default:
+      return 'closed'
+  }
+}
+
+function getActivityBufferStats(): {
+  streamCount: number
+  bufferedEventCount: number
+  maxBufferedEventsPerStream: number
+  streamWithMostEvents: string | null
+} {
+  let bufferedEventCount = 0
+  let maxBufferedEventsPerStream = 0
+  let streamWithMostEvents: string | null = null
+
+  for (const [activitySessionKey, activities] of activityBySessionKey.entries()) {
+    bufferedEventCount += activities.length
+    if (activities.length > maxBufferedEventsPerStream) {
+      maxBufferedEventsPerStream = activities.length
+      streamWithMostEvents = activitySessionKey
+    }
+  }
+
+  return {
+    streamCount: activityBySessionKey.size,
+    bufferedEventCount,
+    maxBufferedEventsPerStream,
+    streamWithMostEvents,
+  }
+}
+
+function getFrontendRuntimeDiagnostics(): FrontendRuntimeDiagnostics {
+  pruneRecentActivityEvents()
+  const activityStats = getActivityBufferStats()
+  const webglInfo = renderer.info
+  const selectedHexSnapshot = selectedHex ? { q: selectedHex.q, r: selectedHex.r } : null
+
+  return {
+    timestamp: new Date().toISOString(),
+    runtimeDisposed,
+    ws: {
+      state: getWebSocketState(ws),
+      hasReconnectTimeout: reconnectTimeout !== null,
+      hasReceivedInitialState,
+    },
+    world: {
+      cityCount: cities.length,
+      sessionCount: sessions.length,
+      originCount: origins.length,
+      selectedHex: selectedHexSnapshot,
+    },
+    activity: {
+      streamCount: activityStats.streamCount,
+      bufferedEventCount: activityStats.bufferedEventCount,
+      maxBufferedEventsPerStream: activityStats.maxBufferedEventsPerStream,
+      maxPerStreamLimit: MAX_ACTIVITIES_PER_SESSION,
+      totalEventsReceived: totalActivityEventsReceived,
+      recentEventsPerMinute: recentActivityEventTimestamps.length,
+      streamWithMostEvents: activityStats.streamWithMostEvents,
+    },
+    hud: {
+      hasPendingWorkerUpdateFrame: workerHudUpdateFrameId !== null,
+      totalWorkerHudUpdates,
+    },
+    renderer: zoneRenderer.getRuntimeStats(),
+    webgl: {
+      geometries: webglInfo.memory.geometries,
+      textures: webglInfo.memory.textures,
+      drawCalls: webglInfo.render.calls,
+      triangles: webglInfo.render.triangles,
+      points: webglInfo.render.points,
+      lines: webglInfo.render.lines,
+    },
+    artifactMediaCaches: getArtifactMediaCacheStats(),
+    views: {
+      cityHud: cityPanel.getRuntimeStats(),
+      fileViewer: fileViewerModal.getRuntimeStats(),
+      tapestry: tapestryView.getRuntimeStats(),
+      playground: playgroundViewer.getRuntimeStats(),
+    },
+  }
+}
+
+debugWindow.getFrontendRuntimeDiagnostics = getFrontendRuntimeDiagnostics
+debugWindow.debugRuntime = async () => {
+  const frontend = getFrontendRuntimeDiagnostics()
+  let server: unknown | null = null
+
+  try {
+    const res = await fetch(`http://${window.location.hostname}:4004/debug-runtime`)
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(body || `HTTP ${res.status}`)
+    }
+    server = await res.json()
+  } catch (error) {
+    console.warn('[debugRuntime] Failed to fetch /debug-runtime:', error)
+  }
+
+  const snapshot = { frontend, server }
+  console.log('[debugRuntime] snapshot', snapshot)
+  return snapshot
+}
+
 // Swarm drag handling (intercept mousedown on swarms before camera pan)
-canvasOverlay.addEventListener('mousedown', (e) => {
+const onCanvasMouseDownCapture = (e: MouseEvent) => {
   // Only handle left button
   if (e.button !== 0) return
 
@@ -511,15 +754,18 @@ canvasOverlay.addEventListener('mousedown', (e) => {
   if (workerHit) {
     // Start swarm drag - this prevents camera from panning
     if (zoneRenderer.startSwarmDrag(workerHit.workerId, e.clientX, e.clientY)) {
+      zoneRenderer.clearWorkerFileHover(true)
       e.stopPropagation()  // Prevent camera from starting its pan
     }
   }
-}, true)  // Use capture phase to run before camera's handler
+}
+canvasOverlay.addEventListener('mousedown', onCanvasMouseDownCapture, true)  // capture phase to run before camera handler
 
 // Click handling
-canvasOverlay.addEventListener('click', (e) => {
+const onCanvasClick = (e: MouseEvent) => {
   // Ignore clicks that were drags (including swarm drags)
   if (camera.dragging || zoneRenderer.isDraggingSwarm) return
+  zoneRenderer.clearWorkerFileHover(true)
 
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
   const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
@@ -538,8 +784,7 @@ canvasOverlay.addEventListener('click', (e) => {
     const session = sessions.find(s => s.id === workerHit.workerId)
     if (session) {
       selectedHex = session.hex || hex
-      // Open map-pinned conversation card
-      zoneRenderer.openConversationCard(session)
+      focusKittyTab(session.id)
       return
     }
   }
@@ -559,22 +804,15 @@ canvasOverlay.addEventListener('click', (e) => {
 
   if (entity?.type === 'worker' && entity.entityId) {
     selectedHex = hex
-    const session = sessions.find(s => s.id === entity.entityId)
-    if (session) {
-      // Open map-pinned conversation card
-      zoneRenderer.openConversationCard(session)
-    }
+    focusKittyTab(entity.entityId)
   } else {
-    // Empty tile: close most recent card, or clear selection if none
-    const closed = zoneRenderer.closeMostRecentCard()
-    if (!closed) {
-      selectedHex = null
-    }
+    selectedHex = null
   }
-})
+}
+canvasOverlay.addEventListener('click', onCanvasClick)
 
 // Double-click for primary actions (focus terminal / new worker)
-canvasOverlay.addEventListener('dblclick', (e) => {
+const onCanvasDoubleClick = (e: MouseEvent) => {
   if (camera.dragging) return
 
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
@@ -609,7 +847,8 @@ canvasOverlay.addEventListener('dblclick', (e) => {
       promptNewWorker(nearestCity)
     }
   }
-})
+}
+canvasOverlay.addEventListener('dblclick', onCanvasDoubleClick)
 
 // Force Touch (Mac trackpad) for context menu
 // Track mouse position for force touch (event doesn't include coordinates)
@@ -617,12 +856,15 @@ let forceMouseX = 0
 let forceMouseY = 0
 let forceTouchFired = false
 
-canvasOverlay.addEventListener('mousemove', (e) => {
+const onCanvasMouseMove = (e: MouseEvent) => {
   forceMouseX = e.clientX
   forceMouseY = e.clientY
 
   // Custom cursor based on what's under the mouse
-  if (camera.dragging || movingCityId) return  // Don't change cursor while dragging
+  if (camera.dragging || movingCityId) {
+    zoneRenderer.clearWorkerFileHover()
+    return
+  }
 
   const worldPos = camera.screenToWorld(e.clientX, e.clientY)
 
@@ -630,8 +872,20 @@ canvasOverlay.addEventListener('mousemove', (e) => {
   const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
   if (workerHit) {
     canvas.style.cursor = 'grab'
+    const session = sessions.find(s => s.id === workerHit.workerId)
+    if (session) {
+      const swarmPos = zoneRenderer.getSwarmWorldPosition(workerHit.workerId)
+      const tooltipAnchor = swarmPos
+        ? camera.worldToScreen(swarmPos.x, 0.7, swarmPos.z)
+        : { x: e.clientX, y: e.clientY }
+      zoneRenderer.updateWorkerFileHover(session, tooltipAnchor)
+    } else {
+      zoneRenderer.clearWorkerFileHover()
+    }
     return
   }
+
+  zoneRenderer.clearWorkerFileHover()
 
   if (zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)) {
     canvas.style.cursor = 'var(--cursor-bird)'
@@ -639,15 +893,25 @@ canvasOverlay.addEventListener('mousemove', (e) => {
   }
 
   canvas.style.cursor = ''
-})
+}
+canvasOverlay.addEventListener('mousemove', onCanvasMouseMove)
+
+const onCanvasMouseLeave = () => {
+  zoneRenderer.clearWorkerFileHover()
+  if (!movingCityId) {
+    canvas.style.cursor = ''
+  }
+}
+canvasOverlay.addEventListener('mouseleave', onCanvasMouseLeave)
 
 // Claim gesture to prevent system Quick Look
-canvasOverlay.addEventListener('webkitmouseforcewillbegin', (e) => {
+const onCanvasForceWillBegin = (e: Event) => {
   e.preventDefault()
-})
+}
+canvasOverlay.addEventListener('webkitmouseforcewillbegin', onCanvasForceWillBegin)
 
 // Force click: deep-press a city opens claims/playground, otherwise context menu
-canvasOverlay.addEventListener('webkitmouseforcedown', () => {
+const onCanvasForceDown = () => {
   if (camera.dragging) return
   forceTouchFired = true
 
@@ -659,6 +923,7 @@ canvasOverlay.addEventListener('webkitmouseforcedown', () => {
     if (city && (city.hasClaims || city.hasPlaygrounds)) {
       handleCityClick(city)
       if (city.hasClaims) {
+        cityPanel.hide()
         tapestryView.show(city)
       } else {
         playgroundViewer.show(city)
@@ -668,7 +933,8 @@ canvasOverlay.addEventListener('webkitmouseforcedown', () => {
   }
 
   handleContextMenu(forceMouseX, forceMouseY)
-})
+}
+canvasOverlay.addEventListener('webkitmouseforcedown', onCanvasForceDown)
 
 // Suppress click after force touch (force touch fires normal click on release)
 // Named handler for HMR cleanup
@@ -890,17 +1156,15 @@ async function activateRemoteCity(city: City): Promise<void> {
   }
 }
 
-// Escape key: cancel move mode or close most recent card
+// Escape key: cancel move mode
 function handleEscapeKey(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return
 
   if (movingCityId) {
     movingCityId = null
     document.body.style.cursor = ''
-    return
   }
-
-  zoneRenderer.closeMostRecentCard()
+  zoneRenderer.clearWorkerFileHover(true)
 }
 window.addEventListener('keydown', handleEscapeKey)
 
@@ -921,7 +1185,7 @@ function handleCycleKeys(e: KeyboardEvent): void {
     if (sessions.length === 0) return
     workerCycleIndex = (workerCycleIndex + direction + sessions.length) % sessions.length
     const session = sessions[workerCycleIndex]
-    zoneRenderer.openConversationCard(session)
+    focusKittyTab(session.id)
     // Focus camera on worker's swarm
     const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
     if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
@@ -946,16 +1210,14 @@ window.addEventListener('resize', resizeHandler)
 
 // Render loop
 function animate(): void {
-  requestAnimationFrame(animate)
+  if (runtimeDisposed) return
+  animationFrameId = requestAnimationFrame(animate)
 
   // Animate (breathing pulse, label visibility, distance fading)
   zoneRenderer.animate(camera.cameraDistance)
 
   renderer.render(scene, camera.camera)
   labelRenderer.render(scene, camera.camera)
-
-  // Reapply card z-indexes after CSS2DRenderer (which overwrites them based on depth)
-  zoneRenderer.reapplyCardZIndexes()
 }
 
 // Start
@@ -963,10 +1225,10 @@ connectWebSocket()
 animate()
 
 // Add some mock data for testing when server is not available
-setTimeout(() => {
+mockDataTimeout = setTimeout(() => {
   if (cities.length === 0) {
     const mockCities: City[] = [
-      { id: '1', name: 'hexarchy-v2', path: '/projects/hexarchy-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, hasPlaygrounds: true, isDormant: false, originId: 'local' },
+      { id: '1', name: 'portolan-v2', path: '/projects/portolan-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, hasPlaygrounds: true, isDormant: false, originId: 'local' },
       { id: '2', name: 'loom', path: '/projects/loom', hex: { q: 2, r: -1 }, fiberCount: 7, hasClaims: true, hasPlaygrounds: false, isDormant: false, originId: 'local' },
       { id: '3', name: 'pure-eb', path: '/projects/pure-eb', hex: { q: -2, r: 1 }, fiberCount: 0, hasClaims: true, hasPlaygrounds: false, isDormant: true, originId: 'remote-candide' },
     ]
@@ -979,38 +1241,76 @@ setTimeout(() => {
     sessions = mockSessions
     zoneRenderer.updateState(cities, sessions)
   }
+  mockDataTimeout = null
 }, 1000)
+
+function cleanupRuntime(): void {
+  if (hasRuntimeCleanupRun) return
+  hasRuntimeCleanupRun = true
+  runtimeDisposed = true
+
+  // Stop async loops and reconnect timers before disposing owned resources.
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId)
+    animationFrameId = null
+  }
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout)
+    reconnectTimeout = null
+  }
+  if (mockDataTimeout) {
+    clearTimeout(mockDataTimeout)
+    mockDataTimeout = null
+  }
+  if (workerHudUpdateFrameId !== null) {
+    cancelAnimationFrame(workerHudUpdateFrameId)
+    workerHudUpdateFrameId = null
+  }
+
+  // Close WebSocket and prevent reconnection attempts.
+  wsCleanedUp = true
+  ws?.close()
+  ws = null
+
+  // Remove all event listeners (named handlers for clean unsubscribe).
+  document.removeEventListener('contextmenu', contextMenuHandler)
+  document.removeEventListener('click', forceClickCaptureHandler, true)
+  canvasOverlay.removeEventListener('mousedown', onCanvasMouseDownCapture, true)
+  canvasOverlay.removeEventListener('click', onCanvasClick)
+  canvasOverlay.removeEventListener('dblclick', onCanvasDoubleClick)
+  canvasOverlay.removeEventListener('mousemove', onCanvasMouseMove)
+  canvasOverlay.removeEventListener('mouseleave', onCanvasMouseLeave)
+  canvasOverlay.removeEventListener('webkitmouseforcewillbegin', onCanvasForceWillBegin)
+  canvasOverlay.removeEventListener('webkitmouseforcedown', onCanvasForceDown)
+  window.removeEventListener('keydown', handleEscapeKey)
+  window.removeEventListener('keydown', handleCycleKeys)
+  window.removeEventListener('resize', resizeHandler)
+
+  // Dispose UI panels (removes DOM and detaches document listeners).
+  cityPanel.dispose()
+  fileViewerModal.dispose()
+  contextMenu.dispose()
+  newWorkerDialog.dispose()
+  viewOverlay.dispose()
+  tabbedPlansView.dispose()
+  tapestryView.dispose()
+  playgroundViewer.dispose()
+
+  // Dispose renderer components in reverse initialization order.
+  camera.dispose()
+  zoneRenderer.dispose()
+  renderer.dispose()
+
+  // Clear shared UI media caches so HMR and prod cleanup follow the same teardown path.
+  clearArtifactMediaCaches()
+
+  // Clean up DOM elements.
+  labelRenderer.domElement.remove()
+}
 
 // HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    // Close WebSocket and prevent reconnection attempts
-    wsCleanedUp = true
-    ws?.close()
-
-    // Remove all event listeners (named handlers for clean unsubscribe)
-    document.removeEventListener('contextmenu', contextMenuHandler)
-    document.removeEventListener('click', forceClickCaptureHandler, true)
-    window.removeEventListener('keydown', handleEscapeKey)
-    window.removeEventListener('keydown', handleCycleKeys)
-    window.removeEventListener('resize', resizeHandler)
-
-    // Dispose UI panels (removes DOM and detaches document listeners)
-    cityPanel.dispose()
-    fileViewerModal.dispose()
-    contextMenu.dispose()
-    newWorkerDialog.dispose()
-    viewOverlay.dispose()
-    tabbedPlansView.dispose()
-    tapestryView.dispose()
-    playgroundViewer.dispose()
-
-    // Dispose renderer components in reverse initialization order
-    camera.dispose()
-    zoneRenderer.dispose()
-    renderer.dispose()
-
-    // Clean up DOM elements
-    labelRenderer.domElement.remove()
+    cleanupRuntime()
   })
 }

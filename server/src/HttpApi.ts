@@ -11,16 +11,15 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
 import { exec, execFile, execFileSync, spawn, execSync } from 'child_process';
+import { createReadStream } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { promisify } from 'util';
-import { extname } from 'path';
+import { extname, isAbsolute, normalize, resolve } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence, Annotation } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
-import type { TranscriptReader } from './TranscriptReader.js';
-import type { ConversationCache, CachedMessage } from './ConversationCache.js';
-import type { CardStatePersistence } from './CardStatePersistence.js';
+import type { RecentFileTracker } from './RecentFileTracker.js';
 import { shellEscape } from './KittyIntegration.js';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
@@ -67,12 +66,11 @@ interface SessionLookup {
   getAllSessions(): Session[];
 }
 
+type RuntimeDiagnosticsProvider = () => unknown | Promise<unknown>;
+
 // ============================================================================
 // HttpApi
 // ============================================================================
-
-// Remote conversation lookup callback
-export type RemoteConversationLookup = (sessionId: string) => any[] | undefined;
 
 export class HttpApi {
   private cityLookup: CityLookup;
@@ -80,10 +78,9 @@ export class HttpApi {
   private persistenceLookup: PersistenceLookup;
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
-  private transcriptReader: TranscriptReader | null = null;
-  private remoteConversationLookup: RemoteConversationLookup | null = null;
-  private conversationCache: ConversationCache | null = null;
-  private cardStatePersistence: CardStatePersistence | null = null;
+  private recentFileTracker: RecentFileTracker | null = null;
+  private hookSessionToWorkerSessionId: Map<string, string> = new Map();
+  private runtimeDiagnosticsProvider: RuntimeDiagnosticsProvider | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -110,31 +107,17 @@ export class HttpApi {
   }
 
   /**
-   * Set transcript reader for conversation history
+   * Set recent file tracker for worker hover tooltips
    */
-  setTranscriptReader(reader: TranscriptReader): void {
-    this.transcriptReader = reader;
+  setRecentFileTracker(tracker: RecentFileTracker): void {
+    this.recentFileTracker = tracker;
   }
 
   /**
-   * Set remote conversation lookup for remote worker transcripts
+   * Set runtime diagnostics provider for /debug-runtime endpoint.
    */
-  setRemoteConversationLookup(lookup: RemoteConversationLookup): void {
-    this.remoteConversationLookup = lookup;
-  }
-
-  /**
-   * Set conversation cache for hook-based conversation updates
-   */
-  setConversationCache(cache: ConversationCache): void {
-    this.conversationCache = cache;
-  }
-
-  /**
-   * Set card state persistence for conversation card positions
-   */
-  setCardStatePersistence(persistence: CardStatePersistence): void {
-    this.cardStatePersistence = persistence;
+  setRuntimeDiagnosticsProvider(provider: RuntimeDiagnosticsProvider): void {
+    this.runtimeDiagnosticsProvider = provider;
   }
 
   /**
@@ -213,11 +196,6 @@ export class HttpApi {
       return true;
     }
 
-    if (url.pathname === '/send-message' && req.method === 'POST') {
-      await this.handleSendMessage(req, res);
-      return true;
-    }
-
     if (url.pathname === '/file-as-fiber' && req.method === 'POST') {
       await this.handleFileAsFiber(req, res);
       return true;
@@ -238,48 +216,18 @@ export class HttpApi {
       return true;
     }
 
-    if (url.pathname === '/conversation') {
-      await this.handleConversation(url, res);
+    if (url.pathname === '/recent-files' && req.method === 'GET') {
+      await this.handleRecentFiles(url, res);
       return true;
     }
 
-    if (url.pathname === '/debug-transcripts') {
-      await this.handleDebugTranscripts(res);
+    if (url.pathname === '/debug-runtime') {
+      await this.handleDebugRuntime(res);
       return true;
     }
 
-    // Hook endpoints for conversation capture
-    if (req.method === 'POST' && url.pathname === '/hook/message') {
-      await this.handleHookMessage(req, res);
-      return true;
-    }
-
-    if (url.pathname === '/hook/health') {
-      await this.handleHookHealth(res);
-      return true;
-    }
-
-    // Card state persistence endpoints
-    if (url.pathname === '/card-states' && req.method === 'GET') {
-      await this.handleGetCardStates(res);
-      return true;
-    }
-
-    if (url.pathname.match(/^\/card-state\/[^/]+$/) && req.method === 'GET') {
-      const workerId = decodeURIComponent(url.pathname.split('/')[2]);
-      await this.handleGetCardState(workerId, res);
-      return true;
-    }
-
-    if (url.pathname.match(/^\/card-state\/[^/]+$/) && req.method === 'PUT') {
-      const workerId = decodeURIComponent(url.pathname.split('/')[2]);
-      await this.handleSaveCardState(workerId, req, res);
-      return true;
-    }
-
-    if (url.pathname.match(/^\/card-state\/[^/]+$/) && req.method === 'DELETE') {
-      const workerId = decodeURIComponent(url.pathname.split('/')[2]);
-      await this.handleDeleteCardState(workerId, res);
+    if (req.method === 'POST' && url.pathname === '/hook/file-touch') {
+      await this.handleHookFileTouch(req, res);
       return true;
     }
 
@@ -579,31 +527,30 @@ export class HttpApi {
     const fullPath = `${city.path}/results/claims/${assetPath}`;
     const ext = assetPath.split('.').pop()?.toLowerCase();
     const contentType = MIME_TYPES[ext || ''] || 'application/octet-stream';
+    const timeout = ext === 'pdf' ? 60000 : 30000;
 
     try {
-      let data: Buffer;
       if (city.originId === 'local') {
-        data = await readFile(fullPath);
+        await this.streamLocalBinaryFile(fullPath, contentType, 'no-cache', res);
       } else {
         const sshHost = this.getSshHost(city);
-        // encoding: 'buffer' returns { stdout: Buffer } at runtime, but
-        // promisify(execFile) types don't express this overload
-        const result = await execFileAsync(
-          'ssh', [sshHost, `cat ${shellEscape(fullPath)}`],
-          { maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' as BufferEncoding },
-        );
-        data = Buffer.from(result.stdout as unknown as Buffer);
+        await this.streamRemoteBinaryFile(sshHost, fullPath, contentType, 'no-cache', timeout, res);
+      }
+    } catch (error) {
+      if (res.headersSent || res.writableEnded) {
+        return;
       }
 
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-cache',
-      });
-      res.end(data);
-    } catch (error) {
-      res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end(`Asset not found: ${assetPath}`);
+      const statusCode = typeof (error as { statusCode?: number })?.statusCode === 'number'
+        ? (error as { statusCode: number }).statusCode
+        : ((error as { code?: string })?.code === 'ENOENT' ? 404 : 500);
+
+      res.writeHead(statusCode, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+      if (statusCode === 404) {
+        res.end(`Asset not found: ${assetPath}`);
+      } else {
+        res.end('Failed to read asset');
+      }
     }
   }
 
@@ -692,6 +639,250 @@ export class HttpApi {
   }
 
   /**
+   * Read binary file bytes locally or via SSH without remote base64 encoding.
+   * This keeps remote media transfer at one binary copy instead of base64 inflating
+   * payloads in transit and memory.
+   */
+  private async readBinaryFileBuffer(
+    filePath: string,
+    originId: string | null,
+    maxBuffer: number,
+    timeout: number
+  ): Promise<Buffer> {
+    if (!originId || originId === 'local') {
+      return readFile(filePath);
+    }
+
+    const origin = this.originLookup.getOrigin(originId);
+    if (!origin?.sshHost) {
+      const error = new Error('Origin not found or not connected') as Error & { statusCode?: number };
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const result = await execFileAsync(
+      'ssh', [origin.sshHost, `cat ${shellEscape(filePath)}`],
+      { maxBuffer, timeout, encoding: 'buffer' as BufferEncoding },
+    );
+    return Buffer.from(result.stdout as unknown as Buffer);
+  }
+
+  private streamHeaders(mimeType: string, cacheControl: string): Record<string, string> {
+    return {
+      'Content-Type': mimeType,
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': cacheControl,
+    };
+  }
+
+  private makeHttpError(message: string, statusCode: number): Error & { statusCode: number } {
+    const error = new Error(message) as Error & { statusCode: number };
+    error.statusCode = statusCode;
+    return error;
+  }
+
+  private streamLocalBinaryFile(
+    filePath: string,
+    mimeType: string,
+    cacheControl: string,
+    res: ServerResponse
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const fileStream = createReadStream(filePath);
+      let headersWritten = false;
+      let settled = false;
+
+      const cleanup = () => {
+        fileStream.removeListener('open', onOpen);
+        fileStream.removeListener('error', onError);
+        res.removeListener('finish', onFinish);
+        res.removeListener('close', onClose);
+      };
+
+      const resolveOnce = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const onOpen = () => {
+        if (res.destroyed || res.writableEnded) {
+          fileStream.destroy();
+          resolveOnce();
+          return;
+        }
+        headersWritten = true;
+        res.writeHead(200, this.streamHeaders(mimeType, cacheControl));
+        fileStream.pipe(res);
+      };
+
+      const onError = (error: NodeJS.ErrnoException) => {
+        if (headersWritten || res.headersSent) {
+          res.destroy(error);
+          resolveOnce();
+          return;
+        }
+
+        if (error.code === 'ENOENT') {
+          rejectOnce(this.makeHttpError('File not found', 404));
+          return;
+        }
+        rejectOnce(error);
+      };
+
+      const onFinish = () => {
+        resolveOnce();
+      };
+
+      const onClose = () => {
+        if (!res.writableEnded) {
+          fileStream.destroy();
+        }
+        resolveOnce();
+      };
+
+      fileStream.once('open', onOpen);
+      fileStream.once('error', onError);
+      res.once('finish', onFinish);
+      res.once('close', onClose);
+    });
+  }
+
+  private streamRemoteBinaryFile(
+    sshHost: string,
+    filePath: string,
+    mimeType: string,
+    cacheControl: string,
+    timeout: number,
+    res: ServerResponse
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ssh = spawn('ssh', [sshHost, `cat ${shellEscape(filePath)}`], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      if (!ssh.stdout || !ssh.stderr) {
+        reject(this.makeHttpError('Failed to create SSH streams', 500));
+        return;
+      }
+
+      let headersWritten = false;
+      let settled = false;
+      let timedOut = false;
+      let stderr = '';
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        ssh.kill('SIGKILL');
+      }, timeout);
+
+      const cleanup = () => {
+        clearTimeout(timeoutHandle);
+        ssh.stdout?.removeListener('data', onStdoutData);
+        ssh.stderr?.removeListener('data', onStderrData);
+        ssh.removeListener('error', onError);
+        ssh.removeListener('close', onClose);
+        res.removeListener('drain', onDrain);
+        res.removeListener('close', onResClose);
+      };
+
+      const resolveOnce = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const onStdoutData = (chunk: Buffer) => {
+        if (settled) return;
+        if (!headersWritten) {
+          headersWritten = true;
+          res.writeHead(200, this.streamHeaders(mimeType, cacheControl));
+        }
+        if (!res.write(chunk)) {
+          ssh.stdout?.pause();
+        }
+      };
+
+      const onStderrData = (chunk: Buffer) => {
+        if (stderr.length >= 4096) return;
+        const remaining = 4096 - stderr.length;
+        stderr += chunk.toString('utf-8', 0, remaining);
+      };
+
+      const onDrain = () => {
+        ssh.stdout?.resume();
+      };
+
+      const onError = (error: Error) => {
+        if (headersWritten || res.headersSent) {
+          res.destroy(error);
+          resolveOnce();
+          return;
+        }
+        rejectOnce(error);
+      };
+
+      const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (settled) return;
+        if (code === 0) {
+          if (!headersWritten) {
+            headersWritten = true;
+            res.writeHead(200, this.streamHeaders(mimeType, cacheControl));
+          }
+          if (!res.writableEnded) {
+            res.end();
+          }
+          resolveOnce();
+          return;
+        }
+
+        const message = timedOut
+          ? 'Remote file read timed out'
+          : (stderr.trim() || (signal ? `SSH terminated by ${signal}` : `SSH exited with code ${code ?? 'unknown'}`));
+
+        if (!headersWritten && !res.headersSent && !res.writableEnded) {
+          const notFound = /no such file|cannot stat|not found/i.test(message);
+          const statusCode = timedOut ? 504 : (notFound ? 404 : 500);
+          rejectOnce(this.makeHttpError(notFound ? 'File not found' : message, statusCode));
+          return;
+        }
+
+        res.destroy(new Error(message));
+        resolveOnce();
+      };
+
+      const onResClose = () => {
+        if (!res.writableEnded) {
+          ssh.kill('SIGTERM');
+        }
+        resolveOnce();
+      };
+
+      ssh.stdout.on('data', onStdoutData);
+      ssh.stderr.on('data', onStderrData);
+      ssh.on('error', onError);
+      ssh.on('close', onClose);
+      res.on('drain', onDrain);
+      res.once('close', onResClose);
+    });
+  }
+
+  /**
    * Handle binary file content (images, PDFs) - returns base64 data URL
    */
   private async handleBinaryContent(
@@ -707,24 +898,7 @@ export class HttpApi {
     const timeout = ext === 'pdf' ? 60000 : 30000;
 
     try {
-      let data: Buffer;
-
-      if (!originId || originId === 'local') {
-        data = await readFile(filePath);
-      } else {
-        const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Origin not found or not connected' }));
-          return;
-        }
-
-        const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, `base64 ${shellEscape(filePath)}`],
-          { maxBuffer, timeout }
-        );
-        data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
-      }
+      const data = await this.readBinaryFileBuffer(filePath, originId, maxBuffer, timeout);
 
       const dataUrl = `data:${mimeType};base64,${data.toString('base64')}`;
 
@@ -735,10 +909,15 @@ export class HttpApi {
       res.end(JSON.stringify({ type: fileType, url: dataUrl, path: filePath }));
     } catch (error: any) {
       console.error(`Failed to fetch ${fileType} content:`, error.message);
-      const statusCode = error.code === 'ENOENT' ? 404 : 500;
+      const statusCode = typeof error.statusCode === 'number'
+        ? error.statusCode
+        : (error.code === 'ENOENT' ? 404 : 500);
+      const notFoundMessage = error.message === 'Origin not found or not connected'
+        ? error.message
+        : `${fileType} not found`;
       res.writeHead(statusCode, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        error: error.code === 'ENOENT' ? `${fileType} not found` : `Failed to read ${fileType}`
+        error: statusCode === 404 ? notFoundMessage : `Failed to read ${fileType}`
       }));
     }
   }
@@ -753,43 +932,37 @@ export class HttpApi {
     res: ServerResponse
   ): Promise<void> {
     const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
-    const maxBuffer = ext === 'pdf' ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
     const timeout = ext === 'pdf' ? 60000 : 30000;
 
     try {
-      let data: Buffer;
-
       if (!originId || originId === 'local') {
-        data = await readFile(filePath);
-      } else {
-        const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
-          res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-          res.end('Origin not found');
-          return;
-        }
-
-        const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, `base64 ${shellEscape(filePath)}`],
-          { maxBuffer, timeout }
-        );
-        data = Buffer.from(stdout.replace(/\s/g, ''), 'base64');
+        await this.streamLocalBinaryFile(filePath, mimeType, 'public, max-age=3600', res);
+        return;
       }
 
-      res.writeHead(200, {
-        'Content-Type': mimeType,
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=3600',
-        'Content-Length': data.length,
-      });
-      res.end(data);
+      const origin = this.originLookup.getOrigin(originId);
+      if (!origin?.sshHost) {
+        throw this.makeHttpError('Origin not found or not connected', 404);
+      }
+      await this.streamRemoteBinaryFile(origin.sshHost, filePath, mimeType, 'public, max-age=3600', timeout, res);
     } catch (error: any) {
+      if (res.headersSent || res.writableEnded) {
+        return;
+      }
+
       console.error('Failed to serve raw binary:', error.message, error.stderr || '');
-      res.writeHead(error.code === 'ENOENT' ? 404 : 500, {
+      const statusCode = typeof error.statusCode === 'number'
+        ? error.statusCode
+        : (error.code === 'ENOENT' ? 404 : 500);
+      res.writeHead(statusCode, {
         'Content-Type': 'text/plain',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(error.message || 'Not found');
+      if (statusCode === 404 && error.message === 'Origin not found or not connected') {
+        res.end(error.message);
+      } else {
+        res.end(error.message || 'Not found');
+      }
     }
   }
 
@@ -1227,65 +1400,6 @@ export class HttpApi {
   }
 
   /**
-   * POST /send-message
-   * Send a chat message to a worker's tmux session
-   */
-  private async handleSendMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.sessionLookup) {
-      this.sendJsonError(res, 500, 'Session lookup not initialized');
-      return;
-    }
-
-    const data = await this.parseJsonBody<{ sessionId: string; message: string }>(req, res);
-    if (!data) return;
-
-    const { sessionId, message } = data;
-
-    if (!sessionId || !message?.trim()) {
-      this.sendJsonError(res, 400, 'sessionId and message are required');
-      return;
-    }
-
-    const session = this.sessionLookup.findSession(sessionId);
-    if (!session) {
-      this.sendJsonError(res, 404, 'Session not found');
-      return;
-    }
-
-    const tmuxSession = session.tmuxSession;
-    const isRemote = session.originId !== 'local';
-    let sshHost: string | undefined;
-
-    if (isRemote) {
-      const origin = this.originLookup.getOrigin(session.originId);
-      sshHost = origin?.sshHost;
-      if (!sshHost) {
-        this.sendJsonError(res, 404, 'Origin not found for remote session');
-        return;
-      }
-    }
-
-    try {
-      const escaped = shellEscape(tmuxSession);
-
-      if (!isRemote) {
-        execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
-        execSync(`tmux paste-buffer -t ${escaped}`, { timeout: 5000 });
-        execSync(`tmux send-keys -t ${escaped} Enter`, { timeout: 5000 });
-      } else {
-        execFileSync('ssh', [sshHost!, 'tmux load-buffer -'], { input: message, timeout: 10000 });
-        execFileSync('ssh', [sshHost!, `tmux paste-buffer -t ${escaped}`], { timeout: 10000 });
-        execFileSync('ssh', [sshHost!, `tmux send-keys -t ${escaped} Enter`], { timeout: 10000 });
-      }
-
-      this.sendJsonSuccess(res, { success: true });
-    } catch (error: any) {
-      console.error('Failed to send message:', error.message);
-      this.sendJsonError(res, 500, 'Failed to send message: ' + error.message);
-    }
-  }
-
-  /**
    * Format annotations as markdown for Claude
    * Includes full file path and optional global comment
    */
@@ -1648,163 +1762,203 @@ export class HttpApi {
   }
 
   /**
-   * Get conversation history for a session
-   * Query params: sessionId, tmuxSession, limit
+   * GET /recent-files?sessionId=...&limit=5
+   * Returns the latest touched files for a worker session.
    */
-  private async handleConversation(url: URL, res: ServerResponse): Promise<void> {
-    const sessionId = url.searchParams.get('sessionId') ?? undefined;
-    const tmuxSession = url.searchParams.get('tmuxSession') ?? undefined;
-    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
-
-    if (!sessionId && !tmuxSession) {
-      this.sendJsonError(res, 400, 'Missing sessionId or tmuxSession parameter');
+  private async handleRecentFiles(url: URL, res: ServerResponse): Promise<void> {
+    if (!this.recentFileTracker) {
+      this.sendJsonError(res, 500, 'Recent file tracker not configured');
       return;
     }
 
-    try {
-      const messages = await this.resolveConversationMessages(sessionId, limit, tmuxSession);
-      this.sendJsonSuccess(res, { messages });
-    } catch (error: any) {
-      console.error('Failed to fetch conversation:', error.message);
-      this.sendJsonError(res, 500, 'Failed to fetch conversation');
+    const sessionId = url.searchParams.get('sessionId');
+    if (!sessionId) {
+      this.sendJsonError(res, 400, 'Missing sessionId parameter');
+      return;
     }
+
+    const limitRaw = parseInt(url.searchParams.get('limit') || '5', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(10, limitRaw)) : 5;
+    const files = this.recentFileTracker.getRecentFiles(sessionId, limit);
+    this.sendJsonSuccess(res, { sessionId, files });
   }
 
   /**
-   * Resolve conversation messages using multiple lookup strategies
-   *
-   * Priority: sessionId > remote lookup > TranscriptReader
-   * Session-specific lookup is strongly preferred. Tmux aggregation removed —
-   * it caused cross-contamination between sessions sharing a tmux name after
-   * disconnects/reconnects.
+   * POST /hook/file-touch
+   * Receives Claude Code PostToolUse events for Read/Write/Edit.
    */
-  private async resolveConversationMessages(sessionId: string | undefined, limit: number, tmuxSessionParam?: string): Promise<any[]> {
-    const session = sessionId ? this.sessionLookup?.findSession(sessionId) : undefined;
-    const isRemote = session?.originId && session.originId !== 'local';
-
-    // 1. ConversationCache by sessionId (primary path)
-    if (this.conversationCache && sessionId) {
-      const messages = this.conversationCache.getMessages(sessionId, limit);
-      if (messages.length > 0) return messages;
+  private async handleHookFileTouch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.recentFileTracker) {
+      this.sendJsonError(res, 500, 'Recent file tracker not configured');
+      return;
+    }
+    if (!this.sessionLookup) {
+      this.sendJsonError(res, 500, 'Session lookup not configured');
+      return;
     }
 
-    // 2. ConversationCache by prefixed tmux session (remote hooks path)
-    // Remote hooks store messages under Claude's own sessionId (a UUID),
-    // but portolan session IDs are constructed differently (e.g. "remote-host-tmuxName").
-    // Fall back to tmux-based lookup using the originId/tmuxSession key.
-    if (this.conversationCache && isRemote && session) {
-      const prefixedTmux = `${session.originId}/${session.tmuxSession}`;
-      const messages = this.conversationCache.getMessagesByTmux(prefixedTmux, limit);
-      if (messages.length > 0) return messages;
+    const payload = await this.parseJsonBody<Record<string, unknown>>(req, res);
+    if (!payload) return;
+
+    const sessionIdRaw = typeof payload.session_id === 'string'
+      ? payload.session_id
+      : typeof payload.sessionId === 'string'
+        ? payload.sessionId
+        : '';
+    const toolNameRaw = typeof payload.tool_name === 'string'
+      ? payload.tool_name
+      : typeof payload.toolName === 'string'
+        ? payload.toolName
+        : '';
+
+    const toolInput = payload.tool_input && typeof payload.tool_input === 'object'
+      ? payload.tool_input as Record<string, unknown>
+      : payload.toolInput && typeof payload.toolInput === 'object'
+        ? payload.toolInput as Record<string, unknown>
+        : null;
+
+    const filePathRaw = toolInput && typeof toolInput.file_path === 'string'
+      ? toolInput.file_path
+      : toolInput && typeof toolInput.path === 'string'
+        ? toolInput.path
+        : '';
+    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
+    const filePath = this.normalizeHookFilePath(filePathRaw, cwd);
+
+    if (!sessionIdRaw || !toolNameRaw || !filePath) {
+      this.sendJsonError(res, 400, 'Missing required fields: session_id, tool_name, tool_input.file_path');
+      return;
     }
 
-    // Remaining lookups require sessionId
-    if (!sessionId) return [];
-
-    // 3. Remote conversation lookup (legacy agent-proxied path)
-    if (isRemote) {
-      const cached = this.remoteConversationLookup?.(sessionId);
-      if (cached && cached.length > 0) return cached.slice(-limit);
+    if (!['Read', 'Write', 'Edit'].includes(toolNameRaw)) {
+      this.sendJsonSuccess(res, { success: true, ignored: true, reason: 'tool-filter' });
+      return;
     }
 
-    // 3. TranscriptReader (legacy fallback for local sessions)
-    if (this.transcriptReader && session && !isRemote) {
-      await this.updateTranscriptMapping(sessionId, session);
-      return this.transcriptReader.getRecentMessages(session.cwd, limit, sessionId);
+    const resolvedSession = this.resolveWorkerSessionForHook(sessionIdRaw, cwd, filePath);
+    if (!resolvedSession) {
+      this.sendJsonSuccess(res, { success: true, stored: false, reason: 'session-not-found' });
+      return;
     }
 
-    return [];
-  }
-
-  /**
-   * Update transcript mapping if a new transcript is detected
-   */
-  private async updateTranscriptMapping(sessionId: string, session: Session): Promise<void> {
-    if (!this.transcriptReader || !session.tmuxSession) return;
-
-    const currentMapping = this.transcriptReader.getSessionTranscript(sessionId);
-    const detected = await this.transcriptReader.detectTranscriptFromTmux(session.tmuxSession, session.cwd);
-
-    if (detected && detected !== currentMapping) {
-      this.transcriptReader.setSessionTranscript(sessionId, detected);
-    }
-  }
-
-  private async handleDebugTranscripts(res: ServerResponse): Promise<void> {
-    const mappings = this.transcriptReader?.getAllSessionMappings() || new Map();
-    const sessions = this.sessionLookup?.getAllSessions() || [];
-
-    const debug = {
-      mappings: Object.fromEntries(
-        [...mappings.entries()].map(([id, path]) => [id, path.split('/').pop()])
-      ),
-      sessions: sessions.map(s => ({
-        id: s.id,
-        name: s.name,
-        tmuxSession: s.tmuxSession,
-        cwd: s.cwd,
-        status: s.status,
-        mappedTranscript: mappings.get(s.id)?.split('/').pop() || null
-      }))
-    };
-
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+    this.hookSessionToWorkerSessionId.set(sessionIdRaw, resolvedSession.id);
+    this.recentFileTracker.recordTouch(resolvedSession.id, toolNameRaw, filePath);
+    this.sendJsonSuccess(res, {
+      success: true,
+      stored: true,
+      workerSessionId: resolvedSession.id,
+      tmuxSession: resolvedSession.tmuxSession,
     });
-    res.end(JSON.stringify(debug, null, 2));
   }
 
-  // ============================================================================
-  // Hook Endpoints for Conversation Capture
-  // ============================================================================
+  /**
+   * Best-effort resolution from hook session_id -> active worker session.
+   */
+  private resolveWorkerSessionForHook(
+    hookSessionId: string,
+    cwd: string,
+    filePath: string
+  ): Session | null {
+    if (!this.sessionLookup) return null;
+
+    const mappedWorkerSessionId = this.hookSessionToWorkerSessionId.get(hookSessionId);
+    if (mappedWorkerSessionId) {
+      const mappedSession = this.sessionLookup.findSession(mappedWorkerSessionId);
+      if (mappedSession) return mappedSession;
+      this.hookSessionToWorkerSessionId.delete(hookSessionId);
+    }
+
+    const directByWorkerId = this.sessionLookup.findSession(hookSessionId);
+    if (directByWorkerId) return directByWorkerId;
+
+    const allSessions = this.sessionLookup.getAllSessions();
+    const directByTmux = allSessions.find((s) => s.tmuxSession === hookSessionId);
+    if (directByTmux) return directByTmux;
+
+    const cwdMatches = cwd
+      ? allSessions.filter((s) =>
+        this.pathContains(s.cwd, cwd) || this.pathContains(cwd, s.cwd)
+      )
+      : [];
+    if (cwdMatches.length === 1) return cwdMatches[0];
+
+    const fileMatches = filePath
+      ? allSessions.filter((s) => this.pathContains(s.cwd, filePath))
+      : [];
+    if (fileMatches.length === 1) return fileMatches[0];
+
+    const candidates = (cwdMatches.length > 1 ? cwdMatches : fileMatches.length > 1 ? fileMatches : [])
+      .slice()
+      .sort((a, b) => b.lastActivity - a.lastActivity);
+    if (candidates.length > 0) return candidates[0];
+
+    const working = allSessions
+      .filter((s) => s.status === 'working')
+      .sort((a, b) => b.lastActivity - a.lastActivity);
+    if (working.length === 1) return working[0];
+
+    return null;
+  }
+
+  private normalizePathForMatch(pathValue: string): string {
+    const trimmed = pathValue.trim();
+    if (!trimmed) return '';
+    const normalizedPath = normalize(trimmed);
+    if (normalizedPath === '/') return '/';
+    return normalizedPath.replace(/\/+$/, '');
+  }
 
   /**
-   * POST /hook/message
-   * Receive conversation messages from Claude Code hooks
-   * Body: { sessionId, tmuxSession, cwd, messages: [{ type, content, timestamp }] }
+   * True when targetPath is basePath itself or a descendant path.
+   * Uses boundary-safe matching to avoid "/foo" matching "/foobar".
    */
-  private async handleHookMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.conversationCache) {
-      this.sendJsonError(res, 500, 'Conversation cache not configured');
-      return;
+  private pathContains(basePath: string, targetPath: string): boolean {
+    const base = this.normalizePathForMatch(basePath);
+    const target = this.normalizePathForMatch(targetPath);
+    if (!base || !target) return false;
+    if (base === target) return true;
+    if (base === '/') return target.startsWith('/');
+    return target.startsWith(`${base}/`);
+  }
+
+  private normalizeHookFilePath(filePath: string, cwd: string): string {
+    const trimmedPath = filePath.trim();
+    if (!trimmedPath) return '';
+
+    if (isAbsolute(trimmedPath)) {
+      return normalize(trimmedPath);
     }
 
-    const parseResult = await this.parseJsonBody<{
-      sessionId: string;
-      tmuxSession: string;
-      cwd: string;
-      messages: CachedMessage[];
-    }>(req, res);
-
-    if (!parseResult) return;
-
-    const { sessionId, tmuxSession, cwd, messages } = parseResult;
-
-    if (!sessionId || !tmuxSession || !messages || !Array.isArray(messages)) {
-      this.sendJsonError(res, 400, 'Missing required fields: sessionId, tmuxSession, messages');
-      return;
+    const trimmedCwd = cwd.trim();
+    if (trimmedCwd && isAbsolute(trimmedCwd)) {
+      return normalize(resolve(trimmedCwd, trimmedPath));
     }
 
+    return trimmedPath;
+  }
+
+  private async handleDebugRuntime(res: ServerResponse): Promise<void> {
     try {
-      // Auto-detect remote origin for hooks arriving via SSH tunnel.
-      // Remote hooks POST directly to :4004 with unprefixed tmuxSession,
-      // but ConversationCache keys need the originId/ prefix for lookup.
-      let effectiveTmux = tmuxSession;
-      if (this.sessionLookup) {
-        const remoteSession = this.sessionLookup.getAllSessions().find(
-          s => s.tmuxSession === tmuxSession && s.originId !== 'local'
-        );
-        if (remoteSession) {
-          effectiveTmux = `${remoteSession.originId}/${tmuxSession}`;
-        }
-      }
+      const runtimeDiagnostics = this.runtimeDiagnosticsProvider
+        ? await this.runtimeDiagnosticsProvider()
+        : {};
 
-      this.conversationCache.addMessages(sessionId, effectiveTmux, cwd || '', messages);
-      this.sendJsonSuccess(res, { success: true, count: messages.length });
-    } catch (error: any) {
-      console.error('[Hook] Failed to add messages:', error.message);
-      this.sendJsonError(res, 500, 'Failed to add messages');
+      const debug = {
+        timestamp: Date.now(),
+        pid: process.pid,
+        uptimeSeconds: process.uptime(),
+        memory: process.memoryUsage(),
+        runtime: runtimeDiagnostics,
+      };
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify(debug, null, 2));
+    } catch (error) {
+      console.error('Failed to collect runtime diagnostics:', error);
+      this.sendJsonError(res, 500, 'Failed to collect runtime diagnostics');
     }
   }
 
@@ -1847,92 +2001,4 @@ export class HttpApi {
     res.end(JSON.stringify(data));
   }
 
-  /**
-   * GET /hook/health
-   * Debug endpoint showing last event time per session
-   */
-  private async handleHookHealth(res: ServerResponse): Promise<void> {
-    if (!this.conversationCache) {
-      this.sendJsonError(res, 500, 'Conversation cache not configured');
-      return;
-    }
-
-    const health = this.conversationCache.getHealthInfo();
-    this.sendJsonSuccess(res, health as Record<string, unknown>);
-  }
-
-  // ============================================================================
-  // Card State Persistence
-  // ============================================================================
-
-  /**
-   * GET /card-states - Get all saved card states
-   */
-  private async handleGetCardStates(res: ServerResponse): Promise<void> {
-    if (!this.cardStatePersistence) {
-      this.sendJsonError(res, 500, 'Card state persistence not configured');
-      return;
-    }
-
-    const states = this.cardStatePersistence.getAll();
-    this.sendJsonSuccess(res, { states });
-  }
-
-  /**
-   * GET /card-state/:workerId - Get card state for a worker
-   */
-  private async handleGetCardState(workerId: string, res: ServerResponse): Promise<void> {
-    if (!this.cardStatePersistence) {
-      this.sendJsonError(res, 500, 'Card state persistence not configured');
-      return;
-    }
-
-    const state = this.cardStatePersistence.get(workerId);
-    if (!state) {
-      this.sendJsonError(res, 404, 'Card state not found');
-      return;
-    }
-
-    this.sendJsonSuccess(res, { state });
-  }
-
-  /**
-   * PUT /card-state/:workerId - Save card state for a worker
-   */
-  private async handleSaveCardState(
-    workerId: string,
-    req: IncomingMessage,
-    res: ServerResponse
-  ): Promise<void> {
-    if (!this.cardStatePersistence) {
-      this.sendJsonError(res, 500, 'Card state persistence not configured');
-      return;
-    }
-
-    const body = await this.parseJsonBody<{
-      size?: { width: number; height: number };
-      swarmOffset?: { x: number; z: number };
-    }>(req, res);
-
-    if (!body) return;
-
-    const state = this.cardStatePersistence.set(workerId, {
-      size: body.size,
-      swarmOffset: body.swarmOffset,
-    });
-    this.sendJsonSuccess(res, { state });
-  }
-
-  /**
-   * DELETE /card-state/:workerId - Delete card state for a worker
-   */
-  private async handleDeleteCardState(workerId: string, res: ServerResponse): Promise<void> {
-    if (!this.cardStatePersistence) {
-      this.sendJsonError(res, 500, 'Card state persistence not configured');
-      return;
-    }
-
-    const deleted = this.cardStatePersistence.delete(workerId);
-    this.sendJsonSuccess(res, { deleted });
-  }
 }

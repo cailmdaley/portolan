@@ -17,7 +17,7 @@ ws.on('message', (data) => {
     console.log('Total:', msg.results.length, 'results');
     process.exit(0);
   } else if (msg.cities) {
-    const city = msg.cities.find(c => c.path.includes('hexarchy-v2'));
+    const city = msg.cities.find(c => c.path.includes('portolan'));
     if (city && !cityId) {
       cityId = city.id;
       ws.send(JSON.stringify({

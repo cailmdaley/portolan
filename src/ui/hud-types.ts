@@ -17,3 +17,8 @@ export interface SearchResult {
   line?: number
   match?: string
 }
+
+export interface DirectoryEntry {
+  name: string
+  type: 'file' | 'dir'
+}

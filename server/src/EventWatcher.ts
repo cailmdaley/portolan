@@ -39,6 +39,28 @@ export interface ActivityEvent {
 type StatusChangeCallback = (tmuxSession: string, status: 'idle' | 'working') => void;
 type ActivityCallback = (activity: ActivityEvent) => void;
 
+interface EventWatcherOptions {
+  workingTimeoutMs?: number;
+  maxActivitiesPerSession?: number;
+  maxTrackedSessions?: number;
+  inactiveSessionRetentionMs?: number;
+}
+
+export interface EventWatcherStats {
+  eventsFile: string;
+  watcherActive: boolean;
+  pollIntervalActive: boolean;
+  timeoutCheckIntervalActive: boolean;
+  workingTimeoutMs: number;
+  maxActivitiesPerSession: number;
+  maxTrackedSessions: number;
+  inactiveSessionRetentionMs: number;
+  workingSessionCount: number;
+  recentActivitySessionCount: number;
+  totalRecentActivities: number;
+  trackedSessionCount: number;
+}
+
 export class EventWatcher {
   private eventsFile: string;
   private lastFileSize: number = 0;
@@ -57,9 +79,24 @@ export class EventWatcher {
   // Recent activities per tmux session (for initial state)
   private recentActivities: Map<string, ActivityEvent[]> = new Map();
   private maxActivitiesPerSession = 50;
+  private maxTrackedSessions = 500;
+  private inactiveSessionRetentionMs = 15 * 60_000;
+  private sessionLastSeenAt: Map<string, number> = new Map();
 
-  constructor(eventsFile?: string) {
+  constructor(eventsFile?: string, options: EventWatcherOptions = {}) {
     this.eventsFile = eventsFile ?? join(homedir(), '.portolan', 'data', 'events.jsonl');
+    if (options.workingTimeoutMs !== undefined) {
+      this.workingTimeout = options.workingTimeoutMs;
+    }
+    if (options.maxActivitiesPerSession !== undefined) {
+      this.maxActivitiesPerSession = options.maxActivitiesPerSession;
+    }
+    if (options.maxTrackedSessions !== undefined) {
+      this.maxTrackedSessions = options.maxTrackedSessions;
+    }
+    if (options.inactiveSessionRetentionMs !== undefined) {
+      this.inactiveSessionRetentionMs = options.inactiveSessionRetentionMs;
+    }
   }
 
   /**
@@ -88,6 +125,48 @@ export class EventWatcher {
    */
   getRecentActivities(tmuxSession: string): ActivityEvent[] {
     return this.recentActivities.get(tmuxSession) || [];
+  }
+
+  /**
+   * Return compact runtime stats for diagnostics/debug endpoints.
+   */
+  getStats(): EventWatcherStats {
+    let totalRecentActivities = 0;
+    for (const activities of this.recentActivities.values()) {
+      totalRecentActivities += activities.length;
+    }
+
+    return {
+      eventsFile: this.eventsFile,
+      watcherActive: this.watcher !== null,
+      pollIntervalActive: this.pollInterval !== null,
+      timeoutCheckIntervalActive: this.timeoutCheckInterval !== null,
+      workingTimeoutMs: this.workingTimeout,
+      maxActivitiesPerSession: this.maxActivitiesPerSession,
+      maxTrackedSessions: this.maxTrackedSessions,
+      inactiveSessionRetentionMs: this.inactiveSessionRetentionMs,
+      workingSessionCount: this.lastActivityBySession.size,
+      recentActivitySessionCount: this.recentActivities.size,
+      totalRecentActivities,
+      trackedSessionCount: this.sessionLastSeenAt.size,
+    };
+  }
+
+  /**
+   * Remove all cached state for sessions that are no longer active.
+   */
+  reconcileActiveSessions(activeTmuxSessions: Iterable<string>): void {
+    const active = new Set(activeTmuxSessions);
+    const knownSessions = new Set<string>();
+    for (const key of this.sessionLastSeenAt.keys()) knownSessions.add(key);
+    for (const key of this.recentActivities.keys()) knownSessions.add(key);
+    for (const key of this.lastActivityBySession.keys()) knownSessions.add(key);
+
+    for (const tmuxSession of knownSessions) {
+      if (!active.has(tmuxSession)) {
+        this.deleteSessionState(tmuxSession);
+      }
+    }
   }
 
   /**
@@ -196,6 +275,7 @@ export class EventWatcher {
         try {
           const event = JSON.parse(line) as PortolanEvent;
           if (!event.tmuxSession) continue;
+          this.markSessionSeen(event.tmuxSession, event.timestamp);
 
           const status = this.eventToStatus(event.type);
           if (status && event.timestamp > (latestStatus.get(event.tmuxSession)?.timestamp ?? 0)) {
@@ -222,7 +302,7 @@ export class EventWatcher {
             acts.push(activity);
           }
 
-          // Collect user_prompt_submit events for conversation backfill
+          // Collect user_prompt_submit events for recent activity backfill
           if (event.type === 'user_prompt_submit' && event.prompt) {
             const activity: ActivityEvent = {
               tmuxSession: event.tmuxSession,
@@ -257,13 +337,18 @@ export class EventWatcher {
         // Only apply 'working' status if recent (within timeout)
         if (status === 'working' && now - timestamp > this.workingTimeout) {
           this.updateStatus(tmuxSession, 'idle');
+          this.lastActivityBySession.delete(tmuxSession);
         } else {
           this.updateStatus(tmuxSession, status);
           if (status === 'working') {
             this.lastActivityBySession.set(tmuxSession, timestamp);
+          } else {
+            this.lastActivityBySession.delete(tmuxSession);
           }
         }
       }
+
+      this.pruneInactiveSessionState(now);
     } catch (err) {
       console.error('EventWatcher: Failed to process recent events:', err);
     }
@@ -316,12 +401,16 @@ export class EventWatcher {
    */
   private processEvent(event: PortolanEvent): void {
     if (!event.tmuxSession) return;
+    const eventTimestamp = Number.isFinite(event.timestamp) ? event.timestamp : Date.now();
+    this.markSessionSeen(event.tmuxSession, eventTimestamp);
 
     const status = this.eventToStatus(event.type);
     if (status) {
       this.updateStatus(event.tmuxSession, status);
       if (status === 'working') {
-        this.lastActivityBySession.set(event.tmuxSession, Date.now());
+        this.lastActivityBySession.set(event.tmuxSession, eventTimestamp);
+      } else {
+        this.lastActivityBySession.delete(event.tmuxSession);
       }
     }
 
@@ -367,6 +456,8 @@ export class EventWatcher {
         this.activityCallback(activity);
       }
     }
+
+    this.pruneInactiveSessionState(Date.now());
   }
 
   /**
@@ -392,6 +483,7 @@ export class EventWatcher {
     if (activities.length > this.maxActivitiesPerSession) {
       activities.pop(); // Remove oldest
     }
+    this.markSessionSeen(tmuxSession, activity.timestamp);
   }
 
   /**
@@ -422,6 +514,7 @@ export class EventWatcher {
         this.lastActivityBySession.delete(tmuxSession);
       }
     }
+    this.pruneInactiveSessionState(now);
   }
 
   /**
@@ -434,5 +527,45 @@ export class EventWatcher {
     if (this.changeCallback) {
       this.changeCallback(tmuxSession, status);
     }
+  }
+
+  private markSessionSeen(tmuxSession: string, timestamp: number): void {
+    const current = this.sessionLastSeenAt.get(tmuxSession) ?? 0;
+    if (timestamp > current) {
+      this.sessionLastSeenAt.set(tmuxSession, timestamp);
+    }
+    this.enforceTrackedSessionLimit();
+  }
+
+  private pruneInactiveSessionState(now: number): void {
+    const cutoff = now - this.inactiveSessionRetentionMs;
+    for (const [tmuxSession, lastSeen] of this.sessionLastSeenAt.entries()) {
+      if (lastSeen <= cutoff && !this.lastActivityBySession.has(tmuxSession)) {
+        this.deleteSessionState(tmuxSession);
+      }
+    }
+  }
+
+  private enforceTrackedSessionLimit(): void {
+    if (this.sessionLastSeenAt.size <= this.maxTrackedSessions) {
+      return;
+    }
+
+    const removable = Array.from(this.sessionLastSeenAt.entries())
+      .filter(([tmuxSession]) => !this.lastActivityBySession.has(tmuxSession))
+      .sort((a, b) => a[1] - b[1]);
+
+    for (const [tmuxSession] of removable) {
+      if (this.sessionLastSeenAt.size <= this.maxTrackedSessions) {
+        break;
+      }
+      this.deleteSessionState(tmuxSession);
+    }
+  }
+
+  private deleteSessionState(tmuxSession: string): void {
+    this.lastActivityBySession.delete(tmuxSession);
+    this.recentActivities.delete(tmuxSession);
+    this.sessionLastSeenAt.delete(tmuxSession);
   }
 }

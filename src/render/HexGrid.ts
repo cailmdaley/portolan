@@ -1,5 +1,5 @@
 // HexGrid.ts - Hexagonal grid coordinate system
-// Ported from v1, originally from hexarchy project
+// Ported from v1, originally from portolan project
 
 import type { HexCoord, CartesianCoord } from '../state/types'
 

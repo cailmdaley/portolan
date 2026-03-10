@@ -1,7 +1,7 @@
 #!/bin/bash
-# Hexarchy Hook - Captures Claude Code events for activity tracking
+# Portolan Hook - Captures Claude Code events for activity tracking
 #
-# Writes events to ~/.hexarchy/data/events.jsonl for the hexarchy-v2 server.
+# Writes events to ~/.portolan/data/events.jsonl for the portolan server.
 # Tracks working/idle status based on Claude activity.
 #
 # Install via: scripts/install-remote.sh <ssh-host>
@@ -9,8 +9,8 @@
 set -e
 
 # Config
-HEXARCHY_DATA_DIR="${HEXARCHY_DATA_DIR:-$HOME/.hexarchy/data}"
-EVENTS_FILE="${HEXARCHY_EVENTS_FILE:-$HEXARCHY_DATA_DIR/events.jsonl}"
+PORTOLAN_DATA_DIR="${PORTOLAN_DATA_DIR:-$HOME/.portolan/data}"
+EVENTS_FILE="${PORTOLAN_EVENTS_FILE:-$PORTOLAN_DATA_DIR/events.jsonl}"
 mkdir -p "$(dirname "$EVENTS_FILE")"
 
 # Find jq

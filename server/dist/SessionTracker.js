@@ -6,6 +6,7 @@
  */
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { isCliProcess, detectCli } from './cli-provider.js';
 const execAsync = promisify(exec);
 export class SessionTracker {
     sessions = new Map();
@@ -68,8 +69,8 @@ export class SessionTracker {
         try {
             const discovered = await this.discoverSessions();
             const discoveredMap = new Map();
-            for (const { tmuxSession, cwd } of discovered) {
-                discoveredMap.set(tmuxSession, { tmuxSession, cwd });
+            for (const { tmuxSession, cwd, cli } of discovered) {
+                discoveredMap.set(tmuxSession, { tmuxSession, cwd, cli });
             }
             let changed = false;
             // Remove sessions that no longer exist
@@ -80,13 +81,18 @@ export class SessionTracker {
                 }
             }
             // Add or update sessions
-            for (const { tmuxSession, cwd } of discovered) {
+            for (const { tmuxSession, cwd, cli } of discovered) {
                 const existing = this.sessions.get(tmuxSession);
                 if (existing) {
                     // Update cwd if changed
                     if (existing.cwd !== cwd) {
                         existing.cwd = cwd;
                         existing.cityId = null; // Will be reassigned by index.ts
+                        changed = true;
+                    }
+                    // Update cli if detected
+                    if (cli && existing.cli !== cli) {
+                        existing.cli = cli;
                         changed = true;
                     }
                     // Ensure not offline
@@ -102,6 +108,7 @@ export class SessionTracker {
                         name: this.truncateName(tmuxSession),
                         tmuxSession,
                         cwd,
+                        cli,
                         status: 'idle',
                         createdAt: Date.now(),
                         lastActivity: Date.now(),
@@ -138,29 +145,68 @@ export class SessionTracker {
             if (paneData.length === 0) {
                 return [];
             }
-            // Check which panes have claude running
-            const claudeSessions = [];
+            // Check which panes have a CLI running (claude or codex)
+            const cliSessions = [];
             // NOTE: Detection logic duplicated in server/agent.js — keep in sync
             for (const { tmuxSession, cwd, panePid } of paneData) {
                 try {
-                    // Check if pane process ITSELF is claude (when zsh -c execs into claude)
+                    // Check if pane process ITSELF is a CLI (when zsh -c execs into claude/codex)
+                    // Use both comm (macOS) and full args (Linux, where codex runs as "node .../codex")
                     const { stdout: paneComm } = await execAsync(`ps -o comm= -p ${panePid} 2>/dev/null || true`);
-                    if (paneComm.trim().includes('claude')) {
-                        claudeSessions.push({ tmuxSession, cwd });
+                    const paneCommTrimmed = paneComm.trim();
+                    if (isCliProcess(paneCommTrimmed)) {
+                        cliSessions.push({ tmuxSession, cwd, cli: detectCli(paneCommTrimmed) });
                         continue;
                     }
-                    // Also check children (for cases where shell doesn't exec)
-                    // Use -x for exact process name match (not -f which matches full command line)
-                    const { stdout: pgrepOut } = await execAsync(`pgrep -P ${panePid} -x claude 2>/dev/null || true`);
-                    if (pgrepOut.trim()) {
-                        claudeSessions.push({ tmuxSession, cwd });
+                    // Check full args for cases like "node .../bin/codex" on Linux
+                    const { stdout: paneArgs } = await execAsync(`ps -o args= -p ${panePid} 2>/dev/null || true`);
+                    if (paneArgs.trim() && isCliProcess(paneArgs.trim())) {
+                        cliSessions.push({ tmuxSession, cwd, cli: detectCli(paneArgs.trim()) });
+                        continue;
+                    }
+                    // BFS through descendants (up to depth 4) to handle deep chains
+                    // e.g. bash → python3 → MainThread → codex (ralph-launched sessions)
+                    let matchedChildPid;
+                    let frontier = [panePid];
+                    outer: for (let depth = 0; depth < 4; depth++) {
+                        const nextFrontier = [];
+                        for (const pid of frontier) {
+                            const { stdout: childPidsOut } = await execAsync(`pgrep -P ${pid} 2>/dev/null || true`);
+                            for (const candidatePid of childPidsOut.trim().split('\n').filter(Boolean)) {
+                                try {
+                                    const { stdout: childComm } = await execAsync(`ps -o comm= -p ${candidatePid} 2>/dev/null || true`);
+                                    if (isCliProcess(childComm.trim())) {
+                                        matchedChildPid = candidatePid;
+                                        break outer;
+                                    }
+                                    const { stdout: childArgs } = await execAsync(`ps -o args= -p ${candidatePid} 2>/dev/null || true`);
+                                    if (isCliProcess(childArgs.trim())) {
+                                        matchedChildPid = candidatePid;
+                                        break outer;
+                                    }
+                                    nextFrontier.push(candidatePid);
+                                }
+                                catch { /* skip */ }
+                            }
+                        }
+                        frontier = nextFrontier;
+                    }
+                    if (matchedChildPid) {
+                        // Determine which CLI by checking args
+                        let cli;
+                        try {
+                            const { stdout: childArgs } = await execAsync(`ps -o args= -p ${matchedChildPid} 2>/dev/null || true`);
+                            cli = detectCli(childArgs.trim()) ?? detectCli((await execAsync(`ps -o comm= -p ${matchedChildPid} 2>/dev/null || true`)).stdout.trim());
+                        }
+                        catch { /* fall through with undefined cli */ }
+                        cliSessions.push({ tmuxSession, cwd, cli });
                     }
                 }
                 catch {
                     // Ignore errors from pgrep
                 }
             }
-            return claudeSessions;
+            return cliSessions;
         }
         catch {
             // tmux not running or error

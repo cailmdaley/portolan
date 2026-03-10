@@ -33,6 +33,7 @@
     "katex": "^0.16.27",
     "marked": "^17.0.1",
     "marked-katex-extension": "^5.1.6",
+    "pdfjs-dist": "^5.4.624",
     "three": "^0.172.0"
   },
   "devDependencies": {

@@ -219,6 +219,17 @@ export class FileViewerModal {
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private arrowHandler: ((e: KeyboardEvent) => void) | null = null
 
+  // Async request ownership for race-safe modal loads
+  private activeShowRequestId: number = 0
+  private activeShowAbortController: AbortController | null = null
+  private renderedMarkdownRequestId: number = 0
+  private renderedMarkdownAbortController: AbortController | null = null
+
+  // Image annotation popover cleanup (outside click + deferred attach)
+  private imageAnnotationOutsideClickHandler: ((e: MouseEvent) => void) | null = null
+  private imageAnnotationOutsideClickTimer: number | null = null
+  private deferredUiTimers = new Set<number>()
+
   constructor() {
     this.backdrop = this.createBackdrop()
     this.modal = this.createModal()
@@ -463,6 +474,87 @@ export class FileViewerModal {
     }
   }
 
+  private beginShowRequest(): { requestId: number; signal: AbortSignal } {
+    // Cancel older in-flight request so stale responses cannot mutate this modal.
+    this.activeShowAbortController?.abort()
+    const controller = new AbortController()
+    this.activeShowAbortController = controller
+    this.activeShowRequestId += 1
+    return { requestId: this.activeShowRequestId, signal: controller.signal }
+  }
+
+  private isShowRequestActive(requestId: number): boolean {
+    return requestId === this.activeShowRequestId
+  }
+
+  private finishShowRequest(requestId: number): void {
+    if (this.isShowRequestActive(requestId)) {
+      this.activeShowAbortController = null
+    }
+  }
+
+  private cancelActiveShowRequest(): void {
+    this.activeShowAbortController?.abort()
+    this.activeShowAbortController = null
+    this.activeShowRequestId += 1
+  }
+
+  private beginRenderedMarkdownRequest(): { requestId: number; signal: AbortSignal } {
+    this.renderedMarkdownAbortController?.abort()
+    const controller = new AbortController()
+    this.renderedMarkdownAbortController = controller
+    this.renderedMarkdownRequestId += 1
+    return { requestId: this.renderedMarkdownRequestId, signal: controller.signal }
+  }
+
+  private isRenderedMarkdownRequestActive(requestId: number, wrapper: HTMLElement, filePath: string): boolean {
+    return (
+      this.renderedMarkdownRequestId === requestId &&
+      this.modal.classList.contains('visible') &&
+      this.currentPath === filePath &&
+      this.contentEl.contains(wrapper)
+    )
+  }
+
+  private finishRenderedMarkdownRequest(requestId: number): void {
+    if (this.renderedMarkdownRequestId === requestId) {
+      this.renderedMarkdownAbortController = null
+    }
+  }
+
+  private cancelRenderedMarkdownRequest(): void {
+    this.renderedMarkdownAbortController?.abort()
+    this.renderedMarkdownAbortController = null
+    this.renderedMarkdownRequestId += 1
+  }
+
+  private scheduleDeferredUiTask(task: () => void, delayMs: number): number {
+    const timerId = window.setTimeout(() => {
+      this.deferredUiTimers.delete(timerId)
+      task()
+    }, delayMs)
+    this.deferredUiTimers.add(timerId)
+    return timerId
+  }
+
+  private clearDeferredUiTasks(): void {
+    for (const timerId of this.deferredUiTimers) {
+      window.clearTimeout(timerId)
+    }
+    this.deferredUiTimers.clear()
+  }
+
+  private clearImageAnnotationOutsideClick(): void {
+    if (this.imageAnnotationOutsideClickTimer !== null) {
+      window.clearTimeout(this.imageAnnotationOutsideClickTimer)
+      this.imageAnnotationOutsideClickTimer = null
+    }
+    if (this.imageAnnotationOutsideClickHandler) {
+      document.removeEventListener('click', this.imageAnnotationOutsideClickHandler)
+      this.imageAnnotationOutsideClickHandler = null
+    }
+  }
+
   private navigateToFile(index: number): void {
     if (index < 0 || index >= this.navigationFiles.length) return
     if (this.isDirty) {
@@ -523,6 +615,11 @@ export class FileViewerModal {
     cityId?: string,
     jumpToLine?: number,
   ): Promise<void> {
+    const { requestId, signal } = this.beginShowRequest()
+    this.cancelRenderedMarkdownRequest()
+    this.clearDeferredUiTasks()
+
+    try {
     // Show loading state
     this.pathEl.textContent = filePath
     this.pathEl.classList.remove('dirty')
@@ -579,13 +676,13 @@ export class FileViewerModal {
     // Check if this is an image file
     const ext = this.getExtension(filePath)
     if (IMAGE_EXTENSIONS.has(ext)) {
-      await this.showImage(filePath, originId)
+      await this.showImage(filePath, originId, requestId, signal)
       return
     }
 
     // Check if this is a PDF file
     if (PDF_EXTENSIONS.has(ext)) {
-      await this.showPdf(filePath, originId)
+      await this.showPdf(filePath, originId, requestId, signal)
       return
     }
 
@@ -593,12 +690,15 @@ export class FileViewerModal {
       // Fetch file content and annotations in parallel
       const [contentResponse, annotationsResponse] = await Promise.all([
         fetch(
-          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
+          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
+          { signal }
         ),
         fetch(
-          `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
+          `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
+          { signal }
         ),
       ])
+      if (!this.isShowRequestActive(requestId)) return
 
       if (!contentResponse.ok) {
         const error = await contentResponse.json()
@@ -606,12 +706,14 @@ export class FileViewerModal {
       }
 
       const data: FileContent = await contentResponse.json()
+      if (!this.isShowRequestActive(requestId)) return
       this.currentContent = data
       this.originalContent = data.content
 
       // Load annotations
       if (annotationsResponse.ok) {
         const annotationsData = await annotationsResponse.json()
+        if (!this.isShowRequestActive(requestId)) return
         this.annotations = annotationsData.annotations || []
       }
 
@@ -641,8 +743,14 @@ export class FileViewerModal {
       // Update annotation panel
       this.annotationPanel.setAnnotations(this.annotations)
     } catch (error: any) {
+      if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
+        return
+      }
       this.langEl.textContent = 'error'
       this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
+    }
+    } finally {
+      this.finishShowRequest(requestId)
     }
   }
 
@@ -651,7 +759,71 @@ export class FileViewerModal {
     return match ? match[0].toLowerCase() : ''
   }
 
-  private async showImage(filePath: string, originId: string): Promise<void> {
+  private buildRawFileUrl(filePath: string, originId: string): string {
+    let url = `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&raw=true`
+    if (originId && originId !== 'local') {
+      url += `&originId=${encodeURIComponent(originId)}`
+    }
+    return url
+  }
+
+  private waitForImageLoad(img: HTMLImageElement, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'))
+        return
+      }
+
+      const cleanup = () => {
+        signal.removeEventListener('abort', onAbort)
+        img.removeEventListener('load', onLoad)
+        img.removeEventListener('error', onError)
+      }
+      const onAbort = () => {
+        cleanup()
+        reject(new DOMException('Aborted', 'AbortError'))
+      }
+      const onLoad = () => {
+        cleanup()
+        resolve()
+      }
+      const onError = () => {
+        cleanup()
+        reject(new Error('Failed to load image'))
+      }
+
+      signal.addEventListener('abort', onAbort, { once: true })
+      img.addEventListener('load', onLoad, { once: true })
+      img.addEventListener('error', onError, { once: true })
+
+      if (img.complete) {
+        cleanup()
+        if (img.naturalWidth > 0) {
+          resolve()
+        } else {
+          reject(new Error('Failed to load image'))
+        }
+      }
+    })
+  }
+
+  private async fetchFileAnnotations(filePath: string, originId: string, signal: AbortSignal): Promise<Annotation[]> {
+    try {
+      const response = await fetch(
+        `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
+        { signal }
+      )
+      if (!response.ok) return []
+      const data = await response.json()
+      return Array.isArray(data.annotations) ? data.annotations : []
+    } catch (error: any) {
+      if (error?.name === 'AbortError') throw error
+      console.error('Failed to load annotations:', error)
+      return []
+    }
+  }
+
+  private async showImage(filePath: string, originId: string, requestId: number, signal: AbortSignal): Promise<void> {
     this.langEl.textContent = 'image'
     this.modeLineEl.textContent = 'Click to annotate'
     this.saveBtn.style.display = 'none'
@@ -660,50 +832,31 @@ export class FileViewerModal {
     this.currentContent = null  // Can't copy image to clipboard as text
 
     try {
-      // Fetch image and annotations in parallel
-      const [imageResponse, annotationsResponse] = await Promise.all([
-        fetch(
-          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
-        ),
-        fetch(
-          `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
-        ),
-      ])
+      const rawUrl = this.buildRawFileUrl(filePath, originId)
+      const container = document.createElement('div')
+      container.className = 'file-viewer-image'
+      const img = document.createElement('img')
+      img.alt = filePath
+      container.appendChild(img)
+      this.contentEl.innerHTML = ''
+      this.contentEl.appendChild(container)
 
-      if (!imageResponse.ok) {
-        const error = await imageResponse.json()
-        throw new Error(error.error || 'Failed to load image')
-      }
+      img.src = rawUrl
+      const imageLoadPromise = this.waitForImageLoad(img, signal)
+      const annotationsPromise = this.fetchFileAnnotations(filePath, originId, signal)
 
-      const data = await imageResponse.json()
+      const [annotations] = await Promise.all([annotationsPromise, imageLoadPromise])
+      if (!this.isShowRequestActive(requestId)) return
 
-      // Load annotations
-      if (annotationsResponse.ok) {
-        const annotationsData = await annotationsResponse.json()
-        this.annotations = annotationsData.annotations || []
-      }
-
-      if (data.type === 'image' && data.url) {
-        const container = document.createElement('div')
-        container.className = 'file-viewer-image'
-        container.innerHTML = `<img src="${data.url}" alt="${escapeHtml(filePath)}" />`
-        this.contentEl.innerHTML = ''
-        this.contentEl.appendChild(container)
-
-        // Set up click-to-annotate
-        const img = container.querySelector('img')!
-        this.setupImageAnnotation(container, img)
-
-        // Render existing annotation markers
-        this.renderImageAnnotationMarkers(container)
-
-        // Show send/fiber buttons if we have annotations
-        this.updateSendButton()
-        this.annotationPanel.setAnnotations(this.annotations)
-      } else {
-        throw new Error('Invalid image response')
-      }
+      this.annotations = annotations
+      this.setupImageAnnotation(container, img)
+      this.renderImageAnnotationMarkers(container)
+      this.updateSendButton()
+      this.annotationPanel.setAnnotations(this.annotations)
     } catch (error: any) {
+      if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
+        return
+      }
       this.langEl.textContent = 'error'
       this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
     }
@@ -732,6 +885,7 @@ export class FileViewerModal {
     // Remove any existing input
     const existing = container.querySelector('.image-annotation-input-wrapper')
     if (existing) existing.remove()
+    this.clearImageAnnotationOutsideClick()
 
     // Create input wrapper
     const wrapper = document.createElement('div')
@@ -767,12 +921,14 @@ export class FileViewerModal {
 
       await this.saveImageAnnotation(x, y, comment)
       wrapper.remove()
+      this.clearImageAnnotationOutsideClick()
       this.renderImageAnnotationMarkers(container)
     }
 
     // Cancel handler
     const cancel = () => {
       wrapper.remove()
+      this.clearImageAnnotationOutsideClick()
     }
 
     saveBtn.addEventListener('click', save)
@@ -792,22 +948,30 @@ export class FileViewerModal {
     const closeOnClickOutside = (e: MouseEvent) => {
       if (!wrapper.contains(e.target as Node)) {
         wrapper.remove()
-        document.removeEventListener('click', closeOnClickOutside)
+        this.clearImageAnnotationOutsideClick()
       }
     }
-    setTimeout(() => document.addEventListener('click', closeOnClickOutside), 0)
+    this.imageAnnotationOutsideClickHandler = closeOnClickOutside
+    this.imageAnnotationOutsideClickTimer = window.setTimeout(() => {
+      this.imageAnnotationOutsideClickTimer = null
+      if (this.imageAnnotationOutsideClickHandler === closeOnClickOutside) {
+        document.addEventListener('click', closeOnClickOutside)
+      }
+    }, 0)
   }
 
   private async saveImageAnnotation(x: number, y: number, comment: string): Promise<void> {
     if (!this.currentPath) return
+    const filePath = this.currentPath
+    const originId = this.currentOriginId
 
     try {
       const response = await fetch(`${API_BASE}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          filePath: this.currentPath,
-          originId: this.currentOriginId,
+          filePath,
+          originId,
           from: 0,
           to: 0,
           originalText: `[Image point at ${x.toFixed(1)}%, ${y.toFixed(1)}%]`,
@@ -826,6 +990,7 @@ export class FileViewerModal {
       }
 
       const data = await response.json()
+      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
       this.annotations.push(data.annotation)
 
       // Update panel and buttons
@@ -876,7 +1041,7 @@ export class FileViewerModal {
           if (annItem) {
             annItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
             annItem.classList.add('highlight')
-            setTimeout(() => annItem.classList.remove('highlight'), 1500)
+            this.scheduleDeferredUiTask(() => annItem.classList.remove('highlight'), 1500)
           }
         })
 
@@ -885,7 +1050,7 @@ export class FileViewerModal {
     })
   }
 
-  private async showPdf(filePath: string, originId: string): Promise<void> {
+  private async showPdf(filePath: string, originId: string, requestId: number, signal: AbortSignal): Promise<void> {
     this.langEl.textContent = 'pdf'
     this.modeLineEl.textContent = ''
     this.saveBtn.style.display = 'none'
@@ -893,31 +1058,13 @@ export class FileViewerModal {
     this.downloadBtn.style.display = 'none'
     this.currentContent = null  // Can't copy PDF to clipboard as text
 
-    try {
-      const response = await fetch(
-        `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}&binary=true`
-      )
+    if (signal.aborted || !this.isShowRequestActive(requestId)) return
 
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to load PDF')
-      }
-
-      const data = await response.json()
-
-      if (data.type === 'pdf' && data.url) {
-        const container = document.createElement('div')
-        container.className = 'file-viewer-pdf'
-        container.innerHTML = `<iframe src="${data.url}" title="${escapeHtml(filePath)}" />`
-        this.contentEl.innerHTML = ''
-        this.contentEl.appendChild(container)
-      } else {
-        throw new Error('Invalid PDF response')
-      }
-    } catch (error: any) {
-      this.langEl.textContent = 'error'
-      this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
-    }
+    const container = document.createElement('div')
+    container.className = 'file-viewer-pdf'
+    container.innerHTML = `<iframe src="${this.buildRawFileUrl(filePath, originId)}" title="${escapeHtml(filePath)}" />`
+    this.contentEl.innerHTML = ''
+    this.contentEl.appendChild(container)
   }
 
   private createEditor(content: string, language: string): void {
@@ -1070,84 +1217,9 @@ export class FileViewerModal {
       this.show(fullPath, this.currentOriginId, undefined, undefined, this.currentCityPath, this.currentCityId, line)
     })
 
-    // Resolve tapestry data: config, staleness, downstream, artifacts, metrics
-    if (isFiber && this.currentCityId) {
-      fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(this.currentCityId)}`)
-        .then(r => r.json())
-        .then(data => {
-          if (!data) return
-
-          // Config interpolation
-          if (data.config) interpolateConfig(wrapper, data.config)
-
-          // Find matching tapestry node for this fiber
-          const fiberIdMatch = this.currentPath.match(/\.felt\/([^/]+)\.md$/i)
-          const fiberId = fiberIdMatch?.[1]
-          if (!fiberId) return
-
-          const node = (data.nodes || []).find((n: { id: string }) => n.id === fiberId)
-
-          // Staleness color on status span
-          if (node?.staleness) {
-            const statusEl = wrapper.querySelector('.fiber-card-status') as HTMLElement | null
-            if (statusEl) statusEl.style.color = STALENESS_COLORS[node.staleness] || ''
-          }
-
-          // Downstream dependencies (inject after .fiber-card-console)
-          const downstream = data.downstream?.[fiberId] || []
-          if (downstream.length > 0) {
-            const console = wrapper.querySelector('.fiber-card-console')
-            if (console) {
-              const dsHtml = `<div class="fiber-card-downstream">
-                <span class="fiber-card-deps-label">downstream</span>
-                ${downstream.map((d: { id: string; title: string; status: string }) => {
-                  const icon = d.status === 'closed' ? '●' : d.status === 'active' ? '◐' : '○'
-                  const short = d.title.replace(/-[a-f0-9]{8}$/, '').replace(/[-_]/g, ' ').split(' ').slice(0, 3).join(' ')
-                  return `<span class="fiber-card-dep">${icon} ${escapeHtml(short)}</span>`
-                }).join(', ')}
-              </div>`
-              console.insertAdjacentHTML('afterend', dsHtml)
-            }
-          }
-
-          // Artifact gallery (inject after .fiber-card-rule)
-          if (node?.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 0) {
-            const rule = wrapper.querySelector('.fiber-card-rule')
-            if (rule) {
-              const gallery = renderArtifactGallery(
-                node.evidence.artifacts,
-                (path: string) => `${API_BASE}/file-content?path=${encodeURIComponent(path)}&raw=true`,
-              )
-              rule.insertAdjacentHTML('afterend', gallery.html)
-              gallery.attach(wrapper)
-            }
-          }
-
-          // Evidence metrics (inject after .fiber-card-rule, after artifacts)
-          if (node?.evidence?.metrics && Object.keys(node.evidence.metrics).length > 0) {
-            const rule = wrapper.querySelector('.fiber-card-rule')
-            if (rule) {
-              const items: Array<{ key: string; value: string }> = []
-              for (const [key, value] of Object.entries(node.evidence.metrics as Record<string, unknown>)) {
-                if (typeof value === 'object' && value !== null) {
-                  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-                    items.push({ key: `${key}.${k}`, value: typeof v === 'number' ? (v as number).toFixed(4) : String(v) })
-                  }
-                } else {
-                  items.push({ key, value: typeof value === 'number' ? (value as number).toFixed(4) : String(value) })
-                }
-              }
-              const metricsHtml = `<div class="tapestry-evidence-section">
-                <div class="tapestry-evidence">${items.map(({ key, value }) =>
-                  `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
-                ).join('')}</div>
-              </div>`
-              rule.insertAdjacentHTML('afterend', metricsHtml)
-            }
-          }
-        })
-        .catch(() => {})
-    }
+    // Resolve tapestry data: config, staleness, downstream, artifacts, metrics.
+    // This async work is owned and cancelable so stale responses cannot mutate a newer file view.
+    void this.loadRenderedMarkdownContext(wrapper, this.currentPath, this.currentCityId)
 
     this.modeLineEl.textContent = 'Double-click to edit'
 
@@ -1172,6 +1244,96 @@ export class FileViewerModal {
         this.handleRenderedSelection(sel)
       }, 200)
     })
+  }
+
+  private async loadRenderedMarkdownContext(wrapper: HTMLElement, filePath: string, cityId: string): Promise<void> {
+    const isFiber = /\.felt\/[^/]+\.md$/i.test(filePath)
+    if (!isFiber || !cityId) return
+
+    const { requestId, signal } = this.beginRenderedMarkdownRequest()
+    try {
+      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(cityId)}`, { signal })
+      if (!response.ok) return
+
+      const data = await response.json()
+      if (!data || !this.isRenderedMarkdownRequestActive(requestId, wrapper, filePath)) return
+
+      // Config interpolation
+      if (data.config) {
+        interpolateConfig(wrapper, data.config)
+      }
+
+      // Find matching tapestry node for this fiber
+      const fiberIdMatch = filePath.match(/\.felt\/([^/]+)\.md$/i)
+      const fiberId = fiberIdMatch?.[1]
+      if (!fiberId) return
+
+      const node = (data.nodes || []).find((n: { id: string }) => n.id === fiberId)
+
+      // Staleness color on status span
+      if (node?.staleness) {
+        const statusEl = wrapper.querySelector('.fiber-card-status') as HTMLElement | null
+        if (statusEl) statusEl.style.color = STALENESS_COLORS[node.staleness] || ''
+      }
+
+      // Downstream dependencies (inject after .fiber-card-console)
+      const downstream = data.downstream?.[fiberId] || []
+      if (downstream.length > 0) {
+        const console = wrapper.querySelector('.fiber-card-console')
+        if (console) {
+          const dsHtml = `<div class="fiber-card-downstream">
+                <span class="fiber-card-deps-label">downstream</span>
+                ${downstream.map((d: { id: string; title: string; status: string }) => {
+                  const icon = d.status === 'closed' ? '●' : d.status === 'active' ? '◐' : '○'
+                  const short = d.title.replace(/-[a-f0-9]{8}$/, '').replace(/[-_]/g, ' ').split(' ').slice(0, 3).join(' ')
+                  return `<span class="fiber-card-dep">${icon} ${escapeHtml(short)}</span>`
+                }).join(', ')}
+              </div>`
+          console.insertAdjacentHTML('afterend', dsHtml)
+        }
+      }
+
+      // Artifact gallery (inject after .fiber-card-rule)
+      if (node?.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 0) {
+        const rule = wrapper.querySelector('.fiber-card-rule')
+        if (rule) {
+          const gallery = renderArtifactGallery(
+            node.evidence.artifacts,
+            (path: string) => `${API_BASE}/file-content?path=${encodeURIComponent(path)}&raw=true`,
+          )
+          rule.insertAdjacentHTML('afterend', gallery.html)
+          gallery.attach(wrapper)
+        }
+      }
+
+      // Evidence metrics (inject after .fiber-card-rule, after artifacts)
+      if (node?.evidence?.metrics && Object.keys(node.evidence.metrics).length > 0) {
+        const rule = wrapper.querySelector('.fiber-card-rule')
+        if (rule) {
+          const items: Array<{ key: string; value: string }> = []
+          for (const [key, value] of Object.entries(node.evidence.metrics as Record<string, unknown>)) {
+            if (typeof value === 'object' && value !== null) {
+              for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                items.push({ key: `${key}.${k}`, value: typeof v === 'number' ? (v as number).toFixed(4) : String(v) })
+              }
+            } else {
+              items.push({ key, value: typeof value === 'number' ? (value as number).toFixed(4) : String(value) })
+            }
+          }
+          const metricsHtml = `<div class="tapestry-evidence-section">
+                <div class="tapestry-evidence">${items.map(({ key, value }) =>
+                  `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
+                ).join('')}</div>
+              </div>`
+          rule.insertAdjacentHTML('afterend', metricsHtml)
+        }
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return
+      console.error('Failed to load rendered markdown context:', error)
+    } finally {
+      this.finishRenderedMarkdownRequest(requestId)
+    }
   }
 
   // ── Fiber frontmatter parsing & rendering ──────────────────────────
@@ -1499,7 +1661,8 @@ export class FileViewerModal {
       this.updateDirtyIndicator()
 
       this.saveBtn.textContent = 'Saved!'
-      setTimeout(() => {
+      this.scheduleDeferredUiTask(() => {
+        if (!this.modal.classList.contains('visible')) return
         this.saveBtn.textContent = 'Save'
         this.saveBtn.removeAttribute('disabled')
       }, 1500)
@@ -1529,7 +1692,8 @@ export class FileViewerModal {
       await navigator.clipboard.writeText(content)
       const originalText = this.copyBtn.textContent
       this.copyBtn.textContent = 'Copied!'
-      setTimeout(() => {
+      this.scheduleDeferredUiTask(() => {
+        if (!this.modal.classList.contains('visible')) return
         this.copyBtn.textContent = originalText
       }, 1500)
     } catch {
@@ -1541,7 +1705,8 @@ export class FileViewerModal {
       document.execCommand('copy')
       document.body.removeChild(textarea)
       this.copyBtn.textContent = 'Copied!'
-      setTimeout(() => {
+      this.scheduleDeferredUiTask(() => {
+        if (!this.modal.classList.contains('visible')) return
         this.copyBtn.textContent = 'Copy'
       }, 1500)
     }
@@ -1568,7 +1733,8 @@ export class FileViewerModal {
     // Show feedback
     const originalText = this.downloadBtn.textContent
     this.downloadBtn.textContent = 'Downloaded!'
-    setTimeout(() => {
+    this.scheduleDeferredUiTask(() => {
+      if (!this.modal.classList.contains('visible')) return
       this.downloadBtn.textContent = originalText
     }, 1500)
   }
@@ -1603,6 +1769,10 @@ export class FileViewerModal {
   }
 
   hide(): void {
+    this.cancelActiveShowRequest()
+    this.cancelRenderedMarkdownRequest()
+    this.clearDeferredUiTasks()
+    this.clearImageAnnotationOutsideClick()
     this.backdrop.classList.remove('visible')
     this.modal.classList.remove('visible')
     this.currentContent = null
@@ -1626,8 +1796,48 @@ export class FileViewerModal {
     return this.modal.classList.contains('visible')
   }
 
+  getRuntimeStats(): {
+    visible: boolean
+    currentPath: string | null
+    currentOriginId: string
+    hasEditorView: boolean
+    isDirty: boolean
+    markdownRendered: boolean
+    annotationCount: number
+    navigationFileCount: number
+    navigationIndex: number
+    activeShowRequestId: number
+    hasActiveShowRequest: boolean
+    renderedMarkdownRequestId: number
+    hasRenderedMarkdownRequest: boolean
+    deferredUiTimerCount: number
+    hasImageAnnotationOutsideClickHandler: boolean
+    hasImageAnnotationOutsideClickTimer: boolean
+  } {
+    return {
+      visible: this.isVisible(),
+      currentPath: this.currentPath || null,
+      currentOriginId: this.currentOriginId,
+      hasEditorView: this.editorView !== null,
+      isDirty: this.isDirty,
+      markdownRendered: this.markdownRendered,
+      annotationCount: this.annotations.length,
+      navigationFileCount: this.navigationFiles.length,
+      navigationIndex: this.navigationIndex,
+      activeShowRequestId: this.activeShowRequestId,
+      hasActiveShowRequest: this.activeShowAbortController !== null,
+      renderedMarkdownRequestId: this.renderedMarkdownRequestId,
+      hasRenderedMarkdownRequest: this.renderedMarkdownAbortController !== null,
+      deferredUiTimerCount: this.deferredUiTimers.size,
+      hasImageAnnotationOutsideClickHandler: this.imageAnnotationOutsideClickHandler !== null,
+      hasImageAnnotationOutsideClickTimer: this.imageAnnotationOutsideClickTimer !== null,
+    }
+  }
+
   dispose(): void {
     this.hide()
+    this.cancelRenderedMarkdownRequest()
+    this.clearDeferredUiTasks()
     this.backdrop.remove()
     this.modal.remove()
   }
@@ -1770,6 +1980,8 @@ export class FileViewerModal {
 
   private async saveAnnotation(from: number, to: number, selectedText: string, comment: string): Promise<void> {
     if (!this.currentContent) return
+    const filePath = this.currentContent.path
+    const originId = this.currentOriginId
 
     const content = this.editorView?.state.doc.toString() || this.originalContent
 
@@ -1798,8 +2010,8 @@ export class FileViewerModal {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          filePath: this.currentContent.path,
-          originId: this.currentOriginId,
+          filePath,
+          originId,
           from,
           to,
           line,
@@ -1817,6 +2029,7 @@ export class FileViewerModal {
       }
 
       const data = await response.json()
+      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
       this.annotations.push(data.annotation)
 
       // Update highlights and panel
@@ -1849,7 +2062,7 @@ export class FileViewerModal {
         marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
         // Pulse animation
         marker.style.transform = 'translate(-50%, -50%) scale(1.5)'
-        setTimeout(() => {
+        this.scheduleDeferredUiTask(() => {
           marker.style.transform = 'translate(-50%, -50%) scale(1)'
         }, 300)
       }
@@ -1864,18 +2077,23 @@ export class FileViewerModal {
 
   private async reloadAnnotations(): Promise<void> {
     if (!this.currentPath) return
+    const filePath = this.currentPath
+    const originId = this.currentOriginId
 
     try {
       const response = await fetch(
-        `${API_BASE}/annotations?path=${encodeURIComponent(this.currentPath)}&originId=${encodeURIComponent(this.currentOriginId)}`
+        `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
       )
+      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
       if (response.ok) {
         const data = await response.json()
+        if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
         this.annotations = data.annotations || []
       } else {
         this.annotations = []
       }
     } catch {
+      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
       this.annotations = []
     }
 
@@ -1962,13 +2180,15 @@ export class FileViewerModal {
       if (createNew) {
         this.sendBtn.textContent = 'Sent!'
         this.sendBtn.removeAttribute('disabled')
-        setTimeout(() => {
+        this.scheduleDeferredUiTask(() => {
+          if (!this.modal.classList.contains('visible')) return
           this.sendBtn.textContent = 'Send to Worker'
         }, 2000)
       } else {
         const originalText = this.sendBtn.textContent
         this.sendBtn.textContent = 'Sent!'
-        setTimeout(() => {
+        this.scheduleDeferredUiTask(() => {
+          if (!this.modal.classList.contains('visible')) return
           this.sendBtn.textContent = originalText
         }, 2000)
       }
@@ -2050,7 +2270,8 @@ export class FileViewerModal {
       // Show success feedback
       this.fiberBtn.textContent = 'Filed!'
       this.fiberBtn.removeAttribute('disabled')
-      setTimeout(() => {
+      this.scheduleDeferredUiTask(() => {
+        if (!this.modal.classList.contains('visible')) return
         this.fiberBtn.textContent = 'File as Fiber'
       }, 2000)
 

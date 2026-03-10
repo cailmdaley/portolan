@@ -1,5 +1,5 @@
 #!/bin/bash
-# dev.sh - Start hexarchy frontend + backend, cleaning ports first
+# dev.sh - Start portolan frontend + backend, cleaning ports first
 
 set -e
 
@@ -29,7 +29,7 @@ echo "Starting frontend on :$FRONTEND_PORT..."
 FRONTEND_PID=$!
 
 echo ""
-echo "Hexarchy running:"
+echo "Portolan running:"
 echo "  Frontend: http://localhost:$FRONTEND_PORT"
 echo "  Backend:  ws://localhost:$BACKEND_PORT"
 echo ""

@@ -1,13 +1,15 @@
 #!/bin/bash
-# Install hexarchy agent and hooks on a remote machine
+# Install portolan agent and hooks on a remote machine
 #
 # Usage: ./scripts/install-remote.sh <ssh-host> [--start]
 #
 # This script:
-# 1. Copies hexarchy-hook.sh to remote ~/.hexarchy/hooks/
-# 2. Copies agent.js to remote ~/bin/hexarchy-agent.js
-# 3. Creates ~/.hexarchy/data/ directory
-# 4. Patches ~/.claude/settings.json to add hook entries
+# 1. Copies portolan-hook.sh to remote ~/.portolan/hooks/
+# 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js
+# 3. Creates ~/.portolan/data/ directory
+# 4. Patches ~/.claude/settings.json to add:
+#    - command hooks for portolan activity tracking
+#    - PostToolUse HTTP hook for file-touch forwarding
 # 5. Optionally starts the agent in a tmux session
 #
 # Prerequisites on remote:
@@ -27,9 +29,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-log() { echo -e "${GREEN}[hexarchy]${NC} $1"; }
-warn() { echo -e "${YELLOW}[hexarchy]${NC} $1"; }
-error() { echo -e "${RED}[hexarchy]${NC} $1" >&2; }
+log() { echo -e "${GREEN}[portolan]${NC} $1"; }
+warn() { echo -e "${YELLOW}[portolan]${NC} $1"; }
+error() { echo -e "${RED}[portolan]${NC} $1" >&2; }
 
 # Parse arguments
 SSH_HOST=""
@@ -66,7 +68,7 @@ if [ -z "$SSH_HOST" ]; then
   exit 1
 fi
 
-log "Installing hexarchy on $SSH_HOST..."
+log "Installing portolan on $SSH_HOST..."
 
 # Check SSH connectivity
 log "Testing SSH connection..."
@@ -93,20 +95,20 @@ echo "ok"
 
 # Create directories on remote
 log "Creating directories..."
-ssh "$SSH_HOST" "mkdir -p ~/.hexarchy/hooks ~/.hexarchy/data ~/bin"
+ssh "$SSH_HOST" "mkdir -p ~/.portolan/hooks ~/.portolan/data ~/.local/bin"
 
 # Copy files
-log "Copying hexarchy-hook.sh..."
-scp -q "$REPO_DIR/server/hooks/hexarchy-hook.sh" "$SSH_HOST:~/.hexarchy/hooks/"
-ssh "$SSH_HOST" "chmod +x ~/.hexarchy/hooks/hexarchy-hook.sh"
+log "Copying portolan-hook.sh..."
+scp -q "$REPO_DIR/server/hooks/portolan-hook.sh" "$SSH_HOST:~/.portolan/hooks/"
+ssh "$SSH_HOST" "chmod +x ~/.portolan/hooks/portolan-hook.sh"
 
 log "Copying agent.js..."
-scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/bin/hexarchy-agent.js"
+scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/.local/bin/portolan-agent.js"
 
 # Install ws dependency for agent (use login shell for nvm)
 log "Installing ws package..."
 ssh "$SSH_HOST" 'bash -l -c '\''
-cd ~/bin
+cd ~/.local/bin
 if [ ! -f package.json ]; then
   echo "{\"type\": \"module\"}" > package.json
 fi
@@ -124,7 +126,8 @@ log "Patching Claude settings..."
 ssh "$SSH_HOST" bash <<'PATCH_SETTINGS'
 set -e
 SETTINGS_FILE=~/.claude/settings.json
-HOOK_PATH="$HOME/.hexarchy/hooks/hexarchy-hook.sh"
+HOOK_PATH="$HOME/.portolan/hooks/portolan-hook.sh"
+FILE_TOUCH_URL="http://localhost:4004/hook/file-touch"
 
 # Create settings file if it doesn't exist
 if [ ! -f "$SETTINGS_FILE" ]; then
@@ -165,6 +168,20 @@ for event in UserPromptSubmit PreToolUse Stop; do
   current=$(add_hook "$event" "$current")
 done
 
+# Ensure PostToolUse forwards Read/Write/Edit tool touches to portolan server
+current=$(echo "$current" | jq --arg url "$FILE_TOUCH_URL" '
+  .hooks.PostToolUse = (
+    (.hooks.PostToolUse // [])
+    | if any(.[]; (.matcher // "") == "Read|Write|Edit" and any((.hooks // [])[]?; .type == "http" and .url == $url))
+      then .
+      else . + [{
+        "matcher": "Read|Write|Edit",
+        "hooks": [{ "type": "http", "url": $url }]
+      }]
+      end
+  )
+')
+
 # Write back
 echo "$current" | jq '.' > "$SETTINGS_FILE"
 echo "Settings updated"
@@ -175,21 +192,62 @@ log "Installation complete!"
 # Verify installation
 log "Verifying..."
 ssh "$SSH_HOST" bash <<'VERIFY'
-echo "  Hook: $(ls ~/.hexarchy/hooks/hexarchy-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Agent: $(ls ~/bin/hexarchy-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  ws: $(ls ~/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Settings: $(grep -q hexarchy-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
+echo "  Hook: $(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
+echo "  Agent: $(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
+echo "  ws: $(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
+echo "  Settings: $(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
+echo "  File-touch hook: $(grep -q '/hook/file-touch' ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
 VERIFY
+
+log "Checking remote HTTP hook forwarding..."
+if ! curl -sS -m 3 http://localhost:4004/debug-runtime >/dev/null 2>&1; then
+  warn "Local portolan server not reachable at http://localhost:4004; skipping live forwarding probe"
+else
+  local_pid=""
+  if command -v jq >/dev/null 2>&1; then
+    local_pid="$(curl -sS -m 3 http://localhost:4004/debug-runtime | jq -r '.pid // empty' 2>/dev/null || true)"
+  fi
+
+  remote_debug="$(ssh "$SSH_HOST" "curl -sS -m 5 http://localhost:4004/debug-runtime" 2>/dev/null || true)"
+  if [ -z "$remote_debug" ]; then
+    warn "Remote could not reach localhost:4004 via SSH tunnel"
+    warn "Verify SSH config includes: RemoteForward 4004 127.0.0.1:4004"
+  else
+    if [ -n "$local_pid" ] && command -v jq >/dev/null 2>&1; then
+      remote_pid="$(echo "$remote_debug" | jq -r '.pid // empty' 2>/dev/null || true)"
+      if [ -n "$remote_pid" ] && [ "$remote_pid" = "$local_pid" ]; then
+        log "Tunnel check: remote localhost:4004 resolves to local server (pid $local_pid)"
+      else
+        warn "Tunnel check: remote /debug-runtime responded but pid did not match local server"
+      fi
+    else
+      log "Tunnel check: remote /debug-runtime endpoint is reachable"
+    fi
+
+    probe_session="remote-forward-probe-$(date +%s)"
+    probe_payload="$(printf '{"session_id":"%s","tool_name":"Read","tool_input":{"file_path":"/tmp/portolan-remote-forward-probe.ts"},"cwd":"/tmp"}' "$probe_session")"
+    probe_response="$(ssh "$SSH_HOST" "curl -sS -m 5 -X POST http://localhost:4004/hook/file-touch -H 'Content-Type: application/json' -d @-" <<< "$probe_payload" 2>/dev/null || true)"
+
+    if command -v jq >/dev/null 2>&1 && echo "$probe_response" | jq -e '.success == true' >/dev/null 2>&1; then
+      log "Hook check: remote POST /hook/file-touch reached server"
+    elif echo "$probe_response" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
+      log "Hook check: remote POST /hook/file-touch reached server"
+    else
+      warn "Hook check failed. Response: ${probe_response:-<empty>}"
+      warn "Verify SSH config includes: RemoteForward 4004 127.0.0.1:4004"
+    fi
+  fi
+fi
 
 # Start agent if requested
 if [ "$START_AGENT" = true ]; then
   log "Starting agent..."
   ssh "$SSH_HOST" bash <<STARTAGENT
     # Kill existing agent if running
-    tmux kill-session -t hexarchy-agent 2>/dev/null || true
+    tmux kill-session -t portolan-agent 2>/dev/null || true
     # Start new agent session
-    tmux new-session -d -s hexarchy-agent "bash -l -c 'node ~/bin/hexarchy-agent.js connect --ssh-host=$SSH_HOST'"
-    echo "Agent started in tmux session 'hexarchy-agent'"
+    tmux new-session -d -s portolan-agent "bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'"
+    echo "Agent started in tmux session 'portolan-agent'"
 STARTAGENT
 fi
 
@@ -201,6 +259,6 @@ echo "         RemoteForward 4004 127.0.0.1:4004"
 echo ""
 echo "  2. Start the agent on remote (if not using --start):"
 echo "       ssh $SSH_HOST"
-echo "       tmux new-session -d -s hexarchy-agent 'node ~/bin/hexarchy-agent.js connect --ssh-host=$SSH_HOST'"
+echo "       tmux new-session -d -s portolan-agent 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'"
 echo ""
 echo "  3. Restart any existing Claude Code sessions to pick up hooks"

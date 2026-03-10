@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Hexarchy Remote Agent
+ * Portolan Remote Agent
  *
  * Lightweight agent that runs on remote machines to bridge Claude Code sessions
- * to a local hexarchy server via SSH tunnel.
+ * to a local portolan server via SSH tunnel.
  *
  * Usage:
- *   hexarchy-agent connect [host:port] [--ssh-host=name]
- *   hexarchy-agent status
+ *   portolan-agent connect [host:port] [--ssh-host=name]
+ *   portolan-agent status
  *
  * The agent:
  * 1. Discovers local tmux sessions running Claude Code
- * 2. Connects to hexarchy server (default localhost:4004, tunneled from local)
+ * 2. Connects to portolan server (default localhost:4004, tunneled from local)
  * 3. Registers with the hostname as origin
  * 4. Sends periodic session updates
  *
@@ -21,11 +21,10 @@
  */
 
 import WebSocket from 'ws';
-import { createServer } from 'http';
 import { exec } from 'child_process';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { resolve, join } from 'path';
 
 const execAsync = promisify(exec);
@@ -33,21 +32,17 @@ const execAsync = promisify(exec);
 // ============================================================================
 // Configuration
 // ============================================================================
-const ORIGIN_NAME = process.env.HEXARCHY_ORIGIN || hostname();
+const ORIGIN_NAME = process.env.PORTOLAN_ORIGIN || hostname();
 const DEFAULT_SERVER = 'localhost:4004';
 const RECONNECT_INTERVAL = 5000;
 const POLL_INTERVAL = 5000;  // Session discovery interval
-const EVENTS_FILE = join(homedir(), '.hexarchy', 'data', 'events.jsonl');
-const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
-const DEBUG = process.env.HEXARCHY_DEBUG === 'true';
+const EVENTS_FILE = join(homedir(), '.portolan', 'data', 'events.jsonl');
+const DEBUG = process.env.PORTOLAN_DEBUG === 'true';
 const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLANNOTATOR_PORT, 10) : null;
-const CONVERSATION_POLL_INTERVAL = 30000;  // Fallback polling every 30s (hooks are primary)
-const HOOK_SERVER_PORT = 4005;  // HTTP server for receiving hook POSTs
 
 // CLI provider detection — detect both claude and codex simultaneously
 const ALL_CLI_PROCESS_NAMES = ['claude', 'codex'];
 function isCliProcess(comm) { return ALL_CLI_PROCESS_NAMES.some(n => comm.includes(n)); }
-function pgrepPattern() { return ALL_CLI_PROCESS_NAMES.join('\\|'); }
 
 // ============================================================================
 // State
@@ -58,15 +53,12 @@ let connected = false;
 let pollInterval = null;
 let eventsWatchInterval = null;
 let lastEventsCharPosition = 0;
-let conversationPollInterval = null;
-// Cache: cwd -> { messages: ConversationMessage[], mtime: number, transcriptPath: string }
-const conversationCache = new Map();
 
 // ============================================================================
 // Logging
 // ============================================================================
 function log(...args) {
-    console.log(`[hexarchy-agent ${new Date().toISOString()}]`, ...args);
+    console.log(`[portolan-agent ${new Date().toISOString()}]`, ...args);
 }
 
 function debug(...args) {
@@ -89,10 +81,10 @@ function detectClaims(cwd) {
 }
 
 /**
- * Check if a directory has playgrounds (.hexarchy/playgrounds/ with .html files)
+ * Check if a directory has playgrounds (.portolan/playgrounds/ with .html files)
  */
 function detectPlaygrounds(cwd) {
-    const playgroundsDir = resolve(cwd, '.hexarchy/playgrounds');
+    const playgroundsDir = resolve(cwd, '.portolan/playgrounds');
     if (!existsSync(playgroundsDir)) {
         return false;
     }
@@ -235,7 +227,7 @@ async function discoverSessions() {
         for (const line of lines) {
             const [tmuxSession, cwd, panePid] = line.split('\t');
             // Skip the agent's own tmux session
-            if (panePid && tmuxSession !== 'hexarchy-agent' && tmuxSession !== 'portolan-agent') {
+            if (panePid && tmuxSession !== 'portolan-agent') {
                 paneData.push({ tmuxSession, cwd: cwd || process.cwd(), panePid });
             }
         }
@@ -408,7 +400,7 @@ function extractActivityDetails(tool, input) {
 function startEventsWatcher() {
     if (!existsSync(EVENTS_FILE)) {
         log(`Events file not found: ${EVENTS_FILE}`);
-        log('Activity tracking disabled. Install hexarchy-hook.sh to enable.');
+        log('Activity tracking disabled. Install portolan-hook.sh to enable.');
         return;
     }
 
@@ -484,413 +476,6 @@ function processEvent(event) {
 }
 
 // ============================================================================
-// Hook Server (receives POSTs from portolan-conversation-hook.sh)
-// ============================================================================
-
-let hookServer = null;
-
-/**
- * Start HTTP server to receive hook POSTs
- * Forwards messages to portolan server via WebSocket
- */
-function startHookServer() {
-    hookServer = createServer((req, res) => {
-        // CORS headers
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-        if (req.method === 'OPTIONS') {
-            res.writeHead(204);
-            res.end();
-            return;
-        }
-
-        if (req.method === 'POST' && req.url === '/hook/message') {
-            let body = '';
-            req.on('data', chunk => { body += chunk; });
-            req.on('end', () => {
-                try {
-                    const data = JSON.parse(body);
-                    handleHookMessage(data);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: true }));
-                } catch (err) {
-                    debug(`Hook parse error: ${err.message}`);
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Invalid JSON' }));
-                }
-            });
-            return;
-        }
-
-        if (req.method === 'GET' && req.url === '/hook/health') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, connected }));
-            return;
-        }
-
-        res.writeHead(404);
-        res.end('Not found');
-    });
-
-    hookServer.listen(HOOK_SERVER_PORT, '127.0.0.1', () => {
-        log(`Hook server listening on 127.0.0.1:${HOOK_SERVER_PORT}`);
-    });
-
-    hookServer.on('error', (err) => {
-        if (err.code === 'EADDRINUSE') {
-            log(`Hook server port ${HOOK_SERVER_PORT} in use, skipping`);
-        } else {
-            debug(`Hook server error: ${err.message}`);
-        }
-    });
-}
-
-/**
- * Handle incoming hook message
- * Forward to portolan server via WebSocket
- */
-function handleHookMessage(data) {
-    const { sessionId, tmuxSession, cwd, messages } = data;
-
-    if (!sessionId || !tmuxSession || !messages || messages.length === 0) {
-        debug('Hook: missing required fields');
-        return;
-    }
-
-    debug(`Hook: ${messages.length} messages for ${tmuxSession}`);
-
-    // Forward to portolan server via WebSocket
-    if (connected && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'agent_conversation',
-            payload: {
-                sessionId,
-                tmuxSession,
-                cwd,
-                messages
-            }
-        }));
-        debug(`Forwarded ${messages.length} hook messages to server`);
-    }
-}
-
-// ============================================================================
-// Transcript Reading (for conversation sync)
-// ============================================================================
-
-/**
- * Escape path for Claude's project directory format
- * /Users/foo/bar -> -Users-foo-bar
- * Claude Code also replaces underscores with hyphens
- */
-function escapePathForClaude(cwd) {
-    return cwd.replace(/[/_]/g, '-');
-}
-
-/**
- * Find the most recent transcript file for a project
- */
-function findLatestTranscript(projectDir) {
-    try {
-        const files = readdirSync(projectDir)
-            .filter(f => f.endsWith('.jsonl'))
-            .map(f => {
-                const path = join(projectDir, f);
-                return { name: f, path, mtime: statSync(path).mtimeMs };
-            })
-            .sort((a, b) => b.mtime - a.mtime);
-
-        return files[0] ?? null;
-    } catch {
-        return null;
-    }
-}
-
-// Cache: tmuxSession -> transcriptPath (for session-specific mapping)
-const sessionTranscriptMap = new Map();
-
-/**
- * Detect transcript for a tmux session by checking Claude's open files
- * Claude keeps task directories open which contain the session UUID
- */
-async function detectTranscriptForSession(tmuxSession, cwd) {
-    try {
-        // Get the pane PID for this tmux session
-        const { stdout: paneInfo } = await execAsync(
-            `tmux list-panes -t "${tmuxSession}" -F "#{pane_pid}" 2>/dev/null`
-        );
-        const panePid = paneInfo.trim().split('\n')[0];
-        if (!panePid) return null;
-
-        // Find the CLI process PID (claude or codex)
-        let claudePid = null;
-
-        // Check if pane process is a CLI
-        const { stdout: paneComm } = await execAsync(
-            `ps -o comm= -p ${panePid} 2>/dev/null || true`
-        );
-        if (isCliProcess(paneComm.trim())) {
-            claudePid = panePid;
-        } else {
-            // Check full args (codex on Linux runs as "node .../bin/codex")
-            const { stdout: paneArgs } = await execAsync(
-                `ps -o args= -p ${panePid} 2>/dev/null || true`
-            );
-            if (paneArgs.trim() && isCliProcess(paneArgs.trim())) {
-                claudePid = panePid;
-            } else {
-                // Check children by name first, then by args
-                const { stdout: pgrepOut } = await execAsync(
-                    `pgrep -P ${panePid} -x ${pgrepPattern()} 2>/dev/null || true`
-                );
-                claudePid = pgrepOut.trim().split('\n')[0] || null;
-
-                if (!claudePid) {
-                    const { stdout: childPids } = await execAsync(
-                        `pgrep -P ${panePid} 2>/dev/null || true`
-                    );
-                    for (const candidatePid of childPids.trim().split('\n').filter(Boolean)) {
-                        try {
-                            const { stdout: childArgs } = await execAsync(
-                                `ps -o args= -p ${candidatePid} 2>/dev/null || true`
-                            );
-                            if (isCliProcess(childArgs.trim())) {
-                                claudePid = candidatePid;
-                                break;
-                            }
-                        } catch { /* skip */ }
-                    }
-                }
-            }
-        }
-
-        if (!claudePid) return null;
-
-        // Use lsof to find which task directory Claude has open
-        const { stdout: lsofOut } = await execAsync(
-            `lsof -p ${claudePid} 2>/dev/null | grep '/.claude/tasks/' || true`
-        );
-
-        // Extract the UUID from the task directory path
-        const match = lsofOut.match(/\.claude\/tasks\/([a-f0-9-]{36})/);
-        if (!match) return null;
-
-        const sessionUuid = match[1];
-
-        // Find the corresponding transcript file
-        const escapedPath = escapePathForClaude(cwd);
-        const projectDir = join(CLAUDE_PROJECTS_DIR, escapedPath);
-        const transcriptPath = join(projectDir, `${sessionUuid}.jsonl`);
-
-        if (existsSync(transcriptPath)) {
-            debug(`Detected transcript for ${tmuxSession} via lsof: ${sessionUuid}`);
-            return transcriptPath;
-        }
-
-        return null;
-    } catch (err) {
-        debug(`lsof detection failed: ${err.message}`);
-        return null;
-    }
-}
-
-/**
- * Parse a single transcript event into conversation messages
- */
-function parseTranscriptEvent(event) {
-    const messages = [];
-    const timestamp = event.timestamp || new Date().toISOString();
-
-    if (event.type === 'user') {
-        const content = extractUserContent(event.message);
-        if (content && !content.startsWith('[')) {  // Skip tool results
-            messages.push({
-                type: 'user',
-                content,
-                timestamp
-            });
-        }
-    } else if (event.type === 'assistant') {
-        const contentBlocks = event.message?.content;
-        if (Array.isArray(contentBlocks)) {
-            for (const block of contentBlocks) {
-                if (block.type === 'thinking') {
-                    messages.push({
-                        type: 'thinking',
-                        content: block.thinking || '',
-                        preview: (block.thinking || '').slice(0, 100),
-                        timestamp
-                    });
-                } else if (block.type === 'text') {
-                    messages.push({
-                        type: 'assistant',
-                        content: block.text || '',
-                        timestamp
-                    });
-                } else if (block.type === 'tool_use') {
-                    messages.push({
-                        type: 'tool_use',
-                        content: block.name || 'tool',
-                        toolName: block.name,
-                        toolInput: block.input,
-                        timestamp
-                    });
-                }
-            }
-        }
-    }
-
-    return messages;
-}
-
-/**
- * Extract user message content (handles string or array format)
- */
-function extractUserContent(message) {
-    if (!message) return null;
-
-    if (typeof message.content === 'string') {
-        return message.content;
-    }
-
-    if (Array.isArray(message.content)) {
-        for (const block of message.content) {
-            if (block.type === 'text') {
-                return block.text;
-            }
-        }
-    }
-
-    return null;
-}
-
-/**
- * Read conversation from transcript file for a specific tmux session
- */
-async function readTranscript(cwd, tmuxSession) {
-    const escapedPath = escapePathForClaude(cwd);
-    const projectDir = join(CLAUDE_PROJECTS_DIR, escapedPath);
-
-    // Try to use session-specific mapping first
-    let transcriptPath = sessionTranscriptMap.get(tmuxSession);
-    let mtime = 0;
-
-    // If no mapping, try lsof detection
-    if (!transcriptPath) {
-        transcriptPath = await detectTranscriptForSession(tmuxSession, cwd);
-        if (transcriptPath) {
-            sessionTranscriptMap.set(tmuxSession, transcriptPath);
-        }
-    }
-
-    // Fall back to most recent file if no mapping
-    if (!transcriptPath) {
-        const latestFile = findLatestTranscript(projectDir);
-        if (!latestFile) {
-            return null;
-        }
-        transcriptPath = latestFile.path;
-        mtime = latestFile.mtime;
-    } else {
-        try {
-            mtime = statSync(transcriptPath).mtimeMs;
-        } catch {
-            // File doesn't exist, clear mapping and try latest
-            sessionTranscriptMap.delete(tmuxSession);
-            const latestFile = findLatestTranscript(projectDir);
-            if (!latestFile) return null;
-            transcriptPath = latestFile.path;
-            mtime = latestFile.mtime;
-        }
-    }
-
-    // Check cache using tmuxSession as key (not just cwd)
-    const cacheKey = `${tmuxSession}:${cwd}`;
-    const cached = conversationCache.get(cacheKey);
-    if (cached && cached.transcriptPath === transcriptPath && cached.mtime === mtime) {
-        return cached;
-    }
-
-    // Read and parse transcript
-    const messages = [];
-    try {
-        const content = readFileSync(transcriptPath, 'utf-8');
-        const lines = content.split('\n').filter(Boolean);
-
-        for (const line of lines) {
-            try {
-                const event = JSON.parse(line);
-                const parsed = parseTranscriptEvent(event);
-                messages.push(...parsed);
-            } catch {
-                // Skip malformed lines
-            }
-        }
-    } catch (err) {
-        debug(`Transcript read error: ${err.message}`);
-        return null;
-    }
-
-    const result = {
-        messages,
-        mtime,
-        transcriptPath
-    };
-
-    conversationCache.set(cacheKey, result);
-    return result;
-}
-
-/**
- * Poll conversations once and send to server
- * Used for initial history sync and fallback
- */
-async function pollConversationsOnce() {
-    if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
-        return;
-    }
-
-    const sessions = await discoverSessions();
-
-    for (const session of sessions) {
-        const transcript = await readTranscript(session.cwd, session.tmuxSession);
-        if (transcript && transcript.messages.length > 0) {
-            // Extract sessionId from transcript path (format: .../{uuid}.jsonl)
-            const sessionId = transcript.transcriptPath
-                .split('/').pop()  // get filename
-                .replace('.jsonl', '');  // remove extension
-
-            // Send last 100 messages
-            const recentMessages = transcript.messages.slice(-100);
-            ws.send(JSON.stringify({
-                type: 'agent_conversation',
-                payload: {
-                    sessionId,
-                    tmuxSession: session.tmuxSession,
-                    cwd: session.cwd,
-                    messages: recentMessages
-                }
-            }));
-            debug(`Sent ${recentMessages.length} conversation messages for ${session.tmuxSession}`);
-        }
-    }
-}
-
-/**
- * Start conversation polling: once immediately for history, then every 30s as fallback
- * Primary updates come via hooks → hook server → WebSocket
- */
-function startConversationPolling() {
-    // Poll once immediately to seed history
-    pollConversationsOnce();
-
-    // Then poll every 30s as fallback (in case hooks aren't configured)
-    conversationPollInterval = setInterval(pollConversationsOnce, CONVERSATION_POLL_INTERVAL);
-}
-
-// ============================================================================
 // WebSocket Connection
 // ============================================================================
 
@@ -916,7 +501,7 @@ function buildSpecificSshHost(baseSshHost) {
 }
 
 /**
- * Connect to hexarchy server
+ * Connect to portolan server
  */
 function connect(serverUrl, sshHost) {
     if (ws) {
@@ -941,7 +526,7 @@ function connect(serverUrl, sshHost) {
 
     ws.on('open', () => {
         connected = true;
-        log(`Connected to hexarchy server at ${serverUrl}`);
+        log(`Connected to portolan server at ${serverUrl}`);
 
         // Send initial sessions
         pollSessions();
@@ -1000,21 +585,20 @@ function scheduleReconnect(serverUrl, sshHost) {
 // ============================================================================
 function printUsage() {
     console.log(`
-Hexarchy Remote Agent
+Portolan Remote Agent
 
 Usage:
-  hexarchy-agent connect [host:port] [--ssh-host=name]
-  hexarchy-agent status
-  hexarchy-agent help
+  portolan-agent connect [host:port] [--ssh-host=name]
+  portolan-agent status
+  portolan-agent help
 
 Options:
   host:port       Server address (default: localhost:4004)
   --ssh-host=X    SSH config name for this host (default: hostname)
 
 Environment:
-  HEXARCHY_ORIGIN     Origin name (default: hostname)
-  HEXARCHY_DEBUG      Enable debug logging (true/false)
-  PORTOLAN_URL        Hook endpoint (set to http://127.0.0.1:4005/hook/message for remote)
+  PORTOLAN_ORIGIN     Origin name (default: hostname)
+  PORTOLAN_DEBUG      Enable debug logging (true/false)
 
 SSH tunnel setup (in local ~/.ssh/config):
   Host yourserver
@@ -1022,10 +606,10 @@ SSH tunnel setup (in local ~/.ssh/config):
 
 Example:
   # On remote machine (with SSH tunnel active)
-  hexarchy-agent connect
+  portolan-agent connect
 
   # With custom SSH host name (for focus commands)
-  hexarchy-agent connect --ssh-host=myserver
+  portolan-agent connect --ssh-host=myserver
 `);
 }
 
@@ -1046,7 +630,7 @@ async function main() {
     switch (command) {
         case 'connect': {
             const serverUrl = positionalArgs[1] || DEFAULT_SERVER;
-            log(`Starting hexarchy-agent (origin: ${ORIGIN_NAME})`);
+            log(`Starting portolan-agent (origin: ${ORIGIN_NAME})`);
 
             // Start session polling
             pollInterval = setInterval(pollSessions, POLL_INTERVAL);
@@ -1054,12 +638,6 @@ async function main() {
 
             // Start events watcher (for activity stream)
             startEventsWatcher();
-
-            // Start hook server (for receiving hook POSTs)
-            startHookServer();
-
-            // Start conversation polling (for full transcript sync, fallback if hooks not installed)
-            startConversationPolling();
 
             // Connect to server
             connect(serverUrl, sshHost);
@@ -1069,8 +647,6 @@ async function main() {
                 log('Shutting down...');
                 if (pollInterval) clearInterval(pollInterval);
                 if (eventsWatchInterval) clearInterval(eventsWatchInterval);
-                if (conversationPollInterval) clearInterval(conversationPollInterval);
-                if (hookServer) hookServer.close();
                 if (ws) ws.close();
                 process.exit(0);
             });

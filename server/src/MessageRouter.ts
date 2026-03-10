@@ -45,23 +45,6 @@ export interface AgentActivityMessage {
   };
 }
 
-export interface AgentConversationMessage {
-  type: 'agent_conversation';
-  payload: {
-    sessionId: string;
-    tmuxSession: string;
-    cwd: string;
-    messages: Array<{
-      type: 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result';
-      content: string;
-      timestamp: string;
-      toolName?: string;
-      toolInput?: any;
-      preview?: string;
-    }>;
-  };
-}
-
 export interface GetFibersMessage {
   type: 'getFibers';
   cityId: string;
@@ -118,6 +101,12 @@ export interface MoveCityMessage {
   newPosition: { q: number; r: number };
 }
 
+export interface ListDirectoryMessage {
+  type: 'listDirectory';
+  cityId: string;
+  path: string;
+}
+
 export type ClientMessage =
   | FocusMessage
   | AgentSessionsUpdateMessage
@@ -129,7 +118,8 @@ export type ClientMessage =
   | ConfirmUnpinMessage
   | KillWorkerMessage
   | SearchFilesMessage
-  | MoveCityMessage;
+  | MoveCityMessage
+  | ListDirectoryMessage;
 
 // ============================================================================
 // Handler Interface
@@ -146,6 +136,7 @@ export interface MessageHandlers {
   onKillWorker(sessionId: string): void;
   onSearchFiles(ws: WebSocket, cityId: string, query: string, searchId: string, mode?: 'filename' | 'content'): void;
   onMoveCity(ws: WebSocket, cityId: string, newPosition: { q: number; r: number }): void;
+  onListDirectory(ws: WebSocket, cityId: string, path: string): void;
 }
 
 // ============================================================================
@@ -206,6 +197,10 @@ export class MessageRouter {
 
         case 'moveCity':
           this.handlers.onMoveCity(ws, message.cityId, message.newPosition);
+          break;
+
+        case 'listDirectory':
+          this.handlers.onListDirectory(ws, message.cityId, message.path);
           break;
 
         default:
