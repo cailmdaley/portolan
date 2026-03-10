@@ -7,11 +7,8 @@
  */
 
 import { createServer } from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
 import { execFile } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import { WebSocketServer, WebSocket } from 'ws';
 import { promisify } from 'util';
 
 import { SessionTracker, Session } from './SessionTracker.js';
@@ -25,8 +22,8 @@ import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader
 import { EventWatcher, type ActivityEvent } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
 import { KittyIntegration, expandHome, shellEscape } from './KittyIntegration.js';
-import { MessageRouter, AgentSessionsUpdateMessage, AgentActivityMessage } from './MessageRouter.js';
-import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
+import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
+import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
 import { reconcilePreviousLocalSessions } from './PreviousSessionReconciler.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 
@@ -83,60 +80,7 @@ for (const pc of persistedCities) {
   cityManager.addPinnedCity(pc.id, pc.path, pc.name, pc.position, pc.originId);
 }
 
-// Track remote sessions: Map<originId, Map<tmuxSession, Session>>
-const remoteSessions = new Map<string, Map<string, Session>>();
-
-// Track remote git statuses: Map<"originId:path", GitStatus>
-const remoteGitStatuses = new Map<string, GitStatus>();
-
-// Track remote activities: Map<activitySessionKey, ActivityEvent[]>
-const remoteActivities = new Map<string, ActivityEvent[]>();
-const MAX_REMOTE_ACTIVITIES = 50;
-
-// Track remote working timeout ownership by explicit origin/session keys.
-const remoteWorkingSessions = new RemoteWorkingSessionTracker();
 const REMOTE_WORKING_TIMEOUT = 30_000; // 30 seconds, same as EventWatcher
-
-// Activity persistence
-const activityPersistencePath = join(homedir(), '.portolan', 'remote-activities.json');
-
-function loadActivityPersistence(): void {
-  if (!existsSync(activityPersistencePath)) return;
-  try {
-    const content = readFileSync(activityPersistencePath, 'utf-8');
-    const data = JSON.parse(content) as { version: 1; activities: Record<string, ActivityEvent[]> };
-    if (data.version === 1 && data.activities) {
-      for (const [activitySessionKey, acts] of Object.entries(data.activities)) {
-        remoteActivities.set(activitySessionKey, acts);
-      }
-      console.log(`[Activity] Loaded ${remoteActivities.size} remote session activities`);
-    }
-  } catch (error) {
-    console.error('[Activity] Failed to load persistence:', error);
-  }
-}
-
-function saveActivityPersistence(): void {
-  const dataDir = join(homedir(), '.portolan');
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true });
-  }
-  const activities: Record<string, ActivityEvent[]> = {};
-  for (const [activitySessionKey, acts] of remoteActivities.entries()) {
-    activities[activitySessionKey] = acts;
-  }
-  const data = { version: 1 as const, activities };
-  const tmpPath = activityPersistencePath + '.tmp';
-  try {
-    writeFileSync(tmpPath, JSON.stringify(data), 'utf-8');
-    renameSync(tmpPath, activityPersistencePath);
-  } catch (error) {
-    console.error('[Activity] Failed to save persistence:', error);
-  }
-}
-
-// Load activity on startup
-loadActivityPersistence();
 
 // Track connected browser clients
 const clients: Set<WebSocket> = new Set();
@@ -155,19 +99,10 @@ const sessionLookup = {
   findSession(sessionId: string): Session | undefined {
     const local = sessionTracker.getSessions().find(s => s.id === sessionId);
     if (local) return local;
-    for (const originSessions of remoteSessions.values()) {
-      for (const session of originSessions.values()) {
-        if (session.id === sessionId) return session;
-      }
-    }
-    return undefined;
+    return remoteAgentCoordinator.findSession(sessionId);
   },
   getAllSessions(): Session[] {
-    const all: Session[] = [...sessionTracker.getSessions()];
-    for (const originSessions of remoteSessions.values()) {
-      all.push(...originSessions.values());
-    }
-    return all;
+    return [...sessionTracker.getSessions(), ...remoteAgentCoordinator.getAllSessions()];
   },
 };
 
@@ -211,17 +146,17 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     },
     maps: {
       activeSearches: workspaceBrowser.getActiveSearchCount(),
-      remoteSessionOrigins: remoteSessions.size,
-      remoteGitStatuses: remoteGitStatuses.size,
-      remoteActivities: remoteActivities.size,
-      remoteActivityEvents: getRemoteActivityEventCount(),
+      remoteSessionOrigins: remoteAgentCoordinator.getRemoteSessionOriginCount(),
+      remoteGitStatuses: remoteAgentCoordinator.getRemoteGitStatusCount(),
+      remoteActivities: remoteAgentCoordinator.getRemoteActivityStoreCount(),
+      remoteActivityEvents: remoteAgentCoordinator.getRemoteActivityEventCount(),
     },
     intervals: {
       fiberRefreshActive: fiberRefreshIntervalHandle !== null,
       remoteWorkingTimeoutActive: remoteWorkingTimeoutIntervalHandle !== null,
     },
     eventWatcher: eventWatcher.getStats(),
-    remoteWorkingSessions: remoteWorkingSessions.getStats(),
+    remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
     recentFiles: {
       sessionCount: recentFileTracker.getSessionCount(),
       entryCount: recentFileTracker.getTotalEntryCount(),
@@ -230,6 +165,21 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
 });
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
+const remoteAgentCoordinator = new RemoteAgentCoordinator(
+  cityManager,
+  originManager,
+  recentFileTracker,
+  previousSessions,
+  {
+    assignSessionToCity,
+    broadcastActivity,
+    broadcastState: () => {
+      buildState().then(broadcast);
+    },
+    rebuildCities,
+    reconnectTunnel,
+  },
+);
 
 // Callback for creating new workers (used by send-annotations endpoint)
 httpApi.setOnCreateNewWorker(async (cityPath: string, originId: string) => {
@@ -258,19 +208,7 @@ function getAllSessions(): Session[] {
 }
 
 function getRemoteSessionCount(): number {
-  let total = 0;
-  for (const sessionsByOrigin of remoteSessions.values()) {
-    total += sessionsByOrigin.size;
-  }
-  return total;
-}
-
-function getRemoteActivityEventCount(): number {
-  let total = 0;
-  for (const activities of remoteActivities.values()) {
-    total += activities.length;
-  }
-  return total;
+  return remoteAgentCoordinator.getRemoteSessionCount();
 }
 
 /**
@@ -305,8 +243,7 @@ async function buildState(): Promise<StateUpdate> {
       if (city.originId === 'local') {
         gitStatus = gitStatusManager.getStatus(city.path) ?? undefined;
       } else {
-        const remoteKey = `${city.originId}:${city.path}`;
-        gitStatus = remoteGitStatuses.get(remoteKey);
+        gitStatus = remoteAgentCoordinator.getGitStatus(city.originId, city.path);
       }
 
       return {
@@ -344,7 +281,7 @@ async function buildState(): Promise<StateUpdate> {
     const activitySessionKey = getActivitySessionKey(session.originId, session.tmuxSession);
     const sessionActivities = session.originId === LOCAL_ORIGIN_ID
       ? eventWatcher.getRecentActivities(session.tmuxSession)
-      : remoteActivities.get(activitySessionKey) || [];
+      : remoteAgentCoordinator.getActivities(session.originId, session.tmuxSession);
     if (sessionActivities.length > 0) {
       activities[activitySessionKey] = sessionActivities;
     }
@@ -465,195 +402,6 @@ sessionTracker.onSessionsChange((localSessions) => {
 // ============================================================================
 // Remote Session Handling
 // ============================================================================
-
-function pruneStaleRemoteActivities(): boolean {
-  const activeKeys = new Set<string>();
-  for (const [originId, sessionsByOrigin] of remoteSessions.entries()) {
-    for (const tmuxSession of sessionsByOrigin.keys()) {
-      activeKeys.add(getActivitySessionKey(originId, tmuxSession));
-    }
-  }
-
-  let changed = false;
-  for (const activitySessionKey of remoteActivities.keys()) {
-    if (!activeKeys.has(activitySessionKey)) {
-      remoteActivities.delete(activitySessionKey);
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-/**
- * Remove all side-channel state that is owned by a remote session.
- * Returns true when activity persistence should be rewritten.
- */
-function cleanupRemoteSessionData(originId: string, session: Session): boolean {
-  let activityChanged = false;
-
-  remoteWorkingSessions.clear(originId, session.tmuxSession);
-
-  if (remoteActivities.delete(getActivitySessionKey(originId, session.tmuxSession))) {
-    activityChanged = true;
-  }
-
-  return activityChanged;
-}
-
-function pruneRemoteGitStatus(originId: string, activeCwds: Set<string>): void {
-  const prefix = `${originId}:`;
-  for (const [key] of remoteGitStatuses.entries()) {
-    if (!key.startsWith(prefix)) continue;
-    const cwd = key.slice(prefix.length);
-    if (!activeCwds.has(cwd)) {
-      remoteGitStatuses.delete(key);
-    }
-  }
-}
-
-function handleAgentSessionsUpdate(
-  originId: string,
-  agentSessions: AgentSessionsUpdateMessage['payload']['sessions']
-): void {
-  if (!remoteSessions.has(originId)) {
-    remoteSessions.set(originId, new Map());
-  }
-  const originSessionsMap = remoteSessions.get(originId)!;
-  const updatedTmuxSessions = new Set(agentSessions.map(s => s.tmuxSession));
-  const removedSessions: Session[] = [];
-
-  for (const [tmuxSession, session] of originSessionsMap) {
-    if (!updatedTmuxSessions.has(tmuxSession)) {
-      if (session.cityId && session.workerHex) {
-        cityManager.releaseWorkerHex(session.cityId, session.workerHex);
-      }
-      originSessionsMap.delete(tmuxSession);
-      previousSessions.delete(session.id);
-      removedSessions.push(session);
-      console.log(`Remote session removed: ${session.name} from ${originId}`);
-    }
-  }
-
-  let activityChanged = false;
-  for (const removed of removedSessions) {
-    recentFileTracker.removeSession(removed.id);
-    activityChanged = cleanupRemoteSessionData(originId, removed) || activityChanged;
-  }
-  activityChanged = pruneStaleRemoteActivities() || activityChanged;
-  if (activityChanged) {
-    saveActivityPersistence();
-  }
-
-  for (const agentSession of agentSessions) {
-    const status = agentSession.status || 'idle';
-    const existing = originSessionsMap.get(agentSession.tmuxSession);
-    if (existing) {
-      existing.cwd = agentSession.cwd;
-      existing.status = status;
-      existing.lastActivity = Date.now();
-    } else {
-      const session: Session = {
-        id: `remote-${originId}-${agentSession.tmuxSession}`,
-        name: agentSession.name,
-        tmuxSession: agentSession.tmuxSession,
-        cwd: agentSession.cwd,
-        status,
-        createdAt: Date.now(),
-        lastActivity: Date.now(),
-        originId,
-      };
-      originSessionsMap.set(agentSession.tmuxSession, session);
-      console.log(`Remote session discovered: ${session.name} from ${originId}`);
-    }
-
-    // Keep timeout ownership aligned with authoritative agent status.
-    remoteWorkingSessions.reconcile(originId, agentSession.tmuxSession, status);
-  }
-
-  rebuildCities();
-
-  const claimsByCwd = new Map<string, boolean>();
-  const playgroundsByCwd = new Map<string, boolean>();
-  for (const agentSession of agentSessions) {
-    if (agentSession.hasClaims !== undefined) {
-      claimsByCwd.set(agentSession.cwd, agentSession.hasClaims);
-    }
-    if (agentSession.hasPlaygrounds !== undefined) {
-      playgroundsByCwd.set(agentSession.cwd, agentSession.hasPlaygrounds);
-    }
-  }
-
-  for (const agentSession of agentSessions) {
-    if (agentSession.gitStatus) {
-      const remoteKey = `${originId}:${agentSession.cwd}`;
-      remoteGitStatuses.set(remoteKey, agentSession.gitStatus);
-    }
-  }
-  pruneRemoteGitStatus(originId, new Set(agentSessions.map(s => s.cwd)));
-
-  for (const session of originSessionsMap.values()) {
-    if (!session.cwd) continue;
-    const city = cityManager.findCityForPath(session.cwd, session.originId);
-    if (!city) continue;
-
-    const hasClaims = claimsByCwd.get(session.cwd);
-    if (hasClaims !== undefined) {
-      city.hasClaims = hasClaims;
-    }
-
-    const hasPlaygrounds = playgroundsByCwd.get(session.cwd);
-    if (hasPlaygrounds !== undefined) {
-      city.hasPlaygrounds = hasPlaygrounds;
-    }
-
-    assignSessionToCity(session, city);
-
-    previousSessions.set(session.id, session);
-  }
-
-  buildState().then(broadcast);
-}
-
-function reconnectTunnel(sshHost: string): void {
-  console.log(`Reconnecting SSH tunnel to ${sshHost}...`);
-  execFile('ssh', ['-fN', sshHost], (err) => {
-    if (err) console.error(`SSH tunnel reconnect to ${sshHost} failed:`, err.message);
-    else console.log(`SSH tunnel to ${sshHost} re-established`);
-  });
-}
-
-function handleAgentDisconnect(originId: string, sshHost?: string): void {
-  const originSessionsMap = remoteSessions.get(originId);
-  if (!originSessionsMap) return;
-
-  if (!originManager.isOriginConnected(originId)) {
-    let activityChanged = false;
-
-    for (const [tmuxSession, session] of originSessionsMap) {
-      if (session.cityId && session.workerHex) {
-        cityManager.releaseWorkerHex(session.cityId, session.workerHex);
-      }
-      originSessionsMap.delete(tmuxSession);
-      previousSessions.delete(session.id);
-      recentFileTracker.removeSession(session.id);
-      activityChanged = cleanupRemoteSessionData(originId, session) || activityChanged;
-    }
-    activityChanged = pruneStaleRemoteActivities() || activityChanged;
-    if (activityChanged) {
-      saveActivityPersistence();
-    }
-
-    // Clean up git statuses for this origin
-    pruneRemoteGitStatus(originId, new Set<string>());
-    remoteWorkingSessions.clearOrigin(originId);
-
-    remoteSessions.delete(originId);
-    rebuildCities();
-    buildState().then(broadcast);
-
-    if (sshHost) reconnectTunnel(sshHost);
-  }
-}
 
 // ============================================================================
 // Message Handlers
@@ -875,55 +623,9 @@ wss.on('connection', async (ws, req) => {
       try {
         const message = JSON.parse(data.toString());
         if (message.type === 'agent_sessions_update') {
-          handleAgentSessionsUpdate(origin.id, message.payload.sessions);
+          remoteAgentCoordinator.handleAgentSessionsUpdate(origin.id, message.payload.sessions);
         } else if (message.type === 'agent_activity') {
-          const activity = (message as AgentActivityMessage).activity;
-
-          // Only track file operations (Read, Write, Edit)
-          if (!['Read', 'Write', 'Edit'].includes(activity.tool)) {
-            return;
-          }
-
-          // Store remote activity with deduplication
-          const activitySessionKey = getActivitySessionKey(origin.id, activity.tmuxSession);
-          let activities = remoteActivities.get(activitySessionKey);
-          if (!activities) {
-            activities = [];
-            remoteActivities.set(activitySessionKey, activities);
-          }
-
-          // Deduplicate: skip if same tool+fullPath within last 2 seconds
-          const recent = activities[0];
-          if (recent &&
-              recent.tool === activity.tool &&
-              recent.fullPath === activity.fullPath &&
-              Math.abs(recent.timestamp - activity.timestamp) < 2000) {
-            return; // Skip duplicate
-          }
-
-          activities.unshift(activity);
-          if (activities.length > MAX_REMOTE_ACTIVITIES) {
-            activities.pop();
-          }
-          saveActivityPersistence();
-
-          // Update remote session status to 'working'
-          const sessionMap = remoteSessions.get(origin.id);
-          const session = sessionMap?.get(activity.tmuxSession);
-          const now = Date.now();
-          if (session && session.status !== 'working') {
-            session.status = 'working';
-            session.lastActivity = now;
-            remoteWorkingSessions.touch(origin.id, activity.tmuxSession, now);
-            // Trigger rebuild to broadcast the status change
-            sessionTracker['notifyChange']();
-          } else if (session) {
-            // Just update the timestamp
-            session.lastActivity = now;
-            remoteWorkingSessions.touch(origin.id, activity.tmuxSession, now);
-          }
-
-          broadcastActivity(activity, origin.id);
+          remoteAgentCoordinator.handleAgentActivity(origin.id, (message as AgentActivityMessage).activity);
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
@@ -933,7 +635,7 @@ wss.on('connection', async (ws, req) => {
     ws.on('close', () => {
       const disconnectedOrigin = originManager.handleDisconnect(ws);
       if (disconnectedOrigin) {
-        handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
+        remoteAgentCoordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
         broadcast({ ...lastBroadcastState!, origins: originManager.getOrigins() });
       }
       console.log(`Agent disconnected: ${originName}`);
@@ -988,20 +690,9 @@ fiberRefreshIntervalHandle = setInterval(refreshFiberCounts, FIBER_REFRESH_INTER
 
 // Check for remote session working timeouts
 remoteWorkingTimeoutIntervalHandle = setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-  const cutoff = now - REMOTE_WORKING_TIMEOUT;
-  const expired = remoteWorkingSessions.consumeExpired(cutoff);
-  for (const { originId, tmuxSession } of expired) {
-    const sessionMap = remoteSessions.get(originId);
-    const session = sessionMap?.get(tmuxSession);
-    if (session && session.status === 'working') {
-      session.status = 'idle';
-      changed = true;
-    }
-  }
+  const changed = remoteAgentCoordinator.expireWorkingSessions(Date.now() - REMOTE_WORKING_TIMEOUT);
   if (changed) {
-    sessionTracker['notifyChange']();
+    buildState().then(broadcast);
   }
 }, 5000);
 
