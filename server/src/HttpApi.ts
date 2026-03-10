@@ -20,10 +20,9 @@ import type { AnnotationPersistence } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
 import { shellEscape } from './KittyIntegration.js';
-import { getAllFibers, type Fiber } from './FiberReader.js';
-import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
-import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
+import { HttpApiFileContent } from './HttpApiFileContent.js';
+import { HttpApiTapestry } from './HttpApiTapestry.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,6 +59,7 @@ export class HttpApi {
   private persistenceLookup: PersistenceLookup;
   private annotationsApi: HttpApiAnnotations;
   private fileContentApi: HttpApiFileContent;
+  private tapestryApi: HttpApiTapestry;
   private sessionLookup: SessionLookup | null = null;
   private recentFileTracker: RecentFileTracker | null = null;
   private hookSessionToWorkerSessionId: Map<string, string> = new Map();
@@ -84,6 +84,13 @@ export class HttpApi {
     this.fileContentApi = new HttpApiFileContent({
       originLookup,
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
+      sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
+      sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    this.tapestryApi = new HttpApiTapestry({
+      cityLookup,
+      fileContentApi: this.fileContentApi,
+      getSshHost: (city) => this.getSshHost(city),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
@@ -145,12 +152,12 @@ export class HttpApi {
     }
 
     if (url.pathname === '/tapestry') {
-      await this.handleTapestry(url, res);
+      await this.tapestryApi.handleTapestry(url, res);
       return true;
     }
 
     if (url.pathname.startsWith('/tapestry-asset/')) {
-      await this.handleTapestryAsset(url, res);
+      await this.tapestryApi.handleTapestryAsset(url, res);
       return true;
     }
 
@@ -247,317 +254,6 @@ export class HttpApi {
     const origin = this.originLookup.getOrigin(city.originId);
     const persistedCity = this.persistenceLookup.getCityById(city.id);
     return origin?.sshHost || persistedCity?.sshHost || city.originId.replace('remote-', '');
-  }
-
-  // ============================================================================
-  // Tapestry Endpoint
-  // ============================================================================
-
-  /**
-   * GET /tapestry?cityId=xxx
-   *
-   * Returns the full DAG for TapestryView: fibers with tapestry: tags,
-   * dependency edges, evidence summary per fiber, staleness flags.
-   */
-  private async handleTapestry(url: URL, res: ServerResponse): Promise<void> {
-    const cityId = url.searchParams.get('cityId');
-    if (!cityId) {
-      this.sendJsonError(res, 400, 'Missing cityId parameter');
-      return;
-    }
-
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      this.sendJsonError(res, 404, 'City not found');
-      return;
-    }
-
-    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
-
-    try {
-      // Single read: get all fibers, then partition into tapestry vs non-tapestry
-      const allFibers = await this.getAllCityFibers(city.path, sshHost);
-      const ruleFibers = allFibers.filter(f => f.tags?.some(t => t.startsWith('tapestry:') || t.startsWith('rule:')));
-      const fiberIds = new Set(ruleFibers.map(f => f.id));
-
-      // Build spec name map: fiberId → specName
-      const fiberSpecMap = new Map<string, string>();
-      for (const fiber of ruleFibers) {
-        const specName = getSpecName(fiber.tags || []);
-        if (specName) {
-          fiberSpecMap.set(fiber.id, specName);
-        }
-      }
-
-      // Read evidence for each unique specName
-      const uniqueSpecNames = Array.from(new Set(fiberSpecMap.values()));
-      let evidenceMap: Map<string, Evidence | null>;
-      if (sshHost && uniqueSpecNames.length > 0) {
-        // Single SSH call for all specs — avoids connection exhaustion
-        evidenceMap = await readEvidenceBatch(city.path, uniqueSpecNames, sshHost);
-      } else {
-        evidenceMap = new Map<string, Evidence | null>();
-        await Promise.all(
-          uniqueSpecNames.map(async (specName) => {
-            const ev = await readEvidence(city.path, specName);
-            evidenceMap.set(specName, ev);
-          })
-        );
-      }
-
-      // Build response nodes
-      const nodes = ruleFibers.map(fiber => {
-        const specName = fiberSpecMap.get(fiber.id);
-        const evidence = specName ? evidenceMap.get(specName) : null;
-        const deps = (fiber.dependsOn || []).filter(d => fiberIds.has(d));
-        const staleness = computeStaleness(fiber.id, deps, evidenceMap, fiberSpecMap);
-
-        return {
-          id: fiber.id,
-          title: fiber.title,
-          kind: fiber.kind,
-          status: fiber.status,
-          body: fiber.body,
-          outcome: fiber.outcome || null,
-          tags: fiber.tags || [],
-          createdAt: fiber.createdAt || null,
-          closedAt: fiber.closedAt || null,
-          dependsOn: deps,
-          specName: specName || null,
-          staleness,
-          evidence: evidence ? {
-            metrics: evidence.metrics,
-            artifacts: evidence.artifacts,
-            mtime: evidence.mtime,
-            generated: evidence.generated ?? null,
-          } : null,
-        };
-      });
-
-      // Build edges
-      const links: Array<{ source: string; target: string }> = [];
-      for (const fiber of ruleFibers) {
-        for (const dep of (fiber.dependsOn || [])) {
-          if (fiberIds.has(dep)) {
-            links.push({ source: dep, target: fiber.id });
-          }
-        }
-      }
-
-      // Downstream concerns: all fibers that depend on rule fibers
-      const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
-      for (const fiber of allFibers) {
-        for (const dep of (fiber.dependsOn || [])) {
-          if (fiberIds.has(dep)) {
-            if (!downstreamMap[dep]) downstreamMap[dep] = [];
-            downstreamMap[dep].push({
-              id: fiber.id,
-              title: fiber.title,
-              status: fiber.status,
-              kind: fiber.kind,
-            });
-          }
-        }
-      }
-
-      // Read project config (workflow/config/config.yaml) if it exists
-      const config = await this.readCityConfig(city.path, sshHost);
-
-      // All fibers (for sidebar listing)
-      const fibers = allFibers.map(f => ({
-        id: f.id,
-        title: f.title,
-        status: f.status,
-        kind: f.kind,
-        tags: f.tags,
-        body: f.body,
-        outcome: f.outcome || null,
-        createdAt: f.createdAt || null,
-        closedAt: f.closedAt || null,
-        dependsOn: f.dependsOn || [],
-      }));
-
-      this.sendJsonSuccess(res, {
-        nodes,
-        links,
-        downstream: downstreamMap,
-        config,
-        fibers,
-      });
-    } catch (error: any) {
-      console.error('Failed to build tapestry:', error);
-      this.sendJsonError(res, 500, 'Failed to build tapestry: ' + error.message);
-    }
-  }
-
-  /**
-   * Get all fibers for a city (local or remote).
-   * Remote cities use `felt ls --json --body` via SSH.
-   */
-  private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
-    if (!sshHost) {
-      return getAllFibers(cityPath);
-    }
-
-    const cmd = `cd ${shellEscape(cityPath)} && felt ls -s all --json --body 2>/dev/null || echo '[]'`;
-    const { stdout } = await execFileAsync(
-      'ssh', [sshHost, cmd],
-      { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
-    );
-
-    const raw = JSON.parse(stdout.trim() || '[]');
-    return raw.map((f: any): Fiber => ({
-      id: f.id,
-      title: f.title || f.id,
-      status: f.status || 'open',
-      kind: f.kind || 'task',
-      priority: f.priority || 2,
-      createdAt: f.created_at || '',
-      closedAt: f.closed_at,
-      outcome: f.outcome || f.close_reason,
-      body: f.body,
-      // Normalize comma-separated tags: "claim, tapestry:foo" → ["claim", "tapestry:foo"]
-      tags: f.tags?.flatMap((t: string) => t.includes(',') ? t.split(',').map((s: string) => s.trim()).filter(Boolean) : [t]),
-      dependsOn: f.depends_on?.map((d: any) => typeof d === 'string' ? d : d.id),
-    }));
-  }
-
-  /**
-   * Read and flatten project config (workflow/config/config.yaml).
-   * Returns a flat Record<string, string> of dotted key paths to values,
-   * or null if no config exists.
-   */
-  private async readCityConfig(
-    cityPath: string,
-    sshHost?: string,
-  ): Promise<Record<string, string> | null> {
-    // Try candidate config locations in priority order
-    const candidates = [
-      `${cityPath}/config/config.yaml`,
-      `${cityPath}/workflow/config/config.yaml`,
-    ];
-
-    try {
-      let content: string = '';
-      if (sshHost) {
-        const tryPaths = candidates.map(p => `cat ${shellEscape(p)} 2>/dev/null`).join(' || ');
-        const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `${tryPaths} || echo ''`],
-          { maxBuffer: 1024 * 1024, timeout: 10000 },
-        );
-        content = stdout.trim();
-      } else {
-        const { readFile } = await import('fs/promises');
-        for (const p of candidates) {
-          try { content = await readFile(p, 'utf-8'); break; } catch { /* try next */ }
-        }
-      }
-
-      if (!content) return null;
-
-      const { parse } = await import('yaml');
-      const data = parse(content);
-      if (!data || typeof data !== 'object') return null;
-
-      // Flatten to dotted paths
-      const flat: Record<string, string> = {};
-      const walk = (obj: unknown, prefix: string) => {
-        if (obj === null || obj === undefined) return;
-        if (Array.isArray(obj)) {
-          flat[prefix] = JSON.stringify(obj);
-          return;
-        }
-        if (typeof obj === 'object') {
-          for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-            walk(v, prefix ? `${prefix}.${k}` : k);
-          }
-          return;
-        }
-        flat[prefix] = String(obj);
-      };
-      walk(data, '');
-      return flat;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Serve evidence artifacts (plots, images) from results/claims/{specName}/
-   * GET /tapestry-asset/{specName}/{filename}?cityId=xxx
-   */
-  private async handleTapestryAsset(url: URL, res: ServerResponse): Promise<void> {
-    const cityId = url.searchParams.get('cityId');
-    const rawPath = url.pathname.replace('/tapestry-asset/', '');
-    const parts = rawPath.split('/');
-
-    if (!cityId || parts.length < 2) {
-      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('Missing cityId or invalid asset path');
-      return;
-    }
-
-    let assetPath: string;
-    try {
-      assetPath = decodeURIComponent(parts.join('/'));
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('Invalid asset path');
-      return;
-    }
-
-    await this.serveTapestryAsset(cityId, assetPath, res);
-  }
-
-  // ── Shared asset serving ──────────────────────────────────────────
-
-  /**
-   * Serve a tapestry asset file (plot, image, etc.) from results/claims/.
-   * Validates path, resolves city, reads file locally or via SSH.
-   */
-  private async serveTapestryAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
-    // Security: prevent directory traversal and shell injection
-    if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
-      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('Invalid asset path');
-      return;
-    }
-
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      res.end('City not found');
-      return;
-    }
-
-    const fullPath = `${city.path}/results/claims/${assetPath}`;
-    const ext = assetPath.split('.').pop()?.toLowerCase();
-    const contentType = HTTP_API_MIME_TYPES[ext || ''] || 'application/octet-stream';
-    const timeout = ext === 'pdf' ? 60000 : 30000;
-
-    try {
-      if (city.originId === 'local') {
-        await this.fileContentApi.streamLocalBinaryFile(fullPath, contentType, 'no-cache', res);
-      } else {
-        const sshHost = this.getSshHost(city);
-        await this.fileContentApi.streamRemoteBinaryFile(sshHost, fullPath, contentType, 'no-cache', timeout, res);
-      }
-    } catch (error) {
-      if (res.headersSent || res.writableEnded) {
-        return;
-      }
-
-      const statusCode = typeof (error as { statusCode?: number })?.statusCode === 'number'
-        ? (error as { statusCode: number }).statusCode
-        : ((error as { code?: string })?.code === 'ENOENT' ? 404 : 500);
-
-      res.writeHead(statusCode, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-      if (statusCode === 404) {
-        res.end(`Asset not found: ${assetPath}`);
-      } else {
-        res.end('Failed to read asset');
-      }
-    }
   }
 
   /**
