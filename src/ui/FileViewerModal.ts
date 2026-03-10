@@ -1,7 +1,5 @@
 // FileViewerModal.ts - Centered modal for viewing/editing files with CodeMirror + vim
 // Extended with annotation support: selection toolbar, highlights, annotations panel
-
-import { marked } from 'marked'
 // CodeMirror imports
 import { EditorState, type Extension } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine } from '@codemirror/view'
@@ -16,7 +14,7 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
-import { escapeHtml, renderMarkdown, interpolateConfig, STALENESS_COLORS, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
+import { escapeHtml } from './utils'
 import { AnnotationPanel } from './AnnotationPanel'
 import { type WorkerInfo } from './WorkerPicker'
 import {
@@ -24,12 +22,7 @@ import {
   FileViewerAnnotations,
   fileViewerAnnotationHighlightField,
 } from './FileViewerAnnotations'
-
-// Configure marked for GFM (tables, task lists, etc.)
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-})
+import { FileViewerMarkdownView } from './FileViewerMarkdownView'
 
 declare const Prism: {
   highlight: (code: string, grammar: unknown, language: string) => string
@@ -154,8 +147,7 @@ export class FileViewerModal {
   // Double-Escape tracking for vim: first Escape -> normal mode, second Escape -> close
   private lastEscapeTime: number = 0
 
-  // Markdown render mode: true when showing rendered markdown instead of editor
-  private markdownRendered: boolean = false
+  private markdownView: FileViewerMarkdownView
 
   // Handler refs for HMR cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -164,8 +156,6 @@ export class FileViewerModal {
   // Async request ownership for race-safe modal loads
   private activeShowRequestId: number = 0
   private activeShowAbortController: AbortController | null = null
-  private renderedMarkdownRequestId: number = 0
-  private renderedMarkdownAbortController: AbortController | null = null
   private deferredUiTimers = new Set<number>()
 
   constructor() {
@@ -200,6 +190,22 @@ export class FileViewerModal {
         isVisible: this.isVisible(),
       }),
       scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
+    })
+    this.markdownView = new FileViewerMarkdownView({
+      contentEl: this.contentEl,
+      modeLineEl: this.modeLineEl,
+      annotations: this.annotations,
+      getState: () => ({
+        currentPath: this.currentPath,
+        currentOriginId: this.currentOriginId,
+        currentCityPath: this.currentCityPath,
+        currentCityId: this.currentCityId,
+        isVisible: this.isVisible(),
+      }),
+      onOpenPath: (path, originId, cityPath, cityId, line) => {
+        this.show(path, originId, undefined, undefined, cityPath, cityId, line)
+      },
+      onEnterEditMode: () => this.enterFileEditMode(),
     })
 
     this.setupEventListeners()
@@ -293,7 +299,7 @@ export class FileViewerModal {
       const now = Date.now()
 
       // If editing a markdown file, Escape returns to rendered view
-      if (this.editorView?.hasFocus && !this.markdownRendered && this.isMarkdownFile()) {
+      if (this.editorView?.hasFocus && !this.markdownView.isActive() && this.isMarkdownFile()) {
         if (now - this.lastEscapeTime < 1000) {
           // Save if dirty, then exit to rendered view
           if (this.isDirty) {
@@ -399,35 +405,6 @@ export class FileViewerModal {
     this.activeShowRequestId += 1
   }
 
-  private beginRenderedMarkdownRequest(): { requestId: number; signal: AbortSignal } {
-    this.renderedMarkdownAbortController?.abort()
-    const controller = new AbortController()
-    this.renderedMarkdownAbortController = controller
-    this.renderedMarkdownRequestId += 1
-    return { requestId: this.renderedMarkdownRequestId, signal: controller.signal }
-  }
-
-  private isRenderedMarkdownRequestActive(requestId: number, wrapper: HTMLElement, filePath: string): boolean {
-    return (
-      this.renderedMarkdownRequestId === requestId &&
-      this.modal.classList.contains('visible') &&
-      this.currentPath === filePath &&
-      this.contentEl.contains(wrapper)
-    )
-  }
-
-  private finishRenderedMarkdownRequest(requestId: number): void {
-    if (this.renderedMarkdownRequestId === requestId) {
-      this.renderedMarkdownAbortController = null
-    }
-  }
-
-  private cancelRenderedMarkdownRequest(): void {
-    this.renderedMarkdownAbortController?.abort()
-    this.renderedMarkdownAbortController = null
-    this.renderedMarkdownRequestId += 1
-  }
-
   private scheduleDeferredUiTask(task: () => void, delayMs: number): number {
     const timerId = window.setTimeout(() => {
       this.deferredUiTimers.delete(timerId)
@@ -505,7 +482,7 @@ export class FileViewerModal {
     jumpToLine?: number,
   ): Promise<void> {
     const { requestId, signal } = this.beginShowRequest()
-    this.cancelRenderedMarkdownRequest()
+    this.markdownView.reset()
     this.clearDeferredUiTasks()
 
     try {
@@ -538,7 +515,6 @@ export class FileViewerModal {
 
     // Reset double-Escape tracking
     this.lastEscapeTime = 0
-    this.markdownRendered = false
 
     // Reset annotation panel
     this.annotations.reset()
@@ -615,7 +591,7 @@ export class FileViewerModal {
       // Markdown files: render by default, double-click to edit
       const isMarkdown = data.language === 'markdown' || /\.(md|markdown)$/i.test(filePath)
       if (isMarkdown) {
-        this.showRenderedMarkdown(data.content)
+        this.markdownView.show(data.content)
       } else {
         // Create CodeMirror editor
         this.createEditor(data.content, data.language)
@@ -870,294 +846,8 @@ export class FileViewerModal {
     return this.currentContent.language === 'markdown' || /\.(md|markdown)$/i.test(this.currentPath)
   }
 
-  private showRenderedMarkdown(content: string): void {
-    this.markdownRendered = true
-    this.contentEl.innerHTML = ''
-
-    // Resolve image paths: try city root first (project-relative), fall back to file directory
-    const dirPath = this.currentPath.replace(/\/[^/]+$/, '')
-    const mdOpts = {
-      basePath: this.currentCityPath || dirPath,
-      originId: this.currentOriginId,
-    }
-
-    const wrapper = document.createElement('div')
-    wrapper.className = 'file-viewer-markdown editable-markdown'
-
-    // Detect fiber files and render rich frontmatter header
-    const isFiber = /\.felt\/[^/]+\.md$/i.test(this.currentPath)
-    const { frontmatter, body } = isFiber
-      ? this.parseFrontmatter(content)
-      : { frontmatter: null, body: content }
-
-    if (frontmatter) {
-      wrapper.innerHTML = this.renderFiberHeader(frontmatter) + renderMarkdown(body, mdOpts)
-    } else {
-      wrapper.innerHTML = renderMarkdown(content, mdOpts)
-    }
-
-    this.contentEl.appendChild(wrapper)
-
-    // Syntax highlight code blocks
-    if ((window as any).Prism) {
-      (window as any).Prism.highlightAllUnder(wrapper)
-    }
-
-    // Make inline code paths clickable
-    attachInlinePathListeners(wrapper, (relPath, line) => {
-      const fullPath = relPath.startsWith('/') ? relPath : `${this.currentCityPath || dirPath}/${relPath}`
-      this.show(fullPath, this.currentOriginId, undefined, undefined, this.currentCityPath, this.currentCityId, line)
-    })
-
-    // Resolve tapestry data: config, staleness, downstream, artifacts, metrics.
-    // This async work is owned and cancelable so stale responses cannot mutate a newer file view.
-    void this.loadRenderedMarkdownContext(wrapper, this.currentPath, this.currentCityId)
-
-    this.modeLineEl.textContent = 'Double-click to edit'
-
-    // Double-click → swap to editor (suppress annotation on dblclick)
-    let dblClickPending = false
-    wrapper.addEventListener('dblclick', (e) => {
-      dblClickPending = true
-      if ((e.target as HTMLElement).closest('a')) return
-      this.enterFileEditMode()
-    })
-
-    // Text selection → annotation toolbar (same as editor mode)
-    wrapper.addEventListener('mouseup', () => {
-      // Skip if double-click triggered
-      setTimeout(() => {
-        if (dblClickPending) { dblClickPending = false; return }
-        const sel = window.getSelection()
-        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-          this.annotations.hideSelectionToolbar()
-          return
-        }
-        this.annotations.handleRenderedSelection(sel)
-      }, 200)
-    })
-  }
-
-  private async loadRenderedMarkdownContext(wrapper: HTMLElement, filePath: string, cityId: string): Promise<void> {
-    const isFiber = /\.felt\/[^/]+\.md$/i.test(filePath)
-    if (!isFiber || !cityId) return
-
-    const { requestId, signal } = this.beginRenderedMarkdownRequest()
-    try {
-      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(cityId)}`, { signal })
-      if (!response.ok) return
-
-      const data = await response.json()
-      if (!data || !this.isRenderedMarkdownRequestActive(requestId, wrapper, filePath)) return
-
-      // Config interpolation
-      if (data.config) {
-        interpolateConfig(wrapper, data.config)
-      }
-
-      // Find matching tapestry node for this fiber
-      const fiberIdMatch = filePath.match(/\.felt\/([^/]+)\.md$/i)
-      const fiberId = fiberIdMatch?.[1]
-      if (!fiberId) return
-
-      const node = (data.nodes || []).find((n: { id: string }) => n.id === fiberId)
-
-      // Staleness color on status span
-      if (node?.staleness) {
-        const statusEl = wrapper.querySelector('.fiber-card-status') as HTMLElement | null
-        if (statusEl) statusEl.style.color = STALENESS_COLORS[node.staleness] || ''
-      }
-
-      // Downstream dependencies (inject after .fiber-card-console)
-      const downstream = data.downstream?.[fiberId] || []
-      if (downstream.length > 0) {
-        const console = wrapper.querySelector('.fiber-card-console')
-        if (console) {
-          const dsHtml = `<div class="fiber-card-downstream">
-                <span class="fiber-card-deps-label">downstream</span>
-                ${downstream.map((d: { id: string; title: string; status: string }) => {
-                  const icon = d.status === 'closed' ? '●' : d.status === 'active' ? '◐' : '○'
-                  const short = d.title.replace(/-[a-f0-9]{8}$/, '').replace(/[-_]/g, ' ').split(' ').slice(0, 3).join(' ')
-                  return `<span class="fiber-card-dep">${icon} ${escapeHtml(short)}</span>`
-                }).join(', ')}
-              </div>`
-          console.insertAdjacentHTML('afterend', dsHtml)
-        }
-      }
-
-      // Artifact gallery (inject after .fiber-card-rule)
-      if (node?.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 0) {
-        const rule = wrapper.querySelector('.fiber-card-rule')
-        if (rule) {
-          const gallery = renderArtifactGallery(
-            node.evidence.artifacts,
-            (path: string) => `${API_BASE}/file-content?path=${encodeURIComponent(path)}&raw=true`,
-          )
-          rule.insertAdjacentHTML('afterend', gallery.html)
-          gallery.attach(wrapper)
-        }
-      }
-
-      // Evidence metrics (inject after .fiber-card-rule, after artifacts)
-      if (node?.evidence?.metrics && Object.keys(node.evidence.metrics).length > 0) {
-        const rule = wrapper.querySelector('.fiber-card-rule')
-        if (rule) {
-          const items: Array<{ key: string; value: string }> = []
-          for (const [key, value] of Object.entries(node.evidence.metrics as Record<string, unknown>)) {
-            if (typeof value === 'object' && value !== null) {
-              for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-                items.push({ key: `${key}.${k}`, value: typeof v === 'number' ? (v as number).toFixed(4) : String(v) })
-              }
-            } else {
-              items.push({ key, value: typeof value === 'number' ? (value as number).toFixed(4) : String(value) })
-            }
-          }
-          const metricsHtml = `<div class="tapestry-evidence-section">
-                <div class="tapestry-evidence">${items.map(({ key, value }) =>
-                  `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
-                ).join('')}</div>
-              </div>`
-          rule.insertAdjacentHTML('afterend', metricsHtml)
-        }
-      }
-    } catch (error: any) {
-      if (error?.name === 'AbortError') return
-      console.error('Failed to load rendered markdown context:', error)
-    } finally {
-      this.finishRenderedMarkdownRequest(requestId)
-    }
-  }
-
-  // ── Fiber frontmatter parsing & rendering ──────────────────────────
-
-  private parseFrontmatter(content: string): { frontmatter: Record<string, any> | null; body: string } {
-    const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
-    if (!match) return { frontmatter: null, body: content }
-
-    const raw = match[1]
-    const body = match[2]
-    const fm: Record<string, any> = {}
-
-    // Simple YAML parser for fiber frontmatter (flat + arrays)
-    let currentKey = ''
-    let inArray = false
-    for (const line of raw.split('\n')) {
-      const arrayItem = line.match(/^\s+-\s+(.+)$/)
-      if (arrayItem && inArray && currentKey) {
-        if (!Array.isArray(fm[currentKey])) fm[currentKey] = []
-        // Handle object items like {id: "..."} or bare strings
-        const val = arrayItem[1].trim()
-        if (val.startsWith('{') || val.match(/^\w+:/)) {
-          // Simple object: extract id field
-          const idMatch = val.match(/(?:id:\s*['"]?)([^'"}\s]+)/)
-          fm[currentKey].push(idMatch ? { id: idMatch[1] } : val)
-        } else {
-          fm[currentKey].push(val.replace(/^['"]|['"]$/g, ''))
-        }
-        continue
-      }
-
-      const kvMatch = line.match(/^(\S[\w-]+):\s*(.*)$/)
-      if (kvMatch) {
-        currentKey = kvMatch[1]
-        const val = kvMatch[2].trim()
-        if (val === '' || val === '|') {
-          inArray = !val // empty value = potential array start
-          fm[currentKey] = val === '|' ? '' : undefined
-        } else {
-          inArray = false
-          fm[currentKey] = val.replace(/^['"]|['"]$/g, '')
-        }
-      } else if (currentKey && fm[currentKey] === '' && line.startsWith('  ')) {
-        // Multi-line scalar continuation
-        fm[currentKey] += (fm[currentKey] ? '\n' : '') + line.trim()
-      }
-    }
-
-    return { frontmatter: fm, body }
-  }
-
-  private renderFiberHeader(fm: Record<string, any>): string {
-    const statusIcons: Record<string, string> = {
-      untracked: '·', open: '○', active: '◐', closed: '●'
-    }
-    const kindLabels: Record<string, string> = {
-      task: 'Task', decision: 'Decision', spec: 'Specification',
-      doc: 'Document', question: 'Question', bug: 'Bug'
-    }
-
-    const status = fm.status || 'open'
-    const kind = fm.kind || ''
-    const title = fm.title || 'Untitled'
-    const tags = Array.isArray(fm.tags) ? fm.tags : []
-    const deps = Array.isArray(fm['depends-on']) ? fm['depends-on'] : []
-    const createdAt = fm['created-at']
-    const closedAt = fm['closed-at']
-    const closeReason = fm['close-reason'] || fm.outcome || ''
-
-    // Format dates
-    const formatDate = formatFiberDate
-
-    // Status badge color
-    const statusClass = `fiber-status-${status}`
-
-    // Tags
-    const displayTags = tags.filter((t: string) => !t.startsWith('tapestry:'))
-    const tagsHtml = displayTags.length > 0
-      ? `<div class="fiber-card-tags">${displayTags.map((t: string) =>
-          `<span class="fiber-card-tag">${escapeHtml(t.replace(/^\[|\]$/g, ''))}</span>`
-        ).join('')}</div>`
-      : ''
-
-    // Dependencies
-    const depsHtml = deps.length > 0
-      ? `<div class="fiber-card-deps">
-          <span class="fiber-card-deps-label">depends on</span>
-          ${deps.map((d: any) => {
-            const id = typeof d === 'string' ? d : d.id
-            const short = id.replace(/-[a-f0-9]{8}$/, '')
-            return `<a href=".felt/${escapeHtml(id)}.md" class="fiber-card-dep md-link">${escapeHtml(short)}</a>`
-          }).join('<span class="fiber-card-deps-sep">,</span> ')}
-        </div>`
-      : ''
-
-    // Dates
-    const datesHtml = createdAt
-      ? `<div class="fiber-card-dates">
-          <span>Filed ${formatDate(createdAt)}</span>
-          ${closedAt ? `<span class="fiber-card-date-sep">·</span><span>Closed ${formatDate(closedAt)}</span>` : ''}
-        </div>`
-      : ''
-
-    // Close reason / outcome
-    const outcomeHtml = closeReason
-      ? `<div class="fiber-card-outcome">
-          <div class="fiber-card-outcome-label">Outcome</div>
-          <div class="fiber-card-outcome-text">${renderMarkdown(closeReason)}</div>
-        </div>`
-      : ''
-
-    // One dense console line: status · kind · deps · dates · tags
-    const parts: string[] = []
-    parts.push(`<span class="fiber-card-status ${statusClass}">${statusIcons[status] || '○'} ${escapeHtml(status)}</span>`)
-    if (kind) parts.push(`<span class="fiber-card-kind">${escapeHtml(kindLabels[kind] || kind)}</span>`)
-    if (deps.length > 0) parts.push(depsHtml)
-    if (datesHtml) parts.push(datesHtml)
-    if (tags.length > 0) parts.push(tagsHtml)
-
-    return `
-      <header class="fiber-card">
-        <div class="fiber-card-title">${escapeHtml(title)}</div>
-        <div class="fiber-card-console">${parts.join('<span class="fc-sep">·</span>')}</div>
-        ${outcomeHtml}
-        <div class="fiber-card-rule"></div>
-      </header>
-    `
-  }
-
   private enterFileEditMode(): void {
     if (!this.currentContent) return
-    this.markdownRendered = false
     this.createEditor(this.currentContent.content, this.currentContent.language)
     this.modeLineEl.textContent = ''
     if (this.editorView) this.editorView.focus()
@@ -1177,7 +867,7 @@ export class FileViewerModal {
       this.editorView.destroy()
       this.editorView = null
     }
-    this.showRenderedMarkdown(content)
+    this.markdownView.show(content)
   }
 
   private scrollToLine(lineNumber: number): void {
@@ -1346,7 +1036,7 @@ export class FileViewerModal {
 
   hide(): void {
     this.cancelActiveShowRequest()
-    this.cancelRenderedMarkdownRequest()
+    this.markdownView.reset()
     this.clearDeferredUiTasks()
     this.annotations.dispose()
     this.backdrop.classList.remove('visible')
@@ -1395,14 +1085,14 @@ export class FileViewerModal {
       currentOriginId: this.currentOriginId,
       hasEditorView: this.editorView !== null,
       isDirty: this.isDirty,
-      markdownRendered: this.markdownRendered,
+      markdownRendered: this.markdownView.isActive(),
       annotationCount: annotationStats.annotationCount,
       navigationFileCount: this.navigationFiles.length,
       navigationIndex: this.navigationIndex,
       activeShowRequestId: this.activeShowRequestId,
       hasActiveShowRequest: this.activeShowAbortController !== null,
-      renderedMarkdownRequestId: this.renderedMarkdownRequestId,
-      hasRenderedMarkdownRequest: this.renderedMarkdownAbortController !== null,
+      renderedMarkdownRequestId: this.markdownView.getRuntimeStats().renderedMarkdownRequestId,
+      hasRenderedMarkdownRequest: this.markdownView.getRuntimeStats().hasRenderedMarkdownRequest,
       deferredUiTimerCount: this.deferredUiTimers.size,
       hasImageAnnotationOutsideClickHandler: annotationStats.hasImageAnnotationOutsideClickHandler,
       hasImageAnnotationOutsideClickTimer: annotationStats.hasImageAnnotationOutsideClickTimer,
@@ -1411,7 +1101,7 @@ export class FileViewerModal {
 
   dispose(): void {
     this.hide()
-    this.cancelRenderedMarkdownRequest()
+    this.markdownView.reset()
     this.clearDeferredUiTasks()
     this.annotations.dispose()
     this.backdrop.remove()
