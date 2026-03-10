@@ -7,17 +7,18 @@ import * as d3Zoom from 'd3-zoom'
 import 'd3-transition'
 import { easeCubicInOut } from 'd3-ease'
 import type { City } from '../state/types'
-import { escapeHtml, renderMarkdown, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery } from './utils'
+import { escapeHtml, interpolateConfig, showToast } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 import { AnnotationPanel } from './AnnotationPanel'
 import type { TapestryNode, TapestryFiber, TapestryResponse, SimNode, SimLink, SVGPathSelection, EdgeDatum } from './tapestry-types'
 import { TapestryStaticFileModal } from './TapestryStaticFileModal'
 import { TapestryArtifactLightbox } from './TapestryArtifactLightbox'
 import { TapestryDetailBody } from './TapestryDetailBody'
+import { TapestryDetailPanel } from './TapestryDetailPanel'
 import { TapestryClaimsAnnotations } from './TapestryClaimsAnnotations'
 import {
   NODE_RX, NODE_RY, INTERIOR_DEPTH_NUDGE, RING_SCALES, RING_COUNT, SIMULATION_TICKS,
-  stalenessColor, dotStalenessColor, stalenessIcon, statusIcon, isSectionNode,
+  stalenessColor, dotStalenessColor, statusIcon, isSectionNode,
   artifactEntries, isPdfArtifact,
   hashString, seededRandom, organicEllipse, ringOpacity, ellipsePoint,
   shortName, leadParagraph, splitNeighborFibers,
@@ -27,16 +28,12 @@ export type { TapestryResponse } from './tapestry-types'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 
-const DETAIL_DEFAULT_WIDTH = 420
-const DETAIL_MIN_WIDTH = 280
-const DETAIL_MAX_WIDTH = 800
 const PRELOAD_CACHE_LIMIT = 64
 const SEARCH_SNIPPET_CONTEXT = 15
 
 // ── TapestryView ──────────────────────────────────────────────────────
 
 export class TapestryView {
-  private detailKeyHandler: ((e: KeyboardEvent) => void) | null = null
   private panel: HTMLElement
   private closeBtn: HTMLElement
   private dagContainer: HTMLElement
@@ -48,6 +45,7 @@ export class TapestryView {
   private loadingIndicator: HTMLElement
   private annotationPanelEl: HTMLElement
   private annotations: TapestryClaimsAnnotations
+  private detailPanelController: TapestryDetailPanel
 
   private currentCity: City | null = null
   private tapestryData: TapestryResponse | null = null
@@ -63,9 +61,6 @@ export class TapestryView {
   private searchFocusIdx = -1
   private flutterRAF: number | null = null
   private flutterTick: (() => void) | null = null
-  private detailWidth = DETAIL_DEFAULT_WIDTH
-  private galleryDetach: (() => void) | null = null
-  private artifactClickHandler: ((e: MouseEvent) => void) | null = null
   private preloadCache = new Map<string, HTMLImageElement>()
   private hideCleanupTimeout: ReturnType<typeof setTimeout> | null = null
   private dataFetchAbortController: AbortController | null = null
@@ -113,6 +108,25 @@ export class TapestryView {
         if (!this.currentCity || !this.onGetWorkers) return []
         return this.onGetWorkers(this.currentCity)
       },
+    })
+    this.detailPanelController = new TapestryDetailPanel({
+      panel: this.panel,
+      detailPanel: this.detailPanel,
+      fiberListEl: this.fiberListEl,
+      getCurrentCity: () => this.currentCity,
+      getTapestryData: () => this.tapestryData,
+      isStaticMode: () => this.staticMode,
+      getArtifactUrl: (specName, filePath) => this.artifactUrl(specName, filePath),
+      openStaticFile: (href, line) => this.staticFileModal?.open(href, line),
+      openFileFromLink: (href, line) => this.openFileFromLink(href, line),
+      renderDetailBody: (container, body) => this.renderDetailBody(container, body),
+      enterBodyEditMode: (node) => this.enterBodyEditMode(node),
+      saveBodyAndExit: (node) => this.saveBodyAndExit(node),
+      exitBodyEditMode: (node) => this.exitBodyEditMode(node),
+      navigateToFiber: (fiberId) => this.navigateToFiber(fiberId),
+      refreshCurrentNode: () => this.refreshCurrentNode(),
+      hideDetail: () => this.hideDetail(),
+      openArtifactLightbox: (media, node) => this.lightbox.open(media, node),
     })
 
     this.setupEventListeners()
@@ -304,18 +318,7 @@ export class TapestryView {
   }
 
   private cleanupDetailBindings(): void {
-    if (this.detailKeyHandler) {
-      document.removeEventListener('keydown', this.detailKeyHandler)
-      this.detailKeyHandler = null
-    }
-    if (this.galleryDetach) {
-      this.galleryDetach()
-      this.galleryDetach = null
-    }
-    if (this.artifactClickHandler) {
-      this.detailPanel.removeEventListener('click', this.artifactClickHandler)
-      this.artifactClickHandler = null
-    }
+    this.detailPanelController.destroy()
   }
 
   // ── Public API ─────────────────────────────────────────────────────
@@ -441,7 +444,6 @@ export class TapestryView {
     hasDataFetchRequest: boolean
     dataRequestId: number
     hasHideCleanupTimeout: boolean
-    hasDetailKeyHandler: boolean
     hasEscapeHandler: boolean
     hasArtifactClickHandler: boolean
     hasGalleryDetach: boolean
@@ -466,10 +468,9 @@ export class TapestryView {
       hasDataFetchRequest: this.dataFetchAbortController !== null,
       dataRequestId: this.dataRequestId,
       hasHideCleanupTimeout: this.hideCleanupTimeout !== null,
-      hasDetailKeyHandler: this.detailKeyHandler !== null,
       hasEscapeHandler: this.escapeHandler !== null,
-      hasArtifactClickHandler: this.artifactClickHandler !== null,
-      hasGalleryDetach: this.galleryDetach !== null,
+      hasArtifactClickHandler: this.detailPanelController.getRuntimeStats().hasArtifactClickHandler,
+      hasGalleryDetach: this.detailPanelController.getRuntimeStats().hasGalleryDetach,
       hasStaticFileModal: this.staticFileModal?.isOpen() ?? false,
       hasStaticFileModalKeyHandler: this.staticFileModal?.isOpen() ?? false,
       hasLightboxCleanup: this.lightbox.isOpen(),
@@ -481,6 +482,7 @@ export class TapestryView {
     this.disposed = true
     this.hide()
     this.clearHideCleanupTimeout()
+    this.detailPanelController.destroy()
     this.staticFileModal?.close()
     if (this.tooltip) {
       this.tooltip.remove()
@@ -1489,7 +1491,7 @@ export class TapestryView {
   private selectNode(id: string): void {
     this.selectedNodeId = id
     this.updateHighlighting()
-    this.renderDetailPanel(id)
+    this.detailPanelController.renderNode(id)
     this.preloadNeighborArtifacts(id)
     if (!this.staticMode) void this.annotations.load(id)
     this.pushHash(id)
@@ -1537,257 +1539,6 @@ export class TapestryView {
         .attr('stroke', baseColor)
         .attr('stroke-width', 1)
     })
-  }
-
-  // ── Detail panel ───────────────────────────────────────────────────
-
-  private renderDetailPanel(nodeId: string): void {
-    if (!this.tapestryData) return
-    const node = this.tapestryData.nodes.find(n => n.id === nodeId)
-    if (!node) return
-
-    this.detailBody.destroy()
-
-    const downstream = this.tapestryData.downstream[nodeId] || []
-    const nodeColor = stalenessColor(node.staleness)
-
-    // Upstream / Downstream fiber tags
-    const renderFiberTag = (id: string, label: string) =>
-      `<span class="dep-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(label)}</span>`
-
-    const upstreamTags = node.dependsOn.map(dep => {
-      const depNode = this.tapestryData!.nodes.find(n => n.id === dep)
-      return renderFiberTag(dep, depNode ? shortName(depNode.title) : dep.slice(0, 12))
-    }).join('')
-
-    const downstreamTags = downstream.map(d => {
-      const icon = statusIcon(d.status)
-      return `<span class="dep-tag downstream-tag" data-dep-id="${escapeHtml(d.id)}">${icon} ${escapeHtml(shortName(d.title))}</span>`
-    }).join('')
-
-    // Upstream / downstream rows with text labels
-    let graphHtml = ''
-    if (upstreamTags || downstreamTags) {
-      const rows: string[] = []
-      if (upstreamTags) rows.push(`<div class="dep-row"><span class="dep-dir-label">upstream</span>${upstreamTags}</div>`)
-      if (downstreamTags) rows.push(`<div class="dep-row"><span class="dep-dir-label">downstream</span>${downstreamTags}</div>`)
-      graphHtml = `<div class="tapestry-detail-graph">${rows.join('')}</div>`
-    }
-
-    // Body (markdown) — rendered by default, double-click to edit
-    const mdOpts = this.currentCity
-      ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
-      : undefined
-    const bodyHtml = node.body
-      ? `<div class="tapestry-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}"></div>`
-      : ''
-
-    // Evidence metrics — flatten nested objects into key.subkey pairs
-    let evidenceHtml = ''
-    if (node.evidence?.metrics && Object.keys(node.evidence.metrics).length > 0) {
-      const items: Array<{ key: string; value: string }> = []
-      for (const [key, value] of Object.entries(node.evidence.metrics)) {
-        if (typeof value === 'object' && value !== null) {
-          for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-            items.push({ key: `${key}.${k}`, value: typeof v === 'number' ? v.toFixed(4) : String(v) })
-          }
-        } else {
-          items.push({ key, value: typeof value === 'number' ? value.toFixed(4) : String(value) })
-        }
-      }
-      const itemsHtml = items.map(({ key, value }) =>
-        `<div class="evidence-item"><span class="evidence-key">${escapeHtml(key)}</span><span class="evidence-value">${escapeHtml(value)}</span></div>`
-      ).join('')
-      evidenceHtml = `
-        <div class="tapestry-evidence-section">
-          <div class="tapestry-evidence">${itemsHtml}</div>
-        </div>`
-    }
-
-    // Outcome
-    const outcomeHtml = node.outcome
-      ? `<div class="tapestry-detail-outcome"><span class="outcome-label">Outcome</span> ${renderMarkdown(node.outcome, mdOpts)}</div>`
-      : ''
-
-    // Tags (exclude tapestry: prefix tags — those are implicit from the DAG)
-    const displayTags = node.tags.filter(t => !t.startsWith('tapestry:'))
-    const tagsHtml = displayTags.length > 0
-      ? `<div class="tapestry-detail-tags">${displayTags.map(t => `<span class="fiber-tag">${escapeHtml(t)}</span>`).join('')}</div>`
-      : ''
-
-    // Kind badge — always show
-    const kindBadge = `<span class="kind-badge">${escapeHtml(node.kind)}</span>`
-
-    // Timestamps
-    const datesHtml = node.createdAt
-      ? `<span class="detail-dates">Filed ${formatFiberDate(node.createdAt)}${node.closedAt ? ` · Closed ${formatFiberDate(node.closedAt)}` : ''}</span>`
-      : ''
-
-    const actionsHtml = this.staticMode ? '' : `
-      <span class="action detail-action-refresh" title="Re-fetch tapestry data">\u21BB</span>`
-
-    // Artifact gallery via shared util
-    const artifactGallery = node.evidence?.artifacts
-      ? renderArtifactGallery(node.evidence.artifacts, (path) => this.artifactUrl(node.specName || '', path))
-      : null
-    const artifactsHtml = artifactGallery?.html || ''
-
-    this.detailPanel.innerHTML = `
-      <div class="tapestry-detail-resize"></div>
-      <div class="tapestry-detail-header">
-        <div class="tapestry-detail-title">
-          <span class="staleness-badge" style="color: ${nodeColor}">${stalenessIcon(node.staleness)}</span>
-          <span class="detail-name">${escapeHtml(node.title)}</span>
-        </div>
-        <button class="tapestry-detail-close">&times;</button>
-      </div>
-      <div class="tapestry-detail-meta">
-        <span class="detail-status">${escapeHtml(node.status)}</span>
-        ${kindBadge}
-        ${datesHtml}
-        ${tagsHtml}
-        <span class="detail-meta-spacer"></span>
-        ${actionsHtml}
-      </div>
-      <div class="tapestry-detail-content">
-        ${graphHtml}
-        ${outcomeHtml}
-        ${artifactsHtml}
-        ${bodyHtml}
-        ${evidenceHtml}
-      </div>
-    `
-
-    this.fiberListEl.classList.add('hidden')
-    this.detailPanel.classList.remove('hidden')
-    this.panel.querySelector('.tapestry-sidebar')?.classList.add('expanded')
-
-    // Highlight code blocks and interpolate config values in body
-    const bodyContainer = this.detailPanel.querySelector('.tapestry-detail-body')
-    if (bodyContainer && node.body) this.renderDetailBody(bodyContainer as HTMLElement, node.body)
-
-    // Bind detail panel events
-    this.bindDetailEvents(node)
-  }
-
-  private bindDetailEvents(node: TapestryNode): void {
-    // Remove stale detail-owned handlers from previous node selection.
-    this.cleanupDetailBindings()
-
-    // Close button
-    this.detailPanel.querySelector('.tapestry-detail-close')?.addEventListener('click', () => {
-      this.hideDetail()
-    })
-
-    // Meta row: Refresh
-    this.detailPanel.querySelector('.detail-action-refresh')?.addEventListener('click', () => {
-      this.refreshCurrentNode()
-    })
-
-    // Resize handle
-    const resizeHandle = this.detailPanel.querySelector('.tapestry-detail-resize')
-    if (resizeHandle) {
-      resizeHandle.addEventListener('mousedown', (e) => {
-        e.preventDefault()
-        const startX = (e as MouseEvent).clientX
-        const startWidth = this.detailWidth
-        const onMove = (ev: MouseEvent) => {
-          const newWidth = Math.max(DETAIL_MIN_WIDTH, Math.min(DETAIL_MAX_WIDTH, startWidth - (ev.clientX - startX)))
-          this.detailWidth = newWidth
-          this.detailPanel.style.width = `${newWidth}px`
-        }
-        const onUp = () => {
-          document.removeEventListener('mousemove', onMove)
-          document.removeEventListener('mouseup', onUp)
-        }
-        document.addEventListener('mousemove', onMove)
-        document.addEventListener('mouseup', onUp)
-      })
-    }
-
-    // Collapsible sections
-    this.detailPanel.querySelectorAll('.tapestry-collapsible').forEach(h3 => {
-      h3.addEventListener('click', () => {
-        const target = h3.getAttribute('data-target')
-        if (!target) return
-        const container = this.detailPanel.querySelector(`.${target}`)
-        const icon = h3.querySelector('.toggle-icon')
-        if (container && icon) {
-          const isCollapsed = container.classList.toggle('collapsed')
-          icon.textContent = isCollapsed ? '\u25B8' : '\u25BE'
-        }
-      })
-    })
-
-    // Artifact navigation (click + keyboard) — delegate to gallery util
-    if (node.evidence?.artifacts && Object.keys(node.evidence.artifacts).length > 0) {
-      const gallery = renderArtifactGallery(node.evidence.artifacts, (path) => this.artifactUrl(node.specName || '', path))
-      gallery.attach(this.detailPanel)
-      this.galleryDetach = gallery.detach
-    }
-
-    // Artifact media click → lightbox (delegated so it survives carousel re-renders)
-    this.artifactClickHandler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      const media = target.closest('.tapestry-artifact img, .tapestry-artifact iframe, .tapestry-artifact .artifact-open-overlay') as HTMLElement | null
-      if (!media) return
-      e.preventDefault()
-      e.stopPropagation()
-      this.lightbox.open(media, node)
-    }
-    this.detailPanel.addEventListener('click', this.artifactClickHandler)
-
-    // Dependency tag click → navigate to node or open in file viewer
-    this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
-      tag.addEventListener('click', () => {
-        const depId = (tag as HTMLElement).dataset.depId
-        if (!depId) return
-        this.navigateToFiber(depId)
-      })
-    })
-
-    // Link click → navigate in DAG, open in file viewer, or open external URL
-    // Attached to content container so links in body, outcome, and graph all work
-    const contentEl = this.detailPanel.querySelector('.tapestry-detail-content')
-    if (contentEl) {
-      contentEl.addEventListener('click', (e) => {
-        const link = (e.target as HTMLElement).closest('a')
-        if (!link) return
-        e.preventDefault()
-        const href = link.getAttribute('href') || ''
-        // External URLs open normally
-        if (/^https?:\/\//.test(href)) {
-          window.open(href, '_blank', 'noopener')
-          return
-        }
-        // Check if it's a fiber (DAG node or sidebar fiber)
-        const fiberId = this.extractFiberId(href)
-        if (fiberId) {
-          const dagNode = this.tapestryData?.nodes.find(n => n.id === fiberId)
-          if (dagNode) { this.selectNode(fiberId); return }
-          const sidebarFiber = this.tapestryData?.fibers?.find(f => f.id === fiberId)
-          if (sidebarFiber) { this.selectFiber(fiberId); return }
-        }
-        // In static mode, open exported files in viewer
-        if (this.staticMode) {
-          this.staticFileModal?.open(href)
-          return
-        }
-        // Everything else (file paths, fiber files) → file viewer
-        this.openFileFromLink(href)
-      })
-    }
-
-    // Double-click body → swap to CodeMirror editor
-    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
-    if (bodyEl) {
-      bodyEl.addEventListener('dblclick', (e) => {
-        // Don't trigger on links or code blocks
-        if ((e.target as HTMLElement).closest('a, pre, code')) return
-        if (this.staticMode) return
-        this.enterBodyEditMode(node)
-      })
-    }
   }
 
   private clearPreloadCache(): void {
@@ -1887,23 +1638,6 @@ export class TapestryView {
     }
   }
 
-  /** Replace the action portion of the meta row (after the spacer) and bind handlers. */
-  private setMetaActions(html: string, handlers: Record<string, () => void>): void {
-    const metaEl = this.detailPanel.querySelector('.tapestry-detail-meta')
-    if (!metaEl) return
-
-    // Remove existing action spans (everything after the spacer)
-    const spacer = metaEl.querySelector('.detail-meta-spacer')
-    if (spacer) {
-      while (spacer.nextElementSibling) spacer.nextElementSibling.remove()
-      spacer.insertAdjacentHTML('afterend', html)
-    }
-
-    for (const [selector, handler] of Object.entries(handlers)) {
-      metaEl.querySelector(selector)?.addEventListener('click', handler)
-    }
-  }
-
   // ── Inline markdown editing ──────────────────────────────────────────
 
   private renderDetailBody(container: HTMLElement, body: string): void {
@@ -1918,20 +1652,11 @@ export class TapestryView {
 
   private enterBodyEditMode(node: TapestryNode): void {
     if (!node.body || !this.currentCity) return
-    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
+    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body') as HTMLElement | null
     if (!bodyEl) return
 
-    // Swap meta actions to Save/Discard
-    this.setMetaActions(`
-      <span class="action primary detail-action-save">Save</span>
-      <span class="action detail-action-discard">Discard</span>
-    `, {
-      '.detail-action-save': () => this.saveBodyAndExit(node),
-      '.detail-action-discard': () => this.exitBodyEditMode(node),
-    })
-
     this.detailBody.enterEditMode({
-      container: bodyEl as HTMLElement,
+      container: bodyEl,
       node,
       city: this.currentCity,
       onSave: () => { void this.saveBodyAndExit(node) },
@@ -1949,28 +1674,14 @@ export class TapestryView {
 
   private exitBodyEditMode(node: TapestryNode): void {
     this.detailBody.destroy()
-
-    // Restore meta actions to default (Refresh)
-    this.setMetaActions(
-      `<span class="action detail-action-refresh" title="Re-fetch tapestry data">\u21BB</span>`,
-      { '.detail-action-refresh': () => this.refreshCurrentNode() },
-    )
-
-    const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
-    if (bodyEl) {
-      this.renderDetailBody(bodyEl as HTMLElement, node.body)
-    }
+    this.detailPanelController.exitBodyEditMode(node)
   }
 
   private hideDetail(skipVisibilityUpdate = false): void {
     this.cleanupDetailBindings()
     this.lightbox.close()
     this.detailBody.destroy()
-    this.detailPanel.classList.add('hidden')
-    this.fiberListEl.classList.remove('hidden')
-    const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement
-    sidebar?.classList.remove('expanded')
-    sidebar?.style.removeProperty('width')
+    this.detailPanelController.hide()
     this.selectedNodeId = null
     this.pushHash(null)
     if (!this.staticMode) this.annotations.hidePanel()
@@ -2020,16 +1731,6 @@ export class TapestryView {
     if (!this.onOpenFile || !this.currentCity) return
     const path = href.startsWith('/') ? href : `${this.currentCity.path}/${href}`
     this.onOpenFile(path, this.currentCity, line)
-  }
-
-  /** Extract a fiber ID from a link href (e.g. ".felt/some-fiber-id.md" or just "some-fiber-id"). */
-  private extractFiberId(href: string): string | null {
-    // Match .felt/<fiber-id>.md paths
-    const feltMatch = href.match(/\.felt\/([^/]+)\.md$/)
-    if (feltMatch) return feltMatch[1]
-    // Match bare fiber IDs (slug-with-8hex pattern)
-    if (/^[\w-]+-[0-9a-f]{8}$/.test(href)) return href
-    return null
   }
 
   /**
@@ -2121,79 +1822,10 @@ export class TapestryView {
 
   /** Show detail panel for a non-DAG fiber. */
   private selectFiber(fiberId: string): void {
-    if (!this.tapestryData?.fibers) return
-    const fiber = this.tapestryData.fibers.find(f => f.id === fiberId)
-    if (!fiber) return
-
     this.selectedNodeId = fiberId
     this.pushHash(fiberId)
     this.detailBody.destroy()
-
-    const mdOpts = this.currentCity
-      ? { basePath: `${this.currentCity.path}/.felt`, originId: this.currentCity.originId }
-      : undefined
-    const bodyHtml = fiber.body
-      ? '<div class="tapestry-detail-body"></div>'
-      : ''
-
-    // Upstream tags
-    const upstreamTags = fiber.dependsOn.map(dep => {
-      const depFiber = this.tapestryData!.fibers?.find(f => f.id === dep)
-      return `<span class="dep-tag" data-dep-id="${escapeHtml(dep)}">${escapeHtml(depFiber ? shortName(depFiber.title) : dep.slice(0, 12))}</span>`
-    }).join('')
-
-    const graphHtml = upstreamTags
-      ? `<div class="tapestry-detail-graph"><div class="dep-row"><span class="dep-dir-label">upstream</span>${upstreamTags}</div></div>`
-      : ''
-
-    const outcomeHtml = fiber.outcome
-      ? `<div class="tapestry-detail-outcome"><span class="outcome-label">Outcome</span> ${renderMarkdown(fiber.outcome, mdOpts)}</div>`
-      : ''
-
-    // Tags
-    const displayTags = (fiber.tags || []).filter(t => !t.startsWith('tapestry:'))
-    const tagsHtml = displayTags.length > 0
-      ? `<div class="tapestry-detail-tags">${displayTags.map(t => `<span class="fiber-tag">${escapeHtml(t)}</span>`).join('')}</div>`
-      : ''
-
-    const kindBadge = fiber.kind !== 'task' ? `<span class="kind-badge">${escapeHtml(fiber.kind)}</span>` : ''
-
-    this.detailPanel.innerHTML = `
-      <div class="tapestry-detail-header">
-        <div class="tapestry-detail-title">
-          <span class="staleness-badge">${statusIcon(fiber.status)}</span>
-          <span class="detail-name">${escapeHtml(fiber.title)}</span>
-        </div>
-        <button class="tapestry-detail-close">&times;</button>
-      </div>
-      <div class="tapestry-detail-meta">
-        <span class="detail-status">${escapeHtml(fiber.status)}</span>
-        ${kindBadge}
-        ${tagsHtml}
-      </div>
-      <div class="tapestry-detail-content">
-        ${graphHtml}
-        ${outcomeHtml}
-        ${bodyHtml}
-      </div>
-    `
-
-    this.fiberListEl.classList.add('hidden')
-    this.detailPanel.classList.remove('hidden')
-    this.panel.querySelector('.tapestry-sidebar')?.classList.add('expanded')
-
-    // Highlight code blocks
-    const bodyContainer = this.detailPanel.querySelector('.tapestry-detail-body')
-    if (bodyContainer && fiber.body) this.renderDetailBody(bodyContainer as HTMLElement, fiber.body)
-
-    // Bind events
-    this.detailPanel.querySelector('.tapestry-detail-close')?.addEventListener('click', () => this.hideDetail())
-    this.detailPanel.querySelectorAll('.dep-tag').forEach(tag => {
-      tag.addEventListener('click', () => {
-        const depId = (tag as HTMLElement).dataset.depId
-        if (depId) this.navigateToFiber(depId)
-      })
-    })
+    this.detailPanelController.renderFiber(fiberId)
   }
 
   // ── Search ─────────────────────────────────────────────────────────
