@@ -3,8 +3,8 @@
 
 import { marked } from 'marked'
 // CodeMirror imports
-import { EditorState, type Extension, StateField, StateEffect } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine, Decoration, type DecorationSet } from '@codemirror/view'
+import { EditorState, type Extension } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
@@ -16,9 +16,14 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim, Vim } from '@replit/codemirror-vim'
-import { escapeHtml, showToast, renderMarkdown, interpolateConfig, STALENESS_COLORS, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
-import { type WorkerInfo } from './WorkerPicker'
+import { escapeHtml, renderMarkdown, interpolateConfig, STALENESS_COLORS, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
 import { AnnotationPanel } from './AnnotationPanel'
+import { type WorkerInfo } from './WorkerPicker'
+import {
+  type Annotation,
+  FileViewerAnnotations,
+  fileViewerAnnotationHighlightField,
+} from './FileViewerAnnotations'
 
 // Configure marked for GFM (tables, task lists, etc.)
 marked.setOptions({
@@ -39,27 +44,6 @@ interface FileContent {
   type?: 'text' | 'image'
   url?: string  // For images
 }
-
-// Annotation type from server
-export interface Annotation {
-  id: string
-  filePath: string
-  originId: string
-  from: number
-  to: number
-  line?: number    // line number at 'from' (1-indexed)
-  endLine?: number // line number at 'to' (1-indexed)
-  originalText: string
-  contextBefore: string
-  contextAfter: string
-  comment: string
-  createdAt: number
-  // Image annotation fields (optional)
-  x?: number  // percentage 0-100
-  y?: number  // percentage 0-100
-  isImageAnnotation?: boolean
-}
-
 
 // Image file extensions
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'])
@@ -134,41 +118,6 @@ const porchMorningTheme = EditorView.theme({
   },
 }, { dark: false })
 
-// CodeMirror effect and field for annotation highlights
-const setAnnotationsEffect = StateEffect.define<Annotation[]>()
-
-const annotationMark = Decoration.mark({ class: 'cm-annotation-highlight' })
-
-const annotationHighlightField = StateField.define<DecorationSet>({
-  create() {
-    return Decoration.none
-  },
-  update(decorations, tr) {
-    decorations = decorations.map(tr.changes)
-    for (const e of tr.effects) {
-      if (e.is(setAnnotationsEffect)) {
-        const annotations = e.value
-        const marks: { from: number; to: number }[] = []
-        for (const ann of annotations) {
-          // Clamp to document bounds
-          const from = Math.max(0, Math.min(ann.from, tr.state.doc.length))
-          const to = Math.max(from, Math.min(ann.to, tr.state.doc.length))
-          if (from < to) {
-            marks.push({ from, to })
-          }
-        }
-        // Sort and create decorations
-        marks.sort((a, b) => a.from - b.from)
-        decorations = Decoration.set(
-          marks.map(m => annotationMark.range(m.from, m.to))
-        )
-      }
-    }
-    return decorations
-  },
-  provide: f => EditorView.decorations.from(f),
-})
-
 export class FileViewerModal {
   private backdrop: HTMLElement
   private modal: HTMLElement
@@ -185,9 +134,8 @@ export class FileViewerModal {
   private contentWrapper: HTMLElement
   private contentEl: HTMLElement
   private annotationsPanelEl: HTMLElement
-  private annotationPanel: AnnotationPanel<Annotation>
+  private annotations: FileViewerAnnotations
   private modeLineEl: HTMLElement
-  private selectionToolbar: HTMLElement | null = null
   private currentContent: FileContent | null = null
   private currentPath: string = ''
   private currentOriginId: string = 'local'
@@ -196,13 +144,7 @@ export class FileViewerModal {
   private editorView: EditorView | null = null
   private isDirty: boolean = false
   private originalContent: string = ''
-
-  // Annotation state
-  private annotations: Annotation[] = []
-  private globalComment: string = ''
   private sourceWorkerId: string | null = null
-  private cityWorkers: WorkerInfo[] = []
-  private onGetWorkers: ((originId: string, path: string) => Promise<WorkerInfo[]>) | null = null
 
   // Navigation state for cycling through files with Up/Down
   private navigationFiles: string[] = []
@@ -224,10 +166,6 @@ export class FileViewerModal {
   private activeShowAbortController: AbortController | null = null
   private renderedMarkdownRequestId: number = 0
   private renderedMarkdownAbortController: AbortController | null = null
-
-  // Image annotation popover cleanup (outside click + deferred attach)
-  private imageAnnotationOutsideClickHandler: ((e: MouseEvent) => void) | null = null
-  private imageAnnotationOutsideClickTimer: number | null = null
   private deferredUiTimers = new Set<number>()
 
   constructor() {
@@ -247,46 +185,21 @@ export class FileViewerModal {
     this.annotationsPanelEl = this.modal.querySelector('.file-viewer-annotations')!
     this.modeLineEl = this.modal.querySelector('.file-viewer-modeline')!
 
-    this.annotationPanel = new AnnotationPanel<Annotation>(this.annotationsPanelEl, {
-      cssPrefix: 'file-viewer',
-      emptyMessage: 'No annotations yet. Select text to add one.',
-
-      renderPreview: (ann, index) => {
-        if (ann.isImageAnnotation) {
-          return `<span class="annotation-line">#${index + 1}</span> <em style="color: var(--text-muted);">[Image point]</em>`
-        }
-        let locationInfo = ''
-        if (ann.line) {
-          const lineRange = ann.endLine && ann.endLine !== ann.line
-            ? `L${ann.line}-${ann.endLine}`
-            : `L${ann.line}`
-          locationInfo = `<span class="annotation-line">${lineRange}</span> `
-        }
-        const truncated = ann.originalText.length > 50
-          ? ann.originalText.slice(0, 50) + '...'
-          : ann.originalText
-        return `${locationInfo}"${escapeHtml(truncated)}"`
-      },
-
-      onGoto: (ann) => this.gotoAnnotation(ann),
-
-      onRefresh: async () => {
-        await this.reloadAnnotations()
-      },
-
-      buildLoadQuery: () => {
-        if (!this.currentPath) return ''
-        return `path=${encodeURIComponent(this.currentPath)}&originId=${encodeURIComponent(this.currentOriginId)}`
-      },
-
-      getWorkers: () => this.cityWorkers,
-
-      onSendToWorker: (annotations, workerId, createNew) =>
-        this.sendAnnotationsToWorker(annotations, workerId, createNew),
-
-      globalCommentPlaceholder: 'Add summary or overall context...',
-      globalCommentLabel: 'Overall feedback:',
-      hideFooter: true,
+    this.annotations = new FileViewerAnnotations(this.annotationsPanelEl, {
+      modalEl: this.modal,
+      contentEl: this.contentEl,
+      sendBtn: this.sendBtn,
+      fiberBtn: this.fiberBtn,
+      getState: () => ({
+        currentPath: this.currentPath,
+        currentOriginId: this.currentOriginId,
+        currentCityPath: this.currentCityPath,
+        sourceWorkerId: this.sourceWorkerId,
+        originalContent: this.originalContent,
+        editorView: this.editorView,
+        isVisible: this.isVisible(),
+      }),
+      scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
     })
 
     this.setupEventListeners()
@@ -357,19 +270,6 @@ export class FileViewerModal {
     // Save button
     this.saveBtn.addEventListener('click', () => this.saveFile())
 
-    // Send to worker button
-    this.sendBtn.addEventListener('click', () => this.showWorkerPicker())
-
-    // File as fiber button
-    this.fiberBtn.addEventListener('click', () => this.fileAsFiber())
-
-    // Global comment textarea - track changes for send button visibility
-    const globalCommentTextarea = this.annotationsPanelEl.querySelector('.ann-panel-global-input textarea') as HTMLTextAreaElement
-    globalCommentTextarea?.addEventListener('input', () => {
-      this.globalComment = globalCommentTextarea.value
-      this.updateSendButton()
-    })
-
     // Document-level handlers are attached in show(), detached in hide()
     // This prevents HMR stacking where old listeners accumulate across hot reloads
   }
@@ -384,8 +284,8 @@ export class FileViewerModal {
       if (e.key !== 'Escape' || !this.modal.classList.contains('visible')) return
 
       // Hide selection toolbar first
-      if (this.selectionToolbar) {
-        this.hideSelectionToolbar()
+      if (this.annotations.hasSelectionToolbar()) {
+        this.annotations.hideSelectionToolbar()
         e.stopPropagation()
         return
       }
@@ -544,17 +444,6 @@ export class FileViewerModal {
     this.deferredUiTimers.clear()
   }
 
-  private clearImageAnnotationOutsideClick(): void {
-    if (this.imageAnnotationOutsideClickTimer !== null) {
-      window.clearTimeout(this.imageAnnotationOutsideClickTimer)
-      this.imageAnnotationOutsideClickTimer = null
-    }
-    if (this.imageAnnotationOutsideClickHandler) {
-      document.removeEventListener('click', this.imageAnnotationOutsideClickHandler)
-      this.imageAnnotationOutsideClickHandler = null
-    }
-  }
-
   private navigateToFile(index: number): void {
     if (index < 0 || index >= this.navigationFiles.length) return
     if (this.isDirty) {
@@ -603,7 +492,7 @@ export class FileViewerModal {
    * Set callback for getting workers in a city
    */
   setOnGetWorkers(fn: (originId: string, path: string) => Promise<WorkerInfo[]>): void {
-    this.onGetWorkers = fn
+    this.annotations.setOnGetWorkers(fn)
   }
 
   async show(
@@ -636,9 +525,6 @@ export class FileViewerModal {
     this.currentCityPath = cityPath || ''
     this.currentCityId = cityId || ''
     this.sourceWorkerId = sourceWorkerId || null
-    this.annotations = []
-    this.globalComment = ''
-    this.cityWorkers = []
 
     // Set navigation context for Up/Down arrow navigation
     if (navigationContext) {
@@ -655,7 +541,7 @@ export class FileViewerModal {
     this.markdownRendered = false
 
     // Reset annotation panel
-    this.annotationPanel.reset()
+    this.annotations.reset()
 
     // Destroy any existing editor
     if (this.editorView) {
@@ -664,7 +550,7 @@ export class FileViewerModal {
     }
 
     // Hide selection toolbar
-    this.hideSelectionToolbar()
+    this.annotations.hideSelectionToolbar()
 
     // Show modal
     this.backdrop.classList.add('visible')
@@ -714,7 +600,9 @@ export class FileViewerModal {
       if (annotationsResponse.ok) {
         const annotationsData = await annotationsResponse.json()
         if (!this.isShowRequestActive(requestId)) return
-        this.annotations = annotationsData.annotations || []
+        this.annotations.setAnnotations(annotationsData.annotations || [])
+      } else {
+        this.annotations.setAnnotations([])
       }
 
       // Update UI
@@ -723,9 +611,6 @@ export class FileViewerModal {
       this.saveBtn.style.display = 'inline-block'
       this.copyBtn.style.display = 'inline-block'
       this.downloadBtn.style.display = 'inline-block'
-
-      // Show send button if we have annotations
-      this.updateSendButton()
 
       // Markdown files: render by default, double-click to edit
       const isMarkdown = data.language === 'markdown' || /\.(md|markdown)$/i.test(filePath)
@@ -739,9 +624,6 @@ export class FileViewerModal {
           this.scrollToLine(jumpToLine)
         }
       }
-
-      // Update annotation panel
-      this.annotationPanel.setAnnotations(this.annotations)
     } catch (error: any) {
       if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
         return
@@ -848,11 +730,9 @@ export class FileViewerModal {
       const [annotations] = await Promise.all([annotationsPromise, imageLoadPromise])
       if (!this.isShowRequestActive(requestId)) return
 
-      this.annotations = annotations
-      this.setupImageAnnotation(container, img)
-      this.renderImageAnnotationMarkers(container)
-      this.updateSendButton()
-      this.annotationPanel.setAnnotations(this.annotations)
+      this.annotations.setAnnotations(annotations)
+      this.annotations.setupImageAnnotation(container, img)
+      this.annotations.renderImageAnnotationMarkers(container)
     } catch (error: any) {
       if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
         return
@@ -860,194 +740,6 @@ export class FileViewerModal {
       this.langEl.textContent = 'error'
       this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
     }
-  }
-
-  private setupImageAnnotation(container: HTMLElement, img: HTMLImageElement): void {
-    // Click handler for creating annotations
-    img.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-
-      // Calculate position as percentage of image dimensions
-      const rect = img.getBoundingClientRect()
-      const x = ((e.clientX - rect.left) / rect.width) * 100
-      const y = ((e.clientY - rect.top) / rect.height) * 100
-
-      // Show annotation input at click position
-      this.showImageAnnotationInput(container, x, y, e.clientX, e.clientY)
-    })
-
-    // Change cursor to indicate clickable
-    img.style.cursor = 'crosshair'
-  }
-
-  private showImageAnnotationInput(container: HTMLElement, x: number, y: number, screenX: number, screenY: number): void {
-    // Remove any existing input
-    const existing = container.querySelector('.image-annotation-input-wrapper')
-    if (existing) existing.remove()
-    this.clearImageAnnotationOutsideClick()
-
-    // Create input wrapper
-    const wrapper = document.createElement('div')
-    wrapper.className = 'image-annotation-input-wrapper'
-    wrapper.style.position = 'fixed'
-    wrapper.style.left = `${screenX + 10}px`
-    wrapper.style.top = `${screenY + 10}px`
-    wrapper.style.zIndex = '10001'
-    wrapper.innerHTML = `
-      <div class="image-annotation-input">
-        <div class="image-annotation-marker-preview" style="background: var(--gold); width: 12px; height: 12px; border-radius: 50%; margin-bottom: 8px;"></div>
-        <textarea class="annotation-input" placeholder="Add annotation..." rows="2"></textarea>
-        <div class="annotation-input-actions">
-          <button class="annotation-save-btn">Save</button>
-          <button class="annotation-cancel-btn">Cancel</button>
-        </div>
-      </div>
-    `
-
-    document.body.appendChild(wrapper)
-
-    const textarea = wrapper.querySelector('.annotation-input') as HTMLTextAreaElement
-    const saveBtn = wrapper.querySelector('.annotation-save-btn')!
-    const cancelBtn = wrapper.querySelector('.annotation-cancel-btn')!
-
-    // Focus input
-    setTimeout(() => textarea.focus(), 0)
-
-    // Save handler
-    const save = async () => {
-      const comment = textarea.value.trim()
-      if (!comment) return
-
-      await this.saveImageAnnotation(x, y, comment)
-      wrapper.remove()
-      this.clearImageAnnotationOutsideClick()
-      this.renderImageAnnotationMarkers(container)
-    }
-
-    // Cancel handler
-    const cancel = () => {
-      wrapper.remove()
-      this.clearImageAnnotationOutsideClick()
-    }
-
-    saveBtn.addEventListener('click', save)
-    cancelBtn.addEventListener('click', cancel)
-
-    textarea.addEventListener('keydown', (e) => {
-      e.stopPropagation()
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        save()
-      } else if (e.key === 'Escape') {
-        cancel()
-      }
-    })
-
-    // Close if clicking outside
-    const closeOnClickOutside = (e: MouseEvent) => {
-      if (!wrapper.contains(e.target as Node)) {
-        wrapper.remove()
-        this.clearImageAnnotationOutsideClick()
-      }
-    }
-    this.imageAnnotationOutsideClickHandler = closeOnClickOutside
-    this.imageAnnotationOutsideClickTimer = window.setTimeout(() => {
-      this.imageAnnotationOutsideClickTimer = null
-      if (this.imageAnnotationOutsideClickHandler === closeOnClickOutside) {
-        document.addEventListener('click', closeOnClickOutside)
-      }
-    }, 0)
-  }
-
-  private async saveImageAnnotation(x: number, y: number, comment: string): Promise<void> {
-    if (!this.currentPath) return
-    const filePath = this.currentPath
-    const originId = this.currentOriginId
-
-    try {
-      const response = await fetch(`${API_BASE}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath,
-          originId,
-          from: 0,
-          to: 0,
-          originalText: `[Image point at ${x.toFixed(1)}%, ${y.toFixed(1)}%]`,
-          contextBefore: '',
-          contextAfter: '',
-          comment,
-          x,
-          y,
-          isImageAnnotation: true,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to save annotation')
-      }
-
-      const data = await response.json()
-      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
-      this.annotations.push(data.annotation)
-
-      // Update panel and buttons
-      this.annotationPanel.setAnnotations(this.annotations)
-      this.updateSendButton()
-    } catch (error: any) {
-      console.error('Failed to save image annotation:', error)
-      alert(`Failed to save annotation: ${error.message}`)
-    }
-  }
-
-  private renderImageAnnotationMarkers(container: HTMLElement): void {
-    // Remove existing markers
-    container.querySelectorAll('.image-annotation-marker').forEach(m => m.remove())
-
-    const img = container.querySelector('img')
-    if (!img) return
-
-    // Add markers for each image annotation
-    this.annotations.forEach((ann, index) => {
-      if (ann.isImageAnnotation && ann.x !== undefined && ann.y !== undefined) {
-        const marker = document.createElement('div')
-        marker.className = 'image-annotation-marker'
-        marker.style.position = 'absolute'
-        marker.style.left = `${ann.x}%`
-        marker.style.top = `${ann.y}%`
-        marker.style.transform = 'translate(-50%, -50%)'
-        marker.style.width = '24px'
-        marker.style.height = '24px'
-        marker.style.borderRadius = '50%'
-        marker.style.backgroundColor = 'var(--gold)'
-        marker.style.border = '2px solid var(--bg-elevated)'
-        marker.style.cursor = 'pointer'
-        marker.style.display = 'flex'
-        marker.style.alignItems = 'center'
-        marker.style.justifyContent = 'center'
-        marker.style.fontSize = '12px'
-        marker.style.fontWeight = 'bold'
-        marker.style.color = 'var(--bg-card)'
-        marker.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)'
-        marker.textContent = String(index + 1)
-        marker.title = ann.comment
-
-        // Click to scroll to annotation in panel
-        marker.addEventListener('click', (e) => {
-          e.stopPropagation()
-          const annItem = this.annotationsPanelEl.querySelector(`[data-annotation-id="${ann.id}"]`)
-          if (annItem) {
-            annItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            annItem.classList.add('highlight')
-            this.scheduleDeferredUiTask(() => annItem.classList.remove('highlight'), 1500)
-          }
-        })
-
-        container.appendChild(marker)
-      }
-    })
   }
 
   private async showPdf(filePath: string, originId: string, requestId: number, signal: AbortSignal): Promise<void> {
@@ -1098,7 +790,7 @@ export class FileViewerModal {
         ...completionKeymap,
       ]),
       porchMorningTheme,
-      annotationHighlightField,
+      fileViewerAnnotationHighlightField,
       // Track changes for dirty state and selection
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -1114,7 +806,7 @@ export class FileViewerModal {
 
         // Handle selection changes for toolbar
         if (update.selectionSet) {
-          this.handleSelectionChange(update.state)
+          this.annotations.handleEditorSelection(update.state)
         }
       }),
     ]
@@ -1136,7 +828,7 @@ export class FileViewerModal {
     })
 
     // Apply annotation highlights
-    this.updateAnnotationHighlights()
+    this.annotations.updateAnnotationHighlights()
 
     // Update mode line
     this.updateModeLine(state)
@@ -1238,10 +930,10 @@ export class FileViewerModal {
         if (dblClickPending) { dblClickPending = false; return }
         const sel = window.getSelection()
         if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-          this.hideSelectionToolbar()
+          this.annotations.hideSelectionToolbar()
           return
         }
-        this.handleRenderedSelection(sel)
+        this.annotations.handleRenderedSelection(sel)
       }, 200)
     })
   }
@@ -1463,122 +1155,6 @@ export class FileViewerModal {
     `
   }
 
-  /**
-   * Handle text selection in rendered markdown view.
-   * Maps the selected text to character offsets in the raw markdown source.
-   */
-  private handleRenderedSelection(sel: Selection): void {
-    const selectedText = sel.toString().trim()
-    if (!selectedText || !this.originalContent) return
-
-    const rawContent = this.originalContent
-
-    // Try exact match first
-    const idx = rawContent.indexOf(selectedText)
-    if (idx !== -1) {
-      this.showRenderedSelectionToolbar(sel, idx, idx + selectedText.length, selectedText)
-      return
-    }
-
-    // Fuzzy match: normalize all whitespace (newlines, double newlines, etc.)
-    // Extract only alphanumeric+punctuation "skeleton" for matching
-    const normalize = (s: string) => s.replace(/\s+/g, '\x00')
-    const normSelected = normalize(selectedText)
-    const normRaw = normalize(rawContent)
-
-    const fIdx = normRaw.indexOf(normSelected)
-    if (fIdx !== -1) {
-      // Map back to raw offsets: count actual characters consumed
-      let rawFrom = 0, consumed = 0
-      while (consumed < fIdx && rawFrom < rawContent.length) {
-        const rc = rawContent[rawFrom]
-        const nc = normRaw[consumed]
-        if (/\s/.test(rc) && nc === '\x00') {
-          // Skip entire whitespace run in raw
-          while (rawFrom < rawContent.length && /\s/.test(rawContent[rawFrom])) rawFrom++
-          consumed++
-        } else {
-          rawFrom++
-          consumed++
-        }
-      }
-      const from = rawFrom
-
-      // Now advance through the matched portion
-      let matchConsumed = 0
-      while (matchConsumed < normSelected.length && rawFrom < rawContent.length) {
-        const rc = rawContent[rawFrom]
-        const nc = normSelected[matchConsumed]
-        if (/\s/.test(rc) && nc === '\x00') {
-          while (rawFrom < rawContent.length && /\s/.test(rawContent[rawFrom])) rawFrom++
-          matchConsumed++
-        } else {
-          rawFrom++
-          matchConsumed++
-        }
-      }
-
-      this.showRenderedSelectionToolbar(sel, from, rawFrom, selectedText)
-      return
-    }
-
-    // Last resort: use character offsets 0,0 — still allow annotation with selected text
-    this.showRenderedSelectionToolbar(sel, 0, 0, selectedText)
-  }
-
-  /**
-   * Show the selection toolbar positioned relative to a browser Selection in rendered markdown.
-   */
-  private showRenderedSelectionToolbar(sel: Selection, from: number, to: number, selectedText: string): void {
-    const range = sel.getRangeAt(0)
-    const rect = range.getBoundingClientRect()
-    const modalRect = this.modal.getBoundingClientRect()
-
-    // Remove existing toolbar
-    this.hideSelectionToolbar()
-
-    // Create toolbar (same markup as editor mode)
-    const toolbar = document.createElement('div')
-    toolbar.className = 'selection-toolbar'
-    toolbar.innerHTML = `
-      <button class="selection-toolbar-btn" data-action="comment" title="Add comment">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-        </svg>
-        Comment
-      </button>
-      <button class="selection-toolbar-btn" data-action="delete" title="Mark for deletion">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12" />
-        </svg>
-        Delete
-      </button>
-      <button class="selection-toolbar-btn selection-toolbar-close" title="Cancel">
-        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
-    `
-
-    toolbar.style.position = 'absolute'
-    toolbar.style.left = `${rect.left - modalRect.left}px`
-    toolbar.style.top = `${rect.top - modalRect.top - 40}px`
-
-    toolbar.querySelector('[data-action="comment"]')!.addEventListener('click', () => {
-      this.startAnnotationInput(from, to, selectedText)
-    })
-    toolbar.querySelector('[data-action="delete"]')!.addEventListener('click', () => {
-      this.saveAnnotation(from, to, selectedText, '[DELETE]')
-      this.hideSelectionToolbar()
-    })
-    toolbar.querySelector('.selection-toolbar-close')!.addEventListener('click', () => {
-      this.hideSelectionToolbar()
-    })
-
-    this.selectionToolbar = toolbar
-    this.modal.appendChild(toolbar)
-  }
-
   private enterFileEditMode(): void {
     if (!this.currentContent) return
     this.markdownRendered = false
@@ -1772,15 +1348,13 @@ export class FileViewerModal {
     this.cancelActiveShowRequest()
     this.cancelRenderedMarkdownRequest()
     this.clearDeferredUiTasks()
-    this.clearImageAnnotationOutsideClick()
+    this.annotations.dispose()
     this.backdrop.classList.remove('visible')
     this.modal.classList.remove('visible')
     this.currentContent = null
     this.isDirty = false
     this.pathEl.classList.remove('dirty')
-    this.annotations = []
     this.sourceWorkerId = null
-    this.hideSelectionToolbar()
 
     // Detach document-level handlers to prevent HMR stacking
     this.detachDocumentHandlers()
@@ -1814,6 +1388,7 @@ export class FileViewerModal {
     hasImageAnnotationOutsideClickHandler: boolean
     hasImageAnnotationOutsideClickTimer: boolean
   } {
+    const annotationStats = this.annotations.getRuntimeStats()
     return {
       visible: this.isVisible(),
       currentPath: this.currentPath || null,
@@ -1821,7 +1396,7 @@ export class FileViewerModal {
       hasEditorView: this.editorView !== null,
       isDirty: this.isDirty,
       markdownRendered: this.markdownRendered,
-      annotationCount: this.annotations.length,
+      annotationCount: annotationStats.annotationCount,
       navigationFileCount: this.navigationFiles.length,
       navigationIndex: this.navigationIndex,
       activeShowRequestId: this.activeShowRequestId,
@@ -1829,8 +1404,8 @@ export class FileViewerModal {
       renderedMarkdownRequestId: this.renderedMarkdownRequestId,
       hasRenderedMarkdownRequest: this.renderedMarkdownAbortController !== null,
       deferredUiTimerCount: this.deferredUiTimers.size,
-      hasImageAnnotationOutsideClickHandler: this.imageAnnotationOutsideClickHandler !== null,
-      hasImageAnnotationOutsideClickTimer: this.imageAnnotationOutsideClickTimer !== null,
+      hasImageAnnotationOutsideClickHandler: annotationStats.hasImageAnnotationOutsideClickHandler,
+      hasImageAnnotationOutsideClickTimer: annotationStats.hasImageAnnotationOutsideClickTimer,
     }
   }
 
@@ -1838,450 +1413,9 @@ export class FileViewerModal {
     this.hide()
     this.cancelRenderedMarkdownRequest()
     this.clearDeferredUiTasks()
+    this.annotations.dispose()
     this.backdrop.remove()
     this.modal.remove()
   }
 
-  // ============================================================================
-  // Selection Toolbar
-  // ============================================================================
-
-  private handleSelectionChange(state: EditorState): void {
-    const selection = state.selection.main
-
-    // Only show toolbar for non-empty selections
-    if (selection.empty) {
-      this.hideSelectionToolbar()
-      return
-    }
-
-    // Get selected text
-    const selectedText = state.doc.sliceString(selection.from, selection.to)
-    if (selectedText.trim().length === 0) {
-      this.hideSelectionToolbar()
-      return
-    }
-
-    // Show toolbar above selection
-    this.showSelectionToolbar(selection.from, selection.to, selectedText)
-  }
-
-  private showSelectionToolbar(from: number, to: number, selectedText: string): void {
-    // Get position for toolbar
-    if (!this.editorView) return
-
-    const coords = this.editorView.coordsAtPos(from)
-    if (!coords) return
-
-    // Remove existing toolbar
-    this.hideSelectionToolbar()
-
-    // Create toolbar
-    const toolbar = document.createElement('div')
-    toolbar.className = 'selection-toolbar'
-    toolbar.innerHTML = `
-      <button class="selection-toolbar-btn" data-action="comment" title="Add comment">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-        </svg>
-        Comment
-      </button>
-      <button class="selection-toolbar-btn" data-action="delete" title="Mark for deletion">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12" />
-        </svg>
-        Delete
-      </button>
-      <button class="selection-toolbar-btn selection-toolbar-close" title="Cancel">
-        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
-    `
-
-    // Position toolbar above selection
-    const modalRect = this.modal.getBoundingClientRect()
-    toolbar.style.position = 'absolute'
-    toolbar.style.left = `${coords.left - modalRect.left}px`
-    toolbar.style.top = `${coords.top - modalRect.top - 40}px`
-
-    // Event handlers
-    const commentBtn = toolbar.querySelector('[data-action="comment"]')!
-    commentBtn.addEventListener('click', () => {
-      this.startAnnotationInput(from, to, selectedText)
-    })
-
-    const deleteBtn = toolbar.querySelector('[data-action="delete"]')!
-    deleteBtn.addEventListener('click', () => {
-      this.saveAnnotation(from, to, selectedText, '[DELETE]')
-      this.hideSelectionToolbar()
-    })
-
-    const closeBtn = toolbar.querySelector('.selection-toolbar-close')!
-    closeBtn.addEventListener('click', () => {
-      this.hideSelectionToolbar()
-    })
-
-    // Store for cleanup
-    this.selectionToolbar = toolbar
-    this.modal.appendChild(toolbar)
-  }
-
-  private hideSelectionToolbar(): void {
-    if (this.selectionToolbar) {
-      this.selectionToolbar.remove()
-      this.selectionToolbar = null
-    }
-  }
-
-  private startAnnotationInput(from: number, to: number, selectedText: string): void {
-    if (!this.selectionToolbar) return
-
-    // Replace toolbar content with input
-    this.selectionToolbar.innerHTML = `
-      <textarea class="annotation-input" placeholder="Add a comment..." rows="2"></textarea>
-      <div class="annotation-input-actions">
-        <button class="annotation-save-btn">Save</button>
-        <button class="annotation-cancel-btn">Cancel</button>
-      </div>
-    `
-
-    const textarea = this.selectionToolbar.querySelector('.annotation-input') as HTMLTextAreaElement
-    const saveBtn = this.selectionToolbar.querySelector('.annotation-save-btn')!
-    const cancelBtn = this.selectionToolbar.querySelector('.annotation-cancel-btn')!
-
-    // Focus input
-    setTimeout(() => textarea.focus(), 0)
-
-    // Save handler
-    const save = async () => {
-      const comment = textarea.value.trim()
-      if (!comment) return
-
-      await this.saveAnnotation(from, to, selectedText, comment)
-      this.hideSelectionToolbar()
-    }
-
-    saveBtn.addEventListener('click', save)
-    cancelBtn.addEventListener('click', () => this.hideSelectionToolbar())
-
-    // Enter to save, Escape to cancel
-    // Stop propagation to prevent toolbar hotkeys (like 'c') from triggering
-    textarea.addEventListener('keydown', (e) => {
-      e.stopPropagation()
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        save()
-      } else if (e.key === 'Escape') {
-        this.hideSelectionToolbar()
-      }
-    })
-  }
-
-  private async saveAnnotation(from: number, to: number, selectedText: string, comment: string): Promise<void> {
-    if (!this.currentContent) return
-    const filePath = this.currentContent.path
-    const originId = this.currentOriginId
-
-    const content = this.editorView?.state.doc.toString() || this.originalContent
-
-    // Extract context for re-anchoring
-    const contextBefore = content.slice(Math.max(0, from - 20), from)
-    const contextAfter = content.slice(to, Math.min(content.length, to + 20))
-
-    // Calculate line numbers (1-indexed)
-    let line: number | undefined
-    let endLine: number | undefined
-    if (this.editorView) {
-      const startLineInfo = this.editorView.state.doc.lineAt(from)
-      const endLineInfo = this.editorView.state.doc.lineAt(to)
-      line = startLineInfo.number
-      endLine = endLineInfo.number
-    } else {
-      // Compute from raw content when in rendered mode
-      const before = content.slice(0, from)
-      line = (before.match(/\n/g) || []).length + 1
-      const beforeEnd = content.slice(0, to)
-      endLine = (beforeEnd.match(/\n/g) || []).length + 1
-    }
-
-    try {
-      const response = await fetch(`${API_BASE}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath,
-          originId,
-          from,
-          to,
-          line,
-          endLine,
-          originalText: selectedText,
-          contextBefore,
-          contextAfter,
-          comment,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to save annotation')
-      }
-
-      const data = await response.json()
-      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
-      this.annotations.push(data.annotation)
-
-      // Update highlights and panel
-      this.updateAnnotationHighlights()
-      this.annotationPanel.setAnnotations(this.annotations)
-      this.updateSendButton()
-    } catch (error: any) {
-      console.error('Failed to save annotation:', error)
-      alert(`Failed to save annotation: ${error.message}`)
-    }
-  }
-
-  private updateAnnotationHighlights(): void {
-    if (!this.editorView) return
-
-    this.editorView.dispatch({
-      effects: setAnnotationsEffect.of(this.annotations),
-    })
-  }
-
-  // ============================================================================
-  // Annotation Panel Callbacks
-  // ============================================================================
-
-  private gotoAnnotation(ann: Annotation): void {
-    if (ann.isImageAnnotation) {
-      // For image annotations, find and highlight the marker
-      const marker = this.contentEl.querySelector(`.image-annotation-marker[title="${ann.comment}"]`) as HTMLElement
-      if (marker) {
-        marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        // Pulse animation
-        marker.style.transform = 'translate(-50%, -50%) scale(1.5)'
-        this.scheduleDeferredUiTask(() => {
-          marker.style.transform = 'translate(-50%, -50%) scale(1)'
-        }, 300)
-      }
-    } else if (this.editorView) {
-      // For text annotations, scroll to position
-      this.editorView.dispatch({
-        selection: { anchor: ann.from, head: ann.to },
-        scrollIntoView: true,
-      })
-    }
-  }
-
-  private async reloadAnnotations(): Promise<void> {
-    if (!this.currentPath) return
-    const filePath = this.currentPath
-    const originId = this.currentOriginId
-
-    try {
-      const response = await fetch(
-        `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`
-      )
-      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
-      if (response.ok) {
-        const data = await response.json()
-        if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
-        this.annotations = data.annotations || []
-      } else {
-        this.annotations = []
-      }
-    } catch {
-      if (this.currentPath !== filePath || this.currentOriginId !== originId || !this.isVisible()) return
-      this.annotations = []
-    }
-
-    this.annotationPanel.setAnnotations(this.annotations)
-    this.updateAnnotationHighlights()
-    this.updateSendButton()
-  }
-
-  // ============================================================================
-  // Send to Worker
-  // ============================================================================
-
-  private updateSendButton(): void {
-    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
-    this.sendBtn.style.display = hasContent ? 'inline-block' : 'none'
-    this.fiberBtn.style.display = hasContent ? 'inline-block' : 'none'
-  }
-
-  private async showWorkerPicker(): Promise<void> {
-    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
-    if (!hasContent) return
-
-    // If we have a source worker, send directly (global comment is already tracked in state)
-    if (this.sourceWorkerId) {
-      await this.sendAnnotationsToWorker(this.annotations, this.sourceWorkerId)
-      return
-    }
-
-    // Otherwise, need to pick a worker
-    if (!this.currentPath) return
-
-    // Fetch workers for this city
-    if (this.onGetWorkers) {
-      try {
-        this.cityWorkers = await this.onGetWorkers(this.currentOriginId, this.currentPath)
-      } catch (e) {
-        console.error('Failed to get workers:', e)
-        this.cityWorkers = []
-      }
-    }
-
-    // The annotation panel's footer handles the worker picker for panel-initiated sends.
-    // This path is for the header "Send to Worker" button which includes globalComment.
-    const { showWorkerPicker } = await import('./WorkerPicker')
-    showWorkerPicker(this.cityWorkers, this.annotations.length, {
-      onSelectWorker: (workerId) => this.sendAnnotationsToWorker(this.annotations, workerId),
-      onNewWorker: () => this.sendAnnotationsToWorker(this.annotations, undefined, true),
-    })
-  }
-
-  private async sendAnnotationsToWorker(
-    annotations: Annotation[],
-    workerId?: string,
-    createNew?: boolean
-  ): Promise<void> {
-    const hasContent = annotations.length > 0 || this.globalComment.trim().length > 0
-    if (!this.currentPath || !hasContent) return
-
-    try {
-      const response = await fetch(`${API_BASE}/send-annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workerId,
-          createNewWorker: createNew,
-          filePath: this.currentPath,
-          originId: this.currentOriginId,
-          annotations,
-          globalComment: this.globalComment || undefined,
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to send annotations')
-      }
-
-      // Clear feedback after successful send
-      this.globalComment = ''
-      this.annotationPanel.resetGlobalInput()
-      this.updateSendButton()
-
-      // Show success feedback
-      if (createNew) {
-        this.sendBtn.textContent = 'Sent!'
-        this.sendBtn.removeAttribute('disabled')
-        this.scheduleDeferredUiTask(() => {
-          if (!this.modal.classList.contains('visible')) return
-          this.sendBtn.textContent = 'Send to Worker'
-        }, 2000)
-      } else {
-        const originalText = this.sendBtn.textContent
-        this.sendBtn.textContent = 'Sent!'
-        this.scheduleDeferredUiTask(() => {
-          if (!this.modal.classList.contains('visible')) return
-          this.sendBtn.textContent = originalText
-        }, 2000)
-      }
-    } catch (error: any) {
-      console.error('Failed to send annotations:', error)
-      this.sendBtn.textContent = 'Send to Worker'
-      this.sendBtn.removeAttribute('disabled')
-      alert(`Failed to send annotations: ${error.message}`)
-    }
-  }
-
-  // ============================================================================
-  // File as Fiber
-  // ============================================================================
-
-  private async fileAsFiber(): Promise<void> {
-    const hasContent = this.annotations.length > 0 || this.globalComment.trim().length > 0
-    if (!this.currentPath || !hasContent) return
-
-    // Get filename for title
-    const pathParts = this.currentPath.split('/')
-    const filename = pathParts[pathParts.length - 1]
-
-    // Format body
-    const bodyLines: string[] = []
-
-    if (this.globalComment) {
-      bodyLines.push(this.globalComment)
-      bodyLines.push('')
-    }
-
-    if (this.annotations.length > 0) {
-      bodyLines.push('## Annotations')
-      bodyLines.push('')
-
-      this.annotations.forEach((ann, i) => {
-        const lineRef = ann.line ? ` (L${ann.line})` : ''
-        const truncatedText = ann.originalText.length > 60
-          ? ann.originalText.slice(0, 57) + '...'
-          : ann.originalText
-        bodyLines.push(`${i + 1}.${lineRef} **"${truncatedText.replace(/\n/g, ' ')}"**`)
-        bodyLines.push(`   > ${ann.comment}`)
-        bodyLines.push('')
-      })
-    }
-
-    const body = bodyLines.join('\n')
-    const title = `Feedback on ${filename}`
-
-    try {
-      this.fiberBtn.textContent = 'Filing...'
-      this.fiberBtn.setAttribute('disabled', 'true')
-
-      const response = await fetch(`${API_BASE}/file-as-fiber`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: this.currentPath,
-          originId: this.currentOriginId,
-          cityPath: this.currentCityPath,
-          title,
-          body,
-          kind: 'task',
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to file as fiber')
-      }
-
-      const result = await response.json()
-
-      // Clear feedback after successful filing
-      this.globalComment = ''
-      this.annotationPanel.resetGlobalInput()
-      this.updateSendButton()
-
-      // Show success feedback
-      this.fiberBtn.textContent = 'Filed!'
-      this.fiberBtn.removeAttribute('disabled')
-      this.scheduleDeferredUiTask(() => {
-        if (!this.modal.classList.contains('visible')) return
-        this.fiberBtn.textContent = 'File as Fiber'
-      }, 2000)
-
-      // Show toast notification
-      showToast(`Filed as fiber: ${result.fiberId}`, 'success', 4000)
-    } catch (error: any) {
-      console.error('Failed to file as fiber:', error)
-      this.fiberBtn.textContent = 'File as Fiber'
-      this.fiberBtn.removeAttribute('disabled')
-      alert(`Failed to file as fiber: ${error.message}`)
-    }
-  }
 }
