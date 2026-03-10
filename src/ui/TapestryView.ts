@@ -10,10 +10,11 @@ import type { City } from '../state/types'
 import { escapeHtml, renderMarkdown, interpolateConfig, showToast, formatFiberDate, renderArtifactGallery } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 import { AnnotationPanel } from './AnnotationPanel'
-import type { TapestryNode, TapestryFiber, TapestryResponse, SimNode, SimLink, SVGPathSelection, EdgeDatum, ClaimsAnnotation } from './tapestry-types'
+import type { TapestryNode, TapestryFiber, TapestryResponse, SimNode, SimLink, SVGPathSelection, EdgeDatum } from './tapestry-types'
 import { TapestryStaticFileModal } from './TapestryStaticFileModal'
 import { TapestryArtifactLightbox } from './TapestryArtifactLightbox'
 import { TapestryDetailBody } from './TapestryDetailBody'
+import { TapestryClaimsAnnotations } from './TapestryClaimsAnnotations'
 import {
   NODE_RX, NODE_RY, INTERIOR_DEPTH_NUDGE, RING_SCALES, RING_COUNT, SIMULATION_TICKS,
   stalenessColor, dotStalenessColor, stalenessIcon, statusIcon, isSectionNode,
@@ -31,11 +32,6 @@ const DETAIL_MIN_WIDTH = 280
 const DETAIL_MAX_WIDTH = 800
 const PRELOAD_CACHE_LIMIT = 64
 const SEARCH_SNIPPET_CONTEXT = 15
-const TEXT_SELECTION_TRUNCATION = 60
-const POPOVER_WIDTH = 280
-const POPOVER_HEIGHT = 160
-const POPOVER_MARGIN = 8
-const PREVIEW_TRUNCATION = 80
 
 // ── TapestryView ──────────────────────────────────────────────────────
 
@@ -51,7 +47,7 @@ export class TapestryView {
   private searchResults: HTMLElement
   private loadingIndicator: HTMLElement
   private annotationPanelEl: HTMLElement
-  private annotationPanel: AnnotationPanel<ClaimsAnnotation>
+  private annotations: TapestryClaimsAnnotations
 
   private currentCity: City | null = null
   private tapestryData: TapestryResponse | null = null
@@ -103,47 +99,20 @@ export class TapestryView {
     this.searchResults = this.panel.querySelector('.tapestry-search-results')!
     this.loadingIndicator = this.panel.querySelector('.tapestry-loading')!
     this.annotationPanelEl = this.panel.querySelector('.tapestry-annotation-panel')!
-
-    this.annotationPanel = new AnnotationPanel<ClaimsAnnotation>(this.annotationPanelEl, {
-      cssPrefix: 'claims',
-      emptyMessage: 'Select text or click an image to annotate',
-
-      renderPreview: (ann) => {
-        if (ann.selectedText) {
-          const truncated = ann.selectedText.slice(0, PREVIEW_TRUNCATION)
-          const ellipsis = ann.selectedText.length > PREVIEW_TRUNCATION ? '\u2026' : ''
-          return `<div class="ann-selected-text">\u201c${escapeHtml(truncated)}${ellipsis}\u201d</div>`
-        }
-        if (ann.artifact) {
-          return `<div class="ann-pin-label">\u{1F4CC} ${escapeHtml(ann.artifact)} (${Math.round(ann.x || 0)}%, ${Math.round(ann.y || 0)}%)</div>`
-        }
-        return ''
+    this.annotations = new TapestryClaimsAnnotations({
+      panelEl: this.annotationPanelEl,
+      getContainer: () => this.panel,
+      getCurrentCity: () => this.currentCity,
+      getSelectedNodeId: () => this.selectedNodeId,
+      getSelectedNode: () => {
+        if (!this.tapestryData || !this.selectedNodeId) return null
+        return this.tapestryData.nodes.find(node => node.id === this.selectedNodeId) || null
       },
-
-      onPromote: (ann) => this.handleAnnotationPromote(ann),
-
-      onRefresh: () => {
-        if (this.selectedNodeId) {
-          return this.loadAnnotations(this.selectedNodeId)
-        }
-      },
-
-      buildLoadQuery: () => {
-        if (!this.selectedNodeId) return ''
-        return `claimId=${encodeURIComponent(this.selectedNodeId)}`
-      },
-
+      getDetailBodyElement: () => this.detailPanel.querySelector('.tapestry-detail-body'),
       getWorkers: () => {
         if (!this.currentCity || !this.onGetWorkers) return []
         return this.onGetWorkers(this.currentCity)
       },
-
-      onSendToWorker: (annotations, workerId, createNew) =>
-        this.sendAnnotationsToWorker(annotations, workerId, createNew),
-
-      onFileAsFiber: (annotations) => this.fileAnnotationsAsFiber(annotations),
-
-      globalCommentPlaceholder: 'General feedback\u2026',
     })
 
     this.setupEventListeners()
@@ -282,7 +251,7 @@ export class TapestryView {
       selectionTimeout = setTimeout(() => {
         const selection = window.getSelection()
         if (selection && selection.toString().trim().length > 0) {
-          this.handleTextSelection(selection)
+          this.annotations.handleTextSelection(selection)
         }
       }, 250)
     })
@@ -364,8 +333,8 @@ export class TapestryView {
     // Save the incoming hash before hideDetail() clears it
     const incomingHash = window.location.hash
 
-    this.annotationPanel.hidePanel()
-    this.annotationPanel.reset()
+    this.annotations.hidePanel()
+    this.annotations.reset()
     this.hideDetail()
 
     // Persist city in URL (and restore hash that hideDetail cleared)
@@ -429,7 +398,7 @@ export class TapestryView {
     this.currentCity = null
     this.selectedNodeId = null
     this.tapestryData = null
-    this.annotationPanel.reset()
+    this.annotations.reset()
 
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)
@@ -543,7 +512,7 @@ export class TapestryView {
     this.tapestryData = data
     this.selectedNodeId = null
 
-    this.annotationPanel.hidePanel()
+    this.annotations.hidePanel()
     this.annotationPanelEl.style.display = 'none'
     this.closeBtn.style.display = 'none'
 
@@ -1522,7 +1491,7 @@ export class TapestryView {
     this.updateHighlighting()
     this.renderDetailPanel(id)
     this.preloadNeighborArtifacts(id)
-    if (!this.staticMode) this.loadAnnotations(id)
+    if (!this.staticMode) void this.annotations.load(id)
     this.pushHash(id)
   }
 
@@ -2004,7 +1973,7 @@ export class TapestryView {
     sidebar?.style.removeProperty('width')
     this.selectedNodeId = null
     this.pushHash(null)
-    if (!this.staticMode) this.annotationPanel.hidePanel()
+    if (!this.staticMode) this.annotations.hidePanel()
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
 
     // Restore visibility to skeleton + expanded sections (clears selected neighborhood)
@@ -2296,324 +2265,12 @@ export class TapestryView {
     }
   }
 
-  // ── Annotations ────────────────────────────────────────────────────
-
-  private handleTextSelection(selection: Selection): void {
-    const text = selection.toString().trim()
-    if (!text || !this.selectedNodeId) return
-
-    // Position popover near the selection
-    const range = selection.getRangeAt(0)
-    const rect = range.getBoundingClientRect()
-    const nodeId = this.selectedNodeId
-
-    // Compute line numbers within the fiber body
-    const node = this.tapestryData?.nodes.find(n => n.id === nodeId)
-    let line: number | undefined
-    let endLine: number | undefined
-    let filePath: string | undefined
-
-    if (node?.body) {
-      const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
-      if (bodyEl) {
-        // Get text content up to the selection start to count lines
-        const fullText = bodyEl.textContent || ''
-        const beforeSelection = fullText.substring(0, fullText.indexOf(text))
-        if (beforeSelection !== undefined) {
-          // Count newlines in the body source up to approximate offset
-          const ratio = beforeSelection.length / (fullText.length || 1)
-          const bodyLines = node.body.split('\n')
-          const startLineIdx = Math.min(
-            Math.floor(ratio * bodyLines.length),
-            bodyLines.length - 1
-          )
-          line = startLineIdx + 1
-
-          // Estimate end line from selection length
-          const selectionLines = text.split('\n').length
-          if (selectionLines > 1) {
-            endLine = line + selectionLines - 1
-          }
-        }
-      }
-      filePath = `.felt/${nodeId}.md`
-    }
-
-    this.showAnnotationPopover(
-      rect.left + rect.width / 2,
-      rect.bottom + 4,
-      `\u201c${text.slice(0, TEXT_SELECTION_TRUNCATION)}${text.length > TEXT_SELECTION_TRUNCATION ? '\u2026' : ''}\u201d`,
-    ).then(comment => {
-      if (comment) {
-        this.saveAnnotation({ claimId: nodeId, selectedText: text, comment, line, endLine, filePath })
-      }
-    })
-  }
-
   private promptImageAnnotation(
     node: TapestryNode,
     artifactName: string,
     x: number,
     y: number,
   ): void {
-    // Position popover at click location (approximate viewport coords)
-    this.showAnnotationPopover(
-      window.innerWidth / 2,
-      window.innerHeight / 2,
-      `Pin on ${artifactName} (${Math.round(x)}%, ${Math.round(y)}%)`,
-    ).then(comment => {
-      if (comment) {
-        this.saveAnnotation({
-          claimId: node.id,
-          artifact: artifactName,
-          x, y, comment,
-          isImageAnnotation: true,
-        })
-      }
-    })
-  }
-
-  private showAnnotationPopover(
-    anchorX: number,
-    anchorY: number,
-    preview: string,
-  ): Promise<string | null> {
-    return new Promise(resolve => {
-      // Remove any existing popover
-      this.panel.querySelector('.tapestry-ann-popover')?.remove()
-
-      const popover = document.createElement('div')
-      popover.className = 'tapestry-ann-popover'
-
-      const left = Math.max(POPOVER_MARGIN, Math.min(anchorX - POPOVER_WIDTH / 2, window.innerWidth - POPOVER_WIDTH - POPOVER_MARGIN))
-      let top = anchorY + POPOVER_MARGIN
-      if (top + POPOVER_HEIGHT > window.innerHeight - POPOVER_MARGIN) {
-        top = anchorY - POPOVER_HEIGHT - POPOVER_MARGIN
-      }
-
-      popover.style.left = `${left}px`
-      popover.style.top = `${top}px`
-
-      popover.innerHTML = `
-        <div class="ann-popover-preview">${escapeHtml(preview)}</div>
-        <textarea class="ann-popover-input" placeholder="Add comment\u2026" rows="3"></textarea>
-        <div class="ann-popover-actions">
-          <button class="ann-popover-cancel">Cancel</button>
-          <button class="ann-popover-save">Save</button>
-        </div>
-      `
-
-      const textarea = popover.querySelector('textarea')!
-      const saveBtn = popover.querySelector('.ann-popover-save')!
-      const cancelBtn = popover.querySelector('.ann-popover-cancel')!
-
-      const close = (result: string | null) => {
-        popover.remove()
-        resolve(result)
-      }
-
-      saveBtn.addEventListener('click', () => {
-        const val = textarea.value.trim()
-        close(val || null)
-      })
-
-      cancelBtn.addEventListener('click', () => close(null))
-
-      textarea.addEventListener('keydown', (e: KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
-          const val = textarea.value.trim()
-          close(val || null)
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          close(null)
-        }
-      })
-
-      this.panel.appendChild(popover)
-      textarea.focus()
-    })
-  }
-
-  private async saveAnnotation(data: {
-    claimId: string
-    selectedText?: string
-    artifact?: string
-    x?: number
-    y?: number
-    line?: number
-    endLine?: number
-    filePath?: string
-    comment: string
-    isImageAnnotation?: boolean
-  }): Promise<void> {
-    await this.postAnnotation(data.claimId, {
-      comment: data.comment,
-      selectedText: data.selectedText,
-      artifact: data.artifact,
-      x: data.x,
-      y: data.y,
-      line: data.line,
-      endLine: data.endLine,
-      filePath: data.filePath,
-      isImageAnnotation: !!data.isImageAnnotation,
-    }, 'Annotation saved')
-  }
-
-  private async loadAnnotations(nodeId: string): Promise<void> {
-    const response = await this.fetchApi(
-      `/annotations?claimId=${encodeURIComponent(nodeId)}`
-    )
-    if (!response) return
-
-    const result = await response.json()
-    const annotations: ClaimsAnnotation[] = result.annotations || []
-
-    if (annotations.length > 0) {
-      this.annotationPanel.expand()
-    } else {
-      this.annotationPanel.hidePanel()
-    }
-
-    this.annotationPanel.setAnnotations(annotations)
-  }
-
-  private async postAnnotation(
-    claimId: string,
-    fields: Record<string, unknown>,
-    successMessage: string,
-  ): Promise<boolean> {
-    const response = await this.fetchApi('/annotations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        originId: this.currentCity?.originId || 'local',
-        isClaimAnnotation: true,
-        claimId,
-        ...fields,
-      }),
-    })
-
-    if (!response) return false
-
-    showToast(successMessage, 'success', 2000)
-    this.annotationPanel.expand()
-    this.loadAnnotations(claimId)
-    return true
-  }
-
-  private async handleAnnotationPromote(ann: ClaimsAnnotation): Promise<void> {
-    if (!this.currentCity) return
-
-    const response = await this.fetchApi('/promote-to-felt', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        claimId: ann.claimId,
-        comment: ann.comment,
-        cityId: this.currentCity.id,
-      }),
-    })
-
-    if (response) {
-      showToast('Promoted to felt', 'success', 2000)
-    }
-  }
-
-  private async sendAnnotationsToWorker(
-    annotations: ClaimsAnnotation[],
-    workerId?: string,
-    createNew?: boolean,
-  ): Promise<void> {
-    if (!this.currentCity) return
-
-    const globalComment = this.annotationPanel.getGlobalComment()
-
-    const response = await this.fetchApi('/send-annotations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        workerId,
-        createNewWorker: createNew,
-        filePath: this.currentCity.path + '/claims',
-        originId: this.currentCity.originId,
-        annotations,
-        globalComment: globalComment || undefined,
-        cityName: this.currentCity.name,
-        isClaimsSend: true,
-      }),
-    })
-
-    if (response) {
-      showToast('Annotations sent to worker', 'success')
-    }
-  }
-
-  private async fileAnnotationsAsFiber(annotations: ClaimsAnnotation[]): Promise<void> {
-    if (!this.currentCity || !this.selectedNodeId) return
-
-    const node = this.tapestryData?.nodes.find(n => n.id === this.selectedNodeId)
-    if (!node) return
-
-    const globalComment = this.annotationPanel.getGlobalComment()
-
-    // Build body from annotations
-    const bodyLines: string[] = []
-    if (globalComment) {
-      bodyLines.push(globalComment, '')
-    }
-
-    if (annotations.length > 0) {
-      bodyLines.push('## Annotations')
-      bodyLines.push('')
-      annotations.forEach((ann, i) => {
-        const text = ann.selectedText
-          ? `"${ann.selectedText.slice(0, 60).replace(/\n/g, ' ')}${ann.selectedText.length > 60 ? '...' : ''}"`
-          : ann.artifact
-            ? `[Image: ${ann.artifact}]`
-            : ''
-        bodyLines.push(`${i + 1}. ${text}`)
-        bodyLines.push(`   > ${ann.comment}`)
-        bodyLines.push('')
-      })
-    }
-
-    const response = await this.fetchApi('/file-as-fiber', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filePath: `${this.currentCity.path}/.felt/${node.id}.md`,
-        originId: this.currentCity.originId,
-        cityPath: this.currentCity.path,
-        title: `Feedback on ${node.title}`,
-        body: bodyLines.join('\n'),
-        kind: 'task',
-      }),
-    })
-
-    if (response) {
-      const result = await response.json()
-      this.annotationPanel.resetGlobalInput()
-      showToast(`Filed as fiber: ${result.fiberId}`, 'success', 4000)
-    }
-  }
-
-  // ── Fetch helper ───────────────────────────────────────────────────
-
-  private async fetchApi(path: string, init?: RequestInit): Promise<Response | null> {
-    try {
-      const response = await fetch(`${API_BASE}${path}`, init)
-      if (!response.ok) {
-        console.error(`API error ${path}:`, await response.text())
-        showToast('Request failed', 'error')
-        return null
-      }
-      return response
-    } catch (err) {
-      console.error(`API error ${path}:`, err)
-      showToast('Request failed', 'error')
-      return null
-    }
+    this.annotations.promptImageAnnotation(node, artifactName, x, y)
   }
 }
