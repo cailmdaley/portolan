@@ -11,90 +11,20 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
+import { MapInteractionController } from './MapInteractionController'
+import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
 import { CityHUD } from './ui/CityHUD'
 import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
-// GlobalView type for potential future view switching
-type GlobalView = 'map' | 'plots' | 'plans'
-import { ViewOverlay } from './ui/ViewOverlay'
-import { TabbedPlansView } from './ui/TabbedPlansView'
 import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/utils'
 import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
+import { findBestMatchingCity, findNearestCity, getCityWorkers } from './state/cityLookup'
 import { PALETTE, normalizeCity, normalizeSession } from './state/types'
 
-type DebugRuntimeWindow = Window & {
-  zoneRenderer: ZoneRenderer
-  debugWebGL: () => void
-  debugArtifactCaches: () => void
-  getFrontendRuntimeDiagnostics: () => FrontendRuntimeDiagnostics
-  debugRuntime: () => Promise<{ frontend: FrontendRuntimeDiagnostics; server: unknown | null }>
-}
-
-interface FrontendRuntimeDiagnostics {
-  timestamp: string
-  runtimeDisposed: boolean
-  ws: {
-    state: 'missing' | 'connecting' | 'open' | 'closing' | 'closed'
-    hasReconnectTimeout: boolean
-    hasReceivedInitialState: boolean
-  }
-  world: {
-    cityCount: number
-    sessionCount: number
-    originCount: number
-    selectedHex: HexCoord | null
-  }
-  activity: {
-    streamCount: number
-    bufferedEventCount: number
-    maxBufferedEventsPerStream: number
-    maxPerStreamLimit: number
-    totalEventsReceived: number
-    recentEventsPerMinute: number
-    streamWithMostEvents: string | null
-  }
-  hud: {
-    hasPendingWorkerUpdateFrame: boolean
-    totalWorkerHudUpdates: number
-  }
-  renderer: ReturnType<ZoneRenderer['getRuntimeStats']>
-  webgl: {
-    geometries: number
-    textures: number
-    drawCalls: number
-    triangles: number
-    points: number
-    lines: number
-  }
-  artifactMediaCaches: ReturnType<typeof getArtifactMediaCacheStats>
-  views: {
-    cityHud: ReturnType<CityHUD['getRuntimeStats']>
-    fileViewer: ReturnType<FileViewerModal['getRuntimeStats']>
-    tapestry: ReturnType<TapestryView['getRuntimeStats']>
-    playground: ReturnType<PlaygroundViewer['getRuntimeStats']>
-  }
-}
-
-// Get canvas
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
-
-// Context menu: double-click (universal) + right-click (Chrome/Firefox)
-// Safari doesn't reliably fire contextmenu on canvas elements
-// Named handler for HMR cleanup
-const contextMenuHandler = (e: MouseEvent) => {
-  const target = e.target as HTMLElement
-  // Handle context menu on canvas or any label (city/worker)
-  if (target === canvas || target.closest('.label-container')) {
-    e.preventDefault()
-    handleContextMenu(e.clientX, e.clientY)
-  }
-}
-document.addEventListener('contextmenu', contextMenuHandler)
-
-// Alias for event handlers
 const canvasOverlay = canvas
 
 // Setup renderer
@@ -147,26 +77,6 @@ const camera = new Camera(canvas, canvasOverlay)
 
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
-
-// Expose for debugging:
-//   window.zoneRenderer.debugResourceCounts() - scene traversal counts
-//   window.debugWebGL() - WebGL resource counts from renderer.info
-const debugWindow = window as unknown as DebugRuntimeWindow
-debugWindow.zoneRenderer = zoneRenderer
-debugWindow.debugWebGL = () => {
-  const info = renderer.info
-  console.table({
-    'Geometries (GPU)': info.memory.geometries,
-    'Textures (GPU)': info.memory.textures,
-    'Draw calls': info.render.calls,
-    'Triangles': info.render.triangles,
-    'Points': info.render.points,
-    'Lines': info.render.lines,
-  })
-}
-debugWindow.debugArtifactCaches = () => {
-  console.table(getArtifactMediaCacheStats())
-}
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
@@ -226,13 +136,13 @@ const fileViewerModal = new FileViewerModal()
 
 // Wire up file click from worker hover tooltip to file viewer
 zoneRenderer.setWorkerFileClickHandler((fullPath, originId, workerId) => {
-  const city = findBestMatchingCity(originId, fullPath)
+  const city = findBestMatchingCity(cities, originId, fullPath)
   fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path, city?.id)
 })
 
 // Wire up worker lookup for send-to-worker feature
 fileViewerModal.setOnGetWorkers(async (originId: string, path: string) => {
-  const city = findBestMatchingCity(originId, path)
+  const city = findBestMatchingCity(cities, originId, path)
   if (!city) return []
 
   // Return workers (sessions) assigned to this city
@@ -260,41 +170,6 @@ cityPanel.setOnFocusWorker((sessionId) => {
   focusKittyTab(sessionId)
 })
 
-// Setup view switching
-const viewOverlay = new ViewOverlay()
-const tabbedPlansView = new TabbedPlansView()
-
-// View URLs from environment or defaults
-const PLOT_SERVER_URL = 'http://localhost:8873'  // Plot server gallery
-
-// Track current view state (used in handleViewChange)
-// @ts-expect-error Tracked for potential state persistence
-let currentView: GlobalView = 'map'
-
-// @ts-expect-error Kept for future view switching via keyboard/API
-function handleViewChange(view: GlobalView): void {
-  currentView = view
-
-  if (view === 'map') {
-    // Return to hex grid
-    viewOverlay.hide()
-    tabbedPlansView.hide()
-    canvas.style.display = 'block'
-  } else if (view === 'plots') {
-    // Show plot server gallery
-    canvas.style.display = 'none'
-    tabbedPlansView.hide()
-    viewOverlay.show(PLOT_SERVER_URL)
-  } else if (view === 'plans') {
-    // Show tabbed plannotator view
-    canvas.style.display = 'none'
-    viewOverlay.hide()
-    tabbedPlansView.show(origins)
-  }
-}
-
-// ViewSwitcher removed — view stays on 'map' for now
-
 // Tapestry view — native DAG visualization for fibers
 const tapestryView = new TapestryView()
 
@@ -305,12 +180,7 @@ cityPanel.setOnViewClaims((city) => {
 })
 
 // Wire up worker lookup for tapestry view
-function getCityWorkers(city: City): { id: string; name: string; tmuxSession: string }[] {
-  return sessions
-    .filter(s => s.cityId === city.id && s.originId === city.originId)
-    .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
-}
-tapestryView.setOnGetWorkers(getCityWorkers)
+tapestryView.setOnGetWorkers((city) => getCityWorkers(city, sessions))
 
 // Wire up file navigation from tapestry view — open files in file viewer
 tapestryView.setOnOpenFile((filePath, city, line) => {
@@ -324,7 +194,6 @@ const playgroundViewer = new PlaygroundViewer()
 cityPanel.setOnViewPlaygrounds((city) => {
   playgroundViewer.show(city)
 })
-
 
 // State
 let cities: City[] = []
@@ -562,8 +431,6 @@ function handleMessage(message: ServerMessage): void {
     sessions = state.sessions.map(normalizeSession)
     if (state.origins) {
       origins = state.origins
-      // Update tabbed plans view if visible (handles new agents connecting)
-      tabbedPlansView.update(origins)
     }
     // Populate activity history from state (backfill on connect)
     if (state.activities) {
@@ -670,389 +537,68 @@ function getActivityBufferStats(): {
   }
 }
 
-function getFrontendRuntimeDiagnostics(): FrontendRuntimeDiagnostics {
-  pruneRecentActivityEvents()
-  const activityStats = getActivityBufferStats()
-  const webglInfo = renderer.info
-  const selectedHexSnapshot = selectedHex ? { q: selectedHex.q, r: selectedHex.r } : null
-
-  return {
-    timestamp: new Date().toISOString(),
-    runtimeDisposed,
-    ws: {
-      state: getWebSocketState(ws),
-      hasReconnectTimeout: reconnectTimeout !== null,
-      hasReceivedInitialState,
-    },
-    world: {
-      cityCount: cities.length,
-      sessionCount: sessions.length,
-      originCount: origins.length,
-      selectedHex: selectedHexSnapshot,
-    },
-    activity: {
-      streamCount: activityStats.streamCount,
-      bufferedEventCount: activityStats.bufferedEventCount,
-      maxBufferedEventsPerStream: activityStats.maxBufferedEventsPerStream,
+installFrontendRuntimeDiagnostics({
+  renderer,
+  zoneRenderer,
+  cityPanel,
+  fileViewerModal,
+  tapestryView,
+  playgroundViewer,
+  getArtifactMediaCacheStats,
+  getRuntimeDisposed: () => runtimeDisposed,
+  getWebSocketState: () => getWebSocketState(ws),
+  hasReconnectTimeout: () => reconnectTimeout !== null,
+  hasReceivedInitialState: () => hasReceivedInitialState,
+  getWorldStats: () => ({
+    cityCount: cities.length,
+    sessionCount: sessions.length,
+    originCount: origins.length,
+    selectedHex: selectedHex ? { q: selectedHex.q, r: selectedHex.r } : null,
+  }),
+  getActivityStats: () => {
+    pruneRecentActivityEvents()
+    return {
+      stats: getActivityBufferStats(),
       maxPerStreamLimit: MAX_ACTIVITIES_PER_SESSION,
       totalEventsReceived: totalActivityEventsReceived,
       recentEventsPerMinute: recentActivityEventTimestamps.length,
-      streamWithMostEvents: activityStats.streamWithMostEvents,
-    },
-    hud: {
-      hasPendingWorkerUpdateFrame: workerHudUpdateFrameId !== null,
-      totalWorkerHudUpdates,
-    },
-    renderer: zoneRenderer.getRuntimeStats(),
-    webgl: {
-      geometries: webglInfo.memory.geometries,
-      textures: webglInfo.memory.textures,
-      drawCalls: webglInfo.render.calls,
-      triangles: webglInfo.render.triangles,
-      points: webglInfo.render.points,
-      lines: webglInfo.render.lines,
-    },
-    artifactMediaCaches: getArtifactMediaCacheStats(),
-    views: {
-      cityHud: cityPanel.getRuntimeStats(),
-      fileViewer: fileViewerModal.getRuntimeStats(),
-      tapestry: tapestryView.getRuntimeStats(),
-      playground: playgroundViewer.getRuntimeStats(),
-    },
-  }
-}
-
-debugWindow.getFrontendRuntimeDiagnostics = getFrontendRuntimeDiagnostics
-debugWindow.debugRuntime = async () => {
-  const frontend = getFrontendRuntimeDiagnostics()
-  let server: unknown | null = null
-
-  try {
-    const res = await fetch(`http://${window.location.hostname}:4004/debug-runtime`)
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(body || `HTTP ${res.status}`)
     }
-    server = await res.json()
-  } catch (error) {
-    console.warn('[debugRuntime] Failed to fetch /debug-runtime:', error)
-  }
+  },
+  getHudStats: () => ({
+    hasPendingWorkerUpdateFrame: workerHudUpdateFrameId !== null,
+    totalWorkerHudUpdates,
+  }),
+})
 
-  const snapshot = { frontend, server }
-  console.log('[debugRuntime] snapshot', snapshot)
-  return snapshot
-}
-
-// Swarm drag handling (intercept mousedown on swarms before camera pan)
-const onCanvasMouseDownCapture = (e: MouseEvent) => {
-  // Only handle left button
-  if (e.button !== 0) return
-
-  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
-  const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
-
-  if (workerHit) {
-    // Start swarm drag - this prevents camera from panning
-    if (zoneRenderer.startSwarmDrag(workerHit.workerId, e.clientX, e.clientY)) {
-      zoneRenderer.clearWorkerFileHover(true)
-      e.stopPropagation()  // Prevent camera from starting its pan
-    }
-  }
-}
-canvasOverlay.addEventListener('mousedown', onCanvasMouseDownCapture, true)  // capture phase to run before camera handler
-
-// Click handling
-const onCanvasClick = (e: MouseEvent) => {
-  // Ignore clicks that were drags (including swarm drags)
-  if (camera.dragging || zoneRenderer.isDraggingSwarm) return
-  zoneRenderer.clearWorkerFileHover(true)
-
-  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
-  const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-
-  // Handle move mode: clicking a hex moves the city there
-  if (movingCityId) {
-    moveCity(movingCityId, hex)
-    movingCityId = null
-    document.body.style.cursor = ''
-    return
-  }
-
-  // First check for worker swarm at world position
-  const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
-  if (workerHit) {
-    const session = sessions.find(s => s.id === workerHit.workerId)
-    if (session) {
-      selectedHex = session.hex || hex
-      focusKittyTab(session.id)
-      return
-    }
-  }
-
-  // Then check for city at world position (radius-based, for large sprites)
-  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
-  if (cityHit) {
-    const city = cities.find(c => c.id === cityHit.entityId)
-    if (city) {
-      handleCityClick(city)
-      return
-    }
-  }
-
-  // Fall back to hex-based entity lookup (for workers)
-  const entity = zoneRenderer.getEntityAtHex(hex)
-
-  if (entity?.type === 'worker' && entity.entityId) {
-    selectedHex = hex
-    focusKittyTab(entity.entityId)
-  } else {
-    selectedHex = null
-  }
-}
-canvasOverlay.addEventListener('click', onCanvasClick)
-
-// Double-click for primary actions (focus terminal / new worker)
-const onCanvasDoubleClick = (e: MouseEvent) => {
-  if (camera.dragging) return
-
-  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
-  const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-
-  // First check for worker swarm (double-click focuses terminal)
-  const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
-  if (workerHit) {
-    focusKittyTab(workerHit.workerId)
-    return
-  }
-
-  // Then check for city at world position (radius-based)
-  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
-  if (cityHit) {
-    const city = cities.find(c => c.id === cityHit.entityId)
-    if (city) {
-      promptNewWorker(city)
-      return
-    }
-  }
-
-  // Fall back to hex-based lookup
-  const entity = zoneRenderer.getEntityAtHex(hex)
-
-  if (entity?.type === 'worker' && entity.entityId) {
-    focusKittyTab(entity.entityId)
-  } else {
-    // Double-click empty tile → new worker if near city
-    const nearestCity = findNearestCity(hex)
-    if (nearestCity && hexGrid.distance(hex, nearestCity.hex) <= 3) {
-      promptNewWorker(nearestCity)
-    }
-  }
-}
-canvasOverlay.addEventListener('dblclick', onCanvasDoubleClick)
-
-// Force Touch (Mac trackpad) for context menu
-// Track mouse position for force touch (event doesn't include coordinates)
-let forceMouseX = 0
-let forceMouseY = 0
-let forceTouchFired = false
-
-const onCanvasMouseMove = (e: MouseEvent) => {
-  forceMouseX = e.clientX
-  forceMouseY = e.clientY
-
-  // Custom cursor based on what's under the mouse
-  if (camera.dragging || movingCityId) {
-    zoneRenderer.clearWorkerFileHover()
-    return
-  }
-
-  const worldPos = camera.screenToWorld(e.clientX, e.clientY)
-
-  // Check for worker swarm first (smaller hit area, more specific)
-  const workerHit = zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
-  if (workerHit) {
-    canvas.style.cursor = 'grab'
-    const session = sessions.find(s => s.id === workerHit.workerId)
-    if (session) {
-      const swarmPos = zoneRenderer.getSwarmWorldPosition(workerHit.workerId)
-      const tooltipAnchor = swarmPos
-        ? camera.worldToScreen(swarmPos.x, 0.7, swarmPos.z)
-        : { x: e.clientX, y: e.clientY }
-      zoneRenderer.updateWorkerFileHover(session, tooltipAnchor)
+const mapInteractions = new MapInteractionController({
+  canvas: canvasOverlay,
+  camera,
+  hexGrid,
+  zoneRenderer,
+  contextMenu,
+  getCities: () => cities,
+  getSessions: () => sessions,
+  getMovingCityId: () => movingCityId,
+  setMovingCityId: (cityId) => { movingCityId = cityId },
+  setSelectedHex: (hex) => { selectedHex = hex },
+  handleCityClick,
+  handleDeepCityPress: (city) => {
+    handleCityClick(city)
+    if (city.hasClaims) {
+      cityPanel.hide()
+      tapestryView.show(city)
     } else {
-      zoneRenderer.clearWorkerFileHover()
+      playgroundViewer.show(city)
     }
-    return
-  }
-
-  zoneRenderer.clearWorkerFileHover()
-
-  if (zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)) {
-    canvas.style.cursor = 'var(--cursor-bird)'
-    return
-  }
-
-  canvas.style.cursor = ''
-}
-canvasOverlay.addEventListener('mousemove', onCanvasMouseMove)
-
-const onCanvasMouseLeave = () => {
-  zoneRenderer.clearWorkerFileHover()
-  if (!movingCityId) {
-    canvas.style.cursor = ''
-  }
-}
-canvasOverlay.addEventListener('mouseleave', onCanvasMouseLeave)
-
-// Claim gesture to prevent system Quick Look
-const onCanvasForceWillBegin = (e: Event) => {
-  e.preventDefault()
-}
-canvasOverlay.addEventListener('webkitmouseforcewillbegin', onCanvasForceWillBegin)
-
-// Force click: deep-press a city opens claims/playground, otherwise context menu
-const onCanvasForceDown = () => {
-  if (camera.dragging) return
-  forceTouchFired = true
-
-  // Hit-test for city with deep content
-  const worldPos = camera.screenToWorld(forceMouseX, forceMouseY)
-  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
-  if (cityHit) {
-    const city = cities.find(c => c.id === cityHit.entityId)
-    if (city && (city.hasClaims || city.hasPlaygrounds)) {
-      handleCityClick(city)
-      if (city.hasClaims) {
-        cityPanel.hide()
-        tapestryView.show(city)
-      } else {
-        playgroundViewer.show(city)
-      }
-      return
-    }
-  }
-
-  handleContextMenu(forceMouseX, forceMouseY)
-}
-canvasOverlay.addEventListener('webkitmouseforcedown', onCanvasForceDown)
-
-// Suppress click after force touch (force touch fires normal click on release)
-// Named handler for HMR cleanup
-const forceClickCaptureHandler = (e: MouseEvent) => {
-  if (forceTouchFired) {
-    e.stopPropagation()
-    forceTouchFired = false
-  }
-}
-document.addEventListener('click', forceClickCaptureHandler, true) // capture phase to intercept before other handlers
-
-// Right-click context menu handler
-function handleContextMenu(clientX: number, clientY: number) {
-  // Ignore if dragging
-  if (camera.dragging) return
-
-  const worldPos = camera.screenToWorld(clientX, clientY)
-  const hex = hexGrid.cartesianToHex(worldPos.x, worldPos.z)
-
-  // First check for city at world position (radius-based)
-  const cityHit = zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
-  if (cityHit) {
-    const city = cities.find(c => c.id === cityHit.entityId)
-    if (city) {
-      contextMenu.show(clientX, clientY, [
-        {
-          label: 'New Worker',
-          action: () => promptNewWorker(city),
-        },
-        {
-          label: 'Move City',
-          action: () => startMoveCity(city.id),
-        },
-        {
-          label: 'Remove City',
-          action: () => unpinCity(city.id),
-          danger: true,
-        },
-      ])
-      return
-    }
-  }
-
-  // Fall back to hex-based lookup
-  const entity = zoneRenderer.getEntityAtHex(hex)
-
-  if (entity?.type === 'worker' && entity.entityId) {
-    // Worker right-click: show retire option
-    const session = sessions.find(s => s.id === entity.entityId)
-    if (session) {
-      contextMenu.show(clientX, clientY, [
-        {
-          label: 'Focus Tab',
-          action: () => focusKittyTab(session.id),
-        },
-        {
-          label: 'Retire Worker',
-          action: () => killWorker(session.id),
-          danger: true,
-        },
-      ])
-    }
-  } else {
-    // Check distance to nearest city
-    const nearestCity = findNearestCity(hex)
-
-    if (nearestCity && hexGrid.distance(hex, nearestCity.hex) <= 3) {
-      // Within 3 tiles of a city: offer new worker
-      contextMenu.show(clientX, clientY, [
-        {
-          label: `New Worker (${nearestCity.name})`,
-          action: () => promptNewWorker(nearestCity),
-        },
-      ])
-    } else {
-      // Far from any city: offer new city
-      contextMenu.show(clientX, clientY, [
-        {
-          label: 'Add City Here',
-          action: () => promptAddCity(hex),
-        },
-      ])
-    }
-  }
-}
-
-
-
-// Find nearest city to a hex
-function findNearestCity(hex: HexCoord): City | null {
-  if (cities.length === 0) return null
-
-  let nearest: City | null = null
-  let minDist = Infinity
-
-  for (const city of cities) {
-    const dist = hexGrid.distance(hex, city.hex)
-    if (dist < minDist) {
-      minDist = dist
-      nearest = city
-    }
-  }
-
-  return nearest
-}
-
-// Find city with longest matching path for a file (most specific match)
-function findBestMatchingCity(originId: string, filePath: string): City | null {
-  let best: City | null = null
-  for (const city of cities) {
-    if (city.originId !== originId) continue
-    if (!filePath.startsWith(city.path)) continue
-    if (!best || city.path.length > best.path.length) {
-      best = city
-    }
-  }
-  return best
-}
+  },
+  promptNewWorker,
+  promptAddCity,
+  unpinCity,
+  focusKittyTab,
+  killWorker,
+  moveCity,
+  findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
+})
 
 // Prompt for new worker name and create it
 async function promptNewWorker(city: City): Promise<void> {
@@ -1095,12 +641,6 @@ function unpinCity(cityId: string): void {
       cityId,
     }))
   }
-}
-
-// Start moving a city (enter move mode)
-function startMoveCity(cityId: string): void {
-  movingCityId = cityId
-  document.body.style.cursor = 'crosshair'
 }
 
 // Move a city to a new hex position
@@ -1156,50 +696,6 @@ async function activateRemoteCity(city: City): Promise<void> {
   }
 }
 
-// Escape key: cancel move mode
-function handleEscapeKey(e: KeyboardEvent): void {
-  if (e.key !== 'Escape') return
-
-  if (movingCityId) {
-    movingCityId = null
-    document.body.style.cursor = ''
-  }
-  zoneRenderer.clearWorkerFileHover(true)
-}
-window.addEventListener('keydown', handleEscapeKey)
-
-// Cycling keyboard shortcuts
-// Cmd+Alt+9/0: cycle workers, Cmd+Ctrl+9/0: cycle cities
-let workerCycleIndex = -1
-let cityCycleIndex = -1
-
-function handleCycleKeys(e: KeyboardEvent): void {
-  if (!e.metaKey) return
-  if (e.code !== 'Digit9' && e.code !== 'Digit0') return
-
-  const direction = e.code === 'Digit0' ? 1 : -1
-
-  if (e.altKey && !e.ctrlKey) {
-    // Cmd+Alt+9/0: cycle workers
-    e.preventDefault()
-    if (sessions.length === 0) return
-    workerCycleIndex = (workerCycleIndex + direction + sessions.length) % sessions.length
-    const session = sessions[workerCycleIndex]
-    focusKittyTab(session.id)
-    // Focus camera on worker's swarm
-    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
-    if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
-  } else if (e.ctrlKey && !e.altKey) {
-    // Cmd+Ctrl+9/0: cycle cities (only those with active workers)
-    e.preventDefault()
-    const activeCities = cities.filter(c => sessions.some(s => s.cityId === c.id))
-    if (activeCities.length === 0) return
-    cityCycleIndex = (cityCycleIndex + direction + activeCities.length) % activeCities.length
-    handleCityClick(activeCities[cityCycleIndex])
-  }
-}
-window.addEventListener('keydown', handleCycleKeys)
-
 // Window resize handler
 function resizeHandler(): void {
   renderer.setSize(window.innerWidth, window.innerHeight)
@@ -1207,7 +703,6 @@ function resizeHandler(): void {
   camera.resize()
 }
 window.addEventListener('resize', resizeHandler)
-
 // Render loop
 function animate(): void {
   if (runtimeDisposed) return
@@ -1272,18 +767,7 @@ function cleanupRuntime(): void {
   ws?.close()
   ws = null
 
-  // Remove all event listeners (named handlers for clean unsubscribe).
-  document.removeEventListener('contextmenu', contextMenuHandler)
-  document.removeEventListener('click', forceClickCaptureHandler, true)
-  canvasOverlay.removeEventListener('mousedown', onCanvasMouseDownCapture, true)
-  canvasOverlay.removeEventListener('click', onCanvasClick)
-  canvasOverlay.removeEventListener('dblclick', onCanvasDoubleClick)
-  canvasOverlay.removeEventListener('mousemove', onCanvasMouseMove)
-  canvasOverlay.removeEventListener('mouseleave', onCanvasMouseLeave)
-  canvasOverlay.removeEventListener('webkitmouseforcewillbegin', onCanvasForceWillBegin)
-  canvasOverlay.removeEventListener('webkitmouseforcedown', onCanvasForceDown)
-  window.removeEventListener('keydown', handleEscapeKey)
-  window.removeEventListener('keydown', handleCycleKeys)
+  mapInteractions.dispose()
   window.removeEventListener('resize', resizeHandler)
 
   // Dispose UI panels (removes DOM and detaches document listeners).
@@ -1291,8 +775,6 @@ function cleanupRuntime(): void {
   fileViewerModal.dispose()
   contextMenu.dispose()
   newWorkerDialog.dispose()
-  viewOverlay.dispose()
-  tabbedPlansView.dispose()
   tapestryView.dispose()
   playgroundViewer.dispose()
 
