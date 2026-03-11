@@ -12,6 +12,7 @@ import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { MapInteractionController } from './MapInteractionController'
+import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
 import { FrontendStateSync, getActivitySessionKey } from './runtime/FrontendStateSync'
 import { CityHUD } from './ui/CityHUD'
@@ -21,7 +22,7 @@ import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
-import type { City, Session, ServerOrigin, HexCoord } from './state/types'
+import type { City, Session, ServerOrigin } from './state/types'
 import { findBestMatchingCity, findNearestCity, getCityWorkers } from './state/cityLookup'
 import { PALETTE } from './state/types'
 
@@ -81,11 +82,11 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
-  focusKittyTab(workerId)
+  mapActions?.focusKittyTab(workerId)
 })
 
 zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
-  focusKittyTab(workerId)
+  mapActions?.focusKittyTab(workerId)
 })
 
 // Wire up worker label hover → file tooltip (same as bird hover but triggered from CSS2D label)
@@ -125,7 +126,7 @@ function handleCityClick(city: City): void {
   camera.focusAndZoom(pos, 6, 0.95)
 
   if (city.isDormant && city.originId !== 'local') {
-    activateRemoteCity(city)
+    void mapActions?.activateRemoteCity(city)
   } else {
     cityPanel.show(city)
     cityPanel.updateWorkers(sessions)
@@ -168,7 +169,7 @@ cityPanel.setNewWorkerDialog(newWorkerDialog)
 
 // Wire up worker click from city HUD
 cityPanel.setOnFocusWorker((sessionId) => {
-  focusKittyTab(sessionId)
+  mapActions?.focusKittyTab(sessionId)
 })
 
 // Tapestry view — native DAG visualization for fibers
@@ -206,6 +207,7 @@ let mockDataTimeout: ReturnType<typeof setTimeout> | null = null
 let workerHudUpdateFrameId: number | null = null
 let hasRuntimeCleanupRun = false
 let selectedHex: { q: number; r: number } | null = null
+let mapActions: FrontendMapActions | null = null
 
 // Move mode: when set, next click will move this city to that hex
 let movingCityId: string | null = null
@@ -287,6 +289,13 @@ const stateSync = new FrontendStateSync({
   },
 })
 
+mapActions = new FrontendMapActions({
+  newWorkerDialog,
+  sendMessage: (message) => stateSync.send(message),
+  getWebSocketState: () => stateSync.getWebSocketState(),
+  showCity: (city) => cityPanel.show(city),
+})
+
 installFrontendRuntimeDiagnostics({
   renderer,
   zoneRenderer,
@@ -333,97 +342,14 @@ const mapInteractions = new MapInteractionController({
       playgroundViewer.show(city)
     }
   },
-  promptNewWorker,
-  promptAddCity,
-  unpinCity,
-  focusKittyTab,
-  killWorker,
-  moveCity,
+  promptNewWorker: (city) => mapActions!.promptNewWorker(city),
+  promptAddCity: (hex) => mapActions!.promptAddCity(hex),
+  unpinCity: (cityId) => mapActions!.unpinCity(cityId),
+  focusKittyTab: (sessionId) => mapActions!.focusKittyTab(sessionId),
+  killWorker: (sessionId) => mapActions!.killWorker(sessionId),
+  moveCity: (cityId, hex) => mapActions!.moveCity(cityId, hex),
   findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
 })
-
-// Prompt for new worker name and create it
-async function promptNewWorker(city: City): Promise<void> {
-  const result = await newWorkerDialog.show(city.name)
-  if (!result) return  // Cancelled
-
-  stateSync.send({
-    type: 'newWorker',
-    cityPath: city.path,
-    name: result.name || undefined,
-    cli: result.cli || undefined,
-    chrome: result.chrome || undefined,
-    continue: result.continue || undefined,
-  })
-}
-
-// Pin a new city at the given hex
-function promptAddCity(hex: HexCoord): void {
-  const path = window.prompt('Enter the full path for the new city:')
-  if (!path) return
-
-  if (!stateSync.send({
-    type: 'pinCity',
-    path: path.trim(),
-    position: { q: hex.q, r: hex.r },
-  })) {
-    console.error('WebSocket not ready, state:', stateSync.getWebSocketState())
-  }
-}
-
-// Unpin a city
-function unpinCity(cityId: string): void {
-  stateSync.send({
-    type: 'unpinCity',
-    cityId,
-  })
-}
-
-// Move a city to a new hex position
-function moveCity(cityId: string, hex: HexCoord): void {
-  stateSync.send({
-    type: 'moveCity',
-    cityId,
-    newPosition: { q: hex.q, r: hex.r },
-  })
-}
-
-// Kill a worker (tmux session)
-function killWorker(sessionId: string): void {
-  stateSync.send({
-    type: 'killWorker',
-    sessionId,
-  })
-}
-
-// Focus Kitty tab
-function focusKittyTab(sessionId: string): void {
-  stateSync.send({ type: 'focus', sessionId })
-}
-
-// Activate dormant remote city (SSH + start agent)
-async function activateRemoteCity(city: City): Promise<void> {
-
-  try {
-    const response = await fetch(`http://localhost:4004/activate-city?cityId=${city.id}`, {
-      method: 'POST',
-    })
-
-    const result = await response.json()
-
-    if (response.ok) {
-      // Agent will connect and sessions will appear via WebSocket
-      // Show panel while waiting
-      cityPanel.show(city)
-    } else {
-      console.error(`[Activate] Failed: ${result.error}`)
-      alert(`Failed to activate remote city: ${result.error}`)
-    }
-  } catch (err) {
-    console.error('[Activate] Network error:', err)
-    alert(`Failed to connect to server`)
-  }
-}
 
 // Window resize handler
 function resizeHandler(): void {
