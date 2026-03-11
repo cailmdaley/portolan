@@ -2,16 +2,15 @@ import { StateEffect, StateField, type EditorState, type Extension } from '@code
 import { EditorView, Decoration, type DecorationSet } from '@codemirror/view'
 import { AnnotationPanel } from './AnnotationPanel'
 import {
-  fileAnnotationsAsFiber,
   loadAnnotations,
   saveImageAnnotation as persistImageAnnotation,
-  sendAnnotationsToWorker as persistAnnotationsToWorker,
 } from './FileViewerAnnotationActions'
 import type { Annotation } from './FileViewerAnnotationTypes'
-import { type WorkerInfo, showWorkerPicker } from './WorkerPicker'
+import type { WorkerInfo } from './WorkerPicker'
+import { FileViewerAnnotationTransport } from './FileViewerAnnotationTransport'
 import { FileViewerImageAnnotations } from './FileViewerImageAnnotations'
 import { FileViewerTextAnnotations } from './FileViewerTextAnnotations'
-import { escapeHtml, showToast } from './utils'
+import { escapeHtml } from './utils'
 
 export const setFileViewerAnnotationsEffect = StateEffect.define<Annotation[]>()
 
@@ -61,18 +60,14 @@ interface FileViewerAnnotationHost {
 }
 
 export class FileViewerAnnotations {
-  private panelEl: HTMLElement
   private host: FileViewerAnnotationHost
   private annotationPanel: AnnotationPanel<Annotation>
+  private transport: FileViewerAnnotationTransport
   private imageAnnotations: FileViewerImageAnnotations
   private textAnnotations: FileViewerTextAnnotations
   private annotations: Annotation[] = []
-  private globalComment = ''
-  private cityWorkers: WorkerInfo[] = []
-  private onGetWorkers: ((originId: string, path: string) => Promise<WorkerInfo[]>) | null = null
 
   constructor(panelEl: HTMLElement, host: FileViewerAnnotationHost) {
-    this.panelEl = panelEl
     this.host = host
 
     this.annotationPanel = new AnnotationPanel<Annotation>(panelEl, {
@@ -88,9 +83,8 @@ export class FileViewerAnnotations {
         if (!currentPath) return ''
         return `path=${encodeURIComponent(currentPath)}&originId=${encodeURIComponent(currentOriginId)}`
       },
-      getWorkers: () => this.cityWorkers,
-      onSendToWorker: (annotations, workerId, createNew) =>
-        this.sendAnnotationsToWorker(annotations, workerId, createNew),
+      getWorkers: () => [],
+      onSendToWorker: async () => {},
       globalCommentPlaceholder: 'Add summary or overall context...',
       globalCommentLabel: 'Overall feedback:',
       hideFooter: true,
@@ -116,22 +110,36 @@ export class FileViewerAnnotations {
       },
       addAnnotation: (annotation) => this.addAnnotation(annotation, true),
     })
-
-    this.setupEventListeners()
+    this.transport = new FileViewerAnnotationTransport({
+      panelEl,
+      sendBtn: host.sendBtn,
+      fiberBtn: host.fiberBtn,
+      annotationPanel: this.annotationPanel,
+      getState: () => {
+        const state = host.getState()
+        return {
+          currentPath: state.currentPath,
+          currentOriginId: state.currentOriginId,
+          currentCityPath: state.currentCityPath,
+          sourceWorkerId: state.sourceWorkerId,
+          isVisible: state.isVisible,
+        }
+      },
+      getAnnotations: () => this.annotations,
+      scheduleDeferredUiTask: host.scheduleDeferredUiTask,
+    })
   }
 
   setOnGetWorkers(fn: (originId: string, path: string) => Promise<WorkerInfo[]>): void {
-    this.onGetWorkers = fn
+    this.transport.setOnGetWorkers(fn)
   }
 
   reset(): void {
     this.annotations = []
-    this.globalComment = ''
-    this.cityWorkers = []
     this.annotationPanel.reset()
+    this.transport.reset()
     this.textAnnotations.reset()
     this.imageAnnotations.reset()
-    this.updateActionButtons()
   }
 
   setAnnotations(annotations: Annotation[]): void {
@@ -146,7 +154,7 @@ export class FileViewerAnnotations {
   }
 
   getGlobalComment(): string {
-    return this.globalComment
+    return this.annotationPanel.getGlobalComment()
   }
 
   getRuntimeStats(): {
@@ -183,61 +191,11 @@ export class FileViewerAnnotations {
   }
 
   async showWorkerPicker(): Promise<void> {
-    const { currentPath, currentOriginId, sourceWorkerId } = this.host.getState()
-    if (!currentPath || !this.hasContent()) return
-
-    if (sourceWorkerId) {
-      await this.sendAnnotationsToWorker(this.annotations, sourceWorkerId)
-      return
-    }
-
-    if (this.onGetWorkers) {
-      try {
-        this.cityWorkers = await this.onGetWorkers(currentOriginId, currentPath)
-      } catch (error) {
-        console.error('Failed to get workers:', error)
-        this.cityWorkers = []
-      }
-    }
-
-    showWorkerPicker(this.cityWorkers, this.annotations.length, {
-      onSelectWorker: (workerId) => this.sendAnnotationsToWorker(this.annotations, workerId),
-      onNewWorker: () => this.sendAnnotationsToWorker(this.annotations, undefined, true),
-    })
+    await this.transport.showWorkerPicker()
   }
 
   async fileAsFiber(): Promise<void> {
-    const { currentPath, currentOriginId, currentCityPath } = this.host.getState()
-    if (!currentPath || !this.hasContent()) return
-
-    try {
-      this.host.fiberBtn.textContent = 'Filing...'
-      this.host.fiberBtn.setAttribute('disabled', 'true')
-
-      const result = await fileAnnotationsAsFiber({
-        currentPath,
-        currentOriginId,
-        currentCityPath,
-        annotations: this.annotations,
-        globalComment: this.globalComment,
-      })
-      this.globalComment = ''
-      this.annotationPanel.resetGlobalInput()
-      this.updateActionButtons()
-
-      this.host.fiberBtn.textContent = 'Filed!'
-      this.host.fiberBtn.removeAttribute('disabled')
-      this.host.scheduleDeferredUiTask(() => {
-        if (!this.host.getState().isVisible) return
-        this.host.fiberBtn.textContent = 'File as Fiber'
-      }, 2000)
-      showToast(`Filed as fiber: ${result.fiberId}`, 'success', 4000)
-    } catch (error: any) {
-      console.error('Failed to file as fiber:', error)
-      this.host.fiberBtn.textContent = 'File as Fiber'
-      this.host.fiberBtn.removeAttribute('disabled')
-      alert(`Failed to file as fiber: ${error.message}`)
-    }
+    await this.transport.fileAsFiber()
   }
 
   hideSelectionToolbar(): void {
@@ -255,21 +213,6 @@ export class FileViewerAnnotations {
   dispose(): void {
     this.textAnnotations.dispose()
     this.imageAnnotations.dispose()
-  }
-
-  private setupEventListeners(): void {
-    const globalCommentTextarea = this.panelEl.querySelector('.ann-panel-global-input textarea') as HTMLTextAreaElement | null
-    globalCommentTextarea?.addEventListener('input', () => {
-      this.globalComment = globalCommentTextarea.value
-      this.updateActionButtons()
-    })
-
-    this.host.sendBtn.addEventListener('click', () => {
-      void this.showWorkerPicker()
-    })
-    this.host.fiberBtn.addEventListener('click', () => {
-      void this.fileAsFiber()
-    })
   }
 
   private renderPreview(ann: Annotation, index: number): string {
@@ -290,14 +233,8 @@ export class FileViewerAnnotations {
     return `${locationInfo}"${escapeHtml(truncated)}"`
   }
 
-  private hasContent(): boolean {
-    return this.annotations.length > 0 || this.globalComment.trim().length > 0
-  }
-
   private updateActionButtons(): void {
-    const visible = this.hasContent() ? 'inline-block' : 'none'
-    this.host.sendBtn.style.display = visible
-    this.host.fiberBtn.style.display = visible
+    this.transport.updateActionButtons()
   }
 
   private addAnnotation(annotation: Annotation, updateHighlights: boolean): void {
@@ -368,43 +305,6 @@ export class FileViewerAnnotations {
       selection: { anchor: annotation.from, head: annotation.to },
       scrollIntoView: true,
     })
-  }
-
-  private async sendAnnotationsToWorker(
-    annotations: Annotation[],
-    workerId?: string,
-    createNew?: boolean,
-  ): Promise<void> {
-    const { currentPath, currentOriginId, isVisible } = this.host.getState()
-    if (!currentPath || (annotations.length === 0 && this.globalComment.trim().length === 0)) return
-
-    try {
-      await persistAnnotationsToWorker({
-        currentPath,
-        currentOriginId,
-        workerId,
-        createNew,
-        annotations,
-        globalComment: this.globalComment,
-      })
-
-      this.globalComment = ''
-      this.annotationPanel.resetGlobalInput()
-      this.updateActionButtons()
-
-      const originalText = createNew ? 'Send to Worker' : this.host.sendBtn.textContent
-      this.host.sendBtn.textContent = 'Sent!'
-      this.host.sendBtn.removeAttribute('disabled')
-      this.host.scheduleDeferredUiTask(() => {
-        if (!this.host.getState().isVisible || !isVisible) return
-        this.host.sendBtn.textContent = originalText || 'Send to Worker'
-      }, 2000)
-    } catch (error: any) {
-      console.error('Failed to send annotations:', error)
-      this.host.sendBtn.textContent = 'Send to Worker'
-      this.host.sendBtn.removeAttribute('disabled')
-      alert(`Failed to send annotations: ${error.message}`)
-    }
   }
 
 }
