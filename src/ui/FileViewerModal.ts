@@ -6,6 +6,7 @@ import {
 } from './FileViewerAnnotations'
 import { FileViewerContentPresenter } from './FileViewerContentPresenter'
 import { FileViewerMarkdownView } from './FileViewerMarkdownView'
+import { FileViewerModalRuntime } from './FileViewerModalRuntime'
 import { FileViewerTextEditor } from './FileViewerTextEditor'
 
 export class FileViewerModal {
@@ -29,22 +30,8 @@ export class FileViewerModal {
   private textEditor: FileViewerTextEditor
   private modeLineEl: HTMLElement
 
-  // Navigation state for cycling through files with Up/Down
-  private navigationFiles: string[] = []
-  private navigationIndex: number = -1
-  private skipEditorFocus: boolean = false
-
-  // Double-Escape tracking for vim: first Escape -> normal mode, second Escape -> close
-  private lastEscapeTime: number = 0
-
   private markdownView: FileViewerMarkdownView
-
-  // Handler refs for HMR cleanup
-  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
-  private arrowHandler: ((e: KeyboardEvent) => void) | null = null
-
-  // Async request ownership for race-safe modal loads
-  private deferredUiTimers = new Set<number>()
+  private runtime: FileViewerModalRuntime
 
   constructor() {
     this.backdrop = this.createBackdrop()
@@ -77,7 +64,7 @@ export class FileViewerModal {
         editorView: this.textEditor.getEditorView(),
         isVisible: this.isVisible(),
       }),
-      scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
+      scheduleDeferredUiTask: (task, delayMs) => this.runtime.scheduleDeferredUiTask(task, delayMs),
     })
     this.textEditor = new FileViewerTextEditor({
       contentEl: this.contentEl,
@@ -87,7 +74,7 @@ export class FileViewerModal {
       copyBtn: this.copyBtn,
       downloadBtn: this.downloadBtn,
       annotations: this.annotations,
-      scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
+      scheduleDeferredUiTask: (task, delayMs) => this.runtime.scheduleDeferredUiTask(task, delayMs),
       getOriginId: () => this.contentPresenter.getCurrentOriginId(),
       isVisible: () => this.isVisible(),
       onRenderMarkdown: (content) => this.markdownView.show(content),
@@ -119,6 +106,24 @@ export class FileViewerModal {
       annotations: this.annotations,
       textEditor: this.textEditor,
       markdownView: this.markdownView,
+    })
+    this.runtime = new FileViewerModalRuntime({
+      backdropEl: this.backdrop,
+      modalEl: this.modal,
+      annotations: this.annotations,
+      textEditor: this.textEditor,
+      markdownView: this.markdownView,
+      contentPresenter: this.contentPresenter,
+      isVisible: () => this.isVisible(),
+      onCloseRequested: () => this.tryClose(),
+      onNavigate: (filePath, navigationContext) => {
+        void this.show(
+          filePath,
+          this.contentPresenter.getCurrentOriginId(),
+          this.contentPresenter.getSourceWorkerId() || undefined,
+          navigationContext,
+        )
+      },
     })
 
     this.setupEventListeners()
@@ -189,145 +194,8 @@ export class FileViewerModal {
     // Save button
     this.saveBtn.addEventListener('click', () => this.textEditor.save())
 
-    // Document-level handlers are attached in show(), detached in hide()
-    // This prevents HMR stacking where old listeners accumulate across hot reloads
-  }
-
-  private attachDocumentHandlers(): void {
-    // Only attach if not already attached
-    if (this.escapeHandler) return
-
-    // Escape key to close the file viewer
-    // For vim: first Escape -> normal mode, second Escape (within 1s) -> close
-    this.escapeHandler = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || !this.modal.classList.contains('visible')) return
-
-      // Hide selection toolbar first
-      if (this.annotations.hasSelectionToolbar()) {
-        this.annotations.hideSelectionToolbar()
-        e.stopPropagation()
-        return
-      }
-
-      const now = Date.now()
-
-      // If editing a markdown file, Escape returns to rendered view
-      if (
-        this.textEditor.hasEditorFocus() &&
-        !this.markdownView.isActive() &&
-        this.textEditor.isMarkdownFile(this.contentPresenter.getCurrentPath())
-      ) {
-        if (now - this.lastEscapeTime < 1000) {
-          if (this.textEditor.getIsDirty()) {
-            this.textEditor.save().then(() => this.textEditor.exitMarkdownEditMode())
-          } else {
-            this.textEditor.exitMarkdownEditMode()
-          }
-          e.stopPropagation()
-          this.lastEscapeTime = 0
-          return
-        } else {
-          this.lastEscapeTime = now
-          return
-        }
-      }
-
-      // If editor exists and has focus, use double-Escape
-      if (this.textEditor.hasEditorFocus()) {
-        // Second Escape within 1 second -> close
-        if (now - this.lastEscapeTime < 1000) {
-          this.tryClose()
-          e.stopPropagation()
-          this.lastEscapeTime = 0
-        } else {
-          // First Escape -> let vim handle it, record time
-          this.lastEscapeTime = now
-          // Don't stop propagation - let vim see it
-        }
-        return
-      }
-
-      // No editor or not focused -> close immediately
-      this.tryClose()
-      e.stopPropagation()
-    }
-
-    // Up/Down arrow keys to navigate between files (only when editor not focused)
-    this.arrowHandler = (e: KeyboardEvent) => {
-      if (!this.modal.classList.contains('visible')) return
-      if (this.navigationFiles.length === 0) return
-      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
-
-      // Don't navigate if typing in a textarea/input
-      const target = e.target as HTMLElement
-      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
-
-      // Don't navigate if editor is focused - let CodeMirror handle cursor movement
-      if (this.textEditor.hasEditorFocus()) return
-
-      e.preventDefault()
-      e.stopImmediatePropagation()
-
-      const direction = e.key === 'ArrowUp' ? -1 : 1
-      const newIndex = this.navigationIndex + direction
-
-      // Wrap around
-      if (newIndex < 0) {
-        this.navigateToFile(this.navigationFiles.length - 1)
-      } else if (newIndex >= this.navigationFiles.length) {
-        this.navigateToFile(0)
-      } else {
-        this.navigateToFile(newIndex)
-      }
-    }
-
-    document.addEventListener('keydown', this.escapeHandler)
-    document.addEventListener('keydown', this.arrowHandler)
-  }
-
-  private detachDocumentHandlers(): void {
-    if (this.escapeHandler) {
-      document.removeEventListener('keydown', this.escapeHandler)
-      this.escapeHandler = null
-    }
-    if (this.arrowHandler) {
-      document.removeEventListener('keydown', this.arrowHandler)
-      this.arrowHandler = null
-    }
-  }
-
-  private scheduleDeferredUiTask(task: () => void, delayMs: number): number {
-    const timerId = window.setTimeout(() => {
-      this.deferredUiTimers.delete(timerId)
-      task()
-    }, delayMs)
-    this.deferredUiTimers.add(timerId)
-    return timerId
-  }
-
-  private clearDeferredUiTasks(): void {
-    for (const timerId of this.deferredUiTimers) {
-      window.clearTimeout(timerId)
-    }
-    this.deferredUiTimers.clear()
-  }
-
-  private navigateToFile(index: number): void {
-    if (index < 0 || index >= this.navigationFiles.length) return
-    if (this.textEditor.getIsDirty()) {
-      if (!confirm('You have unsaved changes. Discard them?')) {
-        return
-      }
-    }
-
-    this.navigationIndex = index
-    const filePath = this.navigationFiles[index]
-    // Show the new file, preserving navigation context
-    this.skipEditorFocus = true
-    this.show(filePath, this.contentPresenter.getCurrentOriginId(), this.contentPresenter.getSourceWorkerId() || undefined, {
-      files: this.navigationFiles,
-      index: this.navigationIndex,
-    })
+    // Document-level handlers are attached in the runtime during show()/hide().
+    // This prevents HMR stacking where old listeners accumulate across hot reloads.
   }
 
   private setupVimCommands(): void {
@@ -368,21 +236,9 @@ export class FileViewerModal {
     cityId?: string,
     jumpToLine?: number,
   ): Promise<void> {
-    this.clearDeferredUiTasks()
+    this.runtime.activate(navigationContext)
     this.sendBtn.style.display = 'none'
     this.fiberBtn.style.display = 'none'
-    if (navigationContext) {
-      this.navigationFiles = navigationContext.files
-      this.navigationIndex = navigationContext.index
-    } else {
-      this.navigationFiles = []
-      this.navigationIndex = -1
-      this.skipEditorFocus = false
-    }
-    this.lastEscapeTime = 0
-    this.backdrop.classList.add('visible')
-    this.modal.classList.add('visible')
-    this.attachDocumentHandlers()
     await this.contentPresenter.show({
       filePath,
       originId,
@@ -390,9 +246,9 @@ export class FileViewerModal {
       cityPath,
       cityId,
       jumpToLine,
-      focusEditor: !this.skipEditorFocus,
+      focusEditor: this.runtime.shouldFocusEditor(),
     })
-    this.skipEditorFocus = false
+    this.runtime.completeShow()
   }
 
   private async refresh(): Promise<void> {
@@ -428,14 +284,9 @@ export class FileViewerModal {
   }
 
   hide(): void {
-    this.clearDeferredUiTasks()
     this.contentPresenter.hide()
     this.annotations.dispose()
-    this.backdrop.classList.remove('visible')
-    this.modal.classList.remove('visible')
-
-    // Detach document-level handlers to prevent HMR stacking
-    this.detachDocumentHandlers()
+    this.runtime.deactivate()
   }
 
   isVisible(): boolean {
@@ -463,6 +314,7 @@ export class FileViewerModal {
     const annotationStats = this.annotations.getRuntimeStats()
     const presenterStats = this.contentPresenter.getRuntimeStats()
     const markdownStats = this.markdownView.getRuntimeStats()
+    const runtimeStats = this.runtime.getRuntimeStats()
     return {
       visible: this.isVisible(),
       currentPath: presenterStats.currentPath,
@@ -471,13 +323,13 @@ export class FileViewerModal {
       isDirty: this.textEditor.getIsDirty(),
       markdownRendered: this.markdownView.isActive(),
       annotationCount: annotationStats.annotationCount,
-      navigationFileCount: this.navigationFiles.length,
-      navigationIndex: this.navigationIndex,
+      navigationFileCount: runtimeStats.navigationFileCount,
+      navigationIndex: runtimeStats.navigationIndex,
       activeShowRequestId: presenterStats.activeShowRequestId,
       hasActiveShowRequest: presenterStats.hasActiveShowRequest,
       renderedMarkdownRequestId: markdownStats.renderedMarkdownRequestId,
       hasRenderedMarkdownRequest: markdownStats.hasRenderedMarkdownRequest,
-      deferredUiTimerCount: this.deferredUiTimers.size,
+      deferredUiTimerCount: runtimeStats.deferredUiTimerCount,
       hasImageAnnotationOutsideClickHandler: annotationStats.hasImageAnnotationOutsideClickHandler,
       hasImageAnnotationOutsideClickTimer: annotationStats.hasImageAnnotationOutsideClickTimer,
     }
@@ -486,7 +338,6 @@ export class FileViewerModal {
   dispose(): void {
     this.hide()
     this.markdownView.reset()
-    this.clearDeferredUiTasks()
     this.annotations.dispose()
     this.textEditor.destroy()
     this.backdrop.remove()
