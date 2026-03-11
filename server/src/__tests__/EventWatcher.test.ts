@@ -47,7 +47,7 @@ afterEach(() => {
 describe('EventWatcher session-state ownership', () => {
   it('clears working-timeout ownership immediately on idle events', () => {
     const watcher = new EventWatcher('/tmp/nonexistent-events.jsonl');
-    const internals = watcher as any;
+    const state = (watcher as any).getDebugState();
 
     processEvent(watcher, makeEvent({
       tmuxSession: 'alpha',
@@ -55,14 +55,14 @@ describe('EventWatcher session-state ownership', () => {
       timestamp: 1_000,
       tool: 'Read',
     }));
-    expect(internals.lastActivityBySession.has('alpha')).toBe(true);
+    expect(state.lastActivityBySession.has('alpha')).toBe(true);
 
     processEvent(watcher, makeEvent({
       tmuxSession: 'alpha',
       type: 'stop',
       timestamp: 1_500,
     }));
-    expect(internals.lastActivityBySession.has('alpha')).toBe(false);
+    expect(state.lastActivityBySession.has('alpha')).toBe(false);
   });
 
   it('bounds idle tracked sessions by maxTrackedSessions', () => {
@@ -70,13 +70,13 @@ describe('EventWatcher session-state ownership', () => {
       maxTrackedSessions: 2,
       inactiveSessionRetentionMs: Number.MAX_SAFE_INTEGER,
     });
-    const internals = watcher as any;
+    const state = (watcher as any).getDebugState();
 
     processWorkingAndIdle(watcher, 'alpha', 1_000);
     processWorkingAndIdle(watcher, 'beta', 2_000);
     processWorkingAndIdle(watcher, 'gamma', 3_000);
 
-    expect(internals.sessionLastSeenAt.size).toBeLessThanOrEqual(2);
+    expect(state.sessionLastSeenAt.size).toBeLessThanOrEqual(2);
     expect(watcher.getRecentActivities('alpha')).toHaveLength(0);
     expect(watcher.getRecentActivities('beta').length).toBeGreaterThan(0);
     expect(watcher.getRecentActivities('gamma').length).toBeGreaterThan(0);
@@ -84,7 +84,7 @@ describe('EventWatcher session-state ownership', () => {
 
   it('reconciles stale sessions against active tmux ownership', () => {
     const watcher = new EventWatcher('/tmp/nonexistent-events.jsonl');
-    const internals = watcher as any;
+    const state = (watcher as any).getDebugState();
 
     processEvent(watcher, makeEvent({
       tmuxSession: 'keep',
@@ -102,12 +102,12 @@ describe('EventWatcher session-state ownership', () => {
     watcher.reconcileActiveSessions(['keep']);
 
     expect(watcher.getRecentActivities('keep').length).toBeGreaterThan(0);
-    expect(internals.lastActivityBySession.has('keep')).toBe(true);
-    expect(internals.sessionLastSeenAt.has('keep')).toBe(true);
+    expect(state.lastActivityBySession.has('keep')).toBe(true);
+    expect(state.sessionLastSeenAt.has('keep')).toBe(true);
 
     expect(watcher.getRecentActivities('drop')).toHaveLength(0);
-    expect(internals.lastActivityBySession.has('drop')).toBe(false);
-    expect(internals.sessionLastSeenAt.has('drop')).toBe(false);
+    expect(state.lastActivityBySession.has('drop')).toBe(false);
+    expect(state.sessionLastSeenAt.has('drop')).toBe(false);
   });
 
   it('prunes inactive idle sessions by retention window', () => {
@@ -115,17 +115,17 @@ describe('EventWatcher session-state ownership', () => {
       inactiveSessionRetentionMs: 1_000,
       maxTrackedSessions: 10,
     });
-    const internals = watcher as any;
+    const state = (watcher as any).getDebugState();
 
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_500);
     processWorkingAndIdle(watcher, 'old-session', 1_000);
     expect(watcher.getRecentActivities('old-session').length).toBeGreaterThan(0);
 
     nowSpy.mockReturnValue(2_600);
-    internals.checkWorkingTimeouts();
+    (watcher as any).checkWorkingTimeouts();
 
     expect(watcher.getRecentActivities('old-session')).toHaveLength(0);
-    expect(internals.sessionLastSeenAt.has('old-session')).toBe(false);
+    expect(state.sessionLastSeenAt.has('old-session')).toBe(false);
   });
 
   it('reports compact stats for runtime diagnostics', () => {
