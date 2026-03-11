@@ -2,7 +2,6 @@ import {
   fileAnnotationsAsFiber,
   sendAnnotationsToWorker as persistAnnotationsToWorker,
 } from './FileViewerAnnotationActions'
-import type { AnnotationPanel } from './AnnotationPanel'
 import type { Annotation } from './FileViewerAnnotationTypes'
 import { type WorkerInfo, showWorkerPicker } from './WorkerPicker'
 import { showToast } from './utils'
@@ -19,7 +18,9 @@ interface FileViewerAnnotationTransportHost {
   panelEl: HTMLElement
   sendBtn: HTMLElement
   fiberBtn: HTMLElement
-  annotationPanel: AnnotationPanel<Annotation>
+  hasContent: () => boolean
+  getGlobalComment: () => string
+  resetGlobalComment: () => void
   getState: () => FileViewerAnnotationTransportState
   getAnnotations: () => Annotation[]
   scheduleDeferredUiTask: (task: () => void, delayMs: number) => number
@@ -45,14 +46,14 @@ export class FileViewerAnnotationTransport {
   }
 
   updateActionButtons(): void {
-    const visible = this.host.annotationPanel.hasContent() ? 'inline-block' : 'none'
+    const visible = this.host.hasContent() ? 'inline-block' : 'none'
     this.host.sendBtn.style.display = visible
     this.host.fiberBtn.style.display = visible
   }
 
   async showWorkerPicker(): Promise<void> {
     const { currentPath, currentOriginId, sourceWorkerId } = this.host.getState()
-    if (!currentPath || !this.host.annotationPanel.hasContent()) return
+    if (!currentPath || !this.host.hasContent()) return
 
     if (sourceWorkerId) {
       await this.sendAnnotationsToWorker(this.host.getAnnotations(), sourceWorkerId)
@@ -76,7 +77,7 @@ export class FileViewerAnnotationTransport {
 
   async fileAsFiber(): Promise<void> {
     const { currentPath, currentOriginId, currentCityPath } = this.host.getState()
-    if (!currentPath || !this.host.annotationPanel.hasContent()) return
+    if (!currentPath || !this.host.hasContent()) return
 
     try {
       this.host.fiberBtn.textContent = 'Filing...'
@@ -87,9 +88,9 @@ export class FileViewerAnnotationTransport {
         currentOriginId,
         currentCityPath,
         annotations: this.host.getAnnotations(),
-        globalComment: this.host.annotationPanel.getGlobalComment(),
+        globalComment: this.host.getGlobalComment(),
       })
-      this.host.annotationPanel.resetGlobalInput()
+      this.host.resetGlobalComment()
       this.updateActionButtons()
 
       this.host.fiberBtn.textContent = 'Filed!'
@@ -127,7 +128,7 @@ export class FileViewerAnnotationTransport {
     createNew?: boolean,
   ): Promise<void> {
     const { currentPath, currentOriginId, isVisible } = this.host.getState()
-    const globalComment = this.host.annotationPanel.getGlobalComment()
+    const globalComment = this.host.getGlobalComment()
     if (!currentPath || (annotations.length === 0 && globalComment.length === 0)) return
 
     try {
@@ -140,7 +141,7 @@ export class FileViewerAnnotationTransport {
         globalComment,
       })
 
-      this.host.annotationPanel.resetGlobalInput()
+      this.host.resetGlobalComment()
       this.updateActionButtons()
 
       const originalText = createNew ? 'Send to Worker' : this.host.sendBtn.textContent
