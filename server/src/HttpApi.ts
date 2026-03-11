@@ -13,7 +13,6 @@ import { URL } from 'url';
 import { execFile } from 'child_process';
 import { readFile } from 'fs/promises';
 import { promisify } from 'util';
-import { isAbsolute, normalize, resolve } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence } from './AnnotationPersistence.js';
@@ -22,6 +21,7 @@ import type { RecentFileTracker } from './RecentFileTracker.js';
 import { shellEscape } from './KittyIntegration.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
+import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiTapestry } from './HttpApiTapestry.js';
 
 const execFileAsync = promisify(execFile);
@@ -59,11 +59,8 @@ export class HttpApi {
   private persistenceLookup: PersistenceLookup;
   private annotationsApi: HttpApiAnnotations;
   private fileContentApi: HttpApiFileContent;
+  private hooksRuntimeApi: HttpApiHooksRuntime;
   private tapestryApi: HttpApiTapestry;
-  private sessionLookup: SessionLookup | null = null;
-  private recentFileTracker: RecentFileTracker | null = null;
-  private hookSessionToWorkerSessionId: Map<string, string> = new Map();
-  private runtimeDiagnosticsProvider: RuntimeDiagnosticsProvider | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -83,6 +80,11 @@ export class HttpApi {
     });
     this.fileContentApi = new HttpApiFileContent({
       originLookup,
+      parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
+      sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
+      sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
@@ -107,22 +109,22 @@ export class HttpApi {
    * Set session lookup instance
    */
   setSessionLookup(lookup: SessionLookup): void {
-    this.sessionLookup = lookup;
     this.annotationsApi.setSessionLookup(lookup);
+    this.hooksRuntimeApi.setSessionLookup(lookup);
   }
 
   /**
    * Set recent file tracker for worker hover tooltips
    */
   setRecentFileTracker(tracker: RecentFileTracker): void {
-    this.recentFileTracker = tracker;
+    this.hooksRuntimeApi.setRecentFileTracker(tracker);
   }
 
   /**
    * Set runtime diagnostics provider for /debug-runtime endpoint.
    */
   setRuntimeDiagnosticsProvider(provider: RuntimeDiagnosticsProvider): void {
-    this.runtimeDiagnosticsProvider = provider;
+    this.hooksRuntimeApi.setRuntimeDiagnosticsProvider(provider);
   }
 
   setOnCreateNewWorker(fn: (cityPath: string, originId: string) => Promise<string>): void {
@@ -230,17 +232,17 @@ export class HttpApi {
     }
 
     if (url.pathname === '/recent-files' && req.method === 'GET') {
-      await this.handleRecentFiles(url, res);
+      await this.hooksRuntimeApi.handleRecentFiles(url, res);
       return true;
     }
 
     if (url.pathname === '/debug-runtime') {
-      await this.handleDebugRuntime(res);
+      await this.hooksRuntimeApi.handleDebugRuntime(res);
       return true;
     }
 
     if (req.method === 'POST' && url.pathname === '/hook/file-touch') {
-      await this.handleHookFileTouch(req, res);
+      await this.hooksRuntimeApi.handleHookFileTouch(req, res);
       return true;
     }
 
@@ -431,213 +433,12 @@ export class HttpApi {
     }
   }
 
-  /**
-   * GET /recent-files?sessionId=...&limit=5
-   * Returns the latest touched files for a worker session.
-   */
-  private async handleRecentFiles(url: URL, res: ServerResponse): Promise<void> {
-    if (!this.recentFileTracker) {
-      this.sendJsonError(res, 500, 'Recent file tracker not configured');
-      return;
-    }
-
-    const sessionId = url.searchParams.get('sessionId');
-    if (!sessionId) {
-      this.sendJsonError(res, 400, 'Missing sessionId parameter');
-      return;
-    }
-
-    const limitRaw = parseInt(url.searchParams.get('limit') || '5', 10);
-    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(10, limitRaw)) : 5;
-    const files = this.recentFileTracker.getRecentFiles(sessionId, limit);
-    this.sendJsonSuccess(res, { sessionId, files });
-  }
-
-  /**
-   * POST /hook/file-touch
-   * Receives Claude Code PostToolUse events for Read/Write/Edit.
-   */
-  private async handleHookFileTouch(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.recentFileTracker) {
-      this.sendJsonError(res, 500, 'Recent file tracker not configured');
-      return;
-    }
-    if (!this.sessionLookup) {
-      this.sendJsonError(res, 500, 'Session lookup not configured');
-      return;
-    }
-
-    const payload = await this.parseJsonBody<Record<string, unknown>>(req, res);
-    if (!payload) return;
-
-    const sessionIdRaw = typeof payload.session_id === 'string'
-      ? payload.session_id
-      : typeof payload.sessionId === 'string'
-        ? payload.sessionId
-        : '';
-    const toolNameRaw = typeof payload.tool_name === 'string'
-      ? payload.tool_name
-      : typeof payload.toolName === 'string'
-        ? payload.toolName
-        : '';
-
-    const toolInput = payload.tool_input && typeof payload.tool_input === 'object'
-      ? payload.tool_input as Record<string, unknown>
-      : payload.toolInput && typeof payload.toolInput === 'object'
-        ? payload.toolInput as Record<string, unknown>
-        : null;
-
-    const filePathRaw = toolInput && typeof toolInput.file_path === 'string'
-      ? toolInput.file_path
-      : toolInput && typeof toolInput.path === 'string'
-        ? toolInput.path
-        : '';
-    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-    const filePath = this.normalizeHookFilePath(filePathRaw, cwd);
-
-    if (!sessionIdRaw || !toolNameRaw || !filePath) {
-      this.sendJsonError(res, 400, 'Missing required fields: session_id, tool_name, tool_input.file_path');
-      return;
-    }
-
-    if (!['Read', 'Write', 'Edit'].includes(toolNameRaw)) {
-      this.sendJsonSuccess(res, { success: true, ignored: true, reason: 'tool-filter' });
-      return;
-    }
-
-    const resolvedSession = this.resolveWorkerSessionForHook(sessionIdRaw, cwd, filePath);
-    if (!resolvedSession) {
-      this.sendJsonSuccess(res, { success: true, stored: false, reason: 'session-not-found' });
-      return;
-    }
-
-    this.hookSessionToWorkerSessionId.set(sessionIdRaw, resolvedSession.id);
-    this.recentFileTracker.recordTouch(resolvedSession.id, toolNameRaw, filePath);
-    this.sendJsonSuccess(res, {
-      success: true,
-      stored: true,
-      workerSessionId: resolvedSession.id,
-      tmuxSession: resolvedSession.tmuxSession,
-    });
-  }
-
-  /**
-   * Best-effort resolution from hook session_id -> active worker session.
-   */
-  private resolveWorkerSessionForHook(
-    hookSessionId: string,
-    cwd: string,
-    filePath: string
-  ): Session | null {
-    if (!this.sessionLookup) return null;
-
-    const mappedWorkerSessionId = this.hookSessionToWorkerSessionId.get(hookSessionId);
-    if (mappedWorkerSessionId) {
-      const mappedSession = this.sessionLookup.findSession(mappedWorkerSessionId);
-      if (mappedSession) return mappedSession;
-      this.hookSessionToWorkerSessionId.delete(hookSessionId);
-    }
-
-    const directByWorkerId = this.sessionLookup.findSession(hookSessionId);
-    if (directByWorkerId) return directByWorkerId;
-
-    const allSessions = this.sessionLookup.getAllSessions();
-    const directByTmux = allSessions.find((s) => s.tmuxSession === hookSessionId);
-    if (directByTmux) return directByTmux;
-
-    const cwdMatches = cwd
-      ? allSessions.filter((s) =>
-        this.pathContains(s.cwd, cwd) || this.pathContains(cwd, s.cwd)
-      )
-      : [];
-    if (cwdMatches.length === 1) return cwdMatches[0];
-
-    const fileMatches = filePath
-      ? allSessions.filter((s) => this.pathContains(s.cwd, filePath))
-      : [];
-    if (fileMatches.length === 1) return fileMatches[0];
-
-    const candidates = (cwdMatches.length > 1 ? cwdMatches : fileMatches.length > 1 ? fileMatches : [])
-      .slice()
-      .sort((a, b) => b.lastActivity - a.lastActivity);
-    if (candidates.length > 0) return candidates[0];
-
-    const working = allSessions
-      .filter((s) => s.status === 'working')
-      .sort((a, b) => b.lastActivity - a.lastActivity);
-    if (working.length === 1) return working[0];
-
-    return null;
-  }
-
-  private normalizePathForMatch(pathValue: string): string {
-    const trimmed = pathValue.trim();
-    if (!trimmed) return '';
-    const normalizedPath = normalize(trimmed);
-    if (normalizedPath === '/') return '/';
-    return normalizedPath.replace(/\/+$/, '');
-  }
-
-  /**
-   * True when targetPath is basePath itself or a descendant path.
-   * Uses boundary-safe matching to avoid "/foo" matching "/foobar".
-   */
-  private pathContains(basePath: string, targetPath: string): boolean {
-    const base = this.normalizePathForMatch(basePath);
-    const target = this.normalizePathForMatch(targetPath);
-    if (!base || !target) return false;
-    if (base === target) return true;
-    if (base === '/') return target.startsWith('/');
-    return target.startsWith(`${base}/`);
-  }
-
-  private normalizeHookFilePath(filePath: string, cwd: string): string {
-    const trimmedPath = filePath.trim();
-    if (!trimmedPath) return '';
-
-    if (isAbsolute(trimmedPath)) {
-      return normalize(trimmedPath);
-    }
-
-    const trimmedCwd = cwd.trim();
-    if (trimmedCwd && isAbsolute(trimmedCwd)) {
-      return normalize(resolve(trimmedCwd, trimmedPath));
-    }
-
-    return trimmedPath;
-  }
-
   private formatAnnotationsForClaude(filePath: string, annotations: unknown[], globalComment?: string): string {
     return this.annotationsApi.formatAnnotationsForClaude(filePath, annotations as any, globalComment);
   }
 
   private formatClaimsAnnotationsForClaude(cityName: string, annotations: unknown[], globalComment?: string): string {
     return this.annotationsApi.formatClaimsAnnotationsForClaude(cityName, annotations as any, globalComment);
-  }
-
-  private async handleDebugRuntime(res: ServerResponse): Promise<void> {
-    try {
-      const runtimeDiagnostics = this.runtimeDiagnosticsProvider
-        ? await this.runtimeDiagnosticsProvider()
-        : {};
-
-      const debug = {
-        timestamp: Date.now(),
-        pid: process.pid,
-        uptimeSeconds: process.uptime(),
-        memory: process.memoryUsage(),
-        runtime: runtimeDiagnostics,
-      };
-
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify(debug, null, 2));
-    } catch (error) {
-      console.error('Failed to collect runtime diagnostics:', error);
-      this.sendJsonError(res, 500, 'Failed to collect runtime diagnostics');
-    }
   }
 
   /**
