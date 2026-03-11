@@ -16,6 +16,7 @@ import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
 import { getActivitySessionKey } from './runtime/FrontendActivityStore'
 import { FrontendStateSync } from './runtime/FrontendStateSync'
+import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { CityHUD } from './ui/CityHUD'
 import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
@@ -202,30 +203,11 @@ cityPanel.setOnViewPlaygrounds((city) => {
 let cities: City[] = []
 let sessions: Session[] = []
 let origins: ServerOrigin[] = []
-let runtimeDisposed = false
-let animationFrameId: number | null = null
-let mockDataTimeout: ReturnType<typeof setTimeout> | null = null
-let workerHudUpdateFrameId: number | null = null
-let hasRuntimeCleanupRun = false
 let selectedHex: { q: number; r: number } | null = null
 let mapActions: FrontendMapActions | null = null
 
 // Move mode: when set, next click will move this city to that hex
 let movingCityId: string | null = null
-
-let totalWorkerHudUpdates = 0
-
-function scheduleWorkerHudUpdate(): void {
-  if (!cityPanel.isVisible() || workerHudUpdateFrameId !== null) return
-
-  // Coalesce bursty activity events into at most one HUD rerender per frame.
-  workerHudUpdateFrameId = requestAnimationFrame(() => {
-    workerHudUpdateFrameId = null
-    if (runtimeDisposed) return
-    totalWorkerHudUpdates += 1
-    cityPanel.updateWorkers(sessions)
-  })
-}
 
 const stateSync = new FrontendStateSync({
   handlePanelMessage: (message) => cityPanel.handleMessage(message),
@@ -282,44 +264,12 @@ const stateSync = new FrontendStateSync({
   },
   onActivity: ({ activitySessionKey, activities }) => {
     zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
-    scheduleWorkerHudUpdate()
+    appRuntime.scheduleWorkerHudUpdate()
   },
   onServerError: (message) => {
     console.error('[Frontend] Server error:', message)
     alert(message)
   },
-})
-
-mapActions = new FrontendMapActions({
-  newWorkerDialog,
-  sendMessage: (message) => stateSync.send(message),
-  getWebSocketState: () => stateSync.getWebSocketState(),
-  showCity: (city) => cityPanel.show(city),
-})
-
-installFrontendRuntimeDiagnostics({
-  renderer,
-  zoneRenderer,
-  cityPanel,
-  fileViewerModal,
-  tapestryView,
-  playgroundViewer,
-  getArtifactMediaCacheStats,
-  getRuntimeDisposed: () => runtimeDisposed,
-  getWebSocketState: () => stateSync.getWebSocketState(),
-  hasReconnectTimeout: () => stateSync.hasPendingReconnect(),
-  hasReceivedInitialState: () => stateSync.getHasReceivedInitialState(),
-  getWorldStats: () => ({
-    cityCount: cities.length,
-    sessionCount: sessions.length,
-    originCount: origins.length,
-    selectedHex: selectedHex ? { q: selectedHex.q, r: selectedHex.r } : null,
-  }),
-  getActivityStats: () => stateSync.getActivityStats(),
-  getHudStats: () => ({
-    hasPendingWorkerUpdateFrame: workerHudUpdateFrameId !== null,
-    totalWorkerHudUpdates,
-  }),
 })
 
 const mapInteractions = new MapInteractionController({
@@ -352,97 +302,66 @@ const mapInteractions = new MapInteractionController({
   findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
 })
 
-// Window resize handler
-function resizeHandler(): void {
-  renderer.setSize(window.innerWidth, window.innerHeight)
-  labelRenderer.setSize(window.innerWidth, window.innerHeight)
-  camera.resize()
-}
-window.addEventListener('resize', resizeHandler)
-// Render loop
-function animate(): void {
-  if (runtimeDisposed) return
-  animationFrameId = requestAnimationFrame(animate)
+mapActions = new FrontendMapActions({
+  newWorkerDialog,
+  sendMessage: (message) => stateSync.send(message),
+  getWebSocketState: () => stateSync.getWebSocketState(),
+  showCity: (city) => cityPanel.show(city),
+})
 
-  // Animate (breathing pulse, label visibility, distance fading)
-  zoneRenderer.animate(camera.cameraDistance)
-
-  renderer.render(scene, camera.camera)
-  labelRenderer.render(scene, camera.camera)
-}
-
-// Start
-stateSync.connect()
-animate()
-
-// Add some mock data for testing when server is not available
-mockDataTimeout = setTimeout(() => {
-  if (cities.length === 0) {
-    const mockCities: City[] = [
-      { id: '1', name: 'portolan-v2', path: '/projects/portolan-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, hasPlaygrounds: true, isDormant: false, originId: 'local' },
-      { id: '2', name: 'loom', path: '/projects/loom', hex: { q: 2, r: -1 }, fiberCount: 7, hasClaims: true, hasPlaygrounds: false, isDormant: false, originId: 'local' },
-      { id: '3', name: 'pure-eb', path: '/projects/pure-eb', hex: { q: -2, r: 1 }, fiberCount: 0, hasClaims: true, hasPlaygrounds: false, isDormant: true, originId: 'remote-candide' },
-    ]
-    const mockSessions: Session[] = [
-      { id: 's1', name: 'claude-0', tmuxSession: 'mock-0', cityId: '1', hex: { q: 1, r: 0 }, status: 'working', originId: 'local', lastActivity: Date.now() },
-      { id: 's2', name: 'claude-1', tmuxSession: 'mock-1', cityId: '1', hex: { q: 0, r: 1 }, status: 'idle', originId: 'local', lastActivity: Date.now() },
-      { id: 's3', name: 'claude-2', tmuxSession: 'mock-2', cityId: '2', hex: { q: 3, r: -1 }, status: 'idle', originId: 'local', lastActivity: Date.now() },
-    ]
+const appRuntime = new FrontendAppRuntime({
+  renderer,
+  scene,
+  labelRenderer,
+  camera,
+  zoneRenderer,
+  stateSync,
+  mapInteractions,
+  cityPanel,
+  fileViewerModal,
+  contextMenu,
+  newWorkerDialog,
+  tapestryView,
+  playgroundViewer,
+  clearArtifactMediaCaches,
+  getCities: () => cities,
+  updateWorkerHud: () => cityPanel.updateWorkers(sessions),
+  isWorkerHudVisible: () => cityPanel.isVisible(),
+  applyMockState: (mockCities, mockSessions) => {
     cities = mockCities
     sessions = mockSessions
     zoneRenderer.updateState(cities, sessions)
-  }
-  mockDataTimeout = null
-}, 1000)
+  },
+})
 
-function cleanupRuntime(): void {
-  if (hasRuntimeCleanupRun) return
-  hasRuntimeCleanupRun = true
-  runtimeDisposed = true
+installFrontendRuntimeDiagnostics({
+  renderer,
+  zoneRenderer,
+  cityPanel,
+  fileViewerModal,
+  tapestryView,
+  playgroundViewer,
+  getArtifactMediaCacheStats,
+  getRuntimeDisposed: () => appRuntime.isDisposed(),
+  getWebSocketState: () => stateSync.getWebSocketState(),
+  hasReconnectTimeout: () => stateSync.hasPendingReconnect(),
+  hasReceivedInitialState: () => stateSync.getHasReceivedInitialState(),
+  getWorldStats: () => ({
+    cityCount: cities.length,
+    sessionCount: sessions.length,
+    originCount: origins.length,
+    selectedHex: selectedHex ? { q: selectedHex.q, r: selectedHex.r } : null,
+  }),
+  getActivityStats: () => stateSync.getActivityStats(),
+  getHudStats: () => appRuntime.getHudStats(),
+})
 
-  // Stop async loops and reconnect timers before disposing owned resources.
-  if (animationFrameId !== null) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = null
-  }
-  if (mockDataTimeout) {
-    clearTimeout(mockDataTimeout)
-    mockDataTimeout = null
-  }
-  if (workerHudUpdateFrameId !== null) {
-    cancelAnimationFrame(workerHudUpdateFrameId)
-    workerHudUpdateFrameId = null
-  }
-
-  // Close WebSocket and prevent reconnection attempts.
-  stateSync.dispose()
-
-  mapInteractions.dispose()
-  window.removeEventListener('resize', resizeHandler)
-
-  // Dispose UI panels (removes DOM and detaches document listeners).
-  cityPanel.dispose()
-  fileViewerModal.dispose()
-  contextMenu.dispose()
-  newWorkerDialog.dispose()
-  tapestryView.dispose()
-  playgroundViewer.dispose()
-
-  // Dispose renderer components in reverse initialization order.
-  camera.dispose()
-  zoneRenderer.dispose()
-  renderer.dispose()
-
-  // Clear shared UI media caches so HMR and prod cleanup follow the same teardown path.
-  clearArtifactMediaCaches()
-
-  // Clean up DOM elements.
-  labelRenderer.domElement.remove()
-}
+stateSync.connect()
+appRuntime.start()
 
 // HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    cleanupRuntime()
+    appRuntime.dispose()
   })
 }
