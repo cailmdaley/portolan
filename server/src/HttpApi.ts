@@ -10,21 +10,17 @@
 
 import { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
-import { execFile } from 'child_process';
-import { readFile } from 'fs/promises';
-import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
-import { shellEscape } from './KittyIntegration.js';
+import { HttpApiActivation } from './HttpApiActivation.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
+import { HttpApiPlayground } from './HttpApiPlayground.js';
 import { HttpApiTapestry } from './HttpApiTapestry.js';
-
-const execFileAsync = promisify(execFile);
 
 // ============================================================================
 // Types
@@ -60,6 +56,8 @@ export class HttpApi {
   private annotationsApi: HttpApiAnnotations;
   private fileContentApi: HttpApiFileContent;
   private hooksRuntimeApi: HttpApiHooksRuntime;
+  private activationApi: HttpApiActivation;
+  private playgroundApi: HttpApiPlayground;
   private tapestryApi: HttpApiTapestry;
 
   constructor(
@@ -88,6 +86,14 @@ export class HttpApi {
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    this.activationApi = new HttpApiActivation({
+      cityLookup,
+      getSshHost: (city) => this.getSshHost(city),
+    });
+    this.playgroundApi = new HttpApiPlayground({
+      cityLookup,
+      getSshHost: (city) => this.getSshHost(city),
     });
     this.tapestryApi = new HttpApiTapestry({
       cityLookup,
@@ -164,7 +170,7 @@ export class HttpApi {
     }
 
     if (req.method === 'POST' && url.pathname === '/activate-city') {
-      await this.handleActivateCity(url, res);
+      await this.activationApi.handleActivateCity(url, res);
       return true;
     }
 
@@ -222,12 +228,12 @@ export class HttpApi {
     }
 
     if (url.pathname === '/playground-list') {
-      await this.handlePlaygroundList(url, res);
+      await this.playgroundApi.handlePlaygroundList(url, res);
       return true;
     }
 
     if (url.pathname === '/playground') {
-      await this.handlePlayground(url, res);
+      await this.playgroundApi.handlePlayground(url, res);
       return true;
     }
 
@@ -256,181 +262,6 @@ export class HttpApi {
     const origin = this.originLookup.getOrigin(city.originId);
     const persistedCity = this.persistenceLookup.getCityById(city.id);
     return origin?.sshHost || persistedCity?.sshHost || city.originId.replace('remote-', '');
-  }
-
-  /**
-   * Activate dormant remote city endpoint
-   * POST /activate-city?cityId=xxx
-   */
-  private async handleActivateCity(url: URL, res: ServerResponse): Promise<void> {
-    console.log(`[Activate] Received request for cityId=${url.searchParams.get('cityId')}`);
-    const cityId = url.searchParams.get('cityId');
-    if (!cityId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing cityId parameter' }));
-      return;
-    }
-
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'City not found' }));
-      return;
-    }
-
-    // Only activate remote cities
-    if (city.originId === 'local') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot activate local city - start a session manually' }));
-      return;
-    }
-
-    const sshHost = this.getSshHost(city);
-
-    try {
-      // Check if agent is already running on this host
-      // Use -T to disable TTY allocation (avoids "Pseudo-terminal will not be allocated" warnings)
-      const { stdout: checkOutput } = await execFileAsync(
-        'ssh', ['-T', sshHost, 'tmux has-session -t portolan-agent 2>/dev/null && echo running || echo stopped'],
-        { timeout: 10000 }
-      );
-
-      if (checkOutput.trim() === 'running') {
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ status: 'already_running', message: 'Agent already running on ' + sshHost }));
-        return;
-      }
-
-      // Start the agent via SSH
-      // Use -T to disable TTY allocation, bash -l to get login shell with nvm/node in PATH
-      console.log(`[Activate] Starting portolan-agent on ${sshHost}...`);
-      await execFileAsync(
-        'ssh', ['-T', sshHost, `tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${sshHost}\\""`],
-        { timeout: 30000 }
-      );
-
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ status: 'started', message: 'Agent started on ' + sshHost }));
-    } catch (error: any) {
-      console.error(`[Activate] Failed to start agent on ${sshHost}:`, error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ error: 'Failed to start agent: ' + error.message }));
-    }
-  }
-
-  // ============================================================================
-  // Playground Endpoints
-  // ============================================================================
-
-  /**
-   * List available playgrounds for a city
-   * GET /playground-list?cityId=xxx
-   */
-  private async handlePlaygroundList(url: URL, res: ServerResponse): Promise<void> {
-    const cityId = url.searchParams.get('cityId');
-    if (!cityId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing cityId parameter' }));
-      return;
-    }
-
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'City not found' }));
-      return;
-    }
-
-    const playgroundsDir = `${city.path}/.portolan/playgrounds`;
-
-    try {
-      let files: string[];
-      if (city.originId === 'local') {
-        const { readdirSync } = await import('fs');
-        files = readdirSync(playgroundsDir).filter(f => f.endsWith('.html'));
-      } else {
-        const sshHost = this.getSshHost(city);
-        const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `ls ${shellEscape(playgroundsDir)}/*.html 2>/dev/null || true`],
-          { timeout: 10000 }
-        );
-        files = stdout.trim().split('\n')
-          .filter(Boolean)
-          .map(f => f.split('/').pop()!)
-          .filter(f => f.endsWith('.html'));
-      }
-
-      // Sort by name, most recently modified first would be nice but simpler to just sort alphabetically
-      files.sort();
-
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ playgrounds: files }));
-    } catch (error: any) {
-      console.error('Failed to list playgrounds:', error.message);
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(JSON.stringify({ playgrounds: [] }));
-    }
-  }
-
-  /**
-   * Serve a playground HTML file
-   * GET /playground?cityId=xxx&name=playground.html
-   */
-  private async handlePlayground(url: URL, res: ServerResponse): Promise<void> {
-    const cityId = url.searchParams.get('cityId');
-    const name = url.searchParams.get('name');
-
-    if (!cityId || !name) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Missing cityId or name parameter');
-      return;
-    }
-
-    // Security: prevent directory traversal
-    if (name.includes('/') || name.includes('..')) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Invalid playground name');
-      return;
-    }
-
-    const city = this.cityLookup.getCityById(cityId);
-    if (!city) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('City not found');
-      return;
-    }
-
-    const playgroundPath = `${city.path}/.portolan/playgrounds/${name}`;
-
-    try {
-      let html: string;
-      if (city.originId === 'local') {
-        html = await readFile(playgroundPath, 'utf-8');
-      } else {
-        const sshHost = this.getSshHost(city);
-        const { stdout } = await execFileAsync(
-          'ssh', [sshHost, `cat ${shellEscape(playgroundPath)}`],
-          { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
-        );
-        html = stdout;
-      }
-
-      res.writeHead(200, {
-        'Content-Type': 'text/html',
-        'Access-Control-Allow-Origin': '*',
-      });
-      res.end(html);
-    } catch (error: any) {
-      console.error('Failed to fetch playground:', error.message);
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Playground not found');
-    }
   }
 
   private formatAnnotationsForClaude(filePath: string, annotations: unknown[], globalComment?: string): string {
