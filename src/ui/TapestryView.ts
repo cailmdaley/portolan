@@ -8,6 +8,7 @@ import { TapestryDagGraph } from './TapestryDagGraph'
 import { TapestryDetailBody } from './TapestryDetailBody'
 import { TapestryDetailPanel } from './TapestryDetailPanel'
 import { TapestrySidebar } from './TapestrySidebar'
+import { TapestryViewInteractions } from './TapestryViewInteractions'
 import { TapestryViewRuntime } from './TapestryViewRuntime'
 import type { TapestryNode, TapestryResponse } from './tapestry-types'
 import { interpolateConfig, showToast } from './utils'
@@ -31,6 +32,7 @@ export class TapestryView {
   private detailPanelController: TapestryDetailPanel
   private sidebar: TapestrySidebar
   private runtime = new TapestryViewRuntime()
+  private interactions: TapestryViewInteractions
   private hideCleanupTimeout: ReturnType<typeof setTimeout> | null = null
   private lightbox = new TapestryArtifactLightbox(
     (specName, filePath) => this.runtime.artifactUrl(specName, filePath),
@@ -39,7 +41,6 @@ export class TapestryView {
   )
   private detailBody = new TapestryDetailBody()
 
-  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private onGetWorkers: ((city: City) => WorkerInfo[]) | null = null
   private onOpenFile: ((path: string, city: City, line?: number) => void) | null = null
 
@@ -106,6 +107,22 @@ export class TapestryView {
       selectSearchNode: (fiberId) => this.graph.revealAndSelect(fiberId, true, true),
       selectFiber: (fiberId) => this.selectFiber(fiberId),
     })
+    this.interactions = new TapestryViewInteractions({
+      detailPanel: this.detailPanel,
+      sidebarResizeHandle: this.panel.querySelector('.tapestry-sidebar-resize'),
+      sidebar: this.panel.querySelector('.tapestry-sidebar'),
+      isVisible: () => this.isVisible(),
+      isStaticMode: () => this.runtime.isStaticMode(),
+      getEditingNode: () => {
+        const editingNodeId = this.detailBody.getEditingNodeId()
+        if (!editingNodeId) return null
+        return this.runtime.getTapestryData()?.nodes.find((node) => node.id === editingNodeId) || null
+      },
+      exitBodyEditMode: (node) => this.exitBodyEditMode(node),
+      hide: () => this.hide(),
+      hideDetail: () => this.hideDetail(),
+      handleTextSelection: (selection) => this.annotations.handleTextSelection(selection),
+    })
 
     this.setupEventListeners()
     document.body.appendChild(this.panel)
@@ -155,60 +172,6 @@ export class TapestryView {
 
   private setupEventListeners(): void {
     this.closeBtn.addEventListener('click', () => this.hide())
-
-    this.escapeHandler = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || !this.isVisible()) return
-      if (this.detailBody.isEditing()) {
-        const node = this.runtime.getTapestryData()?.nodes.find((candidate) => candidate.id === this.detailBody.getEditingNodeId())
-        if (node) this.exitBodyEditMode(node)
-        return
-      }
-      if (this.detailPanel.classList.contains('hidden')) {
-        this.hide()
-      } else {
-        this.hideDetail()
-      }
-    }
-
-    const sidebarResize = this.panel.querySelector('.tapestry-sidebar-resize')
-    const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement
-    if (sidebarResize && sidebar) {
-      sidebarResize.addEventListener('mousedown', (e) => {
-        e.preventDefault()
-        sidebar.style.transition = 'none'
-        const startX = (e as MouseEvent).clientX
-        const startWidth = sidebar.getBoundingClientRect().width
-        const onMove = (ev: MouseEvent) => {
-          const maxWidth = window.innerWidth * 0.85
-          const newWidth = Math.max(300, Math.min(maxWidth, startWidth - (ev.clientX - startX)))
-          sidebar.style.width = `${newWidth}px`
-        }
-        const onUp = () => {
-          sidebar.style.transition = ''
-          document.removeEventListener('mousemove', onMove)
-          document.removeEventListener('mouseup', onUp)
-        }
-        document.addEventListener('mousemove', onMove)
-        document.addEventListener('mouseup', onUp)
-      })
-    }
-
-    let selectionTimeout: ReturnType<typeof setTimeout> | null = null
-    this.detailPanel.addEventListener('mouseup', () => {
-      if (this.runtime.isStaticMode()) return
-      selectionTimeout = setTimeout(() => {
-        const selection = window.getSelection()
-        if (selection && selection.toString().trim().length > 0) {
-          this.annotations.handleTextSelection(selection)
-        }
-      }, 250)
-    })
-    this.detailPanel.addEventListener('dblclick', () => {
-      if (selectionTimeout) {
-        clearTimeout(selectionTimeout)
-        selectionTimeout = null
-      }
-    })
   }
 
   private clearHideCleanupTimeout(): void {
@@ -230,9 +193,7 @@ export class TapestryView {
     this.loadingIndicator.classList.remove('error')
     this.dagContainer.innerHTML = ''
 
-    if (this.escapeHandler) {
-      document.addEventListener('keydown', this.escapeHandler)
-    }
+    this.interactions.attach()
     this.panel.classList.add('visible')
 
     try {
@@ -260,9 +221,7 @@ export class TapestryView {
     this.annotations.reset()
     this.sidebar.reset()
 
-    if (this.escapeHandler) {
-      document.removeEventListener('keydown', this.escapeHandler)
-    }
+    this.interactions.detach()
 
     this.hideCleanupTimeout = setTimeout(() => {
       if (!this.isVisible()) {
@@ -319,7 +278,7 @@ export class TapestryView {
       hasDataFetchRequest: runtimeStats.hasDataFetchRequest,
       dataRequestId: runtimeStats.dataRequestId,
       hasHideCleanupTimeout: this.hideCleanupTimeout !== null,
-      hasEscapeHandler: this.escapeHandler !== null,
+      hasEscapeHandler: this.interactions.getRuntimeStats().hasEscapeHandler,
       hasArtifactClickHandler: this.detailPanelController.getRuntimeStats().hasArtifactClickHandler,
       hasGalleryDetach: this.detailPanelController.getRuntimeStats().hasGalleryDetach,
       hasStaticFileModal: runtimeStats.hasStaticFileModal,
@@ -335,6 +294,7 @@ export class TapestryView {
     this.clearHideCleanupTimeout()
     this.detailPanelController.destroy()
     this.sidebar.destroy()
+    this.interactions.destroy()
     this.graph.destroy()
     this.panel.remove()
   }
@@ -358,9 +318,7 @@ export class TapestryView {
     this.loadingIndicator.style.display = 'none'
     this.dagContainer.innerHTML = ''
 
-    if (this.escapeHandler) {
-      document.addEventListener('keydown', this.escapeHandler)
-    }
+    this.interactions.attach()
     this.panel.classList.add('visible')
 
     this.graph.render(data)
