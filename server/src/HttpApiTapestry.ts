@@ -6,7 +6,7 @@ import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
-import { shellEscape } from './KittyIntegration.js';
+import { shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
 

@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { extname } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Origin } from './OriginManager.js';
-import { shellEscape } from './KittyIntegration.js';
+import { shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
 

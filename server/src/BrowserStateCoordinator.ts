@@ -6,7 +6,7 @@ import { WebSocket } from 'ws';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
-import { expandHome, shellEscape } from './KittyIntegration.js';
+import { expandHome, shellEscape } from './ShellPathUtils.js';
 import type { Origin, OriginManager } from './OriginManager.js';
 import { reconcilePreviousLocalSessions } from './PreviousSessionReconciler.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';

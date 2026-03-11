@@ -10,7 +10,7 @@ import { readFile, stat } from 'fs/promises';
 import { join } from 'path';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
-import { shellEscape } from './KittyIntegration.js';
+import { shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
 

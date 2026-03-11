@@ -6,7 +6,7 @@ import { WebSocket } from 'ws';
 
 import { CityManager } from './CityManager.js';
 import { CityPersistence } from './CityPersistence.js';
-import { shellEscape } from './KittyIntegration.js';
+import { shellEscape } from './ShellPathUtils.js';
 import { OriginManager } from './OriginManager.js';
 
 const execAsync = promisify(exec);

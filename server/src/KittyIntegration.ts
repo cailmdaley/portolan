@@ -9,12 +9,13 @@
  */
 
 import { execSync } from 'child_process';
-import { homedir } from 'os';
 import type { WebSocket } from 'ws';
 import type { Session } from './SessionTracker.js';
 import type { Origin } from './OriginManager.js';
 import type { City } from './CityManager.js';
 import { cliProvider, getProvider } from './cli-provider.js';
+import { KittyHandoff } from './KittyHandoff.js';
+import { shellEscape } from './ShellPathUtils.js';
 
 // ============================================================================
 // Types
@@ -33,36 +34,11 @@ interface CityLookup {
   getSshHost(city: City): string | undefined;
 }
 
-// ============================================================================
-// Utilities
-// ============================================================================
-
-/**
- * Escape shell arguments for safe use in commands
- * Wraps argument in single quotes and escapes any single quotes within
- */
-export function shellEscape(arg: string): string {
-  return "'" + arg.replace(/'/g, "'\\''") + "'";
-}
-
-/**
- * Expand ~ to home directory in paths
- */
-export function expandHome(filepath: string): string {
-  if (filepath.startsWith('~/') || filepath === '~') {
-    return filepath.replace('~', homedir());
-  }
-  return filepath;
-}
-
-// ============================================================================
-// KittyIntegration
-// ============================================================================
-
 export class KittyIntegration {
   private sessionLookup: SessionLookup;
   private originLookup: OriginLookup;
   private cityLookup: CityLookup;
+  private handoffController: KittyHandoff;
 
   constructor(
     sessionLookup: SessionLookup,
@@ -72,6 +48,12 @@ export class KittyIntegration {
     this.sessionLookup = sessionLookup;
     this.originLookup = originLookup;
     this.cityLookup = cityLookup;
+    this.handoffController = new KittyHandoff({
+      cityLookup,
+      getSocket: () => this.getSocket(),
+      getSshAuthSockEnv: () => this.getSshAuthSockEnv(),
+      activateKitty: () => this.activateKitty(),
+    });
   }
 
   /**
@@ -315,131 +297,7 @@ export class KittyIntegration {
    * 4. Send `felt show <fiberId>` as first message via tmux send-keys
    */
   async handoff(fiberId: string, cityPath: string, cli?: string): Promise<void> {
-    console.log('[Handoff] Starting for fiber:', fiberId, 'path:', cityPath);
-
-    // Find the city to determine if it's local or remote
-    const city = this.cityLookup.findCityByPath(cityPath);
-    const isRemote = city && city.originId !== 'local';
-
-    // Get SSH host for remote cities
-    let sshHost: string | undefined;
-    if (isRemote && city) {
-      sshHost = this.cityLookup.getSshHost(city);
-      console.log(`[Handoff] Remote city detected, using SSH host: ${sshHost}`);
-    }
-
-    const socket = this.getSocket();
-    const escapedCwd = shellEscape(cityPath);
-    // Use fiber ID as tmux session name (unique per fiber)
-    const tmuxSession = fiberId;
-    const escapedSession = shellEscape(tmuxSession);
-
-    try {
-      const provider = cli ? getProvider(cli) : cliProvider;
-      const handoffCmd = provider.launchCmd();
-      if (isRemote && sshHost) {
-        // Remote: create tmux session on remote via SSH
-        const remoteTmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} '${provider.remoteShell} -l -c "felt on ${fiberId} && ${handoffCmd} || exec ${provider.remoteShell}"'`;
-        const sshCmd = `ssh -T ${sshHost} ${shellEscape(remoteTmuxCmd)}`;
-        console.log('[Handoff] Creating remote tmux session:', sshCmd);
-        execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
-
-        // Open kitty tab that SSH's to remote and attaches to tmux
-        const kittyTabTitle = `${tmuxSession}@${city?.originId.replace('remote-', '') || 'remote'}`;
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${shellEscape(kittyTabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
-        console.log('[Handoff] Opening kitty tab with SSH:', kittyCmd);
-        execSync(kittyCmd, { stdio: 'pipe' });
-
-        // Focus the newly created tab
-        const exactTitleMatch = shellEscape(`^${kittyTabTitle}$`);
-        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
-
-        console.log(`[Handoff] Launched remote handoff: ${tmuxSession} on ${sshHost}:${cityPath}`);
-
-        // Wait for Claude to start, then send fiber context
-        await this.sendFiberContextAfterDelay(fiberId, escapedSession, sshHost, cityPath);
-      } else {
-        // Local: create tmux session
-        // Start Claude directly (fiber context sent after startup)
-        const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} '${provider.localShell} -l -c "felt on ${fiberId} && ${handoffCmd} || exec ${provider.localShell}"'`;
-        console.log('[Handoff] Creating local tmux session:', tmuxCmd);
-        execSync(tmuxCmd, { stdio: 'pipe' });
-
-        // Open kitty tab attached to the tmux session
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`;
-        console.log('[Handoff] Opening kitty tab:', kittyCmd);
-        execSync(kittyCmd, { stdio: 'pipe' });
-
-        // Focus the newly created tab
-        const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
-        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
-
-        console.log(`[Handoff] Launched local handoff: ${tmuxSession} in ${cityPath}`);
-
-        // Wait for Claude to start, then send fiber context
-        await this.sendFiberContextAfterDelay(fiberId, escapedSession, undefined, cityPath);
-      }
-    } catch (error) {
-      console.error(`[Handoff] Failed to launch handoff tab for ${fiberId}:`, error);
-    }
-
-    this.activateKitty();
-  }
-
-  /**
-   * Wait for Claude to start, then send fiber context via tmux send-keys
-   */
-  private async sendFiberContextAfterDelay(
-    fiberId: string,
-    escapedSession: string,
-    sshHost: string | undefined,
-    cityPath: string
-  ): Promise<void> {
-    // Wait for Claude to start (4s for remote systems)
-    await new Promise(resolve => setTimeout(resolve, 4000));
-
-    // Get fiber content by running felt show
-    let fiberContent: string;
-    try {
-      if (sshHost) {
-        fiberContent = execSync(`ssh ${sshHost} "cd ${shellEscape(cityPath)} && felt show ${fiberId}"`, {
-          encoding: 'utf-8',
-          timeout: 10000,
-        }).trim();
-      } else {
-        fiberContent = execSync(`cd ${shellEscape(cityPath)} && felt show ${fiberId}`, {
-          encoding: 'utf-8',
-          timeout: 5000,
-        }).trim();
-      }
-    } catch (error) {
-      console.error(`[Handoff] Failed to get fiber content:`, error);
-      fiberContent = `(Could not fetch fiber content. Run \`felt show ${fiberId}\` to see it.)`;
-    }
-
-    // Build the message to send with full fiber context
-    const message = `This session was opened to work on this fiber:\n\n\`\`\`\n${fiberContent}\n\`\`\``;
-
-    try {
-      if (sshHost) {
-        // Remote: use tmux load-buffer via stdin to avoid escaping issues
-        const loadCmd = `ssh ${sshHost} "tmux load-buffer -"`;
-        const pasteCmd = `ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`;
-        const enterCmd = `ssh ${sshHost} "tmux send-keys -t '${escapedSession}' Enter"`;
-
-        execSync(loadCmd, { input: message, timeout: 10000 });
-        execSync(pasteCmd, { timeout: 10000 });
-        execSync(enterCmd, { timeout: 10000 });
-      } else {
-        // Local: use tmux load-buffer via stdin to avoid escaping issues
-        execSync(`tmux load-buffer -`, { input: message, timeout: 5000 });
-        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
-        execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
-      }
-      console.log(`[Handoff] Sent fiber context for ${fiberId}`);
-    } catch (error) {
-      console.error(`[Handoff] Failed to send fiber context:`, error);
-    }
+    await this.handoffController.handoff(fiberId, cityPath, cli);
   }
 
   /**

@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises';
 import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
-import { shellEscape } from './KittyIntegration.js';
+import { shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
 

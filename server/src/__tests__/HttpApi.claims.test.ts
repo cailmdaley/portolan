@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';
-import { shellEscape } from '../KittyIntegration.js';
+import { shellEscape } from '../ShellPathUtils.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';

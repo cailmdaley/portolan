@@ -5,7 +5,7 @@ import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
-import { shellEscape } from './KittyIntegration.js';
+import { shellEscape } from './ShellPathUtils.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
