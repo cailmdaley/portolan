@@ -8,16 +8,12 @@ import { TapestryDagGraph } from './TapestryDagGraph'
 import { TapestryDetailBody } from './TapestryDetailBody'
 import { TapestryDetailPanel } from './TapestryDetailPanel'
 import { TapestrySidebar } from './TapestrySidebar'
-import { TapestryStaticFileModal } from './TapestryStaticFileModal'
+import { TapestryViewRuntime } from './TapestryViewRuntime'
 import type { TapestryNode, TapestryResponse } from './tapestry-types'
-import { artifactEntries, isPdfArtifact } from './tapestry-helpers'
 import { interpolateConfig, showToast } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 
 export type { TapestryResponse } from './tapestry-types'
-
-const API_BASE = `http://${window.location.hostname}:4004`
-const PRELOAD_CACHE_LIMIT = 64
 
 export class TapestryView {
   private panel: HTMLElement
@@ -34,25 +30,14 @@ export class TapestryView {
   private annotations: TapestryClaimsAnnotations
   private detailPanelController: TapestryDetailPanel
   private sidebar: TapestrySidebar
-
-  private currentCity: City | null = null
-  private tapestryData: TapestryResponse | null = null
-  private selectedNodeId: string | null = null
-  private staticMode = false
-  private staticAssetBase = ''
-  private staticDataBase = ''
-  private preloadCache = new Map<string, HTMLImageElement>()
+  private runtime = new TapestryViewRuntime()
   private hideCleanupTimeout: ReturnType<typeof setTimeout> | null = null
-  private dataFetchAbortController: AbortController | null = null
-  private dataRequestId = 0
-  private staticFileModal: TapestryStaticFileModal | null = null
   private lightbox = new TapestryArtifactLightbox(
-    (specName, filePath) => this.artifactUrl(specName, filePath),
+    (specName, filePath) => this.runtime.artifactUrl(specName, filePath),
     (node, artifactName, x, y) => this.promptImageAnnotation(node, artifactName, x, y),
-    () => this.staticMode,
+    () => this.runtime.isStaticMode(),
   )
   private detailBody = new TapestryDetailBody()
-  private disposed = false
 
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private onGetWorkers: ((city: City) => WorkerInfo[]) | null = null
@@ -77,27 +62,30 @@ export class TapestryView {
     this.annotations = new TapestryClaimsAnnotations({
       panelEl: this.annotationPanelEl,
       getContainer: () => this.panel,
-      getCurrentCity: () => this.currentCity,
-      getSelectedNodeId: () => this.selectedNodeId,
+      getCurrentCity: () => this.runtime.getCurrentCity(),
+      getSelectedNodeId: () => this.runtime.getSelectedNodeId(),
       getSelectedNode: () => {
-        if (!this.tapestryData || !this.selectedNodeId) return null
-        return this.tapestryData.nodes.find((node) => node.id === this.selectedNodeId) || null
+        const data = this.runtime.getTapestryData()
+        const selectedNodeId = this.runtime.getSelectedNodeId()
+        if (!data || !selectedNodeId) return null
+        return data.nodes.find((node) => node.id === selectedNodeId) || null
       },
       getDetailBodyElement: () => this.detailPanel.querySelector('.tapestry-detail-body'),
       getWorkers: () => {
-        if (!this.currentCity || !this.onGetWorkers) return []
-        return this.onGetWorkers(this.currentCity)
+        const city = this.runtime.getCurrentCity()
+        if (!city || !this.onGetWorkers) return []
+        return this.onGetWorkers(city)
       },
     })
     this.detailPanelController = new TapestryDetailPanel({
       panel: this.panel,
       detailPanel: this.detailPanel,
       fiberListEl: this.fiberListEl,
-      getCurrentCity: () => this.currentCity,
-      getTapestryData: () => this.tapestryData,
-      isStaticMode: () => this.staticMode,
-      getArtifactUrl: (specName, filePath) => this.artifactUrl(specName, filePath),
-      openStaticFile: (href, line) => this.staticFileModal?.open(href, line),
+      getCurrentCity: () => this.runtime.getCurrentCity(),
+      getTapestryData: () => this.runtime.getTapestryData(),
+      isStaticMode: () => this.runtime.isStaticMode(),
+      getArtifactUrl: (specName, filePath) => this.runtime.artifactUrl(specName, filePath),
+      openStaticFile: (href, line) => this.runtime.openStaticFile(href, line),
       openFileFromLink: (href, line) => this.openFileFromLink(href, line),
       renderDetailBody: (container, body) => this.renderDetailBody(container, body),
       enterBodyEditMode: (node) => this.enterBodyEditMode(node),
@@ -112,7 +100,7 @@ export class TapestryView {
       searchInput: this.fiberSearchInput,
       searchResults: this.searchResults,
       fiberResultsEl: this.fiberResultsEl,
-      getData: () => this.tapestryData,
+      getData: () => this.runtime.getTapestryData(),
       setSearchMatches: (matches) => this.graph.setSearchMatches(matches),
       selectListedNode: (fiberId) => this.graph.selectNode(fiberId),
       selectSearchNode: (fiberId) => this.graph.revealAndSelect(fiberId, true, true),
@@ -171,7 +159,7 @@ export class TapestryView {
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !this.isVisible()) return
       if (this.detailBody.isEditing()) {
-        const node = this.tapestryData?.nodes.find((candidate) => candidate.id === this.detailBody.getEditingNodeId())
+        const node = this.runtime.getTapestryData()?.nodes.find((candidate) => candidate.id === this.detailBody.getEditingNodeId())
         if (node) this.exitBodyEditMode(node)
         return
       }
@@ -207,7 +195,7 @@ export class TapestryView {
 
     let selectionTimeout: ReturnType<typeof setTimeout> | null = null
     this.detailPanel.addEventListener('mouseup', () => {
-      if (this.staticMode) return
+      if (this.runtime.isStaticMode()) return
       selectionTimeout = setTimeout(() => {
         const selection = window.getSelection()
         if (selection && selection.toString().trim().length > 0) {
@@ -223,23 +211,6 @@ export class TapestryView {
     })
   }
 
-  private beginDataRequest(): { requestId: number; signal: AbortSignal } {
-    this.dataFetchAbortController?.abort()
-    const controller = new AbortController()
-    this.dataFetchAbortController = controller
-    const requestId = ++this.dataRequestId
-    return { requestId, signal: controller.signal }
-  }
-
-  private isCurrentDataRequest(requestId: number): boolean {
-    return !this.disposed && requestId === this.dataRequestId
-  }
-
-  private clearDataRequest(): void {
-    this.dataFetchAbortController?.abort()
-    this.dataFetchAbortController = null
-  }
-
   private clearHideCleanupTimeout(): void {
     if (this.hideCleanupTimeout) {
       clearTimeout(this.hideCleanupTimeout)
@@ -248,23 +219,11 @@ export class TapestryView {
   }
 
   async show(city: City): Promise<void> {
-    this.disposed = false
     this.clearHideCleanupTimeout()
-    this.clearPreloadCache()
-
-    this.currentCity = city
-    this.selectedNodeId = null
     this.sidebar.reset()
-
-    const incomingHash = window.location.hash
     this.annotations.hidePanel()
     this.annotations.reset()
     this.hideDetail()
-
-    const url = new URL(window.location.href)
-    url.searchParams.set('city', city.id)
-    url.hash = incomingHash
-    window.history.replaceState(null, '', url.toString())
 
     this.loadingIndicator.style.display = 'flex'
     this.loadingIndicator.textContent = 'Loading tapestry\u2026'
@@ -276,49 +235,28 @@ export class TapestryView {
     }
     this.panel.classList.add('visible')
 
-    const { requestId, signal } = this.beginDataRequest()
     try {
-      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(city.id)}`, { signal })
-      if (!response.ok) throw new Error(await response.text())
-      const data = await response.json()
-      if (!this.isCurrentDataRequest(requestId)) return
-      this.tapestryData = data
+      const data = await this.runtime.showCity(city)
       this.loadingIndicator.style.display = 'none'
       this.graph.render(data)
       this.sidebar.renderFiberList()
       this.selectFromHash()
     } catch (err) {
-      if (!this.isCurrentDataRequest(requestId)) return
       if (err instanceof DOMException && err.name === 'AbortError') return
       this.loadingIndicator.textContent = 'Failed to load tapestry'
       this.loadingIndicator.classList.add('error')
       console.error('Tapestry fetch failed:', err)
-    } finally {
-      if (this.isCurrentDataRequest(requestId)) {
-        this.dataFetchAbortController = null
-      }
     }
   }
 
   hide(): void {
-    this.clearDataRequest()
     this.clearHideCleanupTimeout()
     this.hideDetail(true)
     this.graph.clear()
-    this.staticFileModal?.close()
-    this.clearPreloadCache()
+    this.runtime.hide()
 
     this.panel.classList.remove('visible')
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
-
-    const url = new URL(window.location.href)
-    url.searchParams.delete('city')
-    url.hash = ''
-    window.history.replaceState(null, '', url.toString())
-
-    this.currentCity = null
-    this.selectedNodeId = null
-    this.tapestryData = null
     this.annotations.reset()
     this.sidebar.reset()
 
@@ -364,39 +302,39 @@ export class TapestryView {
     hasTooltip: boolean
   } {
     const graphStats = this.graph.getRuntimeStats()
+    const runtimeStats = this.runtime.getRuntimeStats()
     return {
       visible: this.isVisible(),
-      disposed: this.disposed,
-      staticMode: this.staticMode,
-      currentCityId: this.currentCity?.id ?? null,
-      selectedNodeId: this.selectedNodeId,
+      disposed: runtimeStats.disposed,
+      staticMode: runtimeStats.staticMode,
+      currentCityId: runtimeStats.currentCityId,
+      selectedNodeId: runtimeStats.selectedNodeId,
       expandedNodeCount: graphStats.expandedNodeCount,
       visibleNodeCount: graphStats.visibleNodeCount,
       hasSimulation: graphStats.hasSimulation,
       hasSvg: graphStats.hasSvg,
       hasZoomBehavior: graphStats.hasZoomBehavior,
-      preloadCacheSize: this.preloadCache.size,
+      preloadCacheSize: runtimeStats.preloadCacheSize,
       transientFrameCount: graphStats.transientFrameCount,
-      hasDataFetchRequest: this.dataFetchAbortController !== null,
-      dataRequestId: this.dataRequestId,
+      hasDataFetchRequest: runtimeStats.hasDataFetchRequest,
+      dataRequestId: runtimeStats.dataRequestId,
       hasHideCleanupTimeout: this.hideCleanupTimeout !== null,
       hasEscapeHandler: this.escapeHandler !== null,
       hasArtifactClickHandler: this.detailPanelController.getRuntimeStats().hasArtifactClickHandler,
       hasGalleryDetach: this.detailPanelController.getRuntimeStats().hasGalleryDetach,
-      hasStaticFileModal: this.staticFileModal?.isOpen() ?? false,
-      hasStaticFileModalKeyHandler: this.staticFileModal?.isOpen() ?? false,
+      hasStaticFileModal: runtimeStats.hasStaticFileModal,
+      hasStaticFileModalKeyHandler: runtimeStats.hasStaticFileModalKeyHandler,
       hasLightboxCleanup: this.lightbox.isOpen(),
       hasTooltip: graphStats.hasTooltip,
     }
   }
 
   dispose(): void {
-    this.disposed = true
+    this.runtime.dispose()
     this.hide()
     this.clearHideCleanupTimeout()
     this.detailPanelController.destroy()
     this.sidebar.destroy()
-    this.staticFileModal?.close()
     this.graph.destroy()
     this.panel.remove()
   }
@@ -410,17 +348,8 @@ export class TapestryView {
   }
 
   showStatic(data: TapestryResponse, _title: string, assetBase = './data/claims'): void {
-    this.disposed = false
     this.clearHideCleanupTimeout()
-    this.clearDataRequest()
-    this.clearPreloadCache()
-
-    this.staticMode = true
-    this.staticAssetBase = assetBase
-    this.staticDataBase = assetBase.replace(/\/[^/]+\/claims$/, '')
-    this.staticFileModal = new TapestryStaticFileModal(this.staticDataBase)
-    this.tapestryData = data
-    this.selectedNodeId = null
+    this.runtime.showStatic(data, assetBase)
     this.sidebar.reset()
 
     this.annotations.hidePanel()
@@ -439,119 +368,32 @@ export class TapestryView {
     this.selectFromHash()
   }
 
-  private pushHash(id: string | null): void {
-    const current = window.location.hash.slice(1)
-    if (id === current) return
-    if (id) {
-      window.history.pushState(null, '', `#${id}`)
-    } else {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search)
-    }
-  }
-
   selectFromHash(): void {
-    const hash = window.location.hash.slice(1)
-    if (!hash || !this.tapestryData) return
-    const node = this.tapestryData.nodes.find((candidate) => candidate.id === hash)
-    if (node) {
-      this.graph.revealAndSelect(hash, false, true)
-      return
-    }
-    if (this.tapestryData.fibers?.find((fiber) => fiber.id === hash)) {
-      this.selectFiber(hash)
-    }
-  }
-
-  private artifactUrl(specName: string, filePath: string): string {
-    const filename = filePath.split('/').pop() || ''
-    if (this.staticMode) {
-      return `${this.staticAssetBase}/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}`
-    }
-    return `${API_BASE}/tapestry-asset/${encodeURIComponent(specName)}/${encodeURIComponent(filename)}?cityId=${encodeURIComponent(this.currentCity?.id || '')}`
+    this.runtime.selectFromHash(
+      (fiberId) => this.graph.revealAndSelect(fiberId, false, true),
+      (fiberId) => this.selectFiber(fiberId),
+    )
   }
 
   private handleGraphSelection(id: string): void {
-    this.selectedNodeId = id
+    this.runtime.setSelectedNodeId(id)
     this.detailPanelController.renderNode(id)
-    this.preloadNeighborArtifacts(id)
-    if (!this.staticMode) void this.annotations.load(id)
-    this.pushHash(id)
-  }
-
-  private clearPreloadCache(): void {
-    for (const img of this.preloadCache.values()) {
-      img.onload = null
-      img.onerror = null
-      img.src = ''
-    }
-    this.preloadCache.clear()
-  }
-
-  private touchPreload(url: string): boolean {
-    const existing = this.preloadCache.get(url)
-    if (!existing) return false
-    this.preloadCache.delete(url)
-    this.preloadCache.set(url, existing)
-    return true
-  }
-
-  private prunePreloadCache(): void {
-    while (this.preloadCache.size > PRELOAD_CACHE_LIMIT) {
-      const oldestKey = this.preloadCache.keys().next().value as string | undefined
-      if (!oldestKey) return
-      const img = this.preloadCache.get(oldestKey)
-      if (img) {
-        img.onload = null
-        img.onerror = null
-        img.src = ''
-      }
-      this.preloadCache.delete(oldestKey)
-    }
-  }
-
-  private preloadNeighborArtifacts(nodeId: string): void {
-    if (!this.tapestryData) return
-    const node = this.tapestryData.nodes.find((candidate) => candidate.id === nodeId)
-    if (!node) return
-
-    const neighborIds = new Set<string>()
-    node.dependsOn.forEach((id) => neighborIds.add(id))
-    const downstream = this.tapestryData.downstream[nodeId] || []
-    downstream.forEach((candidate) => neighborIds.add(candidate.id))
-
-    for (const neighborId of neighborIds) {
-      const neighbor = this.tapestryData.nodes.find((candidate) => candidate.id === neighborId)
-      if (!neighbor?.evidence?.artifacts) continue
-      const entries = artifactEntries(neighbor.evidence.artifacts)
-      if (entries.length === 0) continue
-      const firstImage = entries.find(([, path]) => !isPdfArtifact(path))
-      if (!firstImage) continue
-      const [, path] = firstImage
-      const url = this.artifactUrl(neighbor.specName || '', path)
-      if (this.touchPreload(url)) continue
-      const img = new Image()
-      img.src = url
-      this.preloadCache.set(url, img)
-      this.prunePreloadCache()
-    }
+    this.runtime.preloadNeighborArtifacts(id)
+    if (!this.runtime.isStaticMode()) void this.annotations.load(id)
+    this.runtime.pushHash(id)
   }
 
   private async refreshCurrentNode(): Promise<void> {
-    if (!this.currentCity) return
-    const selectedId = this.selectedNodeId
-
-    const { requestId, signal } = this.beginDataRequest()
+    if (!this.runtime.getCurrentCity()) return
+    const selectedId = this.runtime.getSelectedNodeId()
     try {
-      const response = await fetch(`${API_BASE}/tapestry?cityId=${encodeURIComponent(this.currentCity.id)}`, { signal })
-      if (!response.ok) throw new Error(await response.text())
-      const data = await response.json()
-      if (!this.isCurrentDataRequest(requestId)) return
-      this.tapestryData = data
+      const data = await this.runtime.refresh()
+      if (!data) return
       this.graph.render(data)
       this.sidebar.renderFiberList()
 
       if (selectedId) {
-        const node = this.tapestryData?.nodes.find((candidate) => candidate.id === selectedId)
+        const node = this.runtime.getTapestryData()?.nodes.find((candidate) => candidate.id === selectedId)
         if (node) {
           this.graph.selectNode(selectedId)
         }
@@ -559,14 +401,9 @@ export class TapestryView {
 
       showToast('Refreshed', 'success', 1500)
     } catch (err) {
-      if (!this.isCurrentDataRequest(requestId)) return
       if (err instanceof DOMException && err.name === 'AbortError') return
       showToast('Refresh failed', 'error')
       console.error('Tapestry refresh failed:', err)
-    } finally {
-      if (this.isCurrentDataRequest(requestId)) {
-        this.dataFetchAbortController = null
-      }
     }
   }
 
@@ -574,28 +411,30 @@ export class TapestryView {
     this.detailBody.render({
       container,
       body,
-      city: this.currentCity,
+      city: this.runtime.getCurrentCity(),
       interpolateConfig: (bodyEl) => this.interpolateConfig(bodyEl),
       openFileFromLink: (path, line) => this.openFileFromLink(path, line),
     })
   }
 
   private enterBodyEditMode(node: TapestryNode): void {
-    if (!node.body || !this.currentCity) return
+    const city = this.runtime.getCurrentCity()
+    if (!node.body || !city) return
     const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body') as HTMLElement | null
     if (!bodyEl) return
 
     this.detailBody.enterEditMode({
       container: bodyEl,
       node,
-      city: this.currentCity,
+      city,
       onSave: () => { void this.saveBodyAndExit(node) },
     })
   }
 
   private async saveBodyAndExit(node: TapestryNode): Promise<void> {
-    if (!this.currentCity) return
-    const newContent = await this.detailBody.save(node, this.currentCity)
+    const city = this.runtime.getCurrentCity()
+    if (!city) return
+    const newContent = await this.detailBody.save(node, city)
     if (newContent === null) return
     node.body = newContent
     this.exitBodyEditMode(node)
@@ -615,21 +454,22 @@ export class TapestryView {
     this.lightbox.close()
     this.detailBody.destroy()
     this.detailPanelController.hide()
-    this.selectedNodeId = null
-    this.pushHash(null)
-    if (!this.staticMode) this.annotations.hidePanel()
+    this.runtime.setSelectedNodeId(null)
+    this.runtime.pushHash(null)
+    if (!this.runtime.isStaticMode()) this.annotations.hidePanel()
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
     if (!skipGraphReset) this.graph.clearSelection()
   }
 
   private navigateToFiber(fiberId: string): void {
-    if (!this.tapestryData) return
-    const dagNode = this.tapestryData.nodes.find((node) => node.id === fiberId)
+    const data = this.runtime.getTapestryData()
+    if (!data) return
+    const dagNode = data.nodes.find((node) => node.id === fiberId)
     if (dagNode) {
       this.graph.selectNode(fiberId, true)
       return
     }
-    if (this.tapestryData.fibers?.find((fiber) => fiber.id === fiberId)) {
+    if (data.fibers?.find((fiber) => fiber.id === fiberId)) {
       this.selectFiber(fiberId)
       return
     }
@@ -637,24 +477,25 @@ export class TapestryView {
   }
 
   private openFileFromLink(href: string, line?: number): void {
-    if (this.staticMode) {
-      this.staticFileModal?.open(href, line)
+    if (this.runtime.isStaticMode()) {
+      this.runtime.openStaticFile(href, line)
       return
     }
-    if (!this.onOpenFile || !this.currentCity) return
-    const path = href.startsWith('/') ? href : `${this.currentCity.path}/${href}`
-    this.onOpenFile(path, this.currentCity, line)
+    const city = this.runtime.getCurrentCity()
+    if (!this.onOpenFile || !city) return
+    const path = href.startsWith('/') ? href : `${city.path}/${href}`
+    this.onOpenFile(path, city, line)
   }
 
   private interpolateConfig(container: HTMLElement): void {
-    const config = this.tapestryData?.config
+    const config = this.runtime.getTapestryData()?.config
     if (!config) return
     interpolateConfig(container, config)
   }
 
   private selectFiber(fiberId: string): void {
-    this.selectedNodeId = fiberId
-    this.pushHash(fiberId)
+    this.runtime.setSelectedNodeId(fiberId)
+    this.runtime.pushHash(fiberId)
     this.detailBody.destroy()
     this.detailPanelController.renderFiber(fiberId)
   }
