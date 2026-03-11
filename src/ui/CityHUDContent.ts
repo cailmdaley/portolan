@@ -1,6 +1,7 @@
 import type { City } from '../state/types'
+import { CityHUDSearch } from './CityHUDSearch'
 import { escapeHtml, fiberStatusIcon } from './utils'
-import type { Fiber, SearchResult } from './hud-types'
+import type { Fiber } from './hud-types'
 
 interface FibersResponse {
   type: 'fibers'
@@ -28,35 +29,44 @@ interface CityHUDContentHost {
 export class CityHUDContent {
   private host: CityHUDContentHost
   private fibersCallback: ((response: FibersResponse) => void) | null = null
-  private currentSearchId = 0
-  private searchResults: SearchResult[] = []
-  private searchQuery = ''
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
+  private search: CityHUDSearch
 
   constructor(host: CityHUDContentHost) {
     this.host = host
-    this.setupSearch()
+    this.search = new CityHUDSearch({
+      sidebar: this.host.sidebar,
+      fiberList: this.host.fiberList,
+      filesList: this.host.filesList,
+      searchInput: this.host.searchInput,
+      searchClear: this.host.searchClear,
+      searchResultsList: this.host.searchResultsList,
+      getCurrentCity: () => this.host.getCurrentCity(),
+      getCurrentTab: () => this.host.getCurrentTab(),
+      getWebSocket: () => this.host.getWebSocket(),
+      getFibers: () => ({ open: this.openFibers, closed: this.closedFibers }),
+      onOpenFiber: (fiberId) => this.openFiber(fiberId),
+      onOpenFile: (fullPath, line) => this.openFile(fullPath, line),
+      renderEmptyFileSearchState: () => this.host.renderEmptyFileSearchState(),
+    })
     this.setupDelegatedListeners()
   }
 
   reset(): void {
     this.fibersCallback = null
-    this.currentSearchId = 0
-    this.searchResults = []
     this.openFibers = []
     this.closedFibers = []
-    this.clearSearch()
+    this.search.reset()
     this.host.fiberList.innerHTML = ''
   }
 
   handleTabChange(tab: HudTab): void {
-    this.clearSearch()
-    this.host.searchInput.placeholder = tab === 'fibers' ? 'Search fibers & files…' : 'Search files…'
+    this.search.handleTabChange(tab)
   }
 
   hasSearchActivity(): boolean {
-    return this.searchQuery.length > 0 || this.host.sidebar.classList.contains('searching')
+    return this.search.hasActivity()
   }
 
   getRuntimeStats(): {
@@ -68,8 +78,7 @@ export class CityHUDContent {
     return {
       openFibers: this.openFibers.length,
       closedFibers: this.closedFibers.length,
-      searchQueryLength: this.searchQuery.length,
-      pendingSearchResults: this.searchResults.length,
+      ...this.search.getRuntimeStats(),
     }
   }
 
@@ -98,62 +107,13 @@ export class CityHUDContent {
       return true
     }
     if (msg.type === 'searchResults') {
-      const response = message as { searchId: string; results: SearchResult[]; error?: string }
-      this.handleSearchResults(response.searchId, response.results, response.error)
-      return true
+      return this.search.handleMessage(message)
     }
     return false
   }
 
   clearSearch(): void {
-    this.searchQuery = ''
-    this.host.searchInput.value = ''
-    this.host.searchClear.style.display = 'none'
-    this.host.sidebar.classList.remove('search-focused')
-
-    this.collapseSearch()
-    if (this.host.getCurrentTab() === 'files') {
-      this.host.renderEmptyFileSearchState()
-    }
-  }
-
-  private setupSearch(): void {
-    this.host.searchInput.addEventListener('input', () => {
-      this.searchQuery = this.host.searchInput.value.trim()
-      this.host.searchClear.style.display = this.host.searchInput.value ? 'block' : 'none'
-
-      if (!this.searchQuery) {
-        this.collapseSearch()
-      } else if (this.host.getCurrentTab() === 'fibers') {
-        this.performSearch()
-      }
-    })
-
-    this.host.searchInput.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && this.searchQuery) {
-        this.performSearch()
-      }
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        this.clearSearch()
-        this.host.searchInput.blur()
-      }
-    })
-
-    this.host.searchInput.addEventListener('focus', () => {
-      this.host.sidebar.classList.add('search-focused')
-    })
-
-    this.host.searchInput.addEventListener('blur', () => {
-      if (!this.searchQuery) {
-        this.host.sidebar.classList.remove('search-focused')
-      }
-    })
-
-    this.host.searchClear.addEventListener('click', () => {
-      this.clearSearch()
-      this.host.searchInput.focus()
-    })
+    this.search.clear()
   }
 
   private setupDelegatedListeners(): void {
@@ -178,118 +138,6 @@ export class CityHUDContent {
       if (!item) return
       this.openFiber(item.dataset.fiberId)
     })
-
-    this.host.searchResultsList.addEventListener('click', (event) => {
-      const item = (event.target as HTMLElement).closest<HTMLElement>('.hud-search-item')
-      if (!item) return
-      if (item.dataset.type === 'file') {
-        const line = item.dataset.line ? parseInt(item.dataset.line, 10) : undefined
-        this.openFile(item.dataset.path, line)
-        return
-      }
-      if (item.dataset.type === 'fiber') {
-        this.openFiber(item.dataset.fiberId)
-      }
-    })
-  }
-
-  private handleSearchResults(searchId: string, results: SearchResult[], error?: string): void {
-    if (!this.searchQuery) return
-    const expectedPrefix = `${this.host.getCurrentCity()?.id || ''}-${this.currentSearchId}`
-    if (!searchId.startsWith(expectedPrefix)) return
-    if (error) {
-      console.error('Search error:', error)
-      return
-    }
-    for (const result of results) {
-      if (!this.searchResults.some(existing => existing.fullPath === result.fullPath)) {
-        this.searchResults.push(result)
-      }
-    }
-    this.renderSearchResults()
-  }
-
-  private performSearch(): void {
-    this.searchResults = []
-    this.host.sidebar.classList.add('searching')
-    this.host.fiberList.style.display = 'none'
-    this.host.filesList.style.display = 'none'
-    this.host.searchResultsList.style.display = 'block'
-    this.host.searchResultsList.innerHTML = '<li class="hud-search-loading">Searching…</li>'
-
-    const currentCity = this.host.getCurrentCity()
-    const ws = this.host.getWebSocket()
-    if (currentCity && ws?.readyState === WebSocket.OPEN) {
-      const searchId = `${currentCity.id}-${++this.currentSearchId}`
-      ws.send(JSON.stringify({
-        type: 'searchFiles',
-        cityId: currentCity.id,
-        query: this.searchQuery,
-        searchId: `${searchId}-name`,
-        mode: 'filename',
-      }))
-    }
-
-    this.renderSearchResults()
-  }
-
-  private collapseSearch(): void {
-    this.host.sidebar.classList.remove('searching')
-    this.searchResults = []
-    this.host.searchResultsList.style.display = 'none'
-    if (this.host.getCurrentTab() === 'files') {
-      this.host.filesList.style.display = ''
-      return
-    }
-    this.host.fiberList.style.display = ''
-  }
-
-  private filterFibersLocally(query: string): Fiber[] {
-    const normalizedQuery = query.toLowerCase()
-    return [...this.openFibers, ...this.closedFibers].filter(fiber =>
-      fiber.title.toLowerCase().includes(normalizedQuery) ||
-      fiber.kind.toLowerCase().includes(normalizedQuery) ||
-      fiber.id.toLowerCase().includes(normalizedQuery) ||
-      (fiber.body?.toLowerCase().includes(normalizedQuery) ?? false) ||
-      (fiber.reason?.toLowerCase().includes(normalizedQuery) ?? false)
-    )
-  }
-
-  private renderSearchResults(): void {
-    const currentTab = this.host.getCurrentTab()
-    const fibers = currentTab === 'fibers' ? this.filterFibersLocally(this.searchQuery) : []
-    const files = currentTab === 'files' ? this.searchResults.slice(0, 20) : []
-
-    if (fibers.length === 0 && files.length === 0) {
-      if (this.host.searchResultsList.querySelector('.hud-search-loading')) return
-      this.host.searchResultsList.innerHTML = '<li class="hud-search-empty">No matches</li>'
-      return
-    }
-
-    let html = ''
-
-    for (const fiber of fibers.slice(0, 20)) {
-      const kind = fiber.kind || 'task'
-      html += `
-        <li class="hud-search-item hud-fiber-item ${kind}" data-type="fiber" data-fiber-id="${fiber.id}">
-          <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
-          <span class="hud-fiber-title">${escapeHtml(fiber.title)}</span>
-          <span class="hud-fiber-kind">${kind}</span>
-        </li>`
-    }
-
-    for (const result of files) {
-      const fileName = result.path.split('/').pop() || result.path
-      const lineInfo = result.line !== undefined ? `:${result.line}` : ''
-      const lineAttr = result.line !== undefined ? ` data-line="${result.line}"` : ''
-      html += `
-        <li class="hud-search-item hud-fiber-item file" data-type="file" data-path="${escapeHtml(result.fullPath)}"${lineAttr}>
-          <span class="hud-search-icon">▹</span>
-          <span class="hud-fiber-title mono">${escapeHtml(fileName)}${lineInfo}</span>
-        </li>`
-    }
-
-    this.host.searchResultsList.innerHTML = html
   }
 
   private renderFibers(open: Fiber[], closed: Fiber[]): void {
