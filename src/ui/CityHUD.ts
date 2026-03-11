@@ -1,7 +1,7 @@
-import type { City, GitStatus, Session } from '../state/types'
+import type { City, Session } from '../state/types'
 import { CityHUDContent } from './CityHUDContent'
 import { CityHUDFileTree } from './CityHUDFileTree'
-import { escapeHtml } from './utils'
+import { CityHUDHeader } from './CityHUDHeader'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 
 type HudTab = 'fibers' | 'files'
@@ -18,9 +18,9 @@ export class CityHUD {
 
   private activeTab: HudTab = 'files'
 
-  private cityWorkers: Session[] = []
   private content: CityHUDContent
   private fileTree: CityHUDFileTree
+  private header: CityHUDHeader
 
   private clickOutsideHandler: ((e: MouseEvent) => void) | null = null
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
@@ -40,6 +40,15 @@ export class CityHUD {
     this.fileTree = new CityHUDFileTree({
       list: this.filesList,
       onOpenFile: (fullPath) => this.openFile(fullPath),
+    })
+    this.header = new CityHUDHeader({
+      headerWidget: this.headerWidget,
+      getCurrentCity: () => this.currentCity,
+      getWebSocket: () => this.ws,
+      getNewWorkerDialog: () => this.newWorkerDialog,
+      getOnViewClaims: () => this.onViewClaims,
+      getOnViewPlaygrounds: () => this.onViewPlaygrounds,
+      getOnFocusWorker: () => this.onFocusWorker,
     })
     this.content = new CityHUDContent({
       sidebar: this.sidebar,
@@ -182,127 +191,13 @@ export class CityHUD {
     }
   }
 
-  private renderGitDetail(status?: GitStatus): void {
-    const content = this.headerWidget.querySelector('.hud-git-detail-content')!
-    if (!status?.isRepo) {
-      content.innerHTML = ''
-      return
-    }
-
-    const rows: string[] = []
-    rows.push(`<div class="hud-gd-row">
-      <span class="hud-gd-label">branch</span>
-      <span class="hud-gd-value hud-gd-branch">${escapeHtml(status.branch)}</span>
-    </div>`)
-
-    if (status.ahead > 0 || status.behind > 0) {
-      const parts: string[] = []
-      if (status.ahead > 0) parts.push(`<span class="hud-gd-ahead">↑${status.ahead}</span>`)
-      if (status.behind > 0) parts.push(`<span class="hud-gd-behind">↓${status.behind}</span>`)
-      rows.push(`<div class="hud-gd-row">
-        <span class="hud-gd-label">remote</span>
-        <span class="hud-gd-value">${parts.join(' ')}</span>
-      </div>`)
-    }
-
-    const staged = status.staged
-    if (staged.added + staged.modified + staged.deleted > 0) {
-      const parts: string[] = []
-      if (staged.added > 0) parts.push(`+${staged.added}`)
-      if (staged.modified > 0) parts.push(`~${staged.modified}`)
-      if (staged.deleted > 0) parts.push(`-${staged.deleted}`)
-      rows.push(`<div class="hud-gd-row">
-        <span class="hud-gd-label">staged</span>
-        <span class="hud-gd-value hud-gd-staged">${parts.join(' ')}</span>
-      </div>`)
-    }
-
-    const unstaged = status.unstaged
-    if (unstaged.added + unstaged.modified + unstaged.deleted > 0) {
-      const parts: string[] = []
-      if (unstaged.added > 0) parts.push(`+${unstaged.added}`)
-      if (unstaged.modified > 0) parts.push(`~${unstaged.modified}`)
-      if (unstaged.deleted > 0) parts.push(`-${unstaged.deleted}`)
-      rows.push(`<div class="hud-gd-row">
-        <span class="hud-gd-label">unstaged</span>
-        <span class="hud-gd-value hud-gd-unstaged">${parts.join(' ')}</span>
-      </div>`)
-    }
-
-    if (status.untracked > 0) {
-      rows.push(`<div class="hud-gd-row">
-        <span class="hud-gd-label">untracked</span>
-        <span class="hud-gd-value hud-gd-untracked">${status.untracked} file${status.untracked !== 1 ? 's' : ''}</span>
-      </div>`)
-    }
-
-    if (status.linesAdded > 0 || status.linesRemoved > 0) {
-      const parts: string[] = []
-      if (status.linesAdded > 0) parts.push(`<span class="hud-git-add">+${status.linesAdded}</span>`)
-      if (status.linesRemoved > 0) parts.push(`<span class="hud-git-rm">−${status.linesRemoved}</span>`)
-      rows.push(`<div class="hud-gd-row">
-        <span class="hud-gd-label">diff</span>
-        <span class="hud-gd-value">${parts.join(' ')}</span>
-      </div>`)
-    }
-
-    if (status.lastCommitMessage) {
-      const timeStr = status.lastCommitTime ? this.relativeTime(status.lastCommitTime) : ''
-      const msg = status.lastCommitMessage.length > 48
-        ? status.lastCommitMessage.slice(0, 48) + '…'
-        : status.lastCommitMessage
-      rows.push(`<div class="hud-gd-commit">
-        <span class="hud-gd-commit-msg">${escapeHtml(msg)}</span>
-        ${timeStr ? `<span class="hud-gd-commit-time">${timeStr}</span>` : ''}
-      </div>`)
-    }
-
-    content.innerHTML = rows.join('')
-  }
-
-  private relativeTime(timestamp: number): string {
-    const now = Date.now()
-    const diff = now - timestamp
-    const minutes = Math.floor(diff / 60000)
-    if (minutes < 1) return 'just now'
-    if (minutes < 60) return `${minutes}m ago`
-    const hours = Math.floor(minutes / 60)
-    if (hours < 24) return `${hours}h ago`
-    const days = Math.floor(hours / 24)
-    return `${days}d ago`
-  }
-
-  private renderActions(city: City): void {
-    const buttons: string[] = []
-    if (city.hasClaims) {
-      buttons.push(`<button class="hud-action-btn hud-action-claims" title="Claims">⚖</button>`)
-    }
-    if (city.hasPlaygrounds) {
-      buttons.push(`<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds">▶</button>`)
-    }
-
-    const row = this.headerWidget.querySelector('.hud-actions')!
-    row.innerHTML = buttons.join('')
-
-    row.querySelector('.hud-action-claims')?.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (this.currentCity) this.onViewClaims?.(this.currentCity)
-    })
-
-    row.querySelector('.hud-action-playgrounds')?.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (this.currentCity) this.onViewPlaygrounds?.(this.currentCity)
-    })
-  }
-
   show(city: City): void {
     if (document.querySelector('.tapestry-view.visible')) return
 
     this.currentCity = city
     this.headerWidget.querySelector('.hud-city-name')!.textContent = city.name
     this.headerWidget.querySelector('.hud-city-path')!.textContent = city.path
-    this.renderGitDetail(city.gitStatus)
-    this.renderActions(city)
+    this.header.show(city)
 
     this.fileTree.setCurrentCity(city)
     this.fileTree.reset()
@@ -324,6 +219,7 @@ export class CityHUD {
     this.detachDocumentListeners()
     this.content.clearSearch()
     this.fileTree.reset()
+    this.header.reset()
   }
 
   isVisible(): boolean {
@@ -349,7 +245,7 @@ export class CityHUD {
       visible: this.isVisible(),
       activeTab: this.activeTab,
       currentCityId: this.currentCity?.id ?? null,
-      cityWorkerCount: this.cityWorkers.length,
+      ...this.header.getRuntimeStats(),
       ...this.content.getRuntimeStats(),
       ...this.fileTree.getRuntimeStats(),
     }
@@ -382,8 +278,7 @@ export class CityHUD {
 
   updateWorkers(sessions: Session[]): void {
     if (!this.currentCity || !this.container.classList.contains('visible')) return
-    this.cityWorkers = sessions.filter(session => session.cityId === this.currentCity!.id)
-    this.renderWorkers()
+    this.header.updateWorkers(sessions)
   }
 
   handleMessage(message: unknown): boolean {
@@ -395,47 +290,6 @@ export class CityHUD {
   private openFile(fullPath: string | undefined, line?: number): void {
     if (!fullPath || !this.currentCity || !this.onOpenFile) return
     this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path, this.currentCity.id, line)
-  }
-
-  private renderWorkers(): void {
-    const container = this.headerWidget.querySelector('.hud-header-workers')!
-    const parts: string[] = [`<span class="hud-header-workers-label">workers</span>`]
-
-    const chips = this.cityWorkers.map(session => {
-      const statusClass = session.status === 'working' ? 'working' : 'idle'
-      return `<span class="hud-worker-chip ${statusClass}" data-session-id="${session.id}" title="${escapeHtml(session.name)}">` +
-        `<span class="hud-worker-dot ${statusClass}">●</span>${escapeHtml(session.name)}</span>`
-    })
-
-    chips.push('<button class="hud-worker-add" title="New Worker">+</button>')
-    container.innerHTML = parts.concat(chips).join('')
-
-    for (const chip of container.querySelectorAll<HTMLElement>('.hud-worker-chip')) {
-      chip.addEventListener('click', (e) => {
-        e.stopPropagation()
-        const sessionId = chip.dataset.sessionId
-        if (sessionId) this.onFocusWorker?.(sessionId)
-      })
-    }
-
-    container.querySelector('.hud-worker-add')?.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (this.currentCity && this.newWorkerDialog) {
-        this.newWorkerDialog.show(this.currentCity.name).then(result => {
-          if (!result) return
-          if (this.ws?.readyState === WebSocket.OPEN && this.currentCity) {
-            this.ws.send(JSON.stringify({
-              type: 'newWorker',
-              cityPath: this.currentCity.path,
-              name: result.name || undefined,
-              cli: result.cli || undefined,
-              chrome: result.chrome || undefined,
-              continue: result.continue || undefined,
-            }))
-          }
-        })
-      }
-    })
   }
 
   dispose(): void {
