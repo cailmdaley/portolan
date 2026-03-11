@@ -1,4 +1,4 @@
-import { renderPdfAllPages } from './utils'
+import { renderPdfAllPages } from './ArtifactMedia'
 import type { TapestryNode } from './tapestry-types'
 import { artifactEntries, isPdfArtifact } from './tapestry-helpers'
 

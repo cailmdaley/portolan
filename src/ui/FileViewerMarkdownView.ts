@@ -1,4 +1,5 @@
-import { escapeHtml, renderMarkdown, interpolateConfig, STALENESS_COLORS, formatFiberDate, renderArtifactGallery, attachInlinePathListeners } from './utils'
+import { renderArtifactGallery } from './ArtifactMedia'
+import { escapeHtml, renderMarkdown, interpolateConfig, STALENESS_COLORS, formatFiberDate, attachInlinePathListeners } from './utils'
 import { type FileViewerAnnotations } from './FileViewerAnnotations'
 
 const API_BASE = `http://${window.location.hostname}:4004`

@@ -5,7 +5,7 @@ import type { FileViewerModal } from '../ui/FileViewerModal'
 import type { TapestryView } from '../ui/TapestryView'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
-import type { getArtifactMediaCacheStats } from '../ui/utils'
+import type { getArtifactMediaCacheStats } from '../ui/ArtifactMedia'
 
 export type DebugRuntimeWindow = Window & {
   zoneRenderer: ZoneRenderer

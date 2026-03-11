@@ -1,4 +1,5 @@
-import { escapeHtml, formatFiberDate, renderArtifactGallery, renderMarkdown } from './utils'
+import { renderArtifactGallery } from './ArtifactMedia'
+import { escapeHtml, formatFiberDate, renderMarkdown } from './utils'
 import type { City } from '../state/types'
 import type { TapestryNode, TapestryResponse } from './tapestry-types'
 import { shortName, stalenessColor, stalenessIcon, statusIcon } from './tapestry-helpers'
