@@ -7,38 +7,22 @@
  */
 
 import { createServer } from 'http';
-import { execFile } from 'child_process';
-import { WebSocketServer, WebSocket } from 'ws';
-import { promisify } from 'util';
+import { WebSocketServer } from 'ws';
 
 import { SessionTracker, Session } from './SessionTracker.js';
-import { CityManager, City, SessionInfo } from './CityManager.js';
-import { OriginManager, Origin } from './OriginManager.js';
+import { CityManager, City } from './CityManager.js';
+import { OriginManager } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
-import { GitStatusManager, GitStatus } from './GitStatusManager.js';
+import { GitStatusManager } from './GitStatusManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
-import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
-import { EventWatcher, type ActivityEvent } from './EventWatcher.js';
+import { EventWatcher } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
-import { KittyIntegration, expandHome, shellEscape } from './KittyIntegration.js';
+import { KittyIntegration } from './KittyIntegration.js';
 import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
 import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
-import { reconcilePreviousLocalSessions } from './PreviousSessionReconciler.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
-
-const execFileAsync = promisify(execFile);
-
-// ============================================================================
-// Types
-// ============================================================================
-
-interface StateUpdate {
-  cities: City[];
-  sessions: Session[];
-  origins?: Origin[];
-  activities?: Record<string, ActivityEvent[]>;  // activitySessionKey -> recent activities
-}
+import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 
 // ============================================================================
 // Constants
@@ -47,12 +31,7 @@ interface StateUpdate {
 const PORT = process.env.VITEST ? 4099 : 4004;
 const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 const LOCAL_ORIGIN_ID = 'local';
-let fiberRefreshIntervalHandle: NodeJS.Timeout | null = null;
 let remoteWorkingTimeoutIntervalHandle: NodeJS.Timeout | null = null;
-
-function getActivitySessionKey(originId: string, tmuxSession: string): string {
-  return `${originId}:${tmuxSession}`;
-}
 
 // ============================================================================
 // Initialization
@@ -81,12 +60,6 @@ for (const pc of persistedCities) {
 }
 
 const REMOTE_WORKING_TIMEOUT = 30_000; // 30 seconds, same as EventWatcher
-
-// Track connected browser clients
-const clients: Set<WebSocket> = new Set();
-
-// Track last broadcast state for fiber count comparison
-let lastBroadcastState: StateUpdate | null = null;
 
 // Track previous sessions to detect removals
 let previousSessions = new Map<string, Session>();
@@ -141,7 +114,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       previousSessionRecords: previousSessions.size,
     },
     websocket: {
-      browserClients: clients.size,
+      browserClients: browserStateCoordinator.getClientCount(),
       connectedRemoteOrigins,
     },
     maps: {
@@ -152,7 +125,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       remoteActivityEvents: remoteAgentCoordinator.getRemoteActivityEventCount(),
     },
     intervals: {
-      fiberRefreshActive: fiberRefreshIntervalHandle !== null,
+      fiberRefreshActive: browserStateCoordinator.isFiberRefreshActive(),
       remoteWorkingTimeoutActive: remoteWorkingTimeoutIntervalHandle !== null,
     },
     eventWatcher: eventWatcher.getStats(),
@@ -165,21 +138,33 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
 });
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
+const browserStateCoordinator = new BrowserStateCoordinator({
+  cityManager,
+  cityPersistence,
+  eventWatcher,
+  gitStatusManager,
+  originManager,
+  previousSessions,
+  recentFileTracker,
+  sessionLookup,
+  localOriginId: LOCAL_ORIGIN_ID,
+});
 const remoteAgentCoordinator = new RemoteAgentCoordinator(
   cityManager,
   originManager,
   recentFileTracker,
   previousSessions,
   {
-    assignSessionToCity,
-    broadcastActivity,
+    assignSessionToCity: browserStateCoordinator.assignSessionToCity.bind(browserStateCoordinator),
+    broadcastActivity: browserStateCoordinator.broadcastActivity.bind(browserStateCoordinator),
     broadcastState: () => {
-      buildState().then(broadcast);
+      void browserStateCoordinator.broadcastCurrentState();
     },
-    rebuildCities,
+    rebuildCities: browserStateCoordinator.rebuildCities.bind(browserStateCoordinator),
     reconnectTunnel,
   },
 );
+browserStateCoordinator.setRemoteAgentStateSource(remoteAgentCoordinator);
 
 // Callback for creating new workers (used by send-annotations endpoint)
 httpApi.setOnCreateNewWorker(async (cityPath: string, originId: string) => {
@@ -203,168 +188,8 @@ httpApi.setOnFocusSession((sessionId: string) => {
 // State Management
 // ============================================================================
 
-function getAllSessions(): Session[] {
-  return sessionLookup.getAllSessions();
-}
-
 function getRemoteSessionCount(): number {
   return remoteAgentCoordinator.getRemoteSessionCount();
-}
-
-/**
- * Assign a session to a city, handling hex allocation and cleanup.
- * Releases previous hex if session is moving between cities.
- */
-function assignSessionToCity(session: Session, city: City): void {
-  const previousCityId = session.cityId;
-  if (previousCityId !== city.id) {
-    if (previousCityId && session.workerHex) {
-      cityManager.releaseWorkerHex(previousCityId, session.workerHex);
-    }
-    session.cityId = city.id;
-    session.workerHex = cityManager.assignWorkerHex(city.id);
-  } else if (!session.workerHex) {
-    session.workerHex = cityManager.assignWorkerHex(city.id);
-  }
-}
-
-async function buildState(): Promise<StateUpdate> {
-  const sessions = getAllSessions();
-  const cities = cityManager.getCities();
-
-  cityManager.updateClaimsStatus();
-  cityManager.updatePlaygroundsStatus();
-
-  const activeCityIds = new Set(sessions.filter(s => s.cityId).map(s => s.cityId));
-
-  const citiesWithFibers = await Promise.all(
-    cities.map(async (city) => {
-      let gitStatus: GitStatus | undefined;
-      if (city.originId === 'local') {
-        gitStatus = gitStatusManager.getStatus(city.path) ?? undefined;
-      } else {
-        gitStatus = remoteAgentCoordinator.getGitStatus(city.originId, city.path);
-      }
-
-      return {
-        ...city,
-        fiberCount: city.originId === 'local' ? await countOpenFibers(city.path) : 0,
-        hasClaims: city.hasClaims ?? false,
-        hasPlaygrounds: city.hasPlaygrounds ?? false,
-        isDormant: !activeCityIds.has(city.id),
-        gitStatus,
-      };
-    })
-  );
-
-  const cityMap = new Map(cities.map((c) => [c.id, c]));
-
-  const sessionsWithAbsoluteHex = sessions.map((session) => {
-    if (session.workerHex && session.cityId) {
-      const city = cityMap.get(session.cityId);
-      if (city) {
-        return {
-          ...session,
-          workerHex: {
-            q: city.position.q + session.workerHex.q,
-            r: city.position.r + session.workerHex.r,
-          },
-        };
-      }
-    }
-    return session;
-  });
-
-  // Collect recent activities for each session
-  const activities: Record<string, ActivityEvent[]> = {};
-  for (const session of sessions) {
-    const activitySessionKey = getActivitySessionKey(session.originId, session.tmuxSession);
-    const sessionActivities = session.originId === LOCAL_ORIGIN_ID
-      ? eventWatcher.getRecentActivities(session.tmuxSession)
-      : remoteAgentCoordinator.getActivities(session.originId, session.tmuxSession);
-    if (sessionActivities.length > 0) {
-      activities[activitySessionKey] = sessionActivities;
-    }
-  }
-
-  return {
-    cities: citiesWithFibers,
-    sessions: sessionsWithAbsoluteHex,
-    origins: originManager.getOrigins(),
-    activities,
-  };
-}
-
-function broadcast(state: StateUpdate): void {
-  const message = JSON.stringify(state);
-  for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
-    }
-  }
-  lastBroadcastState = state;
-}
-
-function broadcastActivity(activity: ActivityEvent, originId: string): void {
-  const message = JSON.stringify({
-    type: 'activity',
-    activity: {
-      ...activity,
-      originId,
-      activitySessionKey: getActivitySessionKey(originId, activity.tmuxSession),
-    },
-  });
-  for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
-    }
-  }
-}
-
-function fiberCountsChanged(oldState: StateUpdate | null, newState: StateUpdate): boolean {
-  if (!oldState) return true;
-  if (oldState.cities.length !== newState.cities.length) return true;
-  for (const newCity of newState.cities) {
-    const oldCity = oldState.cities.find((c) => c.id === newCity.id);
-    if (!oldCity || oldCity.fiberCount !== newCity.fiberCount) return true;
-  }
-  return false;
-}
-
-async function refreshFiberCounts(): Promise<void> {
-  const state = await buildState();
-  if (fiberCountsChanged(lastBroadcastState, state)) {
-    console.log('Fiber counts changed, broadcasting update');
-    broadcast(state);
-  }
-}
-
-function rebuildCities(): void {
-  const allSessions = getAllSessions();
-  const sessionInfos: SessionInfo[] = allSessions
-    .filter(s => s.cwd)
-    .map(s => ({ cwd: s.cwd, originId: s.originId }));
-  cityManager.updateFromSessions(sessionInfos);
-
-  for (const city of cityManager.getCities()) {
-    if (!cityManager.isPinned(city.id)) {
-      const sshHost = city.originId !== 'local'
-        ? originManager.getOrigin(city.originId)?.sshHost
-        : undefined;
-      cityPersistence.pin(city.path, city.position, city.originId, city.name, sshHost);
-      cityManager.addPinnedCity(city.id, city.path, city.name, city.position, city.originId);
-    } else if (city.originId !== 'local') {
-      const origin = originManager.getOrigin(city.originId);
-      const persistedCity = cityPersistence.getCityById(city.id);
-      if (origin?.sshHost && persistedCity && !persistedCity.sshHost) {
-        cityPersistence.pin(city.path, city.position, city.originId, city.name, origin.sshHost);
-      }
-    }
-
-    if (city.originId === 'local') {
-      gitStatusManager.track(city.path);
-    }
-  }
 }
 
 // ============================================================================
@@ -372,32 +197,7 @@ function rebuildCities(): void {
 // ============================================================================
 
 sessionTracker.onSessionsChange((localSessions) => {
-  eventWatcher.reconcileActiveSessions(localSessions.map(session => session.tmuxSession));
-
-  const removedLocalSessions = reconcilePreviousLocalSessions(
-    previousSessions,
-    localSessions,
-    LOCAL_ORIGIN_ID,
-  );
-
-  for (const removedSession of removedLocalSessions) {
-    if (removedSession.cityId && removedSession.workerHex) {
-      cityManager.releaseWorkerHex(removedSession.cityId, removedSession.workerHex);
-    }
-    recentFileTracker.removeSession(removedSession.id);
-  }
-
-  rebuildCities();
-
-  for (const session of localSessions) {
-    if (!session.cwd) continue;
-    const city = cityManager.findCityForPath(session.cwd, session.originId);
-    if (!city) continue;
-
-    assignSessionToCity(session, city);
-  }
-
-  buildState().then(broadcast);
+  void browserStateCoordinator.handleLocalSessionsChange(localSessions);
 });
 // ============================================================================
 // Remote Session Handling
@@ -407,173 +207,21 @@ sessionTracker.onSessionsChange((localSessions) => {
 // Message Handlers
 // ============================================================================
 
-async function handleGetFibers(ws: WebSocket, cityId: string): Promise<void> {
-  const city = cityManager.getCityById(cityId);
-  if (!city) {
-    ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], recentlyClosed: [] }));
-    return;
-  }
-
-  try {
-    if (city.originId === 'local') {
-      const [open, recentlyClosed] = await Promise.all([
-        getOpenFibers(city.path),
-        getRecentlyClosed(city.path, 5),
-      ]);
-      ws.send(JSON.stringify({ type: 'fibers', cityId, open, recentlyClosed }));
-    } else {
-      const origin = originManager.getOrigin(city.originId);
-      if (!origin?.sshHost) {
-        ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], recentlyClosed: [] }));
-        return;
-      }
-      const [open, recentlyClosed] = await Promise.all([
-        getRemoteFibers(origin.sshHost, city.path, 'open'),
-        getRemoteFibers(origin.sshHost, city.path, 'closed'),
-      ]);
-      ws.send(JSON.stringify({ type: 'fibers', cityId, open, recentlyClosed }));
-    }
-  } catch (error) {
-    console.error('Failed to get fibers:', error);
-    ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], recentlyClosed: [] }));
-  }
-}
-
-async function getRemoteFibers(
-  sshHost: string,
-  cityPath: string,
-  status: 'open' | 'closed'
-): Promise<Array<{ id: string; title: string; kind: string; status: string; body?: string; outcome?: string }>> {
-  const escapedPath = shellEscape(cityPath);
-  const statusFlag = status === 'open' ? '-s open' : '-s closed';
-  const recentFlag = status === 'closed' ? '--recent 5' : '';
-
-  try {
-    const { stdout } = await execFileAsync(
-      'ssh', [sshHost, `cd ${escapedPath} && felt ls ${statusFlag} ${recentFlag} --json --body 2>/dev/null || echo '[]'`],
-      { timeout: 10000 }
-    );
-    const fibers = JSON.parse(stdout.trim() || '[]');
-    return fibers.map((f: any) => ({
-      id: f.id,
-      title: f.title,
-      kind: f.kind || 'task',
-      status: f.status || status,
-      body: f.body || undefined,
-      outcome: f.outcome || f.close_reason || undefined,
-    }));
-  } catch (error) {
-    console.error(`Failed to get remote fibers from ${sshHost}:${cityPath}:`, error);
-    return [];
-  }
-}
-
-function handlePinCity(
-  ws: WebSocket,
-  path: string,
-  position: { q: number; r: number },
-  name?: string
-): void {
-  try {
-    const expandedPath = expandHome(path);
-    const city = cityManager.pinCity(expandedPath, position, 'local', name);
-    cityPersistence.pin(expandedPath, position, 'local', name || city.name);
-    console.log(`City pinned: ${city.name} at (${position.q}, ${position.r})`);
-    buildState().then(broadcast);
-    ws.send(JSON.stringify({ type: 'cityPinned', city }));
-  } catch (error) {
-    console.error('Failed to pin city:', error);
-    ws.send(JSON.stringify({ type: 'error', message: 'Failed to pin city' }));
-  }
-}
-
-function handleUnpinCity(ws: WebSocket, cityId: string): void {
-  try {
-    const allSessions = getAllSessions();
-    const city = cityManager.getCityById(cityId);
-    if (!city) {
-      ws.send(JSON.stringify({ type: 'error', message: 'City not found' }));
-      return;
-    }
-
-    const sessionCount = allSessions.filter(
-      (s) => s.cwd && s.cwd === city.path && s.originId === city.originId
-    ).length;
-
-    if (sessionCount > 0) {
-      ws.send(JSON.stringify({
-        type: 'confirmUnpin',
-        cityId,
-        cityName: city.name,
-        sessionCount,
-      }));
-      return;
-    }
-
-    performUnpin(ws, cityId);
-  } catch (error) {
-    console.error('Failed to unpin city:', error);
-    ws.send(JSON.stringify({ type: 'error', message: 'Failed to unpin city' }));
-  }
-}
-
-function performUnpin(ws: WebSocket, cityId: string): void {
-  const city = cityManager.getCityById(cityId);
-  if (!city) return;
-
-  cityManager.unpinCity(cityId);
-  cityPersistence.unpin(cityId);
-  console.log(`City unpinned: ${city.name}`);
-
-  rebuildCities();
-  buildState().then(broadcast);
-  ws.send(JSON.stringify({ type: 'cityUnpinned', cityId }));
-}
-
-function handleMoveCity(
-  ws: WebSocket,
-  cityId: string,
-  newPosition: { q: number; r: number }
-): void {
-  try {
-    const city = cityManager.getCityById(cityId);
-    if (!city) {
-      ws.send(JSON.stringify({ type: 'error', message: 'City not found' }));
-      return;
-    }
-
-    if (!cityManager.isPinned(cityId)) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Can only move pinned cities' }));
-      return;
-    }
-
-    cityManager.moveCity(cityId, newPosition);
-    cityPersistence.updatePosition(cityId, newPosition);
-    console.log(`City moved: ${city.name} to (${newPosition.q}, ${newPosition.r})`);
-
-    buildState().then(broadcast);
-    ws.send(JSON.stringify({ type: 'cityMoved', cityId, newPosition }));
-  } catch (error) {
-    console.error('Failed to move city:', error);
-    ws.send(JSON.stringify({ type: 'error', message: 'Failed to move city' }));
-  }
-}
-
 // ============================================================================
 // Message Router Setup
 // ============================================================================
 
 const messageRouter = new MessageRouter({
   onFocus: (sessionId) => kitty.focusSession(sessionId),
-  onGetFibers: handleGetFibers,
+  onGetFibers: browserStateCoordinator.handleGetFibers.bind(browserStateCoordinator),
   onHandoff: (fiberId, cityPath) => kitty.handoff(fiberId, cityPath),
   onNewWorker: (ws, cityPath, name, chrome, continueSession, cli) => kitty.newWorker(ws, cityPath, name, chrome, continueSession, cli),
-  onPinCity: handlePinCity,
-  onUnpinCity: handleUnpinCity,
-  onConfirmUnpin: performUnpin,
+  onPinCity: browserStateCoordinator.handlePinCity.bind(browserStateCoordinator),
+  onUnpinCity: browserStateCoordinator.handleUnpinCity.bind(browserStateCoordinator),
+  onConfirmUnpin: browserStateCoordinator.performUnpin.bind(browserStateCoordinator),
   onKillWorker: (sessionId) => kitty.killWorker(sessionId),
   onSearchFiles: workspaceBrowser.handleSearchFiles.bind(workspaceBrowser),
-  onMoveCity: handleMoveCity,
+  onMoveCity: browserStateCoordinator.handleMoveCity.bind(browserStateCoordinator),
   onListDirectory: workspaceBrowser.handleListDirectory.bind(workspaceBrowser),
 });
 
@@ -636,7 +284,7 @@ wss.on('connection', async (ws, req) => {
       const disconnectedOrigin = originManager.handleDisconnect(ws);
       if (disconnectedOrigin) {
         remoteAgentCoordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
-        broadcast({ ...lastBroadcastState!, origins: originManager.getOrigins() });
+        void browserStateCoordinator.broadcastCurrentState();
       }
       console.log(`Agent disconnected: ${originName}`);
     });
@@ -644,15 +292,12 @@ wss.on('connection', async (ws, req) => {
     ws.on('error', (error) => console.error('Agent WebSocket error:', error));
   } else {
     // Browser client
-    clients.add(ws);
+    await browserStateCoordinator.attachClient(ws);
     console.log('Browser client connected');
-
-    const state = await buildState();
-    ws.send(JSON.stringify(state));
 
     ws.on('message', (data) => messageRouter.routeClientMessage(ws, data.toString()));
     ws.on('close', () => {
-      clients.delete(ws);
+      browserStateCoordinator.detachClient(ws);
       console.log('Browser client disconnected');
     });
     ws.on('error', (error) => console.error('WebSocket error:', error));
@@ -676,23 +321,23 @@ eventWatcher.setSessionTracker(sessionTracker);
 eventWatcher.onActivity((activity) => {
   console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
 
-  broadcastActivity(activity, LOCAL_ORIGIN_ID);
+  browserStateCoordinator.broadcastActivity(activity, LOCAL_ORIGIN_ID);
 });
 eventWatcher.start();
 
 gitStatusManager.setUpdateHandler(({ path, status }) => {
   console.log(`[Git] ${path}: ${status.branch} +${status.linesAdded}/-${status.linesRemoved}`);
-  buildState().then(broadcast);
+  void browserStateCoordinator.broadcastCurrentState();
 });
 gitStatusManager.start();
 
-fiberRefreshIntervalHandle = setInterval(refreshFiberCounts, FIBER_REFRESH_INTERVAL);
+browserStateCoordinator.startFiberRefresh(FIBER_REFRESH_INTERVAL);
 
 // Check for remote session working timeouts
 remoteWorkingTimeoutIntervalHandle = setInterval(() => {
   const changed = remoteAgentCoordinator.expireWorkingSessions(Date.now() - REMOTE_WORKING_TIMEOUT);
   if (changed) {
-    buildState().then(broadcast);
+    void browserStateCoordinator.broadcastCurrentState();
   }
 }, 5000);
 
@@ -712,10 +357,7 @@ server.listen(PORT, () => {
 let shuttingDown = false;
 
 function stopBackgroundTimers(): void {
-  if (fiberRefreshIntervalHandle) {
-    clearInterval(fiberRefreshIntervalHandle);
-    fiberRefreshIntervalHandle = null;
-  }
+  browserStateCoordinator.stop();
   if (remoteWorkingTimeoutIntervalHandle) {
     clearInterval(remoteWorkingTimeoutIntervalHandle);
     remoteWorkingTimeoutIntervalHandle = null;
