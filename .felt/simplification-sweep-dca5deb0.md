@@ -6,7 +6,6 @@ tags:
 created-at: 2026-03-06T10:46:31.715433+01:00
 ---
 
-
 Deep simplification of the portolan codebase. Not a checklist — a desired state. Survey reality, find the largest gap, close it.
 
 ## Desired State
@@ -95,3 +94,5 @@ The codebase is ~21k LOC across ~40 source files. Files under 500 LOC have been 
 
 **Iteration 24 (2026-03-11):** Surveyed `src/ui/utils.ts` after it hit 801 LOC and confirmed it was still mixing a distinct artifact-media subsystem with general markdown/UI helpers. Extracted PDF.js loading, artifact gallery rendering, PDF/image warm caches, and cache diagnostics into `ArtifactMedia.ts` (488 LOC); `utils.ts` dropped to 298 LOC and now focuses on markdown rendering, inline-path wiring, formatting helpers, and toast UI. Verified with `npm run build` and `cd server && npm test`. Next structural target is `TapestryView.ts` at 815 LOC; after that, the remaining production files are under the target ceiling and should be checked for single-concern clarity rather than size alone.
 **Iteration 25 (2026-03-11):** Stayed on `TapestryView.ts` because the file was still over the target and still mixed view orchestration with the entire sidebar search/list subsystem. Extracted search input events, keyboard focus, node-match highlighting, fiber filtering/sorting, and click dispatch into `TapestrySidebar.ts` (215 LOC). `TapestryView.ts` dropped from 815 LOC to 670 LOC and now coordinates data fetches, DAG selection, detail rendering, artifact preloading, and annotation handoff instead of owning sidebar UI state inline. Verified with `npm run build` and `cd server && npm test`. Next step is to survey the remaining production files under the size ceiling for single-concern clarity, starting with `main.ts`, `server/src/index.ts`, `FileViewerAnnotations.ts`, and `FileViewerModal.ts`.
+
+**Iteration 26 (2026-03-11):** Surveyed the remaining sub-800 production files and found that `main.ts` still mixed application bootstrap with the full browser-server state-sync runtime. Extracted WebSocket connection lifecycle, server-message routing, reconnect state, activity buffering, and diagnostics accessors into `FrontendStateSync.ts` (332 LOC). `main.ts` dropped from 798 LOC to 521 LOC and now focuses on renderer/UI wiring, map actions, initial camera focus, and lifecycle coordination. Verified with `npm run build` and `cd server && npm test`. Next step is to continue the single-concern survey on `server/src/index.ts`, `FileViewerAnnotations.ts`, and `FileViewerModal.ts`, which are all under the size ceiling but still the likeliest files to contain embedded subsystems.

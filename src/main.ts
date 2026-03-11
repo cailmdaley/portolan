@@ -13,6 +13,7 @@ import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { MapInteractionController } from './MapInteractionController'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
+import { FrontendStateSync, getActivitySessionKey } from './runtime/FrontendStateSync'
 import { CityHUD } from './ui/CityHUD'
 import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
@@ -20,9 +21,9 @@ import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
-import type { Activity, City, Session, ServerCity, ServerSession, ServerOrigin, HexCoord } from './state/types'
+import type { City, Session, ServerOrigin, HexCoord } from './state/types'
 import { findBestMatchingCity, findNearestCity, getCityWorkers } from './state/cityLookup'
-import { PALETTE, normalizeCity, normalizeSession } from './state/types'
+import { PALETTE } from './state/types'
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
 const canvasOverlay = canvas
@@ -199,38 +200,17 @@ cityPanel.setOnViewPlaygrounds((city) => {
 let cities: City[] = []
 let sessions: Session[] = []
 let origins: ServerOrigin[] = []
-let ws: WebSocket | null = null
-let wsCleanedUp = false  // Prevent reconnect on HMR cleanup
 let runtimeDisposed = false
-let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let animationFrameId: number | null = null
 let mockDataTimeout: ReturnType<typeof setTimeout> | null = null
 let workerHudUpdateFrameId: number | null = null
 let hasRuntimeCleanupRun = false
-let hasReceivedInitialState = false  // Track first state for initial camera focus
 let selectedHex: { q: number; r: number } | null = null
 
 // Move mode: when set, next click will move this city to that hex
 let movingCityId: string | null = null
 
-function getActivitySessionKey(originId: string, tmuxSession: string): string {
-  return `${originId}:${tmuxSession}`
-}
-
-// Activity stream per stable activity session key (originId:tmuxSession)
-const activityBySessionKey = new Map<string, Activity[]>()
-const MAX_ACTIVITIES_PER_SESSION = 10
-const ACTIVITY_RATE_WINDOW_MS = 60_000
-const recentActivityEventTimestamps: number[] = []
-let totalActivityEventsReceived = 0
 let totalWorkerHudUpdates = 0
-
-function pruneRecentActivityEvents(now = Date.now()): void {
-  const cutoff = now - ACTIVITY_RATE_WINDOW_MS
-  while (recentActivityEventTimestamps.length > 0 && recentActivityEventTimestamps[0] < cutoff) {
-    recentActivityEventTimestamps.shift()
-  }
-}
 
 function scheduleWorkerHudUpdate(): void {
   if (!cityPanel.isVisible() || workerHudUpdateFrameId !== null) return
@@ -244,209 +224,16 @@ function scheduleWorkerHudUpdate(): void {
   })
 }
 
-// Handle incoming activity event
-function handleActivityEvent(
-  activity: {
-    tmuxSession: string
-    tool: string
-    summary?: string
-    fullPath?: string
-    timestamp: number
-    originId?: string
-    activitySessionKey?: string
-  }
-): void {
-  const activitySessionKey = activity.activitySessionKey
-    ?? (activity.originId ? getActivitySessionKey(activity.originId, activity.tmuxSession) : null)
-  if (!activitySessionKey) return
+const stateSync = new FrontendStateSync({
+  handlePanelMessage: (message) => cityPanel.handleMessage(message),
+  onSocketOpen: (socket) => {
+    cityPanel.setWebSocket(socket)
+  },
+  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, isInitialState, urlCityId }) => {
+    cities = nextCities
+    sessions = nextSessions
+    origins = nextOrigins
 
-  totalActivityEventsReceived += 1
-  recentActivityEventTimestamps.push(Date.now())
-  pruneRecentActivityEvents()
-
-  // Store activity
-  let activities = activityBySessionKey.get(activitySessionKey)
-  if (!activities) {
-    activities = []
-    activityBySessionKey.set(activitySessionKey, activities)
-  }
-  activities.unshift({
-    tool: activity.tool,
-    summary: activity.summary,
-    fullPath: activity.fullPath,
-    timestamp: activity.timestamp,
-  })
-  if (activities.length > MAX_ACTIVITIES_PER_SESSION) {
-    activities.pop()
-  }
-
-  // Update ZoneRenderer worker marker activity
-  zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
-
-  // Activity stream can be high-frequency; coalesce HUD updates per animation frame.
-  scheduleWorkerHudUpdate()
-}
-
-// Connect to server
-function connectWebSocket(): void {
-  if (wsCleanedUp || runtimeDisposed) return
-  const wsUrl = `ws://${window.location.hostname}:4004`
-  ws = new WebSocket(wsUrl)
-
-  ws.onopen = () => {
-    console.log('Connected to portolan server')
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout)
-      reconnectTimeout = null
-    }
-    cityPanel.setWebSocket(ws!)
-  }
-
-  ws.onmessage = (event) => {
-    try {
-      const message = JSON.parse(event.data)
-      // Route to panels that handle specific message types
-      if (cityPanel.handleMessage(message)) return
-
-      handleMessage(message)
-    } catch (e) {
-      console.error('Failed to parse message:', e)
-    }
-  }
-
-  ws.onclose = () => {
-    if (wsCleanedUp) return  // Don't reconnect on HMR cleanup
-    console.log('Disconnected from server, reconnecting...')
-    if (!reconnectTimeout) {
-      reconnectTimeout = setTimeout(() => {
-        reconnectTimeout = null
-        connectWebSocket()
-      }, 2000)
-    }
-  }
-
-  ws.onerror = (e) => {
-    console.error('WebSocket error:', e)
-  }
-}
-
-interface ServerState {
-  cities: ServerCity[]
-  sessions: ServerSession[]
-  origins?: ServerOrigin[]
-  activities?: Record<string, Activity[]>
-}
-
-interface ConfirmUnpinMessage {
-  type: 'confirmUnpin'
-  cityId: string
-  cityName: string
-  sessionCount: number
-}
-
-interface CityPinnedMessage {
-  type: 'cityPinned'
-  city: ServerCity
-}
-
-interface CityUnpinnedMessage {
-  type: 'cityUnpinned'
-  cityId: string
-}
-
-interface CityMovedMessage {
-  type: 'cityMoved'
-  cityId: string
-  newPosition: { q: number; r: number }
-}
-
-interface ErrorMessage {
-  type: 'error'
-  message: string
-}
-
-interface ActivityMessage {
-  type: 'activity'
-  activity: {
-    tmuxSession: string
-    tool: string
-    summary?: string
-    fullPath?: string
-    timestamp: number
-    originId?: string
-    activitySessionKey?: string
-  }
-}
-
-type ServerMessage = ServerState | ConfirmUnpinMessage | CityPinnedMessage | CityUnpinnedMessage | CityMovedMessage | ErrorMessage | ActivityMessage
-
-function handleMessage(message: ServerMessage): void {
-  // Handle persistence-related messages
-  if ('type' in message) {
-    if (message.type === 'confirmUnpin') {
-      // Show confirmation dialog
-      const msg = message as ConfirmUnpinMessage
-      const confirmed = window.confirm(
-        `City "${msg.cityName}" has ${msg.sessionCount} active session(s).\n\n` +
-        `The city will remain visible while sessions are active.\n` +
-        `Remove persistence anyway?`
-      )
-      if (confirmed && ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'confirmUnpinCity', cityId: msg.cityId }))
-      }
-      return
-    }
-
-    if (message.type === 'cityPinned') {
-      return
-    }
-
-    if (message.type === 'cityUnpinned') {
-      return
-    }
-
-    if (message.type === 'cityMoved') {
-      return
-    }
-
-    if (message.type === 'error') {
-      const errorMsg = (message as ErrorMessage).message
-      console.error('[Frontend] Server error:', errorMsg)
-      // Show user-facing errors in an alert
-      alert(errorMsg)
-      return
-    }
-
-    if (message.type === 'activity') {
-      const actMsg = message as ActivityMessage
-      handleActivityEvent(actMsg.activity)
-      return
-    }
-  }
-
-  // Server sends state directly: { cities: [...], sessions: [...], origins: [...], activities: {...} }
-  const state = message as ServerState
-  if (state.cities && state.sessions) {
-    cities = state.cities.map(normalizeCity)
-    sessions = state.sessions.map(normalizeSession)
-    if (state.origins) {
-      origins = state.origins
-    }
-    // Populate activity history from state (backfill on connect)
-    if (state.activities) {
-      for (const [activitySessionKey, acts] of Object.entries(state.activities)) {
-        activityBySessionKey.set(activitySessionKey, acts)
-      }
-    }
-    // Clean up activities for sessions that no longer exist
-    const currentActivitySessionKeys = new Set(
-      sessions.map(s => getActivitySessionKey(s.originId, s.tmuxSession))
-    )
-    for (const activitySessionKey of activityBySessionKey.keys()) {
-      if (!currentActivitySessionKeys.has(activitySessionKey)) {
-        activityBySessionKey.delete(activitySessionKey)
-      }
-    }
     zoneRenderer.updateState(cities, sessions)
     for (const session of sessions) {
       const activitySessionKey = getActivitySessionKey(session.originId, session.tmuxSession)
@@ -456,86 +243,49 @@ function handleMessage(message: ServerMessage): void {
       }
     }
 
-    // Update HUD worker list if visible
     cityPanel.updateWorkers(sessions)
 
-    // On first state, focus camera on most recently active city
-    if (!hasReceivedInitialState && cities.length > 0) {
-      hasReceivedInitialState = true
+    if (!isInitialState || cities.length === 0) return
 
-      // Find city with most recent session activity
-      let mostRecentCity: City | null = null
-      let mostRecentTime = 0
-
-      for (const session of sessions) {
-        if (session.cityId && session.lastActivity > mostRecentTime) {
-          const city = cities.find(c => c.id === session.cityId)
-          if (city) {
-            mostRecentCity = city
-            mostRecentTime = session.lastActivity
-          }
-        }
-      }
-
-      // Fall back to first city if no sessions
-      const targetCity = mostRecentCity || cities[0]
-      console.log('[InitialFocus]', mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
-        sessions.length, 'sessions,', sessions.filter(s => s.cityId).length, 'with cityId')
-      const pos = hexGrid.axialToCartesian(targetCity.hex)
-      camera.focusAndZoom(pos, 6, 0.95)
-
-      // Restore tapestry from URL — if ?city= is set, auto-open the tapestry
-      const urlCityId = new URLSearchParams(window.location.search).get('city')
-      if (urlCityId) {
-        const urlCity = cities.find(c => c.id === urlCityId)
-        if (urlCity) {
-          cityPanel.hide()
-          tapestryView.show(urlCity)
+    let mostRecentCity: City | null = null
+    let mostRecentTime = 0
+    for (const session of sessions) {
+      if (session.cityId && session.lastActivity > mostRecentTime) {
+        const city = cities.find(c => c.id === session.cityId)
+        if (city) {
+          mostRecentCity = city
+          mostRecentTime = session.lastActivity
         }
       }
     }
-  }
-}
 
-function getWebSocketState(socket: WebSocket | null): 'missing' | 'connecting' | 'open' | 'closing' | 'closed' {
-  if (!socket) return 'missing'
-  switch (socket.readyState) {
-    case WebSocket.CONNECTING:
-      return 'connecting'
-    case WebSocket.OPEN:
-      return 'open'
-    case WebSocket.CLOSING:
-      return 'closing'
-    default:
-      return 'closed'
-  }
-}
+    const targetCity = mostRecentCity || cities[0]
+    console.log(
+      '[InitialFocus]',
+      mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
+      sessions.length,
+      'sessions,',
+      sessions.filter(s => s.cityId).length,
+      'with cityId'
+    )
+    const pos = hexGrid.axialToCartesian(targetCity.hex)
+    camera.focusAndZoom(pos, 6, 0.95)
 
-function getActivityBufferStats(): {
-  streamCount: number
-  bufferedEventCount: number
-  maxBufferedEventsPerStream: number
-  streamWithMostEvents: string | null
-} {
-  let bufferedEventCount = 0
-  let maxBufferedEventsPerStream = 0
-  let streamWithMostEvents: string | null = null
-
-  for (const [activitySessionKey, activities] of activityBySessionKey.entries()) {
-    bufferedEventCount += activities.length
-    if (activities.length > maxBufferedEventsPerStream) {
-      maxBufferedEventsPerStream = activities.length
-      streamWithMostEvents = activitySessionKey
-    }
-  }
-
-  return {
-    streamCount: activityBySessionKey.size,
-    bufferedEventCount,
-    maxBufferedEventsPerStream,
-    streamWithMostEvents,
-  }
-}
+    if (!urlCityId) return
+    const urlCity = cities.find(c => c.id === urlCityId)
+    if (!urlCity) return
+    cityPanel.hide()
+    tapestryView.show(urlCity)
+  },
+  onActivity: ({ activitySessionKey, activities }) => {
+    zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
+    scheduleWorkerHudUpdate()
+  },
+  onServerError: (message) => {
+    console.error('[Frontend] Server error:', message)
+    alert(message)
+  },
+})
 
 installFrontendRuntimeDiagnostics({
   renderer,
@@ -546,24 +296,16 @@ installFrontendRuntimeDiagnostics({
   playgroundViewer,
   getArtifactMediaCacheStats,
   getRuntimeDisposed: () => runtimeDisposed,
-  getWebSocketState: () => getWebSocketState(ws),
-  hasReconnectTimeout: () => reconnectTimeout !== null,
-  hasReceivedInitialState: () => hasReceivedInitialState,
+  getWebSocketState: () => stateSync.getWebSocketState(),
+  hasReconnectTimeout: () => stateSync.hasPendingReconnect(),
+  hasReceivedInitialState: () => stateSync.getHasReceivedInitialState(),
   getWorldStats: () => ({
     cityCount: cities.length,
     sessionCount: sessions.length,
     originCount: origins.length,
     selectedHex: selectedHex ? { q: selectedHex.q, r: selectedHex.r } : null,
   }),
-  getActivityStats: () => {
-    pruneRecentActivityEvents()
-    return {
-      stats: getActivityBufferStats(),
-      maxPerStreamLimit: MAX_ACTIVITIES_PER_SESSION,
-      totalEventsReceived: totalActivityEventsReceived,
-      recentEventsPerMinute: recentActivityEventTimestamps.length,
-    }
-  },
+  getActivityStats: () => stateSync.getActivityStats(),
   getHudStats: () => ({
     hasPendingWorkerUpdateFrame: workerHudUpdateFrameId !== null,
     totalWorkerHudUpdates,
@@ -605,16 +347,14 @@ async function promptNewWorker(city: City): Promise<void> {
   const result = await newWorkerDialog.show(city.name)
   if (!result) return  // Cancelled
 
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'newWorker',
-      cityPath: city.path,
-      name: result.name || undefined,  // undefined if empty (will auto-generate)
-      cli: result.cli || undefined,  // 'claude' | 'codex'
-      chrome: result.chrome || undefined,  // only send if true
-      continue: result.continue || undefined,  // only send if true
-    }))
-  }
+  stateSync.send({
+    type: 'newWorker',
+    cityPath: city.path,
+    name: result.name || undefined,
+    cli: result.cli || undefined,
+    chrome: result.chrome || undefined,
+    continue: result.continue || undefined,
+  })
 }
 
 // Pin a new city at the given hex
@@ -622,54 +362,43 @@ function promptAddCity(hex: HexCoord): void {
   const path = window.prompt('Enter the full path for the new city:')
   if (!path) return
 
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'pinCity',
-      path: path.trim(),
-      position: { q: hex.q, r: hex.r },
-    }))
-  } else {
-    console.error('WebSocket not ready, readyState:', ws?.readyState)
+  if (!stateSync.send({
+    type: 'pinCity',
+    path: path.trim(),
+    position: { q: hex.q, r: hex.r },
+  })) {
+    console.error('WebSocket not ready, state:', stateSync.getWebSocketState())
   }
 }
 
 // Unpin a city
 function unpinCity(cityId: string): void {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'unpinCity',
-      cityId,
-    }))
-  }
+  stateSync.send({
+    type: 'unpinCity',
+    cityId,
+  })
 }
 
 // Move a city to a new hex position
 function moveCity(cityId: string, hex: HexCoord): void {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'moveCity',
-      cityId,
-      newPosition: { q: hex.q, r: hex.r },
-    }))
-  }
+  stateSync.send({
+    type: 'moveCity',
+    cityId,
+    newPosition: { q: hex.q, r: hex.r },
+  })
 }
 
 // Kill a worker (tmux session)
 function killWorker(sessionId: string): void {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'killWorker',
-      sessionId,
-    }))
-  }
+  stateSync.send({
+    type: 'killWorker',
+    sessionId,
+  })
 }
 
 // Focus Kitty tab
 function focusKittyTab(sessionId: string): void {
-  // Send focus request to server
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'focus', sessionId }))
-  }
+  stateSync.send({ type: 'focus', sessionId })
 }
 
 // Activate dormant remote city (SSH + start agent)
@@ -716,7 +445,7 @@ function animate(): void {
 }
 
 // Start
-connectWebSocket()
+stateSync.connect()
 animate()
 
 // Add some mock data for testing when server is not available
@@ -749,10 +478,6 @@ function cleanupRuntime(): void {
     cancelAnimationFrame(animationFrameId)
     animationFrameId = null
   }
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout)
-    reconnectTimeout = null
-  }
   if (mockDataTimeout) {
     clearTimeout(mockDataTimeout)
     mockDataTimeout = null
@@ -763,9 +488,7 @@ function cleanupRuntime(): void {
   }
 
   // Close WebSocket and prevent reconnection attempts.
-  wsCleanedUp = true
-  ws?.close()
-  ws = null
+  stateSync.dispose()
 
   mapInteractions.dispose()
   window.removeEventListener('resize', resizeHandler)
