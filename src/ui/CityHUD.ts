@@ -1,6 +1,7 @@
 import type { City, GitStatus, Session } from '../state/types'
+import { CityHUDFileTree } from './CityHUDFileTree'
 import { escapeHtml, fiberStatusIcon } from './utils'
-import type { DirectoryEntry, Fiber, SearchResult } from './hud-types'
+import type { Fiber, SearchResult } from './hud-types'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 
 interface FibersResponse {
@@ -8,14 +9,6 @@ interface FibersResponse {
   cityId: string
   open: Fiber[]
   recentlyClosed: Fiber[]
-}
-
-interface DirectoryListingResponse {
-  type: 'directoryListing'
-  cityId: string
-  path: string
-  entries: DirectoryEntry[]
-  error?: string
 }
 
 type FibersCallback = (response: FibersResponse) => void
@@ -42,15 +35,9 @@ export class CityHUD {
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
 
-  // File tree state
-  private directoryCache = new Map<string, DirectoryEntry[]>()
-  private expandedDirs = new Set<string>()
-  private loadingDirs = new Set<string>()
-  private directoryErrors = new Map<string, string>()
-  private inFlightDirectoryRequests = new Set<string>()
-
   // Worker state
   private cityWorkers: Session[] = []
+  private fileTree: CityHUDFileTree
 
   // Stored listener refs for HMR-safe cleanup
   private clickOutsideHandler: ((e: MouseEvent) => void) | null = null
@@ -77,6 +64,10 @@ export class CityHUD {
     this.searchInput = this.container.querySelector('.hud-search-input')!
     this.searchClear = this.container.querySelector('.hud-search-clear')!
     this.searchResultsList = this.container.querySelector('.hud-search-results')!
+    this.fileTree = new CityHUDFileTree({
+      list: this.filesList,
+      onOpenFile: (fullPath) => this.openFile(fullPath),
+    })
     this.setupEventHandlers()
     this.setupSearch()
     this.setupDelegatedListeners()
@@ -205,7 +196,7 @@ export class CityHUD {
     this.searchInput.placeholder = tab === 'fibers' ? 'Search fibers & files…' : 'Search files…'
 
     if (tab === 'files') {
-      this.ensureRootListing()
+      this.fileTree.ensureRootListing()
     }
   }
 
@@ -337,7 +328,8 @@ export class CityHUD {
 
     this.openFibers = []
     this.closedFibers = []
-    this.resetFileTreeState()
+    this.fileTree.setCurrentCity(city)
+    this.fileTree.reset()
 
     this.activeTab = 'files'
     this.switchTab('files')
@@ -353,9 +345,10 @@ export class CityHUD {
   hide(): void {
     this.container.classList.remove('visible')
     this.currentCity = null
+    this.fileTree.setCurrentCity(null)
     this.detachDocumentListeners()
     this.clearSearch()
-    this.resetFileTreeState()
+    this.fileTree.reset()
   }
 
   isVisible(): boolean {
@@ -386,16 +379,13 @@ export class CityHUD {
       searchQueryLength: this.searchQuery.length,
       pendingSearchResults: this.searchResults.length,
       cityWorkerCount: this.cityWorkers.length,
-      directoryCacheEntries: this.directoryCache.size,
-      expandedDirectoryCount: this.expandedDirs.size,
-      loadingDirectoryCount: this.loadingDirs.size,
-      directoryErrorCount: this.directoryErrors.size,
-      inFlightDirectoryRequestCount: this.inFlightDirectoryRequests.size,
+      ...this.fileTree.getRuntimeStats(),
     }
   }
 
   setWebSocket(ws: WebSocket): void {
     this.ws = ws
+    this.fileTree.setWebSocket(ws)
   }
 
   setOnViewClaims(callback: (city: City) => void): void {
@@ -440,10 +430,7 @@ export class CityHUD {
       this.handleSearchResults(response.searchId, response.results, response.error)
       return true
     }
-    if (msg.type === 'directoryListing') {
-      this.handleDirectoryListing(message as DirectoryListingResponse)
-      return true
-    }
+    if (this.fileTree.handleMessage(message)) return true
     return false
   }
 
@@ -534,19 +521,6 @@ export class CityHUD {
       }
     })
 
-    this.filesList.addEventListener('click', (e) => {
-      const row = (e.target as HTMLElement).closest<HTMLElement>('.hud-tree-row')
-      if (!row) return
-      const path = row.dataset.path
-      const type = row.dataset.type
-      if (!path || !type) return
-
-      if (type === 'dir') {
-        this.toggleDirectory(path)
-      } else {
-        this.openFile(path)
-      }
-    })
   }
 
   private performSearch(): void {
@@ -581,7 +555,7 @@ export class CityHUD {
 
     this.collapseSearch()
     if (this.activeTab === 'files') {
-      this.renderFileTree()
+      this.fileTree.renderEmptySearchState()
     }
   }
 
@@ -684,155 +658,6 @@ export class CityHUD {
         <button class="hud-fiber-handoff" data-fiber-id="${fiber.id}" title="Hand off to worker">↗</button>
       </li>
     `
-  }
-
-  private ensureRootListing(): void {
-    if (!this.currentCity) return
-    const root = this.currentCity.path
-    this.expandedDirs.add(root)
-    if (!this.directoryCache.has(root) && !this.loadingDirs.has(root)) {
-      this.requestDirectoryListing(root)
-    }
-    this.renderFileTree()
-  }
-
-  private resetFileTreeState(): void {
-    this.directoryCache.clear()
-    this.expandedDirs.clear()
-    this.loadingDirs.clear()
-    this.directoryErrors.clear()
-    this.inFlightDirectoryRequests.clear()
-    this.filesList.innerHTML = ''
-  }
-
-  private toggleDirectory(path: string): void {
-    if (this.expandedDirs.has(path)) {
-      this.expandedDirs.delete(path)
-      this.renderFileTree()
-      return
-    }
-
-    this.expandedDirs.add(path)
-    if (!this.directoryCache.has(path) && !this.loadingDirs.has(path)) {
-      this.requestDirectoryListing(path)
-    }
-    this.renderFileTree()
-  }
-
-  private requestDirectoryListing(path: string): void {
-    if (!this.currentCity || !this.ws || this.ws.readyState !== WebSocket.OPEN) return
-    if (this.inFlightDirectoryRequests.has(path)) return
-
-    this.inFlightDirectoryRequests.add(path)
-    this.loadingDirs.add(path)
-    this.directoryErrors.delete(path)
-    this.renderFileTree()
-
-    this.ws.send(JSON.stringify({
-      type: 'listDirectory',
-      cityId: this.currentCity.id,
-      path,
-    }))
-  }
-
-  private handleDirectoryListing(response: DirectoryListingResponse): void {
-    if (!this.currentCity || response.cityId !== this.currentCity.id) return
-
-    this.inFlightDirectoryRequests.delete(response.path)
-    this.loadingDirs.delete(response.path)
-
-    if (response.error) {
-      this.directoryErrors.set(response.path, response.error)
-    } else {
-      this.directoryErrors.delete(response.path)
-      this.directoryCache.set(response.path, response.entries)
-    }
-
-    this.renderFileTree()
-  }
-
-  private renderFileTree(): void {
-    if (!this.currentCity) return
-
-    const root = this.currentCity.path
-    const rootEntries = this.directoryCache.get(root)
-    const rootLoading = this.loadingDirs.has(root)
-
-    if (!this.expandedDirs.has(root)) {
-      this.filesList.innerHTML = '<li class="hud-file-empty">Open Files tab to browse this project.</li>'
-      return
-    }
-
-    if (!rootEntries && rootLoading) {
-      this.filesList.innerHTML = '<li class="hud-file-empty">Loading…</li>'
-      return
-    }
-
-    if (!rootEntries) {
-      this.filesList.innerHTML = '<li class="hud-file-empty">No directory listing available.</li>'
-      return
-    }
-
-    let html = ''
-
-    for (const entry of rootEntries) {
-      html += this.renderTreeNode(root, entry, 0, '')
-    }
-
-    this.filesList.innerHTML = html || '<li class="hud-file-empty">No matching entries.</li>'
-  }
-
-  private renderTreeNode(parentPath: string, entry: DirectoryEntry, depth: number, filter: string): string {
-    const fullPath = `${parentPath.replace(/\/$/, '')}/${entry.name}`
-    const isDir = entry.type === 'dir'
-    const isExpanded = isDir && this.expandedDirs.has(fullPath)
-    const isLoading = isDir && this.loadingDirs.has(fullPath)
-    const error = this.directoryErrors.get(fullPath)
-    const matches = !filter || entry.name.toLowerCase().includes(filter)
-
-    let html = ''
-
-    if (matches) {
-      const arrow = isDir ? (isExpanded ? '▼' : '▶') : '•'
-      html += `
-        <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px">
-          <span class="hud-tree-arrow">${arrow}</span>
-          <span class="hud-tree-name">${escapeHtml(entry.name)}</span>
-        </li>
-      `
-    }
-
-    if (!isDir || !isExpanded) {
-      return html
-    }
-
-    if (isLoading) {
-      html += `
-        <li class="hud-tree-status" style="padding-left: ${(depth + 1) * 16 + 8}px">…</li>
-      `
-      return html
-    }
-
-    if (error) {
-      html += `
-        <li class="hud-tree-status error" style="padding-left: ${(depth + 1) * 16 + 8}px">couldn't read directory</li>
-      `
-      return html
-    }
-
-    const children = this.directoryCache.get(fullPath) || []
-    if (children.length === 0) {
-      html += `
-        <li class="hud-tree-status" style="padding-left: ${(depth + 1) * 16 + 8}px">empty</li>
-      `
-      return html
-    }
-
-    for (const child of children) {
-      html += this.renderTreeNode(fullPath, child, depth + 1, filter)
-    }
-
-    return html
   }
 
   private openFiber(fiberId: string | undefined): void {
