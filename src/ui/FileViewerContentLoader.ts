@@ -1,8 +1,6 @@
 import { escapeHtml } from './utils'
-import {
-  type Annotation,
-  type FileViewerAnnotations,
-} from './FileViewerAnnotations'
+import type { Annotation } from './FileViewerAnnotationTypes'
+import { type FileViewerAnnotations } from './FileViewerAnnotations'
 import { FileViewerMarkdownView } from './FileViewerMarkdownView'
 import {
   type FileContent,

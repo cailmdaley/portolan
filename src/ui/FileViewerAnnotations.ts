@@ -1,29 +1,17 @@
 import { EditorState, StateEffect, StateField, type Extension } from '@codemirror/state'
 import { EditorView, Decoration, type DecorationSet } from '@codemirror/view'
 import { AnnotationPanel } from './AnnotationPanel'
+import {
+  fileAnnotationsAsFiber,
+  loadAnnotations,
+  saveImageAnnotation as persistImageAnnotation,
+  saveTextAnnotation,
+  sendAnnotationsToWorker as persistAnnotationsToWorker,
+} from './FileViewerAnnotationActions'
+import type { Annotation } from './FileViewerAnnotationTypes'
 import { type WorkerInfo, showWorkerPicker } from './WorkerPicker'
 import { FileViewerImageAnnotations } from './FileViewerImageAnnotations'
 import { escapeHtml, showToast } from './utils'
-
-const API_BASE = `http://${window.location.hostname}:4004`
-
-export interface Annotation {
-  id: string
-  filePath: string
-  originId: string
-  from: number
-  to: number
-  line?: number
-  endLine?: number
-  originalText: string
-  contextBefore: string
-  contextAfter: string
-  comment: string
-  createdAt: number
-  x?: number
-  y?: number
-  isImageAnnotation?: boolean
-}
 
 export const setFileViewerAnnotationsEffect = StateEffect.define<Annotation[]>()
 
@@ -274,46 +262,17 @@ export class FileViewerAnnotations {
     const { currentPath, currentOriginId, currentCityPath } = this.host.getState()
     if (!currentPath || !this.hasContent()) return
 
-    const filename = currentPath.split('/').pop() || currentPath
-    const bodyLines: string[] = []
-    if (this.globalComment) {
-      bodyLines.push(this.globalComment, '')
-    }
-    if (this.annotations.length > 0) {
-      bodyLines.push('## Annotations', '')
-      this.annotations.forEach((ann, index) => {
-        const lineRef = ann.line ? ` (L${ann.line})` : ''
-        const truncatedText = ann.originalText.length > 60
-          ? ann.originalText.slice(0, 57) + '...'
-          : ann.originalText
-        bodyLines.push(`${index + 1}.${lineRef} **"${truncatedText.replace(/\n/g, ' ')}"**`)
-        bodyLines.push(`   > ${ann.comment}`)
-        bodyLines.push('')
-      })
-    }
-
     try {
       this.host.fiberBtn.textContent = 'Filing...'
       this.host.fiberBtn.setAttribute('disabled', 'true')
 
-      const response = await fetch(`${API_BASE}/file-as-fiber`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: currentPath,
-          originId: currentOriginId,
-          cityPath: currentCityPath,
-          title: `Feedback on ${filename}`,
-          body: bodyLines.join('\n'),
-          kind: 'task',
-        }),
+      const result = await fileAnnotationsAsFiber({
+        currentPath,
+        currentOriginId,
+        currentCityPath,
+        annotations: this.annotations,
+        globalComment: this.globalComment,
       })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to file as fiber')
-      }
-
-      const result = await response.json()
       this.globalComment = ''
       this.annotationPanel.resetGlobalInput()
       this.updateActionButtons()
@@ -515,31 +474,21 @@ export class FileViewerAnnotations {
     }
 
     try {
-      const response = await fetch(`${API_BASE}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: currentPath,
-          originId: currentOriginId,
-          from,
-          to,
-          line,
-          endLine,
-          originalText: selectedText,
-          contextBefore,
-          contextAfter,
-          comment,
-        }),
+      const annotation = await saveTextAnnotation({
+        currentPath,
+        currentOriginId,
+        from,
+        to,
+        line,
+        endLine,
+        selectedText,
+        comment,
+        contextBefore,
+        contextAfter,
       })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to save annotation')
-      }
-
-      const data = await response.json()
       const state = this.host.getState()
       if (!isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) return
-      this.annotations.push(data.annotation)
+      this.annotations.push(annotation)
       this.annotationPanel.setAnnotations(this.annotations)
       this.updateAnnotationHighlights()
       this.updateActionButtons()
@@ -554,37 +503,21 @@ export class FileViewerAnnotations {
     if (!currentPath) return null
 
     try {
-      const response = await fetch(`${API_BASE}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: currentPath,
-          originId: currentOriginId,
-          from: 0,
-          to: 0,
-          originalText: `[Image point at ${x.toFixed(1)}%, ${y.toFixed(1)}%]`,
-          contextBefore: '',
-          contextAfter: '',
-          comment,
-          x,
-          y,
-          isImageAnnotation: true,
-        }),
+      const annotation = await persistImageAnnotation({
+        currentPath,
+        currentOriginId,
+        x,
+        y,
+        comment,
       })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to save annotation')
-      }
-
-      const data = await response.json()
       const state = this.host.getState()
       if (!state.isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) {
         return null
       }
-      this.annotations.push(data.annotation)
+      this.annotations.push(annotation)
       this.annotationPanel.setAnnotations(this.annotations)
       this.updateActionButtons()
-      return data.annotation
+      return annotation
     } catch (error: any) {
       console.error('Failed to save image annotation:', error)
       alert(`Failed to save annotation: ${error.message}`)
@@ -597,18 +530,10 @@ export class FileViewerAnnotations {
     if (!currentPath) return
 
     try {
-      const response = await fetch(
-        `${API_BASE}/annotations?path=${encodeURIComponent(currentPath)}&originId=${encodeURIComponent(currentOriginId)}`
-      )
+      const annotations = await loadAnnotations(currentPath, currentOriginId)
       const state = this.host.getState()
       if (!isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) return
-      if (!response.ok) {
-        this.setAnnotations([])
-        return
-      }
-      const data = await response.json()
-      if (!state.isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) return
-      this.setAnnotations(data.annotations || [])
+      this.setAnnotations(annotations)
     } catch {
       const state = this.host.getState()
       if (!state.isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) return
@@ -645,22 +570,14 @@ export class FileViewerAnnotations {
     if (!currentPath || (annotations.length === 0 && this.globalComment.trim().length === 0)) return
 
     try {
-      const response = await fetch(`${API_BASE}/send-annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workerId,
-          createNewWorker: createNew,
-          filePath: currentPath,
-          originId: currentOriginId,
-          annotations,
-          globalComment: this.globalComment || undefined,
-        }),
+      await persistAnnotationsToWorker({
+        currentPath,
+        currentOriginId,
+        workerId,
+        createNew,
+        annotations,
+        globalComment: this.globalComment,
       })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to send annotations')
-      }
 
       this.globalComment = ''
       this.annotationPanel.resetGlobalInput()

@@ -1,4 +1,4 @@
-import { type Annotation } from './FileViewerAnnotations'
+import type { Annotation } from './FileViewerAnnotationTypes'
 
 interface FileViewerImageAnnotationHost {
   panelEl: HTMLElement
