@@ -12,8 +12,7 @@ import { css } from '@codemirror/lang-css'
 import { html as htmlLang } from '@codemirror/lang-html'
 import { vim } from '@replit/codemirror-vim'
 import { type FileViewerAnnotations, fileViewerAnnotationHighlightField } from './FileViewerAnnotations'
-
-const API_BASE = `http://${window.location.hostname}:4004`
+import { FileViewerTextActions } from './FileViewerTextActions'
 
 export interface FileContent {
   content: string
@@ -106,10 +105,9 @@ export class FileViewerTextEditor {
   private copyBtn: HTMLElement
   private downloadBtn: HTMLElement
   private annotations: FileViewerAnnotations
-  private scheduleDeferredUiTask: FileViewerTextEditorOptions['scheduleDeferredUiTask']
   private getOriginId: () => string
-  private isVisible: () => boolean
   private onRenderMarkdown: (content: string) => void
+  private textActions: FileViewerTextActions
 
   private editorView: EditorView | null = null
   private currentContent: FileContent | null = null
@@ -124,10 +122,15 @@ export class FileViewerTextEditor {
     this.copyBtn = options.copyBtn
     this.downloadBtn = options.downloadBtn
     this.annotations = options.annotations
-    this.scheduleDeferredUiTask = options.scheduleDeferredUiTask
     this.getOriginId = options.getOriginId
-    this.isVisible = options.isVisible
     this.onRenderMarkdown = options.onRenderMarkdown
+    this.textActions = new FileViewerTextActions({
+      saveBtn: this.saveBtn,
+      copyBtn: this.copyBtn,
+      downloadBtn: this.downloadBtn,
+      scheduleDeferredUiTask: options.scheduleDeferredUiTask,
+      isVisible: options.isVisible,
+    })
   }
 
   getCurrentContent(): FileContent | null {
@@ -195,95 +198,33 @@ export class FileViewerTextEditor {
     if (!this.editorView || !this.currentContent) return
 
     const content = this.editorView.state.doc.toString()
-
-    try {
-      this.saveBtn.textContent = 'Saving...'
-      this.saveBtn.setAttribute('disabled', 'true')
-
-      const response = await fetch(`${API_BASE}/save-file`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          path: this.currentContent.path,
-          content,
-          originId: this.getOriginId(),
-        }),
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to save file')
-      }
-
+    const saved = await this.textActions.saveFile({
+      path: this.currentContent.path,
+      content,
+      originId: this.getOriginId(),
+    })
+    if (saved) {
       this.currentContent.content = content
       this.originalContent = content
       this.isDirty = false
       this.updateDirtyIndicator()
-
-      this.saveBtn.textContent = 'Saved!'
-      this.scheduleDeferredUiTask(() => {
-        if (!this.isVisible()) return
-        this.saveBtn.textContent = 'Save'
-        this.saveBtn.removeAttribute('disabled')
-      }, 1500)
-    } catch (error: any) {
-      console.error('Failed to save file:', error)
-      this.saveBtn.textContent = 'Save'
-      this.saveBtn.removeAttribute('disabled')
-      alert(`Failed to save: ${error.message}`)
     }
   }
 
   async copyToClipboard(): Promise<void> {
     const content = this.getTextContent()
     if (!content) return
-
-    try {
-      await navigator.clipboard.writeText(content)
-      const originalText = this.copyBtn.textContent
-      this.copyBtn.textContent = 'Copied!'
-      this.scheduleDeferredUiTask(() => {
-        if (!this.isVisible()) return
-        this.copyBtn.textContent = originalText
-      }, 1500)
-    } catch {
-      const textarea = document.createElement('textarea')
-      textarea.value = content
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      this.copyBtn.textContent = 'Copied!'
-      this.scheduleDeferredUiTask(() => {
-        if (!this.isVisible()) return
-        this.copyBtn.textContent = 'Copy'
-      }, 1500)
-    }
+    await this.textActions.copyText(content)
   }
 
   download(): void {
     const content = this.getTextContent()
     if (!content) return
 
-    const filename = this.currentContent?.path.split('/').pop() || 'download.txt'
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-
-    const originalText = this.downloadBtn.textContent
-    this.downloadBtn.textContent = 'Downloaded!'
-    this.scheduleDeferredUiTask(() => {
-      if (!this.isVisible()) return
-      this.downloadBtn.textContent = originalText
-    }, 1500)
+    this.textActions.downloadText({
+      content,
+      filename: this.currentContent?.path.split('/').pop() || 'download.txt',
+    })
   }
 
   reset(): void {
