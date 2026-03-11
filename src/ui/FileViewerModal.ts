@@ -1,21 +1,12 @@
 import { Vim } from '@replit/codemirror-vim'
-import { escapeHtml } from './utils'
 import { AnnotationPanel } from './AnnotationPanel'
 import { type WorkerInfo } from './WorkerPicker'
 import {
-  type Annotation,
   FileViewerAnnotations,
 } from './FileViewerAnnotations'
+import { FileViewerContentPresenter } from './FileViewerContentPresenter'
 import { FileViewerMarkdownView } from './FileViewerMarkdownView'
-import { type FileContent, FileViewerTextEditor } from './FileViewerTextEditor'
-
-// Image file extensions
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'])
-
-// PDF extension
-const PDF_EXTENSIONS = new Set(['.pdf'])
-
-const API_BASE = `http://${window.location.hostname}:4004`
+import { FileViewerTextEditor } from './FileViewerTextEditor'
 
 export class FileViewerModal {
   private backdrop: HTMLElement
@@ -34,13 +25,9 @@ export class FileViewerModal {
   private contentEl: HTMLElement
   private annotationsPanelEl: HTMLElement
   private annotations: FileViewerAnnotations
+  private contentPresenter: FileViewerContentPresenter
   private textEditor: FileViewerTextEditor
   private modeLineEl: HTMLElement
-  private currentPath: string = ''
-  private currentOriginId: string = 'local'
-  private currentCityPath: string = ''
-  private currentCityId: string = ''
-  private sourceWorkerId: string | null = null
 
   // Navigation state for cycling through files with Up/Down
   private navigationFiles: string[] = []
@@ -57,8 +44,6 @@ export class FileViewerModal {
   private arrowHandler: ((e: KeyboardEvent) => void) | null = null
 
   // Async request ownership for race-safe modal loads
-  private activeShowRequestId: number = 0
-  private activeShowAbortController: AbortController | null = null
   private deferredUiTimers = new Set<number>()
 
   constructor() {
@@ -84,10 +69,10 @@ export class FileViewerModal {
       sendBtn: this.sendBtn,
       fiberBtn: this.fiberBtn,
       getState: () => ({
-        currentPath: this.currentPath,
-        currentOriginId: this.currentOriginId,
-        currentCityPath: this.currentCityPath,
-        sourceWorkerId: this.sourceWorkerId,
+        currentPath: this.contentPresenter.getCurrentPath(),
+        currentOriginId: this.contentPresenter.getCurrentOriginId(),
+        currentCityPath: this.contentPresenter.getCurrentCityPath(),
+        sourceWorkerId: this.contentPresenter.getSourceWorkerId(),
         originalContent: this.textEditor.getOriginalContent(),
         editorView: this.textEditor.getEditorView(),
         isVisible: this.isVisible(),
@@ -103,7 +88,7 @@ export class FileViewerModal {
       downloadBtn: this.downloadBtn,
       annotations: this.annotations,
       scheduleDeferredUiTask: (task, delayMs) => this.scheduleDeferredUiTask(task, delayMs),
-      getOriginId: () => this.currentOriginId,
+      getOriginId: () => this.contentPresenter.getCurrentOriginId(),
       isVisible: () => this.isVisible(),
       onRenderMarkdown: (content) => this.markdownView.show(content),
     })
@@ -112,16 +97,28 @@ export class FileViewerModal {
       modeLineEl: this.modeLineEl,
       annotations: this.annotations,
       getState: () => ({
-        currentPath: this.currentPath,
-        currentOriginId: this.currentOriginId,
-        currentCityPath: this.currentCityPath,
-        currentCityId: this.currentCityId,
+        currentPath: this.contentPresenter.getCurrentPath(),
+        currentOriginId: this.contentPresenter.getCurrentOriginId(),
+        currentCityPath: this.contentPresenter.getCurrentCityPath(),
+        currentCityId: this.contentPresenter.getCurrentCityId(),
         isVisible: this.isVisible(),
       }),
       onOpenPath: (path, originId, cityPath, cityId, line) => {
         this.show(path, originId, undefined, undefined, cityPath, cityId, line)
       },
       onEnterEditMode: () => this.textEditor.enterMarkdownEditMode(),
+    })
+    this.contentPresenter = new FileViewerContentPresenter({
+      pathEl: this.pathEl,
+      langEl: this.langEl,
+      contentEl: this.contentEl,
+      modeLineEl: this.modeLineEl,
+      saveBtn: this.saveBtn,
+      copyBtn: this.copyBtn,
+      downloadBtn: this.downloadBtn,
+      annotations: this.annotations,
+      textEditor: this.textEditor,
+      markdownView: this.markdownView,
     })
 
     this.setupEventListeners()
@@ -215,7 +212,11 @@ export class FileViewerModal {
       const now = Date.now()
 
       // If editing a markdown file, Escape returns to rendered view
-      if (this.textEditor.hasEditorFocus() && !this.markdownView.isActive() && this.textEditor.isMarkdownFile(this.currentPath)) {
+      if (
+        this.textEditor.hasEditorFocus() &&
+        !this.markdownView.isActive() &&
+        this.textEditor.isMarkdownFile(this.contentPresenter.getCurrentPath())
+      ) {
         if (now - this.lastEscapeTime < 1000) {
           if (this.textEditor.getIsDirty()) {
             this.textEditor.save().then(() => this.textEditor.exitMarkdownEditMode())
@@ -295,31 +296,6 @@ export class FileViewerModal {
     }
   }
 
-  private beginShowRequest(): { requestId: number; signal: AbortSignal } {
-    // Cancel older in-flight request so stale responses cannot mutate this modal.
-    this.activeShowAbortController?.abort()
-    const controller = new AbortController()
-    this.activeShowAbortController = controller
-    this.activeShowRequestId += 1
-    return { requestId: this.activeShowRequestId, signal: controller.signal }
-  }
-
-  private isShowRequestActive(requestId: number): boolean {
-    return requestId === this.activeShowRequestId
-  }
-
-  private finishShowRequest(requestId: number): void {
-    if (this.isShowRequestActive(requestId)) {
-      this.activeShowAbortController = null
-    }
-  }
-
-  private cancelActiveShowRequest(): void {
-    this.activeShowAbortController?.abort()
-    this.activeShowAbortController = null
-    this.activeShowRequestId += 1
-  }
-
   private scheduleDeferredUiTask(task: () => void, delayMs: number): number {
     const timerId = window.setTimeout(() => {
       this.deferredUiTimers.delete(timerId)
@@ -346,10 +322,9 @@ export class FileViewerModal {
 
     this.navigationIndex = index
     const filePath = this.navigationFiles[index]
-    // Skip editor focus when navigating via arrow keys (prevents vim mode activation)
-    this.skipEditorFocus = true
     // Show the new file, preserving navigation context
-    this.show(filePath, this.currentOriginId, this.sourceWorkerId || undefined, {
+    this.skipEditorFocus = true
+    this.show(filePath, this.contentPresenter.getCurrentOriginId(), this.contentPresenter.getSourceWorkerId() || undefined, {
       files: this.navigationFiles,
       index: this.navigationIndex,
     })
@@ -393,246 +368,31 @@ export class FileViewerModal {
     cityId?: string,
     jumpToLine?: number,
   ): Promise<void> {
-    const { requestId, signal } = this.beginShowRequest()
-    this.markdownView.reset()
     this.clearDeferredUiTasks()
-
-    try {
-    // Show loading state
-    this.pathEl.textContent = filePath
-    this.pathEl.classList.remove('dirty')
-    this.langEl.textContent = 'loading...'
-    this.contentEl.innerHTML = '<pre><code>Loading...</code></pre>'
-    this.modeLineEl.textContent = ''
-    this.saveBtn.style.display = 'none'
     this.sendBtn.style.display = 'none'
     this.fiberBtn.style.display = 'none'
-    this.textEditor.reset()
-    this.currentPath = filePath
-    this.currentOriginId = originId
-    this.currentCityPath = cityPath || ''
-    this.currentCityId = cityId || ''
-    this.sourceWorkerId = sourceWorkerId || null
-
-    // Set navigation context for Up/Down arrow navigation
     if (navigationContext) {
       this.navigationFiles = navigationContext.files
       this.navigationIndex = navigationContext.index
     } else {
       this.navigationFiles = []
       this.navigationIndex = -1
-      this.skipEditorFocus = false // Reset when opening fresh (not navigating)
+      this.skipEditorFocus = false
     }
-
-    // Reset double-Escape tracking
     this.lastEscapeTime = 0
-
-    // Reset annotation panel
-    this.annotations.reset()
-
-    // Hide selection toolbar
-    this.annotations.hideSelectionToolbar()
-
-    // Show modal
     this.backdrop.classList.add('visible')
     this.modal.classList.add('visible')
-
-    // Attach document-level handlers (detached in hide() to prevent HMR stacking)
     this.attachDocumentHandlers()
-
-    // Check if this is an image file
-    const ext = this.getExtension(filePath)
-    if (IMAGE_EXTENSIONS.has(ext)) {
-      await this.showImage(filePath, originId, requestId, signal)
-      return
-    }
-
-    // Check if this is a PDF file
-    if (PDF_EXTENSIONS.has(ext)) {
-      await this.showPdf(filePath, originId, requestId, signal)
-      return
-    }
-
-    try {
-      // Fetch file content and annotations in parallel
-      const [contentResponse, annotationsResponse] = await Promise.all([
-        fetch(
-          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
-          { signal }
-        ),
-        fetch(
-          `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
-          { signal }
-        ),
-      ])
-      if (!this.isShowRequestActive(requestId)) return
-
-      if (!contentResponse.ok) {
-        const error = await contentResponse.json()
-        throw new Error(error.error || 'Failed to load file')
-      }
-
-      const data: FileContent = await contentResponse.json()
-      if (!this.isShowRequestActive(requestId)) return
-      this.textEditor.setCurrentContent(data)
-
-      // Load annotations
-      if (annotationsResponse.ok) {
-        const annotationsData = await annotationsResponse.json()
-        if (!this.isShowRequestActive(requestId)) return
-        this.annotations.setAnnotations(annotationsData.annotations || [])
-      } else {
-        this.annotations.setAnnotations([])
-      }
-
-      // Update UI
-      this.pathEl.textContent = data.path
-      this.langEl.textContent = data.language
-      this.saveBtn.style.display = 'inline-block'
-      this.copyBtn.style.display = 'inline-block'
-      this.downloadBtn.style.display = 'inline-block'
-
-      // Markdown files: render by default, double-click to edit
-      const isMarkdown = data.language === 'markdown' || /\.(md|markdown)$/i.test(filePath)
-      if (isMarkdown) {
-        this.markdownView.show(data.content)
-      } else {
-        this.textEditor.showEditor(jumpToLine, !this.skipEditorFocus)
-      }
-      this.skipEditorFocus = false
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
-        return
-      }
-      this.langEl.textContent = 'error'
-      this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
-    }
-    } finally {
-      this.finishShowRequest(requestId)
-    }
-  }
-
-  private getExtension(filePath: string): string {
-    const match = filePath.match(/\.[^.]+$/)
-    return match ? match[0].toLowerCase() : ''
-  }
-
-  private buildRawFileUrl(filePath: string, originId: string): string {
-    let url = `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&raw=true`
-    if (originId && originId !== 'local') {
-      url += `&originId=${encodeURIComponent(originId)}`
-    }
-    return url
-  }
-
-  private waitForImageLoad(img: HTMLImageElement, signal: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (signal.aborted) {
-        reject(new DOMException('Aborted', 'AbortError'))
-        return
-      }
-
-      const cleanup = () => {
-        signal.removeEventListener('abort', onAbort)
-        img.removeEventListener('load', onLoad)
-        img.removeEventListener('error', onError)
-      }
-      const onAbort = () => {
-        cleanup()
-        reject(new DOMException('Aborted', 'AbortError'))
-      }
-      const onLoad = () => {
-        cleanup()
-        resolve()
-      }
-      const onError = () => {
-        cleanup()
-        reject(new Error('Failed to load image'))
-      }
-
-      signal.addEventListener('abort', onAbort, { once: true })
-      img.addEventListener('load', onLoad, { once: true })
-      img.addEventListener('error', onError, { once: true })
-
-      if (img.complete) {
-        cleanup()
-        if (img.naturalWidth > 0) {
-          resolve()
-        } else {
-          reject(new Error('Failed to load image'))
-        }
-      }
+    await this.contentPresenter.show({
+      filePath,
+      originId,
+      sourceWorkerId,
+      cityPath,
+      cityId,
+      jumpToLine,
+      focusEditor: !this.skipEditorFocus,
     })
-  }
-
-  private async fetchFileAnnotations(filePath: string, originId: string, signal: AbortSignal): Promise<Annotation[]> {
-    try {
-      const response = await fetch(
-        `${API_BASE}/annotations?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
-        { signal }
-      )
-      if (!response.ok) return []
-      const data = await response.json()
-      return Array.isArray(data.annotations) ? data.annotations : []
-    } catch (error: any) {
-      if (error?.name === 'AbortError') throw error
-      console.error('Failed to load annotations:', error)
-      return []
-    }
-  }
-
-  private async showImage(filePath: string, originId: string, requestId: number, signal: AbortSignal): Promise<void> {
-    this.langEl.textContent = 'image'
-    this.modeLineEl.textContent = 'Click to annotate'
-    this.saveBtn.style.display = 'none'
-    this.copyBtn.style.display = 'none'
-    this.downloadBtn.style.display = 'none'
-    this.textEditor.setCurrentContent(null)
-
-    try {
-      const rawUrl = this.buildRawFileUrl(filePath, originId)
-      const container = document.createElement('div')
-      container.className = 'file-viewer-image'
-      const img = document.createElement('img')
-      img.alt = filePath
-      container.appendChild(img)
-      this.contentEl.innerHTML = ''
-      this.contentEl.appendChild(container)
-
-      img.src = rawUrl
-      const imageLoadPromise = this.waitForImageLoad(img, signal)
-      const annotationsPromise = this.fetchFileAnnotations(filePath, originId, signal)
-
-      const [annotations] = await Promise.all([annotationsPromise, imageLoadPromise])
-      if (!this.isShowRequestActive(requestId)) return
-
-      this.annotations.setAnnotations(annotations)
-      this.annotations.setupImageAnnotation(container, img)
-      this.annotations.renderImageAnnotationMarkers(container)
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || !this.isShowRequestActive(requestId)) {
-        return
-      }
-      this.langEl.textContent = 'error'
-      this.contentEl.innerHTML = `<pre><code class="error">Error: ${error.message}</code></pre>`
-    }
-  }
-
-  private async showPdf(filePath: string, originId: string, requestId: number, signal: AbortSignal): Promise<void> {
-    this.langEl.textContent = 'pdf'
-    this.modeLineEl.textContent = ''
-    this.saveBtn.style.display = 'none'
-    this.copyBtn.style.display = 'none'
-    this.downloadBtn.style.display = 'none'
-    this.textEditor.setCurrentContent(null)
-
-    if (signal.aborted || !this.isShowRequestActive(requestId)) return
-
-    const container = document.createElement('div')
-    container.className = 'file-viewer-pdf'
-    container.innerHTML = `<iframe src="${this.buildRawFileUrl(filePath, originId)}" title="${escapeHtml(filePath)}" />`
-    this.contentEl.innerHTML = ''
-    this.contentEl.appendChild(container)
+    this.skipEditorFocus = false
   }
 
   private async refresh(): Promise<void> {
@@ -649,7 +409,11 @@ export class FileViewerModal {
     const originalText = this.refreshBtn.textContent
     this.refreshBtn.textContent = '...'
 
-    await this.show(currentContent.path, this.currentOriginId, this.sourceWorkerId || undefined)
+    await this.show(
+      currentContent.path,
+      this.contentPresenter.getCurrentOriginId(),
+      this.contentPresenter.getSourceWorkerId() || undefined,
+    )
 
     this.refreshBtn.textContent = originalText
   }
@@ -664,14 +428,11 @@ export class FileViewerModal {
   }
 
   hide(): void {
-    this.cancelActiveShowRequest()
-    this.markdownView.reset()
     this.clearDeferredUiTasks()
+    this.contentPresenter.hide()
     this.annotations.dispose()
-    this.textEditor.reset()
     this.backdrop.classList.remove('visible')
     this.modal.classList.remove('visible')
-    this.sourceWorkerId = null
 
     // Detach document-level handlers to prevent HMR stacking
     this.detachDocumentHandlers()
@@ -700,20 +461,22 @@ export class FileViewerModal {
     hasImageAnnotationOutsideClickTimer: boolean
   } {
     const annotationStats = this.annotations.getRuntimeStats()
+    const presenterStats = this.contentPresenter.getRuntimeStats()
+    const markdownStats = this.markdownView.getRuntimeStats()
     return {
       visible: this.isVisible(),
-      currentPath: this.currentPath || null,
-      currentOriginId: this.currentOriginId,
+      currentPath: presenterStats.currentPath,
+      currentOriginId: presenterStats.currentOriginId,
       hasEditorView: this.textEditor.hasEditorView(),
       isDirty: this.textEditor.getIsDirty(),
       markdownRendered: this.markdownView.isActive(),
       annotationCount: annotationStats.annotationCount,
       navigationFileCount: this.navigationFiles.length,
       navigationIndex: this.navigationIndex,
-      activeShowRequestId: this.activeShowRequestId,
-      hasActiveShowRequest: this.activeShowAbortController !== null,
-      renderedMarkdownRequestId: this.markdownView.getRuntimeStats().renderedMarkdownRequestId,
-      hasRenderedMarkdownRequest: this.markdownView.getRuntimeStats().hasRenderedMarkdownRequest,
+      activeShowRequestId: presenterStats.activeShowRequestId,
+      hasActiveShowRequest: presenterStats.hasActiveShowRequest,
+      renderedMarkdownRequestId: markdownStats.renderedMarkdownRequestId,
+      hasRenderedMarkdownRequest: markdownStats.hasRenderedMarkdownRequest,
       deferredUiTimerCount: this.deferredUiTimers.size,
       hasImageAnnotationOutsideClickHandler: annotationStats.hasImageAnnotationOutsideClickHandler,
       hasImageAnnotationOutsideClickTimer: annotationStats.hasImageAnnotationOutsideClickTimer,
