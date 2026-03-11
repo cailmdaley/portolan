@@ -2,6 +2,7 @@ import { EditorState, StateEffect, StateField, type Extension } from '@codemirro
 import { EditorView, Decoration, type DecorationSet } from '@codemirror/view'
 import { AnnotationPanel } from './AnnotationPanel'
 import { type WorkerInfo, showWorkerPicker } from './WorkerPicker'
+import { FileViewerImageAnnotations } from './FileViewerImageAnnotations'
 import { escapeHtml, showToast } from './utils'
 
 const API_BASE = `http://${window.location.hostname}:4004`
@@ -75,13 +76,12 @@ export class FileViewerAnnotations {
   private panelEl: HTMLElement
   private host: FileViewerAnnotationHost
   private annotationPanel: AnnotationPanel<Annotation>
+  private imageAnnotations: FileViewerImageAnnotations
   private annotations: Annotation[] = []
   private globalComment = ''
   private cityWorkers: WorkerInfo[] = []
   private onGetWorkers: ((originId: string, path: string) => Promise<WorkerInfo[]>) | null = null
   private selectionToolbar: HTMLElement | null = null
-  private imageAnnotationOutsideClickHandler: ((e: MouseEvent) => void) | null = null
-  private imageAnnotationOutsideClickTimer: number | null = null
 
   constructor(panelEl: HTMLElement, host: FileViewerAnnotationHost) {
     this.panelEl = panelEl
@@ -108,6 +108,13 @@ export class FileViewerAnnotations {
       hideFooter: true,
     })
 
+    this.imageAnnotations = new FileViewerImageAnnotations({
+      panelEl,
+      scheduleDeferredUiTask: host.scheduleDeferredUiTask,
+      getAnnotations: () => this.annotations,
+      saveImageAnnotation: (x, y, comment) => this.saveImageAnnotation(x, y, comment),
+    })
+
     this.setupEventListeners()
   }
 
@@ -121,7 +128,7 @@ export class FileViewerAnnotations {
     this.cityWorkers = []
     this.annotationPanel.reset()
     this.hideSelectionToolbar()
-    this.clearImageAnnotationOutsideClick()
+    this.imageAnnotations.reset()
     this.updateActionButtons()
   }
 
@@ -145,10 +152,11 @@ export class FileViewerAnnotations {
     hasImageAnnotationOutsideClickHandler: boolean
     hasImageAnnotationOutsideClickTimer: boolean
   } {
+    const imageStats = this.imageAnnotations.getRuntimeStats()
     return {
       annotationCount: this.annotations.length,
-      hasImageAnnotationOutsideClickHandler: this.imageAnnotationOutsideClickHandler !== null,
-      hasImageAnnotationOutsideClickTimer: this.imageAnnotationOutsideClickTimer !== null,
+      hasImageAnnotationOutsideClickHandler: imageStats.hasOutsideClickHandler,
+      hasImageAnnotationOutsideClickTimer: imageStats.hasOutsideClickTimer,
     }
   }
 
@@ -231,57 +239,11 @@ export class FileViewerAnnotations {
   }
 
   setupImageAnnotation(container: HTMLElement, img: HTMLImageElement): void {
-    img.addEventListener('click', (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-
-      const rect = img.getBoundingClientRect()
-      const x = ((event.clientX - rect.left) / rect.width) * 100
-      const y = ((event.clientY - rect.top) / rect.height) * 100
-
-      this.showImageAnnotationInput(container, x, y, event.clientX, event.clientY)
-    })
-
-    img.style.cursor = 'crosshair'
+    this.imageAnnotations.setupImageAnnotation(container, img)
   }
 
   renderImageAnnotationMarkers(container: HTMLElement): void {
-    container.querySelectorAll('.image-annotation-marker').forEach(marker => marker.remove())
-
-    for (const [index, ann] of this.annotations.entries()) {
-      if (!ann.isImageAnnotation || ann.x === undefined || ann.y === undefined) continue
-
-      const marker = document.createElement('div')
-      marker.className = 'image-annotation-marker'
-      marker.style.position = 'absolute'
-      marker.style.left = `${ann.x}%`
-      marker.style.top = `${ann.y}%`
-      marker.style.transform = 'translate(-50%, -50%)'
-      marker.style.width = '24px'
-      marker.style.height = '24px'
-      marker.style.borderRadius = '50%'
-      marker.style.backgroundColor = 'var(--gold)'
-      marker.style.border = '2px solid var(--bg-elevated)'
-      marker.style.cursor = 'pointer'
-      marker.style.display = 'flex'
-      marker.style.alignItems = 'center'
-      marker.style.justifyContent = 'center'
-      marker.style.fontSize = '12px'
-      marker.style.fontWeight = 'bold'
-      marker.style.color = 'var(--bg-card)'
-      marker.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)'
-      marker.textContent = String(index + 1)
-      marker.title = ann.comment
-      marker.addEventListener('click', (event) => {
-        event.stopPropagation()
-        const annItem = this.panelEl.querySelector(`[data-annotation-id="${ann.id}"]`)
-        if (!annItem) return
-        annItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        annItem.classList.add('highlight')
-        this.host.scheduleDeferredUiTask(() => annItem.classList.remove('highlight'), 1500)
-      })
-      container.appendChild(marker)
-    }
+    this.imageAnnotations.renderMarkers(container)
   }
 
   async showWorkerPicker(): Promise<void> {
@@ -387,7 +349,7 @@ export class FileViewerAnnotations {
 
   dispose(): void {
     this.hideSelectionToolbar()
-    this.clearImageAnnotationOutsideClick()
+    this.imageAnnotations.dispose()
   }
 
   private setupEventListeners(): void {
@@ -587,9 +549,9 @@ export class FileViewerAnnotations {
     }
   }
 
-  private async saveImageAnnotation(x: number, y: number, comment: string): Promise<void> {
+  private async saveImageAnnotation(x: number, y: number, comment: string): Promise<Annotation | null> {
     const { currentPath, currentOriginId } = this.host.getState()
-    if (!currentPath) return
+    if (!currentPath) return null
 
     try {
       const response = await fetch(`${API_BASE}/annotations`, {
@@ -616,13 +578,17 @@ export class FileViewerAnnotations {
 
       const data = await response.json()
       const state = this.host.getState()
-      if (!state.isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) return
+      if (!state.isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) {
+        return null
+      }
       this.annotations.push(data.annotation)
       this.annotationPanel.setAnnotations(this.annotations)
       this.updateActionButtons()
+      return data.annotation
     } catch (error: any) {
       console.error('Failed to save image annotation:', error)
       alert(`Failed to save annotation: ${error.message}`)
+      return null
     }
   }
 
@@ -715,85 +681,4 @@ export class FileViewerAnnotations {
     }
   }
 
-  private showImageAnnotationInput(
-    container: HTMLElement,
-    x: number,
-    y: number,
-    screenX: number,
-    screenY: number,
-  ): void {
-    container.querySelector('.image-annotation-input-wrapper')?.remove()
-    this.clearImageAnnotationOutsideClick()
-
-    const wrapper = document.createElement('div')
-    wrapper.className = 'image-annotation-input-wrapper'
-    wrapper.style.position = 'fixed'
-    wrapper.style.left = `${screenX + 10}px`
-    wrapper.style.top = `${screenY + 10}px`
-    wrapper.style.zIndex = '10001'
-    wrapper.innerHTML = `
-      <div class="image-annotation-input">
-        <div class="image-annotation-marker-preview" style="background: var(--gold); width: 12px; height: 12px; border-radius: 50%; margin-bottom: 8px;"></div>
-        <textarea class="annotation-input" placeholder="Add annotation..." rows="2"></textarea>
-        <div class="annotation-input-actions">
-          <button class="annotation-save-btn">Save</button>
-          <button class="annotation-cancel-btn">Cancel</button>
-        </div>
-      </div>
-    `
-
-    document.body.appendChild(wrapper)
-
-    const textarea = wrapper.querySelector('.annotation-input') as HTMLTextAreaElement | null
-    const save = async () => {
-      const comment = textarea?.value.trim() || ''
-      if (!comment) return
-      await this.saveImageAnnotation(x, y, comment)
-      wrapper.remove()
-      this.clearImageAnnotationOutsideClick()
-      this.renderImageAnnotationMarkers(container)
-    }
-    const cancel = () => {
-      wrapper.remove()
-      this.clearImageAnnotationOutsideClick()
-    }
-
-    wrapper.querySelector('.annotation-save-btn')?.addEventListener('click', () => {
-      void save()
-    })
-    wrapper.querySelector('.annotation-cancel-btn')?.addEventListener('click', cancel)
-    textarea?.addEventListener('keydown', (event) => {
-      event.stopPropagation()
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault()
-        void save()
-      } else if (event.key === 'Escape') {
-        cancel()
-      }
-    })
-    window.setTimeout(() => textarea?.focus(), 0)
-
-    const closeOnClickOutside = (event: MouseEvent) => {
-      if (wrapper.contains(event.target as Node)) return
-      wrapper.remove()
-      this.clearImageAnnotationOutsideClick()
-    }
-    this.imageAnnotationOutsideClickHandler = closeOnClickOutside
-    this.imageAnnotationOutsideClickTimer = window.setTimeout(() => {
-      this.imageAnnotationOutsideClickTimer = null
-      if (this.imageAnnotationOutsideClickHandler === closeOnClickOutside) {
-        document.addEventListener('click', closeOnClickOutside)
-      }
-    }, 0)
-  }
-
-  private clearImageAnnotationOutsideClick(): void {
-    if (this.imageAnnotationOutsideClickTimer !== null) {
-      window.clearTimeout(this.imageAnnotationOutsideClickTimer)
-      this.imageAnnotationOutsideClickTimer = null
-    }
-    if (!this.imageAnnotationOutsideClickHandler) return
-    document.removeEventListener('click', this.imageAnnotationOutsideClickHandler)
-    this.imageAnnotationOutsideClickHandler = null
-  }
 }
