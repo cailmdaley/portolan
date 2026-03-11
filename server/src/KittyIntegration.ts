@@ -15,6 +15,7 @@ import type { Origin } from './OriginManager.js';
 import type { City } from './CityManager.js';
 import { cliProvider, getProvider } from './cli-provider.js';
 import { KittyHandoff } from './KittyHandoff.js';
+import { KittySessionController } from './KittySessionController.js';
 import { shellEscape } from './ShellPathUtils.js';
 
 // ============================================================================
@@ -35,21 +36,25 @@ interface CityLookup {
 }
 
 export class KittyIntegration {
-  private sessionLookup: SessionLookup;
-  private originLookup: OriginLookup;
   private cityLookup: CityLookup;
   private handoffController: KittyHandoff;
+  private sessionController: KittySessionController;
 
   constructor(
     sessionLookup: SessionLookup,
     originLookup: OriginLookup,
     cityLookup: CityLookup
   ) {
-    this.sessionLookup = sessionLookup;
-    this.originLookup = originLookup;
     this.cityLookup = cityLookup;
     this.handoffController = new KittyHandoff({
       cityLookup,
+      getSocket: () => this.getSocket(),
+      getSshAuthSockEnv: () => this.getSshAuthSockEnv(),
+      activateKitty: () => this.activateKitty(),
+    });
+    this.sessionController = new KittySessionController({
+      sessionLookup,
+      originLookup,
       getSocket: () => this.getSocket(),
       getSshAuthSockEnv: () => this.getSshAuthSockEnv(),
       activateKitty: () => this.activateKitty(),
@@ -87,78 +92,7 @@ export class KittyIntegration {
    * For remote sessions: SSH to the remote and attach to tmux
    */
   focusSession(sessionId: string): void {
-    const session = this.sessionLookup.findSession(sessionId);
-
-    if (!session) {
-      console.error(`Session not found: ${sessionId}`);
-      return;
-    }
-
-    const socket = this.getSocket();
-    const tmuxSession = session.tmuxSession;
-    const escapedSession = shellEscape(tmuxSession);
-    // Use regex anchors for exact title match
-    const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
-
-    if (session.originId === 'local') {
-      // Local session
-      const escapedCwd = shellEscape(session.cwd);
-
-      try {
-        // Try to focus existing tab (exact match)
-        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, {
-          stdio: 'ignore',
-        });
-        console.log(`Focused tab: ${tmuxSession}`);
-      } catch {
-        // No tab exists - create one with correct working directory
-        try {
-          execSync(
-            `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`,
-            { stdio: 'ignore' }
-          );
-          console.log(`Launched new tab: ${tmuxSession} in ${session.cwd}`);
-        } catch (error) {
-          console.error(`Failed to launch tab for ${tmuxSession}:`, error);
-        }
-      }
-    } else {
-      // Remote session - SSH + tmux attach
-      const origin = this.originLookup.getOrigin(session.originId);
-      if (!origin || !origin.sshHost) {
-        console.error(`Cannot focus remote session: no sshHost for origin ${session.originId}`);
-        return;
-      }
-
-      // Agent provides specific node SSH host for multi-node HPC systems
-      const sshHost = origin.sshHost;
-
-      const tabTitle = `${tmuxSession}@${origin.name}`;
-      const escapedTabTitle = shellEscape(tabTitle);
-      const exactRemoteTitleMatch = shellEscape(`^${tabTitle}$`);
-
-      try {
-        // Try to focus existing tab (exact match)
-        execSync(`kitty @ --to ${socket} focus-tab --match title:${exactRemoteTitleMatch}`, {
-          stdio: 'ignore',
-        });
-        console.log(`Focused remote tab: ${tabTitle}`);
-      } catch {
-        // No tab exists - create one with SSH + tmux attach
-        // Use -tt to force TTY allocation even when launched from another program
-        try {
-          const sshCommand = `ssh -tt ${shellEscape(sshHost)} tmux attach -t ${escapedSession}`;
-          const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${escapedTabTitle} ${sshCommand}`;
-          console.log(`[Focus] Running: ${kittyCmd}`);
-          execSync(kittyCmd, { stdio: 'ignore' });
-          console.log(`Launched remote tab: ${tabTitle} via ${sshHost}`);
-        } catch (error) {
-          console.error(`Failed to launch remote tab for ${tmuxSession}:`, error);
-        }
-      }
-    }
-
-    this.activateKitty();
+    this.sessionController.focusSession(sessionId);
   }
 
   /**
@@ -305,35 +239,6 @@ export class KittyIntegration {
    * Supports both local and remote sessions
    */
   killWorker(sessionId: string): void {
-    const session = this.sessionLookup.findSession(sessionId);
-
-    if (!session) {
-      console.error(`[KillWorker] Session not found: ${sessionId}`);
-      return;
-    }
-
-    const escapedSession = shellEscape(session.tmuxSession);
-
-    try {
-      if (session.originId === 'local') {
-        execSync(`tmux kill-session -t ${escapedSession}`, { stdio: 'pipe' });
-        console.log(`[KillWorker] Killed local session: ${session.tmuxSession}`);
-      } else {
-        // Remote session - kill via SSH
-        const origin = this.originLookup.getOrigin(session.originId);
-        if (!origin || !origin.sshHost) {
-          console.error(`[KillWorker] Cannot kill remote session: no sshHost for origin ${session.originId}`);
-          return;
-        }
-
-        const remoteTmuxCmd = `tmux kill-session -t ${escapedSession}`;
-        const sshCmd = `ssh ${origin.sshHost} ${shellEscape(remoteTmuxCmd)}`;
-        execSync(sshCmd, { stdio: 'pipe', timeout: 10000 });
-        console.log(`[KillWorker] Killed remote session: ${session.tmuxSession} on ${origin.sshHost}`);
-      }
-    } catch (error: unknown) {
-      const err = error as { message?: string };
-      console.error(`[KillWorker] Failed to kill session ${session.tmuxSession}:`, err.message);
-    }
+    this.sessionController.killWorker(sessionId);
   }
 }
