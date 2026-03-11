@@ -1,14 +1,8 @@
 import type { Activity, City, Session, ServerCity, ServerOrigin, ServerSession } from '../state/types'
 import { normalizeCity, normalizeSession } from '../state/types'
+import { FrontendActivityStore, type FrontendActivityEvent } from './FrontendActivityStore'
 
 const API_BASE = `ws://${window.location.hostname}:4004`
-
-const MAX_ACTIVITIES_PER_SESSION = 10
-const ACTIVITY_RATE_WINDOW_MS = 60_000
-
-export function getActivitySessionKey(originId: string, tmuxSession: string): string {
-  return `${originId}:${tmuxSession}`
-}
 
 interface ServerState {
   cities: ServerCity[]
@@ -47,15 +41,7 @@ interface ErrorMessage {
 
 interface ActivityMessage {
   type: 'activity'
-  activity: {
-    tmuxSession: string
-    tool: string
-    summary?: string
-    fullPath?: string
-    timestamp: number
-    originId?: string
-    activitySessionKey?: string
-  }
+  activity: FrontendActivityEvent
 }
 
 type ServerMessage =
@@ -98,9 +84,7 @@ export class FrontendStateSync {
   private wsCleanedUp = false
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   private hasReceivedInitialState = false
-  private activityBySessionKey = new Map<string, Activity[]>()
-  private recentActivityEventTimestamps: number[] = []
-  private totalActivityEventsReceived = 0
+  private activityStore = new FrontendActivityStore()
 
   constructor(options: FrontendStateSyncOptions) {
     this.options = options
@@ -192,31 +176,7 @@ export class FrontendStateSync {
     totalEventsReceived: number
     recentEventsPerMinute: number
   } {
-    this.pruneRecentActivityEvents()
-
-    let bufferedEventCount = 0
-    let maxBufferedEventsPerStream = 0
-    let streamWithMostEvents: string | null = null
-
-    for (const [activitySessionKey, activities] of this.activityBySessionKey.entries()) {
-      bufferedEventCount += activities.length
-      if (activities.length > maxBufferedEventsPerStream) {
-        maxBufferedEventsPerStream = activities.length
-        streamWithMostEvents = activitySessionKey
-      }
-    }
-
-    return {
-      stats: {
-        streamCount: this.activityBySessionKey.size,
-        bufferedEventCount,
-        maxBufferedEventsPerStream,
-        streamWithMostEvents,
-      },
-      maxPerStreamLimit: MAX_ACTIVITIES_PER_SESSION,
-      totalEventsReceived: this.totalActivityEventsReceived,
-      recentEventsPerMinute: this.recentActivityEventTimestamps.length,
-    }
+    return this.activityStore.getStats()
   }
 
   private handleMessage(message: ServerMessage): void {
@@ -262,20 +222,7 @@ export class FrontendStateSync {
       this.origins = state.origins
     }
 
-    if (state.activities) {
-      for (const [activitySessionKey, activities] of Object.entries(state.activities)) {
-        this.activityBySessionKey.set(activitySessionKey, activities)
-      }
-    }
-
-    const currentActivitySessionKeys = new Set(
-      this.sessions.map(session => getActivitySessionKey(session.originId, session.tmuxSession))
-    )
-    for (const activitySessionKey of this.activityBySessionKey.keys()) {
-      if (!currentActivitySessionKeys.has(activitySessionKey)) {
-        this.activityBySessionKey.delete(activitySessionKey)
-      }
-    }
+    this.activityStore.syncSessionActivities(state.activities, this.sessions)
 
     const isInitialState = !this.hasReceivedInitialState && this.cities.length > 0
     if (isInitialState) {
@@ -286,47 +233,19 @@ export class FrontendStateSync {
       cities: this.cities,
       sessions: this.sessions,
       origins: this.origins,
-      activityBySessionKey: this.activityBySessionKey,
+      activityBySessionKey: this.activityStore.getActivities(),
       isInitialState,
       urlCityId: isInitialState ? new URLSearchParams(window.location.search).get('city') : null,
     })
   }
 
   private handleActivityEvent(activity: ActivityMessage['activity']): void {
-    const activitySessionKey = activity.activitySessionKey
-      ?? (activity.originId ? getActivitySessionKey(activity.originId, activity.tmuxSession) : null)
-    if (!activitySessionKey) return
-
-    this.totalActivityEventsReceived += 1
-    this.recentActivityEventTimestamps.push(Date.now())
-    this.pruneRecentActivityEvents()
-
-    let activities = this.activityBySessionKey.get(activitySessionKey)
-    if (!activities) {
-      activities = []
-      this.activityBySessionKey.set(activitySessionKey, activities)
-    }
-
-    activities.unshift({
-      tool: activity.tool,
-      summary: activity.summary,
-      fullPath: activity.fullPath,
-      timestamp: activity.timestamp,
-    })
-    if (activities.length > MAX_ACTIVITIES_PER_SESSION) {
-      activities.pop()
-    }
+    const update = this.activityStore.applyActivityEvent(activity)
+    if (!update) return
 
     this.options.onActivity({
-      activitySessionKey,
-      activities,
+      activitySessionKey: update.activitySessionKey,
+      activities: update.activities,
     })
-  }
-
-  private pruneRecentActivityEvents(now = Date.now()): void {
-    const cutoff = now - ACTIVITY_RATE_WINDOW_MS
-    while (this.recentActivityEventTimestamps.length > 0 && this.recentActivityEventTimestamps[0] < cutoff) {
-      this.recentActivityEventTimestamps.shift()
-    }
   }
 }
