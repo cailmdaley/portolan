@@ -7,17 +7,17 @@ import { TapestryClaimsAnnotations } from './TapestryClaimsAnnotations'
 import { TapestryDagGraph } from './TapestryDagGraph'
 import { TapestryDetailBody } from './TapestryDetailBody'
 import { TapestryDetailPanel } from './TapestryDetailPanel'
+import { TapestrySidebar } from './TapestrySidebar'
 import { TapestryStaticFileModal } from './TapestryStaticFileModal'
-import type { TapestryFiber, TapestryNode, TapestryResponse } from './tapestry-types'
-import { artifactEntries, isPdfArtifact, shortName, statusIcon, stalenessColor } from './tapestry-helpers'
-import { escapeHtml, interpolateConfig, showToast } from './utils'
+import type { TapestryNode, TapestryResponse } from './tapestry-types'
+import { artifactEntries, isPdfArtifact } from './tapestry-helpers'
+import { interpolateConfig, showToast } from './utils'
 import { type WorkerInfo } from './WorkerPicker'
 
 export type { TapestryResponse } from './tapestry-types'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 const PRELOAD_CACHE_LIMIT = 64
-const SEARCH_SNIPPET_CONTEXT = 15
 
 export class TapestryView {
   private panel: HTMLElement
@@ -33,6 +33,7 @@ export class TapestryView {
   private graph: TapestryDagGraph
   private annotations: TapestryClaimsAnnotations
   private detailPanelController: TapestryDetailPanel
+  private sidebar: TapestrySidebar
 
   private currentCity: City | null = null
   private tapestryData: TapestryResponse | null = null
@@ -40,7 +41,6 @@ export class TapestryView {
   private staticMode = false
   private staticAssetBase = ''
   private staticDataBase = ''
-  private searchFocusIdx = -1
   private preloadCache = new Map<string, HTMLImageElement>()
   private hideCleanupTimeout: ReturnType<typeof setTimeout> | null = null
   private dataFetchAbortController: AbortController | null = null
@@ -108,6 +108,16 @@ export class TapestryView {
       hideDetail: () => this.hideDetail(),
       openArtifactLightbox: (media, node) => this.lightbox.open(media, node),
     })
+    this.sidebar = new TapestrySidebar({
+      searchInput: this.fiberSearchInput,
+      searchResults: this.searchResults,
+      fiberResultsEl: this.fiberResultsEl,
+      getData: () => this.tapestryData,
+      setSearchMatches: (matches) => this.graph.setSearchMatches(matches),
+      selectListedNode: (fiberId) => this.graph.selectNode(fiberId),
+      selectSearchNode: (fiberId) => this.graph.revealAndSelect(fiberId, true, true),
+      selectFiber: (fiberId) => this.selectFiber(fiberId),
+    })
 
     this.setupEventListeners()
     document.body.appendChild(this.panel)
@@ -171,38 +181,6 @@ export class TapestryView {
         this.hideDetail()
       }
     }
-
-    this.fiberSearchInput.addEventListener('input', () => {
-      this.handleSearch()
-      this.renderFiberList()
-    })
-    this.fiberSearchInput.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        this.fiberSearchInput.value = ''
-        this.searchResults.innerHTML = ''
-        this.clearSearchHighlights()
-        this.searchFocusIdx = -1
-        this.fiberSearchInput.blur()
-        this.renderFiberList()
-        return
-      }
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault()
-        const results = this.searchResults.querySelectorAll<HTMLElement>('.search-result')
-        if (results.length === 0) return
-        this.searchFocusIdx = e.key === 'ArrowDown'
-          ? (this.searchFocusIdx + 1) % results.length
-          : this.searchFocusIdx <= 0 ? results.length - 1 : this.searchFocusIdx - 1
-        this.updateSearchFocus()
-        return
-      }
-      if (e.key === 'Enter') {
-        const results = this.searchResults.querySelectorAll<HTMLElement>('.search-result')
-        if (this.searchFocusIdx >= 0 && this.searchFocusIdx < results.length) {
-          results[this.searchFocusIdx].click()
-        }
-      }
-    })
 
     const sidebarResize = this.panel.querySelector('.tapestry-sidebar-resize')
     const sidebar = this.panel.querySelector('.tapestry-sidebar') as HTMLElement
@@ -276,6 +254,7 @@ export class TapestryView {
 
     this.currentCity = city
     this.selectedNodeId = null
+    this.sidebar.reset()
 
     const incomingHash = window.location.hash
     this.annotations.hidePanel()
@@ -306,7 +285,7 @@ export class TapestryView {
       this.tapestryData = data
       this.loadingIndicator.style.display = 'none'
       this.graph.render(data)
-      this.renderFiberList()
+      this.sidebar.renderFiberList()
       this.selectFromHash()
     } catch (err) {
       if (!this.isCurrentDataRequest(requestId)) return
@@ -341,6 +320,7 @@ export class TapestryView {
     this.selectedNodeId = null
     this.tapestryData = null
     this.annotations.reset()
+    this.sidebar.reset()
 
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)
@@ -415,6 +395,7 @@ export class TapestryView {
     this.hide()
     this.clearHideCleanupTimeout()
     this.detailPanelController.destroy()
+    this.sidebar.destroy()
     this.staticFileModal?.close()
     this.graph.destroy()
     this.panel.remove()
@@ -440,6 +421,7 @@ export class TapestryView {
     this.staticFileModal = new TapestryStaticFileModal(this.staticDataBase)
     this.tapestryData = data
     this.selectedNodeId = null
+    this.sidebar.reset()
 
     this.annotations.hidePanel()
     this.annotationPanelEl.style.display = 'none'
@@ -453,7 +435,7 @@ export class TapestryView {
     this.panel.classList.add('visible')
 
     this.graph.render(data)
-    this.renderFiberList()
+    this.sidebar.renderFiberList()
     this.selectFromHash()
   }
 
@@ -566,7 +548,7 @@ export class TapestryView {
       if (!this.isCurrentDataRequest(requestId)) return
       this.tapestryData = data
       this.graph.render(data)
-      this.renderFiberList()
+      this.sidebar.renderFiberList()
 
       if (selectedId) {
         const node = this.tapestryData?.nodes.find((candidate) => candidate.id === selectedId)
@@ -670,138 +652,11 @@ export class TapestryView {
     interpolateConfig(container, config)
   }
 
-  private renderFiberList(): void {
-    if (!this.tapestryData) return
-    const fibers = this.tapestryData.fibers || []
-    const query = this.fiberSearchInput.value.toLowerCase().trim()
-    const filtered = query
-      ? fibers.filter((fiber) => {
-          const text = [fiber.title, fiber.body, fiber.kind, fiber.id, fiber.outcome, ...(fiber.tags || [])]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-          return text.includes(query)
-        })
-      : fibers
-
-    const isRule = (fiber: TapestryFiber) => fiber.tags?.some((tag) => tag.startsWith('tapestry:')) ?? false
-    const stalenessOrder: Record<string, number> = { stale: 0, 'no-evidence': 1, fresh: 2 }
-    const statusOrder: Record<string, number> = { active: 0, open: 1, untracked: 2, closed: 3 }
-
-    const sorted = [...filtered].sort((a, b) => {
-      const aRule = isRule(a) ? 0 : 1
-      const bRule = isRule(b) ? 0 : 1
-      if (aRule !== bRule) return aRule - bRule
-      if (aRule === 0 && bRule === 0) {
-        const aDag = this.tapestryData!.nodes.find((node) => node.id === a.id)
-        const bDag = this.tapestryData!.nodes.find((node) => node.id === b.id)
-        const aStaleness = stalenessOrder[aDag?.staleness || 'no-evidence'] ?? 1
-        const bStaleness = stalenessOrder[bDag?.staleness || 'no-evidence'] ?? 1
-        if (aStaleness !== bStaleness) return aStaleness - bStaleness
-      }
-      const aStatus = statusOrder[a.status] ?? 2
-      const bStatus = statusOrder[b.status] ?? 2
-      if (aStatus !== bStatus) return aStatus - bStatus
-      return a.title.localeCompare(b.title)
-    })
-
-    this.fiberResultsEl.innerHTML = sorted.map((fiber) => {
-      const dagNode = this.tapestryData!.nodes.find((node) => node.id === fiber.id)
-      const ruleTag = isRule(fiber)
-      const dotColor = dagNode ? stalenessColor(dagNode.staleness) : '#7A7368'
-      const dotIcon = statusIcon(fiber.status)
-      const nonRuleTags = (fiber.tags || []).filter((tag) => !tag.startsWith('tapestry:'))
-      const tagsHtml = nonRuleTags.map((tag) =>
-        `<span class="fiber-tag">${escapeHtml(tag.replace(/^\[|\]$/g, ''))}</span>`
-      ).join('')
-      const kindBadge = fiber.kind !== 'task' ? `<span class="fiber-kind">${escapeHtml(fiber.kind)}</span>` : ''
-      const ruleClass = ruleTag ? ' fiber-item-rule' : ''
-      return `<div class="fiber-item${ruleClass}" data-fiber-id="${escapeHtml(fiber.id)}">
-        <span class="fiber-dot" style="color: ${dotColor}">${dotIcon}</span>
-        <span class="fiber-title">${escapeHtml(shortName(fiber.title))}</span>
-        ${tagsHtml}${kindBadge}
-      </div>`
-    }).join('')
-
-    this.fiberResultsEl.querySelectorAll('.fiber-item').forEach((el) => {
-      el.addEventListener('click', () => {
-        const fiberId = (el as HTMLElement).dataset.fiberId
-        if (!fiberId) return
-        if (this.tapestryData?.nodes.find((node) => node.id === fiberId)) {
-          this.graph.selectNode(fiberId)
-        } else {
-          this.selectFiber(fiberId)
-        }
-      })
-    })
-  }
-
   private selectFiber(fiberId: string): void {
     this.selectedNodeId = fiberId
     this.pushHash(fiberId)
     this.detailBody.destroy()
     this.detailPanelController.renderFiber(fiberId)
-  }
-
-  private handleSearch(): void {
-    const query = this.fiberSearchInput.value.toLowerCase().trim()
-    this.clearSearchHighlights()
-    this.searchResults.innerHTML = ''
-    this.searchFocusIdx = -1
-
-    if (!query || !this.tapestryData) return
-
-    const matches: Array<{ node: TapestryNode; context: string }> = []
-    this.tapestryData.nodes.forEach((node) => {
-      const searchText = [node.title, node.body, node.kind, node.id].filter(Boolean).join(' ').toLowerCase()
-      if (!searchText.includes(query)) return
-      const idx = searchText.indexOf(query)
-      const start = Math.max(0, idx - SEARCH_SNIPPET_CONTEXT)
-      const end = Math.min(searchText.length, idx + query.length + SEARCH_SNIPPET_CONTEXT)
-      let snippet = searchText.substring(start, end)
-      if (start > 0) snippet = '...' + snippet
-      if (end < searchText.length) snippet += '...'
-      matches.push({ node, context: snippet })
-    })
-
-    this.graph.setSearchMatches(new Set(matches.map((match) => match.node.id)))
-
-    if (matches.length === 0) {
-      this.searchResults.innerHTML = '<div class="search-no-results">no matches</div>'
-      return
-    }
-
-    matches.forEach((match) => {
-      const color = stalenessColor(match.node.staleness)
-      const div = document.createElement('div')
-      div.className = 'search-result'
-      div.innerHTML = `
-        <span class="search-result-dot" style="background: ${color}"></span>
-        <span class="search-result-name">${escapeHtml(shortName(match.node.title))}</span>
-        <span class="search-result-match">${escapeHtml(match.context)}</span>
-      `
-      div.addEventListener('click', () => {
-        this.graph.revealAndSelect(match.node.id, true, true)
-        this.fiberSearchInput.value = ''
-        this.searchResults.innerHTML = ''
-        this.clearSearchHighlights()
-        this.searchFocusIdx = -1
-        this.renderFiberList()
-      })
-      this.searchResults.appendChild(div)
-    })
-  }
-
-  private clearSearchHighlights(): void {
-    this.graph.setSearchMatches(new Set())
-  }
-
-  private updateSearchFocus(): void {
-    const results = this.searchResults.querySelectorAll<HTMLElement>('.search-result')
-    results.forEach((result, index) => result.classList.toggle('search-focused', index === this.searchFocusIdx))
-    if (this.searchFocusIdx >= 0 && this.searchFocusIdx < results.length) {
-      results[this.searchFocusIdx].scrollIntoView({ block: 'nearest' })
-    }
   }
 
   private promptImageAnnotation(
