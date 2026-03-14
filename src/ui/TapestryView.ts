@@ -307,7 +307,7 @@ export class TapestryView {
     this.onOpenFile = fn
   }
 
-  showStatic(data: TapestryResponse, _title: string, assetBase = './data/claims'): void {
+  showStatic(data: TapestryResponse, _title: string, assetBase = './data/tapestry'): void {
     this.clearHideCleanupTimeout()
     this.runtime.showStatic(data, assetBase)
     this.sidebar.reset()

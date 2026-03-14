@@ -40,7 +40,7 @@ function writeArtifact(claimsDir: string, specName: string, filename: string, co
 describe('HttpApi — /tapestry endpoint', () => {
   const CITY_DIR = join(TEST_DIR, 'test-city');
   const FELT_DIR = join(CITY_DIR, '.felt');
-  const CLAIMS_DIR = join(CITY_DIR, 'results', 'claims');
+  const CLAIMS_DIR = join(CITY_DIR, 'results', 'tapestry');
   let api: HttpApi;
 
   beforeEach(() => {
@@ -386,7 +386,7 @@ created-at: 2026-01-03T00:00:00Z
 
 describe('HttpApi — /tapestry-asset endpoint', () => {
   const CITY_DIR = join(TEST_DIR, 'asset-city');
-  const CLAIMS_DIR = join(CITY_DIR, 'results', 'claims');
+  const CLAIMS_DIR = join(CITY_DIR, 'results', 'tapestry');
   let api: HttpApi;
 
   beforeEach(() => {
@@ -560,7 +560,7 @@ describe('EvidenceReader', () => {
     const CITY = join(TEST_DIR, 'evidence-city');
 
     it('reads evidence.json with metrics and artifacts', async () => {
-      const dir = join(CITY, 'results', 'claims', 'test_spec');
+      const dir = join(CITY, 'results', 'tapestry', 'test_spec');
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'evidence.json'), JSON.stringify({
         evidence: { pte: 0.3, chi2: 12 },
@@ -579,7 +579,7 @@ describe('EvidenceReader', () => {
     });
 
     it('only includes image files from output field', async () => {
-      const dir = join(CITY, 'results', 'claims', 'with_images');
+      const dir = join(CITY, 'results', 'tapestry', 'with_images');
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'evidence.json'), JSON.stringify({
         evidence: {},
@@ -597,7 +597,7 @@ describe('EvidenceReader', () => {
     });
 
     it('returns null when evidence.json does not exist', async () => {
-      mkdirSync(join(CITY, 'results', 'claims', 'empty'), { recursive: true });
+      mkdirSync(join(CITY, 'results', 'tapestry', 'empty'), { recursive: true });
       const ev = await readEvidence(CITY, 'empty');
       expect(ev).toBeNull();
     });
@@ -609,7 +609,7 @@ describe('EvidenceReader', () => {
     });
 
     it('returns empty artifacts when no output field exists', async () => {
-      const dir = join(CITY, 'results', 'claims', 'legacy_spec');
+      const dir = join(CITY, 'results', 'tapestry', 'legacy_spec');
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'evidence.json'), JSON.stringify({
         evidence: { pte: 0.5 },

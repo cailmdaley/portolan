@@ -29,7 +29,7 @@ export interface City {
   name: string;         // display name
   position: { q: number; r: number };
   fiberCount?: number;  // injected by FiberReader
-  hasClaims?: boolean;  // has workflow/config or results/claims
+  hasClaims?: boolean;  // has workflow/config or results/tapestry
   hasPlaygrounds?: boolean;  // has .portolan/playgrounds/ with files
   gitStatus?: GitStatus;  // injected by GitStatusManager
   createdAt?: number;
@@ -456,7 +456,7 @@ export class CityManager {
   }
 
   /**
-   * Detect if a city has claims (workflow/config or results/claims directories)
+   * Detect if a city has claims (workflow/config or results/tapestry directories)
    * Only works for local cities.
    */
   detectClaims(city: City): boolean {
@@ -466,7 +466,7 @@ export class CityManager {
     }
 
     const hasWorkflowConfig = existsSync(resolve(city.path, 'workflow/config'));
-    const hasResultsClaims = existsSync(resolve(city.path, 'results/claims'));
+    const hasResultsClaims = existsSync(resolve(city.path, 'results/tapestry'));
     const hasFelt = existsSync(resolve(city.path, '.felt'));
     return hasWorkflowConfig || hasResultsClaims || hasFelt;
   }

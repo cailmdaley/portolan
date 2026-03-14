@@ -296,7 +296,7 @@ export class HttpApiTapestry {
       return;
     }
 
-    const fullPath = `${city.path}/results/claims/${assetPath}`;
+    const fullPath = `${city.path}/results/tapestry/${assetPath}`;
     const ext = assetPath.split('.').pop()?.toLowerCase();
     const contentType = HTTP_API_MIME_TYPES[ext || ''] || 'application/octet-stream';
     const timeout = ext === 'pdf' ? 60000 : 30000;

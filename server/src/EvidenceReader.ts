@@ -2,7 +2,7 @@
  * EvidenceReader — reads evidence.json and artifact metadata for claim fibers.
  *
  * Works both locally and via SSH for remote cities.
- * Evidence lives at: {cityPath}/results/claims/{specName}/evidence.json
+ * Evidence lives at: {cityPath}/results/tapestry/{specName}/evidence.json
  * Artifacts are images and PDFs in the same directory.
  */
 
@@ -30,7 +30,7 @@ export async function readEvidence(
   specName: string,
   sshHost?: string,
 ): Promise<Evidence | null> {
-  const evidenceDir = `${cityPath}/results/claims/${specName}`;
+  const evidenceDir = `${cityPath}/results/tapestry/${specName}`;
 
   try {
     if (sshHost) {
@@ -125,7 +125,7 @@ export async function readEvidenceBatch(
   if (specNames.length === 0) return results;
 
   // Build a shell loop that emits delimited blocks per spec
-  const claimsDir = shellEscape(`${cityPath}/results/claims`);
+  const claimsDir = shellEscape(`${cityPath}/results/tapestry`);
   const perSpec = specNames.map(spec => {
     const ej = `${claimsDir}/${shellEscape(spec)}/evidence.json`;
     return [

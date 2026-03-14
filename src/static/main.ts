@@ -87,7 +87,7 @@ function bootstrap(): void {
     .then((data: TapestryResponse) => {
       if (!isCurrentRequest(requestId)) return
 
-      const assetBase = `/${basePath}/data/${cityName}/claims`
+      const assetBase = `/${basePath}/data/${cityName}/tapestry`
       view.showStatic(data, cityName, assetBase)
       attachPopstateHandler(view)
     })

@@ -115,7 +115,7 @@ export class TapestryViewRuntime {
     }
   }
 
-  showStatic(data: TapestryResponse, assetBase = './data/claims'): void {
+  showStatic(data: TapestryResponse, assetBase = './data/tapestry'): void {
     this.disposed = false
     this.clearDataRequest()
     this.clearPreloadCache()
@@ -124,7 +124,7 @@ export class TapestryViewRuntime {
     this.currentCity = null
     this.staticMode = true
     this.staticAssetBase = assetBase
-    this.staticDataBase = assetBase.replace(/\/[^/]+\/claims$/, '')
+    this.staticDataBase = assetBase.replace(/\/[^/]+\/tapestry$/, '')
     this.staticFileModal = new TapestryStaticFileModal(this.staticDataBase)
     this.tapestryData = data
     this.selectedNodeId = null

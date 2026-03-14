@@ -121,7 +121,7 @@ async function main() {
     for (const [_name, filePath] of Object.entries(node.evidence.artifacts)) {
       if (typeof filePath !== 'string') continue
       const filename = filePath.split('/').pop() || ''
-      const outDir = path.join(OUT_DIR, 'claims', node.specName)
+      const outDir = path.join(OUT_DIR, 'tapestry', node.specName)
       const outPath = path.join(outDir, filename)
 
       if (!force && fs.existsSync(outPath)) continue
