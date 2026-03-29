@@ -1,3 +1,4 @@
+import { renderPdfAllPages } from './ArtifactMedia'
 import { escapeHtml, highlightCodeBlocks, renderMarkdown } from './utils'
 
 const MIN_MODAL_WIDTH = 400
@@ -29,12 +30,19 @@ export class TapestryStaticFileModal {
     document.querySelector('.tapestry-file-modal')?.remove()
   }
 
+  private resolveFileUrl(href: string): string {
+    // Files exported by the old TS script are stored flat in files/ with / → _
+    // Files referenced in fiber text may be project-relative paths
+    const flatName = href.replace(/^\.{0,2}\//, '').replace(/\//g, '_')
+    return `${this.staticDataBase}/files/${flatName}`
+  }
+
   async open(href: string, line?: number): Promise<void> {
     if (!this.staticDataBase) return
 
     const filename = href.split('/').pop() || ''
     const ext = filename.split('.').pop()?.toLowerCase() || ''
-    const url = `${this.staticDataBase}/${href}`
+    const url = this.resolveFileUrl(href)
     const modal = this.ensureModal()
     if (!modal) return
 
@@ -44,7 +52,11 @@ export class TapestryStaticFileModal {
     bodyEl.innerHTML = '<div style="padding:1rem;color:var(--ui-text-muted)">Loading...</div>'
 
     if (ext === 'pdf') {
-      bodyEl.innerHTML = `<iframe src="${url}" style="width:100%;height:100%;border:none;"></iframe>`
+      bodyEl.innerHTML = ''
+      const pdfContainer = document.createElement('div')
+      pdfContainer.style.cssText = 'width:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;'
+      bodyEl.appendChild(pdfContainer)
+      renderPdfAllPages(url, pdfContainer)
       return
     }
 
