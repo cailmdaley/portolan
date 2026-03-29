@@ -52,6 +52,17 @@ export class TapestryStaticFileModal {
     bodyEl.innerHTML = '<div style="padding:1rem;color:var(--ui-text-muted)">Loading...</div>'
 
     if (ext === 'pdf') {
+      try {
+        const resp = await fetch(url)
+        const ct = resp.headers.get('content-type') || ''
+        if (!resp.ok || !ct.includes('application/pdf')) {
+          bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">File not found: ${escapeHtml(filename)}</div>`
+          return
+        }
+      } catch {
+        bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">File not found: ${escapeHtml(filename)}</div>`
+        return
+      }
       bodyEl.innerHTML = ''
       const pdfContainer = document.createElement('div')
       pdfContainer.style.cssText = 'width:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;'
@@ -61,13 +72,23 @@ export class TapestryStaticFileModal {
     }
 
     if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
-      bodyEl.innerHTML = `<img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;margin:auto;display:block;" />`
+      const img = new Image()
+      img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;margin:auto;display:block;'
+      img.onload = () => { bodyEl.innerHTML = ''; bodyEl.appendChild(img) }
+      img.onerror = () => { bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">File not found: ${escapeHtml(filename)}</div>` }
+      img.src = url
       return
     }
 
     try {
       const resp = await fetch(url)
       if (!resp.ok) throw new Error(`${resp.status}`)
+      // Guard against SPA catch-all: if we expect code/text but got HTML back,
+      // the file doesn't actually exist on the server.
+      const ct = resp.headers.get('content-type') || ''
+      if (ct.includes('text/html') && ext !== 'html' && ext !== 'htm') {
+        throw new Error('unexpected html response')
+      }
       const text = await resp.text()
 
       if (ext === 'md') {
@@ -113,7 +134,7 @@ export class TapestryStaticFileModal {
         bodyEl.querySelector('.highlighted-line')?.scrollIntoView({ block: 'center' })
       }
     } catch {
-      bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">Could not load file: ${escapeHtml(filename)}</div>`
+      bodyEl.innerHTML = `<div style="padding:1rem;color:var(--ui-text-muted)">File not found: ${escapeHtml(filename)}</div>`
     }
   }
 
