@@ -1,5 +1,6 @@
 import { renderPdfAllPages } from './ArtifactMedia'
 import { escapeHtml, highlightCodeBlocks, renderMarkdown } from './utils'
+import './tapestry-file-modal.css'
 
 const MIN_MODAL_WIDTH = 400
 const MAX_MODAL_WIDTH_FRACTION = 0.95
