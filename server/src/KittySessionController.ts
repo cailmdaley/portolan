@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import type { Session } from './SessionTracker.js';
 import type { Origin } from './OriginManager.js';
-import { shellEscape } from './ShellPathUtils.js';
+import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 export interface KittySessionLookup {
   findSession(sessionId: string): Session | undefined;
@@ -45,6 +45,7 @@ export class KittySessionController {
     const socket = this.getSocket();
     const tmuxSession = session.tmuxSession;
     const escapedSession = shellEscape(tmuxSession);
+    const exactSessionTarget = exactTmuxTarget(tmuxSession);
     const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
 
     if (session.originId === 'local') {
@@ -58,7 +59,7 @@ export class KittySessionController {
       } catch {
         try {
           execSync(
-            `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`,
+            `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${exactSessionTarget}`,
             { stdio: 'ignore' }
           );
           console.log(`Launched new tab: ${tmuxSession} in ${session.cwd}`);
@@ -85,7 +86,7 @@ export class KittySessionController {
         console.log(`Focused remote tab: ${tabTitle}`);
       } catch {
         try {
-          const sshCommand = `ssh -tt ${shellEscape(sshHost)} tmux attach -t ${escapedSession}`;
+          const sshCommand = `ssh -tt ${shellEscape(sshHost)} tmux attach -t ${exactSessionTarget}`;
           const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${escapedTabTitle} ${sshCommand}`;
           console.log(`[Focus] Running: ${kittyCmd}`);
           execSync(kittyCmd, { stdio: 'ignore' });
@@ -107,11 +108,11 @@ export class KittySessionController {
       return;
     }
 
-    const escapedSession = shellEscape(session.tmuxSession);
+    const exactSessionTarget = exactTmuxTarget(session.tmuxSession);
 
     try {
       if (session.originId === 'local') {
-        execSync(`tmux kill-session -t ${escapedSession}`, { stdio: 'pipe' });
+        execSync(`tmux kill-session -t ${exactSessionTarget}`, { stdio: 'pipe' });
         console.log(`[KillWorker] Killed local session: ${session.tmuxSession}`);
       } else {
         const origin = this.originLookup.getOrigin(session.originId);
@@ -120,7 +121,7 @@ export class KittySessionController {
           return;
         }
 
-        const remoteTmuxCmd = `tmux kill-session -t ${escapedSession}`;
+        const remoteTmuxCmd = `tmux kill-session -t ${exactSessionTarget}`;
         const sshCmd = `ssh ${origin.sshHost} ${shellEscape(remoteTmuxCmd)}`;
         execSync(sshCmd, { stdio: 'pipe', timeout: 10000 });
         console.log(`[KillWorker] Killed remote session: ${session.tmuxSession} on ${origin.sshHost}`);

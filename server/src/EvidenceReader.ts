@@ -197,10 +197,11 @@ export function getSpecName(tags: string[]): string | undefined {
 /**
  * Compute staleness: a fiber is stale if any upstream dependency has
  * evidence with a newer mtime than this fiber's evidence.
+ * Walks transitively through nodes without evidence (grouping nodes).
  */
 export function computeStaleness(
   fiberId: string,
-  dependsOn: string[],
+  depsMap: Map<string, string[]>,
   evidenceMap: Map<string, Evidence | null>,
   fiberSpecMap: Map<string, string>, // fiberId → specName
 ): 'fresh' | 'stale' | 'no-evidence' {
@@ -210,17 +211,39 @@ export function computeStaleness(
   const myEvidence = evidenceMap.get(specName);
   if (!myEvidence) return 'no-evidence';
 
-  for (const depId of dependsOn) {
+  const visited = new Set<string>([fiberId]);
+  if (hasNewerUpstream(fiberId, myEvidence.mtime, depsMap, evidenceMap, fiberSpecMap, visited)) {
+    return 'stale';
+  }
+
+  return 'fresh';
+}
+
+function hasNewerUpstream(
+  fiberId: string,
+  currentMtime: number,
+  depsMap: Map<string, string[]>,
+  evidenceMap: Map<string, Evidence | null>,
+  fiberSpecMap: Map<string, string>,
+  visited: Set<string>,
+): boolean {
+  for (const depId of depsMap.get(fiberId) ?? []) {
+    if (visited.has(depId)) continue;
+    visited.add(depId);
+
     const depSpec = fiberSpecMap.get(depId);
     if (!depSpec) continue;
 
     const depEvidence = evidenceMap.get(depSpec);
-    if (!depEvidence) continue;
+    if (depEvidence) {
+      if (depEvidence.mtime > currentMtime) return true;
+      continue;
+    }
 
-    if (depEvidence.mtime > myEvidence.mtime) {
-      return 'stale';
+    // No evidence — walk through this node to its upstreams
+    if (hasNewerUpstream(depId, currentMtime, depsMap, evidenceMap, fiberSpecMap, visited)) {
+      return true;
     }
   }
-
-  return 'fresh';
+  return false;
 }

@@ -10,6 +10,11 @@ import { shellEscape } from './ShellPathUtils.js';
 const execFileAsync = promisify(execFile);
 
 export const HTTP_API_MIME_TYPES: Record<string, string> = {
+  'html': 'text/html',
+  'txt': 'text/plain',
+  'json': 'application/json',
+  'xml': 'application/xml',
+  'map': 'application/json',
   'png': 'image/png',
   'jpg': 'image/jpeg',
   'jpeg': 'image/jpeg',
@@ -18,13 +23,113 @@ export const HTTP_API_MIME_TYPES: Record<string, string> = {
   'webp': 'image/webp',
   'ico': 'image/x-icon',
   'pdf': 'application/pdf',
+  'mp4': 'video/mp4',
   'otf': 'font/otf',
   'ttf': 'font/ttf',
   'woff': 'font/woff',
   'woff2': 'font/woff2',
   'css': 'text/css',
   'js': 'application/javascript',
+  'mjs': 'application/javascript',
 };
+
+const PORTOLAN_HTML_BRIDGE = `
+<script>
+(() => {
+  const frameId = new URLSearchParams(window.location.search).get('_portolan_frame');
+  if (!frameId || window.parent === window) return;
+
+  const postLocation = () => {
+    window.parent.postMessage({
+      type: 'portolan-html-location',
+      frameId,
+      href: window.location.href,
+    }, '*');
+  };
+
+  window.addEventListener('hashchange', postLocation);
+  window.addEventListener('popstate', postLocation);
+  window.addEventListener('message', (event) => {
+    if (event.data?.type === 'portolan-html-location-request' && event.data.frameId === frameId) {
+      postLocation();
+    }
+  });
+
+  const wrapHistoryMethod = (method) => {
+    const original = history[method];
+    if (typeof original !== 'function') return;
+    history[method] = function(...args) {
+      const result = original.apply(this, args);
+      postLocation();
+      return result;
+    };
+  };
+
+  wrapHistoryMethod('pushState');
+  wrapHistoryMethod('replaceState');
+
+  // Reveal.js slide tracking
+  const getSlideTitle = () => {
+    const slide = Reveal.getCurrentSlide();
+    if (!slide) return '';
+    const heading = slide.querySelector('h1, h2, h3, h4, h5, h6');
+    return heading ? heading.textContent.trim() : '';
+  };
+
+  const postSlide = (indexh, indexv, total) => {
+    window.parent.postMessage({
+      type: 'portolan-reveal-slide',
+      frameId,
+      slide: indexv > 0 ? indexh + '.' + indexv : indexh,
+      slideIndex: indexh,
+      slideIndexV: indexv,
+      totalSlides: total,
+      slideTitle: getSlideTitle(),
+    }, '*');
+  };
+
+  const hookReveal = () => {
+    if (typeof Reveal === 'undefined' || !Reveal.isReady || !Reveal.isReady()) return false;
+    Reveal.on('slidechanged', (event) => {
+      postSlide(event.indexh, event.indexv, Reveal.getTotalSlides());
+      postLocation();
+    });
+    const indices = Reveal.getIndices();
+    postSlide(indices.h, indices.v, Reveal.getTotalSlides());
+    return true;
+  };
+
+  // Also respond to slide-request from parent (for goto)
+  window.addEventListener('message', (event) => {
+    if (event.data?.type === 'portolan-reveal-goto' && event.data.frameId === frameId) {
+      if (typeof Reveal !== 'undefined' && Reveal.isReady && Reveal.isReady()) {
+        Reveal.slide(event.data.slideIndex, event.data.slideIndexV || 0);
+      }
+    }
+  });
+
+  if (document.readyState === 'complete') {
+    postLocation();
+    if (!hookReveal()) {
+      // Reveal may init after DOMContentLoaded; poll briefly
+      let attempts = 0;
+      const poll = setInterval(() => {
+        if (hookReveal() || ++attempts > 20) clearInterval(poll);
+      }, 250);
+    }
+  } else {
+    window.addEventListener('load', () => {
+      postLocation();
+      if (!hookReveal()) {
+        let attempts = 0;
+        const poll = setInterval(() => {
+          if (hookReveal() || ++attempts > 20) clearInterval(poll);
+        }, 250);
+      }
+    }, { once: true });
+  }
+})();
+</script>`;
 
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'pdf',
@@ -119,6 +224,68 @@ export class HttpApiFileContent {
     }
   }
 
+  async handleProjectFile(url: URL, res: ServerResponse): Promise<void> {
+    // Route: /project-file/{originId}/absolute/path/to/file
+    // Origin is encoded in the path so relative URLs in HTML preserve it.
+    const prefix = '/project-file/';
+    const rest = url.pathname.slice(prefix.length);
+    const slashIdx = rest.indexOf('/');
+    if (slashIdx < 0) {
+      this.sendProjectFileError(res, 400, 'Missing file path');
+      return;
+    }
+    const originId = decodeURIComponent(rest.slice(0, slashIdx));
+    const filePath = decodeURIComponent(rest.slice(slashIdx));
+
+    if (!filePath.startsWith('/') || filePath.includes('..')) {
+      this.sendProjectFileError(res, 400, 'Invalid path');
+      return;
+    }
+
+    const ext = extname(filePath).toLowerCase().slice(1);
+    const mimeType = HTTP_API_MIME_TYPES[ext] || 'application/octet-stream';
+
+    try {
+      if (ext === 'html') {
+        await this.handleProjectHtmlFile(filePath, originId, mimeType, res);
+        return;
+      }
+
+      if (originId && originId !== 'local') {
+        const origin = this.originLookup.getOrigin(originId);
+        if (!origin?.sshHost) {
+          this.sendProjectFileError(res, 400, 'Unknown origin');
+          return;
+        }
+        await this.streamRemoteBinaryFile(origin.sshHost, filePath, mimeType, 'no-cache', 30_000, res);
+      } else {
+        await this.streamLocalBinaryFile(filePath, mimeType, 'no-cache', res);
+      }
+    } catch (error: any) {
+      if (res.headersSent || res.writableEnded) return;
+      const statusCode = typeof error.statusCode === 'number'
+        ? error.statusCode
+        : (error.code === 'ENOENT' ? 404 : 500);
+      this.sendProjectFileError(
+        res,
+        statusCode,
+        statusCode === 404 ? 'File not found' : 'Failed to read file',
+      );
+    }
+  }
+
+  private async handleProjectHtmlFile(
+    filePath: string,
+    originId: string,
+    mimeType: string,
+    res: ServerResponse,
+  ): Promise<void> {
+    const content = await this.readTextFile(filePath, originId || null);
+    const bridgedContent = this.injectHtmlBridge(content);
+    res.writeHead(200, this.streamHeaders(mimeType, 'no-cache'));
+    res.end(bridgedContent);
+  }
+
   async handleSaveFile(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const data = await this.parseJsonBody<{ path?: string; content?: string; originId?: string }>(req, res);
     if (!data) return;
@@ -181,6 +348,41 @@ export class HttpApiFileContent {
       { maxBuffer, timeout, encoding: 'buffer' as BufferEncoding },
     );
     return Buffer.from(result.stdout as unknown as Buffer);
+  }
+
+  private async readTextFile(filePath: string, originId: string | null): Promise<string> {
+    if (!originId || originId === 'local') {
+      return readFile(filePath, 'utf-8');
+    }
+
+    const origin = this.originLookup.getOrigin(originId);
+    if (!origin?.sshHost) {
+      const error = new Error('Origin not found or not connected') as Error & { statusCode?: number };
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const { stdout } = await execFileAsync(
+      'ssh', [origin.sshHost, `cat ${shellEscape(filePath)}`],
+      { maxBuffer: 10 * 1024 * 1024, timeout: 10000 }
+    );
+    return stdout;
+  }
+
+  private injectHtmlBridge(content: string): string {
+    if (content.includes('portolan-html-location')) {
+      return content;
+    }
+
+    if (/<\/head>/i.test(content)) {
+      return content.replace(/<\/head>/i, `${PORTOLAN_HTML_BRIDGE}\n</head>`);
+    }
+
+    if (/<\/body>/i.test(content)) {
+      return content.replace(/<\/body>/i, `${PORTOLAN_HTML_BRIDGE}\n</body>`);
+    }
+
+    return `${content}\n${PORTOLAN_HTML_BRIDGE}`;
   }
 
   private streamHeaders(mimeType: string, cacheControl: string): Record<string, string> {
@@ -270,6 +472,14 @@ export class HttpApiFileContent {
       res.once('finish', onFinish);
       res.once('close', onClose);
     });
+  }
+
+  private sendProjectFileError(res: ServerResponse, status: number, message: string): void {
+    res.writeHead(status, {
+      'Content-Type': 'text/plain',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(message);
   }
 
   streamRemoteBinaryFile(

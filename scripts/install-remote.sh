@@ -168,17 +168,13 @@ for event in UserPromptSubmit PreToolUse Stop; do
   current=$(add_hook "$event" "$current")
 done
 
-# Ensure PostToolUse forwards Read/Write/Edit tool touches to portolan server
-current=$(echo "$current" | jq --arg url "$FILE_TOUCH_URL" '
+# Ensure PostToolUse uses the command hook so remote file touches include tmux_session.
+current=$(echo "$current" | jq --arg path "$HOOK_PATH" '
   .hooks.PostToolUse = (
-    (.hooks.PostToolUse // [])
-    | if any(.[]; (.matcher // "") == "Read|Write|Edit" and any((.hooks // [])[]?; .type == "http" and .url == $url))
-      then .
-      else . + [{
-        "matcher": "Read|Write|Edit",
-        "hooks": [{ "type": "http", "url": $url }]
-      }]
-      end
+    [{
+      "matcher": "Read|Write|Edit",
+      "hooks": [{ "type": "command", "command": $path }]
+    }]
   )
 ')
 
@@ -196,7 +192,7 @@ echo "  Hook: $(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' |
 echo "  Agent: $(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  ws: $(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  Settings: $(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
-echo "  File-touch hook: $(grep -q '/hook/file-touch' ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
+echo "  File-touch hook: $(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
 VERIFY
 
 log "Checking remote HTTP hook forwarding..."

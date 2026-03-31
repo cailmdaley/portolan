@@ -9,6 +9,14 @@ export function shellEscape(arg: string): string {
 }
 
 /**
+ * Build an exact tmux target.
+ * tmux treats bare targets as exact-or-prefix matches; prefixing with "=" forces exact.
+ */
+export function exactTmuxTarget(sessionName: string): string {
+  return shellEscape(`=${sessionName}`);
+}
+
+/**
  * Expand ~ to the current user's home directory.
  */
 export function expandHome(filepath: string): string {

@@ -8,7 +8,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
-import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
+
+function stableCityId(key: string): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 32);
+}
 
 // ============================================================================
 // Types
@@ -74,10 +78,17 @@ export class CityPersistence {
         return [];
       }
 
+      let migrated = false;
       for (const city of data.cities) {
         const key = this.makeKey(city.originId, city.path);
+        const stableId = stableCityId(key);
+        if (city.id !== stableId) {
+          city.id = stableId;
+          migrated = true;
+        }
         this.cities.set(key, city);
       }
+      if (migrated) this.save();
 
       console.log(`Loaded ${this.cities.size} persisted cities`);
       return this.getCities();
@@ -165,7 +176,7 @@ export class CityPersistence {
 
     // Create new persisted city
     const city: PersistedCity = {
-      id: randomUUID(),
+      id: stableCityId(key),
       path: resolvedPath,
       name: name || resolvedPath.split('/').pop() || resolvedPath,
       position,
@@ -210,6 +221,45 @@ export class CityPersistence {
       }
     }
     return null;
+  }
+
+  /**
+   * Find sshHost for any persisted city at the given path (any origin).
+   * Used as fallback when ID-based lookup fails due to key normalization.
+   */
+  findSshHostForPath(path: string): string | undefined {
+    const resolvedPath = resolve(path);
+    for (const city of this.cities.values()) {
+      if (city.path === resolvedPath && city.sshHost) {
+        return city.sshHost;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Re-key a persisted city under a new originId (e.g., normalizing hostname → sshHost).
+   * Updates the internal key, originId, and ID, then saves.
+   */
+  normalizeOriginId(oldOriginId: string, newOriginId: string, sshHost: string): void {
+    const toRekey: Array<{ oldKey: string; city: PersistedCity }> = [];
+    for (const [key, city] of this.cities) {
+      if (city.originId === oldOriginId) {
+        toRekey.push({ oldKey: key, city });
+      }
+    }
+    if (toRekey.length === 0) return;
+
+    for (const { oldKey, city } of toRekey) {
+      this.cities.delete(oldKey);
+      city.originId = newOriginId;
+      city.sshHost = sshHost;
+      const newKey = this.makeKey(newOriginId, city.path);
+      city.id = stableCityId(newKey);
+      this.cities.set(newKey, city);
+    }
+    this.save();
+    console.log(`Normalized ${toRekey.length} cities from ${oldOriginId} → ${newOriginId}`);
   }
 
   /**

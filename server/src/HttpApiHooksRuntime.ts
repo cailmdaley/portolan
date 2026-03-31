@@ -97,6 +97,16 @@ export class HttpApiHooksRuntime {
         ? toolInput.path
         : '';
     const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
+    const tmuxSessionRaw = typeof payload.tmux_session === 'string'
+      ? payload.tmux_session
+      : typeof payload.tmuxSession === 'string'
+        ? payload.tmuxSession
+        : '';
+    const originNameRaw = typeof payload.origin_name === 'string'
+      ? payload.origin_name
+      : typeof payload.originName === 'string'
+        ? payload.originName
+        : '';
     const filePath = this.normalizeHookFilePath(filePathRaw, cwd);
 
     if (!sessionIdRaw || !toolNameRaw || !filePath) {
@@ -109,7 +119,13 @@ export class HttpApiHooksRuntime {
       return;
     }
 
-    const resolvedSession = this.resolveWorkerSessionForHook(sessionIdRaw, cwd, filePath);
+    const resolvedSession = this.resolveWorkerSessionForHook(
+      sessionIdRaw,
+      cwd,
+      filePath,
+      tmuxSessionRaw,
+      originNameRaw,
+    );
     if (!resolvedSession) {
       this.sendJsonSuccess(res, { success: true, stored: false, reason: 'session-not-found' });
       return;
@@ -153,7 +169,9 @@ export class HttpApiHooksRuntime {
   private resolveWorkerSessionForHook(
     hookSessionId: string,
     cwd: string,
-    filePath: string
+    filePath: string,
+    tmuxSessionHint: string,
+    originNameHint: string,
   ): Session | null {
     if (!this.sessionLookup) return null;
 
@@ -168,18 +186,28 @@ export class HttpApiHooksRuntime {
     if (directByWorkerId) return directByWorkerId;
 
     const allSessions = this.sessionLookup.getAllSessions();
-    const directByTmux = allSessions.find((s) => s.tmuxSession === hookSessionId);
-    if (directByTmux) return directByTmux;
+    const originIdHint = originNameHint.trim() ? `remote-${originNameHint.trim()}` : '';
+    const scopedSessions = originIdHint
+      ? allSessions.filter((s) => s.originId === originIdHint)
+      : allSessions;
+
+    if (tmuxSessionHint.trim()) {
+      const tmuxMatches = scopedSessions.filter((s) => s.tmuxSession === tmuxSessionHint.trim());
+      if (tmuxMatches.length === 1) return tmuxMatches[0];
+    }
+
+    const directByTmux = scopedSessions.filter((s) => s.tmuxSession === hookSessionId);
+    if (directByTmux.length === 1) return directByTmux[0];
 
     const cwdMatches = cwd
-      ? allSessions.filter((s) =>
+      ? scopedSessions.filter((s) =>
         this.pathContains(s.cwd, cwd) || this.pathContains(cwd, s.cwd)
       )
       : [];
     if (cwdMatches.length === 1) return cwdMatches[0];
 
     const fileMatches = filePath
-      ? allSessions.filter((s) => this.pathContains(s.cwd, filePath))
+      ? scopedSessions.filter((s) => this.pathContains(s.cwd, filePath))
       : [];
     if (fileMatches.length === 1) return fileMatches[0];
 
@@ -188,7 +216,7 @@ export class HttpApiHooksRuntime {
       .sort((a, b) => b.lastActivity - a.lastActivity);
     if (candidates.length > 0) return candidates[0];
 
-    const working = allSessions
+    const working = scopedSessions
       .filter((s) => s.status === 'working')
       .sort((a, b) => b.lastActivity - a.lastActivity);
     if (working.length === 1) return working[0];

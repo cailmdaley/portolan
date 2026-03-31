@@ -5,7 +5,7 @@ import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
-import { shellEscape } from './ShellPathUtils.js';
+import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -251,19 +251,20 @@ export class HttpApiAnnotations {
       : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
-      const escaped = shellEscape(tmuxSession);
-
       if (!isRemote) {
+        const exactSessionTarget = exactTmuxTarget(tmuxSession);
         execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
-        execSync(`tmux paste-buffer -t ${escaped}`, { timeout: 5000 });
+        execSync(`tmux paste-buffer -t ${exactSessionTarget}`, { timeout: 5000 });
       } else {
         if (!sshHost) {
           this.sendJsonError(res, 404, 'Origin not found');
           return;
         }
 
+        // Remote: use bare session name (no = prefix) for tmux 2.7 compatibility
+        const remoteTarget = shellEscape(tmuxSession);
         execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: formattedMessage, timeout: 10000 });
-        execFileSync('ssh', [sshHost, `tmux paste-buffer -t ${escaped}`], { timeout: 10000 });
+        execFileSync('ssh', [sshHost, `tmux paste-buffer -t ${remoteTarget}`], { timeout: 10000 });
       }
 
       if (workerId && this.onFocusSession) {
@@ -378,7 +379,14 @@ export class HttpApiAnnotations {
       lines.push('');
 
       annotations.forEach((ann, i) => {
-        if (ann.isImageAnnotation) {
+        if (ann.isSlideAnnotation && ann.slide !== undefined) {
+          const slideRef = ann.slideTitle
+            ? `Slide ${ann.slide + 1}: ${ann.slideTitle}`
+            : `Slide ${ann.slide + 1}`;
+          lines.push(`## ${i + 1}. ${slideRef}`);
+          lines.push(`> ${ann.comment}`);
+          lines.push('');
+        } else if (ann.isImageAnnotation) {
           const posRef = ann.x !== undefined && ann.y !== undefined
             ? ` at position (${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
             : '';

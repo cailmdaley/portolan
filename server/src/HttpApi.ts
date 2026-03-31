@@ -36,6 +36,7 @@ interface OriginLookup {
 
 interface PersistenceLookup {
   getCityById(cityId: string): { sshHost?: string } | null;
+  findSshHostForPath(path: string): string | undefined;
 }
 
 interface SessionLookup {
@@ -179,6 +180,11 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'GET' && url.pathname.startsWith('/project-file/')) {
+      await this.fileContentApi.handleProjectFile(url, res);
+      return true;
+    }
+
     if (req.method === 'POST' && url.pathname === '/save-file') {
       await this.fileContentApi.handleSaveFile(req, res);
       return true;
@@ -260,8 +266,14 @@ export class HttpApi {
    */
   private getSshHost(city: City): string {
     const origin = this.originLookup.getOrigin(city.originId);
+    if (origin?.sshHost) return origin.sshHost;
     const persistedCity = this.persistenceLookup.getCityById(city.id);
-    return origin?.sshHost || persistedCity?.sshHost || city.originId.replace('remote-', '');
+    if (persistedCity?.sshHost) return persistedCity.sshHost;
+    // Fallback: ID-based lookup can fail when CityManager normalizes keys differently
+    // from CityPersistence (e.g., remote-c02 vs remote-candide). Search by path.
+    const pathSshHost = this.persistenceLookup.findSshHostForPath(city.path);
+    if (pathSshHost) return pathSshHost;
+    return city.originId.replace('remote-', '');
   }
 
   private formatAnnotationsForClaude(filePath: string, annotations: unknown[], globalComment?: string): string {

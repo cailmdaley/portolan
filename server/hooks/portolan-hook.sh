@@ -29,8 +29,26 @@ else
   timestamp=$(($(date +%s) * 1000))
 fi
 
-# Single jq call: parse input, map event type, build output JSON
-"$JQ" -c --arg ts "$timestamp" --arg tmux "$tmux_session" '
+# Read hook payload once so we can branch on the raw hook event.
+input=$(cat)
+[ -z "$input" ] && exit 0
+
+raw_hook_name=$(printf '%s' "$input" | "$JQ" -r '.hook_event_name // empty' 2>/dev/null || true)
+
+if [ "$raw_hook_name" = "PostToolUse" ]; then
+  forward_payload=$(printf '%s' "$input" | "$JQ" -c --arg tmux "$tmux_session" --arg origin "$(hostname)" '
+    select((.tool_name // "") | test("^(Read|Write|Edit)$")) |
+    . + { tmux_session: $tmux, origin_name: $origin }
+  ' 2>/dev/null || true)
+  if [ -n "$forward_payload" ]; then
+    curl -sS -m 2 -X POST http://localhost:4004/hook/file-touch \
+      -H 'Content-Type: application/json' \
+      -d "$forward_payload" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmux_session" '
   # Map hook event name to event type (PostToolUse excluded - unused by server)
   def map_event_type:
     if . == "PreToolUse" then "pre_tool_use"
@@ -68,6 +86,12 @@ fi
       end
     )
   end
-' >> "$EVENTS_FILE"
+')
+
+if [ -z "$payload" ]; then
+  exit 0
+fi
+
+printf '%s\n' "$payload" >> "$EVENTS_FILE"
 
 exit 0

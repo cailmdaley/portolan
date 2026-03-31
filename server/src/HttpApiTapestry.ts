@@ -81,11 +81,16 @@ export class HttpApiTapestry {
         );
       }
 
+      const depsMap = new Map<string, string[]>();
+      for (const fiber of ruleFibers) {
+        depsMap.set(fiber.id, (fiber.dependsOn || []).filter((dep) => fiberIds.has(dep)));
+      }
+
       const nodes = ruleFibers.map((fiber) => {
         const specName = fiberSpecMap.get(fiber.id);
         const evidence = specName ? evidenceMap.get(specName) : null;
-        const deps = (fiber.dependsOn || []).filter((dependency) => fiberIds.has(dependency));
-        const staleness = computeStaleness(fiber.id, deps, evidenceMap, fiberSpecMap);
+        const deps = depsMap.get(fiber.id) || [];
+        const staleness = computeStaleness(fiber.id, depsMap, evidenceMap, fiberSpecMap);
 
         return {
           id: fiber.id,
@@ -119,7 +124,7 @@ export class HttpApiTapestry {
       }
 
       const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
-      for (const fiber of allFibers) {
+      for (const fiber of ruleFibers) {
         for (const dependency of fiber.dependsOn || []) {
           if (fiberIds.has(dependency)) {
             if (!downstreamMap[dependency]) {
@@ -149,12 +154,15 @@ export class HttpApiTapestry {
         dependsOn: fiber.dependsOn || [],
       }));
 
+      const decisions = await this.readASTRADecisions(city.path, nodes, sshHost);
+
       this.sendJsonSuccess(res, {
         nodes,
         links,
         downstream: downstreamMap,
         config,
         fibers,
+        decisions,
       });
     } catch (error: any) {
       console.error('Failed to build tapestry:', error);
@@ -279,6 +287,109 @@ export class HttpApiTapestry {
       return flat;
     } catch {
       return null;
+    }
+  }
+
+  private async readASTRADecisions(
+    cityPath: string,
+    nodes: Array<{ id: string; specName: string | null; tags: string[] }>,
+    sshHost?: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      let content = '';
+      const astraPath = `${cityPath}/astra.yaml`;
+      if (sshHost) {
+        const { stdout } = await execFileAsync(
+          'ssh',
+          [sshHost, `cat ${shellEscape(astraPath)} 2>/dev/null || echo ''`],
+          { maxBuffer: 1024 * 1024, timeout: 10000 },
+        );
+        content = stdout.trim();
+      } else {
+        try {
+          content = await readFile(astraPath, 'utf-8');
+        } catch {
+          return [];
+        }
+      }
+      if (!content) return [];
+
+      const { parse } = await import('yaml');
+      const data = parse(content);
+      if (!data?.decisions || typeof data.decisions !== 'object') return [];
+
+      // Build specName→nodeId and tag→nodeId maps for evidence wiring
+      const specToIds = new Map<string, string[]>();
+      const tagToIds = new Map<string, string[]>();
+      for (const node of nodes) {
+        if (node.specName) {
+          const ids = specToIds.get(node.specName) || [];
+          ids.push(node.id);
+          specToIds.set(node.specName, ids);
+        }
+        for (const tag of node.tags) {
+          const ids = tagToIds.get(tag) || [];
+          ids.push(node.id);
+          tagToIds.set(tag, ids);
+        }
+      }
+
+      const flattenDecisions = (
+        rawDecisions: Record<string, any>,
+        analysisId: string,
+      ): Array<Record<string, unknown>> => {
+        return Object.entries(rawDecisions)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([id, dec]) => {
+            const tapestryNodes: string[] = dec.tapestry_nodes || [];
+            let evidenceIds: string[] = [];
+            for (const specName of tapestryNodes) {
+              const matched = specToIds.get(specName) || [];
+              for (const nid of matched) {
+                if (!evidenceIds.includes(nid)) evidenceIds.push(nid);
+              }
+            }
+            if (evidenceIds.length === 0) {
+              for (const nid of tagToIds.get(`evidence:${id}`) || []) {
+                if (!evidenceIds.includes(nid)) evidenceIds.push(nid);
+              }
+            }
+            evidenceIds.sort();
+
+            const options = Object.entries(dec.options || {})
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([optId, opt]: [string, any]) => ({
+                id: optId,
+                label: opt.label || optId,
+                description: opt.description || '',
+                excluded: opt.excluded || false,
+                excludedReason: opt.excluded_reason || '',
+              }));
+
+            return {
+              id,
+              label: dec.label || id,
+              rationale: dec.rationale || '',
+              tags: dec.tags || [],
+              default: dec.default || '',
+              analysisId,
+              options,
+              evidenceIds,
+            };
+          });
+      };
+
+      const decisions = flattenDecisions(data.decisions, '');
+      if (data.analyses && typeof data.analyses === 'object') {
+        for (const [analysisId, analysis] of Object.entries(data.analyses as Record<string, any>).sort(([a], [b]) => a.localeCompare(b))) {
+          if (analysis.decisions && typeof analysis.decisions === 'object') {
+            decisions.push(...flattenDecisions(analysis.decisions, analysisId));
+          }
+        }
+      }
+      return decisions;
+    } catch {
+      return [];
     }
   }
 

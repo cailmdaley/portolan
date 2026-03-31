@@ -52,8 +52,15 @@ const persistedCities = cityPersistence.load();
 // Load persisted annotations
 annotationPersistence.load();
 for (const pc of persistedCities) {
-  // Set sshHost first so city keys are normalized correctly
   if (pc.sshHost && pc.originId !== 'local') {
+    // Normalize originId to use sshHost instead of raw hostname (e.g., "remote-c02" → "remote-candide").
+    // Different login nodes produce different hostnames; the SSH config name is the stable identifier.
+    const baseSshHost = pc.sshHost.replace(/-login\d+$/, '');
+    const normalizedOriginId = `remote-${baseSshHost}`;
+    if (pc.originId !== normalizedOriginId) {
+      cityPersistence.normalizeOriginId(pc.originId, normalizedOriginId, pc.sshHost);
+      pc.originId = normalizedOriginId;
+    }
     cityManager.setOriginSshHost(pc.originId, pc.sshHost);
   }
   cityManager.addPinnedCity(pc.id, pc.path, pc.name, pc.position, pc.originId);
@@ -85,8 +92,10 @@ const cityLookup = {
   },
   getSshHost(city: City): string | undefined {
     const origin = originManager.getOrigin(city.originId);
+    if (origin?.sshHost) return origin.sshHost;
     const persistedCity = cityPersistence.getCityById(city.id);
-    return origin?.sshHost || persistedCity?.sshHost || city.originId.replace('remote-', '');
+    if (persistedCity?.sshHost) return persistedCity.sshHost;
+    return cityPersistence.findSshHostForPath(city.path) || city.originId.replace('remote-', '');
   },
 };
 
@@ -252,8 +261,10 @@ wss.on('connection', async (ws, req) => {
   const plannotatorPort = plannotatorPortParam ? parseInt(plannotatorPortParam, 10) : undefined;
 
   if (isAgent && originName) {
-    // Agent connection
-    const origin = originManager.registerAgent(originName, ws, sshHost, plannotatorPort);
+    // Agent connection — normalize origin name using sshHost when available
+    // so different login nodes (login07.leonardo.local) map to the same origin (cineca).
+    const effectiveOriginName = sshHost ? sshHost.replace(/-login\d+$/, '') : originName;
+    const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort);
     cityManager.setOriginPosition(origin.id, origin.position);
     // Track sshHost for city key normalization (so different login nodes share cities)
     if (sshHost) {

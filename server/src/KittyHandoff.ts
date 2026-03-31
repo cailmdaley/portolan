@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import type { City } from './CityManager.js';
 import { cliProvider, getProvider } from './cli-provider.js';
-import { shellEscape } from './ShellPathUtils.js';
+import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 interface CityLookup {
   findCityByPath(path: string): City | undefined;
@@ -43,6 +43,7 @@ export class KittyHandoff {
     const escapedCwd = shellEscape(cityPath);
     const tmuxSession = fiberId;
     const escapedSession = shellEscape(tmuxSession);
+    const exactSessionTarget = exactTmuxTarget(tmuxSession);
 
     try {
       const provider = cli ? getProvider(cli) : cliProvider;
@@ -54,7 +55,7 @@ export class KittyHandoff {
         execSync(sshCmd, { stdio: 'pipe', timeout: 30000 });
 
         const kittyTabTitle = `${tmuxSession}@${city?.originId.replace('remote-', '') || 'remote'}`;
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${shellEscape(kittyTabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
+        const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${shellEscape(kittyTabTitle)} ssh -tt ${sshHost} tmux attach -t ${exactSessionTarget}`;
         console.log('[Handoff] Opening kitty tab with SSH:', kittyCmd);
         execSync(kittyCmd, { stdio: 'pipe' });
 
@@ -62,13 +63,13 @@ export class KittyHandoff {
         execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
 
         console.log(`[Handoff] Launched remote handoff: ${tmuxSession} on ${sshHost}:${cityPath}`);
-        await this.sendFiberContextAfterDelay(fiberId, escapedSession, sshHost, cityPath);
+        await this.sendFiberContextAfterDelay(fiberId, tmuxSession, sshHost, cityPath);
       } else {
         const tmuxCmd = `tmux new-session -d -s ${escapedSession} -c ${escapedCwd} '${provider.localShell} -l -c "felt on ${fiberId} && ${handoffCmd} || exec ${provider.localShell}"'`;
         console.log('[Handoff] Creating local tmux session:', tmuxCmd);
         execSync(tmuxCmd, { stdio: 'pipe' });
 
-        const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`;
+        const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${exactSessionTarget}`;
         console.log('[Handoff] Opening kitty tab:', kittyCmd);
         execSync(kittyCmd, { stdio: 'pipe' });
 
@@ -76,7 +77,7 @@ export class KittyHandoff {
         execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, { stdio: 'ignore' });
 
         console.log(`[Handoff] Launched local handoff: ${tmuxSession} in ${cityPath}`);
-        await this.sendFiberContextAfterDelay(fiberId, escapedSession, undefined, cityPath);
+        await this.sendFiberContextAfterDelay(fiberId, tmuxSession, undefined, cityPath);
       }
     } catch (error) {
       console.error(`[Handoff] Failed to launch handoff tab for ${fiberId}:`, error);
@@ -87,7 +88,7 @@ export class KittyHandoff {
 
   private async sendFiberContextAfterDelay(
     fiberId: string,
-    escapedSession: string,
+    tmuxSession: string,
     sshHost: string | undefined,
     cityPath: string,
   ): Promise<void> {
@@ -113,15 +114,17 @@ export class KittyHandoff {
 
     const message = `This session was opened to work on this fiber:\n\n\`\`\`\n${fiberContent}\n\`\`\``;
 
+    const exactSessionTarget = exactTmuxTarget(tmuxSession);
+
     try {
       if (sshHost) {
         execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: message, timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux paste-buffer -t '${escapedSession}'"`, { timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux send-keys -t '${escapedSession}' Enter"`, { timeout: 10000 });
+        execSync(`ssh ${sshHost} "tmux paste-buffer -t ${exactSessionTarget}"`, { timeout: 10000 });
+        execSync(`ssh ${sshHost} "tmux send-keys -t ${exactSessionTarget} Enter"`, { timeout: 10000 });
       } else {
         execSync('tmux load-buffer -', { input: message, timeout: 5000 });
-        execSync(`tmux paste-buffer -t '${escapedSession}'`, { timeout: 5000 });
-        execSync(`tmux send-keys -t '${escapedSession}' Enter`, { timeout: 5000 });
+        execSync(`tmux paste-buffer -t ${exactSessionTarget}`, { timeout: 5000 });
+        execSync(`tmux send-keys -t ${exactSessionTarget} Enter`, { timeout: 5000 });
       }
       console.log(`[Handoff] Sent fiber context for ${fiberId}`);
     } catch (error) {
