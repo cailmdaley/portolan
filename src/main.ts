@@ -23,6 +23,8 @@ import { ContextMenu } from './ui/ContextMenu'
 import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
+import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
+import { RecentWorkerBar } from './ui/RecentWorkerBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
 import { findBestMatchingCity, findNearestCity, getCityWorkers } from './state/cityLookup'
@@ -194,6 +196,37 @@ tapestryView.setOnOpenFile((filePath, city, line) => {
 // Setup playground viewer
 const playgroundViewer = new PlaygroundViewer()
 
+const globalSearchPalette = new GlobalSearchPalette({
+  onSelectCity: (city) => {
+    handleCityClick(city)
+  },
+  onSelectWorker: (session) => {
+    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
+    if (swarmPos) {
+      camera.focusAndZoom(swarmPos, 6, 0.95)
+    } else if (session.hex) {
+      camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
+    }
+    mapActions?.focusKittyTab(session.id)
+  },
+})
+
+const recentWorkerBar = new RecentWorkerBar({
+  onSelectWorker: (session) => {
+    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
+    if (swarmPos) {
+      camera.focusAndZoom(swarmPos, 6, 0.95)
+    } else if (session.hex) {
+      camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
+    }
+    mapActions?.focusKittyTab(session.id)
+  },
+  onFileClick: (fullPath, originId, workerId) => {
+    const city = findBestMatchingCity(cities, originId, fullPath)
+    fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path, city?.id)
+  },
+})
+
 // Wire up View Playgrounds button
 cityPanel.setOnViewPlaygrounds((city) => {
   playgroundViewer.show(city)
@@ -229,6 +262,7 @@ const stateSync = new FrontendStateSync({
     }
 
     cityPanel.updateWorkers(sessions)
+    recentWorkerBar.update(cities, sessions)
 
     if (!isInitialState || cities.length === 0) return
 
@@ -309,6 +343,47 @@ mapActions = new FrontendMapActions({
   showCity: (city) => cityPanel.show(city),
 })
 
+const isEditableElement = (element: Element | null): boolean => {
+  if (!(element instanceof HTMLElement)) return false
+  if (element.isContentEditable) return true
+  const tagName = element.tagName
+  return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT'
+}
+
+const onGlobalSearchKeydown = (event: KeyboardEvent): void => {
+  if (event.key !== '/') return
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  if (globalSearchPalette.isVisible()) return
+  if (isEditableElement(document.activeElement)) return
+
+  event.preventDefault()
+  globalSearchPalette.show(cities, sessions)
+}
+
+window.addEventListener('keydown', onGlobalSearchKeydown)
+
+const onGlobalHotkeys = (event: KeyboardEvent): void => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  if (isEditableElement(document.activeElement)) return
+  if (globalSearchPalette.isVisible()) return
+
+  const city = cityPanel.getCurrentCity()
+
+  if (event.key === 'n' && city && cityPanel.isVisible()) {
+    event.preventDefault()
+    void mapActions?.promptNewWorker(city)
+    return
+  }
+
+  if (event.key === 't' && city && cityPanel.isVisible()) {
+    event.preventDefault()
+    cityPanel.hide()
+    tapestryView.show(city)
+  }
+}
+
+window.addEventListener('keydown', onGlobalHotkeys)
+
 const appRuntime = new FrontendAppRuntime({
   renderer,
   scene,
@@ -362,6 +437,10 @@ appRuntime.start()
 // HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    window.removeEventListener('keydown', onGlobalSearchKeydown)
+    window.removeEventListener('keydown', onGlobalHotkeys)
+    globalSearchPalette.hide()
+    recentWorkerBar.dispose()
     appRuntime.dispose()
   })
 }

@@ -226,6 +226,10 @@ export class CityHUD {
     return this.container.classList.contains('visible')
   }
 
+  getCurrentCity(): City | null {
+    return this.currentCity
+  }
+
   getRuntimeStats(): {
     visible: boolean
     activeTab: 'fibers' | 'files'

@@ -57,6 +57,7 @@ export class TapestryView {
     this.annotationPanelEl = this.panel.querySelector('.tapestry-annotation-panel')!
     this.graph = new TapestryDagGraph({
       container: this.dagContainer,
+      getInitialRevealThreshold: () => this.runtime.getInitialRevealThreshold(),
       onSelectNode: (id) => this.handleGraphSelection(id),
       onClearSelection: () => this.hideDetail(true),
     })
@@ -98,6 +99,7 @@ export class TapestryView {
       openArtifactLightbox: (media, node) => this.lightbox.open(media, node),
     })
     this.sidebar = new TapestrySidebar({
+      sidebarEl: this.panel.querySelector('.tapestry-sidebar')!,
       searchInput: this.fiberSearchInput,
       searchResults: this.searchResults,
       fiberResultsEl: this.fiberResultsEl,
@@ -124,8 +126,32 @@ export class TapestryView {
       handleTextSelection: (selection) => this.annotations.handleTextSelection(selection),
     })
 
+    this.setupDeltaSlider()
     this.setupEventListeners()
     document.body.appendChild(this.panel)
+  }
+
+  private setupDeltaSlider(): void {
+    const slider = this.panel.querySelector('.delta-slider') as HTMLInputElement | null
+    const label = this.panel.querySelector('.delta-value') as HTMLElement | null
+    if (!slider || !label) return
+
+    const initialDays = this.runtime.getRevealDays()
+    slider.value = String(Math.min(90, initialDays))
+    label.textContent = this.formatDays(initialDays)
+
+    slider.addEventListener('input', () => {
+      const days = Number(slider.value)
+      label.textContent = this.formatDays(days)
+      this.runtime.setRevealDays(days)
+      this.graph.reinitializeVisibility()
+    })
+  }
+
+  private formatDays(days: number): string {
+    if (days >= 90) return 'all'
+    if (days >= 30) return `${Math.round(days / 7)}w`
+    return `${days}d`
   }
 
   private createPanel(): HTMLElement {
@@ -138,6 +164,10 @@ export class TapestryView {
           <div class="tapestry-dag-wrapper">
             <div class="tapestry-loading">Loading tapestry\u2026</div>
             <div class="tapestry-dag"></div>
+            <div class="tapestry-delta-control">
+              <label class="delta-label">Recent <span class="delta-value">7d</span></label>
+              <input type="range" class="delta-slider" min="1" max="90" value="7" />
+            </div>
           </div>
           <div class="tapestry-sidebar">
             <div class="tapestry-sidebar-resize"></div>
@@ -183,6 +213,7 @@ export class TapestryView {
 
   async show(city: City): Promise<void> {
     this.clearHideCleanupTimeout()
+    const incomingHash = window.location.hash
     this.sidebar.reset()
     this.annotations.hidePanel()
     this.annotations.reset()
@@ -197,7 +228,7 @@ export class TapestryView {
     this.panel.classList.add('visible')
 
     try {
-      const data = await this.runtime.showCity(city)
+      const data = await this.runtime.showCity(city, incomingHash)
       this.loadingIndicator.style.display = 'none'
       this.graph.render(data)
       this.sidebar.renderFiberList()
@@ -334,6 +365,7 @@ export class TapestryView {
   }
 
   private handleGraphSelection(id: string): void {
+    this.sidebar.expand()
     this.runtime.setSelectedNodeId(id)
     this.detailPanelController.renderNode(id)
     this.runtime.preloadNeighborArtifacts(id)
@@ -417,6 +449,7 @@ export class TapestryView {
     if (!this.runtime.isStaticMode()) this.annotations.hidePanel()
     this.panel.querySelector('.tapestry-ann-popover')?.remove()
     if (!skipGraphReset) this.graph.clearSelection()
+    this.sidebar.collapse()
   }
 
   private navigateToFiber(fiberId: string): void {
@@ -452,6 +485,7 @@ export class TapestryView {
   }
 
   private selectFiber(fiberId: string): void {
+    this.sidebar.expand()
     this.runtime.setSelectedNodeId(fiberId)
     this.runtime.pushHash(fiberId)
     this.detailBody.destroy()

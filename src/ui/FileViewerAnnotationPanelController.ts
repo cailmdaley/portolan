@@ -1,6 +1,7 @@
 import {
   loadAnnotations,
   saveImageAnnotation as persistImageAnnotation,
+  saveSlideAnnotation as persistSlideAnnotation,
 } from './FileViewerAnnotationActions'
 import { AnnotationPanel } from './AnnotationPanel'
 import type { Annotation } from './FileViewerAnnotationTypes'
@@ -24,12 +25,16 @@ interface FileViewerAnnotationPanelControllerHost {
   getState: () => FileViewerAnnotationPanelState
   scheduleDeferredUiTask: (task: () => void, delayMs: number) => number
   onAnnotationsChanged: (annotations: Annotation[]) => void
+  onGotoSlide?: (slideIndex: number) => void
 }
 
 export class FileViewerAnnotationPanelController {
   private host: FileViewerAnnotationPanelControllerHost
   private annotationPanel: AnnotationPanel<Annotation>
   private annotations: Annotation[] = []
+  private currentSlide: number | null = null
+  private currentSlideTitle = ''
+  private slideAnnotateBtn: HTMLButtonElement | null = null
 
   constructor(host: FileViewerAnnotationPanelControllerHost) {
     this.host = host
@@ -113,6 +118,63 @@ export class FileViewerAnnotationPanelController {
     }
   }
 
+  setCurrentSlide(slide: number | null, title?: string): void {
+    this.currentSlide = slide
+    this.currentSlideTitle = title || ''
+
+    if (slide !== null && !this.slideAnnotateBtn) {
+      const btn = document.createElement('button')
+      btn.className = 'ann-panel-slide-annotate'
+      btn.title = 'Annotate current slide'
+      btn.textContent = '+ Slide'
+      btn.addEventListener('click', () => {
+        if (this.currentSlide !== null) {
+          void this.addSlideAnnotationStub(this.currentSlide, this.currentSlideTitle)
+        }
+      })
+      const headerActions = this.host.panelEl.querySelector('.ann-panel-header-actions')
+      if (headerActions) {
+        headerActions.insertBefore(btn, headerActions.firstChild)
+      }
+      this.slideAnnotateBtn = btn
+    } else if (slide === null && this.slideAnnotateBtn) {
+      this.slideAnnotateBtn.remove()
+      this.slideAnnotateBtn = null
+    }
+  }
+
+  private async addSlideAnnotationStub(slide: number, title: string): Promise<void> {
+    const annotation = await this.saveSlideAnnotation(slide, '...', title)
+    if (annotation) {
+      this.annotationPanel.startEditById(annotation.id)
+    }
+  }
+
+  async saveSlideAnnotation(slide: number, comment: string, slideTitle?: string): Promise<Annotation | null> {
+    const { currentPath, currentOriginId } = this.host.getState()
+    if (!currentPath) return null
+
+    try {
+      const annotation = await persistSlideAnnotation({
+        currentPath,
+        currentOriginId,
+        slide,
+        slideTitle,
+        comment,
+      })
+      const state = this.host.getState()
+      if (!state.isVisible || state.currentPath !== currentPath || state.currentOriginId !== currentOriginId) {
+        return null
+      }
+      this.addAnnotation(annotation)
+      return annotation
+    } catch (error: any) {
+      console.error('Failed to save slide annotation:', error)
+      alert(`Failed to save annotation: ${error.message}`)
+      return null
+    }
+  }
+
   async reloadAnnotations(): Promise<void> {
     const { currentPath, currentOriginId, isVisible } = this.host.getState()
     if (!currentPath) return
@@ -132,6 +194,11 @@ export class FileViewerAnnotationPanelController {
   private renderPreview(ann: Annotation, index: number): string {
     if (ann.isImageAnnotation) {
       return `<span class="annotation-line">#${index + 1}</span> <em style="color: var(--text-muted);">[Image point]</em>`
+    }
+
+    if (ann.isSlideAnnotation && ann.slide !== undefined) {
+      const title = ann.slideTitle ? `: ${escapeHtml(ann.slideTitle)}` : ''
+      return `<span class="annotation-line">S${ann.slide + 1}</span> <em style="color: var(--text-muted);">[Slide ${ann.slide + 1}${title}]</em>`
     }
 
     let locationInfo = ''
@@ -156,6 +223,11 @@ export class FileViewerAnnotationPanelController {
       this.host.scheduleDeferredUiTask(() => {
         marker.style.transform = 'translate(-50%, -50%) scale(1)'
       }, 300)
+      return
+    }
+
+    if (annotation.isSlideAnnotation && annotation.slide !== undefined) {
+      this.host.onGotoSlide?.(annotation.slide)
       return
     }
 

@@ -3,6 +3,8 @@ import { FileViewerContentLoader } from './FileViewerContentLoader'
 import { FileViewerMarkdownView } from './FileViewerMarkdownView'
 import { FileViewerTextEditor } from './FileViewerTextEditor'
 
+const HTML_EXTENSIONS = new Set(['.html', '.htm'])
+
 interface FileViewerContentPresenterOptions {
   pathEl: HTMLElement
   langEl: HTMLElement
@@ -24,6 +26,8 @@ interface ShowFileOptions {
   cityId?: string
   jumpToLine?: number
   focusEditor?: boolean
+  cacheBust?: boolean
+  preserveHtmlUrl?: string
 }
 
 export class FileViewerContentPresenter {
@@ -92,6 +96,14 @@ export class FileViewerContentPresenter {
     return this.sourceWorkerId
   }
 
+  getCurrentHtmlViewUrl(): string | null {
+    return this.contentLoader.getCurrentHtmlViewUrl()
+  }
+
+  gotoSlide(slideIndex: number, slideIndexV: number = 0): void {
+    this.contentLoader.gotoSlide(slideIndex, slideIndexV)
+  }
+
   getRuntimeStats(): {
     currentPath: string | null
     currentOriginId: string
@@ -130,11 +142,25 @@ export class FileViewerContentPresenter {
       this.annotations.reset()
       this.annotations.hideSelectionToolbar()
 
+      // Set up slide tracking for HTML files
+      const ext = (options.filePath.match(/\.[^.]+$/)?.[0] || '').toLowerCase()
+      if (HTML_EXTENSIONS.has(ext)) {
+        this.contentLoader.setOnSlideChange((slide, _slideV, _total, title) => {
+          if (!this.isShowRequestActive(requestId)) return
+          this.annotations.setCurrentSlide(slide, title)
+        })
+      } else {
+        this.contentLoader.setOnSlideChange(null)
+        this.annotations.setCurrentSlide(null)
+      }
+
       await this.contentLoader.showFile({
         filePath: options.filePath,
         originId: options.originId,
         jumpToLine: options.jumpToLine,
         focusEditor: options.focusEditor,
+        cacheBust: options.cacheBust,
+        preserveHtmlUrl: options.preserveHtmlUrl,
         signal,
         isRequestActive: () => this.isShowRequestActive(requestId),
       })
@@ -147,6 +173,7 @@ export class FileViewerContentPresenter {
     this.cancelActiveShowRequest()
     this.markdownView.reset()
     this.textEditor.reset()
+    this.contentLoader.resetHtmlView()
     this.currentPath = ''
     this.currentCityPath = ''
     this.currentCityId = ''
@@ -175,6 +202,11 @@ export class FileViewerContentPresenter {
     this.activeShowAbortController?.abort()
     this.activeShowAbortController = null
     this.activeShowRequestId += 1
+  }
+
+  dispose(): void {
+    this.cancelActiveShowRequest()
+    this.contentLoader.dispose()
   }
 
 }

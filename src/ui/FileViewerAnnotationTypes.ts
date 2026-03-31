@@ -14,4 +14,9 @@ export interface Annotation {
   x?: number
   y?: number
   isImageAnnotation?: boolean
+
+  // Slide annotation fields (for reveal.js / HTML presentations)
+  slide?: number               // 0-indexed slide number
+  slideTitle?: string           // heading text from the slide
+  isSlideAnnotation?: boolean
 }

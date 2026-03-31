@@ -23,6 +23,14 @@ interface SaveImageAnnotationInput {
   comment: string
 }
 
+interface SaveSlideAnnotationInput {
+  currentPath: string
+  currentOriginId: string
+  slide: number
+  slideTitle?: string
+  comment: string
+}
+
 interface SendAnnotationsInput {
   currentPath: string
   currentOriginId: string
@@ -48,11 +56,16 @@ function buildFiberBody(globalComment: string, annotations: Annotation[]): strin
   if (annotations.length > 0) {
     bodyLines.push('## Annotations', '')
     annotations.forEach((ann, index) => {
-      const lineRef = ann.line ? ` (L${ann.line})` : ''
+      let locationRef = ''
+      if (ann.isSlideAnnotation && ann.slide !== undefined) {
+        locationRef = ` (Slide ${ann.slide + 1})`
+      } else if (ann.line) {
+        locationRef = ` (L${ann.line})`
+      }
       const truncatedText = ann.originalText.length > 60
         ? ann.originalText.slice(0, 57) + '...'
         : ann.originalText
-      bodyLines.push(`${index + 1}.${lineRef} **"${truncatedText.replace(/\n/g, ' ')}"**`)
+      bodyLines.push(`${index + 1}.${locationRef} **"${truncatedText.replace(/\n/g, ' ')}"**`)
       bodyLines.push(`   > ${ann.comment}`)
       bodyLines.push('')
     })
@@ -101,6 +114,35 @@ export async function saveImageAnnotation(input: SaveImageAnnotationInput): Prom
       x: input.x,
       y: input.y,
       isImageAnnotation: true,
+    }),
+  })
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.error || 'Failed to save annotation')
+  }
+  const data = await response.json()
+  return data.annotation
+}
+
+export async function saveSlideAnnotation(input: SaveSlideAnnotationInput): Promise<Annotation> {
+  const slideLabel = input.slideTitle
+    ? `[Slide ${input.slide + 1}: ${input.slideTitle}]`
+    : `[Slide ${input.slide + 1}]`
+  const response = await fetch(`${API_BASE}/annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filePath: input.currentPath,
+      originId: input.currentOriginId,
+      from: 0,
+      to: 0,
+      originalText: slideLabel,
+      contextBefore: '',
+      contextAfter: '',
+      comment: input.comment,
+      slide: input.slide,
+      slideTitle: input.slideTitle || undefined,
+      isSlideAnnotation: true,
     }),
   })
   if (!response.ok) {

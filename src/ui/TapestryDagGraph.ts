@@ -22,6 +22,7 @@ import {
 
 interface TapestryDagGraphOptions {
   container: HTMLElement
+  getInitialRevealThreshold: () => number
   onSelectNode: (id: string) => void
   onClearSelection: () => void
 }
@@ -44,6 +45,7 @@ export class TapestryDagGraph {
     this.onSelectNode = options.onSelectNode
     this.visibility = new TapestryDagVisibility({
       getData: () => this.data,
+      getInitialRevealThreshold: () => options.getInitialRevealThreshold(),
       onSelectNode: (id) => this.onSelectNode(id),
       onClearSelection: () => options.onClearSelection(),
       requestTransientFrame: (callback) => this.requestTransientFrame(callback),
@@ -119,6 +121,10 @@ export class TapestryDagGraph {
 
   clearSelection(skipVisibilityUpdate = false): void {
     this.visibility.clearSelection(skipVisibilityUpdate)
+  }
+
+  reinitializeVisibility(): void {
+    this.visibility.initializeSectionVisibility()
   }
 
   setSearchMatches(ids: Set<string>): void {

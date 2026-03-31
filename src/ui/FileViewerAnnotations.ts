@@ -52,6 +52,7 @@ interface FileViewerAnnotationHost {
   fiberBtn: HTMLElement
   getState: () => FileViewerAnnotationState
   scheduleDeferredUiTask: (task: () => void, delayMs: number) => number
+  onGotoSlide?: (slideIndex: number) => void
 }
 
 export class FileViewerAnnotations {
@@ -81,6 +82,7 @@ export class FileViewerAnnotations {
         this.updateAnnotationHighlights()
         this.transport.updateActionButtons()
       },
+      onGotoSlide: host.onGotoSlide,
     })
 
     this.imageAnnotations = new FileViewerImageAnnotations({
@@ -179,6 +181,14 @@ export class FileViewerAnnotations {
 
   renderImageAnnotationMarkers(container: HTMLElement): void {
     this.imageAnnotations.renderMarkers(container)
+  }
+
+  setCurrentSlide(slide: number | null, title?: string): void {
+    this.panelController.setCurrentSlide(slide, title)
+  }
+
+  async saveSlideAnnotation(slide: number, comment: string): Promise<void> {
+    await this.panelController.saveSlideAnnotation(slide, comment)
   }
 
   async showWorkerPicker(): Promise<void> {

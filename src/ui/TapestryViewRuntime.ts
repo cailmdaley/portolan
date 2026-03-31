@@ -5,6 +5,8 @@ import type { TapestryResponse } from './tapestry-types'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 const PRELOAD_CACHE_LIMIT = 64
+const DAY_MS = 24 * 60 * 60 * 1000
+const DEFAULT_RECENT_EVIDENCE_DAYS = 7
 
 export class TapestryViewRuntime {
   private currentCity: City | null = null
@@ -18,6 +20,7 @@ export class TapestryViewRuntime {
   private dataRequestId = 0
   private staticFileModal: TapestryStaticFileModal | null = null
   private disposed = false
+  private revealDays: number | null = null
 
   getCurrentCity(): City | null {
     return this.currentCity
@@ -37,6 +40,35 @@ export class TapestryViewRuntime {
 
   isDisposed(): boolean {
     return this.disposed
+  }
+
+  getRevealDays(): number {
+    if (this.revealDays !== null) return this.revealDays
+
+    const url = new URL(window.location.href)
+    const since = url.searchParams.get('since')
+    if (since) {
+      const parsed = Date.parse(since)
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.round((Date.now() - parsed) / DAY_MS))
+      }
+    }
+
+    const days = url.searchParams.get('days')
+    if (days) {
+      const parsed = Number(days)
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed
+    }
+
+    return DEFAULT_RECENT_EVIDENCE_DAYS
+  }
+
+  setRevealDays(days: number): void {
+    this.revealDays = days
+  }
+
+  getInitialRevealThreshold(): number {
+    return Date.now() - this.getRevealDays() * DAY_MS
   }
 
   getRuntimeStats(): {
@@ -63,7 +95,7 @@ export class TapestryViewRuntime {
     }
   }
 
-  async showCity(city: City): Promise<TapestryResponse> {
+  async showCity(city: City, preserveHash?: string): Promise<TapestryResponse> {
     this.disposed = false
     this.clearPreloadCache()
     this.staticFileModal?.close()
@@ -76,7 +108,7 @@ export class TapestryViewRuntime {
     this.staticAssetBase = ''
     this.staticDataBase = ''
 
-    const incomingHash = window.location.hash
+    const incomingHash = preserveHash || window.location.hash
     const url = new URL(window.location.href)
     url.searchParams.set('city', city.id)
     url.hash = incomingHash
@@ -124,7 +156,7 @@ export class TapestryViewRuntime {
     this.currentCity = null
     this.staticMode = true
     this.staticAssetBase = assetBase
-    this.staticDataBase = assetBase.replace(/\/[^/]+\/tapestry$/, '')
+    this.staticDataBase = assetBase.replace(/\/tapestry$/, '')
     this.staticFileModal = new TapestryStaticFileModal(this.staticDataBase)
     this.tapestryData = data
     this.selectedNodeId = null

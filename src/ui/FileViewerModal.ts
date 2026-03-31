@@ -65,6 +65,7 @@ export class FileViewerModal {
         isVisible: this.isVisible(),
       }),
       scheduleDeferredUiTask: (task, delayMs) => this.runtime.scheduleDeferredUiTask(task, delayMs),
+      onGotoSlide: (slideIndex) => this.contentPresenter.gotoSlide(slideIndex),
     })
     this.textEditor = new FileViewerTextEditor({
       contentEl: this.contentEl,
@@ -235,6 +236,8 @@ export class FileViewerModal {
     cityPath?: string,
     cityId?: string,
     jumpToLine?: number,
+    cacheBust?: boolean,
+    preserveHtmlUrl?: string,
   ): Promise<void> {
     this.runtime.activate(navigationContext)
     this.sendBtn.style.display = 'none'
@@ -247,13 +250,15 @@ export class FileViewerModal {
       cityId,
       jumpToLine,
       focusEditor: this.runtime.shouldFocusEditor(),
+      cacheBust,
+      preserveHtmlUrl,
     })
     this.runtime.completeShow()
   }
 
   private async refresh(): Promise<void> {
-    const currentContent = this.textEditor.getCurrentContent()
-    if (!currentContent) return
+    const currentPath = this.contentPresenter.getCurrentPath()
+    if (!currentPath) return
 
     if (this.textEditor.getIsDirty()) {
       if (!confirm('You have unsaved changes. Refresh anyway?')) {
@@ -264,14 +269,23 @@ export class FileViewerModal {
     // Show feedback
     const originalText = this.refreshBtn.textContent
     this.refreshBtn.textContent = '...'
+    const preserveHtmlUrl = this.contentPresenter.getCurrentHtmlViewUrl() || undefined
 
-    await this.show(
-      currentContent.path,
-      this.contentPresenter.getCurrentOriginId(),
-      this.contentPresenter.getSourceWorkerId() || undefined,
-    )
-
-    this.refreshBtn.textContent = originalText
+    try {
+      await this.show(
+        currentPath,
+        this.contentPresenter.getCurrentOriginId(),
+        this.contentPresenter.getSourceWorkerId() || undefined,
+        undefined,
+        this.contentPresenter.getCurrentCityPath() || undefined,
+        this.contentPresenter.getCurrentCityId() || undefined,
+        undefined,
+        true,
+        preserveHtmlUrl,
+      )
+    } finally {
+      this.refreshBtn.textContent = originalText
+    }
   }
 
   private tryClose(): void {
@@ -340,6 +354,7 @@ export class FileViewerModal {
     this.markdownView.reset()
     this.annotations.dispose()
     this.textEditor.destroy()
+    this.contentPresenter.dispose()
     this.backdrop.remove()
     this.modal.remove()
   }

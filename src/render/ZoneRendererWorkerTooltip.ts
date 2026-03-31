@@ -38,6 +38,7 @@ export class ZoneRendererWorkerTooltip {
     }
 
     if (this.targetWorkerId === session.id) {
+      this.clearHideTimer()
       if (this.hoverTimerId !== null) return
       if (this.tooltipEl.style.display !== 'none') return
     }
@@ -56,12 +57,14 @@ export class ZoneRendererWorkerTooltip {
   }
 
   clearHover(force = false): void {
-    this.targetWorkerId = null
     this.clearHoverTimer()
     if (force) {
       this.hide()
       return
     }
+    // Don't null targetWorkerId — if the mouse returns to the same worker
+    // within the hide grace period, updateHover() will recognise it and
+    // keep the tooltip open instead of flickering.
     this.scheduleHide()
   }
 
@@ -261,7 +264,7 @@ export class ZoneRendererWorkerTooltip {
       this.hideTimerId = null
       if (this.hovered) return
       this.hide()
-    }, 120)
+    }, 250)
   }
 
   private hide(resetTarget = true): void {

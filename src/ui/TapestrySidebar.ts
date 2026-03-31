@@ -5,6 +5,7 @@ import type { TapestryFiber, TapestryNode, TapestryResponse } from './tapestry-t
 const SEARCH_SNIPPET_CONTEXT = 15
 
 type TapestrySidebarOptions = {
+  sidebarEl: HTMLElement
   searchInput: HTMLInputElement
   searchResults: HTMLElement
   fiberResultsEl: HTMLElement
@@ -16,6 +17,7 @@ type TapestrySidebarOptions = {
 }
 
 export class TapestrySidebar {
+  private sidebarEl: HTMLElement
   private searchInput: HTMLInputElement
   private searchResults: HTMLElement
   private fiberResultsEl: HTMLElement
@@ -27,6 +29,7 @@ export class TapestrySidebar {
   private searchFocusIdx = -1
 
   constructor(options: TapestrySidebarOptions) {
+    this.sidebarEl = options.sidebarEl
     this.searchInput = options.searchInput
     this.searchResults = options.searchResults
     this.fiberResultsEl = options.fiberResultsEl
@@ -45,6 +48,15 @@ export class TapestrySidebar {
     this.searchResults.innerHTML = ''
     this.searchFocusIdx = -1
     this.clearSearchHighlights()
+    this.collapse()
+  }
+
+  collapse(): void {
+    this.sidebarEl.classList.add('collapsed')
+  }
+
+  expand(): void {
+    this.sidebarEl.classList.remove('collapsed')
   }
 
   renderFiberList(): void {

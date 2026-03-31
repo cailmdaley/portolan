@@ -130,6 +130,12 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     }
   }
 
+  /** Trigger inline edit on a specific annotation by ID. */
+  startEditById(id: string): void {
+    const ann = this.annotations.find(a => a.id === id)
+    if (ann) this.startEdit(ann)
+  }
+
   /** Whether there are annotations or a global comment. */
   hasContent(): boolean {
     return this.annotations.length > 0 || this.getGlobalComment().length > 0
@@ -321,7 +327,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     cancelBtn.addEventListener('click', () => finishEdit(false))
     textarea.addEventListener('keydown', (e: KeyboardEvent) => {
       e.stopPropagation()
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         finishEdit(true)
       }

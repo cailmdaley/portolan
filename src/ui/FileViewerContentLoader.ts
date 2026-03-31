@@ -9,6 +9,7 @@ import {
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'])
 const PDF_EXTENSIONS = new Set(['.pdf'])
+const HTML_EXTENSIONS = new Set(['.html'])
 const API_BASE = `http://${window.location.hostname}:4004`
 
 interface FileViewerContentLoaderOptions {
@@ -29,6 +30,8 @@ interface ShowFileOptions {
   originId: string
   jumpToLine?: number
   focusEditor?: boolean
+  cacheBust?: boolean
+  preserveHtmlUrl?: string
   signal: AbortSignal
   isRequestActive: () => boolean
 }
@@ -44,6 +47,11 @@ export class FileViewerContentLoader {
   private annotations: FileViewerAnnotations
   private textEditor: FileViewerTextEditor
   private markdownView: FileViewerMarkdownView
+  private currentHtmlView: { frameId: string; url: string } | null = null
+  private currentSlideState: { slide: number; slideV: number; total: number; title: string } | null = null
+  private onSlideChange: ((slide: number, slideV: number, total: number, title: string) => void) | null = null
+  private readonly htmlStateMessageType = 'portolan-html-location'
+  private messageHandler: ((event: MessageEvent) => void) | null = null
 
   constructor(options: FileViewerContentLoaderOptions) {
     this.pathEl = options.pathEl
@@ -56,26 +64,38 @@ export class FileViewerContentLoader {
     this.annotations = options.annotations
     this.textEditor = options.textEditor
     this.markdownView = options.markdownView
+    this.messageHandler = (event: MessageEvent) => this.handleHtmlViewMessage(event)
+    window.addEventListener('message', this.messageHandler)
   }
 
   async showFile(options: ShowFileOptions): Promise<void> {
-    const { filePath, originId, signal, isRequestActive } = options
+    const { filePath, originId, cacheBust, preserveHtmlUrl, signal, isRequestActive } = options
     const ext = this.getExtension(filePath)
 
     if (IMAGE_EXTENSIONS.has(ext)) {
-      await this.showImage(filePath, originId, signal, isRequestActive)
+      this.resetHtmlView()
+      await this.showImage(filePath, originId, signal, isRequestActive, cacheBust)
       return
     }
 
     if (PDF_EXTENSIONS.has(ext)) {
-      this.showPdf(filePath, originId, signal, isRequestActive)
+      this.resetHtmlView()
+      this.showPdf(filePath, originId, signal, isRequestActive, cacheBust)
       return
     }
 
+    if (HTML_EXTENSIONS.has(ext)) {
+      this.showHtml(filePath, originId, signal, isRequestActive, cacheBust, preserveHtmlUrl)
+      return
+    }
+
+    this.resetHtmlView()
+
     try {
+      const bustSuffix = cacheBust ? `&_t=${Date.now()}` : ''
       const [contentResponse, annotationsResponse] = await Promise.all([
         fetch(
-          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}`,
+          `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&originId=${encodeURIComponent(originId)}${bustSuffix}`,
           { signal },
         ),
         fetch(
@@ -127,12 +147,97 @@ export class FileViewerContentLoader {
     return match ? match[0].toLowerCase() : ''
   }
 
-  private buildRawFileUrl(filePath: string, originId: string): string {
+  private buildRawFileUrl(filePath: string, originId: string, cacheBust?: boolean): string {
     let url = `${API_BASE}/file-content?path=${encodeURIComponent(filePath)}&raw=true`
     if (originId && originId !== 'local') {
       url += `&originId=${encodeURIComponent(originId)}`
     }
+    if (cacheBust) {
+      url += `&_t=${Date.now()}`
+    }
     return url
+  }
+
+  private buildProjectFileUrl(filePath: string, originId: string): string {
+    const encodedPath = filePath
+      .split('/')
+      .map(segment => encodeURIComponent(segment))
+      .join('/')
+    return `${API_BASE}/project-file/${encodeURIComponent(originId)}${encodedPath}`
+  }
+
+  private buildHtmlViewUrl(
+    filePath: string,
+    originId: string,
+    frameId: string,
+    cacheBust?: boolean,
+    preserveUrl?: string,
+  ): string {
+    const baseUrl = this.buildProjectFileUrl(filePath, originId)
+    const url = new URL(preserveUrl || baseUrl)
+    url.searchParams.set('_portolan_frame', frameId)
+    if (cacheBust) {
+      url.searchParams.set('_t', `${Date.now()}`)
+    } else {
+      url.searchParams.delete('_t')
+    }
+    return url.toString()
+  }
+
+  getCurrentHtmlViewUrl(): string | null {
+    return this.currentHtmlView?.url || null
+  }
+
+  getCurrentSlideState(): { slide: number; slideV: number; total: number; title: string } | null {
+    return this.currentSlideState
+  }
+
+  setOnSlideChange(fn: ((slide: number, slideV: number, total: number, title: string) => void) | null): void {
+    this.onSlideChange = fn
+  }
+
+  gotoSlide(slideIndex: number, slideIndexV: number = 0): void {
+    if (!this.currentHtmlView) return
+    const iframe = this.contentEl.querySelector('iframe') as HTMLIFrameElement | null
+    iframe?.contentWindow?.postMessage({
+      type: 'portolan-reveal-goto',
+      frameId: this.currentHtmlView.frameId,
+      slideIndex,
+      slideIndexV: slideIndexV,
+    }, '*')
+  }
+
+  resetHtmlView(): void {
+    this.currentHtmlView = null
+    this.currentSlideState = null
+  }
+
+  dispose(): void {
+    this.resetHtmlView()
+    if (this.messageHandler) {
+      window.removeEventListener('message', this.messageHandler)
+      this.messageHandler = null
+    }
+  }
+
+  private handleHtmlViewMessage(event: MessageEvent): void {
+    if (event.origin !== API_BASE) return
+    const data = event.data
+    if (!data || !this.currentHtmlView) return
+    if (data.frameId !== this.currentHtmlView.frameId) return
+
+    if (data.type === this.htmlStateMessageType && typeof data.href === 'string') {
+      this.currentHtmlView.url = data.href
+    } else if (data.type === 'portolan-reveal-slide') {
+      const title = typeof data.slideTitle === 'string' ? data.slideTitle : ''
+      this.currentSlideState = {
+        slide: data.slideIndex,
+        slideV: data.slideIndexV || 0,
+        total: data.totalSlides,
+        title,
+      }
+      this.onSlideChange?.(data.slideIndex, data.slideIndexV || 0, data.totalSlides, title)
+    }
   }
 
   private waitForImageLoad(img: HTMLImageElement, signal: AbortSignal): Promise<void> {
@@ -196,13 +301,14 @@ export class FileViewerContentLoader {
     originId: string,
     signal: AbortSignal,
     isRequestActive: () => boolean,
+    cacheBust?: boolean,
   ): Promise<void> {
     this.langEl.textContent = 'image'
     this.modeLineEl.textContent = 'Click to annotate'
     this.textEditor.setCurrentContent(null)
 
     try {
-      const rawUrl = this.buildRawFileUrl(filePath, originId)
+      const rawUrl = this.buildRawFileUrl(filePath, originId, cacheBust)
       const container = document.createElement('div')
       container.className = 'file-viewer-image'
       const img = document.createElement('img')
@@ -234,6 +340,7 @@ export class FileViewerContentLoader {
     originId: string,
     signal: AbortSignal,
     isRequestActive: () => boolean,
+    cacheBust?: boolean,
   ): void {
     this.langEl.textContent = 'pdf'
     this.modeLineEl.textContent = ''
@@ -243,9 +350,51 @@ export class FileViewerContentLoader {
 
     const container = document.createElement('div')
     container.className = 'file-viewer-pdf'
-    container.innerHTML = `<iframe src="${this.buildRawFileUrl(filePath, originId)}" title="${escapeHtml(filePath)}" />`
+    container.innerHTML = `<iframe src="${this.buildRawFileUrl(filePath, originId, cacheBust)}" title="${escapeHtml(filePath)}" />`
     this.contentEl.innerHTML = ''
     this.contentEl.appendChild(container)
+  }
+
+  private async showHtml(
+    filePath: string,
+    originId: string,
+    signal: AbortSignal,
+    isRequestActive: () => boolean,
+    cacheBust?: boolean,
+    preserveHtmlUrl?: string,
+  ): Promise<void> {
+    this.langEl.textContent = 'html'
+    this.modeLineEl.textContent = ''
+    this.textEditor.setCurrentContent(null)
+
+    if (signal.aborted || !isRequestActive()) return
+
+    const frameId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    const iframeUrl = this.buildHtmlViewUrl(filePath, originId, frameId, cacheBust, preserveHtmlUrl)
+    this.currentHtmlView = { frameId, url: iframeUrl }
+    this.currentSlideState = null
+
+    const container = document.createElement('div')
+    container.className = 'file-viewer-pdf'
+    const iframe = document.createElement('iframe')
+    iframe.src = iframeUrl
+    iframe.title = filePath
+    iframe.style.width = '100%'
+    iframe.style.height = '100%'
+    iframe.style.border = 'none'
+    container.appendChild(iframe)
+    this.contentEl.innerHTML = ''
+    this.contentEl.appendChild(container)
+
+    // Fetch annotations for HTML files
+    try {
+      const annotations = await this.fetchFileAnnotations(filePath, originId, signal)
+      if (!isRequestActive()) return
+      this.annotations.setAnnotations(annotations)
+    } catch (error: any) {
+      if (error?.name === 'AbortError' || !isRequestActive()) return
+      this.annotations.setAnnotations([])
+    }
   }
 
   private showError(message: string): void {
