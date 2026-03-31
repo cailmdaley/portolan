@@ -1,9 +1,11 @@
 ---
 title: Simplification sweep
-status: open
+status: closed
 tags:
     - '[portolan]'
 created-at: 2026-03-06T10:46:31.715433+01:00
+closed-at: 2026-03-11T22:45:59.055537+01:00
+outcome: '50 iterations transformed 8 monolithic files (2k-3.2k LOC each) into ~55 focused modules. Net: -1,594 LOC (24,746 → 23,152), 42 → 97 source files. Largest file now 541 LOC (HttpApiFileContent — cohesive file I/O). Zero god objects remain. Every coordinator is a thin wiring layer delegating to single-responsibility runtime modules. All 252 tests pass. The extraction pattern — Coordinator + Runtime + Interactions + domain modules — is consistent across the codebase.'
 ---
 
 Deep simplification of the portolan codebase. Not a checklist — a desired state. Survey reality, find the largest gap, close it.

@@ -157,6 +157,8 @@ One-liners. Fiber has the full story. `felt ls -s all gotcha` for more.
 - **Two file viewer modals.** `FileViewerModal` (main app, `.file-viewer-*`) vs `TapestryStaticFileModal` (static deploy, `.tapestry-file-*`). If on localhost, you're editing the wrong one. See Architecture.
 - **`show()` strips URL hash.** `hideDetail()` → `pushHash(null)` before `showCity` reads it. Capture hash first. `hash-stripped-on-tapestry-show-f7700fb8`
 - **`reconnectTunnel` must kill ControlMaster first.** `ssh -fN` alone multiplexes through the stale master. `stale-controlmaster-breaks-ab430b0f`
+- **Remote origin ID derived from sshHost, not hostname.** Raw hostname (e.g. `login07.leonardo.local`) doesn't match persisted `remote-cineca`. `remote-origin-id-mismatch-0994fb6f`
+- **Dormant remote cities need `hasClaims` default.** No active session → agent never reports `hasClaims`. Pinned remote cities default `true`. `dormant-remote-cities-lack-37a383a9`
 
 ## Deep Dives
 

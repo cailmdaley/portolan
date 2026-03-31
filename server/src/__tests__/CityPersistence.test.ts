@@ -58,7 +58,9 @@ describe('CityPersistence', () => {
       const cities = persistence.load();
       expect(cities).toHaveLength(1);
       expect(cities[0].name).toBe('Test City');
-      expect(cities[0].id).toBe('test-id-1');
+      // ID is now deterministic from originId:path, not the persisted random UUID
+      expect(cities[0].id).toHaveLength(32);
+      expect(cities[0].id).not.toBe('test-id-1');
     });
 
     it('should return empty array for invalid JSON', () => {

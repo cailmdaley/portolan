@@ -30,6 +30,28 @@ describe('HttpApi — file-touch hooks', () => {
     originId: 'local',
   };
 
+  const remotePureEbSlides = {
+    id: 'remote-pureeb-slides',
+    name: 'slides',
+    tmuxSession: 'slides',
+    cwd: '/remote/pureeb',
+    status: 'working' as const,
+    createdAt: Date.now(),
+    lastActivity: Date.now() - 5_000,
+    originId: 'remote-candide',
+  };
+
+  const remotePureEbFinalReview = {
+    id: 'remote-pureeb-final-review',
+    name: 'final-review',
+    tmuxSession: 'final-review',
+    cwd: '/remote/pureeb',
+    status: 'working' as const,
+    createdAt: Date.now(),
+    lastActivity: Date.now(),
+    originId: 'remote-candide',
+  };
+
   function makeApi(sessions: typeof session[] = [session]): HttpApi {
     const api = new HttpApi(cityLookup, stubOriginLookup, stubPersistenceLookup);
     api.setSessionLookup({
@@ -147,5 +169,30 @@ describe('HttpApi — file-touch hooks', () => {
     const get = await httpRequest(api, 'GET', `/recent-files?sessionId=${encodeURIComponent(similarPrefixSession.id)}`);
     expect(get.status).toBe(200);
     expect(get.data.files[0].fullPath).toBe('/project-alpha/src/edit.ts');
+  });
+
+  it('uses tmux_session and origin_name to disambiguate remote workers sharing a cwd', async () => {
+    const api = makeApi([remotePureEbSlides, remotePureEbFinalReview]);
+
+    const post = await httpRequest(api, 'POST', '/hook/file-touch', {
+      session_id: 'unknown-claude-session',
+      tmux_session: 'slides',
+      origin_name: 'candide',
+      tool_name: 'Read',
+      tool_input: { file_path: '/remote/pureeb/slides/deck.md' },
+      cwd: '/remote/pureeb',
+    });
+    expect(post.status).toBe(200);
+    expect(post.data.stored).toBe(true);
+    expect(post.data.workerSessionId).toBe(remotePureEbSlides.id);
+
+    const slidesGet = await httpRequest(api, 'GET', `/recent-files?sessionId=${encodeURIComponent(remotePureEbSlides.id)}`);
+    expect(slidesGet.status).toBe(200);
+    expect(slidesGet.data.files).toHaveLength(1);
+    expect(slidesGet.data.files[0].fullPath).toBe('/remote/pureeb/slides/deck.md');
+
+    const reviewGet = await httpRequest(api, 'GET', `/recent-files?sessionId=${encodeURIComponent(remotePureEbFinalReview.id)}`);
+    expect(reviewGet.status).toBe(200);
+    expect(reviewGet.data.files).toEqual([]);
   });
 });

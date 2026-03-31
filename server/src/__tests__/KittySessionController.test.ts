@@ -93,7 +93,7 @@ describe('KittySessionController', () => {
 
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      "kitty @ --to unix:/tmp/kitty-socket launch --type=tab --cwd='/tmp/project' --title='worker-1' tmux attach -t 'worker-1'",
+      "kitty @ --to unix:/tmp/kitty-socket launch --type=tab --cwd='/tmp/project' --title='worker-1' tmux attach -t '=worker-1'",
       { stdio: 'ignore' }
     );
     expect(activateKitty).toHaveBeenCalledTimes(1);
@@ -125,7 +125,7 @@ describe('KittySessionController', () => {
 
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      "kitty @ --to unix:/tmp/kitty-socket launch --type=tab --env SSH_AUTH_SOCK=/tmp/agent.sock --title='worker-remote@hpc' ssh -tt 'login.example' tmux attach -t 'worker-remote'",
+      "kitty @ --to unix:/tmp/kitty-socket launch --type=tab --env SSH_AUTH_SOCK=/tmp/agent.sock --title='worker-remote@hpc' ssh -tt 'login.example' tmux attach -t '=worker-remote'",
       { stdio: 'ignore' }
     );
     expect(activateKitty).toHaveBeenCalledTimes(1);
@@ -150,7 +150,7 @@ describe('KittySessionController', () => {
     controller.killWorker('session-1');
 
     expect(mockExecSync).toHaveBeenCalledWith(
-      "ssh login.example 'tmux kill-session -t '\\''worker-remote'\\'''",
+      "ssh login.example 'tmux kill-session -t '\\''=worker-remote'\\'''",
       { stdio: 'pipe', timeout: 10000 }
     );
   });
