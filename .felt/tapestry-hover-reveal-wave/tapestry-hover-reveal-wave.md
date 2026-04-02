@@ -1,0 +1,14 @@
+---
+title: 'Tapestry hover: reveal wave + tooltip both at 300ms'
+status: closed
+tags:
+    - portolan
+depends-on:
+    - pyramid-tapestry-tiered
+created-at: 2026-02-22T03:29:14.39203+01:00
+closed-at: 2026-02-22T03:49:49.331361+01:00
+outcome: 'Hover on any node triggers after 300ms: (1) full radial reveal animation via expandedNodes + updateTierVisibility(true) and (2) tooltip showing body lead + HR + outcome. Mouseleave cancels timer and collapses hover-expanded nodes. Click during hover makes expansion permanent (hoverExpandedId cleared, mouseleave skips collapse). leadParagraph() strips markdown, returns first 1-2 sentences.'
+---
+
+(tapestry-hover-reveal-wave)=
+# Tapestry hover: reveal wave + tooltip both at 300ms
