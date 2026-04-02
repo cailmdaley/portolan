@@ -177,13 +177,15 @@ MySTRA's content server API (already running):
 **mystra-theme** (`~/Documents/projects/mystra-theme/`):
 - Map panel: `themes/book/app/components/astra-map/` — AstraMap.tsx (D3 rendering), useAstraGraph.ts (fetches /astra-graph.json), types.ts.
 - Proxy route: `themes/book/app/routes/api.astra-graph.tsx` — Remix route that proxies to content server. Needed because catch-all `$.tsx` route intercepts `*.json` URLs.
-- Two-column layout: resolved analyses left, open frontier right. Tag affinity sorting. Adaptive vertical spacing (fits all nodes within 90% of viewport height). Root anchored left.
+- **Topological DAG layout**: X = data-flow depth (longest path from source), Y = tag-affinity sorted within column. Periphery (unconnected nodes) in rightmost column. Root anchored left. Replaced earlier two-column layout.
 - **Organic rendering** (portolan aesthetic): noise-deformed ellipses (`organicEllipse` with `noise2D`), concentric ring fills + strokes (`RING_SCALES = [1.0, 1.15]`), multi-strand cubic Bézier edges with sag/wobble per-strand, knockout backgrounds for edge overlap.
 - **Hover tooltips**: full node name, status, decision/finding count, tags. 250ms delay.
 - **Label wrapping**: two-line labels with `shortName` (strips Decision:/Finding: prefixes), adaptive truncation (22 chars minimap, 55 fullscreen).
 - Fullscreen toggle with delayed re-render (350ms). Minimize button positioned below navbar (top: 64px).
 - Current page highlighting: gold stroke + glow ring (scale 1.25).
 - Porch-morning palette: teal (resolved), taupe (open), amber (suspicious), mauve (blocked), gold (root/active).
+- **Edge hierarchy**: containment edges suppressed for DAG-connected nodes (only drawn to periphery). Data-flow edges in gold with increased stroke weight (1.2px vs 0.6px containment).
+- **Data-flow cross-references**: 6 links across 7 fibers — two clear chains: `350-mock→adopt-blind→{bb-covariance-blind, blind-b-is-physical}` and `switch-fiducial→{finding-v1-4-6-3, decision-drop}→blind-b-is-physical`. Click navigation confirmed working.
 
 **Launch:**
 ```bash
