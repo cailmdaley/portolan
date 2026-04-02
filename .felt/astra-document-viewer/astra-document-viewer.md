@@ -189,6 +189,7 @@ MySTRA's content server API (already running):
 - **Edge hierarchy**: containment edges suppressed for DAG-connected nodes (only drawn to periphery). Data-flow edges in gold with increased stroke weight (1.2px vs 0.6px containment).
 - **Data-flow cross-references**: 6 links across 7 fibers — two clear chains: `350-mock→adopt-blind→{bb-covariance-blind, blind-b-is-physical}` and `switch-fiducial→{finding-v1-4-6-3, decision-drop}→blind-b-is-physical`. Click navigation confirmed working.
 - **Porch-morning document theme**: `themes/book/app/styles/porch-morning.css` (554 lines) — overrides entire MyST book-theme with warm antiquarian aesthetic. EB Garamond body + JetBrains Mono code. Parchment backgrounds (#FAFAF7 document, #F0EBE3 navbar/sidebar, #E8DDD0 active items). Gold links (#9A7B35), teal h3/cross-refs (#5A7B7B). Sidebar active items with gold border-left. Theme toggle hidden. Prose variables, admonitions, tabs, cards, tables all themed. Dark mode class overridden to always warm.
+- **Sidebar status glyphs**: `themes/book/app/components/SidebarStatusInjector.tsx` — DOM-injection component that fetches ASTRA graph, builds slug→status map, prepends status glyphs (✓ ○ ? ✕) to each sidebar navigation link. Uses `useAstraGraph` hook, runs on navigation and graph load. Porch-morning palette colors per status. Avoids modifying upstream `packages/site` by injecting into rendered DOM.
 
 **Launch:**
 ```bash
