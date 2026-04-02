@@ -19,8 +19,10 @@ import { HttpApiActivation } from './HttpApiActivation.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
+import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
 import { HttpApiTapestry } from './HttpApiTapestry.js';
+import type { MeetingBridge } from './MeetingBridge.js';
 
 // ============================================================================
 // Types
@@ -57,6 +59,7 @@ export class HttpApi {
   private annotationsApi: HttpApiAnnotations;
   private fileContentApi: HttpApiFileContent;
   private hooksRuntimeApi: HttpApiHooksRuntime;
+  private meetingApi: HttpApiMeeting;
   private activationApi: HttpApiActivation;
   private playgroundApi: HttpApiPlayground;
   private tapestryApi: HttpApiTapestry;
@@ -84,6 +87,12 @@ export class HttpApi {
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
+      parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
+      sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
+      sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    this.meetingApi = new HttpApiMeeting({
+      originLookup,
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
@@ -118,6 +127,7 @@ export class HttpApi {
   setSessionLookup(lookup: SessionLookup): void {
     this.annotationsApi.setSessionLookup(lookup);
     this.hooksRuntimeApi.setSessionLookup(lookup);
+    this.meetingApi.setSessionLookup(lookup);
   }
 
   /**
@@ -132,6 +142,10 @@ export class HttpApi {
    */
   setRuntimeDiagnosticsProvider(provider: RuntimeDiagnosticsProvider): void {
     this.hooksRuntimeApi.setRuntimeDiagnosticsProvider(provider);
+  }
+
+  setMeetingBridge(bridge: MeetingBridge): void {
+    this.meetingApi.setMeetingBridge(bridge);
   }
 
   setOnCreateNewWorker(fn: (cityPath: string, originId: string) => Promise<string>): void {
@@ -250,6 +264,26 @@ export class HttpApi {
 
     if (url.pathname === '/debug-runtime') {
       await this.hooksRuntimeApi.handleDebugRuntime(res);
+      return true;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/meeting-bridge') {
+      this.meetingApi.handleGetState(res);
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/start') {
+      await this.meetingApi.handleStart(req, res);
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/stop') {
+      this.meetingApi.handleStop(res);
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/chunk') {
+      await this.meetingApi.handleChunk(req, res);
       return true;
     }
 

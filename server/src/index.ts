@@ -20,6 +20,7 @@ import { EventWatcher } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
 import { KittyIntegration } from './KittyIntegration.js';
 import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
+import { MeetingBridge } from './MeetingBridge.js';
 import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
@@ -45,6 +46,7 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
+const meetingBridge = new MeetingBridge();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
@@ -143,8 +145,10 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       sessionCount: recentFileTracker.getSessionCount(),
       entryCount: recentFileTracker.getTotalEntryCount(),
     },
+    meetingBridge: meetingBridge.getState(),
   };
 });
+httpApi.setMeetingBridge(meetingBridge);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
 const browserStateCoordinator = new BrowserStateCoordinator({
@@ -383,6 +387,7 @@ function shutdown() {
   sessionTracker.stop();
   gitStatusManager.stop();
   eventWatcher.stop();
+  meetingBridge.stop();
   wss.close();
   server.close(() => {
     process.exit(0);
