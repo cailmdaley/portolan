@@ -24,6 +24,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       getState: vi.fn(() => ({ activeMeeting: null, lastMeeting: null })),
       start: vi.fn(),
       stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
     };
 
     api.setMeetingBridge(meetingBridge as any);
@@ -40,6 +41,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       getState: vi.fn(() => ({ activeMeeting: null, lastMeeting: null })),
       start: vi.fn(() => ({ meetingId: 'meeting-1', status: 'running' })),
       stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
     };
 
     api.setSessionLookup({
@@ -89,6 +91,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       getState: () => ({ activeMeeting: null, lastMeeting: null }),
       start: vi.fn(),
       stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
     } as any);
 
     const res = await httpRequest(api, 'POST', '/meeting-bridge/start', {
@@ -105,6 +108,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       getState: vi.fn(() => ({ activeMeeting: null, lastMeeting: null })),
       start: vi.fn(),
       stop: vi.fn(() => ({ meetingId: 'meeting-1', status: 'stopped' })),
+      ingestCandidateEvent: vi.fn(),
     };
 
     api.setMeetingBridge(meetingBridge as any);
@@ -122,6 +126,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       start: vi.fn(),
       stop: vi.fn(),
       ingestChunk: vi.fn(() => ({ meetingId: 'meeting-1', chunkCount: 3, status: 'running' })),
+      ingestCandidateEvent: vi.fn(),
     };
 
     api.setMeetingBridge(meetingBridge as any);
@@ -141,6 +146,30 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', chunkCount: 3, status: 'running' });
   });
 
+  it('routes operator meeting updates into the active meeting bridge', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null })),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestOperatorUpdate: vi.fn(() => ({ meetingId: 'meeting-1', operatorUpdateCount: 2, status: 'running' })),
+      ingestCandidateEvent: vi.fn(),
+    };
+
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/update', {
+      text: 'No, this belongs under calibration and remains unresolved.',
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.ingestOperatorUpdate).toHaveBeenCalledWith({
+      text: 'No, this belongs under calibration and remains unresolved.',
+      kind: undefined,
+    });
+    expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', operatorUpdateCount: 2, status: 'running' });
+  });
+
   it('returns 409 when uploading a transcript chunk without an active meeting', async () => {
     const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
     api.setMeetingBridge({
@@ -150,6 +179,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       ingestChunk: vi.fn(() => {
         throw new Error('No active meeting bridge');
       }),
+      ingestCandidateEvent: vi.fn(),
     } as any);
 
     const res = await httpRequest(api, 'POST', '/meeting-bridge/chunk', {
@@ -158,5 +188,73 @@ describe('HttpApi — meeting bridge endpoints', () => {
 
     expect(res.status).toBe(409);
     expect(res.data.error).toBe('Failed to ingest meeting chunk: No active meeting bridge');
+  });
+
+  it('returns 400 when uploading an empty operator update', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestOperatorUpdate: vi.fn(() => {
+        throw new Error('Meeting update text is empty');
+      }),
+      ingestCandidateEvent: vi.fn(),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/update', {
+      text: '',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Failed to ingest meeting update: Meeting update text is empty');
+  });
+
+  it('routes candidate meeting events into the active meeting bridge', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null })),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(() => ({ meetingId: 'meeting-1', candidateEventCount: 1, status: 'running' })),
+    };
+
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/candidate', {
+      kind: 'decision',
+      text: 'Accepted note: compare the DES calibration plot before formalizing the conclusion.',
+      transcriptChunkIndices: [3],
+      operatorUpdateIndices: [1],
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.ingestCandidateEvent).toHaveBeenCalledWith({
+      kind: 'decision',
+      text: 'Accepted note: compare the DES calibration plot before formalizing the conclusion.',
+      transcriptChunkIndices: [3],
+      operatorUpdateIndices: [1],
+      title: undefined,
+    });
+    expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', candidateEventCount: 1, status: 'running' });
+  });
+
+  it('returns 400 when uploading an empty candidate event', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(() => {
+        throw new Error('Meeting candidate event text is empty');
+      }),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/candidate', {
+      text: '',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Failed to ingest meeting candidate event: Meeting candidate event text is empty');
   });
 });

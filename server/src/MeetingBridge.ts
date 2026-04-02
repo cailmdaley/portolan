@@ -36,15 +36,19 @@ export interface MeetingRunState {
   transcriptPath: string;
   injectionsPath: string;
   updatesPath: string;
+  candidateEventsPath: string;
   metadataPath: string;
   bootstrapSentAt?: number;
   chunkCount: number;
   injectedCount: number;
   operatorUpdateCount: number;
+  candidateEventCount: number;
   lastChunkAt?: number;
   lastChunkPreview?: string;
   lastOperatorUpdateAt?: number;
   lastOperatorUpdatePreview?: string;
+  lastCandidateEventAt?: number;
+  lastCandidateEventPreview?: string;
   lastError?: string;
 }
 
@@ -87,6 +91,17 @@ interface NormalizedOperatorUpdate {
   receivedAt: number;
   kind: string | null;
   text: string;
+  raw: unknown;
+}
+
+interface NormalizedCandidateEvent {
+  eventIndex: number;
+  receivedAt: number;
+  kind: string;
+  title: string | null;
+  text: string;
+  transcriptChunkIndices: number[];
+  operatorUpdateIndices: number[];
   raw: unknown;
 }
 
@@ -145,6 +160,7 @@ export class MeetingBridge {
     const transcriptPath = join(meetingDir, 'transcript.jsonl');
     const injectionsPath = join(meetingDir, 'injections.jsonl');
     const updatesPath = join(meetingDir, 'operator-updates.jsonl');
+    const candidateEventsPath = join(meetingDir, 'candidate-events.jsonl');
     const metadataPath = join(meetingDir, 'meeting.json');
 
     const run: MeetingRunState = {
@@ -160,10 +176,12 @@ export class MeetingBridge {
       transcriptPath,
       injectionsPath,
       updatesPath,
+      candidateEventsPath,
       metadataPath,
       chunkCount: 0,
       injectedCount: 0,
       operatorUpdateCount: 0,
+      candidateEventCount: 0,
     };
 
     this.state.activeMeeting = run;
@@ -259,6 +277,23 @@ export class MeetingBridge {
     return { ...active };
   }
 
+  ingestCandidateEvent(rawEvent: unknown): MeetingRunState {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      throw new Error('No active meeting bridge');
+    }
+
+    const target: MeetingBridgeTarget = {
+      sessionId: active.sessionId,
+      tmuxSession: active.tmuxSession,
+      originId: active.originId,
+      cwd: active.cityPath,
+      sshHost: active.sshHost,
+    };
+    this.handleCandidateEvent(target, active, rawEvent);
+    return { ...active };
+  }
+
   private handleChunk(target: MeetingBridgeTarget, run: MeetingRunState, rawChunk: unknown): void {
     if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
 
@@ -327,6 +362,47 @@ export class MeetingBridge {
       appendJsonLine(run.injectionsPath, {
         kind: 'operator-update',
         updateIndex: update.updateIndex,
+        sentAt: Date.now(),
+        message,
+      });
+
+      this.writeMetadata(run);
+      this.emitStateChanged();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw err;
+    }
+  }
+
+  private handleCandidateEvent(target: MeetingBridgeTarget, run: MeetingRunState, rawEvent: unknown): void {
+    if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
+
+    try {
+      const event = this.normalizeCandidateEvent(rawEvent, run);
+      run.candidateEventCount = event.eventIndex;
+      run.lastCandidateEventAt = event.receivedAt;
+      run.lastCandidateEventPreview = event.title
+        ? `${event.kind}: ${event.title}`
+        : `${event.kind}: ${event.text.slice(0, 160)}`;
+
+      appendJsonLine(run.candidateEventsPath, {
+        meetingId: run.meetingId,
+        eventIndex: event.eventIndex,
+        receivedAt: event.receivedAt,
+        kind: event.kind,
+        title: event.title,
+        text: event.text,
+        transcriptChunkIndices: event.transcriptChunkIndices,
+        operatorUpdateIndices: event.operatorUpdateIndices,
+        raw: event.raw,
+      });
+
+      const message = this.buildCandidateEventMessage(run, event);
+      this.messenger.send(target, message, { pressEnter: true });
+      run.injectedCount += 1;
+      appendJsonLine(run.injectionsPath, {
+        kind: 'candidate-event',
+        eventIndex: event.eventIndex,
         sentAt: Date.now(),
         message,
       });
@@ -452,6 +528,28 @@ export class MeetingBridge {
     };
   }
 
+  private normalizeCandidateEvent(rawEvent: unknown, run: MeetingRunState): NormalizedCandidateEvent {
+    const record = isRecord(rawEvent) ? rawEvent : {};
+    const text = maybeString(record.text) ?? maybeString(rawEvent) ?? '';
+    if (!text) {
+      throw new Error('Meeting candidate event text is empty');
+    }
+
+    const transcriptChunkIndices = maybeNumberList(record.transcriptChunkIndices);
+    const operatorUpdateIndices = maybeNumberList(record.operatorUpdateIndices);
+
+    return {
+      eventIndex: run.candidateEventCount + 1,
+      receivedAt: Date.now(),
+      kind: maybeString(record.kind) ?? 'note',
+      title: maybeString(record.title),
+      text,
+      transcriptChunkIndices: transcriptChunkIndices ?? (run.chunkCount > 0 ? [run.chunkCount] : []),
+      operatorUpdateIndices: operatorUpdateIndices ?? [],
+      raw: rawEvent,
+    };
+  }
+
   private buildBootstrapPrompt(run: MeetingRunState): string {
     return [
       'Portolan meeting assistant mode is now active.',
@@ -501,6 +599,29 @@ export class MeetingBridge {
     lines.push('[/Portolan Meeting Operator Update]');
     return lines.join('\n');
   }
+
+  private buildCandidateEventMessage(run: MeetingRunState, event: NormalizedCandidateEvent): string {
+    const lines = [
+      '[Portolan Meeting Candidate Event]',
+      `meeting_id: ${run.meetingId}`,
+      `event_index: ${event.eventIndex}`,
+      `kind: ${event.kind}`,
+      `received_at: ${event.receivedAt}`,
+    ];
+
+    if (event.title) lines.push(`title: ${event.title}`);
+    if (event.transcriptChunkIndices.length > 0) {
+      lines.push(`transcript_chunk_indices: ${event.transcriptChunkIndices.join(', ')}`);
+    }
+    if (event.operatorUpdateIndices.length > 0) {
+      lines.push(`operator_update_indices: ${event.operatorUpdateIndices.join(', ')}`);
+    }
+    lines.push('This item was explicitly captured by a human from the live meeting. Keep it linked to the cited transcript provenance unless corrected.');
+    lines.push('text:');
+    lines.push(event.text);
+    lines.push('[/Portolan Meeting Candidate Event]');
+    return lines.join('\n');
+  }
 }
 
 function appendJsonLine(path: string, value: unknown): void {
@@ -530,6 +651,14 @@ function maybeNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function maybeNumberList(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const numbers = value
+    .map((entry) => maybeNumber(entry))
+    .filter((entry): entry is number => entry !== null);
+  return numbers.length > 0 ? numbers : [];
+}
+
 function selectTranscriptText(record: Record<string, unknown>): string {
   const enhanced = maybeString(record.enhanced_text);
   if (enhanced) return enhanced;
@@ -550,10 +679,12 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const transcriptPath = maybeString(value.transcriptPath);
   const injectionsPath = maybeString(value.injectionsPath);
   const updatesPath = maybeString(value.updatesPath);
+  const candidateEventsPath = maybeString(value.candidateEventsPath);
   const metadataPath = maybeString(value.metadataPath);
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
   const operatorUpdateCount = maybeNumber(value.operatorUpdateCount);
+  const candidateEventCount = maybeNumber(value.candidateEventCount);
 
   if (
     !meetingId
@@ -574,6 +705,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   }
 
   const resolvedUpdatesPath = updatesPath ?? join(dirname(metadataPath), 'operator-updates.jsonl');
+  const resolvedCandidateEventsPath = candidateEventsPath ?? join(dirname(metadataPath), 'candidate-events.jsonl');
 
   return {
     meetingId,
@@ -589,15 +721,19 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     transcriptPath,
     injectionsPath,
     updatesPath: resolvedUpdatesPath,
+    candidateEventsPath: resolvedCandidateEventsPath,
     metadataPath,
     bootstrapSentAt: maybeNumber(value.bootstrapSentAt) ?? undefined,
     chunkCount,
     injectedCount,
     operatorUpdateCount: operatorUpdateCount ?? 0,
+    candidateEventCount: candidateEventCount ?? 0,
     lastChunkAt: maybeNumber(value.lastChunkAt) ?? undefined,
     lastChunkPreview: maybeString(value.lastChunkPreview) ?? undefined,
     lastOperatorUpdateAt: maybeNumber(value.lastOperatorUpdateAt) ?? undefined,
     lastOperatorUpdatePreview: maybeString(value.lastOperatorUpdatePreview) ?? undefined,
+    lastCandidateEventAt: maybeNumber(value.lastCandidateEventAt) ?? undefined,
+    lastCandidateEventPreview: maybeString(value.lastCandidateEventPreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
   };
 }

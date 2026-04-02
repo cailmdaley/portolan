@@ -29,6 +29,8 @@ export class CityHUDHeader {
   private meetingState: ServerMeetingBridgeState | null = null
   private meetingActionInFlight = false
   private meetingUpdateDraft = ''
+  private meetingCandidateDraft = ''
+  private meetingCandidateKind = 'note'
 
   constructor(options: CityHUDHeaderOptions) {
     this.headerWidget = options.headerWidget
@@ -46,6 +48,8 @@ export class CityHUDHeader {
     this.meetingState = null
     this.meetingActionInFlight = false
     this.meetingUpdateDraft = ''
+    this.meetingCandidateDraft = ''
+    this.meetingCandidateKind = 'note'
     this.headerWidget.querySelector('.hud-git-detail-content')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-actions')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-header-workers')!.innerHTML = ''
@@ -255,6 +259,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.chunkCount} chunk${cityMeeting.chunkCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.injectedCount} sent</span>
             <span>${cityMeeting.operatorUpdateCount} operator update${cityMeeting.operatorUpdateCount === 1 ? '' : 's'}</span>
+            <span>${cityMeeting.candidateEventCount} candidate event${cityMeeting.candidateEventCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
           ${cityMeeting.lastChunkPreview ? `<div class="hud-meeting-preview">${escapeHtml(cityMeeting.lastChunkPreview)}</div>` : ''}
@@ -264,12 +269,29 @@ export class CityHUDHeader {
               <span>${escapeHtml(cityMeeting.lastOperatorUpdatePreview)}</span>
             </div>
           ` : ''}
+          ${cityMeeting.lastCandidateEventPreview ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest candidate</span>
+              <span>${escapeHtml(cityMeeting.lastCandidateEventPreview)}</span>
+            </div>
+          ` : ''}
           ${cityMeeting.lastError ? `<div class="hud-meeting-error">${escapeHtml(cityMeeting.lastError)}</div>` : ''}
           ${cityMeeting.status === 'running' ? `
             <div class="hud-meeting-update">
               <textarea class="hud-meeting-update-input" placeholder="Correct or steer the live meeting narrative…">${escapeHtml(this.meetingUpdateDraft)}</textarea>
               <div class="hud-meeting-update-actions">
                 <button class="hud-meeting-btn hud-meeting-send-update" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingUpdateDraft.trim())}>Send update</button>
+              </div>
+            </div>
+            <div class="hud-meeting-update">
+              <div class="hud-meeting-candidate-controls">
+                <select class="hud-meeting-candidate-kind" ${buttonsDisabled}>
+                  ${this.renderMeetingCandidateKindOptions()}
+                </select>
+              </div>
+              <textarea class="hud-meeting-update-input hud-meeting-candidate-input" placeholder="Capture an accepted note, question, or decision from this meeting…">${escapeHtml(this.meetingCandidateDraft)}</textarea>
+              <div class="hud-meeting-update-actions">
+                <button class="hud-meeting-btn hud-meeting-send-candidate" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingCandidateDraft.trim())}>Capture candidate</button>
               </div>
             </div>
           ` : ''}
@@ -282,6 +304,7 @@ export class CityHUDHeader {
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.transcriptPath)}">Transcript log</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidateEventsPath)}">Candidate events</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.metadataPath)}">Meeting metadata</button>
           </div>
         </div>
@@ -341,6 +364,34 @@ export class CityHUDHeader {
       void this.sendMeetingUpdate()
     })
 
+    const candidateKind = container.querySelector<HTMLSelectElement>('.hud-meeting-candidate-kind')
+    candidateKind?.addEventListener('change', () => {
+      this.meetingCandidateKind = candidateKind.value || 'note'
+    })
+
+    const candidateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-candidate-input')
+    candidateInput?.addEventListener('input', () => {
+      this.meetingCandidateDraft = candidateInput.value
+      const sendButton = container.querySelector<HTMLButtonElement>('.hud-meeting-send-candidate')
+      if (sendButton && !this.meetingActionInFlight) {
+        sendButton.disabled = this.meetingCandidateDraft.trim().length === 0
+      }
+    })
+    candidateInput?.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault()
+        if (!this.meetingActionInFlight && this.meetingCandidateDraft.trim()) {
+          void this.sendMeetingCandidate()
+        }
+      }
+    })
+
+    container.querySelector('.hud-meeting-send-candidate')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (this.meetingActionInFlight || !this.meetingCandidateDraft.trim()) return
+      void this.sendMeetingCandidate()
+    })
+
     for (const button of container.querySelectorAll<HTMLButtonElement>('.hud-meeting-open-log')) {
       button.addEventListener('click', (event) => {
         event.stopPropagation()
@@ -354,6 +405,19 @@ export class CityHUDHeader {
   private renderMeetingStartButtons(disabledAttr: string): string {
     return this.cityWorkers
       .map(session => `<button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" ${disabledAttr}>Start on ${escapeHtml(session.name)}</button>`)
+      .join('')
+  }
+
+  private renderMeetingCandidateKindOptions(): string {
+    const options = [
+      ['note', 'Accepted note'],
+      ['question', 'Open question'],
+      ['decision', 'Candidate decision'],
+      ['action-item', 'Action item'],
+    ] as const
+
+    return options
+      .map(([value, label]) => `<option value="${value}"${this.meetingCandidateKind === value ? ' selected' : ''}>${escapeHtml(label)}</option>`)
       .join('')
   }
 
@@ -459,6 +523,41 @@ export class CityHUDHeader {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to send meeting update: ${message}`)
+    } finally {
+      this.meetingActionInFlight = false
+      this.renderMeeting()
+    }
+  }
+
+  private async sendMeetingCandidate(): Promise<void> {
+    const text = this.meetingCandidateDraft.trim()
+    const cityMeeting = this.selectMeetingForCurrentCity()
+    if (!text || !cityMeeting) return
+
+    this.meetingActionInFlight = true
+    this.renderMeeting()
+    try {
+      const response = await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge/candidate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          kind: this.meetingCandidateKind,
+          text,
+          transcriptChunkIndices: cityMeeting.chunkCount > 0 ? [cityMeeting.chunkCount] : [],
+          operatorUpdateIndices: cityMeeting.operatorUpdateCount > 0 ? [cityMeeting.operatorUpdateCount] : [],
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(await this.readErrorMessage(response))
+      }
+
+      this.meetingCandidateDraft = ''
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`Failed to capture meeting candidate: ${message}`)
     } finally {
       this.meetingActionInFlight = false
       this.renderMeeting()

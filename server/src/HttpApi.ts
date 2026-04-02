@@ -287,6 +287,16 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/update') {
+      await this.meetingApi.handleUpdate(req, res);
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/candidate') {
+      await this.meetingApi.handleCandidate(req, res);
+      return true;
+    }
+
     if (req.method === 'POST' && url.pathname === '/hook/file-touch') {
       await this.hooksRuntimeApi.handleHookFileTouch(req, res);
       return true;

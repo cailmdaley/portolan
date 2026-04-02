@@ -158,6 +158,81 @@ export class HttpApiMeeting {
     }
   }
 
+  async handleUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{ update?: unknown; text?: unknown; kind?: unknown }>(req, res);
+    if (!data) return;
+
+    const update = data.update ?? (data.text !== undefined ? { text: data.text, kind: data.kind } : undefined);
+    if (update === undefined) {
+      this.sendJsonError(res, 400, 'Missing update');
+      return;
+    }
+
+    try {
+      const meeting = this.meetingBridge.ingestOperatorUpdate(update);
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge'
+        ? 409
+        : message === 'Meeting update text is empty'
+          ? 400
+          : 500;
+      this.sendJsonError(res, status, `Failed to ingest meeting update: ${message}`);
+    }
+  }
+
+  async handleCandidate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{
+      event?: unknown;
+      text?: unknown;
+      title?: unknown;
+      kind?: unknown;
+      transcriptChunkIndices?: unknown;
+      operatorUpdateIndices?: unknown;
+    }>(req, res);
+    if (!data) return;
+
+    const event = data.event ?? (
+      data.text !== undefined
+        ? {
+            text: data.text,
+            title: data.title,
+            kind: data.kind,
+            transcriptChunkIndices: data.transcriptChunkIndices,
+            operatorUpdateIndices: data.operatorUpdateIndices,
+          }
+        : undefined
+    );
+    if (event === undefined) {
+      this.sendJsonError(res, 400, 'Missing event');
+      return;
+    }
+
+    try {
+      const meeting = this.meetingBridge.ingestCandidateEvent(event);
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge'
+        ? 409
+        : message === 'Meeting candidate event text is empty'
+          ? 400
+          : 500;
+      this.sendJsonError(res, status, `Failed to ingest meeting candidate event: ${message}`);
+    }
+  }
+
   private getState(): MeetingBridgeState | null {
     return this.meetingBridge?.getState() ?? null;
   }

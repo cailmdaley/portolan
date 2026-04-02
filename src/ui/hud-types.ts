@@ -37,12 +37,20 @@ export interface MeetingRunState {
   cityPath: string
   transcriptPath: string
   injectionsPath: string
+  updatesPath: string
+  candidateEventsPath: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number
   injectedCount: number
+  operatorUpdateCount: number
+  candidateEventCount: number
   lastChunkAt?: number
   lastChunkPreview?: string
+  lastOperatorUpdateAt?: number
+  lastOperatorUpdatePreview?: string
+  lastCandidateEventAt?: number
+  lastCandidateEventPreview?: string
   lastError?: string
 }
 

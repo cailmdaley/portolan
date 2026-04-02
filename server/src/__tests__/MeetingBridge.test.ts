@@ -282,10 +282,69 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('captures candidate events with transcript provenance and injects them into the worker thread', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-candidate',
+        tmuxSession: 'worker-candidate',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({ id: 'chunk-1', text: 'We should keep this unresolved until we compare both calibrations.' });
+
+    const updated = bridge.ingestCandidateEvent({
+      kind: 'question',
+      title: 'Calibration comparison still open',
+      text: 'Whether the DES comparison changes the calibration conclusion remains open.',
+      transcriptChunkIndices: [1],
+    });
+
+    expect(updated.candidateEventCount).toBe(1);
+    expect(updated.injectedCount).toBe(3);
+    expect(updated.lastCandidateEventPreview).toContain('Calibration comparison still open');
+    expect(messenger.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tmuxSession: 'worker-candidate' }),
+      expect.stringContaining('Portolan Meeting Candidate Event'),
+      { pressEnter: true },
+    );
+
+    const eventLog = JSON.parse(readFileSync(run.candidateEventsPath, 'utf-8').trim());
+    expect(eventLog).toMatchObject({
+      meetingId: run.meetingId,
+      eventIndex: 1,
+      kind: 'question',
+      title: 'Calibration comparison still open',
+      transcriptChunkIndices: [1],
+      text: 'Whether the DES comparison changes the calibration conclusion remains open.',
+    });
+
+    const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n');
+    expect(JSON.parse(injections[2])).toMatchObject({
+      kind: 'candidate-event',
+      eventIndex: 1,
+    });
+  });
+
   it('emits state updates as the meeting run changes', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };
-    const states: Array<{ activeMeeting: string | null; lastMeeting: string | null; chunkCount: number; operatorUpdateCount: number }> = [];
+    const states: Array<{ activeMeeting: string | null; lastMeeting: string | null; chunkCount: number; operatorUpdateCount: number; candidateEventCount: number }> = [];
 
     const bridge = new MeetingBridge({
       baseDir,
@@ -303,6 +362,7 @@ describe('MeetingBridge', () => {
         lastMeeting: state.lastMeeting?.status ?? null,
         chunkCount: state.activeMeeting?.chunkCount ?? state.lastMeeting?.chunkCount ?? 0,
         operatorUpdateCount: state.activeMeeting?.operatorUpdateCount ?? state.lastMeeting?.operatorUpdateCount ?? 0,
+        candidateEventCount: state.activeMeeting?.candidateEventCount ?? state.lastMeeting?.candidateEventCount ?? 0,
       });
     });
 
@@ -317,13 +377,15 @@ describe('MeetingBridge', () => {
     });
     bridge.ingestChunk({ id: 'c1', text: 'Pull up the prior evidence chain.' });
     bridge.ingestOperatorUpdate({ text: 'Keep this tentative until we compare both plots.' });
+    bridge.ingestCandidateEvent({ kind: 'note', text: 'Accepted note: prior evidence chain needs to be surfaced next.' });
     bridge.stop();
 
     expect(states).toEqual([
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 0, operatorUpdateCount: 0 },
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 0 },
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1 },
-      { activeMeeting: null, lastMeeting: 'stopped', chunkCount: 1, operatorUpdateCount: 1 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 0, operatorUpdateCount: 0, candidateEventCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 0, candidateEventCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1 },
+      { activeMeeting: null, lastMeeting: 'stopped', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1 },
     ]);
   });
 
@@ -357,6 +419,8 @@ describe('MeetingBridge', () => {
       chunkCount: 3,
       injectedCount: 4,
       operatorUpdateCount: 0,
+      candidateEventCount: 0,
+      candidateEventsPath: join(meetingDir, 'candidate-events.jsonl'),
       updatesPath: join(meetingDir, 'operator-updates.jsonl'),
       lastChunkPreview: 'Recovered chunk',
     });
@@ -392,6 +456,7 @@ describe('MeetingBridge', () => {
       status: 'stopped',
       chunkCount: 8,
       injectedCount: 9,
+      candidateEventCount: 0,
     });
     expect(recovered?.stoppedAt).toBeGreaterThanOrEqual(before);
     expect(recovered?.stoppedAt).toBeLessThanOrEqual(after);

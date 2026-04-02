@@ -39,6 +39,9 @@ The system satisfies these invariants:
 - **Narrative is editable while live.**
   - The assistant maintains a rolling account of where the meeting stands: what we think, what changed, what remains open, and what evidence was pulled.
   - Humans can correct that account in place: “no, that is not the conclusion,” “that belongs under calibration,” “this is still unresolved.”
+  - Current concrete correction path: the Portolan HUD and `POST /meeting-bridge/update` can inject operator steering/correction messages into the active meeting run, persist them under `operator-updates.jsonl`, and feed the same update back into the chosen worker thread.
+- **Accepted structure has its own live lane.**
+  - Current concrete promotion path: the Portolan HUD and `POST /meeting-bridge/candidate` can capture accepted notes, open questions, candidate decisions, and action items into `candidate-events.jsonl`, annotate them with transcript/operator provenance, and feed the accepted capture back into the chosen worker thread.
 - **Tentative talk stays tentative.**
   - Speculation, brainstorming, and contradicted intermediate views must not silently harden into durable claims.
   - Promotion from live note to accepted fiber or ASTRA structure requires an explicit acceptance step or equivalent human confirmation.
@@ -162,9 +165,11 @@ Meeting-assistant evidence should eventually include:
 - A local capture loop from the Mac into Portolan without manual file copying.
 - Transcript chunks appearing in the app while a meeting is ongoing or immediately after chunk completion.
 - The assistant maintaining a rolling note/narrative state that can be corrected live.
+- Accepted candidate events appearing in the app with transcript provenance before later felt/ASTRA formalization.
 - A spoken/requested retrieval pulling an existing plot, artifact, fiber, or evidence chain into view.
 - Promotion of accepted meeting outputs into felt, with source provenance intact.
 - A path from accepted meeting narrative into ASTRA/MySTRA renderable structure.
+- Live human steering updates appearing in the app, being injected into the assistant thread, and remaining inspectable as provenance alongside transcript and worker-injection logs.
 
 ## Open Questions
 
