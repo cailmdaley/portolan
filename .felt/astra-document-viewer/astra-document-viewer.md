@@ -168,7 +168,7 @@ MySTRA's content server API (already running):
 5. Build and point MySTRA's launcher at the fork
 6. MySTRA's `src/theme/launcher.ts` already supports custom theme directories
 
-### What's been built (as of 2026-04-02)
+### What's been built (as of 2026-04-02, updated 2026-04-02)
 
 **MySTRA content server** (`~/Documents/projects/MySTRA/`):
 - `GET /astra-graph.json` — walks analysis tree, emits nodes with real decision/insight counts, status inference (resolved if decisions have defaults or findings have evidence, suspicious if decisions lack defaults, open otherwise), tag lists, data-flow links. `src/server/routes/graph.ts`.
@@ -179,11 +179,13 @@ MySTRA's content server API (already running):
 - Proxy route: `themes/book/app/routes/api.astra-graph.tsx` — Remix route that proxies to content server. Needed because catch-all `$.tsx` route intercepts `*.json` URLs.
 - **Topological DAG layout**: X = data-flow depth (longest path from source), Y = tag-affinity sorted within column. Periphery (unconnected nodes) in rightmost column. Root anchored left. Replaced earlier two-column layout.
 - **Organic rendering** (portolan aesthetic): noise-deformed ellipses (`organicEllipse` with `noise2D`), concentric ring fills + strokes (`RING_SCALES = [1.0, 1.15]`), multi-strand cubic Bézier edges with sag/wobble per-strand, knockout backgrounds for edge overlap.
-- **Hover tooltips**: full node name, status, decision/finding count, tags. 250ms delay.
+- **Hover tooltips**: full node name, status, decision/finding count, tags. 250ms delay. Suppressed when detail panel is open.
 - **Label wrapping**: two-line labels with `shortName` (strips Decision:/Finding: prefixes), adaptive truncation (22 chars minimap, 55 fullscreen).
-- Fullscreen toggle with delayed re-render (350ms). Minimize button positioned below navbar (top: 64px).
-- Current page highlighting: gold stroke + glow ring (scale 1.25).
-- Porch-morning palette: teal (resolved), taupe (open), amber (suspicious), mauve (blocked), gold (root/active).
+- **Status glyphs** (shape > color): ✓ resolved, ○ open, ? suspicious, ✕ blocked. Rendered below node labels in system-ui font.
+- **Fullscreen detail panel**: click node in fullscreen → slide-in panel from right with title, status badge (glyph + label), decision/finding count, tags, upstream/downstream data-flow links (clickable for graph navigation), "Open in Document" button (exits fullscreen + navigates). Gold highlight ring on selected node. Click-to-dismiss tooltip on node click.
+- Fullscreen toggle with transitionend-based re-render (replaces 350ms delay — old SVG stays visible during CSS transition). Minimize button positioned below navbar (top: 64px).
+- Current page highlighting: gold stroke + glow ring (scale 1.25). Same treatment for selected node in fullscreen.
+- Porch-morning palette: teal (resolved), taupe (open), amber (suspicious), mauve (blocked), gold (root/active/selected).
 - **Edge hierarchy**: containment edges suppressed for DAG-connected nodes (only drawn to periphery). Data-flow edges in gold with increased stroke weight (1.2px vs 0.6px containment).
 - **Data-flow cross-references**: 6 links across 7 fibers — two clear chains: `350-mock→adopt-blind→{bb-covariance-blind, blind-b-is-physical}` and `switch-fiducial→{finding-v1-4-6-3, decision-drop}→blind-b-is-physical`. Click navigation confirmed working.
 - **Porch-morning document theme**: `themes/book/app/styles/porch-morning.css` (554 lines) — overrides entire MyST book-theme with warm antiquarian aesthetic. EB Garamond body + JetBrains Mono code. Parchment backgrounds (#FAFAF7 document, #F0EBE3 navbar/sidebar, #E8DDD0 active items). Gold links (#9A7B35), teal h3/cross-refs (#5A7B7B). Sidebar active items with gold border-left. Theme toggle hidden. Prose variables, admonitions, tabs, cards, tables all themed. Dark mode class overridden to always warm.
