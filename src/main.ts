@@ -247,7 +247,7 @@ const stateSync = new FrontendStateSync({
   onSocketOpen: (socket) => {
     cityPanel.setWebSocket(socket)
   },
-  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, isInitialState, urlCityId }) => {
+  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge, isInitialState, urlCityId }) => {
     cities = nextCities
     sessions = nextSessions
     origins = nextOrigins
@@ -262,6 +262,7 @@ const stateSync = new FrontendStateSync({
     }
 
     cityPanel.updateWorkers(sessions)
+    cityPanel.updateMeetingState(meetingBridge)
     recentWorkerBar.update(cities, sessions)
 
     if (!isInitialState || cities.length === 0) return

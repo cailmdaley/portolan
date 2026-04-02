@@ -160,7 +160,11 @@ const browserStateCoordinator = new BrowserStateCoordinator({
   previousSessions,
   recentFileTracker,
   sessionLookup,
+  getMeetingState: () => meetingBridge.getState(),
   localOriginId: LOCAL_ORIGIN_ID,
+});
+meetingBridge.onStateChange(() => {
+  void browserStateCoordinator.broadcastCurrentState();
 });
 const remoteAgentCoordinator = new RemoteAgentCoordinator(
   cityManager,

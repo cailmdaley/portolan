@@ -1,7 +1,7 @@
 import type { City, GitStatus, Session } from '../state/types'
 import { escapeHtml } from './utils'
 import type { NewWorkerDialog } from './NewWorkerDialog'
-import type { MeetingBridgeState, MeetingRunState } from './hud-types'
+import type { ServerMeetingBridgeState, ServerMeetingRunState } from '../state/types'
 
 const PORTOLAN_HTTP_BASE = `${window.location.protocol === 'https:' ? 'https' : 'http'}://${window.location.hostname}:4004`
 
@@ -26,9 +26,9 @@ export class CityHUDHeader {
   private getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   private getOnFocusWorker: () => ((sessionId: string) => void) | null
   private cityWorkers: Session[] = []
-  private meetingState: MeetingBridgeState | null = null
-  private meetingPollHandle: ReturnType<typeof setInterval> | null = null
+  private meetingState: ServerMeetingBridgeState | null = null
   private meetingActionInFlight = false
+  private meetingUpdateDraft = ''
 
   constructor(options: CityHUDHeaderOptions) {
     this.headerWidget = options.headerWidget
@@ -42,10 +42,10 @@ export class CityHUDHeader {
   }
 
   reset(): void {
-    this.stopMeetingPolling()
     this.cityWorkers = []
     this.meetingState = null
     this.meetingActionInFlight = false
+    this.meetingUpdateDraft = ''
     this.headerWidget.querySelector('.hud-git-detail-content')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-actions')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-header-workers')!.innerHTML = ''
@@ -57,8 +57,6 @@ export class CityHUDHeader {
     this.renderActions(city)
     this.renderWorkers()
     this.renderMeeting()
-    this.startMeetingPolling()
-    void this.refreshMeetingState()
   }
 
   updateWorkers(sessions: Session[]): void {
@@ -67,6 +65,13 @@ export class CityHUDHeader {
       ? sessions.filter(session => session.cityId === currentCity.id)
       : []
     this.renderWorkers()
+  }
+
+  updateMeetingState(meetingState: ServerMeetingBridgeState | null): void {
+    this.meetingState = meetingState
+    if (this.getCurrentCity()) {
+      this.renderMeeting()
+    }
   }
 
   getRuntimeStats(): { cityWorkerCount: number } {
@@ -226,7 +231,7 @@ export class CityHUDHeader {
     const activeMeeting = this.meetingState?.activeMeeting ?? null
     const cityMeeting = this.selectMeetingForCurrentCity()
     const meetingElsewhere = activeMeeting && !this.belongsToCurrentCity(activeMeeting)
-    const buttonsDisabled = this.meetingActionInFlight ? 'disabled' : ''
+    const buttonsDisabled = this.renderDisabledAttr(this.meetingActionInFlight)
 
     const lines: string[] = ['<div class="hud-meeting-header"><span class="hud-header-workers-label">meeting</span></div>']
 
@@ -249,10 +254,25 @@ export class CityHUDHeader {
           <div class="hud-meeting-meta">
             <span>${cityMeeting.chunkCount} chunk${cityMeeting.chunkCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.injectedCount} sent</span>
+            <span>${cityMeeting.operatorUpdateCount} operator update${cityMeeting.operatorUpdateCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
           ${cityMeeting.lastChunkPreview ? `<div class="hud-meeting-preview">${escapeHtml(cityMeeting.lastChunkPreview)}</div>` : ''}
+          ${cityMeeting.lastOperatorUpdatePreview ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest update</span>
+              <span>${escapeHtml(cityMeeting.lastOperatorUpdatePreview)}</span>
+            </div>
+          ` : ''}
           ${cityMeeting.lastError ? `<div class="hud-meeting-error">${escapeHtml(cityMeeting.lastError)}</div>` : ''}
+          ${cityMeeting.status === 'running' ? `
+            <div class="hud-meeting-update">
+              <textarea class="hud-meeting-update-input" placeholder="Correct or steer the live meeting narrative…">${escapeHtml(this.meetingUpdateDraft)}</textarea>
+              <div class="hud-meeting-update-actions">
+                <button class="hud-meeting-btn hud-meeting-send-update" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingUpdateDraft.trim())}>Send update</button>
+              </div>
+            </div>
+          ` : ''}
           <div class="hud-meeting-actions">
             ${cityMeeting.status === 'running'
               ? `<button class="hud-meeting-btn hud-meeting-stop" ${buttonsDisabled}>Stop</button>`
@@ -261,6 +281,7 @@ export class CityHUDHeader {
           <div class="hud-meeting-actions hud-meeting-links">
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.transcriptPath)}">Transcript log</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.metadataPath)}">Meeting metadata</button>
           </div>
         </div>
@@ -297,6 +318,29 @@ export class CityHUDHeader {
       void this.stopMeeting()
     })
 
+    const updateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-update-input')
+    updateInput?.addEventListener('input', () => {
+      this.meetingUpdateDraft = updateInput.value
+      const sendButton = container.querySelector<HTMLButtonElement>('.hud-meeting-send-update')
+      if (sendButton && !this.meetingActionInFlight) {
+        sendButton.disabled = this.meetingUpdateDraft.trim().length === 0
+      }
+    })
+    updateInput?.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault()
+        if (!this.meetingActionInFlight && this.meetingUpdateDraft.trim()) {
+          void this.sendMeetingUpdate()
+        }
+      }
+    })
+
+    container.querySelector('.hud-meeting-send-update')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (this.meetingActionInFlight || !this.meetingUpdateDraft.trim()) return
+      void this.sendMeetingUpdate()
+    })
+
     for (const button of container.querySelectorAll<HTMLButtonElement>('.hud-meeting-open-log')) {
       button.addEventListener('click', (event) => {
         event.stopPropagation()
@@ -313,6 +357,10 @@ export class CityHUDHeader {
       .join('')
   }
 
+  private renderDisabledAttr(disabled: boolean): string {
+    return disabled ? 'disabled' : ''
+  }
+
   private openMeetingFile(path: string): void {
     const currentCity = this.getCurrentCity()
     if (!currentCity) return
@@ -323,7 +371,7 @@ export class CityHUDHeader {
     return this.cityWorkers.find(session => session.id === sessionId)?.name ?? fallback
   }
 
-  private selectMeetingForCurrentCity(): MeetingRunState | null {
+  private selectMeetingForCurrentCity(): ServerMeetingRunState | null {
     const activeMeeting = this.meetingState?.activeMeeting ?? null
     if (activeMeeting && this.belongsToCurrentCity(activeMeeting)) {
       return activeMeeting
@@ -337,38 +385,11 @@ export class CityHUDHeader {
     return null
   }
 
-  private belongsToCurrentCity(meeting: MeetingRunState): boolean {
+  private belongsToCurrentCity(meeting: ServerMeetingRunState): boolean {
     const currentCity = this.getCurrentCity()
     return !!currentCity
       && meeting.cityPath === currentCity.path
       && meeting.originId === currentCity.originId
-  }
-
-  private startMeetingPolling(): void {
-    if (this.meetingPollHandle) return
-    this.meetingPollHandle = setInterval(() => {
-      void this.refreshMeetingState()
-    }, 3000)
-  }
-
-  private stopMeetingPolling(): void {
-    if (!this.meetingPollHandle) return
-    clearInterval(this.meetingPollHandle)
-    this.meetingPollHandle = null
-  }
-
-  private async refreshMeetingState(): Promise<void> {
-    try {
-      const response = await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge`)
-      if (!response.ok) return
-      const data = await response.json() as { meeting?: MeetingBridgeState | null }
-      this.meetingState = data.meeting ?? null
-      if (this.getCurrentCity()) {
-        this.renderMeeting()
-      }
-    } catch (error) {
-      console.warn('[CityHUDHeader] Failed to load meeting bridge state', error)
-    }
   }
 
   private async startMeeting(workerId: string): Promise<void> {
@@ -386,8 +407,6 @@ export class CityHUDHeader {
       if (!response.ok) {
         throw new Error(await this.readErrorMessage(response))
       }
-
-      await this.refreshMeetingState()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to start meeting bridge: ${message}`)
@@ -408,11 +427,38 @@ export class CityHUDHeader {
       if (!response.ok) {
         throw new Error(await this.readErrorMessage(response))
       }
-
-      await this.refreshMeetingState()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to stop meeting bridge: ${message}`)
+    } finally {
+      this.meetingActionInFlight = false
+      this.renderMeeting()
+    }
+  }
+
+  private async sendMeetingUpdate(): Promise<void> {
+    const text = this.meetingUpdateDraft.trim()
+    if (!text) return
+
+    this.meetingActionInFlight = true
+    this.renderMeeting()
+    try {
+      const response = await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text }),
+      })
+
+      if (!response.ok) {
+        throw new Error(await this.readErrorMessage(response))
+      }
+
+      this.meetingUpdateDraft = ''
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`Failed to send meeting update: ${message}`)
     } finally {
       this.meetingActionInFlight = false
       this.renderMeeting()

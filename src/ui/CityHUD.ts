@@ -1,4 +1,4 @@
-import type { City, Session } from '../state/types'
+import type { City, ServerMeetingBridgeState, Session } from '../state/types'
 import { CityHUDContent } from './CityHUDContent'
 import { CityHUDFileTree } from './CityHUDFileTree'
 import { CityHUDHeader } from './CityHUDHeader'
@@ -28,6 +28,7 @@ export class CityHUD {
   private onViewClaims: ((city: City) => void) | null = null
   private onViewPlaygrounds: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null = null
+  private onOpenDirectory: ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null = null
   private onFocusWorker: ((sessionId: string) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
@@ -41,6 +42,7 @@ export class CityHUD {
       list: this.filesList,
       onOpenFile: (fullPath) => this.openFile(fullPath),
     })
+    this.onOpenDirectory = (fullPath) => this.openDirectory(fullPath)
     this.header = new CityHUDHeader({
       headerWidget: this.headerWidget,
       getCurrentCity: () => this.currentCity,
@@ -48,6 +50,7 @@ export class CityHUD {
       getNewWorkerDialog: () => this.newWorkerDialog,
       getOnViewClaims: () => this.onViewClaims,
       getOnViewPlaygrounds: () => this.onViewPlaygrounds,
+      getOnOpenFile: () => this.onOpenFile,
       getOnFocusWorker: () => this.onFocusWorker,
     })
     this.content = new CityHUDContent({
@@ -61,6 +64,7 @@ export class CityHUD {
       getCurrentTab: () => this.activeTab,
       getWebSocket: () => this.ws,
       getOnOpenFile: () => this.onOpenFile,
+      getOnOpenDirectory: () => this.onOpenDirectory,
       renderEmptyFileSearchState: () => this.fileTree.renderEmptySearchState(),
     })
     this.setupEventHandlers()
@@ -84,6 +88,7 @@ export class CityHUD {
           <p class="hud-city-path"></p>
           <div class="hud-git-detail-content"></div>
           <div class="hud-header-workers"></div>
+          <div class="hud-header-meeting"></div>
         </div>
 
         <div class="hud-tabbar">
@@ -272,6 +277,10 @@ export class CityHUD {
     this.onOpenFile = callback
   }
 
+  setOnOpenDirectory(callback: (fullPath: string, originId: string, cityPath: string, cityId: string) => void): void {
+    this.onOpenDirectory = callback
+  }
+
   setNewWorkerDialog(dialog: NewWorkerDialog): void {
     this.newWorkerDialog = dialog
   }
@@ -285,6 +294,10 @@ export class CityHUD {
     this.header.updateWorkers(sessions)
   }
 
+  updateMeetingState(meetingBridge: ServerMeetingBridgeState | null): void {
+    this.header.updateMeetingState(meetingBridge)
+  }
+
   handleMessage(message: unknown): boolean {
     if (this.content.handleMessage(message)) return true
     if (this.fileTree.handleMessage(message)) return true
@@ -294,6 +307,12 @@ export class CityHUD {
   private openFile(fullPath: string | undefined, line?: number): void {
     if (!fullPath || !this.currentCity || !this.onOpenFile) return
     this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path, this.currentCity.id, line)
+  }
+
+  private openDirectory(fullPath: string | undefined): void {
+    if (!fullPath || !this.currentCity) return
+    this.switchTab('files')
+    this.fileTree.openDirectory(fullPath)
   }
 
   dispose(): void {

@@ -229,6 +229,104 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('persists operator updates and injects them into the active worker thread', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-update',
+        tmuxSession: 'worker-update',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    const updated = bridge.ingestOperatorUpdate({
+      kind: 'correction',
+      text: 'No, the calibration comparison is still unresolved. Keep this tentative.',
+    });
+
+    expect(updated.operatorUpdateCount).toBe(1);
+    expect(updated.injectedCount).toBe(2);
+    expect(updated.lastOperatorUpdatePreview).toContain('calibration comparison');
+    expect(messenger.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tmuxSession: 'worker-update' }),
+      expect.stringContaining('Portolan Meeting Operator Update'),
+      { pressEnter: true },
+    );
+
+    const updateLog = JSON.parse(readFileSync(run.updatesPath, 'utf-8').trim());
+    expect(updateLog).toMatchObject({
+      meetingId: run.meetingId,
+      updateIndex: 1,
+      kind: 'correction',
+      text: 'No, the calibration comparison is still unresolved. Keep this tentative.',
+    });
+
+    const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n');
+    expect(JSON.parse(injections[1])).toMatchObject({
+      kind: 'operator-update',
+      updateIndex: 1,
+    });
+  });
+
+  it('emits state updates as the meeting run changes', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const states: Array<{ activeMeeting: string | null; lastMeeting: string | null; chunkCount: number; operatorUpdateCount: number }> = [];
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    bridge.onStateChange((state) => {
+      states.push({
+        activeMeeting: state.activeMeeting?.status ?? null,
+        lastMeeting: state.lastMeeting?.status ?? null,
+        chunkCount: state.activeMeeting?.chunkCount ?? state.lastMeeting?.chunkCount ?? 0,
+        operatorUpdateCount: state.activeMeeting?.operatorUpdateCount ?? state.lastMeeting?.operatorUpdateCount ?? 0,
+      });
+    });
+
+    bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-stream',
+        tmuxSession: 'worker-stream',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+    bridge.ingestChunk({ id: 'c1', text: 'Pull up the prior evidence chain.' });
+    bridge.ingestOperatorUpdate({ text: 'Keep this tentative until we compare both plots.' });
+    bridge.stop();
+
+    expect(states).toEqual([
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 0, operatorUpdateCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1 },
+      { activeMeeting: null, lastMeeting: 'stopped', chunkCount: 1, operatorUpdateCount: 1 },
+    ]);
+  });
+
   it('recovers the most recent persisted meeting state on startup', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const meetingDir = join(baseDir, '2026-04-02-worker-portolan');
@@ -258,6 +356,8 @@ describe('MeetingBridge', () => {
       status: 'stopped',
       chunkCount: 3,
       injectedCount: 4,
+      operatorUpdateCount: 0,
+      updatesPath: join(meetingDir, 'operator-updates.jsonl'),
       lastChunkPreview: 'Recovered chunk',
     });
   });

@@ -76,6 +76,37 @@ export interface ServerOrigin {
   lastSeen: number
 }
 
+export interface ServerMeetingRunState {
+  meetingId: string
+  status: 'running' | 'stopped' | 'error'
+  sourceType: 'voiceink' | 'manual'
+  startedAt: number
+  stoppedAt?: number
+  sessionId: string
+  tmuxSession: string
+  originId: string
+  sshHost?: string
+  cityPath: string
+  transcriptPath: string
+  injectionsPath: string
+  updatesPath: string
+  metadataPath: string
+  bootstrapSentAt?: number
+  chunkCount: number
+  injectedCount: number
+  operatorUpdateCount: number
+  lastChunkAt?: number
+  lastChunkPreview?: string
+  lastOperatorUpdateAt?: number
+  lastOperatorUpdatePreview?: string
+  lastError?: string
+}
+
+export interface ServerMeetingBridgeState {
+  activeMeeting: ServerMeetingRunState | null
+  lastMeeting: ServerMeetingRunState | null
+}
+
 // Frontend types (normalized for rendering)
 export interface City {
   id: string
@@ -144,4 +175,3 @@ export const PALETTE = {
   workerActive: 0x5a7b7b,  // Teal — working
   gridEdge: 0x6b5b4b,     // Warm brown — hex grid edges
 } as const
-

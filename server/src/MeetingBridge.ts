@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
 import type { TmuxSessionTarget } from './TmuxSessionMessenger.js';
 import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 import {
@@ -35,12 +35,16 @@ export interface MeetingRunState {
   cityPath: string;
   transcriptPath: string;
   injectionsPath: string;
+  updatesPath: string;
   metadataPath: string;
   bootstrapSentAt?: number;
   chunkCount: number;
   injectedCount: number;
+  operatorUpdateCount: number;
   lastChunkAt?: number;
   lastChunkPreview?: string;
+  lastOperatorUpdateAt?: number;
+  lastOperatorUpdatePreview?: string;
   lastError?: string;
 }
 
@@ -48,6 +52,8 @@ export interface MeetingBridgeState {
   activeMeeting: MeetingRunState | null;
   lastMeeting: MeetingRunState | null;
 }
+
+type MeetingBridgeStateListener = (state: MeetingBridgeState) => void;
 
 export interface MeetingBridgeMessageSender {
   send(target: TmuxSessionTarget, message: string, options?: { pressEnter?: boolean }): void;
@@ -76,11 +82,20 @@ interface NormalizedTranscriptChunk {
   raw: unknown;
 }
 
+interface NormalizedOperatorUpdate {
+  updateIndex: number;
+  receivedAt: number;
+  kind: string | null;
+  text: string;
+  raw: unknown;
+}
+
 export class MeetingBridge {
   private readonly baseDir: string;
   private readonly latestStatePath: string;
   private readonly messenger: MeetingBridgeMessageSender;
   private readonly sourceFactory: MeetingTranscriptSourceFactory;
+  private readonly stateListeners = new Set<MeetingBridgeStateListener>();
   private activeSource: TranscriptSource | null = null;
   private state: MeetingBridgeState = {
     activeMeeting: null,
@@ -109,6 +124,13 @@ export class MeetingBridge {
     };
   }
 
+  onStateChange(listener: MeetingBridgeStateListener): () => void {
+    this.stateListeners.add(listener);
+    return () => {
+      this.stateListeners.delete(listener);
+    };
+  }
+
   start(options: MeetingBridgeStartOptions): MeetingRunState {
     this.stop();
 
@@ -122,6 +144,7 @@ export class MeetingBridge {
 
     const transcriptPath = join(meetingDir, 'transcript.jsonl');
     const injectionsPath = join(meetingDir, 'injections.jsonl');
+    const updatesPath = join(meetingDir, 'operator-updates.jsonl');
     const metadataPath = join(meetingDir, 'meeting.json');
 
     const run: MeetingRunState = {
@@ -136,9 +159,11 @@ export class MeetingBridge {
       cityPath: options.target.cwd,
       transcriptPath,
       injectionsPath,
+      updatesPath,
       metadataPath,
       chunkCount: 0,
       injectedCount: 0,
+      operatorUpdateCount: 0,
     };
 
     this.state.activeMeeting = run;
@@ -178,6 +203,7 @@ export class MeetingBridge {
       throw err;
     }
 
+    this.emitStateChanged();
     return { ...run };
   }
 
@@ -213,6 +239,23 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleChunk(target, active, rawChunk);
+    return { ...active };
+  }
+
+  ingestOperatorUpdate(rawUpdate: unknown): MeetingRunState {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      throw new Error('No active meeting bridge');
+    }
+
+    const target: MeetingBridgeTarget = {
+      sessionId: active.sessionId,
+      tmuxSession: active.tmuxSession,
+      originId: active.originId,
+      cwd: active.cityPath,
+      sshHost: active.sshHost,
+    };
+    this.handleOperatorUpdate(target, active, rawUpdate);
     return { ...active };
   }
 
@@ -253,9 +296,46 @@ export class MeetingBridge {
       }
 
       this.writeMetadata(run);
+      this.emitStateChanged();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.handleError(run, err);
+    }
+  }
+
+  private handleOperatorUpdate(target: MeetingBridgeTarget, run: MeetingRunState, rawUpdate: unknown): void {
+    if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
+
+    try {
+      const update = this.normalizeOperatorUpdate(rawUpdate, run.operatorUpdateCount + 1);
+      run.operatorUpdateCount = update.updateIndex;
+      run.lastOperatorUpdateAt = update.receivedAt;
+      run.lastOperatorUpdatePreview = update.text.slice(0, 160);
+
+      appendJsonLine(run.updatesPath, {
+        meetingId: run.meetingId,
+        updateIndex: update.updateIndex,
+        receivedAt: update.receivedAt,
+        kind: update.kind,
+        text: update.text,
+        raw: update.raw,
+      });
+
+      const message = this.buildOperatorUpdateMessage(run, update);
+      this.messenger.send(target, message, { pressEnter: true });
+      run.injectedCount += 1;
+      appendJsonLine(run.injectionsPath, {
+        kind: 'operator-update',
+        updateIndex: update.updateIndex,
+        sentAt: Date.now(),
+        message,
+      });
+
+      this.writeMetadata(run);
+      this.emitStateChanged();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw err;
     }
   }
 
@@ -277,6 +357,14 @@ export class MeetingBridge {
     this.state.activeMeeting = null;
     this.state.lastMeeting = { ...run };
     this.writeMetadata(run);
+    this.emitStateChanged();
+  }
+
+  private emitStateChanged(): void {
+    const state = this.getState();
+    for (const listener of this.stateListeners) {
+      listener(state);
+    }
   }
 
   private writeMetadata(run: MeetingRunState): void {
@@ -348,6 +436,22 @@ export class MeetingBridge {
     };
   }
 
+  private normalizeOperatorUpdate(rawUpdate: unknown, updateIndex: number): NormalizedOperatorUpdate {
+    const record = isRecord(rawUpdate) ? rawUpdate : {};
+    const text = maybeString(record.text) ?? maybeString(rawUpdate) ?? '';
+    if (!text) {
+      throw new Error('Meeting update text is empty');
+    }
+
+    return {
+      updateIndex,
+      receivedAt: Date.now(),
+      kind: maybeString(record.kind),
+      text,
+      raw: rawUpdate,
+    };
+  }
+
   private buildBootstrapPrompt(run: MeetingRunState): string {
     return [
       'Portolan meeting assistant mode is now active.',
@@ -379,6 +483,22 @@ export class MeetingBridge {
     lines.push('transcript:');
     lines.push(chunk.text);
     lines.push('[/Portolan Meeting Transcript Chunk]');
+    return lines.join('\n');
+  }
+
+  private buildOperatorUpdateMessage(run: MeetingRunState, update: NormalizedOperatorUpdate): string {
+    const lines = [
+      '[Portolan Meeting Operator Update]',
+      `meeting_id: ${run.meetingId}`,
+      `update_index: ${update.updateIndex}`,
+      `received_at: ${update.receivedAt}`,
+    ];
+
+    if (update.kind) lines.push(`kind: ${update.kind}`);
+    lines.push('Treat this as an explicit human steering update for the live meeting narrative.');
+    lines.push('update:');
+    lines.push(update.text);
+    lines.push('[/Portolan Meeting Operator Update]');
     return lines.join('\n');
   }
 }
@@ -429,9 +549,11 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const cityPath = maybeString(value.cityPath);
   const transcriptPath = maybeString(value.transcriptPath);
   const injectionsPath = maybeString(value.injectionsPath);
+  const updatesPath = maybeString(value.updatesPath);
   const metadataPath = maybeString(value.metadataPath);
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
+  const operatorUpdateCount = maybeNumber(value.operatorUpdateCount);
 
   if (
     !meetingId
@@ -451,6 +573,8 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     return null;
   }
 
+  const resolvedUpdatesPath = updatesPath ?? join(dirname(metadataPath), 'operator-updates.jsonl');
+
   return {
     meetingId,
     status,
@@ -464,12 +588,16 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     cityPath,
     transcriptPath,
     injectionsPath,
+    updatesPath: resolvedUpdatesPath,
     metadataPath,
     bootstrapSentAt: maybeNumber(value.bootstrapSentAt) ?? undefined,
     chunkCount,
     injectedCount,
+    operatorUpdateCount: operatorUpdateCount ?? 0,
     lastChunkAt: maybeNumber(value.lastChunkAt) ?? undefined,
     lastChunkPreview: maybeString(value.lastChunkPreview) ?? undefined,
+    lastOperatorUpdateAt: maybeNumber(value.lastOperatorUpdateAt) ?? undefined,
+    lastOperatorUpdatePreview: maybeString(value.lastOperatorUpdatePreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
   };
 }

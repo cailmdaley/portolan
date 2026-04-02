@@ -1,4 +1,12 @@
-import type { Activity, City, Session, ServerCity, ServerOrigin, ServerSession } from '../state/types'
+import type {
+  Activity,
+  City,
+  ServerCity,
+  ServerMeetingBridgeState,
+  ServerOrigin,
+  ServerSession,
+  Session,
+} from '../state/types'
 import { normalizeCity, normalizeSession } from '../state/types'
 import { FrontendActivityStore, type FrontendActivityEvent } from './FrontendActivityStore'
 
@@ -9,6 +17,7 @@ interface ServerState {
   sessions: ServerSession[]
   origins?: ServerOrigin[]
   activities?: Record<string, Activity[]>
+  meetingBridge?: ServerMeetingBridgeState | null
 }
 
 interface ConfirmUnpinMessage {
@@ -58,6 +67,7 @@ interface FrontendStateSnapshot {
   sessions: Session[]
   origins: ServerOrigin[]
   activityBySessionKey: ReadonlyMap<string, Activity[]>
+  meetingBridge: ServerMeetingBridgeState | null
   isInitialState: boolean
   urlCityId: string | null
 }
@@ -80,6 +90,7 @@ export class FrontendStateSync {
   private cities: City[] = []
   private sessions: Session[] = []
   private origins: ServerOrigin[] = []
+  private meetingBridge: ServerMeetingBridgeState | null = null
   private ws: WebSocket | null = null
   private wsCleanedUp = false
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
@@ -221,6 +232,7 @@ export class FrontendStateSync {
     if (state.origins) {
       this.origins = state.origins
     }
+    this.meetingBridge = state.meetingBridge ?? null
 
     this.activityStore.syncSessionActivities(state.activities, this.sessions)
 
@@ -234,6 +246,7 @@ export class FrontendStateSync {
       sessions: this.sessions,
       origins: this.origins,
       activityBySessionKey: this.activityStore.getActivities(),
+      meetingBridge: this.meetingBridge,
       isInitialState,
       urlCityId: isInitialState ? new URLSearchParams(window.location.search).get('city') : null,
     })
