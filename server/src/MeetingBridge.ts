@@ -49,6 +49,12 @@ export interface MeetingCandidateEventEntry {
   operatorUpdateIndices: number[];
 }
 
+export interface MeetingRetrievalRequestEntry {
+  requestIndex: number;
+  receivedAt: number;
+  text: string;
+}
+
 export interface MeetingRunState {
   meetingId: string;
   status: 'running' | 'stopped' | 'error';
@@ -64,22 +70,27 @@ export interface MeetingRunState {
   injectionsPath: string;
   updatesPath: string;
   candidateEventsPath: string;
+  retrievalRequestsPath: string;
   metadataPath: string;
   bootstrapSentAt?: number;
   chunkCount: number;
   injectedCount: number;
   operatorUpdateCount: number;
   candidateEventCount: number;
+  retrievalRequestCount: number;
   lastChunkAt?: number;
   lastChunkPreview?: string;
   lastOperatorUpdateAt?: number;
   lastOperatorUpdatePreview?: string;
   lastCandidateEventAt?: number;
   lastCandidateEventPreview?: string;
+  lastRetrievalRequestAt?: number;
+  lastRetrievalRequestPreview?: string;
   lastError?: string;
   recentTranscriptChunks: MeetingTranscriptEntry[];
   recentOperatorUpdates: MeetingOperatorUpdateEntry[];
   recentCandidateEvents: MeetingCandidateEventEntry[];
+  recentRetrievalRequests: MeetingRetrievalRequestEntry[];
 }
 
 export interface MeetingBridgeState {
@@ -132,6 +143,13 @@ interface NormalizedCandidateEvent {
   text: string;
   transcriptChunkIndices: number[];
   operatorUpdateIndices: number[];
+  raw: unknown;
+}
+
+interface NormalizedRetrievalRequest {
+  requestIndex: number;
+  receivedAt: number;
+  text: string;
   raw: unknown;
 }
 
@@ -193,6 +211,7 @@ export class MeetingBridge {
     const injectionsPath = join(meetingDir, 'injections.jsonl');
     const updatesPath = join(meetingDir, 'operator-updates.jsonl');
     const candidateEventsPath = join(meetingDir, 'candidate-events.jsonl');
+    const retrievalRequestsPath = join(meetingDir, 'retrieval-requests.jsonl');
     const metadataPath = join(meetingDir, 'meeting.json');
 
     const run: MeetingRunState = {
@@ -209,14 +228,17 @@ export class MeetingBridge {
       injectionsPath,
       updatesPath,
       candidateEventsPath,
+      retrievalRequestsPath,
       metadataPath,
       chunkCount: 0,
       injectedCount: 0,
       operatorUpdateCount: 0,
       candidateEventCount: 0,
+      retrievalRequestCount: 0,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
+      recentRetrievalRequests: [],
     };
 
     this.state.activeMeeting = run;
@@ -326,6 +348,23 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleCandidateEvent(target, active, rawEvent);
+    return cloneMeetingRunState(active);
+  }
+
+  ingestRetrievalRequest(rawRequest: unknown): MeetingRunState {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      throw new Error('No active meeting bridge');
+    }
+
+    const target: MeetingBridgeTarget = {
+      sessionId: active.sessionId,
+      tmuxSession: active.tmuxSession,
+      originId: active.originId,
+      cwd: active.cityPath,
+      sshHost: active.sshHost,
+    };
+    this.handleRetrievalRequest(target, active, rawRequest);
     return cloneMeetingRunState(active);
   }
 
@@ -462,6 +501,46 @@ export class MeetingBridge {
       appendJsonLine(run.injectionsPath, {
         kind: 'candidate-event',
         eventIndex: event.eventIndex,
+        sentAt: Date.now(),
+        message,
+      });
+
+      this.writeMetadata(run);
+      this.emitStateChanged();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw err;
+    }
+  }
+
+  private handleRetrievalRequest(target: MeetingBridgeTarget, run: MeetingRunState, rawRequest: unknown): void {
+    if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
+
+    try {
+      const request = this.normalizeRetrievalRequest(rawRequest, run.retrievalRequestCount + 1);
+      run.retrievalRequestCount = request.requestIndex;
+      run.lastRetrievalRequestAt = request.receivedAt;
+      run.lastRetrievalRequestPreview = request.text.slice(0, 160);
+
+      appendJsonLine(run.retrievalRequestsPath, {
+        meetingId: run.meetingId,
+        requestIndex: request.requestIndex,
+        receivedAt: request.receivedAt,
+        text: request.text,
+        raw: request.raw,
+      });
+      run.recentRetrievalRequests = appendRecentItem(run.recentRetrievalRequests, {
+        requestIndex: request.requestIndex,
+        receivedAt: request.receivedAt,
+        text: request.text,
+      });
+
+      const message = this.buildRetrievalRequestMessage(run, request);
+      this.messenger.send(target, message, { pressEnter: true });
+      run.injectedCount += 1;
+      appendJsonLine(run.injectionsPath, {
+        kind: 'retrieval-request',
+        requestIndex: request.requestIndex,
         sentAt: Date.now(),
         message,
       });
@@ -620,6 +699,21 @@ export class MeetingBridge {
     };
   }
 
+  private normalizeRetrievalRequest(rawRequest: unknown, requestIndex: number): NormalizedRetrievalRequest {
+    const record = isRecord(rawRequest) ? rawRequest : {};
+    const text = maybeString(record.text) ?? maybeString(rawRequest) ?? '';
+    if (!text) {
+      throw new Error('Meeting retrieval request text is empty');
+    }
+
+    return {
+      requestIndex,
+      receivedAt: Date.now(),
+      text,
+      raw: rawRequest,
+    };
+  }
+
   private buildBootstrapPrompt(run: MeetingRunState): string {
     return [
       'Portolan meeting assistant mode is now active.',
@@ -692,6 +786,19 @@ export class MeetingBridge {
     lines.push('[/Portolan Meeting Candidate Event]');
     return lines.join('\n');
   }
+
+  private buildRetrievalRequestMessage(run: MeetingRunState, request: NormalizedRetrievalRequest): string {
+    return [
+      '[Portolan Meeting Retrieval Request]',
+      `meeting_id: ${run.meetingId}`,
+      `request_index: ${request.requestIndex}`,
+      `received_at: ${request.receivedAt}`,
+      'Treat this as an explicit request to retrieve existing evidence, artifacts, fibers, plots, papers, or decisions before proposing new computation.',
+      'request:',
+      request.text,
+      '[/Portolan Meeting Retrieval Request]',
+    ].join('\n');
+  }
 }
 
 function appendJsonLine(path: string, value: unknown): void {
@@ -761,11 +868,13 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const injectionsPath = maybeString(value.injectionsPath);
   const updatesPath = maybeString(value.updatesPath);
   const candidateEventsPath = maybeString(value.candidateEventsPath);
+  const retrievalRequestsPath = maybeString(value.retrievalRequestsPath);
   const metadataPath = maybeString(value.metadataPath);
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
   const operatorUpdateCount = maybeNumber(value.operatorUpdateCount);
   const candidateEventCount = maybeNumber(value.candidateEventCount);
+  const retrievalRequestCount = maybeNumber(value.retrievalRequestCount);
 
   if (
     !meetingId
@@ -787,6 +896,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
 
   const resolvedUpdatesPath = updatesPath ?? join(dirname(metadataPath), 'operator-updates.jsonl');
   const resolvedCandidateEventsPath = candidateEventsPath ?? join(dirname(metadataPath), 'candidate-events.jsonl');
+  const resolvedRetrievalRequestsPath = retrievalRequestsPath ?? join(dirname(metadataPath), 'retrieval-requests.jsonl');
 
   return {
     meetingId,
@@ -803,22 +913,27 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     injectionsPath,
     updatesPath: resolvedUpdatesPath,
     candidateEventsPath: resolvedCandidateEventsPath,
+    retrievalRequestsPath: resolvedRetrievalRequestsPath,
     metadataPath,
     bootstrapSentAt: maybeNumber(value.bootstrapSentAt) ?? undefined,
     chunkCount,
     injectedCount,
     operatorUpdateCount: operatorUpdateCount ?? 0,
     candidateEventCount: candidateEventCount ?? 0,
+    retrievalRequestCount: retrievalRequestCount ?? 0,
     lastChunkAt: maybeNumber(value.lastChunkAt) ?? undefined,
     lastChunkPreview: maybeString(value.lastChunkPreview) ?? undefined,
     lastOperatorUpdateAt: maybeNumber(value.lastOperatorUpdateAt) ?? undefined,
     lastOperatorUpdatePreview: maybeString(value.lastOperatorUpdatePreview) ?? undefined,
     lastCandidateEventAt: maybeNumber(value.lastCandidateEventAt) ?? undefined,
     lastCandidateEventPreview: maybeString(value.lastCandidateEventPreview) ?? undefined,
+    lastRetrievalRequestAt: maybeNumber(value.lastRetrievalRequestAt) ?? undefined,
+    lastRetrievalRequestPreview: maybeString(value.lastRetrievalRequestPreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
     recentTranscriptChunks: parseTranscriptEntries(value.recentTranscriptChunks),
     recentOperatorUpdates: parseOperatorUpdateEntries(value.recentOperatorUpdates),
     recentCandidateEvents: parseCandidateEventEntries(value.recentCandidateEvents),
+    recentRetrievalRequests: parseRetrievalRequestEntries(value.recentRetrievalRequests),
   };
 }
 
@@ -840,6 +955,7 @@ function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
       transcriptChunkIndices: [...event.transcriptChunkIndices],
       operatorUpdateIndices: [...event.operatorUpdateIndices],
     })),
+    recentRetrievalRequests: run.recentRetrievalRequests.map((request) => ({ ...request })),
   };
 }
 
@@ -901,6 +1017,22 @@ function parseCandidateEventEntries(value: unknown): MeetingCandidateEventEntry[
       text,
       transcriptChunkIndices: maybeNumberList(entry.transcriptChunkIndices) ?? [],
       operatorUpdateIndices: maybeNumberList(entry.operatorUpdateIndices) ?? [],
+    }];
+  }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseRetrievalRequestEntries(value: unknown): MeetingRetrievalRequestEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const requestIndex = maybeNumber(entry.requestIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const text = maybeString(entry.text);
+    if (requestIndex === null || receivedAt === null || text === null) return [];
+    return [{
+      requestIndex,
+      receivedAt,
+      text,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
 }

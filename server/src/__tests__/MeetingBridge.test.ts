@@ -362,6 +362,63 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('persists retrieval requests and injects them into the active worker thread', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-retrieval',
+        tmuxSession: 'worker-retrieval',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    const updated = bridge.ingestRetrievalRequest({
+      text: 'Pull up the latest calibration plot and the fiber where we last discussed DES weighting.',
+    });
+
+    expect(updated.retrievalRequestCount).toBe(1);
+    expect(updated.injectedCount).toBe(2);
+    expect(updated.lastRetrievalRequestPreview).toContain('latest calibration plot');
+    expect(updated.recentRetrievalRequests).toEqual([
+      expect.objectContaining({
+        requestIndex: 1,
+        text: 'Pull up the latest calibration plot and the fiber where we last discussed DES weighting.',
+      }),
+    ]);
+    expect(messenger.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tmuxSession: 'worker-retrieval' }),
+      expect.stringContaining('Portolan Meeting Retrieval Request'),
+      { pressEnter: true },
+    );
+
+    const requestLog = JSON.parse(readFileSync(run.retrievalRequestsPath, 'utf-8').trim());
+    expect(requestLog).toMatchObject({
+      meetingId: run.meetingId,
+      requestIndex: 1,
+      text: 'Pull up the latest calibration plot and the fiber where we last discussed DES weighting.',
+    });
+
+    const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n');
+    expect(JSON.parse(injections[1])).toMatchObject({
+      kind: 'retrieval-request',
+      requestIndex: 1,
+    });
+  });
+
   it('rejects candidate events without transcript or operator provenance', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };
@@ -428,7 +485,7 @@ describe('MeetingBridge', () => {
   it('emits state updates as the meeting run changes', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };
-    const states: Array<{ activeMeeting: string | null; lastMeeting: string | null; chunkCount: number; operatorUpdateCount: number; candidateEventCount: number }> = [];
+    const states: Array<{ activeMeeting: string | null; lastMeeting: string | null; chunkCount: number; operatorUpdateCount: number; candidateEventCount: number; retrievalRequestCount: number }> = [];
 
     const bridge = new MeetingBridge({
       baseDir,
@@ -447,6 +504,7 @@ describe('MeetingBridge', () => {
         chunkCount: state.activeMeeting?.chunkCount ?? state.lastMeeting?.chunkCount ?? 0,
         operatorUpdateCount: state.activeMeeting?.operatorUpdateCount ?? state.lastMeeting?.operatorUpdateCount ?? 0,
         candidateEventCount: state.activeMeeting?.candidateEventCount ?? state.lastMeeting?.candidateEventCount ?? 0,
+        retrievalRequestCount: state.activeMeeting?.retrievalRequestCount ?? state.lastMeeting?.retrievalRequestCount ?? 0,
       });
     });
 
@@ -467,14 +525,16 @@ describe('MeetingBridge', () => {
       transcriptChunkIndices: [1],
       operatorUpdateIndices: [1],
     });
+    bridge.ingestRetrievalRequest('Retrieve the prior evidence chain and DES calibration plot.');
     bridge.stop();
 
     expect(states).toEqual([
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 0, operatorUpdateCount: 0, candidateEventCount: 0 },
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 0, candidateEventCount: 0 },
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 0 },
-      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1 },
-      { activeMeeting: null, lastMeeting: 'stopped', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 0, operatorUpdateCount: 0, candidateEventCount: 0, retrievalRequestCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 0, candidateEventCount: 0, retrievalRequestCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 0, retrievalRequestCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1, retrievalRequestCount: 0 },
+      { activeMeeting: 'running', lastMeeting: 'running', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1, retrievalRequestCount: 1 },
+      { activeMeeting: null, lastMeeting: 'stopped', chunkCount: 1, operatorUpdateCount: 1, candidateEventCount: 1, retrievalRequestCount: 1 },
     ]);
   });
 
@@ -509,12 +569,15 @@ describe('MeetingBridge', () => {
       injectedCount: 4,
       operatorUpdateCount: 0,
       candidateEventCount: 0,
+      retrievalRequestCount: 0,
       candidateEventsPath: join(meetingDir, 'candidate-events.jsonl'),
       updatesPath: join(meetingDir, 'operator-updates.jsonl'),
+      retrievalRequestsPath: join(meetingDir, 'retrieval-requests.jsonl'),
       lastChunkPreview: 'Recovered chunk',
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
+      recentRetrievalRequests: [],
     });
   });
 
@@ -549,9 +612,11 @@ describe('MeetingBridge', () => {
       chunkCount: 8,
       injectedCount: 9,
       candidateEventCount: 0,
+      retrievalRequestCount: 0,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
+      recentRetrievalRequests: [],
     });
     expect(recovered?.stoppedAt).toBeGreaterThanOrEqual(before);
     expect(recovered?.stoppedAt).toBeLessThanOrEqual(after);
@@ -585,12 +650,14 @@ describe('MeetingBridge', () => {
       bridge.ingestChunk({ id: `chunk-${index}`, text: `transcript ${index}` });
       bridge.ingestOperatorUpdate({ kind: 'correction', text: `update ${index}` });
       bridge.ingestCandidateEvent({ kind: 'note', text: `candidate ${index}`, transcriptChunkIndices: [index] });
+      bridge.ingestRetrievalRequest(`retrieval ${index}`);
     }
 
     const active = bridge.getState().activeMeeting;
     expect(active?.recentTranscriptChunks.map((chunk) => chunk.chunkIndex)).toEqual([2, 3, 4, 5, 6, 7]);
     expect(active?.recentOperatorUpdates.map((update) => update.updateIndex)).toEqual([2, 3, 4, 5, 6, 7]);
     expect(active?.recentCandidateEvents.map((event) => event.eventIndex)).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(active?.recentRetrievalRequests.map((request) => request.requestIndex)).toEqual([2, 3, 4, 5, 6, 7]);
 
     const recovered = new MeetingBridge({ baseDir, messenger: { send: vi.fn() } }).getState().lastMeeting;
     expect(recovered).toMatchObject({
@@ -618,6 +685,14 @@ describe('MeetingBridge', () => {
         expect.objectContaining({ eventIndex: 5 }),
         expect.objectContaining({ eventIndex: 6 }),
         expect.objectContaining({ eventIndex: 7 }),
+      ],
+      recentRetrievalRequests: [
+        expect.objectContaining({ requestIndex: 2 }),
+        expect.objectContaining({ requestIndex: 3 }),
+        expect.objectContaining({ requestIndex: 4 }),
+        expect.objectContaining({ requestIndex: 5 }),
+        expect.objectContaining({ requestIndex: 6 }),
+        expect.objectContaining({ requestIndex: 7 }),
       ],
     });
   });

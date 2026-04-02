@@ -23,6 +23,7 @@ interface CityHUDContentHost {
   getCurrentTab: () => HudTab
   getWebSocket: () => WebSocket | null
   getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
+  getOnOpenDirectory: () => ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null
   renderEmptyFileSearchState: () => void
 }
 
@@ -48,6 +49,7 @@ export class CityHUDContent {
       getFibers: () => ({ open: this.openFibers, closed: this.closedFibers }),
       onOpenFiber: (fiberId) => this.openFiber(fiberId),
       onOpenFile: (fullPath, line) => this.openFile(fullPath, line),
+      onOpenDirectory: (fullPath) => this.openDirectory(fullPath),
       renderEmptyFileSearchState: () => this.host.renderEmptyFileSearchState(),
     })
     this.setupDelegatedListeners()
@@ -79,6 +81,13 @@ export class CityHUDContent {
       openFibers: this.openFibers.length,
       closedFibers: this.closedFibers.length,
       ...this.search.getRuntimeStats(),
+    }
+  }
+
+  getFibers(): { open: Fiber[]; closed: Fiber[] } {
+    return {
+      open: this.openFibers,
+      closed: this.closedFibers,
     }
   }
 
@@ -177,5 +186,12 @@ export class CityHUDContent {
     const onOpenFile = this.host.getOnOpenFile()
     if (!fullPath || !currentCity || !onOpenFile) return
     onOpenFile(fullPath, currentCity.originId, currentCity.path, currentCity.id, line)
+  }
+
+  private openDirectory(fullPath: string | undefined): void {
+    const currentCity = this.host.getCurrentCity()
+    const onOpenDirectory = this.host.getOnOpenDirectory()
+    if (!fullPath || !currentCity || !onOpenDirectory) return
+    onOpenDirectory(fullPath, currentCity.originId, currentCity.path, currentCity.id)
   }
 }

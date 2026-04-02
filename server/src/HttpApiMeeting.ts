@@ -235,6 +235,35 @@ export class HttpApiMeeting {
     }
   }
 
+  async handleRetrieval(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{ request?: unknown; text?: unknown }>(req, res);
+    if (!data) return;
+
+    const request = data.request ?? (data.text !== undefined ? { text: data.text } : undefined);
+    if (request === undefined) {
+      this.sendJsonError(res, 400, 'Missing retrieval request');
+      return;
+    }
+
+    try {
+      const meeting = this.meetingBridge.ingestRetrievalRequest(request);
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge'
+        ? 409
+        : message === 'Meeting retrieval request text is empty'
+          ? 400
+          : 500;
+      this.sendJsonError(res, status, `Failed to ingest meeting retrieval request: ${message}`);
+    }
+  }
+
   private getState(): MeetingBridgeState | null {
     return this.meetingBridge?.getState() ?? null;
   }

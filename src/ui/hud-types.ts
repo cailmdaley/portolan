@@ -49,6 +49,11 @@ export interface MeetingRunState {
     transcriptChunkIndices: number[]
     operatorUpdateIndices: number[]
   }>
+  recentRetrievalRequests: Array<{
+    requestIndex: number
+    receivedAt: number
+    text: string
+  }>
   meetingId: string
   status: 'running' | 'stopped' | 'error'
   sourceType: 'voiceink' | 'manual'
@@ -63,18 +68,22 @@ export interface MeetingRunState {
   injectionsPath: string
   updatesPath: string
   candidateEventsPath: string
+  retrievalRequestsPath: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number
   injectedCount: number
   operatorUpdateCount: number
   candidateEventCount: number
+  retrievalRequestCount: number
   lastChunkAt?: number
   lastChunkPreview?: string
   lastOperatorUpdateAt?: number
   lastOperatorUpdatePreview?: string
   lastCandidateEventAt?: number
   lastCandidateEventPreview?: string
+  lastRetrievalRequestAt?: number
+  lastRetrievalRequestPreview?: string
   lastError?: string
 }
 

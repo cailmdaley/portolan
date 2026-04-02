@@ -2,17 +2,34 @@ import type { City, GitStatus, Session } from '../state/types'
 import { escapeHtml } from './utils'
 import type { NewWorkerDialog } from './NewWorkerDialog'
 import type { ServerMeetingBridgeState, ServerMeetingRunState } from '../state/types'
+import type { Fiber, SearchResult } from './hud-types'
 
 const PORTOLAN_HTTP_BASE = `${window.location.protocol === 'https:' ? 'https' : 'http'}://${window.location.hostname}:4004`
 
 interface MeetingThreadItem {
   receivedAt: number
-  lane: 'transcript' | 'update' | 'candidate'
+  lane: 'transcript' | 'update' | 'candidate' | 'retrieval'
   label: string
   text: string
   selectable: boolean
   selected: boolean
   selectionIndex?: number
+}
+
+interface SearchResultsMessage {
+  type: 'searchResults'
+  searchId: string
+  results: SearchResult[]
+  error?: string
+}
+
+interface MeetingRetrievalResult {
+  type: 'fiber' | 'file' | 'dir'
+  id: string
+  title: string
+  path?: string
+  line?: number
+  match?: string
 }
 
 interface CityHUDHeaderOptions {
@@ -24,6 +41,7 @@ interface CityHUDHeaderOptions {
   getOnViewPlaygrounds: () => ((city: City) => void) | null
   getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   getOnFocusWorker: () => ((sessionId: string) => void) | null
+  getFibers: () => { open: Fiber[]; closed: Fiber[] }
 }
 
 export class CityHUDHeader {
@@ -35,6 +53,7 @@ export class CityHUDHeader {
   private getOnViewPlaygrounds: () => ((city: City) => void) | null
   private getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   private getOnFocusWorker: () => ((sessionId: string) => void) | null
+  private getFibers: () => { open: Fiber[]; closed: Fiber[] }
   private cityWorkers: Session[] = []
   private meetingState: ServerMeetingBridgeState | null = null
   private meetingActionInFlight = false
@@ -42,6 +61,10 @@ export class CityHUDHeader {
   private meetingCandidateTitle = ''
   private meetingCandidateDraft = ''
   private meetingCandidateKind = 'note'
+  private meetingRetrievalDraft = ''
+  private retrievalResults: MeetingRetrievalResult[] = []
+  private retrievalSearchToken = 0
+  private retrievalSearchPending = false
   private selectedTranscriptChunkIndices: number[] = []
   private selectedOperatorUpdateIndices: number[] = []
   private selectedMeetingId: string | null = null
@@ -55,6 +78,7 @@ export class CityHUDHeader {
     this.getOnViewPlaygrounds = options.getOnViewPlaygrounds
     this.getOnOpenFile = options.getOnOpenFile
     this.getOnFocusWorker = options.getOnFocusWorker
+    this.getFibers = options.getFibers
   }
 
   reset(): void {
@@ -65,6 +89,9 @@ export class CityHUDHeader {
     this.meetingCandidateTitle = ''
     this.meetingCandidateDraft = ''
     this.meetingCandidateKind = 'note'
+    this.meetingRetrievalDraft = ''
+    this.retrievalResults = []
+    this.retrievalSearchPending = false
     this.clearMeetingSelections()
     this.headerWidget.querySelector('.hud-git-detail-content')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-actions')!.innerHTML = ''
@@ -92,6 +119,37 @@ export class CityHUDHeader {
     if (this.getCurrentCity()) {
       this.renderMeeting()
     }
+  }
+
+  handleMessage(message: unknown): boolean {
+    const currentCity = this.getCurrentCity()
+    if (!currentCity) return false
+    const msg = message as { type?: string }
+    if (msg.type !== 'searchResults') return false
+    const response = message as SearchResultsMessage
+    const prefix = `${currentCity.id}-meeting-retrieval-${this.retrievalSearchToken}`
+    if (!response.searchId.startsWith(prefix)) return false
+
+    if (response.error) {
+      this.retrievalSearchPending = false
+      this.renderMeeting()
+      return true
+    }
+
+    const fileResults: MeetingRetrievalResult[] = response.results.map((result) => ({
+      type: result.type,
+      id: `${result.fullPath}:${result.line ?? 0}`,
+      title: result.path,
+      path: result.fullPath,
+      line: result.line,
+      match: result.match,
+    }))
+    this.mergeRetrievalResults(fileResults)
+    if (response.searchId.endsWith('-content')) {
+      this.retrievalSearchPending = false
+    }
+    this.renderMeeting()
+    return true
   }
 
   getRuntimeStats(): { cityWorkerCount: number } {
@@ -277,6 +335,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.injectedCount} sent</span>
             <span>${cityMeeting.operatorUpdateCount} operator update${cityMeeting.operatorUpdateCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.candidateEventCount} candidate event${cityMeeting.candidateEventCount === 1 ? '' : 's'}</span>
+            <span>${cityMeeting.retrievalRequestCount} retrieval request${cityMeeting.retrievalRequestCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
           ${this.renderMeetingThread(cityMeeting)}
@@ -293,8 +352,23 @@ export class CityHUDHeader {
               <span>${escapeHtml(cityMeeting.lastCandidateEventPreview)}</span>
             </div>
           ` : ''}
+          ${cityMeeting.lastRetrievalRequestPreview ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest retrieval</span>
+              <span>${escapeHtml(cityMeeting.lastRetrievalRequestPreview)}</span>
+            </div>
+          ` : ''}
           ${cityMeeting.lastError ? `<div class="hud-meeting-error">${escapeHtml(cityMeeting.lastError)}</div>` : ''}
           ${cityMeeting.status === 'running' ? `
+            <div class="hud-meeting-update">
+              <div class="hud-meeting-update-label">retrieval</div>
+              <div class="hud-meeting-update-actions">
+                <input class="hud-meeting-retrieval-input" type="text" placeholder="Pull up a plot, fiber, artifact, or evidence chain…" value="${escapeHtml(this.meetingRetrievalDraft)}" ${buttonsDisabled}>
+                <button class="hud-meeting-btn hud-meeting-search-retrieval" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingRetrievalDraft.trim())}>Search</button>
+                <button class="hud-meeting-btn hud-meeting-send-retrieval" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingRetrievalDraft.trim())}>Ask assistant</button>
+              </div>
+              ${this.renderMeetingRetrievalResults()}
+            </div>
             <div class="hud-meeting-update">
               <textarea class="hud-meeting-update-input" placeholder="Correct or steer the live meeting narrative…">${escapeHtml(this.meetingUpdateDraft)}</textarea>
               <div class="hud-meeting-update-actions">
@@ -325,6 +399,7 @@ export class CityHUDHeader {
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidateEventsPath)}">Candidate events</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalRequestsPath)}">Retrieval requests</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.metadataPath)}">Meeting metadata</button>
           </div>
         </div>
@@ -362,6 +437,42 @@ export class CityHUDHeader {
     })
 
     const updateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-update-input:not(.hud-meeting-candidate-input)')
+    const retrievalInput = container.querySelector<HTMLInputElement>('.hud-meeting-retrieval-input')
+    retrievalInput?.addEventListener('input', () => {
+      this.meetingRetrievalDraft = retrievalInput.value
+      const retrievalDisabled = this.meetingActionInFlight || this.meetingRetrievalDraft.trim().length === 0
+      const searchButton = container.querySelector<HTMLButtonElement>('.hud-meeting-search-retrieval')
+      const sendButton = container.querySelector<HTMLButtonElement>('.hud-meeting-send-retrieval')
+      if (searchButton) searchButton.disabled = retrievalDisabled
+      if (sendButton) sendButton.disabled = retrievalDisabled
+    })
+    retrievalInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !(event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        if (!this.meetingActionInFlight && this.meetingRetrievalDraft.trim()) {
+          this.runMeetingRetrievalSearch()
+        }
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault()
+        if (!this.meetingActionInFlight && this.meetingRetrievalDraft.trim()) {
+          void this.sendMeetingRetrieval()
+        }
+      }
+    })
+
+    container.querySelector('.hud-meeting-search-retrieval')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (this.meetingActionInFlight || !this.meetingRetrievalDraft.trim()) return
+      this.runMeetingRetrievalSearch()
+    })
+
+    container.querySelector('.hud-meeting-send-retrieval')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (this.meetingActionInFlight || !this.meetingRetrievalDraft.trim()) return
+      void this.sendMeetingRetrieval()
+    })
+
     updateInput?.addEventListener('input', () => {
       this.meetingUpdateDraft = updateInput.value
       const sendButton = container.querySelector<HTMLButtonElement>('.hud-meeting-send-update')
@@ -452,6 +563,20 @@ export class CityHUDHeader {
         toggle()
       })
     }
+
+    for (const item of container.querySelectorAll<HTMLElement>('.hud-meeting-retrieval-result')) {
+      item.addEventListener('click', (event) => {
+        event.stopPropagation()
+        const type = item.dataset.type
+        if (type === 'fiber') {
+          this.openMeetingFiber(item.dataset.id)
+          return
+        }
+        const path = item.dataset.path
+        if (!path) return
+        this.openMeetingFile(path, item.dataset.line ? parseInt(item.dataset.line, 10) : undefined)
+      })
+    }
   }
 
   private renderMeetingStartButtons(disabledAttr: string): string {
@@ -471,6 +596,44 @@ export class CityHUDHeader {
     return options
       .map(([value, label]) => `<option value="${value}"${this.meetingCandidateKind === value ? ' selected' : ''}>${escapeHtml(label)}</option>`)
       .join('')
+  }
+
+  private renderMeetingRetrievalResults(): string {
+    if (!this.meetingRetrievalDraft.trim() && this.retrievalResults.length === 0 && !this.retrievalSearchPending) {
+      return ''
+    }
+
+    if (this.retrievalSearchPending) {
+      return '<div class="hud-meeting-provenance-empty">Searching local fibers and files…</div>'
+    }
+
+    if (this.retrievalResults.length === 0) {
+      return '<div class="hud-meeting-provenance-empty">No local retrieval matches yet.</div>'
+    }
+
+    return `
+      <div class="hud-meeting-thread">
+        <div class="hud-meeting-update-label">retrieval results</div>
+        ${this.retrievalResults.slice(0, 8).map((result) => `
+          <div
+            class="hud-meeting-thread-item hud-meeting-retrieval-result"
+            data-type="${escapeHtml(result.type)}"
+            ${result.path ? `data-path="${escapeHtml(result.path)}"` : ''}
+            ${result.line ? `data-line="${result.line}"` : ''}
+            ${result.id ? `data-id="${escapeHtml(result.id)}"` : ''}
+            tabindex="0"
+            role="button"
+          >
+            <div class="hud-meeting-thread-meta">
+              <span class="hud-meeting-thread-lane">${escapeHtml(result.type)}</span>
+              <span>${escapeHtml(result.title)}</span>
+              <span>${result.type === 'fiber' ? 'open fiber' : 'open file'}</span>
+            </div>
+            ${result.match ? `<div class="hud-meeting-thread-text">${escapeHtml(result.match)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    `
   }
 
   private renderDisabledAttr(disabled: boolean): string {
@@ -531,6 +694,14 @@ export class CityHUDHeader {
         selectable: false,
         selected: false,
       })),
+      ...meeting.recentRetrievalRequests.map((request) => ({
+        receivedAt: request.receivedAt,
+        lane: 'retrieval' as const,
+        label: this.describeRetrievalRequest(request),
+        text: request.text,
+        selectable: false,
+        selected: false,
+      })),
     ].sort((left, right) => right.receivedAt - left.receivedAt)
 
     if (items.length === 0) {
@@ -583,6 +754,10 @@ export class CityHUDHeader {
     return parts.join(' • ')
   }
 
+  private describeRetrievalRequest(request: ServerMeetingRunState['recentRetrievalRequests'][number]): string {
+    return `retrieval ${request.requestIndex}`
+  }
+
   private syncMeetingSelection(meeting: ServerMeetingRunState | null): void {
     if (!meeting) {
       this.clearMeetingSelections()
@@ -627,10 +802,16 @@ export class CityHUDHeader {
     return [...indices, index].sort((left, right) => left - right)
   }
 
-  private openMeetingFile(path: string): void {
+  private openMeetingFile(path: string, line?: number): void {
     const currentCity = this.getCurrentCity()
     if (!currentCity) return
-    this.getOnOpenFile()?.(path, currentCity.originId, currentCity.path, currentCity.id)
+    this.getOnOpenFile()?.(path, currentCity.originId, currentCity.path, currentCity.id, line)
+  }
+
+  private openMeetingFiber(fiberId: string | undefined): void {
+    const currentCity = this.getCurrentCity()
+    if (!currentCity || !fiberId) return
+    this.openMeetingFile(`${currentCity.path}/.felt/${fiberId}/${fiberId}.md`)
   }
 
   private lookupWorkerName(sessionId: string, fallback: string): string {
@@ -769,6 +950,96 @@ export class CityHUDHeader {
     } finally {
       this.meetingActionInFlight = false
       this.renderMeeting()
+    }
+  }
+
+  private async sendMeetingRetrieval(): Promise<void> {
+    const text = this.meetingRetrievalDraft.trim()
+    if (!text) return
+
+    this.meetingActionInFlight = true
+    this.renderMeeting()
+    try {
+      this.runMeetingRetrievalSearch()
+      const response = await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge/retrieval`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text }),
+      })
+
+      if (!response.ok) {
+        throw new Error(await this.readErrorMessage(response))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`Failed to send retrieval request: ${message}`)
+    } finally {
+      this.meetingActionInFlight = false
+      this.renderMeeting()
+    }
+  }
+
+  private runMeetingRetrievalSearch(): void {
+    const currentCity = this.getCurrentCity()
+    const ws = this.getWebSocket()
+    const query = this.meetingRetrievalDraft.trim()
+    if (!currentCity || !query) return
+
+    this.retrievalResults = this.findMatchingFibers(query)
+    this.retrievalSearchPending = true
+    this.retrievalSearchToken += 1
+    this.renderMeeting()
+
+    if (ws?.readyState !== WebSocket.OPEN) {
+      this.retrievalSearchPending = false
+      this.renderMeeting()
+      return
+    }
+
+    const searchBase = `${currentCity.id}-meeting-retrieval-${this.retrievalSearchToken}`
+    ws.send(JSON.stringify({
+      type: 'searchFiles',
+      cityId: currentCity.id,
+      query,
+      searchId: `${searchBase}-name`,
+      mode: 'filename',
+    }))
+    ws.send(JSON.stringify({
+      type: 'searchFiles',
+      cityId: currentCity.id,
+      query,
+      searchId: `${searchBase}-content`,
+      mode: 'content',
+    }))
+  }
+
+  private findMatchingFibers(query: string): MeetingRetrievalResult[] {
+    const normalized = query.toLowerCase()
+    return [...this.getFibers().open, ...this.getFibers().closed]
+      .filter((fiber) =>
+        fiber.title.toLowerCase().includes(normalized)
+        || fiber.id.toLowerCase().includes(normalized)
+        || fiber.kind.toLowerCase().includes(normalized)
+        || (fiber.body?.toLowerCase().includes(normalized) ?? false)
+        || (fiber.reason?.toLowerCase().includes(normalized) ?? false),
+      )
+      .slice(0, 4)
+      .map((fiber) => ({
+        type: 'fiber',
+        id: fiber.id,
+        title: fiber.title,
+        match: fiber.reason || fiber.body,
+      }))
+  }
+
+  private mergeRetrievalResults(results: MeetingRetrievalResult[]): void {
+    for (const result of results) {
+      if (this.retrievalResults.some((existing) => existing.type === result.type && existing.id === result.id)) {
+        continue
+      }
+      this.retrievalResults.push(result)
     }
   }
 

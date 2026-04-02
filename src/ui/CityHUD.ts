@@ -3,6 +3,7 @@ import { CityHUDContent } from './CityHUDContent'
 import { CityHUDFileTree } from './CityHUDFileTree'
 import { CityHUDHeader } from './CityHUDHeader'
 import type { NewWorkerDialog } from './NewWorkerDialog'
+import type { Fiber } from './hud-types'
 
 type HudTab = 'fibers' | 'files'
 
@@ -52,6 +53,7 @@ export class CityHUD {
       getOnViewPlaygrounds: () => this.onViewPlaygrounds,
       getOnOpenFile: () => this.onOpenFile,
       getOnFocusWorker: () => this.onFocusWorker,
+      getFibers: (): { open: Fiber[]; closed: Fiber[] } => this.content.getFibers(),
     })
     this.content = new CityHUDContent({
       sidebar: this.sidebar,
@@ -299,6 +301,7 @@ export class CityHUD {
   }
 
   handleMessage(message: unknown): boolean {
+    if (this.header.handleMessage(message)) return true
     if (this.content.handleMessage(message)) return true
     if (this.fileTree.handleMessage(message)) return true
     return false
