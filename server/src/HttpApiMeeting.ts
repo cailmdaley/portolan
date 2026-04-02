@@ -227,6 +227,8 @@ export class HttpApiMeeting {
       const status = message === 'No active meeting bridge'
         ? 409
         : message === 'Meeting candidate event text is empty'
+          || message === 'Meeting candidate event requires transcript or operator provenance'
+          || message.startsWith('Meeting candidate event cites invalid ')
           ? 400
           : 500;
       this.sendJsonError(res, status, `Failed to ingest meeting candidate event: ${message}`);

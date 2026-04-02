@@ -362,6 +362,69 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('rejects candidate events without transcript or operator provenance', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-candidate-empty',
+        tmuxSession: 'worker-candidate-empty',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    expect(() => bridge.ingestCandidateEvent({
+      kind: 'note',
+      text: 'Accepted note without cited provenance should fail.',
+    })).toThrowError('Meeting candidate event requires transcript or operator provenance');
+  });
+
+  it('rejects candidate events that cite nonexistent provenance indices', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-candidate-bad-index',
+        tmuxSession: 'worker-candidate-bad-index',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({ id: 'chunk-1', text: 'Only one transcript chunk exists so far.' });
+
+    expect(() => bridge.ingestCandidateEvent({
+      kind: 'decision',
+      text: 'This cites an impossible transcript chunk index.',
+      transcriptChunkIndices: [2],
+    })).toThrowError('Meeting candidate event cites invalid transcript chunk index: 2');
+  });
+
   it('emits state updates as the meeting run changes', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };
@@ -398,7 +461,12 @@ describe('MeetingBridge', () => {
     });
     bridge.ingestChunk({ id: 'c1', text: 'Pull up the prior evidence chain.' });
     bridge.ingestOperatorUpdate({ text: 'Keep this tentative until we compare both plots.' });
-    bridge.ingestCandidateEvent({ kind: 'note', text: 'Accepted note: prior evidence chain needs to be surfaced next.' });
+    bridge.ingestCandidateEvent({
+      kind: 'note',
+      text: 'Accepted note: prior evidence chain needs to be surfaced next.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
     bridge.stop();
 
     expect(states).toEqual([

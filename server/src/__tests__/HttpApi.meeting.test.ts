@@ -257,4 +257,23 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.status).toBe(400);
     expect(res.data.error).toBe('Failed to ingest meeting candidate event: Meeting candidate event text is empty');
   });
+
+  it('returns 400 when uploading a candidate event without cited provenance', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(() => {
+        throw new Error('Meeting candidate event requires transcript or operator provenance');
+      }),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/candidate', {
+      text: 'Accepted note with no provenance.',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Failed to ingest meeting candidate event: Meeting candidate event requires transcript or operator provenance');
+  });
 });

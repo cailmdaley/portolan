@@ -10,6 +10,9 @@ interface MeetingThreadItem {
   lane: 'transcript' | 'update' | 'candidate'
   label: string
   text: string
+  selectable: boolean
+  selected: boolean
+  selectionIndex?: number
 }
 
 interface CityHUDHeaderOptions {
@@ -36,8 +39,12 @@ export class CityHUDHeader {
   private meetingState: ServerMeetingBridgeState | null = null
   private meetingActionInFlight = false
   private meetingUpdateDraft = ''
+  private meetingCandidateTitle = ''
   private meetingCandidateDraft = ''
   private meetingCandidateKind = 'note'
+  private selectedTranscriptChunkIndices: number[] = []
+  private selectedOperatorUpdateIndices: number[] = []
+  private selectedMeetingId: string | null = null
 
   constructor(options: CityHUDHeaderOptions) {
     this.headerWidget = options.headerWidget
@@ -55,8 +62,10 @@ export class CityHUDHeader {
     this.meetingState = null
     this.meetingActionInFlight = false
     this.meetingUpdateDraft = ''
+    this.meetingCandidateTitle = ''
     this.meetingCandidateDraft = ''
     this.meetingCandidateKind = 'note'
+    this.clearMeetingSelections()
     this.headerWidget.querySelector('.hud-git-detail-content')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-actions')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-header-workers')!.innerHTML = ''
@@ -243,6 +252,7 @@ export class CityHUDHeader {
     const cityMeeting = this.selectMeetingForCurrentCity()
     const meetingElsewhere = activeMeeting && !this.belongsToCurrentCity(activeMeeting)
     const buttonsDisabled = this.renderDisabledAttr(this.meetingActionInFlight)
+    this.syncMeetingSelection(cityMeeting)
 
     const lines: string[] = ['<div class="hud-meeting-header"><span class="hud-header-workers-label">meeting</span></div>']
 
@@ -297,9 +307,11 @@ export class CityHUDHeader {
                   ${this.renderMeetingCandidateKindOptions()}
                 </select>
               </div>
+              <input class="hud-meeting-candidate-title" type="text" placeholder="Optional title for the accepted item…" value="${escapeHtml(this.meetingCandidateTitle)}" ${buttonsDisabled}>
+              ${this.renderMeetingCandidateProvenance(cityMeeting)}
               <textarea class="hud-meeting-update-input hud-meeting-candidate-input" placeholder="Capture an accepted note, question, or decision from this meeting…">${escapeHtml(this.meetingCandidateDraft)}</textarea>
               <div class="hud-meeting-update-actions">
-                <button class="hud-meeting-btn hud-meeting-send-candidate" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingCandidateDraft.trim())}>Capture candidate</button>
+                <button class="hud-meeting-btn hud-meeting-send-candidate" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingCandidateDraft.trim() || !this.hasCandidateProvenanceSelection())}>Capture candidate</button>
               </div>
             </div>
           ` : ''}
@@ -349,7 +361,7 @@ export class CityHUDHeader {
       void this.stopMeeting()
     })
 
-    const updateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-update-input')
+    const updateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-update-input:not(.hud-meeting-candidate-input)')
     updateInput?.addEventListener('input', () => {
       this.meetingUpdateDraft = updateInput.value
       const sendButton = container.querySelector<HTMLButtonElement>('.hud-meeting-send-update')
@@ -377,12 +389,17 @@ export class CityHUDHeader {
       this.meetingCandidateKind = candidateKind.value || 'note'
     })
 
+    const candidateTitle = container.querySelector<HTMLInputElement>('.hud-meeting-candidate-title')
+    candidateTitle?.addEventListener('input', () => {
+      this.meetingCandidateTitle = candidateTitle.value
+    })
+
     const candidateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-candidate-input')
     candidateInput?.addEventListener('input', () => {
       this.meetingCandidateDraft = candidateInput.value
       const sendButton = container.querySelector<HTMLButtonElement>('.hud-meeting-send-candidate')
       if (sendButton && !this.meetingActionInFlight) {
-        sendButton.disabled = this.meetingCandidateDraft.trim().length === 0
+        sendButton.disabled = this.meetingCandidateDraft.trim().length === 0 || !this.hasCandidateProvenanceSelection()
       }
     })
     candidateInput?.addEventListener('keydown', (event) => {
@@ -400,12 +417,39 @@ export class CityHUDHeader {
       void this.sendMeetingCandidate()
     })
 
+    container.querySelector('.hud-meeting-clear-provenance')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      this.clearMeetingSelections()
+      this.renderMeeting()
+    })
+
     for (const button of container.querySelectorAll<HTMLButtonElement>('.hud-meeting-open-log')) {
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         const path = button.dataset.path
         if (!path) return
         this.openMeetingFile(path)
+      })
+    }
+
+    for (const item of container.querySelectorAll<HTMLElement>('.hud-meeting-thread-item[data-selectable="true"]')) {
+      const toggle = () => {
+        const lane = item.dataset.lane
+        const index = Number(item.dataset.index)
+        if ((lane !== 'transcript' && lane !== 'update') || !Number.isInteger(index)) return
+        this.toggleMeetingSelection(lane, index)
+        this.renderMeeting()
+      }
+
+      item.addEventListener('click', (event) => {
+        event.stopPropagation()
+        toggle()
+      })
+      item.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        event.stopPropagation()
+        toggle()
       })
     }
   }
@@ -433,6 +477,32 @@ export class CityHUDHeader {
     return disabled ? 'disabled' : ''
   }
 
+  private renderMeetingCandidateProvenance(meeting: ServerMeetingRunState): string {
+    const selectedParts: string[] = []
+    if (this.selectedTranscriptChunkIndices.length > 0) {
+      selectedParts.push(`chunk ${this.selectedTranscriptChunkIndices.join(', ')}`)
+    }
+    if (this.selectedOperatorUpdateIndices.length > 0) {
+      selectedParts.push(`update ${this.selectedOperatorUpdateIndices.join(', ')}`)
+    }
+
+    const emptyMessage = meeting.recentTranscriptChunks.length + meeting.recentOperatorUpdates.length > 0
+      ? 'Select transcript or update items from the live thread to cite provenance.'
+      : 'Waiting for transcript or operator updates to cite.'
+
+    return `
+      <div class="hud-meeting-provenance">
+        <div class="hud-meeting-provenance-row">
+          <span class="hud-meeting-update-label">candidate provenance</span>
+          ${selectedParts.length > 0 ? '<button class="hud-meeting-btn hud-meeting-clear-provenance" type="button">Clear</button>' : ''}
+        </div>
+        ${selectedParts.length > 0
+          ? `<div class="hud-meeting-provenance-selection">${escapeHtml(selectedParts.join(' • '))}</div>`
+          : `<div class="hud-meeting-provenance-empty">${escapeHtml(emptyMessage)}</div>`}
+      </div>
+    `
+  }
+
   private renderMeetingThread(meeting: ServerMeetingRunState): string {
     const items: MeetingThreadItem[] = [
       ...meeting.recentTranscriptChunks.map((chunk) => ({
@@ -440,18 +510,26 @@ export class CityHUDHeader {
         lane: 'transcript' as const,
         label: this.describeTranscriptChunk(chunk),
         text: chunk.text,
+        selectable: true,
+        selected: this.selectedTranscriptChunkIndices.includes(chunk.chunkIndex),
+        selectionIndex: chunk.chunkIndex,
       })),
       ...meeting.recentOperatorUpdates.map((update) => ({
         receivedAt: update.receivedAt,
         lane: 'update' as const,
         label: this.describeOperatorUpdate(update),
         text: update.text,
+        selectable: true,
+        selected: this.selectedOperatorUpdateIndices.includes(update.updateIndex),
+        selectionIndex: update.updateIndex,
       })),
       ...meeting.recentCandidateEvents.map((event) => ({
         receivedAt: event.receivedAt,
         lane: 'candidate' as const,
         label: this.describeCandidateEvent(event),
         text: event.title ? `${event.title}: ${event.text}` : event.text,
+        selectable: false,
+        selected: false,
       })),
     ].sort((left, right) => right.receivedAt - left.receivedAt)
 
@@ -463,11 +541,15 @@ export class CityHUDHeader {
       <div class="hud-meeting-thread">
         <div class="hud-meeting-update-label">live thread</div>
         ${items.map((item) => `
-          <div class="hud-meeting-thread-item hud-meeting-thread-${item.lane}">
+          <div
+            class="hud-meeting-thread-item hud-meeting-thread-${item.lane}${item.selectable ? ' selectable' : ''}${item.selected ? ' selected' : ''}"
+            ${item.selectable ? `data-selectable="true" data-lane="${item.lane}" data-index="${item.selectionIndex}" tabindex="0" role="button" aria-pressed="${item.selected ? 'true' : 'false'}"` : ''}
+          >
             <div class="hud-meeting-thread-meta">
               <span class="hud-meeting-thread-lane">${escapeHtml(item.lane)}</span>
               <span>${escapeHtml(item.label)}</span>
               <span>${escapeHtml(this.relativeTime(item.receivedAt))}</span>
+              ${item.selectable ? `<span class="hud-meeting-thread-select">${item.selected ? 'cited' : 'click to cite'}</span>` : ''}
             </div>
             <div class="hud-meeting-thread-text">${escapeHtml(item.text)}</div>
           </div>
@@ -499,6 +581,50 @@ export class CityHUDHeader {
       parts.push(`update ${event.operatorUpdateIndices.join(', ')}`)
     }
     return parts.join(' • ')
+  }
+
+  private syncMeetingSelection(meeting: ServerMeetingRunState | null): void {
+    if (!meeting) {
+      this.clearMeetingSelections()
+      return
+    }
+
+    if (this.selectedMeetingId !== meeting.meetingId) {
+      this.selectedMeetingId = meeting.meetingId
+      this.selectedTranscriptChunkIndices = []
+      this.selectedOperatorUpdateIndices = []
+      return
+    }
+
+    const availableChunks = new Set(meeting.recentTranscriptChunks.map((chunk) => chunk.chunkIndex))
+    const availableUpdates = new Set(meeting.recentOperatorUpdates.map((update) => update.updateIndex))
+    this.selectedTranscriptChunkIndices = this.selectedTranscriptChunkIndices.filter((index) => availableChunks.has(index))
+    this.selectedOperatorUpdateIndices = this.selectedOperatorUpdateIndices.filter((index) => availableUpdates.has(index))
+  }
+
+  private clearMeetingSelections(): void {
+    this.selectedTranscriptChunkIndices = []
+    this.selectedOperatorUpdateIndices = []
+    this.selectedMeetingId = null
+  }
+
+  private hasCandidateProvenanceSelection(): boolean {
+    return this.selectedTranscriptChunkIndices.length > 0 || this.selectedOperatorUpdateIndices.length > 0
+  }
+
+  private toggleMeetingSelection(lane: 'transcript' | 'update', index: number): void {
+    if (lane === 'transcript') {
+      this.selectedTranscriptChunkIndices = this.toggleIndexSelection(this.selectedTranscriptChunkIndices, index)
+      return
+    }
+    this.selectedOperatorUpdateIndices = this.toggleIndexSelection(this.selectedOperatorUpdateIndices, index)
+  }
+
+  private toggleIndexSelection(indices: number[], index: number): number[] {
+    if (indices.includes(index)) {
+      return indices.filter((value) => value !== index)
+    }
+    return [...indices, index].sort((left, right) => left - right)
   }
 
   private openMeetingFile(path: string): void {
@@ -567,6 +693,7 @@ export class CityHUDHeader {
       if (!response.ok) {
         throw new Error(await this.readErrorMessage(response))
       }
+      this.clearMeetingSelections()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to stop meeting bridge: ${message}`)
@@ -608,7 +735,7 @@ export class CityHUDHeader {
   private async sendMeetingCandidate(): Promise<void> {
     const text = this.meetingCandidateDraft.trim()
     const cityMeeting = this.selectMeetingForCurrentCity()
-    if (!text || !cityMeeting) return
+    if (!text || !cityMeeting || !this.hasCandidateProvenanceSelection()) return
 
     this.meetingActionInFlight = true
     this.renderMeeting()
@@ -620,9 +747,10 @@ export class CityHUDHeader {
         },
         body: JSON.stringify({
           kind: this.meetingCandidateKind,
+          title: this.meetingCandidateTitle.trim() || undefined,
           text,
-          transcriptChunkIndices: cityMeeting.chunkCount > 0 ? [cityMeeting.chunkCount] : [],
-          operatorUpdateIndices: cityMeeting.operatorUpdateCount > 0 ? [cityMeeting.operatorUpdateCount] : [],
+          transcriptChunkIndices: this.selectedTranscriptChunkIndices,
+          operatorUpdateIndices: this.selectedOperatorUpdateIndices,
         }),
       })
 
@@ -630,7 +758,11 @@ export class CityHUDHeader {
         throw new Error(await this.readErrorMessage(response))
       }
 
+      this.meetingCandidateTitle = ''
       this.meetingCandidateDraft = ''
+      this.selectedTranscriptChunkIndices = []
+      this.selectedOperatorUpdateIndices = []
+      this.selectedMeetingId = cityMeeting.meetingId
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to capture meeting candidate: ${message}`)

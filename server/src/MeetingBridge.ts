@@ -594,8 +594,19 @@ export class MeetingBridge {
       throw new Error('Meeting candidate event text is empty');
     }
 
-    const transcriptChunkIndices = maybeNumberList(record.transcriptChunkIndices);
-    const operatorUpdateIndices = maybeNumberList(record.operatorUpdateIndices);
+    const transcriptChunkIndices = normalizeCandidateProvenanceIndices(
+      record.transcriptChunkIndices,
+      run.chunkCount,
+      'transcript chunk',
+    );
+    const operatorUpdateIndices = normalizeCandidateProvenanceIndices(
+      record.operatorUpdateIndices,
+      run.operatorUpdateCount,
+      'operator update',
+    );
+    if (transcriptChunkIndices.length === 0 && operatorUpdateIndices.length === 0) {
+      throw new Error('Meeting candidate event requires transcript or operator provenance');
+    }
 
     return {
       eventIndex: run.candidateEventCount + 1,
@@ -603,8 +614,8 @@ export class MeetingBridge {
       kind: maybeString(record.kind) ?? 'note',
       title: maybeString(record.title),
       text,
-      transcriptChunkIndices: transcriptChunkIndices ?? (run.chunkCount > 0 ? [run.chunkCount] : []),
-      operatorUpdateIndices: operatorUpdateIndices ?? [],
+      transcriptChunkIndices,
+      operatorUpdateIndices,
       raw: rawEvent,
     };
   }
@@ -716,6 +727,17 @@ function maybeNumberList(value: unknown): number[] | null {
     .map((entry) => maybeNumber(entry))
     .filter((entry): entry is number => entry !== null);
   return numbers.length > 0 ? numbers : [];
+}
+
+function normalizeCandidateProvenanceIndices(value: unknown, maxIndex: number, label: string): number[] {
+  const indices = maybeNumberList(value) ?? [];
+  const normalized = Array.from(new Set(indices)).sort((left, right) => left - right);
+  for (const index of normalized) {
+    if (!Number.isInteger(index) || index < 1 || index > maxIndex) {
+      throw new Error(`Meeting candidate event cites invalid ${label} index: ${index}`);
+    }
+  }
+  return normalized;
 }
 
 function selectTranscriptText(record: Record<string, unknown>): string {
