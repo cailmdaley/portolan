@@ -78,6 +78,13 @@ describe('MeetingBridge', () => {
     const state = bridge.getState();
     expect(state.activeMeeting?.chunkCount).toBe(1);
     expect(state.activeMeeting?.injectedCount).toBe(2);
+    expect(state.activeMeeting?.recentTranscriptChunks).toEqual([
+      expect.objectContaining({
+        chunkIndex: 1,
+        sourceChunkId: '17',
+        text: 'Could we pull up the calibration plot before deciding?',
+      }),
+    ]);
     expect(messenger.send).toHaveBeenCalledTimes(2);
     expect(messenger.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ tmuxSession: 'worker-1' }),
@@ -261,6 +268,12 @@ describe('MeetingBridge', () => {
     expect(updated.operatorUpdateCount).toBe(1);
     expect(updated.injectedCount).toBe(2);
     expect(updated.lastOperatorUpdatePreview).toContain('calibration comparison');
+    expect(updated.recentOperatorUpdates).toEqual([
+      expect.objectContaining({
+        updateIndex: 1,
+        kind: 'correction',
+      }),
+    ]);
     expect(messenger.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ tmuxSession: 'worker-update' }),
       expect.stringContaining('Portolan Meeting Operator Update'),
@@ -318,6 +331,14 @@ describe('MeetingBridge', () => {
     expect(updated.candidateEventCount).toBe(1);
     expect(updated.injectedCount).toBe(3);
     expect(updated.lastCandidateEventPreview).toContain('Calibration comparison still open');
+    expect(updated.recentCandidateEvents).toEqual([
+      expect.objectContaining({
+        eventIndex: 1,
+        kind: 'question',
+        title: 'Calibration comparison still open',
+        transcriptChunkIndices: [1],
+      }),
+    ]);
     expect(messenger.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ tmuxSession: 'worker-candidate' }),
       expect.stringContaining('Portolan Meeting Candidate Event'),
@@ -423,6 +444,9 @@ describe('MeetingBridge', () => {
       candidateEventsPath: join(meetingDir, 'candidate-events.jsonl'),
       updatesPath: join(meetingDir, 'operator-updates.jsonl'),
       lastChunkPreview: 'Recovered chunk',
+      recentTranscriptChunks: [],
+      recentOperatorUpdates: [],
+      recentCandidateEvents: [],
     });
   });
 
@@ -457,8 +481,76 @@ describe('MeetingBridge', () => {
       chunkCount: 8,
       injectedCount: 9,
       candidateEventCount: 0,
+      recentTranscriptChunks: [],
+      recentOperatorUpdates: [],
+      recentCandidateEvents: [],
     });
     expect(recovered?.stoppedAt).toBeGreaterThanOrEqual(before);
     expect(recovered?.stoppedAt).toBeLessThanOrEqual(after);
+  });
+
+  it('keeps only a bounded recent live thread and persists it for recovery', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-thread',
+        tmuxSession: 'worker-thread',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    for (let index = 1; index <= 7; index += 1) {
+      bridge.ingestChunk({ id: `chunk-${index}`, text: `transcript ${index}` });
+      bridge.ingestOperatorUpdate({ kind: 'correction', text: `update ${index}` });
+      bridge.ingestCandidateEvent({ kind: 'note', text: `candidate ${index}`, transcriptChunkIndices: [index] });
+    }
+
+    const active = bridge.getState().activeMeeting;
+    expect(active?.recentTranscriptChunks.map((chunk) => chunk.chunkIndex)).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(active?.recentOperatorUpdates.map((update) => update.updateIndex)).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(active?.recentCandidateEvents.map((event) => event.eventIndex)).toEqual([2, 3, 4, 5, 6, 7]);
+
+    const recovered = new MeetingBridge({ baseDir, messenger: { send: vi.fn() } }).getState().lastMeeting;
+    expect(recovered).toMatchObject({
+      meetingId: run.meetingId,
+      recentTranscriptChunks: [
+        expect.objectContaining({ chunkIndex: 2 }),
+        expect.objectContaining({ chunkIndex: 3 }),
+        expect.objectContaining({ chunkIndex: 4 }),
+        expect.objectContaining({ chunkIndex: 5 }),
+        expect.objectContaining({ chunkIndex: 6 }),
+        expect.objectContaining({ chunkIndex: 7 }),
+      ],
+      recentOperatorUpdates: [
+        expect.objectContaining({ updateIndex: 2 }),
+        expect.objectContaining({ updateIndex: 3 }),
+        expect.objectContaining({ updateIndex: 4 }),
+        expect.objectContaining({ updateIndex: 5 }),
+        expect.objectContaining({ updateIndex: 6 }),
+        expect.objectContaining({ updateIndex: 7 }),
+      ],
+      recentCandidateEvents: [
+        expect.objectContaining({ eventIndex: 2 }),
+        expect.objectContaining({ eventIndex: 3 }),
+        expect.objectContaining({ eventIndex: 4 }),
+        expect.objectContaining({ eventIndex: 5 }),
+        expect.objectContaining({ eventIndex: 6 }),
+        expect.objectContaining({ eventIndex: 7 }),
+      ],
+    });
   });
 });

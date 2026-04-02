@@ -77,6 +77,30 @@ export interface ServerOrigin {
 }
 
 export interface ServerMeetingRunState {
+  recentTranscriptChunks: Array<{
+    chunkIndex: number
+    receivedAt: number
+    sourceChunkId?: string
+    timestampLocal?: string
+    status?: string
+    speaker?: string
+    text: string
+  }>
+  recentOperatorUpdates: Array<{
+    updateIndex: number
+    receivedAt: number
+    kind?: string
+    text: string
+  }>
+  recentCandidateEvents: Array<{
+    eventIndex: number
+    receivedAt: number
+    kind: string
+    title?: string
+    text: string
+    transcriptChunkIndices: number[]
+    operatorUpdateIndices: number[]
+  }>
   meetingId: string
   status: 'running' | 'stopped' | 'error'
   sourceType: 'voiceink' | 'manual'

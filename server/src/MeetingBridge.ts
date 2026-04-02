@@ -22,6 +22,33 @@ export interface MeetingBridgeStartOptions {
   voiceInk?: VoiceInkTranscriptSourceOptions;
 }
 
+export interface MeetingTranscriptEntry {
+  chunkIndex: number;
+  receivedAt: number;
+  sourceChunkId?: string;
+  timestampLocal?: string;
+  status?: string;
+  speaker?: string;
+  text: string;
+}
+
+export interface MeetingOperatorUpdateEntry {
+  updateIndex: number;
+  receivedAt: number;
+  kind?: string;
+  text: string;
+}
+
+export interface MeetingCandidateEventEntry {
+  eventIndex: number;
+  receivedAt: number;
+  kind: string;
+  title?: string;
+  text: string;
+  transcriptChunkIndices: number[];
+  operatorUpdateIndices: number[];
+}
+
 export interface MeetingRunState {
   meetingId: string;
   status: 'running' | 'stopped' | 'error';
@@ -50,6 +77,9 @@ export interface MeetingRunState {
   lastCandidateEventAt?: number;
   lastCandidateEventPreview?: string;
   lastError?: string;
+  recentTranscriptChunks: MeetingTranscriptEntry[];
+  recentOperatorUpdates: MeetingOperatorUpdateEntry[];
+  recentCandidateEvents: MeetingCandidateEventEntry[];
 }
 
 export interface MeetingBridgeState {
@@ -105,6 +135,8 @@ interface NormalizedCandidateEvent {
   raw: unknown;
 }
 
+const MAX_RECENT_MEETING_ITEMS = 6;
+
 export class MeetingBridge {
   private readonly baseDir: string;
   private readonly latestStatePath: string;
@@ -134,8 +166,8 @@ export class MeetingBridge {
 
   getState(): MeetingBridgeState {
     return {
-      activeMeeting: this.state.activeMeeting ? { ...this.state.activeMeeting } : null,
-      lastMeeting: this.state.lastMeeting ? { ...this.state.lastMeeting } : null,
+      activeMeeting: this.state.activeMeeting ? cloneMeetingRunState(this.state.activeMeeting) : null,
+      lastMeeting: this.state.lastMeeting ? cloneMeetingRunState(this.state.lastMeeting) : null,
     };
   }
 
@@ -182,6 +214,9 @@ export class MeetingBridge {
       injectedCount: 0,
       operatorUpdateCount: 0,
       candidateEventCount: 0,
+      recentTranscriptChunks: [],
+      recentOperatorUpdates: [],
+      recentCandidateEvents: [],
     };
 
     this.state.activeMeeting = run;
@@ -222,13 +257,13 @@ export class MeetingBridge {
     }
 
     this.emitStateChanged();
-    return { ...run };
+    return cloneMeetingRunState(run);
   }
 
   stop(): MeetingRunState | null {
     const active = this.state.activeMeeting;
     if (!active) {
-      return this.state.lastMeeting ? { ...this.state.lastMeeting } : null;
+      return this.state.lastMeeting ? cloneMeetingRunState(this.state.lastMeeting) : null;
     }
 
     const source = this.activeSource;
@@ -240,7 +275,7 @@ export class MeetingBridge {
     if (active.status === 'running') {
       this.finishRun(active, 'stopped');
     }
-    return { ...active };
+    return cloneMeetingRunState(active);
   }
 
   ingestChunk(rawChunk: unknown): MeetingRunState {
@@ -257,7 +292,7 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleChunk(target, active, rawChunk);
-    return { ...active };
+    return cloneMeetingRunState(active);
   }
 
   ingestOperatorUpdate(rawUpdate: unknown): MeetingRunState {
@@ -274,7 +309,7 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleOperatorUpdate(target, active, rawUpdate);
-    return { ...active };
+    return cloneMeetingRunState(active);
   }
 
   ingestCandidateEvent(rawEvent: unknown): MeetingRunState {
@@ -291,7 +326,7 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleCandidateEvent(target, active, rawEvent);
-    return { ...active };
+    return cloneMeetingRunState(active);
   }
 
   private handleChunk(target: MeetingBridgeTarget, run: MeetingRunState, rawChunk: unknown): void {
@@ -315,6 +350,15 @@ export class MeetingBridge {
         audioFileUrl: chunk.audioFileUrl,
         text: chunk.text,
         raw: chunk.raw,
+      });
+      run.recentTranscriptChunks = appendRecentItem(run.recentTranscriptChunks, {
+        chunkIndex: chunk.chunkIndex,
+        receivedAt: run.lastChunkAt,
+        sourceChunkId: chunk.sourceChunkId ?? undefined,
+        timestampLocal: chunk.timestampLocal ?? undefined,
+        status: chunk.status ?? undefined,
+        speaker: chunk.speaker ?? undefined,
+        text: chunk.text,
       });
 
       if (chunk.text.trim().length > 0) {
@@ -354,6 +398,12 @@ export class MeetingBridge {
         kind: update.kind,
         text: update.text,
         raw: update.raw,
+      });
+      run.recentOperatorUpdates = appendRecentItem(run.recentOperatorUpdates, {
+        updateIndex: update.updateIndex,
+        receivedAt: update.receivedAt,
+        kind: update.kind ?? undefined,
+        text: update.text,
       });
 
       const message = this.buildOperatorUpdateMessage(run, update);
@@ -395,6 +445,15 @@ export class MeetingBridge {
         transcriptChunkIndices: event.transcriptChunkIndices,
         operatorUpdateIndices: event.operatorUpdateIndices,
         raw: event.raw,
+      });
+      run.recentCandidateEvents = appendRecentItem(run.recentCandidateEvents, {
+        eventIndex: event.eventIndex,
+        receivedAt: event.receivedAt,
+        kind: event.kind,
+        title: event.title ?? undefined,
+        text: event.text,
+        transcriptChunkIndices: [...event.transcriptChunkIndices],
+        operatorUpdateIndices: [...event.operatorUpdateIndices],
       });
 
       const message = this.buildCandidateEventMessage(run, event);
@@ -735,6 +794,9 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastCandidateEventAt: maybeNumber(value.lastCandidateEventAt) ?? undefined,
     lastCandidateEventPreview: maybeString(value.lastCandidateEventPreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
+    recentTranscriptChunks: parseTranscriptEntries(value.recentTranscriptChunks),
+    recentOperatorUpdates: parseOperatorUpdateEntries(value.recentOperatorUpdates),
+    recentCandidateEvents: parseCandidateEventEntries(value.recentCandidateEvents),
   };
 }
 
@@ -744,4 +806,79 @@ function maybeMeetingStatus(value: unknown): MeetingRunState['status'] | null {
 
 function maybeSourceType(value: unknown): MeetingRunState['sourceType'] | null {
   return value === 'voiceink' || value === 'manual' ? value : null;
+}
+
+function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
+  return {
+    ...run,
+    recentTranscriptChunks: run.recentTranscriptChunks.map((chunk) => ({ ...chunk })),
+    recentOperatorUpdates: run.recentOperatorUpdates.map((update) => ({ ...update })),
+    recentCandidateEvents: run.recentCandidateEvents.map((event) => ({
+      ...event,
+      transcriptChunkIndices: [...event.transcriptChunkIndices],
+      operatorUpdateIndices: [...event.operatorUpdateIndices],
+    })),
+  };
+}
+
+function appendRecentItem<T>(items: T[], item: T): T[] {
+  return [...items, item].slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseTranscriptEntries(value: unknown): MeetingTranscriptEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const chunkIndex = maybeNumber(entry.chunkIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const text = maybeString(entry.text);
+    if (chunkIndex === null || receivedAt === null || text === null) return [];
+    return [{
+      chunkIndex,
+      receivedAt,
+      sourceChunkId: maybeString(entry.sourceChunkId) ?? undefined,
+      timestampLocal: maybeString(entry.timestampLocal) ?? undefined,
+      status: maybeString(entry.status) ?? undefined,
+      speaker: maybeString(entry.speaker) ?? undefined,
+      text,
+    }];
+  }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseOperatorUpdateEntries(value: unknown): MeetingOperatorUpdateEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const updateIndex = maybeNumber(entry.updateIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const text = maybeString(entry.text);
+    if (updateIndex === null || receivedAt === null || text === null) return [];
+    return [{
+      updateIndex,
+      receivedAt,
+      kind: maybeString(entry.kind) ?? undefined,
+      text,
+    }];
+  }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseCandidateEventEntries(value: unknown): MeetingCandidateEventEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const eventIndex = maybeNumber(entry.eventIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const kind = maybeString(entry.kind);
+    const text = maybeString(entry.text);
+    if (eventIndex === null || receivedAt === null || kind === null || text === null) return [];
+    return [{
+      eventIndex,
+      receivedAt,
+      kind,
+      title: maybeString(entry.title) ?? undefined,
+      text,
+      transcriptChunkIndices: maybeNumberList(entry.transcriptChunkIndices) ?? [],
+      operatorUpdateIndices: maybeNumberList(entry.operatorUpdateIndices) ?? [],
+    }];
+  }).slice(-MAX_RECENT_MEETING_ITEMS);
 }

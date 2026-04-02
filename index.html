@@ -2516,6 +2516,58 @@
         line-height: 1.3;
       }
 
+      .hud-meeting-thread {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 6px 7px;
+        border: 1px solid rgba(120, 96, 64, 0.14);
+        border-radius: 5px;
+        background: rgba(255, 252, 246, 0.72);
+      }
+
+      .hud-meeting-thread-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding-left: 8px;
+        border-left: 2px solid rgba(120, 96, 64, 0.16);
+      }
+
+      .hud-meeting-thread-transcript {
+        border-left-color: rgba(90, 123, 123, 0.42);
+      }
+
+      .hud-meeting-thread-update {
+        border-left-color: rgba(138, 85, 72, 0.42);
+      }
+
+      .hud-meeting-thread-candidate {
+        border-left-color: rgba(154, 123, 53, 0.42);
+      }
+
+      .hud-meeting-thread-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        font-family: var(--font-mono);
+        font-size: var(--hud-font-xs);
+        color: var(--ink-faded);
+      }
+
+      .hud-meeting-thread-lane {
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--ink-light);
+      }
+
+      .hud-meeting-thread-text {
+        font-size: var(--hud-font-sm);
+        color: var(--ink-body);
+        line-height: 1.35;
+        white-space: pre-wrap;
+      }
+
       .hud-meeting-update-preview {
         display: flex;
         flex-direction: column;

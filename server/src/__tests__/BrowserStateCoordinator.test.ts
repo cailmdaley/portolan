@@ -26,6 +26,22 @@ describe('BrowserStateCoordinator', () => {
       },
       getMeetingState: () => ({
         activeMeeting: {
+          recentTranscriptChunks: [
+            {
+              chunkIndex: 2,
+              receivedAt: 200,
+              text: 'Pull up the prior calibration plot.',
+            },
+          ],
+          recentOperatorUpdates: [
+            {
+              updateIndex: 1,
+              receivedAt: 201,
+              kind: 'correction',
+              text: 'Keep the conclusion tentative.',
+            },
+          ],
+          recentCandidateEvents: [],
           meetingId: 'meeting-1',
           status: 'running',
           sourceType: 'manual',
@@ -54,6 +70,12 @@ describe('BrowserStateCoordinator', () => {
           meetingId: 'meeting-1',
           status: 'running',
           operatorUpdateCount: 1,
+          recentTranscriptChunks: [
+            expect.objectContaining({
+              chunkIndex: 2,
+              text: 'Pull up the prior calibration plot.',
+            }),
+          ],
         },
         lastMeeting: null,
       },

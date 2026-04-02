@@ -5,6 +5,13 @@ import type { ServerMeetingBridgeState, ServerMeetingRunState } from '../state/t
 
 const PORTOLAN_HTTP_BASE = `${window.location.protocol === 'https:' ? 'https' : 'http'}://${window.location.hostname}:4004`
 
+interface MeetingThreadItem {
+  receivedAt: number
+  lane: 'transcript' | 'update' | 'candidate'
+  label: string
+  text: string
+}
+
 interface CityHUDHeaderOptions {
   headerWidget: HTMLElement
   getCurrentCity: () => City | null
@@ -262,6 +269,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.candidateEventCount} candidate event${cityMeeting.candidateEventCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
+          ${this.renderMeetingThread(cityMeeting)}
           ${cityMeeting.lastChunkPreview ? `<div class="hud-meeting-preview">${escapeHtml(cityMeeting.lastChunkPreview)}</div>` : ''}
           ${cityMeeting.lastOperatorUpdatePreview ? `
             <div class="hud-meeting-update-preview">
@@ -423,6 +431,74 @@ export class CityHUDHeader {
 
   private renderDisabledAttr(disabled: boolean): string {
     return disabled ? 'disabled' : ''
+  }
+
+  private renderMeetingThread(meeting: ServerMeetingRunState): string {
+    const items: MeetingThreadItem[] = [
+      ...meeting.recentTranscriptChunks.map((chunk) => ({
+        receivedAt: chunk.receivedAt,
+        lane: 'transcript' as const,
+        label: this.describeTranscriptChunk(chunk),
+        text: chunk.text,
+      })),
+      ...meeting.recentOperatorUpdates.map((update) => ({
+        receivedAt: update.receivedAt,
+        lane: 'update' as const,
+        label: this.describeOperatorUpdate(update),
+        text: update.text,
+      })),
+      ...meeting.recentCandidateEvents.map((event) => ({
+        receivedAt: event.receivedAt,
+        lane: 'candidate' as const,
+        label: this.describeCandidateEvent(event),
+        text: event.title ? `${event.title}: ${event.text}` : event.text,
+      })),
+    ].sort((left, right) => right.receivedAt - left.receivedAt)
+
+    if (items.length === 0) {
+      return ''
+    }
+
+    return `
+      <div class="hud-meeting-thread">
+        <div class="hud-meeting-update-label">live thread</div>
+        ${items.map((item) => `
+          <div class="hud-meeting-thread-item hud-meeting-thread-${item.lane}">
+            <div class="hud-meeting-thread-meta">
+              <span class="hud-meeting-thread-lane">${escapeHtml(item.lane)}</span>
+              <span>${escapeHtml(item.label)}</span>
+              <span>${escapeHtml(this.relativeTime(item.receivedAt))}</span>
+            </div>
+            <div class="hud-meeting-thread-text">${escapeHtml(item.text)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `
+  }
+
+  private describeTranscriptChunk(chunk: ServerMeetingRunState['recentTranscriptChunks'][number]): string {
+    const parts = [`chunk ${chunk.chunkIndex}`]
+    if (chunk.speaker) parts.push(chunk.speaker)
+    if (chunk.status) parts.push(chunk.status)
+    if (chunk.timestampLocal) parts.push(chunk.timestampLocal)
+    return parts.join(' • ')
+  }
+
+  private describeOperatorUpdate(update: ServerMeetingRunState['recentOperatorUpdates'][number]): string {
+    return update.kind
+      ? `update ${update.updateIndex} • ${update.kind}`
+      : `update ${update.updateIndex}`
+  }
+
+  private describeCandidateEvent(event: ServerMeetingRunState['recentCandidateEvents'][number]): string {
+    const parts = [`candidate ${event.eventIndex}`, event.kind]
+    if (event.transcriptChunkIndices.length > 0) {
+      parts.push(`chunk ${event.transcriptChunkIndices.join(', ')}`)
+    }
+    if (event.operatorUpdateIndices.length > 0) {
+      parts.push(`update ${event.operatorUpdateIndices.join(', ')}`)
+    }
+    return parts.join(' • ')
   }
 
   private openMeetingFile(path: string): void {
