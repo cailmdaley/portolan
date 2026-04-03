@@ -702,10 +702,20 @@ describe('MeetingBridge', () => {
 
   it('promotes the current live brief into felt and records the promotion provenance', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
     const messenger = { send: vi.fn() };
     const fiberPromoter = {
       createFiber: vi.fn(async () => 'meeting-brief-fiber'),
     };
+    writeFileSync(join(cityPath, 'astra.yaml'), [
+      '$schema: https://astra-spec.org/v1/analysis.schema.json',
+      'version: "1.0"',
+      'name: Portolan',
+      'decisions: {}',
+      'prior_insights: {}',
+      'findings: {}',
+      '',
+    ].join('\n'));
 
     const bridge = new MeetingBridge({
       baseDir,
@@ -724,7 +734,7 @@ describe('MeetingBridge', () => {
         sessionId: 'worker-brief-promote',
         tmuxSession: 'worker-brief-promote',
         originId: 'local',
-        cwd: '/project/portolan',
+        cwd: cityPath,
       },
     });
 
@@ -737,6 +747,19 @@ describe('MeetingBridge', () => {
       transcriptChunkIndices: [1],
       operatorUpdateIndices: [1],
     });
+    bridge.ingestCandidateEvent({
+      kind: 'decision',
+      title: 'Hold calibration conclusion until DES comparison',
+      text: 'Do not finalize the calibration conclusion before reviewing the DES comparison.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestCandidateEvent({
+      kind: 'note',
+      title: 'Comparison run already scoped',
+      text: 'The DES-weight comparison run is already scoped and only needs execution.',
+      transcriptChunkIndices: [1],
+    });
     bridge.ingestRetrievedEvidence({
       type: 'fiber',
       title: 'use-des-weights',
@@ -747,7 +770,7 @@ describe('MeetingBridge', () => {
     const updated = await bridge.promoteLiveBrief();
 
     expect(fiberPromoter.createFiber).toHaveBeenCalledWith(expect.objectContaining({
-      cityPath: '/project/portolan',
+      cityPath,
       originId: 'local',
       kind: 'task',
       title: 'Meeting brief: Calibration remains open pending the DES comparison.',
@@ -763,10 +786,13 @@ describe('MeetingBridge', () => {
     }));
     expect(updated.briefPromotionCount).toBe(1);
     expect(updated.lastBriefPromotionFiberId).toBe('meeting-brief-fiber');
+    expect(updated.lastBriefPromotionAstraAnalysisId).toBe(`meeting-${run.meetingId}`.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/\./g, '-'));
     expect(updated.recentBriefPromotions).toEqual([
       expect.objectContaining({
         promotionIndex: 1,
         fiberId: 'meeting-brief-fiber',
+        astraAnalysisId: updated.lastBriefPromotionAstraAnalysisId,
+        astraPath: join(cityPath, 'astra.yaml'),
       }),
     ]);
 
@@ -776,7 +802,37 @@ describe('MeetingBridge', () => {
       meetingId: run.meetingId,
       promotionIndex: 1,
       fiberId: 'meeting-brief-fiber',
+      astraAnalysisId: updated.lastBriefPromotionAstraAnalysisId,
+      astraPath: join(cityPath, 'astra.yaml'),
     });
+
+    const astra = parseYaml(readFileSync(join(cityPath, 'astra.yaml'), 'utf-8')) as Record<string, any>;
+    const briefAnalysis = astra.analyses[updated.lastBriefPromotionAstraAnalysisId!];
+    expect(briefAnalysis).toMatchObject({
+      name: 'Meeting brief: Calibration remains open pending the DES comparison.',
+      tags: ['portolan', 'meeting', 'meeting-brief'],
+    });
+    expect(briefAnalysis.description).toContain('Calibration remains open pending the DES comparison.');
+    expect(briefAnalysis.description).toContain('meeting-brief-fiber');
+    expect(briefAnalysis.findings['meeting-summary']).toMatchObject({
+      claim: 'Calibration remains open pending the DES comparison.',
+      tags: ['meeting', 'meeting-summary'],
+    });
+    expect(briefAnalysis.findings['accepted-note-3']).toMatchObject({
+      claim: 'Comparison run already scoped',
+      notes: 'The DES-weight comparison run is already scoped and only needs execution.',
+      tags: ['meeting', 'accepted-note'],
+    });
+    expect(briefAnalysis.decisions['meeting-decision-2']).toMatchObject({
+      label: 'Hold calibration conclusion until DES comparison',
+      rationale: 'Do not finalize the calibration conclusion before reviewing the DES comparison.',
+      tags: ['meeting', 'meeting-decision'],
+      default: 'accepted',
+    });
+    expect(briefAnalysis.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'meeting_transcript_log', source: run.transcriptPath }),
+      expect.objectContaining({ id: 'meeting_operator_updates', source: run.updatesPath }),
+    ]));
   });
 
   it('rejects promoting an empty live brief', async () => {

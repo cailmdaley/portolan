@@ -92,6 +92,8 @@ export interface MeetingBriefPromotionEntry {
   receivedAt: number;
   title: string;
   fiberId: string;
+  astraAnalysisId?: string;
+  astraPath?: string;
 }
 
 export interface MeetingLiveBriefItem {
@@ -164,6 +166,7 @@ export interface MeetingRunState {
   lastRetrievedEvidencePreview?: string;
   lastBriefPromotionAt?: number;
   lastBriefPromotionFiberId?: string;
+  lastBriefPromotionAstraAnalysisId?: string;
   lastError?: string;
   recentTranscriptChunks: MeetingTranscriptEntry[];
   recentOperatorUpdates: MeetingOperatorUpdateEntry[];
@@ -220,6 +223,18 @@ export interface MeetingAstraPromoter {
     defaultOption: string;
     options: Record<string, { label: string; description: string }>;
   }): Promise<{ decisionId: string; astraPath: string }>;
+  upsertMeetingBrief(options: {
+    cityPath: string;
+    originId: string;
+    sshHost?: string;
+    analysisId: string;
+    title: string;
+    description: string;
+    tags: string[];
+    inputs: Array<Record<string, unknown>>;
+    findings: Record<string, Record<string, unknown>>;
+    decisions: Record<string, Record<string, unknown>>;
+  }): Promise<{ analysisId: string; astraPath: string }>;
 }
 
 interface NormalizedTranscriptChunk {
@@ -392,6 +407,7 @@ export class MeetingBridge {
       retrievalRequestCount: 0,
       retrievalEvidenceCount: 0,
       briefPromotionCount: 0,
+      lastBriefPromotionAstraAnalysisId: undefined,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentAssistantResponses: [],
@@ -684,17 +700,32 @@ export class MeetingBridge {
       kind: 'task',
       body,
     });
+    const astraPromotion = await this.astraPromoter.upsertMeetingBrief({
+      cityPath: active.cityPath,
+      originId: active.originId,
+      sshHost: active.sshHost,
+      analysisId: this.buildPromotedAstraBriefAnalysisId(active),
+      title: normalizedTitle,
+      description: this.buildPromotedBriefAstraDescription(active, fiberId),
+      tags: ['portolan', 'meeting', 'meeting-brief'],
+      inputs: this.buildPromotedBriefAstraInputs(active),
+      findings: this.buildPromotedBriefAstraFindings(active),
+      decisions: this.buildPromotedBriefAstraDecisions(active),
+    });
 
     const promotionIndex = active.briefPromotionCount + 1;
     const promotedAt = Date.now();
     active.briefPromotionCount = promotionIndex;
     active.lastBriefPromotionAt = promotedAt;
     active.lastBriefPromotionFiberId = fiberId;
+    active.lastBriefPromotionAstraAnalysisId = astraPromotion.analysisId;
     active.recentBriefPromotions = appendRecentItem(active.recentBriefPromotions, {
       promotionIndex,
       receivedAt: promotedAt,
       title: normalizedTitle,
       fiberId,
+      astraAnalysisId: astraPromotion.analysisId,
+      astraPath: astraPromotion.astraPath,
     });
 
     appendJsonLine(active.briefPromotionsPath, {
@@ -703,6 +734,8 @@ export class MeetingBridge {
       receivedAt: promotedAt,
       title: normalizedTitle,
       fiberId,
+      astraAnalysisId: astraPromotion.analysisId,
+      astraPath: astraPromotion.astraPath,
     });
     this.writeMetadata(active);
     this.emitStateChanged();
@@ -1468,6 +1501,10 @@ export class MeetingBridge {
     return `Meeting brief: ${run.meetingId}`;
   }
 
+  private buildPromotedAstraBriefAnalysisId(run: MeetingRunState): string {
+    return sanitizeSegment(`meeting-${run.meetingId}`).replace(/\./g, '-');
+  }
+
   private buildPromotedBriefBody(run: MeetingRunState, title: string): string {
     const brief = run.liveBrief;
     const hasContent = Boolean(brief.currentNarrative)
@@ -1519,6 +1556,196 @@ export class MeetingBridge {
     );
 
     return lines.join('\n');
+  }
+
+  private buildPromotedBriefAstraDescription(run: MeetingRunState, fiberId: string): string {
+    const sections: string[] = [];
+    const brief = run.liveBrief;
+
+    if (brief.currentNarrative?.text.trim()) {
+      sections.push(brief.currentNarrative.text.trim());
+    }
+
+    if (brief.openQuestions.length > 0) {
+      sections.push(
+        `Open questions: ${brief.openQuestions.map((item) => item.title?.trim() || item.text.trim()).join('; ')}.`,
+      );
+    }
+
+    if (brief.actionItems.length > 0) {
+      sections.push(
+        `Action items: ${brief.actionItems.map((item) => item.title?.trim() || item.text.trim()).join('; ')}.`,
+      );
+    }
+
+    if (brief.acceptedNotes.length > 0) {
+      sections.push(
+        `Accepted notes: ${brief.acceptedNotes.map((item) => item.title?.trim() || item.text.trim()).join('; ')}.`,
+      );
+    }
+
+    if (brief.evidenceInView.length > 0) {
+      sections.push(
+        `Evidence in view: ${brief.evidenceInView.map((item) => item.title).join('; ')}.`,
+      );
+    }
+
+    sections.push(
+      `Promoted from Portolan meeting ${run.meetingId}.`,
+      `Meeting brief fiber: ${fiberId}.`,
+      `Meeting metadata: ${run.metadataPath}.`,
+      `Transcript log: ${run.transcriptPath}.`,
+      `Operator update log: ${run.updatesPath}.`,
+      `Candidate event log: ${run.candidateEventsPath}.`,
+      `Retrieved evidence log: ${run.retrievalEvidencePath}.`,
+    );
+
+    return sections.join('\n\n');
+  }
+
+  private buildPromotedBriefAstraInputs(run: MeetingRunState): Array<Record<string, unknown>> {
+    return [
+      {
+        id: 'meeting_metadata',
+        type: 'data',
+        description: 'Persisted metadata for the active Portolan meeting run.',
+        source: run.metadataPath,
+      },
+      {
+        id: 'meeting_transcript_log',
+        type: 'data',
+        description: 'Append-only transcript log for the active Portolan meeting run.',
+        source: run.transcriptPath,
+      },
+      {
+        id: 'meeting_operator_updates',
+        type: 'data',
+        description: 'Operator steering and correction log for the active Portolan meeting run.',
+        source: run.updatesPath,
+      },
+      {
+        id: 'meeting_candidate_events',
+        type: 'data',
+        description: 'Accepted meeting-native candidate captures with transcript provenance.',
+        source: run.candidateEventsPath,
+      },
+      {
+        id: 'meeting_retrieved_evidence',
+        type: 'data',
+        description: 'Evidence explicitly pulled into the live meeting thread.',
+        source: run.retrievalEvidencePath,
+      },
+    ];
+  }
+
+  private buildPromotedBriefAstraFindings(run: MeetingRunState): Record<string, Record<string, unknown>> {
+    const findings: Record<string, Record<string, unknown>> = {};
+    const now = new Date().toISOString();
+
+    const addFinding = (
+      id: string,
+      claim: string,
+      notes: string,
+      tags: string[],
+      transcriptChunkIndices: number[],
+      operatorUpdateIndices: number[],
+    ) => {
+      findings[id] = {
+        id,
+        claim,
+        created_at: now,
+        tags,
+        notes,
+        evidence: this.buildPromotedBriefFindingEvidence(run, id, transcriptChunkIndices, operatorUpdateIndices),
+      };
+    };
+
+    if (run.liveBrief.currentNarrative?.text.trim()) {
+      addFinding(
+        'meeting-summary',
+        run.liveBrief.currentNarrative.text.trim(),
+        `Rolling meeting narrative promoted from Portolan meeting ${run.meetingId}.`,
+        ['meeting', 'meeting-summary'],
+        [],
+        [run.liveBrief.currentNarrative.updateIndex],
+      );
+    }
+
+    run.liveBrief.acceptedNotes.forEach((item) => {
+      const label = item.title?.trim() || item.text.trim();
+      addFinding(
+        `accepted-note-${item.eventIndex}`,
+        label,
+        item.text.trim(),
+        ['meeting', 'accepted-note'],
+        item.transcriptChunkIndices,
+        item.operatorUpdateIndices,
+      );
+    });
+
+    return findings;
+  }
+
+  private buildPromotedBriefFindingEvidence(
+    run: MeetingRunState,
+    findingId: string,
+    transcriptChunkIndices: number[],
+    operatorUpdateIndices: number[],
+  ): Array<Record<string, unknown>> {
+    const evidence: Array<Record<string, unknown>> = [];
+
+    if (transcriptChunkIndices.length > 0) {
+      evidence.push({
+        id: `${findingId}-transcript`,
+        artifact: run.transcriptPath,
+      });
+    }
+
+    if (operatorUpdateIndices.length > 0) {
+      evidence.push({
+        id: `${findingId}-updates`,
+        artifact: run.updatesPath,
+      });
+    }
+
+    if (evidence.length === 0) {
+      evidence.push({
+        id: `${findingId}-metadata`,
+        artifact: run.metadataPath,
+      });
+    }
+
+    return evidence;
+  }
+
+  private buildPromotedBriefAstraDecisions(run: MeetingRunState): Record<string, Record<string, unknown>> {
+    const decisions: Record<string, Record<string, unknown>> = {};
+
+    run.liveBrief.decisions.forEach((item) => {
+      const decisionId = `meeting-decision-${item.eventIndex}`;
+      if (item.promotedAstraDecisionId) {
+        decisions[decisionId] = {
+          from: item.promotedAstraDecisionId,
+        };
+        return;
+      }
+
+      const label = item.title?.trim() || item.text.trim();
+      decisions[decisionId] = {
+        label,
+        rationale: item.text.trim(),
+        tags: ['meeting', 'meeting-decision'],
+        default: 'accepted',
+        options: {
+          accepted: {
+            label: 'Accepted',
+            description: 'Accepted during the Portolan live meeting brief promotion.',
+          },
+        },
+      };
+    });
+
+    return decisions;
   }
 
   private appendBriefItemSection(lines: string[], heading: string, items: MeetingLiveBriefItem[]): void {
@@ -1767,6 +1994,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastRetrievedEvidencePreview: maybeString(value.lastRetrievedEvidencePreview) ?? undefined,
     lastBriefPromotionAt: maybeNumber(value.lastBriefPromotionAt) ?? undefined,
     lastBriefPromotionFiberId: maybeString(value.lastBriefPromotionFiberId) ?? undefined,
+    lastBriefPromotionAstraAnalysisId: maybeString(value.lastBriefPromotionAstraAnalysisId) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
     liveBrief: buildMeetingLiveBrief({
       recentOperatorUpdates: [],
@@ -1834,6 +2062,8 @@ function parseBriefPromotionEntry(value: unknown): MeetingBriefPromotionEntry | 
     receivedAt,
     title,
     fiberId,
+    astraAnalysisId: maybeString(value.astraAnalysisId) ?? undefined,
+    astraPath: maybeString(value.astraPath) ?? undefined,
   };
 }
 
@@ -2149,6 +2379,51 @@ class DefaultMeetingAstraPromoter implements MeetingAstraPromoter {
 
     return {
       decisionId: options.decisionId,
+      astraPath,
+    };
+  }
+
+  async upsertMeetingBrief(options: {
+    cityPath: string;
+    originId: string;
+    sshHost?: string;
+    analysisId: string;
+    title: string;
+    description: string;
+    tags: string[];
+    inputs: Array<Record<string, unknown>>;
+    findings: Record<string, Record<string, unknown>>;
+    decisions: Record<string, Record<string, unknown>>;
+  }): Promise<{ analysisId: string; astraPath: string }> {
+    const astraPath = join(options.cityPath, 'astra.yaml');
+    const content = options.originId === 'local'
+      ? this.readLocalAstra(astraPath)
+      : await this.readRemoteAstra(options.sshHost, astraPath);
+    const parsed = parseYaml(content || '');
+    const document = isRecord(parsed) ? parsed as Record<string, unknown> : {};
+
+    const analyses = isRecord(document.analyses) ? document.analyses as Record<string, unknown> : {};
+    analyses[options.analysisId] = {
+      name: options.title,
+      tags: options.tags,
+      description: options.description,
+      inputs: options.inputs,
+      outputs: [],
+      prior_insights: {},
+      findings: options.findings,
+      decisions: options.decisions,
+    };
+    document.analyses = analyses;
+
+    const nextContent = stringifyYaml(document);
+    if (options.originId === 'local') {
+      writeFileSync(astraPath, nextContent);
+    } else {
+      await this.writeRemoteAstra(options.sshHost, astraPath, nextContent);
+    }
+
+    return {
+      analysisId: options.analysisId,
       astraPath,
     };
   }
