@@ -80,6 +80,11 @@ export class HttpApiMeeting {
       return;
     }
 
+    if (data.sourceType !== undefined && data.sourceType !== 'voiceink' && data.sourceType !== 'manual') {
+      this.sendJsonError(res, 400, 'Invalid meeting sourceType');
+      return;
+    }
+
     const session = this.sessionLookup.findSession(data.workerId);
     if (!session) {
       this.sendJsonError(res, 404, 'Worker not found');

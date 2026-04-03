@@ -72,6 +72,67 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', status: 'running' });
   });
 
+  it('starts a manual-ingress meeting bridge without VoiceInk options', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: null, lastMeeting: null })),
+      start: vi.fn(() => ({ meetingId: 'meeting-manual', status: 'running', sourceType: 'manual' })),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+    };
+
+    api.setSessionLookup({
+      findSession: (sessionId: string) => sessionId === localSession.id ? localSession : undefined,
+      getAllSessions: () => [localSession],
+    });
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/start', {
+      workerId: localSession.id,
+      sourceType: 'manual',
+      initialPrompt: 'Stay ready for HTTP transcript chunks.',
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.start).toHaveBeenCalledWith({
+      target: {
+        sessionId: localSession.id,
+        tmuxSession: localSession.tmuxSession,
+        originId: localSession.originId,
+        cwd: localSession.cwd,
+        sshHost: undefined,
+      },
+      initialPrompt: 'Stay ready for HTTP transcript chunks.',
+      sourceType: 'manual',
+      voiceInk: undefined,
+    });
+    expect(res.data.meeting).toEqual({ meetingId: 'meeting-manual', status: 'running', sourceType: 'manual' });
+  });
+
+  it('rejects invalid meeting source types', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setSessionLookup({
+      findSession: (sessionId: string) => sessionId === localSession.id ? localSession : undefined,
+      getAllSessions: () => [localSession],
+    });
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: null, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/start', {
+      workerId: localSession.id,
+      sourceType: 'bad-source',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Invalid meeting sourceType');
+  });
+
   it('returns 404 when starting a remote meeting bridge without a resolved ssh host', async () => {
     const remoteSession = {
       ...localSession,
