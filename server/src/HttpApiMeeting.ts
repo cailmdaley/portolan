@@ -319,6 +319,60 @@ export class HttpApiMeeting {
     }
   }
 
+  async handleRetrievedEvidence(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{
+      evidence?: unknown;
+      type?: unknown;
+      title?: unknown;
+      fiberId?: unknown;
+      path?: unknown;
+      line?: unknown;
+      match?: unknown;
+      requestIndex?: unknown;
+    }>(req, res);
+    if (!data) return;
+
+    const evidence = data.evidence ?? (
+      data.title !== undefined
+        ? {
+            type: data.type,
+            title: data.title,
+            fiberId: data.fiberId,
+            path: data.path,
+            line: data.line,
+            match: data.match,
+            requestIndex: data.requestIndex,
+          }
+        : undefined
+    );
+    if (evidence === undefined) {
+      this.sendJsonError(res, 400, 'Missing evidence');
+      return;
+    }
+
+    try {
+      const meeting = this.meetingBridge.ingestRetrievedEvidence(evidence);
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge'
+        ? 409
+        : message === 'Meeting retrieved evidence title is empty'
+          || message === 'Meeting retrieved evidence type is invalid'
+          || message === 'Meeting retrieved evidence fiber is missing fiberId'
+          || message === 'Meeting retrieved evidence file is missing path'
+          || message.startsWith('Meeting retrieved evidence cites invalid retrieval request index:')
+          ? 400
+          : 500;
+      this.sendJsonError(res, status, `Failed to ingest meeting retrieved evidence: ${message}`);
+    }
+  }
+
   private getState(): MeetingBridgeState | null {
     return this.meetingBridge?.getState() ?? null;
   }

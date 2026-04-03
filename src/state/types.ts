@@ -118,6 +118,17 @@ export interface ServerMeetingRunState {
     receivedAt: number
     text: string
   }>
+  recentRetrievedEvidence: Array<{
+    evidenceIndex: number
+    receivedAt: number
+    requestIndex?: number
+    type: 'fiber' | 'file'
+    title: string
+    fiberId?: string
+    path?: string
+    line?: number
+    match?: string
+  }>
   meetingId: string
   status: 'running' | 'stopped' | 'error'
   sourceType: 'voiceink' | 'manual'
@@ -135,6 +146,7 @@ export interface ServerMeetingRunState {
   candidateEventsPath: string
   candidatePromotionsPath: string
   retrievalRequestsPath: string
+  retrievalEvidencePath: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number
@@ -144,6 +156,7 @@ export interface ServerMeetingRunState {
   candidateEventCount: number
   promotedCandidateEventCount: number
   retrievalRequestCount: number
+  retrievalEvidenceCount: number
   lastChunkAt?: number
   lastChunkPreview?: string
   lastOperatorUpdateAt?: number
@@ -157,6 +170,8 @@ export interface ServerMeetingRunState {
   lastPromotedCandidateAstraDecisionId?: string
   lastRetrievalRequestAt?: number
   lastRetrievalRequestPreview?: string
+  lastRetrievedEvidenceAt?: number
+  lastRetrievedEvidencePreview?: string
   lastError?: string
 }
 

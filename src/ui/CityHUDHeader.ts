@@ -8,7 +8,7 @@ const PORTOLAN_HTTP_BASE = `${window.location.protocol === 'https:' ? 'https' : 
 
 interface MeetingThreadItem {
   receivedAt: number
-  lane: 'transcript' | 'update' | 'assistant' | 'candidate' | 'retrieval'
+  lane: 'transcript' | 'update' | 'assistant' | 'candidate' | 'retrieval' | 'evidence'
   label: string
   text: string
   selectable: boolean
@@ -67,6 +67,7 @@ export class CityHUDHeader {
   private retrievalResults: MeetingRetrievalResult[] = []
   private retrievalSearchToken = 0
   private retrievalSearchPending = false
+  private retrievalResultRequestIndex: number | null = null
   private selectedTranscriptChunkIndices: number[] = []
   private selectedOperatorUpdateIndices: number[] = []
   private selectedMeetingId: string | null = null
@@ -94,6 +95,7 @@ export class CityHUDHeader {
     this.meetingRetrievalDraft = ''
     this.retrievalResults = []
     this.retrievalSearchPending = false
+    this.retrievalResultRequestIndex = null
     this.clearMeetingSelections()
     this.headerWidget.querySelector('.hud-git-detail-content')!.innerHTML = ''
     this.headerWidget.querySelector('.hud-actions')!.innerHTML = ''
@@ -340,6 +342,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.candidateEventCount} candidate event${cityMeeting.candidateEventCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.promotedCandidateEventCount} promoted</span>
             <span>${cityMeeting.retrievalRequestCount} retrieval request${cityMeeting.retrievalRequestCount === 1 ? '' : 's'}</span>
+            <span>${cityMeeting.retrievalEvidenceCount} evidence pull${cityMeeting.retrievalEvidenceCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
           ${this.renderMeetingThread(cityMeeting)}
@@ -372,6 +375,12 @@ export class CityHUDHeader {
             <div class="hud-meeting-update-preview">
               <span class="hud-meeting-update-label">latest retrieval</span>
               <span>${escapeHtml(cityMeeting.lastRetrievalRequestPreview)}</span>
+            </div>
+          ` : ''}
+          ${cityMeeting.lastRetrievedEvidencePreview ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest evidence</span>
+              <span>${escapeHtml(cityMeeting.lastRetrievedEvidencePreview)}</span>
             </div>
           ` : ''}
           ${cityMeeting.lastError ? `<div class="hud-meeting-error">${escapeHtml(cityMeeting.lastError)}</div>` : ''}
@@ -418,6 +427,7 @@ export class CityHUDHeader {
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidateEventsPath)}">Candidate events</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidatePromotionsPath)}">Candidate promotions</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalRequestsPath)}">Retrieval requests</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalEvidencePath)}">Retrieved evidence</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.metadataPath)}">Meeting metadata</button>
           </div>
         </div>
@@ -597,12 +607,26 @@ export class CityHUDHeader {
         event.stopPropagation()
         const type = item.dataset.type
         if (type === 'fiber') {
-          this.openMeetingFiber(item.dataset.id)
+          const fiberId = item.dataset.id
+          this.openMeetingFiber(fiberId)
+          void this.recordMeetingRetrievedEvidence({
+            type: 'fiber',
+            title: item.dataset.title ?? fiberId ?? 'Fiber',
+            fiberId,
+            match: item.dataset.match,
+          })
           return
         }
         const path = item.dataset.path
         if (!path) return
         this.openMeetingFile(path, item.dataset.line ? parseInt(item.dataset.line, 10) : undefined)
+        void this.recordMeetingRetrievedEvidence({
+          type: 'file',
+          title: item.dataset.title ?? path,
+          path,
+          line: item.dataset.line ? parseInt(item.dataset.line, 10) : undefined,
+          match: item.dataset.match,
+        })
       })
     }
 
@@ -653,9 +677,11 @@ export class CityHUDHeader {
           <div
             class="hud-meeting-thread-item hud-meeting-retrieval-result"
             data-type="${escapeHtml(result.type)}"
+            data-title="${escapeHtml(result.title)}"
             ${result.path ? `data-path="${escapeHtml(result.path)}"` : ''}
             ${result.line ? `data-line="${result.line}"` : ''}
             ${result.id ? `data-id="${escapeHtml(result.id)}"` : ''}
+            ${result.match ? `data-match="${escapeHtml(result.match)}"` : ''}
             tabindex="0"
             role="button"
           >
@@ -748,6 +774,14 @@ export class CityHUDHeader {
         selectable: false,
         selected: false,
       })),
+      ...meeting.recentRetrievedEvidence.map((evidence) => ({
+        receivedAt: evidence.receivedAt,
+        lane: 'evidence' as const,
+        label: this.describeRetrievedEvidence(evidence),
+        text: evidence.match ? `${evidence.title}: ${evidence.match}` : evidence.title,
+        selectable: false,
+        selected: false,
+      })),
     ].sort((left, right) => right.receivedAt - left.receivedAt)
 
     if (items.length === 0) {
@@ -822,6 +856,13 @@ export class CityHUDHeader {
     return `retrieval ${request.requestIndex}`
   }
 
+  private describeRetrievedEvidence(evidence: ServerMeetingRunState['recentRetrievedEvidence'][number]): string {
+    const parts = [`evidence ${evidence.evidenceIndex}`, evidence.type]
+    if (evidence.requestIndex) parts.push(`request ${evidence.requestIndex}`)
+    if (evidence.line) parts.push(`line ${evidence.line}`)
+    return parts.join(' • ')
+  }
+
   private syncMeetingSelection(meeting: ServerMeetingRunState | null): void {
     if (!meeting) {
       this.clearMeetingSelections()
@@ -832,6 +873,7 @@ export class CityHUDHeader {
       this.selectedMeetingId = meeting.meetingId
       this.selectedTranscriptChunkIndices = []
       this.selectedOperatorUpdateIndices = []
+      this.retrievalResultRequestIndex = null
       return
     }
 
@@ -845,6 +887,7 @@ export class CityHUDHeader {
     this.selectedTranscriptChunkIndices = []
     this.selectedOperatorUpdateIndices = []
     this.selectedMeetingId = null
+    this.retrievalResultRequestIndex = null
   }
 
   private hasCandidateProvenanceSelection(): boolean {
@@ -876,6 +919,33 @@ export class CityHUDHeader {
     const currentCity = this.getCurrentCity()
     if (!currentCity || !fiberId) return
     this.openMeetingFile(`${currentCity.path}/.felt/${fiberId}/${fiberId}.md`)
+  }
+
+  private async recordMeetingRetrievedEvidence(evidence: {
+    type: 'fiber' | 'file'
+    title: string
+    fiberId?: string
+    path?: string
+    line?: number
+    match?: string
+  }): Promise<void> {
+    const cityMeeting = this.selectMeetingForCurrentCity()
+    if (!cityMeeting || cityMeeting.status !== 'running') return
+
+    try {
+      await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge/retrieval/evidence`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...evidence,
+          requestIndex: this.retrievalResultRequestIndex ?? undefined,
+        }),
+      })
+    } catch {
+      // Opening the evidence should still work even if meeting bookkeeping fails.
+    }
   }
 
   private lookupWorkerName(sessionId: string, fallback: string): string {
@@ -1036,6 +1106,9 @@ export class CityHUDHeader {
       if (!response.ok) {
         throw new Error(await this.readErrorMessage(response))
       }
+
+      const data = await response.json() as { meeting?: ServerMeetingRunState }
+      this.retrievalResultRequestIndex = data.meeting?.retrievalRequestCount ?? null
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to send retrieval request: ${message}`)

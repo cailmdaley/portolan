@@ -739,6 +739,77 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('persists retrieved evidence and injects it into the active worker thread', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-retrieval-evidence',
+        tmuxSession: 'worker-retrieval-evidence',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestRetrievalRequest({
+      text: 'Pull up the DES weighting fiber.',
+    });
+
+    const updated = bridge.ingestRetrievedEvidence({
+      type: 'fiber',
+      title: 'use-des-weights',
+      fiberId: 'use-des-weights',
+      match: 'Decision to use DES weights for the comparison run.',
+      requestIndex: 1,
+    });
+
+    expect(updated.retrievalEvidenceCount).toBe(1);
+    expect(updated.injectedCount).toBe(3);
+    expect(updated.lastRetrievedEvidencePreview).toBe('use-des-weights');
+    expect(updated.recentRetrievedEvidence).toEqual([
+      expect.objectContaining({
+        evidenceIndex: 1,
+        type: 'fiber',
+        title: 'use-des-weights',
+        fiberId: 'use-des-weights',
+        requestIndex: 1,
+      }),
+    ]);
+    expect(messenger.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tmuxSession: 'worker-retrieval-evidence' }),
+      expect.stringContaining('Portolan Meeting Retrieved Evidence'),
+      { pressEnter: true },
+    );
+
+    const evidenceLog = JSON.parse(readFileSync(run.retrievalEvidencePath, 'utf-8').trim());
+    expect(evidenceLog).toMatchObject({
+      meetingId: run.meetingId,
+      evidenceIndex: 1,
+      type: 'fiber',
+      title: 'use-des-weights',
+      fiberId: 'use-des-weights',
+      requestIndex: 1,
+    });
+
+    const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n');
+    expect(JSON.parse(injections[2])).toMatchObject({
+      kind: 'retrieved-evidence',
+      evidenceIndex: 1,
+    });
+  });
+
   it('rejects candidate events without transcript or operator provenance', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };

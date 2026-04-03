@@ -75,6 +75,18 @@ export interface MeetingRetrievalRequestEntry {
   text: string;
 }
 
+export interface MeetingRetrievedEvidenceEntry {
+  evidenceIndex: number;
+  receivedAt: number;
+  requestIndex?: number;
+  type: 'fiber' | 'file';
+  title: string;
+  fiberId?: string;
+  path?: string;
+  line?: number;
+  match?: string;
+}
+
 export interface MeetingRunState {
   meetingId: string;
   status: 'running' | 'stopped' | 'error';
@@ -93,6 +105,7 @@ export interface MeetingRunState {
   candidateEventsPath: string;
   candidatePromotionsPath: string;
   retrievalRequestsPath: string;
+  retrievalEvidencePath: string;
   metadataPath: string;
   bootstrapSentAt?: number;
   chunkCount: number;
@@ -102,6 +115,7 @@ export interface MeetingRunState {
   candidateEventCount: number;
   promotedCandidateEventCount: number;
   retrievalRequestCount: number;
+  retrievalEvidenceCount: number;
   lastChunkAt?: number;
   lastChunkPreview?: string;
   lastOperatorUpdateAt?: number;
@@ -115,12 +129,15 @@ export interface MeetingRunState {
   lastPromotedCandidateAstraDecisionId?: string;
   lastRetrievalRequestAt?: number;
   lastRetrievalRequestPreview?: string;
+  lastRetrievedEvidenceAt?: number;
+  lastRetrievedEvidencePreview?: string;
   lastError?: string;
   recentTranscriptChunks: MeetingTranscriptEntry[];
   recentOperatorUpdates: MeetingOperatorUpdateEntry[];
   recentAssistantResponses: MeetingAssistantResponseEntry[];
   recentCandidateEvents: MeetingCandidateEventEntry[];
   recentRetrievalRequests: MeetingRetrievalRequestEntry[];
+  recentRetrievedEvidence: MeetingRetrievedEvidenceEntry[];
 }
 
 export interface MeetingBridgeState {
@@ -223,6 +240,19 @@ interface NormalizedRetrievalRequest {
   raw: unknown;
 }
 
+interface NormalizedRetrievedEvidence {
+  evidenceIndex: number;
+  receivedAt: number;
+  requestIndex: number | null;
+  type: 'fiber' | 'file';
+  title: string;
+  fiberId: string | null;
+  path: string | null;
+  line: number | null;
+  match: string | null;
+  raw: unknown;
+}
+
 const MAX_RECENT_MEETING_ITEMS = 6;
 
 export class MeetingBridge {
@@ -294,6 +324,7 @@ export class MeetingBridge {
     const candidateEventsPath = join(meetingDir, 'candidate-events.jsonl');
     const candidatePromotionsPath = join(meetingDir, 'candidate-promotions.jsonl');
     const retrievalRequestsPath = join(meetingDir, 'retrieval-requests.jsonl');
+    const retrievalEvidencePath = join(meetingDir, 'retrieved-evidence.jsonl');
     const metadataPath = join(meetingDir, 'meeting.json');
 
     const run: MeetingRunState = {
@@ -313,6 +344,7 @@ export class MeetingBridge {
       candidateEventsPath,
       candidatePromotionsPath,
       retrievalRequestsPath,
+      retrievalEvidencePath,
       metadataPath,
       chunkCount: 0,
       injectedCount: 0,
@@ -321,11 +353,13 @@ export class MeetingBridge {
       candidateEventCount: 0,
       promotedCandidateEventCount: 0,
       retrievalRequestCount: 0,
+      retrievalEvidenceCount: 0,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentAssistantResponses: [],
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
+      recentRetrievedEvidence: [],
     };
 
     this.state.activeMeeting = run;
@@ -492,6 +526,24 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleRetrievalRequest(target, active, rawRequest);
+    return cloneMeetingRunState(active);
+  }
+
+  ingestRetrievedEvidence(rawEvidence: unknown): MeetingRunState {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      throw new Error('No active meeting bridge');
+    }
+
+    const target: MeetingBridgeTarget = {
+      sessionId: active.sessionId,
+      tmuxSession: active.tmuxSession,
+      originId: active.originId,
+      cwd: active.cityPath,
+      sshHost: active.sshHost,
+    };
+
+    this.handleRetrievedEvidence(target, active, rawEvidence);
     return cloneMeetingRunState(active);
   }
 
@@ -819,6 +871,58 @@ export class MeetingBridge {
     }
   }
 
+  private handleRetrievedEvidence(target: MeetingBridgeTarget, run: MeetingRunState, rawEvidence: unknown): void {
+    if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
+
+    try {
+      const evidence = this.normalizeRetrievedEvidence(rawEvidence, run.retrievalEvidenceCount + 1, run);
+      run.retrievalEvidenceCount = evidence.evidenceIndex;
+      run.lastRetrievedEvidenceAt = evidence.receivedAt;
+      run.lastRetrievedEvidencePreview = evidence.title;
+
+      appendJsonLine(run.retrievalEvidencePath, {
+        meetingId: run.meetingId,
+        evidenceIndex: evidence.evidenceIndex,
+        receivedAt: evidence.receivedAt,
+        requestIndex: evidence.requestIndex,
+        type: evidence.type,
+        title: evidence.title,
+        fiberId: evidence.fiberId,
+        path: evidence.path,
+        line: evidence.line,
+        match: evidence.match,
+        raw: evidence.raw,
+      });
+      run.recentRetrievedEvidence = appendRecentItem(run.recentRetrievedEvidence, {
+        evidenceIndex: evidence.evidenceIndex,
+        receivedAt: evidence.receivedAt,
+        requestIndex: evidence.requestIndex ?? undefined,
+        type: evidence.type,
+        title: evidence.title,
+        fiberId: evidence.fiberId ?? undefined,
+        path: evidence.path ?? undefined,
+        line: evidence.line ?? undefined,
+        match: evidence.match ?? undefined,
+      });
+
+      const message = this.buildRetrievedEvidenceMessage(run, evidence);
+      this.messenger.send(target, message, { pressEnter: true });
+      run.injectedCount += 1;
+      appendJsonLine(run.injectionsPath, {
+        kind: 'retrieved-evidence',
+        evidenceIndex: evidence.evidenceIndex,
+        sentAt: Date.now(),
+        message,
+      });
+
+      this.writeMetadata(run);
+      this.emitStateChanged();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw err;
+    }
+  }
+
   private readCandidateEvent(run: MeetingRunState, eventIndex: number): NormalizedCandidateEvent | null {
     const promotions = new Map<number, {
       promotedAt: number | null;
@@ -1052,6 +1156,51 @@ export class MeetingBridge {
     };
   }
 
+  private normalizeRetrievedEvidence(
+    rawEvidence: unknown,
+    evidenceIndex: number,
+    run: MeetingRunState,
+  ): NormalizedRetrievedEvidence {
+    const record = isRecord(rawEvidence) ? rawEvidence : {};
+    const rawType = maybeString(record.type);
+    const type = rawType === 'fiber' || rawType === 'file' ? rawType : null;
+    const title = maybeString(record.title) ?? '';
+    const fiberId = maybeString(record.fiberId);
+    const path = maybeString(record.path);
+    const line = maybeNumber(record.line);
+    const match = maybeString(record.match);
+    const requestIndex = maybeNumber(record.requestIndex);
+
+    if (!type) {
+      throw new Error('Meeting retrieved evidence type is invalid');
+    }
+    if (!title.trim()) {
+      throw new Error('Meeting retrieved evidence title is empty');
+    }
+    if (type === 'fiber' && !fiberId) {
+      throw new Error('Meeting retrieved evidence fiber is missing fiberId');
+    }
+    if (type === 'file' && !path) {
+      throw new Error('Meeting retrieved evidence file is missing path');
+    }
+    if (requestIndex !== null && (!Number.isInteger(requestIndex) || requestIndex < 1 || requestIndex > run.retrievalRequestCount)) {
+      throw new Error(`Meeting retrieved evidence cites invalid retrieval request index: ${requestIndex}`);
+    }
+
+    return {
+      evidenceIndex,
+      receivedAt: Date.now(),
+      requestIndex,
+      type,
+      title: title.trim(),
+      fiberId,
+      path,
+      line: line !== null && Number.isInteger(line) && line > 0 ? line : null,
+      match,
+      raw: rawEvidence,
+    };
+  }
+
   private buildBootstrapPrompt(run: MeetingRunState): string {
     return [
       'Portolan meeting assistant mode is now active.',
@@ -1255,6 +1404,29 @@ export class MeetingBridge {
       '[/Portolan Meeting Retrieval Request]',
     ].join('\n');
   }
+
+  private buildRetrievedEvidenceMessage(run: MeetingRunState, evidence: NormalizedRetrievedEvidence): string {
+    const lines = [
+      '[Portolan Meeting Retrieved Evidence]',
+      `meeting_id: ${run.meetingId}`,
+      `evidence_index: ${evidence.evidenceIndex}`,
+      `received_at: ${evidence.receivedAt}`,
+      `type: ${evidence.type}`,
+      `title: ${evidence.title}`,
+    ];
+
+    if (evidence.requestIndex !== null) lines.push(`request_index: ${evidence.requestIndex}`);
+    if (evidence.fiberId) lines.push(`fiber_id: ${evidence.fiberId}`);
+    if (evidence.path) lines.push(`path: ${evidence.path}`);
+    if (evidence.line !== null) lines.push(`line: ${evidence.line}`);
+    if (evidence.match) {
+      lines.push('match:');
+      lines.push(evidence.match);
+    }
+    lines.push('Treat this as evidence explicitly pulled into view during the meeting. Keep later narrative and decisions linked to it when relevant.');
+    lines.push('[/Portolan Meeting Retrieved Evidence]');
+    return lines.join('\n');
+  }
 }
 
 function appendJsonLine(path: string, value: unknown): void {
@@ -1327,6 +1499,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const candidateEventsPath = maybeString(value.candidateEventsPath);
   const candidatePromotionsPath = maybeString(value.candidatePromotionsPath);
   const retrievalRequestsPath = maybeString(value.retrievalRequestsPath);
+  const retrievalEvidencePath = maybeString(value.retrievalEvidencePath);
   const metadataPath = maybeString(value.metadataPath);
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
@@ -1335,6 +1508,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const candidateEventCount = maybeNumber(value.candidateEventCount);
   const promotedCandidateEventCount = maybeNumber(value.promotedCandidateEventCount);
   const retrievalRequestCount = maybeNumber(value.retrievalRequestCount);
+  const retrievalEvidenceCount = maybeNumber(value.retrievalEvidenceCount);
 
   if (
     !meetingId
@@ -1359,6 +1533,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const resolvedCandidateEventsPath = candidateEventsPath ?? join(dirname(metadataPath), 'candidate-events.jsonl');
   const resolvedCandidatePromotionsPath = candidatePromotionsPath ?? join(dirname(metadataPath), 'candidate-promotions.jsonl');
   const resolvedRetrievalRequestsPath = retrievalRequestsPath ?? join(dirname(metadataPath), 'retrieval-requests.jsonl');
+  const resolvedRetrievalEvidencePath = retrievalEvidencePath ?? join(dirname(metadataPath), 'retrieved-evidence.jsonl');
 
   return {
     meetingId,
@@ -1378,6 +1553,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     candidateEventsPath: resolvedCandidateEventsPath,
     candidatePromotionsPath: resolvedCandidatePromotionsPath,
     retrievalRequestsPath: resolvedRetrievalRequestsPath,
+    retrievalEvidencePath: resolvedRetrievalEvidencePath,
     metadataPath,
     bootstrapSentAt: maybeNumber(value.bootstrapSentAt) ?? undefined,
     chunkCount,
@@ -1387,6 +1563,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     candidateEventCount: candidateEventCount ?? 0,
     promotedCandidateEventCount: promotedCandidateEventCount ?? 0,
     retrievalRequestCount: retrievalRequestCount ?? 0,
+    retrievalEvidenceCount: retrievalEvidenceCount ?? 0,
     lastChunkAt: maybeNumber(value.lastChunkAt) ?? undefined,
     lastChunkPreview: maybeString(value.lastChunkPreview) ?? undefined,
     lastOperatorUpdateAt: maybeNumber(value.lastOperatorUpdateAt) ?? undefined,
@@ -1400,12 +1577,15 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastPromotedCandidateAstraDecisionId: maybeString(value.lastPromotedCandidateAstraDecisionId) ?? undefined,
     lastRetrievalRequestAt: maybeNumber(value.lastRetrievalRequestAt) ?? undefined,
     lastRetrievalRequestPreview: maybeString(value.lastRetrievalRequestPreview) ?? undefined,
+    lastRetrievedEvidenceAt: maybeNumber(value.lastRetrievedEvidenceAt) ?? undefined,
+    lastRetrievedEvidencePreview: maybeString(value.lastRetrievedEvidencePreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
     recentTranscriptChunks: parseTranscriptEntries(value.recentTranscriptChunks),
     recentOperatorUpdates: parseOperatorUpdateEntries(value.recentOperatorUpdates),
     recentAssistantResponses: parseAssistantResponseEntries(value.recentAssistantResponses),
     recentCandidateEvents: parseCandidateEventEntries(value.recentCandidateEvents),
     recentRetrievalRequests: parseRetrievalRequestEntries(value.recentRetrievalRequests),
+    recentRetrievedEvidence: parseRetrievedEvidenceEntries(value.recentRetrievedEvidence),
   };
 }
 
@@ -1430,6 +1610,7 @@ function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
       promotedAstraDecisionId: event.promotedAstraDecisionId,
     })),
     recentRetrievalRequests: run.recentRetrievalRequests.map((request) => ({ ...request })),
+    recentRetrievedEvidence: run.recentRetrievedEvidence.map((evidence) => ({ ...evidence })),
   };
 }
 
@@ -1536,6 +1717,30 @@ function parseRetrievalRequestEntries(value: unknown): MeetingRetrievalRequestEn
       requestIndex,
       receivedAt,
       text,
+    }];
+  }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseRetrievedEvidenceEntries(value: unknown): MeetingRetrievedEvidenceEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const evidenceIndex = maybeNumber(entry.evidenceIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const rawType = maybeString(entry.type);
+    const type: 'fiber' | 'file' | null = rawType === 'fiber' || rawType === 'file' ? rawType : null;
+    const title = maybeString(entry.title);
+    if (evidenceIndex === null || receivedAt === null || type === null || title === null) return [];
+    return [{
+      evidenceIndex,
+      receivedAt,
+      requestIndex: maybeNumber(entry.requestIndex) ?? undefined,
+      type,
+      title,
+      fiberId: maybeString(entry.fiberId) ?? undefined,
+      path: maybeString(entry.path) ?? undefined,
+      line: maybeNumber(entry.line) ?? undefined,
+      match: maybeString(entry.match) ?? undefined,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
 }

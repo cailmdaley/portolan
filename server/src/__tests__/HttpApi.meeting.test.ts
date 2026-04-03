@@ -339,6 +339,39 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', retrievalRequestCount: 1, status: 'running' });
   });
 
+  it('routes retrieved evidence into the active meeting bridge', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null })),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+      ingestRetrievedEvidence: vi.fn(() => ({ meetingId: 'meeting-1', retrievalEvidenceCount: 1, status: 'running' })),
+    };
+
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/retrieval/evidence', {
+      type: 'fiber',
+      title: 'use-des-weights',
+      fiberId: 'use-des-weights',
+      requestIndex: 1,
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.ingestRetrievedEvidence).toHaveBeenCalledWith({
+      type: 'fiber',
+      title: 'use-des-weights',
+      fiberId: 'use-des-weights',
+      line: undefined,
+      match: undefined,
+      path: undefined,
+      requestIndex: 1,
+    });
+    expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', retrievalEvidenceCount: 1, status: 'running' });
+  });
+
   it('routes candidate promotions into the active meeting bridge', async () => {
     const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
     const meetingBridge = {
@@ -408,5 +441,28 @@ describe('HttpApi — meeting bridge endpoints', () => {
 
     expect(res.status).toBe(400);
     expect(res.data.error).toBe('Failed to ingest meeting retrieval request: Meeting retrieval request text is empty');
+  });
+
+  it('returns 400 when uploading invalid retrieved evidence', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+      ingestRetrievedEvidence: vi.fn(() => {
+        throw new Error('Meeting retrieved evidence title is empty');
+      }),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/retrieval/evidence', {
+      type: 'fiber',
+      title: '',
+      fiberId: 'use-des-weights',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Failed to ingest meeting retrieved evidence: Meeting retrieved evidence title is empty');
   });
 });

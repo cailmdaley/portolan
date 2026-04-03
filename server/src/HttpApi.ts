@@ -313,6 +313,11 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/retrieval/evidence') {
+      await this.meetingApi.handleRetrievedEvidence(req, res);
+      return true;
+    }
+
     if (req.method === 'POST' && url.pathname === '/hook/file-touch') {
       await this.hooksRuntimeApi.handleHookFileTouch(req, res);
       return true;
