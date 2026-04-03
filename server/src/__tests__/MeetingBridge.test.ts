@@ -364,6 +364,72 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('records assistant responses for the active meeting session and ignores duplicates', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-assistant',
+        tmuxSession: 'worker-assistant',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    const updated = bridge.ingestAssistantResponses({
+      sessionId: 'worker-assistant',
+      tmuxSession: 'worker-assistant',
+      originId: 'local',
+    }, [
+      {
+        sourceKey: '2026-04-03T08:00:00Z#0',
+        timestamp: '2026-04-03T08:00:00Z',
+        text: 'The calibration plot agrees with the DES comparison within the current error bars.',
+      },
+      {
+        sourceKey: '2026-04-03T08:00:00Z#0',
+        timestamp: '2026-04-03T08:00:00Z',
+        text: 'The calibration plot agrees with the DES comparison within the current error bars.',
+      },
+    ], {
+      transcriptPath: '/tmp/session.jsonl',
+      hookSessionId: 'hook-session-1',
+    });
+
+    expect(updated?.assistantResponseCount).toBe(1);
+    expect(updated?.lastAssistantResponsePreview).toContain('The calibration plot agrees');
+    expect(updated?.recentAssistantResponses).toEqual([
+      expect.objectContaining({
+        responseIndex: 1,
+        timestamp: '2026-04-03T08:00:00Z',
+        text: 'The calibration plot agrees with the DES comparison within the current error bars.',
+      }),
+    ]);
+
+    expect(messenger.send).toHaveBeenCalledTimes(1);
+    const assistantLines = readFileSync(run.assistantResponsesPath, 'utf-8').trim().split('\n');
+    expect(assistantLines).toHaveLength(1);
+    expect(JSON.parse(assistantLines[0])).toMatchObject({
+      meetingId: run.meetingId,
+      responseIndex: 1,
+      sourceKey: '2026-04-03T08:00:00Z#0',
+      transcriptPath: '/tmp/session.jsonl',
+      hookSessionId: 'hook-session-1',
+    });
+  });
+
   it('captures candidate events with transcript provenance and injects them into the worker thread', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };

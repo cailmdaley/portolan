@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { HttpApi } from '../HttpApi.js';
 import { RecentFileTracker } from '../RecentFileTracker.js';
 import { httpRequest, stubOriginLookup, stubPersistenceLookup } from './test-utils.js';
@@ -52,13 +52,19 @@ describe('HttpApi — file-touch hooks', () => {
     originId: 'remote-candide',
   };
 
-  function makeApi(sessions: typeof session[] = [session]): HttpApi {
+  function makeApi(
+    sessions: typeof session[] = [session],
+    meetingBridge?: { ingestAssistantResponses: (...args: any[]) => unknown },
+  ): HttpApi {
     const api = new HttpApi(cityLookup, stubOriginLookup, stubPersistenceLookup);
     api.setSessionLookup({
       findSession: (sessionId: string) => sessions.find((item) => item.id === sessionId),
       getAllSessions: () => sessions,
     });
     api.setRecentFileTracker(new RecentFileTracker());
+    if (meetingBridge) {
+      api.setMeetingBridge(meetingBridge as any);
+    }
     return api;
   }
 
@@ -194,5 +200,46 @@ describe('HttpApi — file-touch hooks', () => {
     const reviewGet = await httpRequest(api, 'GET', `/recent-files?sessionId=${encodeURIComponent(remotePureEbFinalReview.id)}`);
     expect(reviewGet.status).toBe(200);
     expect(reviewGet.data.files).toEqual([]);
+  });
+
+  it('routes assistant turn hook payloads into the active meeting bridge', async () => {
+    const meetingBridge = {
+      ingestAssistantResponses: vi.fn(() => ({
+        meetingId: 'meeting-1',
+        assistantResponseCount: 2,
+      })),
+    };
+    const api = makeApi([session], meetingBridge);
+
+    const post = await httpRequest(api, 'POST', '/hook/assistant-turn', {
+      session_id: 'unknown-claude-session',
+      cwd: '/project',
+      responses: [
+        {
+          sourceKey: '2026-04-03T08:00:00Z#0',
+          timestamp: '2026-04-03T08:00:00Z',
+          text: 'The latest assistant reply should surface in the meeting lane.',
+        },
+      ],
+      transcript_path: '/project/.claude/session.jsonl',
+    });
+
+    expect(post.status).toBe(200);
+    expect(post.data.stored).toBe(true);
+    expect(post.data.meetingId).toBe('meeting-1');
+    expect(meetingBridge.ingestAssistantResponses).toHaveBeenCalledWith({
+      sessionId: session.id,
+      tmuxSession: session.tmuxSession,
+      originId: session.originId,
+    }, [
+      {
+        sourceKey: '2026-04-03T08:00:00Z#0',
+        timestamp: '2026-04-03T08:00:00Z',
+        text: 'The latest assistant reply should surface in the meeting lane.',
+      },
+    ], {
+      transcriptPath: '/project/.claude/session.jsonl',
+      hookSessionId: 'unknown-claude-session',
+    });
   });
 });

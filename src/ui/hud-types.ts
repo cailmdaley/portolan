@@ -43,6 +43,12 @@ export interface MeetingRunState {
     kind?: string
     text: string
   }>
+  recentAssistantResponses: Array<{
+    responseIndex: number
+    receivedAt: number
+    timestamp?: string
+    text: string
+  }>
   recentCandidateEvents: Array<{
     eventIndex: number
     receivedAt: number
@@ -71,6 +77,7 @@ export interface MeetingRunState {
   transcriptPath: string
   injectionsPath: string
   updatesPath: string
+  assistantResponsesPath: string
   candidateEventsPath: string
   retrievalRequestsPath: string
   metadataPath: string
@@ -78,6 +85,7 @@ export interface MeetingRunState {
   chunkCount: number
   injectedCount: number
   operatorUpdateCount: number
+  assistantResponseCount: number
   candidateEventCount: number
   promotedCandidateEventCount: number
   retrievalRequestCount: number
@@ -85,6 +93,8 @@ export interface MeetingRunState {
   lastChunkPreview?: string
   lastOperatorUpdateAt?: number
   lastOperatorUpdatePreview?: string
+  lastAssistantResponseAt?: number
+  lastAssistantResponsePreview?: string
   lastCandidateEventAt?: number
   lastCandidateEventPreview?: string
   lastPromotedCandidateAt?: number

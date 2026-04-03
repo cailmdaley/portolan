@@ -1,5 +1,6 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { isAbsolute, normalize, resolve } from 'path';
+import type { MeetingBridge } from './MeetingBridge.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
 import type { Session } from './SessionTracker.js';
 
@@ -22,6 +23,7 @@ export class HttpApiHooksRuntime {
   private sendJsonSuccess: HttpApiHooksRuntimeDeps['sendJsonSuccess'];
   private sessionLookup: SessionLookup | null = null;
   private recentFileTracker: RecentFileTracker | null = null;
+  private meetingBridge: MeetingBridge | null = null;
   private hookSessionToWorkerSessionId: Map<string, string> = new Map();
   private runtimeDiagnosticsProvider: RuntimeDiagnosticsProvider | null = null;
 
@@ -37,6 +39,10 @@ export class HttpApiHooksRuntime {
 
   setRecentFileTracker(tracker: RecentFileTracker): void {
     this.recentFileTracker = tracker;
+  }
+
+  setMeetingBridge(bridge: MeetingBridge): void {
+    this.meetingBridge = bridge;
   }
 
   setRuntimeDiagnosticsProvider(provider: RuntimeDiagnosticsProvider): void {
@@ -138,6 +144,88 @@ export class HttpApiHooksRuntime {
       stored: true,
       workerSessionId: resolvedSession.id,
       tmuxSession: resolvedSession.tmuxSession,
+    });
+  }
+
+  async handleHookAssistantTurn(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.sessionLookup) {
+      this.sendJsonError(res, 500, 'Session lookup not configured');
+      return;
+    }
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not configured');
+      return;
+    }
+
+    const payload = await this.parseJsonBody<Record<string, unknown>>(req, res);
+    if (!payload) return;
+
+    const sessionIdRaw = typeof payload.session_id === 'string'
+      ? payload.session_id
+      : typeof payload.sessionId === 'string'
+        ? payload.sessionId
+        : '';
+    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
+    const tmuxSessionRaw = typeof payload.tmux_session === 'string'
+      ? payload.tmux_session
+      : typeof payload.tmuxSession === 'string'
+        ? payload.tmuxSession
+        : '';
+    const originNameRaw = typeof payload.origin_name === 'string'
+      ? payload.origin_name
+      : typeof payload.originName === 'string'
+        ? payload.originName
+        : '';
+    const transcriptPath = typeof payload.transcript_path === 'string'
+      ? payload.transcript_path
+      : typeof payload.transcriptPath === 'string'
+        ? payload.transcriptPath
+        : '';
+    const responses = Array.isArray(payload.responses)
+      ? payload.responses
+      : payload.response !== undefined
+        ? [payload.response]
+        : [];
+
+    if (!sessionIdRaw || responses.length === 0) {
+      this.sendJsonError(res, 400, 'Missing required fields: session_id, responses');
+      return;
+    }
+
+    const resolvedSession = this.resolveWorkerSessionForHook(
+      sessionIdRaw,
+      cwd,
+      transcriptPath,
+      tmuxSessionRaw,
+      originNameRaw,
+    );
+    if (!resolvedSession) {
+      this.sendJsonSuccess(res, { success: true, stored: false, reason: 'session-not-found' });
+      return;
+    }
+
+    this.hookSessionToWorkerSessionId.set(sessionIdRaw, resolvedSession.id);
+    const meeting = this.meetingBridge.ingestAssistantResponses({
+      sessionId: resolvedSession.id,
+      tmuxSession: resolvedSession.tmuxSession,
+      originId: resolvedSession.originId,
+    }, responses, {
+      transcriptPath,
+      hookSessionId: sessionIdRaw,
+    });
+
+    if (!meeting) {
+      this.sendJsonSuccess(res, { success: true, stored: false, reason: 'no-active-meeting' });
+      return;
+    }
+
+    this.sendJsonSuccess(res, {
+      success: true,
+      stored: true,
+      workerSessionId: resolvedSession.id,
+      tmuxSession: resolvedSession.tmuxSession,
+      meetingId: meeting.meetingId,
+      assistantResponseCount: meeting.assistantResponseCount,
     });
   }
 

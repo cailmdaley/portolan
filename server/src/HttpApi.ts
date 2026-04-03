@@ -146,6 +146,7 @@ export class HttpApi {
 
   setMeetingBridge(bridge: MeetingBridge): void {
     this.meetingApi.setMeetingBridge(bridge);
+    this.hooksRuntimeApi.setMeetingBridge(bridge);
   }
 
   setOnCreateNewWorker(fn: (cityPath: string, originId: string) => Promise<string>): void {
@@ -314,6 +315,11 @@ export class HttpApi {
 
     if (req.method === 'POST' && url.pathname === '/hook/file-touch') {
       await this.hooksRuntimeApi.handleHookFileTouch(req, res);
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/hook/assistant-turn') {
+      await this.hooksRuntimeApi.handleHookAssistantTurn(req, res);
       return true;
     }
 

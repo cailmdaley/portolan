@@ -8,7 +8,7 @@ const PORTOLAN_HTTP_BASE = `${window.location.protocol === 'https:' ? 'https' : 
 
 interface MeetingThreadItem {
   receivedAt: number
-  lane: 'transcript' | 'update' | 'candidate' | 'retrieval'
+  lane: 'transcript' | 'update' | 'assistant' | 'candidate' | 'retrieval'
   label: string
   text: string
   selectable: boolean
@@ -336,6 +336,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.chunkCount} chunk${cityMeeting.chunkCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.injectedCount} sent</span>
             <span>${cityMeeting.operatorUpdateCount} operator update${cityMeeting.operatorUpdateCount === 1 ? '' : 's'}</span>
+            <span>${cityMeeting.assistantResponseCount} assistant response${cityMeeting.assistantResponseCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.candidateEventCount} candidate event${cityMeeting.candidateEventCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.promotedCandidateEventCount} promoted</span>
             <span>${cityMeeting.retrievalRequestCount} retrieval request${cityMeeting.retrievalRequestCount === 1 ? '' : 's'}</span>
@@ -347,6 +348,12 @@ export class CityHUDHeader {
             <div class="hud-meeting-update-preview">
               <span class="hud-meeting-update-label">latest update</span>
               <span>${escapeHtml(cityMeeting.lastOperatorUpdatePreview)}</span>
+            </div>
+          ` : ''}
+          ${cityMeeting.lastAssistantResponsePreview ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest assistant</span>
+              <span>${escapeHtml(cityMeeting.lastAssistantResponsePreview)}</span>
             </div>
           ` : ''}
           ${cityMeeting.lastCandidateEventPreview ? `
@@ -407,6 +414,7 @@ export class CityHUDHeader {
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.transcriptPath)}">Transcript log</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.assistantResponsesPath)}">Assistant replies</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidateEventsPath)}">Candidate events</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidatePromotionsPath)}">Candidate promotions</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalRequestsPath)}">Retrieval requests</button>
@@ -713,6 +721,14 @@ export class CityHUDHeader {
         selected: this.selectedOperatorUpdateIndices.includes(update.updateIndex),
         selectionIndex: update.updateIndex,
       })),
+      ...meeting.recentAssistantResponses.map((response) => ({
+        receivedAt: response.receivedAt,
+        lane: 'assistant' as const,
+        label: this.describeAssistantResponse(response),
+        text: response.text,
+        selectable: false,
+        selected: false,
+      })),
       ...meeting.recentCandidateEvents.map((event) => ({
         receivedAt: event.receivedAt,
         lane: 'candidate' as const,
@@ -793,6 +809,12 @@ export class CityHUDHeader {
     if (event.operatorUpdateIndices.length > 0) {
       parts.push(`update ${event.operatorUpdateIndices.join(', ')}`)
     }
+    return parts.join(' • ')
+  }
+
+  private describeAssistantResponse(response: ServerMeetingRunState['recentAssistantResponses'][number]): string {
+    const parts = [`assistant ${response.responseIndex}`]
+    if (response.timestamp) parts.push(response.timestamp)
     return parts.join(' • ')
   }
 

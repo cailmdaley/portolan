@@ -49,6 +49,13 @@ export interface MeetingOperatorUpdateEntry {
   text: string;
 }
 
+export interface MeetingAssistantResponseEntry {
+  responseIndex: number;
+  receivedAt: number;
+  timestamp?: string;
+  text: string;
+}
+
 export interface MeetingCandidateEventEntry {
   eventIndex: number;
   receivedAt: number;
@@ -82,6 +89,7 @@ export interface MeetingRunState {
   transcriptPath: string;
   injectionsPath: string;
   updatesPath: string;
+  assistantResponsesPath: string;
   candidateEventsPath: string;
   candidatePromotionsPath: string;
   retrievalRequestsPath: string;
@@ -90,6 +98,7 @@ export interface MeetingRunState {
   chunkCount: number;
   injectedCount: number;
   operatorUpdateCount: number;
+  assistantResponseCount: number;
   candidateEventCount: number;
   promotedCandidateEventCount: number;
   retrievalRequestCount: number;
@@ -97,6 +106,8 @@ export interface MeetingRunState {
   lastChunkPreview?: string;
   lastOperatorUpdateAt?: number;
   lastOperatorUpdatePreview?: string;
+  lastAssistantResponseAt?: number;
+  lastAssistantResponsePreview?: string;
   lastCandidateEventAt?: number;
   lastCandidateEventPreview?: string;
   lastPromotedCandidateAt?: number;
@@ -107,6 +118,7 @@ export interface MeetingRunState {
   lastError?: string;
   recentTranscriptChunks: MeetingTranscriptEntry[];
   recentOperatorUpdates: MeetingOperatorUpdateEntry[];
+  recentAssistantResponses: MeetingAssistantResponseEntry[];
   recentCandidateEvents: MeetingCandidateEventEntry[];
   recentRetrievalRequests: MeetingRetrievalRequestEntry[];
 }
@@ -181,6 +193,15 @@ interface NormalizedOperatorUpdate {
   raw: unknown;
 }
 
+interface NormalizedAssistantResponse {
+  responseIndex: number;
+  receivedAt: number;
+  timestamp: string | null;
+  sourceKey: string;
+  text: string;
+  raw: unknown;
+}
+
 interface NormalizedCandidateEvent {
   eventIndex: number;
   receivedAt: number;
@@ -213,6 +234,7 @@ export class MeetingBridge {
   private readonly astraPromoter: MeetingAstraPromoter;
   private readonly stateListeners = new Set<MeetingBridgeStateListener>();
   private readonly chunkSources = new Map<string, { chunkIndex: number; revisionIndex: number; text: string; status: string | null }>();
+  private readonly assistantResponseSources = new Set<string>();
   private activeSource: TranscriptSource | null = null;
   private state: MeetingBridgeState = {
     activeMeeting: null,
@@ -255,6 +277,7 @@ export class MeetingBridge {
   start(options: MeetingBridgeStartOptions): MeetingRunState {
     this.stop();
     this.chunkSources.clear();
+    this.assistantResponseSources.clear();
 
     const startedAt = Date.now();
     const meetingId = `${new Date(startedAt).toISOString().replace(/[:.]/g, '-')}-${sanitizeSegment(options.target.tmuxSession)}`;
@@ -267,6 +290,7 @@ export class MeetingBridge {
     const transcriptPath = join(meetingDir, 'transcript.jsonl');
     const injectionsPath = join(meetingDir, 'injections.jsonl');
     const updatesPath = join(meetingDir, 'operator-updates.jsonl');
+    const assistantResponsesPath = join(meetingDir, 'assistant-responses.jsonl');
     const candidateEventsPath = join(meetingDir, 'candidate-events.jsonl');
     const candidatePromotionsPath = join(meetingDir, 'candidate-promotions.jsonl');
     const retrievalRequestsPath = join(meetingDir, 'retrieval-requests.jsonl');
@@ -285,6 +309,7 @@ export class MeetingBridge {
       transcriptPath,
       injectionsPath,
       updatesPath,
+      assistantResponsesPath,
       candidateEventsPath,
       candidatePromotionsPath,
       retrievalRequestsPath,
@@ -292,11 +317,13 @@ export class MeetingBridge {
       chunkCount: 0,
       injectedCount: 0,
       operatorUpdateCount: 0,
+      assistantResponseCount: 0,
       candidateEventCount: 0,
       promotedCandidateEventCount: 0,
       retrievalRequestCount: 0,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
+      recentAssistantResponses: [],
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
     };
@@ -410,6 +437,27 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleOperatorUpdate(target, active, rawUpdate);
+    return cloneMeetingRunState(active);
+  }
+
+  ingestAssistantResponses(
+    target: Pick<MeetingBridgeTarget, 'sessionId' | 'tmuxSession' | 'originId'>,
+    rawResponses: unknown,
+    metadata: { transcriptPath?: string; hookSessionId?: string } = {},
+  ): MeetingRunState | null {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      return null;
+    }
+    if (
+      active.sessionId !== target.sessionId
+      || active.tmuxSession !== target.tmuxSession
+      || active.originId !== target.originId
+    ) {
+      return null;
+    }
+
+    this.handleAssistantResponses(active, rawResponses, metadata);
     return cloneMeetingRunState(active);
   }
 
@@ -680,6 +728,57 @@ export class MeetingBridge {
     }
   }
 
+  private handleAssistantResponses(
+    run: MeetingRunState,
+    rawResponses: unknown,
+    metadata: { transcriptPath?: string; hookSessionId?: string } = {},
+  ): void {
+    if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
+
+    const responses = this.normalizeAssistantResponses(rawResponses, run.assistantResponseCount + 1);
+    if (responses.length === 0) {
+      return;
+    }
+
+    let changed = false;
+    for (const response of responses) {
+      if (this.assistantResponseSources.has(response.sourceKey)) {
+        continue;
+      }
+      this.assistantResponseSources.add(response.sourceKey);
+      changed = true;
+
+      run.assistantResponseCount = response.responseIndex;
+      run.lastAssistantResponseAt = response.receivedAt;
+      run.lastAssistantResponsePreview = response.text.slice(0, 160);
+
+      appendJsonLine(run.assistantResponsesPath, {
+        meetingId: run.meetingId,
+        responseIndex: response.responseIndex,
+        receivedAt: response.receivedAt,
+        timestamp: response.timestamp,
+        sourceKey: response.sourceKey,
+        transcriptPath: metadata.transcriptPath ?? null,
+        hookSessionId: metadata.hookSessionId ?? null,
+        text: response.text,
+        raw: response.raw,
+      });
+      run.recentAssistantResponses = appendRecentItem(run.recentAssistantResponses, {
+        responseIndex: response.responseIndex,
+        receivedAt: response.receivedAt,
+        timestamp: response.timestamp ?? undefined,
+        text: response.text,
+      });
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.writeMetadata(run);
+    this.emitStateChanged();
+  }
+
   private handleRetrievalRequest(target: MeetingBridgeTarget, run: MeetingRunState, rawRequest: unknown): void {
     if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
 
@@ -768,6 +867,7 @@ export class MeetingBridge {
     run.stoppedAt = Date.now();
     this.activeSource = null;
     this.chunkSources.clear();
+    this.assistantResponseSources.clear();
     this.state.activeMeeting = null;
     this.state.lastMeeting = { ...run };
     this.writeMetadata(run);
@@ -906,6 +1006,35 @@ export class MeetingBridge {
       promotedAstraDecisionId: null,
       raw: rawEvent,
     };
+  }
+
+  private normalizeAssistantResponses(rawResponses: unknown, nextResponseIndex: number): NormalizedAssistantResponse[] {
+    const items = Array.isArray(rawResponses) ? rawResponses : [rawResponses];
+    const normalized: NormalizedAssistantResponse[] = [];
+    let responseIndex = nextResponseIndex;
+
+    for (const item of items) {
+      const record = isRecord(item) ? item : {};
+      const text = maybeString(record.text) ?? maybeString(item);
+      if (!text) {
+        continue;
+      }
+      const timestamp = maybeString(record.timestamp);
+      const sourceKey = maybeString(record.sourceKey)
+        ?? maybeString(record.dedupeKey)
+        ?? [timestamp ?? 'assistant', text].join('|');
+      normalized.push({
+        responseIndex,
+        receivedAt: Date.now(),
+        timestamp,
+        sourceKey,
+        text,
+        raw: item,
+      });
+      responseIndex += 1;
+    }
+
+    return normalized;
   }
 
   private normalizeRetrievalRequest(rawRequest: unknown, requestIndex: number): NormalizedRetrievalRequest {
@@ -1194,6 +1323,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const transcriptPath = maybeString(value.transcriptPath);
   const injectionsPath = maybeString(value.injectionsPath);
   const updatesPath = maybeString(value.updatesPath);
+  const assistantResponsesPath = maybeString(value.assistantResponsesPath);
   const candidateEventsPath = maybeString(value.candidateEventsPath);
   const candidatePromotionsPath = maybeString(value.candidatePromotionsPath);
   const retrievalRequestsPath = maybeString(value.retrievalRequestsPath);
@@ -1201,6 +1331,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
   const operatorUpdateCount = maybeNumber(value.operatorUpdateCount);
+  const assistantResponseCount = maybeNumber(value.assistantResponseCount);
   const candidateEventCount = maybeNumber(value.candidateEventCount);
   const promotedCandidateEventCount = maybeNumber(value.promotedCandidateEventCount);
   const retrievalRequestCount = maybeNumber(value.retrievalRequestCount);
@@ -1224,6 +1355,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   }
 
   const resolvedUpdatesPath = updatesPath ?? join(dirname(metadataPath), 'operator-updates.jsonl');
+  const resolvedAssistantResponsesPath = assistantResponsesPath ?? join(dirname(metadataPath), 'assistant-responses.jsonl');
   const resolvedCandidateEventsPath = candidateEventsPath ?? join(dirname(metadataPath), 'candidate-events.jsonl');
   const resolvedCandidatePromotionsPath = candidatePromotionsPath ?? join(dirname(metadataPath), 'candidate-promotions.jsonl');
   const resolvedRetrievalRequestsPath = retrievalRequestsPath ?? join(dirname(metadataPath), 'retrieval-requests.jsonl');
@@ -1242,6 +1374,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     transcriptPath,
     injectionsPath,
     updatesPath: resolvedUpdatesPath,
+    assistantResponsesPath: resolvedAssistantResponsesPath,
     candidateEventsPath: resolvedCandidateEventsPath,
     candidatePromotionsPath: resolvedCandidatePromotionsPath,
     retrievalRequestsPath: resolvedRetrievalRequestsPath,
@@ -1250,6 +1383,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     chunkCount,
     injectedCount,
     operatorUpdateCount: operatorUpdateCount ?? 0,
+    assistantResponseCount: assistantResponseCount ?? 0,
     candidateEventCount: candidateEventCount ?? 0,
     promotedCandidateEventCount: promotedCandidateEventCount ?? 0,
     retrievalRequestCount: retrievalRequestCount ?? 0,
@@ -1257,6 +1391,8 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastChunkPreview: maybeString(value.lastChunkPreview) ?? undefined,
     lastOperatorUpdateAt: maybeNumber(value.lastOperatorUpdateAt) ?? undefined,
     lastOperatorUpdatePreview: maybeString(value.lastOperatorUpdatePreview) ?? undefined,
+    lastAssistantResponseAt: maybeNumber(value.lastAssistantResponseAt) ?? undefined,
+    lastAssistantResponsePreview: maybeString(value.lastAssistantResponsePreview) ?? undefined,
     lastCandidateEventAt: maybeNumber(value.lastCandidateEventAt) ?? undefined,
     lastCandidateEventPreview: maybeString(value.lastCandidateEventPreview) ?? undefined,
     lastPromotedCandidateAt: maybeNumber(value.lastPromotedCandidateAt) ?? undefined,
@@ -1267,6 +1403,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastError: maybeString(value.lastError) ?? undefined,
     recentTranscriptChunks: parseTranscriptEntries(value.recentTranscriptChunks),
     recentOperatorUpdates: parseOperatorUpdateEntries(value.recentOperatorUpdates),
+    recentAssistantResponses: parseAssistantResponseEntries(value.recentAssistantResponses),
     recentCandidateEvents: parseCandidateEventEntries(value.recentCandidateEvents),
     recentRetrievalRequests: parseRetrievalRequestEntries(value.recentRetrievalRequests),
   };
@@ -1285,6 +1422,7 @@ function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
     ...run,
     recentTranscriptChunks: run.recentTranscriptChunks.map((chunk) => ({ ...chunk })),
     recentOperatorUpdates: run.recentOperatorUpdates.map((update) => ({ ...update })),
+    recentAssistantResponses: run.recentAssistantResponses.map((response) => ({ ...response })),
     recentCandidateEvents: run.recentCandidateEvents.map((event) => ({
       ...event,
       transcriptChunkIndices: [...event.transcriptChunkIndices],
@@ -1365,6 +1503,23 @@ function parseCandidateEventEntries(value: unknown): MeetingCandidateEventEntry[
       promotedAt: maybeNumber(entry.promotedAt) ?? undefined,
       promotedFiberId: maybeString(entry.promotedFiberId) ?? undefined,
       promotedAstraDecisionId: maybeString(entry.promotedAstraDecisionId) ?? undefined,
+    }];
+  }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseAssistantResponseEntries(value: unknown): MeetingAssistantResponseEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const responseIndex = maybeNumber(entry.responseIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const text = maybeString(entry.text);
+    if (responseIndex === null || receivedAt === null || text === null) return [];
+    return [{
+      responseIndex,
+      receivedAt,
+      timestamp: maybeString(entry.timestamp) ?? undefined,
+      text,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
 }
