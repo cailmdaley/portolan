@@ -147,6 +147,7 @@ export interface MeetingRunState {
   assistantResponsesPath: string
   candidateEventsPath: string
   retrievalRequestsPath: string
+  liveDocumentPath: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number

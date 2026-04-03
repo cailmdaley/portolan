@@ -221,6 +221,7 @@ export interface ServerMeetingRunState {
   retrievalRequestsPath: string
   retrievalEvidencePath: string
   briefPromotionsPath: string
+  liveDocumentPath: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number

@@ -438,6 +438,7 @@ export class CityHUDHeader {
               : this.renderMeetingStartButtons(buttonsDisabled)}
           </div>
           <div class="hud-meeting-actions hud-meeting-links">
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.liveDocumentPath)}">Live document</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.transcriptPath)}">Transcript log</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>

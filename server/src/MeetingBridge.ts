@@ -138,6 +138,7 @@ export interface MeetingRunState {
   retrievalRequestsPath: string;
   retrievalEvidencePath: string;
   briefPromotionsPath: string;
+  liveDocumentPath: string;
   metadataPath: string;
   bootstrapSentAt?: number;
   chunkCount: number;
@@ -376,6 +377,7 @@ export class MeetingBridge {
     const retrievalRequestsPath = join(meetingDir, 'retrieval-requests.jsonl');
     const retrievalEvidencePath = join(meetingDir, 'retrieved-evidence.jsonl');
     const briefPromotionsPath = join(meetingDir, 'brief-promotions.jsonl');
+    const liveDocumentPath = join(meetingDir, 'live-brief.md');
     const metadataPath = join(meetingDir, 'meeting.json');
 
     const run: MeetingRunState = {
@@ -397,6 +399,7 @@ export class MeetingBridge {
       retrievalRequestsPath,
       retrievalEvidencePath,
       briefPromotionsPath,
+      liveDocumentPath,
       metadataPath,
       chunkCount: 0,
       injectedCount: 0,
@@ -1108,6 +1111,7 @@ export class MeetingBridge {
   }
 
   private writeMetadata(run: MeetingRunState): void {
+    writeFileSync(run.liveDocumentPath, this.buildLiveDocument(run));
     writeFileSync(run.metadataPath, JSON.stringify(run, null, 2));
     writeFileSync(this.latestStatePath, JSON.stringify(run, null, 2));
   }
@@ -1503,6 +1507,118 @@ export class MeetingBridge {
 
   private buildPromotedAstraBriefAnalysisId(run: MeetingRunState): string {
     return sanitizeSegment(`meeting-${run.meetingId}`).replace(/\./g, '-');
+  }
+
+  private buildLiveDocument(run: MeetingRunState): string {
+    const lines = [
+      `# ${this.buildLiveDocumentTitle(run)}`,
+      '',
+      `- status: ${run.status}`,
+      `- source: ${run.sourceType}`,
+      `- worker: ${run.tmuxSession}`,
+      `- meeting id: ${run.meetingId}`,
+      `- started: ${new Date(run.startedAt).toISOString()}`,
+    ];
+
+    if (run.stoppedAt) {
+      lines.push(`- stopped: ${new Date(run.stoppedAt).toISOString()}`);
+    }
+
+    if (run.liveBrief.currentNarrative?.text.trim()) {
+      lines.push('', '## Current narrative', '', run.liveBrief.currentNarrative.text.trim());
+    } else {
+      lines.push('', '## Current narrative', '', '_Awaiting narrative or correction update._');
+    }
+
+    this.appendBriefItemSection(lines, 'Decisions', run.liveBrief.decisions);
+    this.appendBriefItemSection(lines, 'Open questions', run.liveBrief.openQuestions);
+    this.appendBriefItemSection(lines, 'Action items', run.liveBrief.actionItems);
+    this.appendBriefItemSection(lines, 'Accepted notes', run.liveBrief.acceptedNotes);
+
+    if (run.liveBrief.evidenceInView.length > 0) {
+      lines.push('', '## Evidence in view', '');
+      for (const item of run.liveBrief.evidenceInView) {
+        const locator = item.type === 'fiber'
+          ? item.fiberId ?? item.title
+          : item.path ?? item.title;
+        lines.push(`- ${item.title} (${item.type}: ${locator})`);
+        if (item.match?.trim()) {
+          lines.push(`  - match: ${item.match.trim()}`);
+        }
+      }
+    }
+
+    const recentItems = this.buildLiveDocumentRecentItems(run);
+    if (recentItems.length > 0) {
+      lines.push('', '## Recent thread', '');
+      lines.push(...recentItems);
+    }
+
+    lines.push(
+      '',
+      '## Provenance',
+      '',
+      `- metadata: \`${run.metadataPath}\``,
+      `- transcript log: \`${run.transcriptPath}\``,
+      `- worker injections: \`${run.injectionsPath}\``,
+      `- operator updates: \`${run.updatesPath}\``,
+      `- assistant replies: \`${run.assistantResponsesPath}\``,
+      `- candidate events: \`${run.candidateEventsPath}\``,
+      `- candidate promotions: \`${run.candidatePromotionsPath}\``,
+      `- retrieval requests: \`${run.retrievalRequestsPath}\``,
+      `- retrieved evidence: \`${run.retrievalEvidencePath}\``,
+      `- brief promotions: \`${run.briefPromotionsPath}\``,
+    );
+
+    return lines.join('\n');
+  }
+
+  private buildLiveDocumentTitle(run: MeetingRunState): string {
+    const narrative = run.liveBrief.currentNarrative?.text.trim();
+    if (narrative) {
+      return `Live meeting brief: ${narrative.slice(0, 72)}`.replace(/\s+/g, ' ');
+    }
+
+    const leadingDecision = run.liveBrief.decisions[0];
+    if (leadingDecision) {
+      const label = (leadingDecision.title?.trim() || leadingDecision.text.trim()).slice(0, 72);
+      return `Live meeting brief: ${label}`.replace(/\s+/g, ' ');
+    }
+
+    return `Live meeting brief: ${run.meetingId}`;
+  }
+
+  private buildLiveDocumentRecentItems(run: MeetingRunState): string[] {
+    const items = [
+      ...run.recentTranscriptChunks.map((chunk) => ({
+        receivedAt: chunk.receivedAt,
+        line: `- transcript ${chunk.chunkIndex}: ${chunk.text}`,
+      })),
+      ...run.recentOperatorUpdates.map((update) => ({
+        receivedAt: update.receivedAt,
+        line: `- update ${update.updateIndex}${update.kind ? ` (${update.kind})` : ''}: ${update.text}`,
+      })),
+      ...run.recentAssistantResponses.map((response) => ({
+        receivedAt: response.receivedAt,
+        line: `- assistant ${response.responseIndex}: ${response.text}`,
+      })),
+      ...run.recentCandidateEvents.map((event) => ({
+        receivedAt: event.receivedAt,
+        line: `- candidate ${event.eventIndex} (${event.kind}): ${event.title ? `${event.title}: ` : ''}${event.text}`,
+      })),
+      ...run.recentRetrievalRequests.map((request) => ({
+        receivedAt: request.receivedAt,
+        line: `- retrieval ${request.requestIndex}: ${request.text}`,
+      })),
+      ...run.recentRetrievedEvidence.map((evidence) => ({
+        receivedAt: evidence.receivedAt,
+        line: `- evidence ${evidence.evidenceIndex} (${evidence.type}): ${evidence.title}${evidence.match ? ` — ${evidence.match}` : ''}`,
+      })),
+    ]
+      .sort((left, right) => left.receivedAt - right.receivedAt)
+      .slice(-12);
+
+    return items.map((item) => item.line);
   }
 
   private buildPromotedBriefBody(run: MeetingRunState, title: string): string {
@@ -1909,6 +2025,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const retrievalRequestsPath = maybeString(value.retrievalRequestsPath);
   const retrievalEvidencePath = maybeString(value.retrievalEvidencePath);
   const briefPromotionsPath = maybeString(value.briefPromotionsPath);
+  const liveDocumentPath = maybeString(value.liveDocumentPath);
   const metadataPath = maybeString(value.metadataPath);
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
@@ -1945,6 +2062,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const resolvedRetrievalRequestsPath = retrievalRequestsPath ?? join(dirname(metadataPath), 'retrieval-requests.jsonl');
   const resolvedRetrievalEvidencePath = retrievalEvidencePath ?? join(dirname(metadataPath), 'retrieved-evidence.jsonl');
   const resolvedBriefPromotionsPath = briefPromotionsPath ?? join(dirname(metadataPath), 'brief-promotions.jsonl');
+  const resolvedLiveDocumentPath = liveDocumentPath ?? join(dirname(metadataPath), 'live-brief.md');
 
   const run: MeetingRunState = {
     meetingId,
@@ -1966,6 +2084,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     retrievalRequestsPath: resolvedRetrievalRequestsPath,
     retrievalEvidencePath: resolvedRetrievalEvidencePath,
     briefPromotionsPath: resolvedBriefPromotionsPath,
+    liveDocumentPath: resolvedLiveDocumentPath,
     metadataPath,
     bootstrapSentAt: maybeNumber(value.bootstrapSentAt) ?? undefined,
     chunkCount,

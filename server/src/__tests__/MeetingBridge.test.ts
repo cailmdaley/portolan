@@ -110,6 +110,11 @@ describe('MeetingBridge', () => {
       chunkIndex: 1,
       sourceChunkId: '17',
     });
+
+    const liveDocument = readFileSync(run.liveDocumentPath, 'utf-8');
+    expect(liveDocument).toContain(`# Live meeting brief: ${run.meetingId}`);
+    expect(liveDocument).toContain('## Recent thread');
+    expect(liveDocument).toContain('Could we pull up the calibration plot before deciding?');
   });
 
   it('records blank transcript chunks without injecting them into the worker', () => {
@@ -833,6 +838,14 @@ describe('MeetingBridge', () => {
       expect.objectContaining({ id: 'meeting_transcript_log', source: run.transcriptPath }),
       expect.objectContaining({ id: 'meeting_operator_updates', source: run.updatesPath }),
     ]));
+
+    const liveDocument = readFileSync(run.liveDocumentPath, 'utf-8');
+    expect(liveDocument).toContain('# Live meeting brief: Calibration remains open pending the DES comparison.');
+    expect(liveDocument).toContain('## Current narrative');
+    expect(liveDocument).toContain('## Open questions');
+    expect(liveDocument).toContain('## Decisions');
+    expect(liveDocument).toContain('## Evidence in view');
+    expect(liveDocument).toContain(run.briefPromotionsPath);
   });
 
   it('rejects promoting an empty live brief', async () => {
@@ -1138,6 +1151,7 @@ describe('MeetingBridge', () => {
       cityPath: '/project/portolan',
       transcriptPath: join(meetingDir, 'transcript.jsonl'),
       injectionsPath: join(meetingDir, 'injections.jsonl'),
+      liveDocumentPath: join(meetingDir, 'live-brief.md'),
       metadataPath: join(meetingDir, 'meeting.json'),
       chunkCount: 3,
       injectedCount: 4,
@@ -1158,6 +1172,7 @@ describe('MeetingBridge', () => {
       updatesPath: join(meetingDir, 'operator-updates.jsonl'),
       retrievalRequestsPath: join(meetingDir, 'retrieval-requests.jsonl'),
       briefPromotionsPath: join(meetingDir, 'brief-promotions.jsonl'),
+      liveDocumentPath: join(meetingDir, 'live-brief.md'),
       lastChunkPreview: 'Recovered chunk',
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
@@ -1189,6 +1204,7 @@ describe('MeetingBridge', () => {
       cityPath: '/project/portolan',
       transcriptPath: '/tmp/transcript.jsonl',
       injectionsPath: '/tmp/injections.jsonl',
+      liveDocumentPath: '/tmp/live-brief.md',
       metadataPath: '/tmp/meeting.json',
       chunkCount: 8,
       injectedCount: 9,
@@ -1207,6 +1223,7 @@ describe('MeetingBridge', () => {
       candidateEventCount: 0,
       retrievalRequestCount: 0,
       briefPromotionCount: 0,
+      liveDocumentPath: '/tmp/live-brief.md',
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
