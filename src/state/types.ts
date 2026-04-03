@@ -100,6 +100,8 @@ export interface ServerMeetingRunState {
     text: string
     transcriptChunkIndices: number[]
     operatorUpdateIndices: number[]
+    promotedAt?: number
+    promotedFiberId?: string
   }>
   recentRetrievalRequests: Array<{
     requestIndex: number
@@ -120,6 +122,7 @@ export interface ServerMeetingRunState {
   injectionsPath: string
   updatesPath: string
   candidateEventsPath: string
+  candidatePromotionsPath: string
   retrievalRequestsPath: string
   metadataPath: string
   bootstrapSentAt?: number
@@ -127,6 +130,7 @@ export interface ServerMeetingRunState {
   injectedCount: number
   operatorUpdateCount: number
   candidateEventCount: number
+  promotedCandidateEventCount: number
   retrievalRequestCount: number
   lastChunkAt?: number
   lastChunkPreview?: string
@@ -134,6 +138,8 @@ export interface ServerMeetingRunState {
   lastOperatorUpdatePreview?: string
   lastCandidateEventAt?: number
   lastCandidateEventPreview?: string
+  lastPromotedCandidateAt?: number
+  lastPromotedCandidateFiberId?: string
   lastRetrievalRequestAt?: number
   lastRetrievalRequestPreview?: string
   lastError?: string

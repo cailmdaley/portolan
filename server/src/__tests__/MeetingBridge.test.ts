@@ -362,6 +362,111 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('promotes a candidate event into felt and records the promotion provenance', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const fiberPromoter = {
+      createFiber: vi.fn(async () => 'meeting-question-fiber'),
+    };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      fiberPromoter,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-promote',
+        tmuxSession: 'worker-promote',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({ id: 'chunk-1', text: 'Keep this unresolved until we compare against DES.' });
+    bridge.ingestCandidateEvent({
+      kind: 'question',
+      title: 'DES comparison still open',
+      text: 'Whether the DES comparison changes the calibration conclusion remains open.',
+      transcriptChunkIndices: [1],
+    });
+
+    const updated = await bridge.promoteCandidateEvent(1);
+
+    expect(fiberPromoter.createFiber).toHaveBeenCalledWith(expect.objectContaining({
+      cityPath: '/project/portolan',
+      originId: 'local',
+      title: 'DES comparison still open',
+      kind: 'question',
+    }));
+    expect(updated.promotedCandidateEventCount).toBe(1);
+    expect(updated.lastPromotedCandidateFiberId).toBe('meeting-question-fiber');
+    expect(updated.recentCandidateEvents).toEqual([
+      expect.objectContaining({
+        eventIndex: 1,
+        promotedFiberId: 'meeting-question-fiber',
+      }),
+    ]);
+
+    const promotions = readFileSync(run.candidatePromotionsPath, 'utf-8').trim().split('\n');
+    expect(promotions).toHaveLength(1);
+    expect(JSON.parse(promotions[0])).toMatchObject({
+      meetingId: run.meetingId,
+      eventIndex: 1,
+      fiberId: 'meeting-question-fiber',
+      kind: 'question',
+    });
+  });
+
+  it('rejects promoting a candidate event twice', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const fiberPromoter = {
+      createFiber: vi.fn(async () => 'meeting-note-fiber'),
+    };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      fiberPromoter,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-promote-repeat',
+        tmuxSession: 'worker-promote-repeat',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({ id: 'chunk-1', text: 'Accepted note with provenance.' });
+    bridge.ingestCandidateEvent({
+      kind: 'note',
+      text: 'Capture this as an accepted note.',
+      transcriptChunkIndices: [1],
+    });
+
+    await bridge.promoteCandidateEvent(1);
+
+    await expect(bridge.promoteCandidateEvent(1)).rejects.toThrowError(
+      'Meeting candidate event already promoted: 1',
+    );
+  });
+
   it('persists retrieval requests and injects them into the active worker thread', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };

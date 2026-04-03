@@ -14,6 +14,7 @@ interface MeetingThreadItem {
   selectable: boolean
   selected: boolean
   selectionIndex?: number
+  promotedFiberId?: string
 }
 
 interface SearchResultsMessage {
@@ -335,6 +336,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.injectedCount} sent</span>
             <span>${cityMeeting.operatorUpdateCount} operator update${cityMeeting.operatorUpdateCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.candidateEventCount} candidate event${cityMeeting.candidateEventCount === 1 ? '' : 's'}</span>
+            <span>${cityMeeting.promotedCandidateEventCount} promoted</span>
             <span>${cityMeeting.retrievalRequestCount} retrieval request${cityMeeting.retrievalRequestCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
@@ -350,6 +352,12 @@ export class CityHUDHeader {
             <div class="hud-meeting-update-preview">
               <span class="hud-meeting-update-label">latest candidate</span>
               <span>${escapeHtml(cityMeeting.lastCandidateEventPreview)}</span>
+            </div>
+          ` : ''}
+          ${cityMeeting.lastPromotedCandidateFiberId ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest promotion</span>
+              <span>${escapeHtml(cityMeeting.lastPromotedCandidateFiberId)}</span>
             </div>
           ` : ''}
           ${cityMeeting.lastRetrievalRequestPreview ? `
@@ -399,6 +407,7 @@ export class CityHUDHeader {
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidateEventsPath)}">Candidate events</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidatePromotionsPath)}">Candidate promotions</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalRequestsPath)}">Retrieval requests</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.metadataPath)}">Meeting metadata</button>
           </div>
@@ -564,6 +573,16 @@ export class CityHUDHeader {
       })
     }
 
+    for (const button of container.querySelectorAll<HTMLButtonElement>('.hud-meeting-promote-candidate')) {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        if (this.meetingActionInFlight) return
+        const eventIndex = Number(button.dataset.eventIndex)
+        if (!Number.isInteger(eventIndex)) return
+        void this.promoteMeetingCandidate(eventIndex)
+      })
+    }
+
     for (const item of container.querySelectorAll<HTMLElement>('.hud-meeting-retrieval-result')) {
       item.addEventListener('click', (event) => {
         event.stopPropagation()
@@ -575,6 +594,13 @@ export class CityHUDHeader {
         const path = item.dataset.path
         if (!path) return
         this.openMeetingFile(path, item.dataset.line ? parseInt(item.dataset.line, 10) : undefined)
+      })
+    }
+
+    for (const button of container.querySelectorAll<HTMLButtonElement>('.hud-meeting-open-promoted-fiber')) {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        this.openMeetingFiber(button.dataset.fiberId)
       })
     }
   }
@@ -693,6 +719,8 @@ export class CityHUDHeader {
         text: event.title ? `${event.title}: ${event.text}` : event.text,
         selectable: false,
         selected: false,
+        selectionIndex: event.eventIndex,
+        promotedFiberId: event.promotedFiberId,
       })),
       ...meeting.recentRetrievalRequests.map((request) => ({
         receivedAt: request.receivedAt,
@@ -721,8 +749,16 @@ export class CityHUDHeader {
               <span>${escapeHtml(item.label)}</span>
               <span>${escapeHtml(this.relativeTime(item.receivedAt))}</span>
               ${item.selectable ? `<span class="hud-meeting-thread-select">${item.selected ? 'cited' : 'click to cite'}</span>` : ''}
+              ${item.lane === 'candidate' && item.promotedFiberId ? `<span class="hud-meeting-thread-select">promoted → ${escapeHtml(item.promotedFiberId)}</span>` : ''}
             </div>
             <div class="hud-meeting-thread-text">${escapeHtml(item.text)}</div>
+            ${item.lane === 'candidate'
+              ? `<div class="hud-meeting-update-actions">
+                  ${item.promotedFiberId
+                    ? `<button class="hud-meeting-btn hud-meeting-open-promoted-fiber" data-fiber-id="${escapeHtml(item.promotedFiberId)}">Open fiber</button>`
+                    : `<button class="hud-meeting-btn hud-meeting-promote-candidate" data-event-index="${item.selectionIndex}" ${this.renderDisabledAttr(this.meetingActionInFlight)}>Promote to felt</button>`}
+                </div>`
+              : ''}
           </div>
         `).join('')}
       </div>
@@ -975,6 +1011,30 @@ export class CityHUDHeader {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to send retrieval request: ${message}`)
+    } finally {
+      this.meetingActionInFlight = false
+      this.renderMeeting()
+    }
+  }
+
+  private async promoteMeetingCandidate(eventIndex: number): Promise<void> {
+    this.meetingActionInFlight = true
+    this.renderMeeting()
+    try {
+      const response = await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge/candidate/promote`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ eventIndex }),
+      })
+
+      if (!response.ok) {
+        throw new Error(await this.readErrorMessage(response))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`Failed to promote meeting candidate: ${message}`)
     } finally {
       this.meetingActionInFlight = false
       this.renderMeeting()

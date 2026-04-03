@@ -297,6 +297,11 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/candidate/promote') {
+      await this.meetingApi.handlePromoteCandidate(req, res);
+      return true;
+    }
+
     if (req.method === 'POST' && url.pathname === '/meeting-bridge/retrieval') {
       await this.meetingApi.handleRetrieval(req, res);
       return true;

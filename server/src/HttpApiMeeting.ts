@@ -235,6 +235,38 @@ export class HttpApiMeeting {
     }
   }
 
+  async handlePromoteCandidate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{ eventIndex?: unknown }>(req, res);
+    if (!data) return;
+
+    const eventIndex = typeof data.eventIndex === 'number' ? data.eventIndex : Number(data.eventIndex);
+    if (!Number.isInteger(eventIndex) || eventIndex < 1) {
+      this.sendJsonError(res, 400, 'Missing eventIndex');
+      return;
+    }
+
+    try {
+      const meeting = await this.meetingBridge.promoteCandidateEvent(eventIndex);
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge'
+        ? 409
+        : message.startsWith('Meeting candidate event not found:')
+          || message.startsWith('Meeting candidate event already promoted:')
+          ? 400
+          : message === 'Remote origin not found'
+            ? 404
+            : 500;
+      this.sendJsonError(res, status, `Failed to promote meeting candidate event: ${message}`);
+    }
+  }
+
   async handleRetrieval(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.meetingBridge) {
       this.sendJsonError(res, 500, 'Meeting bridge not initialized');

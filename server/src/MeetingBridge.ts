@@ -1,13 +1,19 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { exec, execFile } from 'child_process';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
+import { promisify } from 'util';
 import type { TmuxSessionTarget } from './TmuxSessionMessenger.js';
+import { shellEscape } from './ShellPathUtils.js';
 import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 import {
   type TranscriptSource,
   type VoiceInkTranscriptSourceOptions,
   VoiceInkTranscriptSource,
 } from './VoiceInkTranscriptSource.js';
+
+const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface MeetingBridgeTarget extends TmuxSessionTarget {
   sessionId: string;
@@ -47,6 +53,8 @@ export interface MeetingCandidateEventEntry {
   text: string;
   transcriptChunkIndices: number[];
   operatorUpdateIndices: number[];
+  promotedAt?: number;
+  promotedFiberId?: string;
 }
 
 export interface MeetingRetrievalRequestEntry {
@@ -70,6 +78,7 @@ export interface MeetingRunState {
   injectionsPath: string;
   updatesPath: string;
   candidateEventsPath: string;
+  candidatePromotionsPath: string;
   retrievalRequestsPath: string;
   metadataPath: string;
   bootstrapSentAt?: number;
@@ -77,6 +86,7 @@ export interface MeetingRunState {
   injectedCount: number;
   operatorUpdateCount: number;
   candidateEventCount: number;
+  promotedCandidateEventCount: number;
   retrievalRequestCount: number;
   lastChunkAt?: number;
   lastChunkPreview?: string;
@@ -84,6 +94,8 @@ export interface MeetingRunState {
   lastOperatorUpdatePreview?: string;
   lastCandidateEventAt?: number;
   lastCandidateEventPreview?: string;
+  lastPromotedCandidateAt?: number;
+  lastPromotedCandidateFiberId?: string;
   lastRetrievalRequestAt?: number;
   lastRetrievalRequestPreview?: string;
   lastError?: string;
@@ -115,6 +127,17 @@ export interface MeetingTranscriptSourceFactory {
   ): TranscriptSource;
 }
 
+export interface MeetingFiberPromoter {
+  createFiber(options: {
+    cityPath: string;
+    originId: string;
+    sshHost?: string;
+    title: string;
+    kind: string;
+    body: string;
+  }): Promise<string>;
+}
+
 interface NormalizedTranscriptChunk {
   chunkIndex: number;
   sourceChunkId: string | null;
@@ -143,6 +166,8 @@ interface NormalizedCandidateEvent {
   text: string;
   transcriptChunkIndices: number[];
   operatorUpdateIndices: number[];
+  promotedAt: number | null;
+  promotedFiberId: string | null;
   raw: unknown;
 }
 
@@ -160,6 +185,7 @@ export class MeetingBridge {
   private readonly latestStatePath: string;
   private readonly messenger: MeetingBridgeMessageSender;
   private readonly sourceFactory: MeetingTranscriptSourceFactory;
+  private readonly fiberPromoter: MeetingFiberPromoter;
   private readonly stateListeners = new Set<MeetingBridgeStateListener>();
   private activeSource: TranscriptSource | null = null;
   private state: MeetingBridgeState = {
@@ -171,6 +197,7 @@ export class MeetingBridge {
     baseDir?: string;
     messenger?: MeetingBridgeMessageSender;
     sourceFactory?: MeetingTranscriptSourceFactory;
+    fiberPromoter?: MeetingFiberPromoter;
   } = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), '.portolan', 'meetings');
     this.latestStatePath = join(this.baseDir, 'latest-meeting.json');
@@ -178,6 +205,7 @@ export class MeetingBridge {
     this.sourceFactory = options.sourceFactory ?? {
       createVoiceInkSource: (voiceInkOptions, callbacks) => new VoiceInkTranscriptSource(voiceInkOptions, callbacks),
     };
+    this.fiberPromoter = options.fiberPromoter ?? new DefaultMeetingFiberPromoter();
     mkdirSync(this.baseDir, { recursive: true });
     this.state.lastMeeting = this.loadPersistedMeetingState();
   }
@@ -211,6 +239,7 @@ export class MeetingBridge {
     const injectionsPath = join(meetingDir, 'injections.jsonl');
     const updatesPath = join(meetingDir, 'operator-updates.jsonl');
     const candidateEventsPath = join(meetingDir, 'candidate-events.jsonl');
+    const candidatePromotionsPath = join(meetingDir, 'candidate-promotions.jsonl');
     const retrievalRequestsPath = join(meetingDir, 'retrieval-requests.jsonl');
     const metadataPath = join(meetingDir, 'meeting.json');
 
@@ -228,12 +257,14 @@ export class MeetingBridge {
       injectionsPath,
       updatesPath,
       candidateEventsPath,
+      candidatePromotionsPath,
       retrievalRequestsPath,
       metadataPath,
       chunkCount: 0,
       injectedCount: 0,
       operatorUpdateCount: 0,
       candidateEventCount: 0,
+      promotedCandidateEventCount: 0,
       retrievalRequestCount: 0,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
@@ -368,6 +399,60 @@ export class MeetingBridge {
     return cloneMeetingRunState(active);
   }
 
+  async promoteCandidateEvent(eventIndex: number): Promise<MeetingRunState> {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      throw new Error('No active meeting bridge');
+    }
+
+    if (!Number.isInteger(eventIndex) || eventIndex < 1) {
+      throw new Error(`Meeting candidate event not found: ${eventIndex}`);
+    }
+
+    const event = this.readCandidateEvent(active, eventIndex);
+    if (!event) {
+      throw new Error(`Meeting candidate event not found: ${eventIndex}`);
+    }
+    if (event.promotedFiberId) {
+      throw new Error(`Meeting candidate event already promoted: ${eventIndex}`);
+    }
+
+    const title = this.buildPromotedFiberTitle(event);
+    const kind = this.mapCandidateKindToFiberKind(event.kind);
+    const body = this.buildPromotedFiberBody(active, event);
+    const fiberId = await this.fiberPromoter.createFiber({
+      cityPath: active.cityPath,
+      originId: active.originId,
+      sshHost: active.sshHost,
+      title,
+      kind,
+      body,
+    });
+
+    const promotedAt = Date.now();
+    active.promotedCandidateEventCount += 1;
+    active.lastPromotedCandidateAt = promotedAt;
+    active.lastPromotedCandidateFiberId = fiberId;
+
+    const recentEvent = active.recentCandidateEvents.find((entry) => entry.eventIndex === eventIndex);
+    if (recentEvent) {
+      recentEvent.promotedAt = promotedAt;
+      recentEvent.promotedFiberId = fiberId;
+    }
+
+    appendJsonLine(active.candidatePromotionsPath, {
+      meetingId: active.meetingId,
+      eventIndex,
+      promotedAt,
+      fiberId,
+      title,
+      kind,
+    });
+    this.writeMetadata(active);
+    this.emitStateChanged();
+    return cloneMeetingRunState(active);
+  }
+
   private handleChunk(target: MeetingBridgeTarget, run: MeetingRunState, rawChunk: unknown): void {
     if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
 
@@ -483,6 +568,8 @@ export class MeetingBridge {
         text: event.text,
         transcriptChunkIndices: event.transcriptChunkIndices,
         operatorUpdateIndices: event.operatorUpdateIndices,
+        promotedAt: event.promotedAt,
+        promotedFiberId: event.promotedFiberId,
         raw: event.raw,
       });
       run.recentCandidateEvents = appendRecentItem(run.recentCandidateEvents, {
@@ -493,6 +580,8 @@ export class MeetingBridge {
         text: event.text,
         transcriptChunkIndices: [...event.transcriptChunkIndices],
         operatorUpdateIndices: [...event.operatorUpdateIndices],
+        promotedAt: event.promotedAt ?? undefined,
+        promotedFiberId: event.promotedFiberId ?? undefined,
       });
 
       const message = this.buildCandidateEventMessage(run, event);
@@ -551,6 +640,32 @@ export class MeetingBridge {
       const err = error instanceof Error ? error : new Error(String(error));
       throw err;
     }
+  }
+
+  private readCandidateEvent(run: MeetingRunState, eventIndex: number): NormalizedCandidateEvent | null {
+    const promotions = new Map<number, { promotedAt: number | null; promotedFiberId: string | null }>();
+    for (const entry of readJsonLines(run.candidatePromotionsPath)) {
+      if (!isRecord(entry)) continue;
+      const promotedEventIndex = maybeNumber(entry.eventIndex);
+      if (promotedEventIndex === null) continue;
+      promotions.set(promotedEventIndex, {
+        promotedAt: maybeNumber(entry.promotedAt),
+        promotedFiberId: maybeString(entry.fiberId),
+      });
+    }
+
+    for (const entry of readJsonLines(run.candidateEventsPath)) {
+      const parsed = this.parseCandidateEventLogEntry(entry);
+      if (parsed?.eventIndex === eventIndex) {
+        const promotion = promotions.get(eventIndex);
+        if (promotion) {
+          parsed.promotedAt = promotion.promotedAt;
+          parsed.promotedFiberId = promotion.promotedFiberId;
+        }
+        return parsed;
+      }
+    }
+    return null;
   }
 
   private handleError(run: MeetingRunState, error: Error): void {
@@ -695,6 +810,8 @@ export class MeetingBridge {
       text,
       transcriptChunkIndices,
       operatorUpdateIndices,
+      promotedAt: null,
+      promotedFiberId: null,
       raw: rawEvent,
     };
   }
@@ -787,6 +904,69 @@ export class MeetingBridge {
     return lines.join('\n');
   }
 
+  private buildPromotedFiberTitle(event: NormalizedCandidateEvent): string {
+    if (event.title) return event.title;
+    const prefix = event.kind === 'question'
+      ? 'Meeting question'
+      : event.kind === 'decision'
+        ? 'Meeting decision'
+        : event.kind === 'action-item'
+          ? 'Meeting action item'
+          : 'Meeting note';
+    return `${prefix}: ${event.text.slice(0, 80).trim()}`.replace(/\s+/g, ' ');
+  }
+
+  private buildPromotedFiberBody(run: MeetingRunState, event: NormalizedCandidateEvent): string {
+    const lines = [
+      event.text.trim(),
+      '',
+      '## Meeting provenance',
+      '',
+      `- meeting id: ${run.meetingId}`,
+      `- candidate event: ${event.eventIndex}`,
+      `- meeting metadata: ${run.metadataPath}`,
+      `- candidate events log: ${run.candidateEventsPath}`,
+    ];
+
+    if (event.transcriptChunkIndices.length > 0) {
+      lines.push(`- transcript chunks: ${event.transcriptChunkIndices.join(', ')}`);
+      lines.push(`- transcript log: ${run.transcriptPath}`);
+    }
+    if (event.operatorUpdateIndices.length > 0) {
+      lines.push(`- operator updates: ${event.operatorUpdateIndices.join(', ')}`);
+      lines.push(`- operator update log: ${run.updatesPath}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  private mapCandidateKindToFiberKind(kind: string): string {
+    if (kind === 'question') return 'question';
+    if (kind === 'decision') return 'decision';
+    return 'task';
+  }
+
+  private parseCandidateEventLogEntry(value: unknown): NormalizedCandidateEvent | null {
+    if (!isRecord(value)) return null;
+    const eventIndex = maybeNumber(value.eventIndex);
+    const receivedAt = maybeNumber(value.receivedAt);
+    const kind = maybeString(value.kind);
+    const text = maybeString(value.text);
+    if (eventIndex === null || receivedAt === null || kind === null || text === null) return null;
+    return {
+      eventIndex,
+      receivedAt,
+      kind,
+      title: maybeString(value.title),
+      text,
+      transcriptChunkIndices: maybeNumberList(value.transcriptChunkIndices) ?? [],
+      operatorUpdateIndices: maybeNumberList(value.operatorUpdateIndices) ?? [],
+      promotedAt: maybeNumber(value.promotedAt),
+      promotedFiberId: maybeString(value.promotedFiberId),
+      raw: value,
+    };
+  }
+
   private buildRetrievalRequestMessage(run: MeetingRunState, request: NormalizedRetrievalRequest): string {
     return [
       '[Portolan Meeting Retrieval Request]',
@@ -868,12 +1048,14 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const injectionsPath = maybeString(value.injectionsPath);
   const updatesPath = maybeString(value.updatesPath);
   const candidateEventsPath = maybeString(value.candidateEventsPath);
+  const candidatePromotionsPath = maybeString(value.candidatePromotionsPath);
   const retrievalRequestsPath = maybeString(value.retrievalRequestsPath);
   const metadataPath = maybeString(value.metadataPath);
   const chunkCount = maybeNumber(value.chunkCount);
   const injectedCount = maybeNumber(value.injectedCount);
   const operatorUpdateCount = maybeNumber(value.operatorUpdateCount);
   const candidateEventCount = maybeNumber(value.candidateEventCount);
+  const promotedCandidateEventCount = maybeNumber(value.promotedCandidateEventCount);
   const retrievalRequestCount = maybeNumber(value.retrievalRequestCount);
 
   if (
@@ -896,6 +1078,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
 
   const resolvedUpdatesPath = updatesPath ?? join(dirname(metadataPath), 'operator-updates.jsonl');
   const resolvedCandidateEventsPath = candidateEventsPath ?? join(dirname(metadataPath), 'candidate-events.jsonl');
+  const resolvedCandidatePromotionsPath = candidatePromotionsPath ?? join(dirname(metadataPath), 'candidate-promotions.jsonl');
   const resolvedRetrievalRequestsPath = retrievalRequestsPath ?? join(dirname(metadataPath), 'retrieval-requests.jsonl');
 
   return {
@@ -913,6 +1096,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     injectionsPath,
     updatesPath: resolvedUpdatesPath,
     candidateEventsPath: resolvedCandidateEventsPath,
+    candidatePromotionsPath: resolvedCandidatePromotionsPath,
     retrievalRequestsPath: resolvedRetrievalRequestsPath,
     metadataPath,
     bootstrapSentAt: maybeNumber(value.bootstrapSentAt) ?? undefined,
@@ -920,6 +1104,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     injectedCount,
     operatorUpdateCount: operatorUpdateCount ?? 0,
     candidateEventCount: candidateEventCount ?? 0,
+    promotedCandidateEventCount: promotedCandidateEventCount ?? 0,
     retrievalRequestCount: retrievalRequestCount ?? 0,
     lastChunkAt: maybeNumber(value.lastChunkAt) ?? undefined,
     lastChunkPreview: maybeString(value.lastChunkPreview) ?? undefined,
@@ -927,6 +1112,8 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastOperatorUpdatePreview: maybeString(value.lastOperatorUpdatePreview) ?? undefined,
     lastCandidateEventAt: maybeNumber(value.lastCandidateEventAt) ?? undefined,
     lastCandidateEventPreview: maybeString(value.lastCandidateEventPreview) ?? undefined,
+    lastPromotedCandidateAt: maybeNumber(value.lastPromotedCandidateAt) ?? undefined,
+    lastPromotedCandidateFiberId: maybeString(value.lastPromotedCandidateFiberId) ?? undefined,
     lastRetrievalRequestAt: maybeNumber(value.lastRetrievalRequestAt) ?? undefined,
     lastRetrievalRequestPreview: maybeString(value.lastRetrievalRequestPreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
@@ -1017,6 +1204,8 @@ function parseCandidateEventEntries(value: unknown): MeetingCandidateEventEntry[
       text,
       transcriptChunkIndices: maybeNumberList(entry.transcriptChunkIndices) ?? [],
       operatorUpdateIndices: maybeNumberList(entry.operatorUpdateIndices) ?? [],
+      promotedAt: maybeNumber(entry.promotedAt) ?? undefined,
+      promotedFiberId: maybeString(entry.promotedFiberId) ?? undefined,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
 }
@@ -1035,4 +1224,43 @@ function parseRetrievalRequestEntries(value: unknown): MeetingRetrievalRequestEn
       text,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+class DefaultMeetingFiberPromoter implements MeetingFiberPromoter {
+  async createFiber(options: {
+    cityPath: string;
+    originId: string;
+    sshHost?: string;
+    title: string;
+    kind: string;
+    body: string;
+  }): Promise<string> {
+    const feltCmd = `cd ${shellEscape(options.cityPath)} && felt add ${shellEscape(options.title)} -t ${shellEscape(options.kind)} -b ${shellEscape(options.body)}`;
+    if (options.originId === 'local') {
+      const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
+      return stdout.trim();
+    }
+    if (!options.sshHost) {
+      throw new Error('Remote origin not found');
+    }
+    const { stdout } = await execFileAsync('ssh', [options.sshHost, feltCmd], {
+      timeout: 30000,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout.trim();
+  }
+}
+
+function readJsonLines(path: string): unknown[] {
+  try {
+    const content = readFileSync(path, 'utf-8').trim();
+    if (!content) return [];
+    return content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as unknown);
+  } catch {
+    return [];
+  }
 }

@@ -311,6 +311,57 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', retrievalRequestCount: 1, status: 'running' });
   });
 
+  it('routes candidate promotions into the active meeting bridge', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null })),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+      promoteCandidateEvent: vi.fn(async () => ({
+        meetingId: 'meeting-1',
+        promotedCandidateEventCount: 1,
+        status: 'running',
+      })),
+    };
+
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/candidate/promote', {
+      eventIndex: 3,
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.promoteCandidateEvent).toHaveBeenCalledWith(3);
+    expect(res.data.meeting).toEqual({
+      meetingId: 'meeting-1',
+      promotedCandidateEventCount: 1,
+      status: 'running',
+    });
+  });
+
+  it('returns 400 when promoting an unknown candidate event', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+      promoteCandidateEvent: vi.fn(async () => {
+        throw new Error('Meeting candidate event not found: 9');
+      }),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/candidate/promote', {
+      eventIndex: 9,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Failed to promote meeting candidate event: Meeting candidate event not found: 9');
+  });
+
   it('returns 400 when uploading an empty retrieval request', async () => {
     const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
     api.setMeetingBridge({
