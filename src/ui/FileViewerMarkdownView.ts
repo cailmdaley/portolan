@@ -1,5 +1,5 @@
 import { parseFiberFrontmatter, FileViewerFiberContext, isFiberMarkdownFile, renderFiberHeader } from './FileViewerFiberContext'
-import { renderMarkdown, attachInlinePathListeners } from './utils'
+import { renderMarkdown, attachInlinePathListeners, attachMarkdownPathLinkListeners } from './utils'
 import { type FileViewerAnnotations } from './FileViewerAnnotations'
 
 interface MarkdownViewState {
@@ -82,6 +82,10 @@ export class FileViewerMarkdownView {
     }
 
     attachInlinePathListeners(wrapper, (relPath, line) => {
+      const fullPath = relPath.startsWith('/') ? relPath : `${state.currentCityPath || dirPath}/${relPath}`
+      this.onOpenPath(fullPath, state.currentOriginId, state.currentCityPath, state.currentCityId, line)
+    })
+    attachMarkdownPathLinkListeners(wrapper, (relPath, line) => {
       const fullPath = relPath.startsWith('/') ? relPath : `${state.currentCityPath || dirPath}/${relPath}`
       this.onOpenPath(fullPath, state.currentOriginId, state.currentCityPath, state.currentCityId, line)
     })

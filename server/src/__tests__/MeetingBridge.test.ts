@@ -671,7 +671,7 @@ describe('MeetingBridge', () => {
     });
 
     const liveDocument = readFileSync(run.liveDocumentPath, 'utf-8');
-    expect(liveDocument).toContain('promoted fiber: `.felt/meeting-question-fiber/meeting-question-fiber.md`');
+    expect(liveDocument).toContain('promoted fiber: [meeting-question-fiber](<.felt/meeting-question-fiber/meeting-question-fiber.md>)');
   });
 
   it('syncs promoted meeting decisions into astra.yaml', async () => {
@@ -942,9 +942,9 @@ describe('MeetingBridge', () => {
     expect(liveDocument).toContain('## Open questions');
     expect(liveDocument).toContain('## Decisions');
     expect(liveDocument).toContain('## Evidence in view');
-    expect(liveDocument).toContain('(fiber: `.felt/use-des-weights/use-des-weights.md`)');
-    expect(liveDocument).toContain(`- live ASTRA: \`${join(cityPath, 'astra.yaml')}\``);
-    expect(liveDocument).toContain(run.briefPromotionsPath);
+    expect(liveDocument).toContain('(fiber: [use-des-weights](<.felt/use-des-weights/use-des-weights.md>))');
+    expect(liveDocument).toContain(`- live ASTRA: [astra.yaml](<${join(cityPath, 'astra.yaml')}>)`);
+    expect(liveDocument).toContain(`- brief promotions: [brief-promotions.jsonl](<${run.briefPromotionsPath}>)`);
   });
 
   it('rejects promoting an empty live brief', async () => {

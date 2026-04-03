@@ -6,7 +6,7 @@ import { markdown } from '@codemirror/lang-markdown'
 import { vim } from '@replit/codemirror-vim'
 import type { City } from '../state/types'
 import type { TapestryNode } from './tapestry-types'
-import { attachInlinePathListeners, highlightCodeBlocks, renderMarkdown, showToast } from './utils'
+import { attachInlinePathListeners, attachMarkdownPathLinkListeners, highlightCodeBlocks, renderMarkdown, showToast } from './utils'
 
 const API_BASE = `http://${window.location.hostname}:4004`
 
@@ -46,6 +46,7 @@ export class TapestryDetailBody {
     highlightCodeBlocks(container)
     interpolateConfig(container)
     attachInlinePathListeners(container, (path, line) => openFileFromLink(path, line))
+    attachMarkdownPathLinkListeners(container, (path, line) => openFileFromLink(path, line))
   }
 
   enterEditMode({ container, node, city, onSave }: EditOptions): boolean {

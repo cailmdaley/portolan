@@ -1627,17 +1627,17 @@ export class MeetingBridge {
       '',
       '## Provenance',
       '',
-      `- metadata: \`${run.metadataPath}\``,
-      `- live ASTRA: \`${run.liveAstraPath}\``,
-      `- transcript log: \`${run.transcriptPath}\``,
-      `- worker injections: \`${run.injectionsPath}\``,
-      `- operator updates: \`${run.updatesPath}\``,
-      `- assistant replies: \`${run.assistantResponsesPath}\``,
-      `- candidate events: \`${run.candidateEventsPath}\``,
-      `- candidate promotions: \`${run.candidatePromotionsPath}\``,
-      `- retrieval requests: \`${run.retrievalRequestsPath}\``,
-      `- retrieved evidence: \`${run.retrievalEvidencePath}\``,
-      `- brief promotions: \`${run.briefPromotionsPath}\``,
+      `- metadata: ${this.buildMarkdownPathLink('meeting.json', run.metadataPath)}`,
+      `- live ASTRA: ${this.buildMarkdownPathLink('astra.yaml', run.liveAstraPath)}`,
+      `- transcript log: ${this.buildMarkdownPathLink('transcript.jsonl', run.transcriptPath)}`,
+      `- worker injections: ${this.buildMarkdownPathLink('worker-injections.jsonl', run.injectionsPath)}`,
+      `- operator updates: ${this.buildMarkdownPathLink('operator-updates.jsonl', run.updatesPath)}`,
+      `- assistant replies: ${this.buildMarkdownPathLink('assistant-responses.jsonl', run.assistantResponsesPath)}`,
+      `- candidate events: ${this.buildMarkdownPathLink('candidate-events.jsonl', run.candidateEventsPath)}`,
+      `- candidate promotions: ${this.buildMarkdownPathLink('candidate-promotions.jsonl', run.candidatePromotionsPath)}`,
+      `- retrieval requests: ${this.buildMarkdownPathLink('retrieval-requests.jsonl', run.retrievalRequestsPath)}`,
+      `- retrieved evidence: ${this.buildMarkdownPathLink('retrieved-evidence.jsonl', run.retrievalEvidencePath)}`,
+      `- brief promotions: ${this.buildMarkdownPathLink('brief-promotions.jsonl', run.briefPromotionsPath)}`,
     );
 
     return lines.join('\n');
@@ -2046,7 +2046,7 @@ export class MeetingBridge {
         lines.push(`  - operator updates: ${item.operatorUpdateIndices.join(', ')}`);
       }
       if (item.promotedFiberId) {
-        lines.push(`  - promoted fiber: \`${this.buildMeetingFiberPath(item.promotedFiberId)}\``);
+        lines.push(`  - promoted fiber: ${this.buildMarkdownPathLink(item.promotedFiberId, this.buildMeetingFiberPath(item.promotedFiberId))}`);
       }
       if (item.promotedAstraDecisionId) {
         lines.push(`  - ASTRA decision: ${item.promotedAstraDecisionId}`);
@@ -2060,15 +2060,19 @@ export class MeetingBridge {
 
   private buildRetrievedEvidenceLocator(item: MeetingRetrievedEvidenceEntry): string | null {
     if (item.type === 'fiber' && item.fiberId) {
-      return `\`${this.buildMeetingFiberPath(item.fiberId)}\``;
+      return this.buildMarkdownPathLink(item.fiberId, this.buildMeetingFiberPath(item.fiberId));
     }
 
     if (item.type === 'file' && item.path) {
       const location = item.line && item.line > 0 ? `${item.path}:L${item.line}` : item.path;
-      return `\`${location}\``;
+      return this.buildMarkdownPathLink(basename(item.path), location);
     }
 
     return null;
+  }
+
+  private buildMarkdownPathLink(label: string, path: string): string {
+    return `[${escapeMarkdownLinkLabel(label)}](<${path}>)`;
   }
 
   private mapCandidateKindToFiberKind(kind: string): string {
@@ -2142,6 +2146,10 @@ function appendJsonLine(path: string, value: unknown): void {
 
 function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'meeting';
+}
+
+function escapeMarkdownLinkLabel(value: string): string {
+  return value.replace(/([\\[\]])/g, '\\$1');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
