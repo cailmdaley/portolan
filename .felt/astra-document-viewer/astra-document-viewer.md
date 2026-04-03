@@ -168,7 +168,7 @@ MySTRA's content server API (already running):
 5. Build and point MySTRA's launcher at the fork
 6. MySTRA's `src/theme/launcher.ts` already supports custom theme directories
 
-### What's been built (as of 2026-04-02, updated 2026-04-04)
+### What's been built (as of 2026-04-02, updated 2026-04-05)
 
 **MySTRA content server** (`~/Documents/projects/MySTRA/`):
 - `GET /astra-graph.json` — walks analysis tree, emits nodes with separate `decisionCount`/`findingCount`, `verdict` (first insight claim or first decision rationale, ≤160 chars), status inference, tag lists, data-flow links. `src/server/routes/graph.ts`.
@@ -190,6 +190,8 @@ MySTRA's content server API (already running):
 - **Data-flow cross-references**: 31 links across 20 nodes. Full spine chain: `350-mock→covariance`, `switch-fiducial→data-vectors`, `{covariance,data-vectors}→scale-cuts`, `{scale-cuts,blind-b-is-physical}→paper-synthesis`. Click navigation confirmed working.
 - **Porch-morning document theme**: `themes/book/app/styles/porch-morning.css` (554 lines) — overrides entire MyST book-theme with warm antiquarian aesthetic. EB Garamond body + JetBrains Mono code. Parchment backgrounds (#FAFAF7 document, #F0EBE3 navbar/sidebar, #E8DDD0 active items). Gold links (#9A7B35), teal h3/cross-refs (#5A7B7B). Sidebar active items with gold border-left. Theme toggle hidden. Prose variables, admonitions, tabs, cards, tables all themed. Dark mode class overridden to always warm.
 - **Sidebar status glyphs**: `themes/book/app/components/SidebarStatusInjector.tsx` — DOM-injection component that fetches ASTRA graph, builds slug→status map, prepends status glyphs (✓ ○ ? ✕) to each sidebar navigation link. Uses `useAstraGraph` hook, runs on navigation and graph load. Porch-morning palette colors per status. Avoids modifying upstream `packages/site` by injecting into rendered DOM.
+- **Spine-first sub-analysis layout**: `MySTRA/src/transform/render-sub-analyses.ts` — index page now features tier:1 nodes under "Analysis Spine" with italic verdict sentences (first insight claim) and status glyphs (✓ resolved · N decisions). Non-spine analyses collapse into "Supporting Analyses (N)" details block by default. Status inferred from decision/finding state: blocked if all options excluded, suspicious if decisions but no findings, resolved if findings present.
+- **insights/findings normalization**: `felt export` writes `insights`; MySTRA yaml-loader normalizes `insights→findings` internally. Decision: keep `insights` as the felt-facing name (closed fiber `astra-insights-vs-findings`).
 
 **Launch:**
 ```bash
