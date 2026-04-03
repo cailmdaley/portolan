@@ -158,6 +158,29 @@ export class HttpApiMeeting {
     }
   }
 
+  async handleChunks(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{ chunks?: unknown }>(req, res);
+    if (!data) return;
+    if (!Array.isArray(data.chunks) || data.chunks.length === 0) {
+      this.sendJsonError(res, 400, 'Missing chunks');
+      return;
+    }
+
+    try {
+      const meeting = this.meetingBridge.ingestChunks(data.chunks);
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge' ? 409 : 500;
+      this.sendJsonError(res, status, `Failed to ingest meeting chunks: ${message}`);
+    }
+  }
+
   async handleUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.meetingBridge) {
       this.sendJsonError(res, 500, 'Meeting bridge not initialized');

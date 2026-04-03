@@ -769,7 +769,11 @@ export class CityHUDHeader {
 
   private describeTranscriptChunk(chunk: ServerMeetingRunState['recentTranscriptChunks'][number]): string {
     const parts = [`chunk ${chunk.chunkIndex}`]
+    if (chunk.revisionIndex && chunk.revisionIndex > 1) parts.push(`rev ${chunk.revisionIndex}`)
     if (chunk.speaker) parts.push(chunk.speaker)
+    if (chunk.isPartial) {
+      parts.push('tentative')
+    }
     if (chunk.status) parts.push(chunk.status)
     if (chunk.timestampLocal) parts.push(chunk.timestampLocal)
     return parts.join(' • ')

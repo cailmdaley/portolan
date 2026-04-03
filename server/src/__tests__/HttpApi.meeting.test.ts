@@ -151,6 +151,34 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', chunkCount: 3, status: 'running' });
   });
 
+  it('routes uploaded transcript chunk batches into the active meeting bridge', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null })),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestChunks: vi.fn(() => ({ meetingId: 'meeting-1', chunkCount: 2, status: 'running' })),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+    };
+
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/chunks', {
+      chunks: [
+        { id: 'chunk-1', status: 'partial', text: 'Could we pull up' },
+        { id: 'chunk-1', status: 'complete', text: 'Could we pull up the plot' },
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.ingestChunks).toHaveBeenCalledWith([
+      { id: 'chunk-1', status: 'partial', text: 'Could we pull up' },
+      { id: 'chunk-1', status: 'complete', text: 'Could we pull up the plot' },
+    ]);
+    expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', chunkCount: 2, status: 'running' });
+  });
+
   it('routes operator meeting updates into the active meeting bridge', async () => {
     const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
     const meetingBridge = {

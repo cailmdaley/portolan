@@ -287,6 +287,11 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'POST' && url.pathname === '/meeting-bridge/chunks') {
+      await this.meetingApi.handleChunks(req, res);
+      return true;
+    }
+
     if (req.method === 'POST' && url.pathname === '/meeting-bridge/update') {
       await this.meetingApi.handleUpdate(req, res);
       return true;

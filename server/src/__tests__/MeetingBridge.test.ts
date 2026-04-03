@@ -237,6 +237,74 @@ describe('MeetingBridge', () => {
     });
   });
 
+  it('keeps a stable chunk index across partial transcript revisions', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-partial',
+        tmuxSession: 'worker-partial',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({
+      id: 'live-1',
+      speaker: 'Scientist',
+      status: 'partial',
+      text: 'Could we pull up',
+    });
+    bridge.ingestChunk({
+      id: 'live-1',
+      speaker: 'Scientist',
+      status: 'partial',
+      text: 'Could we pull up the calibration plot',
+    });
+    const updated = bridge.ingestChunk({
+      id: 'live-1',
+      speaker: 'Scientist',
+      status: 'complete',
+      text: 'Could we pull up the calibration plot',
+    });
+
+    expect(updated.chunkCount).toBe(1);
+    expect(updated.recentTranscriptChunks).toEqual([
+      expect.objectContaining({
+        chunkIndex: 1,
+        revisionIndex: 3,
+        status: 'complete',
+        isRevision: true,
+        text: 'Could we pull up the calibration plot',
+      }),
+    ]);
+
+    const transcriptLines = readFileSync(run.transcriptPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(transcriptLines).toHaveLength(3);
+    expect(transcriptLines.map((entry) => entry.chunkIndex)).toEqual([1, 1, 1]);
+    expect(transcriptLines.map((entry) => entry.revisionIndex)).toEqual([1, 2, 3]);
+
+    const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(injections).toHaveLength(4);
+    expect(injections[1]).toMatchObject({ chunkIndex: 1, revisionIndex: 1 });
+    expect(injections[2]).toMatchObject({ chunkIndex: 1, revisionIndex: 2 });
+    expect(injections[3]).toMatchObject({ chunkIndex: 1, revisionIndex: 3 });
+    expect(injections[2].message).toContain('chunk_event: revision');
+    expect(injections[2].message).toContain('tentative: true');
+  });
+
   it('persists operator updates and injects them into the active worker thread', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };

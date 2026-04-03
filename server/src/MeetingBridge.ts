@@ -32,10 +32,13 @@ export interface MeetingBridgeStartOptions {
 export interface MeetingTranscriptEntry {
   chunkIndex: number;
   receivedAt: number;
+  revisionIndex?: number;
   sourceChunkId?: string;
   timestampLocal?: string;
   status?: string;
   speaker?: string;
+  isPartial?: boolean;
+  isRevision?: boolean;
   text: string;
 }
 
@@ -157,12 +160,15 @@ export interface MeetingAstraPromoter {
 
 interface NormalizedTranscriptChunk {
   chunkIndex: number;
+  revisionIndex: number;
   sourceChunkId: string | null;
   timestampLocal: string | null;
   durationSeconds: number | null;
   status: string | null;
   speaker: string | null;
   audioFileUrl: string | null;
+  isPartial: boolean;
+  isRevision: boolean;
   text: string;
   raw: unknown;
 }
@@ -206,6 +212,7 @@ export class MeetingBridge {
   private readonly fiberPromoter: MeetingFiberPromoter;
   private readonly astraPromoter: MeetingAstraPromoter;
   private readonly stateListeners = new Set<MeetingBridgeStateListener>();
+  private readonly chunkSources = new Map<string, { chunkIndex: number; revisionIndex: number; text: string; status: string | null }>();
   private activeSource: TranscriptSource | null = null;
   private state: MeetingBridgeState = {
     activeMeeting: null,
@@ -247,6 +254,7 @@ export class MeetingBridge {
 
   start(options: MeetingBridgeStartOptions): MeetingRunState {
     this.stop();
+    this.chunkSources.clear();
 
     const startedAt = Date.now();
     const meetingId = `${new Date(startedAt).toISOString().replace(/[:.]/g, '-')}-${sanitizeSegment(options.target.tmuxSession)}`;
@@ -366,6 +374,25 @@ export class MeetingBridge {
       sshHost: active.sshHost,
     };
     this.handleChunk(target, active, rawChunk);
+    return cloneMeetingRunState(active);
+  }
+
+  ingestChunks(rawChunks: unknown[]): MeetingRunState {
+    const active = this.state.activeMeeting;
+    if (!active) {
+      throw new Error('No active meeting bridge');
+    }
+
+    for (const rawChunk of rawChunks) {
+      this.handleChunk({
+        sessionId: active.sessionId,
+        tmuxSession: active.tmuxSession,
+        originId: active.originId,
+        cwd: active.cityPath,
+        sshHost: active.sshHost,
+      }, active, rawChunk);
+    }
+
     return cloneMeetingRunState(active);
   }
 
@@ -501,7 +528,8 @@ export class MeetingBridge {
 
     try {
       const chunk = this.normalizeChunk(rawChunk, run.chunkCount + 1);
-      run.chunkCount = chunk.chunkIndex;
+      const shouldInject = this.recordChunkSource(chunk);
+      run.chunkCount = Math.max(run.chunkCount, chunk.chunkIndex);
       run.lastChunkAt = Date.now();
       run.lastChunkPreview = chunk.text.slice(0, 160) || chunk.sourceChunkId || undefined;
 
@@ -509,32 +537,39 @@ export class MeetingBridge {
         meetingId: run.meetingId,
         receivedAt: run.lastChunkAt,
         chunkIndex: chunk.chunkIndex,
+        revisionIndex: chunk.revisionIndex,
         sourceChunkId: chunk.sourceChunkId,
         timestampLocal: chunk.timestampLocal,
         durationSeconds: chunk.durationSeconds,
         status: chunk.status,
         speaker: chunk.speaker,
         audioFileUrl: chunk.audioFileUrl,
+        isPartial: chunk.isPartial,
+        isRevision: chunk.isRevision,
         text: chunk.text,
         raw: chunk.raw,
       });
-      run.recentTranscriptChunks = appendRecentItem(run.recentTranscriptChunks, {
+      run.recentTranscriptChunks = upsertRecentTranscriptItem(run.recentTranscriptChunks, {
         chunkIndex: chunk.chunkIndex,
         receivedAt: run.lastChunkAt,
+        revisionIndex: chunk.revisionIndex,
         sourceChunkId: chunk.sourceChunkId ?? undefined,
         timestampLocal: chunk.timestampLocal ?? undefined,
         status: chunk.status ?? undefined,
         speaker: chunk.speaker ?? undefined,
+        isPartial: chunk.isPartial || undefined,
+        isRevision: chunk.isRevision || undefined,
         text: chunk.text,
       });
 
-      if (chunk.text.trim().length > 0) {
+      if (chunk.text.trim().length > 0 && shouldInject) {
         const message = this.buildTranscriptMessage(run, chunk);
         this.messenger.send(target, message, { pressEnter: true });
         run.injectedCount += 1;
         appendJsonLine(run.injectionsPath, {
           kind: 'transcript-chunk',
           chunkIndex: chunk.chunkIndex,
+          revisionIndex: chunk.revisionIndex,
           sourceChunkId: chunk.sourceChunkId,
           sentAt: Date.now(),
           message,
@@ -732,6 +767,7 @@ export class MeetingBridge {
     run.status = status;
     run.stoppedAt = Date.now();
     this.activeSource = null;
+    this.chunkSources.clear();
     this.state.activeMeeting = null;
     this.state.lastMeeting = { ...run };
     this.writeMetadata(run);
@@ -801,14 +837,20 @@ export class MeetingBridge {
 
   private normalizeChunk(rawChunk: unknown, chunkIndex: number): NormalizedTranscriptChunk {
     const record = isRecord(rawChunk) ? rawChunk : {};
+    const sourceChunkId = maybeString(record.id);
+    const prior = sourceChunkId ? this.chunkSources.get(sourceChunkId) : null;
+    const status = maybeString(record.status);
     return {
-      chunkIndex,
-      sourceChunkId: maybeString(record.id),
+      chunkIndex: prior?.chunkIndex ?? chunkIndex,
+      revisionIndex: (prior?.revisionIndex ?? 0) + 1,
+      sourceChunkId,
       timestampLocal: maybeString(record.timestamp_local),
       durationSeconds: maybeNumber(record.duration_s),
-      status: maybeString(record.status),
+      status,
       speaker: maybeString(record.speaker),
       audioFileUrl: maybeString(record.audio_file_url),
+      isPartial: isPartialTranscriptStatus(status),
+      isRevision: !!prior,
       text: selectTranscriptText(record),
       raw: rawChunk,
     };
@@ -900,6 +942,7 @@ export class MeetingBridge {
       '[Portolan Meeting Transcript Chunk]',
       `meeting_id: ${run.meetingId}`,
       `chunk_index: ${chunk.chunkIndex}`,
+      `revision_index: ${chunk.revisionIndex}`,
       `source: ${run.sourceType}`,
     ];
 
@@ -909,10 +952,32 @@ export class MeetingBridge {
     if (chunk.status) lines.push(`status: ${chunk.status}`);
     if (chunk.speaker) lines.push(`speaker: ${chunk.speaker}`);
     if (chunk.audioFileUrl) lines.push(`audio_file_url: ${chunk.audioFileUrl}`);
+    if (chunk.isRevision) lines.push('chunk_event: revision');
+    if (chunk.isPartial) lines.push('tentative: true');
     lines.push('transcript:');
     lines.push(chunk.text);
     lines.push('[/Portolan Meeting Transcript Chunk]');
     return lines.join('\n');
+  }
+
+  private recordChunkSource(chunk: NormalizedTranscriptChunk): boolean {
+    if (!chunk.sourceChunkId) {
+      return true;
+    }
+
+    const prior = this.chunkSources.get(chunk.sourceChunkId);
+    this.chunkSources.set(chunk.sourceChunkId, {
+      chunkIndex: chunk.chunkIndex,
+      revisionIndex: chunk.revisionIndex,
+      text: chunk.text,
+      status: chunk.status,
+    });
+
+    if (!prior) {
+      return true;
+    }
+
+    return prior.text !== chunk.text || prior.status !== chunk.status;
   }
 
   private buildOperatorUpdateMessage(run: MeetingRunState, update: NormalizedOperatorUpdate): string {
@@ -1234,6 +1299,12 @@ function appendRecentItem<T>(items: T[], item: T): T[] {
   return [...items, item].slice(-MAX_RECENT_MEETING_ITEMS);
 }
 
+function upsertRecentTranscriptItem(items: MeetingTranscriptEntry[], item: MeetingTranscriptEntry): MeetingTranscriptEntry[] {
+  return [...items.filter((entry) => entry.chunkIndex !== item.chunkIndex), item]
+    .sort((left, right) => left.receivedAt - right.receivedAt)
+    .slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
 function parseTranscriptEntries(value: unknown): MeetingTranscriptEntry[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -1245,10 +1316,13 @@ function parseTranscriptEntries(value: unknown): MeetingTranscriptEntry[] {
     return [{
       chunkIndex,
       receivedAt,
+      revisionIndex: maybeNumber(entry.revisionIndex) ?? undefined,
       sourceChunkId: maybeString(entry.sourceChunkId) ?? undefined,
       timestampLocal: maybeString(entry.timestampLocal) ?? undefined,
       status: maybeString(entry.status) ?? undefined,
       speaker: maybeString(entry.speaker) ?? undefined,
+      isPartial: maybeBoolean(entry.isPartial) ?? undefined,
+      isRevision: maybeBoolean(entry.isRevision) ?? undefined,
       text,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
@@ -1309,6 +1383,16 @@ function parseRetrievalRequestEntries(value: unknown): MeetingRetrievalRequestEn
       text,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function maybeBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function isPartialTranscriptStatus(status: string | null): boolean {
+  if (!status) return false;
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'partial' || normalized === 'interim' || normalized === 'live' || normalized === 'in_progress';
 }
 
 class DefaultMeetingFiberPromoter implements MeetingFiberPromoter {

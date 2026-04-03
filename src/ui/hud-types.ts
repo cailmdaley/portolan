@@ -28,10 +28,13 @@ export interface MeetingRunState {
   recentTranscriptChunks: Array<{
     chunkIndex: number
     receivedAt: number
+    revisionIndex?: number
     sourceChunkId?: string
     timestampLocal?: string
     status?: string
     speaker?: string
+    isPartial?: boolean
+    isRevision?: boolean
     text: string
   }>
   recentOperatorUpdates: Array<{
