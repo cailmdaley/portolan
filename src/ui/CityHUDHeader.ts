@@ -390,7 +390,13 @@ export class CityHUDHeader {
           ${cityMeeting.lastBriefPromotionFiberId ? `
             <div class="hud-meeting-update-preview">
               <span class="hud-meeting-update-label">latest brief</span>
-              <span>${escapeHtml(cityMeeting.lastBriefPromotionFiberId)}</span>
+              <span>${escapeHtml(cityMeeting.lastBriefPromotionFiberId)}${cityMeeting.lastBriefPromotionAstraAnalysisId ? ` • ASTRA ${escapeHtml(cityMeeting.lastBriefPromotionAstraAnalysisId)}` : ''}</span>
+            </div>
+          ` : ''}
+          ${cityMeeting.liveAstraAnalysisId ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">live ASTRA</span>
+              <span>${escapeHtml(cityMeeting.liveAstraAnalysisId)}</span>
             </div>
           ` : ''}
           ${cityMeeting.lastError ? `<div class="hud-meeting-error">${escapeHtml(cityMeeting.lastError)}</div>` : ''}
@@ -439,6 +445,7 @@ export class CityHUDHeader {
           </div>
           <div class="hud-meeting-actions hud-meeting-links">
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.liveDocumentPath)}">Live document</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.liveAstraPath)}">Live ASTRA</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.transcriptPath)}">Transcript log</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.injectionsPath)}">Worker injections</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.updatesPath)}">Operator updates</button>

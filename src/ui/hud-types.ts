@@ -148,6 +148,8 @@ export interface MeetingRunState {
   candidateEventsPath: string
   retrievalRequestsPath: string
   liveDocumentPath: string
+  liveAstraPath: string
+  liveAstraAnalysisId: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number
@@ -170,6 +172,10 @@ export interface MeetingRunState {
   lastPromotedCandidateAstraDecisionId?: string
   lastRetrievalRequestAt?: number
   lastRetrievalRequestPreview?: string
+  lastBriefPromotionAt?: number
+  lastBriefPromotionFiberId?: string
+  lastBriefPromotionAstraAnalysisId?: string
+  lastLiveAstraSyncAt?: number
   lastError?: string
 }
 

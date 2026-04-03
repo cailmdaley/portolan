@@ -156,6 +156,91 @@ describe('MeetingBridge', () => {
     expect(transcript.text).toBe('');
   });
 
+  it('syncs the live meeting brief into astra.yaml before explicit promotion', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-live-astra',
+        tmuxSession: 'worker-live-astra',
+        originId: 'local',
+        cwd: cityPath,
+      },
+    });
+
+    bridge.ingestChunk({
+      id: 'chunk-1',
+      text: 'The DES comparison is the blocker before we can settle calibration.',
+    });
+    bridge.ingestOperatorUpdate({
+      kind: 'narrative',
+      text: 'Calibration remains open until the DES comparison is checked.',
+    });
+    bridge.ingestCandidateEvent({
+      kind: 'note',
+      title: 'DES comparison gates calibration',
+      text: 'Do not collapse the calibration conclusion until the DES comparison is reviewed.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestCandidateEvent({
+      kind: 'decision',
+      title: 'Keep calibration tentative',
+      text: 'Treat calibration as unresolved pending the DES comparison.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestRetrievedEvidence({
+      type: 'fiber',
+      title: 'use-des-weights',
+      fiberId: 'use-des-weights',
+      match: 'Decision to use DES weights for the comparison run.',
+    });
+
+    const updated = bridge.getState().activeMeeting;
+    expect(updated?.liveAstraAnalysisId).toBe(`meeting-live-${run.meetingId}`.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/\./g, '-'));
+    expect(updated?.liveAstraPath).toBe(join(cityPath, 'astra.yaml'));
+
+    const astra = parseYaml(readFileSync(join(cityPath, 'astra.yaml'), 'utf-8')) as Record<string, any>;
+    const liveAnalysis = astra.analyses[updated!.liveAstraAnalysisId];
+    expect(liveAnalysis).toMatchObject({
+      name: 'Live meeting brief: Calibration remains open until the DES comparison is checked.',
+      tags: ['portolan', 'meeting', 'meeting-live'],
+    });
+    expect(liveAnalysis.description).toContain('Calibration remains open until the DES comparison is checked.');
+    expect(liveAnalysis.description).toContain(run.liveDocumentPath);
+    expect(liveAnalysis.findings['meeting-live-summary']).toMatchObject({
+      claim: 'Calibration remains open until the DES comparison is checked.',
+      tags: ['meeting', 'meeting-live-summary'],
+    });
+    expect(liveAnalysis.findings['meeting-live-note-1']).toMatchObject({
+      claim: 'DES comparison gates calibration',
+      tags: ['meeting', 'meeting-live-note'],
+    });
+    expect(liveAnalysis.decisions['meeting-decision-2']).toMatchObject({
+      label: 'Keep calibration tentative',
+      rationale: 'Treat calibration as unresolved pending the DES comparison.',
+      tags: ['meeting', 'meeting-decision'],
+    });
+    expect(liveAnalysis.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'meeting_live_document', source: run.liveDocumentPath }),
+      expect.objectContaining({ id: 'meeting_transcript_log', source: run.transcriptPath }),
+    ]));
+  });
+
   it('stops the active source and marks the run errored when the source fails', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };
@@ -812,11 +897,17 @@ describe('MeetingBridge', () => {
     });
 
     const astra = parseYaml(readFileSync(join(cityPath, 'astra.yaml'), 'utf-8')) as Record<string, any>;
+    const liveAnalysis = astra.analyses[updated.liveAstraAnalysisId!];
     const briefAnalysis = astra.analyses[updated.lastBriefPromotionAstraAnalysisId!];
+    expect(liveAnalysis).toMatchObject({
+      name: 'Live meeting brief: Calibration remains open pending the DES comparison.',
+      tags: ['portolan', 'meeting', 'meeting-live'],
+    });
     expect(briefAnalysis).toMatchObject({
       name: 'Meeting brief: Calibration remains open pending the DES comparison.',
       tags: ['portolan', 'meeting', 'meeting-brief'],
     });
+    expect(updated.lastBriefPromotionAstraAnalysisId).not.toBe(updated.liveAstraAnalysisId);
     expect(briefAnalysis.description).toContain('Calibration remains open pending the DES comparison.');
     expect(briefAnalysis.description).toContain('meeting-brief-fiber');
     expect(briefAnalysis.findings['meeting-summary']).toMatchObject({

@@ -222,6 +222,8 @@ export interface ServerMeetingRunState {
   retrievalEvidencePath: string
   briefPromotionsPath: string
   liveDocumentPath: string
+  liveAstraPath: string
+  liveAstraAnalysisId: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number
@@ -250,6 +252,8 @@ export interface ServerMeetingRunState {
   lastRetrievedEvidencePreview?: string
   lastBriefPromotionAt?: number
   lastBriefPromotionFiberId?: string
+  lastBriefPromotionAstraAnalysisId?: string
+  lastLiveAstraSyncAt?: number
   lastError?: string
 }
 
