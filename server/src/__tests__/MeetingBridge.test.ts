@@ -36,6 +36,7 @@ describe('MeetingBridge', () => {
 
   it('boots a meeting run, persists transcript chunks, and injects wrapped messages', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
     const messenger = { send: vi.fn() };
     let source: FakeTranscriptSource | null = null;
 
@@ -55,10 +56,11 @@ describe('MeetingBridge', () => {
         sessionId: 'worker-1',
         tmuxSession: 'worker-1',
         originId: 'local',
-        cwd: '/project/portolan',
+        cwd: cityPath,
       },
     });
 
+    expect(run.liveDocumentPath).toBe(join(cityPath, 'meeting-live-brief.md'));
     expect(source?.started).toBe(true);
     expect(messenger.send).toHaveBeenCalledTimes(1);
     expect(messenger.send).toHaveBeenCalledWith(
@@ -213,6 +215,7 @@ describe('MeetingBridge', () => {
     const updated = bridge.getState().activeMeeting;
     expect(updated?.liveAstraAnalysisId).toBe(`meeting-live-${run.meetingId}`.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/\./g, '-'));
     expect(updated?.liveAstraPath).toBe(join(cityPath, 'astra.yaml'));
+    expect(updated?.liveDocumentPath).toBe(join(cityPath, 'meeting-live-brief.md'));
 
     const astra = parseYaml(readFileSync(join(cityPath, 'astra.yaml'), 'utf-8')) as Record<string, any>;
     const liveAnalysis = astra.analyses[updated!.liveAstraAnalysisId];
@@ -666,6 +669,9 @@ describe('MeetingBridge', () => {
       fiberId: 'meeting-question-fiber',
       kind: 'question',
     });
+
+    const liveDocument = readFileSync(run.liveDocumentPath, 'utf-8');
+    expect(liveDocument).toContain('promoted fiber: `.felt/meeting-question-fiber/meeting-question-fiber.md`');
   });
 
   it('syncs promoted meeting decisions into astra.yaml', async () => {
@@ -936,6 +942,8 @@ describe('MeetingBridge', () => {
     expect(liveDocument).toContain('## Open questions');
     expect(liveDocument).toContain('## Decisions');
     expect(liveDocument).toContain('## Evidence in view');
+    expect(liveDocument).toContain('(fiber: `.felt/use-des-weights/use-des-weights.md`)');
+    expect(liveDocument).toContain(`- live ASTRA: \`${join(cityPath, 'astra.yaml')}\``);
     expect(liveDocument).toContain(run.briefPromotionsPath);
   });
 

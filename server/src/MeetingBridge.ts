@@ -392,7 +392,7 @@ export class MeetingBridge {
     const retrievalRequestsPath = join(meetingDir, 'retrieval-requests.jsonl');
     const retrievalEvidencePath = join(meetingDir, 'retrieved-evidence.jsonl');
     const briefPromotionsPath = join(meetingDir, 'brief-promotions.jsonl');
-    const liveDocumentPath = join(meetingDir, 'live-brief.md');
+    const liveDocumentPath = this.resolveLiveDocumentPath(options.target.cwd, meetingDir);
     const liveAstraPath = join(options.target.cwd, 'astra.yaml');
     const liveAstraAnalysisId = this.buildLiveAstraAnalysisId(meetingId);
     const metadataPath = join(meetingDir, 'meeting.json');
@@ -1130,7 +1130,19 @@ export class MeetingBridge {
     }
   }
 
+  private resolveLiveDocumentPath(cityPath: string, meetingDir: string): string {
+    try {
+      if (statSync(cityPath).isDirectory()) {
+        return join(cityPath, 'meeting-live-brief.md');
+      }
+    } catch {
+      // Fall back to the per-run meeting directory when the city path is unavailable.
+    }
+    return join(meetingDir, 'live-brief.md');
+  }
+
   private writeMetadata(run: MeetingRunState): void {
+    mkdirSync(dirname(run.liveDocumentPath), { recursive: true });
     writeFileSync(run.liveDocumentPath, this.buildLiveDocument(run));
     writeFileSync(run.metadataPath, JSON.stringify(run, null, 2));
     writeFileSync(this.latestStatePath, JSON.stringify(run, null, 2));
@@ -1596,10 +1608,9 @@ export class MeetingBridge {
     if (run.liveBrief.evidenceInView.length > 0) {
       lines.push('', '## Evidence in view', '');
       for (const item of run.liveBrief.evidenceInView) {
-        const locator = item.type === 'fiber'
-          ? item.fiberId ?? item.title
-          : item.path ?? item.title;
-        lines.push(`- ${item.title} (${item.type}: ${locator})`);
+        const locator = this.buildRetrievedEvidenceLocator(item);
+        const locatorLabel = locator ? ` (${item.type}: ${locator})` : '';
+        lines.push(`- ${item.title}${locatorLabel}`);
         if (item.match?.trim()) {
           lines.push(`  - match: ${item.match.trim()}`);
         }
@@ -1617,6 +1628,7 @@ export class MeetingBridge {
       '## Provenance',
       '',
       `- metadata: \`${run.metadataPath}\``,
+      `- live ASTRA: \`${run.liveAstraPath}\``,
       `- transcript log: \`${run.transcriptPath}\``,
       `- worker injections: \`${run.injectionsPath}\``,
       `- operator updates: \`${run.updatesPath}\``,
@@ -2034,12 +2046,29 @@ export class MeetingBridge {
         lines.push(`  - operator updates: ${item.operatorUpdateIndices.join(', ')}`);
       }
       if (item.promotedFiberId) {
-        lines.push(`  - promoted fiber: ${item.promotedFiberId}`);
+        lines.push(`  - promoted fiber: \`${this.buildMeetingFiberPath(item.promotedFiberId)}\``);
       }
       if (item.promotedAstraDecisionId) {
         lines.push(`  - ASTRA decision: ${item.promotedAstraDecisionId}`);
       }
     }
+  }
+
+  private buildMeetingFiberPath(fiberId: string): string {
+    return `.felt/${fiberId}/${fiberId}.md`;
+  }
+
+  private buildRetrievedEvidenceLocator(item: MeetingRetrievedEvidenceEntry): string | null {
+    if (item.type === 'fiber' && item.fiberId) {
+      return `\`${this.buildMeetingFiberPath(item.fiberId)}\``;
+    }
+
+    if (item.type === 'file' && item.path) {
+      const location = item.line && item.line > 0 ? `${item.path}:L${item.line}` : item.path;
+      return `\`${location}\``;
+    }
+
+    return null;
   }
 
   private mapCandidateKindToFiberKind(kind: string): string {
