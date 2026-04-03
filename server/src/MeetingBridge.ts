@@ -11,6 +11,7 @@ import {
   type VoiceInkTranscriptSourceOptions,
   VoiceInkTranscriptSource,
 } from './VoiceInkTranscriptSource.js';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -55,6 +56,7 @@ export interface MeetingCandidateEventEntry {
   operatorUpdateIndices: number[];
   promotedAt?: number;
   promotedFiberId?: string;
+  promotedAstraDecisionId?: string;
 }
 
 export interface MeetingRetrievalRequestEntry {
@@ -96,6 +98,7 @@ export interface MeetingRunState {
   lastCandidateEventPreview?: string;
   lastPromotedCandidateAt?: number;
   lastPromotedCandidateFiberId?: string;
+  lastPromotedCandidateAstraDecisionId?: string;
   lastRetrievalRequestAt?: number;
   lastRetrievalRequestPreview?: string;
   lastError?: string;
@@ -138,6 +141,20 @@ export interface MeetingFiberPromoter {
   }): Promise<string>;
 }
 
+export interface MeetingAstraPromoter {
+  upsertDecision(options: {
+    cityPath: string;
+    originId: string;
+    sshHost?: string;
+    decisionId: string;
+    label: string;
+    rationale: string;
+    tags: string[];
+    defaultOption: string;
+    options: Record<string, { label: string; description: string }>;
+  }): Promise<{ decisionId: string; astraPath: string }>;
+}
+
 interface NormalizedTranscriptChunk {
   chunkIndex: number;
   sourceChunkId: string | null;
@@ -168,6 +185,7 @@ interface NormalizedCandidateEvent {
   operatorUpdateIndices: number[];
   promotedAt: number | null;
   promotedFiberId: string | null;
+  promotedAstraDecisionId: string | null;
   raw: unknown;
 }
 
@@ -186,6 +204,7 @@ export class MeetingBridge {
   private readonly messenger: MeetingBridgeMessageSender;
   private readonly sourceFactory: MeetingTranscriptSourceFactory;
   private readonly fiberPromoter: MeetingFiberPromoter;
+  private readonly astraPromoter: MeetingAstraPromoter;
   private readonly stateListeners = new Set<MeetingBridgeStateListener>();
   private activeSource: TranscriptSource | null = null;
   private state: MeetingBridgeState = {
@@ -198,6 +217,7 @@ export class MeetingBridge {
     messenger?: MeetingBridgeMessageSender;
     sourceFactory?: MeetingTranscriptSourceFactory;
     fiberPromoter?: MeetingFiberPromoter;
+    astraPromoter?: MeetingAstraPromoter;
   } = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), '.portolan', 'meetings');
     this.latestStatePath = join(this.baseDir, 'latest-meeting.json');
@@ -206,6 +226,7 @@ export class MeetingBridge {
       createVoiceInkSource: (voiceInkOptions, callbacks) => new VoiceInkTranscriptSource(voiceInkOptions, callbacks),
     };
     this.fiberPromoter = options.fiberPromoter ?? new DefaultMeetingFiberPromoter();
+    this.astraPromoter = options.astraPromoter ?? new DefaultMeetingAstraPromoter();
     mkdirSync(this.baseDir, { recursive: true });
     this.state.lastMeeting = this.loadPersistedMeetingState();
   }
@@ -430,14 +451,34 @@ export class MeetingBridge {
     });
 
     const promotedAt = Date.now();
+    const astraPromotion = event.kind === 'decision'
+      ? await this.astraPromoter.upsertDecision({
+        cityPath: active.cityPath,
+        originId: active.originId,
+        sshHost: active.sshHost,
+        decisionId: this.buildPromotedAstraDecisionId(active, event),
+        label: title,
+        rationale: this.buildPromotedAstraDecisionRationale(active, event, fiberId),
+        tags: ['portolan', 'meeting', 'meeting-decision'],
+        defaultOption: 'accepted',
+        options: {
+          accepted: {
+            label: 'Accepted',
+            description: 'This meeting decision was explicitly accepted and promoted from the Portolan live meeting lane.',
+          },
+        },
+      })
+      : null;
     active.promotedCandidateEventCount += 1;
     active.lastPromotedCandidateAt = promotedAt;
     active.lastPromotedCandidateFiberId = fiberId;
+    active.lastPromotedCandidateAstraDecisionId = astraPromotion?.decisionId;
 
     const recentEvent = active.recentCandidateEvents.find((entry) => entry.eventIndex === eventIndex);
     if (recentEvent) {
       recentEvent.promotedAt = promotedAt;
       recentEvent.promotedFiberId = fiberId;
+      recentEvent.promotedAstraDecisionId = astraPromotion?.decisionId;
     }
 
     appendJsonLine(active.candidatePromotionsPath, {
@@ -447,6 +488,8 @@ export class MeetingBridge {
       fiberId,
       title,
       kind,
+      astraDecisionId: astraPromotion?.decisionId ?? null,
+      astraPath: astraPromotion?.astraPath ?? null,
     });
     this.writeMetadata(active);
     this.emitStateChanged();
@@ -643,7 +686,11 @@ export class MeetingBridge {
   }
 
   private readCandidateEvent(run: MeetingRunState, eventIndex: number): NormalizedCandidateEvent | null {
-    const promotions = new Map<number, { promotedAt: number | null; promotedFiberId: string | null }>();
+    const promotions = new Map<number, {
+      promotedAt: number | null;
+      promotedFiberId: string | null;
+      promotedAstraDecisionId: string | null;
+    }>();
     for (const entry of readJsonLines(run.candidatePromotionsPath)) {
       if (!isRecord(entry)) continue;
       const promotedEventIndex = maybeNumber(entry.eventIndex);
@@ -651,6 +698,7 @@ export class MeetingBridge {
       promotions.set(promotedEventIndex, {
         promotedAt: maybeNumber(entry.promotedAt),
         promotedFiberId: maybeString(entry.fiberId),
+        promotedAstraDecisionId: maybeString(entry.astraDecisionId),
       });
     }
 
@@ -661,6 +709,7 @@ export class MeetingBridge {
         if (promotion) {
           parsed.promotedAt = promotion.promotedAt;
           parsed.promotedFiberId = promotion.promotedFiberId;
+          parsed.promotedAstraDecisionId = promotion.promotedAstraDecisionId;
         }
         return parsed;
       }
@@ -812,6 +861,7 @@ export class MeetingBridge {
       operatorUpdateIndices,
       promotedAt: null,
       promotedFiberId: null,
+      promotedAstraDecisionId: null,
       raw: rawEvent,
     };
   }
@@ -940,6 +990,37 @@ export class MeetingBridge {
     return lines.join('\n');
   }
 
+  private buildPromotedAstraDecisionId(run: MeetingRunState, event: NormalizedCandidateEvent): string {
+    const label = event.title ?? event.text;
+    return sanitizeSegment(`meeting-${run.meetingId}-event-${event.eventIndex}-${label.toLowerCase()}`).replace(/\./g, '-');
+  }
+
+  private buildPromotedAstraDecisionRationale(
+    run: MeetingRunState,
+    event: NormalizedCandidateEvent,
+    fiberId: string,
+  ): string {
+    const lines = [
+      event.text.trim(),
+      '',
+      `Accepted from Portolan meeting ${run.meetingId} candidate event ${event.eventIndex}.`,
+      `Promoted fiber: ${fiberId}.`,
+      `Meeting metadata: ${run.metadataPath}.`,
+      `Candidate event log: ${run.candidateEventsPath}.`,
+    ];
+
+    if (event.transcriptChunkIndices.length > 0) {
+      lines.push(`Transcript chunks: ${event.transcriptChunkIndices.join(', ')}.`);
+      lines.push(`Transcript log: ${run.transcriptPath}.`);
+    }
+    if (event.operatorUpdateIndices.length > 0) {
+      lines.push(`Operator updates: ${event.operatorUpdateIndices.join(', ')}.`);
+      lines.push(`Operator update log: ${run.updatesPath}.`);
+    }
+
+    return lines.join('\n');
+  }
+
   private mapCandidateKindToFiberKind(kind: string): string {
     if (kind === 'question') return 'question';
     if (kind === 'decision') return 'decision';
@@ -963,6 +1044,7 @@ export class MeetingBridge {
       operatorUpdateIndices: maybeNumberList(value.operatorUpdateIndices) ?? [],
       promotedAt: maybeNumber(value.promotedAt),
       promotedFiberId: maybeString(value.promotedFiberId),
+      promotedAstraDecisionId: maybeString(value.promotedAstraDecisionId),
       raw: value,
     };
   }
@@ -1114,6 +1196,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastCandidateEventPreview: maybeString(value.lastCandidateEventPreview) ?? undefined,
     lastPromotedCandidateAt: maybeNumber(value.lastPromotedCandidateAt) ?? undefined,
     lastPromotedCandidateFiberId: maybeString(value.lastPromotedCandidateFiberId) ?? undefined,
+    lastPromotedCandidateAstraDecisionId: maybeString(value.lastPromotedCandidateAstraDecisionId) ?? undefined,
     lastRetrievalRequestAt: maybeNumber(value.lastRetrievalRequestAt) ?? undefined,
     lastRetrievalRequestPreview: maybeString(value.lastRetrievalRequestPreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
@@ -1141,6 +1224,7 @@ function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
       ...event,
       transcriptChunkIndices: [...event.transcriptChunkIndices],
       operatorUpdateIndices: [...event.operatorUpdateIndices],
+      promotedAstraDecisionId: event.promotedAstraDecisionId,
     })),
     recentRetrievalRequests: run.recentRetrievalRequests.map((request) => ({ ...request })),
   };
@@ -1206,6 +1290,7 @@ function parseCandidateEventEntries(value: unknown): MeetingCandidateEventEntry[
       operatorUpdateIndices: maybeNumberList(entry.operatorUpdateIndices) ?? [],
       promotedAt: maybeNumber(entry.promotedAt) ?? undefined,
       promotedFiberId: maybeString(entry.promotedFiberId) ?? undefined,
+      promotedAstraDecisionId: maybeString(entry.promotedAstraDecisionId) ?? undefined,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
 }
@@ -1248,6 +1333,87 @@ class DefaultMeetingFiberPromoter implements MeetingFiberPromoter {
       maxBuffer: 1024 * 1024,
     });
     return stdout.trim();
+  }
+}
+
+class DefaultMeetingAstraPromoter implements MeetingAstraPromoter {
+  async upsertDecision(options: {
+    cityPath: string;
+    originId: string;
+    sshHost?: string;
+    decisionId: string;
+    label: string;
+    rationale: string;
+    tags: string[];
+    defaultOption: string;
+    options: Record<string, { label: string; description: string }>;
+  }): Promise<{ decisionId: string; astraPath: string }> {
+    const astraPath = join(options.cityPath, 'astra.yaml');
+    const content = options.originId === 'local'
+      ? this.readLocalAstra(astraPath)
+      : await this.readRemoteAstra(options.sshHost, astraPath);
+    const parsed = parseYaml(content || '');
+    const document = isRecord(parsed) ? parsed as Record<string, unknown> : {};
+
+    const decisions = isRecord(document.decisions) ? document.decisions as Record<string, unknown> : {};
+    decisions[options.decisionId] = {
+      label: options.label,
+      rationale: options.rationale,
+      tags: options.tags,
+      default: options.defaultOption,
+      options: options.options,
+    };
+    document.decisions = decisions;
+
+    const nextContent = stringifyYaml(document);
+    if (options.originId === 'local') {
+      writeFileSync(astraPath, nextContent);
+    } else {
+      await this.writeRemoteAstra(options.sshHost, astraPath, nextContent);
+    }
+
+    return {
+      decisionId: options.decisionId,
+      astraPath,
+    };
+  }
+
+  private readLocalAstra(astraPath: string): string {
+    try {
+      return readFileSync(astraPath, 'utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  private async readRemoteAstra(sshHost: string | undefined, astraPath: string): Promise<string> {
+    if (!sshHost) {
+      throw new Error('Remote origin not found');
+    }
+    const { stdout } = await execFileAsync(
+      'ssh',
+      [sshHost, `cat ${shellEscape(astraPath)} 2>/dev/null || echo ''`],
+      { timeout: 30000, maxBuffer: 1024 * 1024 },
+    );
+    return stdout;
+  }
+
+  private async writeRemoteAstra(sshHost: string | undefined, astraPath: string, content: string): Promise<void> {
+    if (!sshHost) {
+      throw new Error('Remote origin not found');
+    }
+    const encoded = Buffer.from(content, 'utf-8').toString('base64');
+    const remoteCommand = [
+      `mkdir -p ${shellEscape(dirname(astraPath))}`,
+      `python3 - <<'PY'`,
+      'import base64',
+      `from pathlib import Path; Path(${JSON.stringify(astraPath)}).write_text(base64.b64decode(${JSON.stringify(encoded)}).decode("utf-8"))`,
+      'PY',
+    ].join('\n');
+    await execFileAsync('ssh', [sshHost, remoteCommand], {
+      timeout: 30000,
+      maxBuffer: 1024 * 1024,
+    });
   }
 }
 

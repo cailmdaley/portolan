@@ -102,6 +102,7 @@ export interface ServerMeetingRunState {
     operatorUpdateIndices: number[]
     promotedAt?: number
     promotedFiberId?: string
+    promotedAstraDecisionId?: string
   }>
   recentRetrievalRequests: Array<{
     requestIndex: number
@@ -140,6 +141,7 @@ export interface ServerMeetingRunState {
   lastCandidateEventPreview?: string
   lastPromotedCandidateAt?: number
   lastPromotedCandidateFiberId?: string
+  lastPromotedCandidateAstraDecisionId?: string
   lastRetrievalRequestAt?: number
   lastRetrievalRequestPreview?: string
   lastError?: string

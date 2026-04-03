@@ -15,6 +15,7 @@ interface MeetingThreadItem {
   selected: boolean
   selectionIndex?: number
   promotedFiberId?: string
+  promotedAstraDecisionId?: string
 }
 
 interface SearchResultsMessage {
@@ -357,7 +358,7 @@ export class CityHUDHeader {
           ${cityMeeting.lastPromotedCandidateFiberId ? `
             <div class="hud-meeting-update-preview">
               <span class="hud-meeting-update-label">latest promotion</span>
-              <span>${escapeHtml(cityMeeting.lastPromotedCandidateFiberId)}</span>
+              <span>${escapeHtml(cityMeeting.lastPromotedCandidateFiberId)}${cityMeeting.lastPromotedCandidateAstraDecisionId ? ` • ASTRA ${escapeHtml(cityMeeting.lastPromotedCandidateAstraDecisionId)}` : ''}</span>
             </div>
           ` : ''}
           ${cityMeeting.lastRetrievalRequestPreview ? `
@@ -721,6 +722,7 @@ export class CityHUDHeader {
         selected: false,
         selectionIndex: event.eventIndex,
         promotedFiberId: event.promotedFiberId,
+        promotedAstraDecisionId: event.promotedAstraDecisionId,
       })),
       ...meeting.recentRetrievalRequests.map((request) => ({
         receivedAt: request.receivedAt,
@@ -749,7 +751,7 @@ export class CityHUDHeader {
               <span>${escapeHtml(item.label)}</span>
               <span>${escapeHtml(this.relativeTime(item.receivedAt))}</span>
               ${item.selectable ? `<span class="hud-meeting-thread-select">${item.selected ? 'cited' : 'click to cite'}</span>` : ''}
-              ${item.lane === 'candidate' && item.promotedFiberId ? `<span class="hud-meeting-thread-select">promoted → ${escapeHtml(item.promotedFiberId)}</span>` : ''}
+              ${item.lane === 'candidate' && item.promotedFiberId ? `<span class="hud-meeting-thread-select">promoted → ${escapeHtml(item.promotedFiberId)}${item.promotedAstraDecisionId ? ` • ASTRA ${escapeHtml(item.promotedAstraDecisionId)}` : ''}</span>` : ''}
             </div>
             <div class="hud-meeting-thread-text">${escapeHtml(item.text)}</div>
             ${item.lane === 'candidate'

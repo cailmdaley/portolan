@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { MeetingBridge } from '../MeetingBridge.js';
 import type { TranscriptSource, TranscriptSourceCallbacks } from '../VoiceInkTranscriptSource.js';
 
@@ -422,6 +423,86 @@ describe('MeetingBridge', () => {
       eventIndex: 1,
       fiberId: 'meeting-question-fiber',
       kind: 'question',
+    });
+  });
+
+  it('syncs promoted meeting decisions into astra.yaml', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+    const messenger = { send: vi.fn() };
+    const fiberPromoter = {
+      createFiber: vi.fn(async () => 'meeting-decision-fiber'),
+    };
+
+    writeFileSync(join(cityPath, 'astra.yaml'), [
+      '$schema: https://astra-spec.org/v1/analysis.schema.json',
+      'version: "1.0"',
+      'name: Project Fibers',
+      '',
+    ].join('\n'));
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      fiberPromoter,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-decision-promote',
+        tmuxSession: 'worker-decision-promote',
+        originId: 'local',
+        cwd: cityPath,
+      },
+    });
+
+    bridge.ingestChunk({ id: 'chunk-1', text: 'We will use the DES weighting path for the comparison run.' });
+    bridge.ingestCandidateEvent({
+      kind: 'decision',
+      title: 'Use DES weighting for comparison run',
+      text: 'Use the DES weighting path for the comparison run and keep the previous weighting as historical context only.',
+      transcriptChunkIndices: [1],
+    });
+
+    const updated = await bridge.promoteCandidateEvent(1);
+
+    expect(updated.lastPromotedCandidateFiberId).toBe('meeting-decision-fiber');
+    expect(updated.lastPromotedCandidateAstraDecisionId).toContain(`meeting-${run.meetingId}-event-1-`);
+    expect(updated.recentCandidateEvents).toEqual([
+      expect.objectContaining({
+        eventIndex: 1,
+        promotedFiberId: 'meeting-decision-fiber',
+        promotedAstraDecisionId: updated.lastPromotedCandidateAstraDecisionId,
+      }),
+    ]);
+
+    const astra = parseYaml(readFileSync(join(cityPath, 'astra.yaml'), 'utf-8')) as Record<string, any>;
+    const decision = astra.decisions[updated.lastPromotedCandidateAstraDecisionId!];
+    expect(decision).toMatchObject({
+      label: 'Use DES weighting for comparison run',
+      default: 'accepted',
+      tags: ['portolan', 'meeting', 'meeting-decision'],
+      options: {
+        accepted: {
+          label: 'Accepted',
+        },
+      },
+    });
+    expect(decision.rationale).toContain('meeting-decision-fiber');
+    expect(decision.rationale).toContain(run.metadataPath);
+
+    const promotions = readFileSync(run.candidatePromotionsPath, 'utf-8').trim().split('\n');
+    expect(JSON.parse(promotions[0])).toMatchObject({
+      eventIndex: 1,
+      fiberId: 'meeting-decision-fiber',
+      astraDecisionId: updated.lastPromotedCandidateAstraDecisionId,
+      astraPath: join(cityPath, 'astra.yaml'),
     });
   });
 

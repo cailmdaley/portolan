@@ -48,6 +48,7 @@ export interface MeetingRunState {
     text: string
     transcriptChunkIndices: number[]
     operatorUpdateIndices: number[]
+    promotedAstraDecisionId?: string
   }>
   recentRetrievalRequests: Array<{
     requestIndex: number
@@ -75,6 +76,7 @@ export interface MeetingRunState {
   injectedCount: number
   operatorUpdateCount: number
   candidateEventCount: number
+  promotedCandidateEventCount: number
   retrievalRequestCount: number
   lastChunkAt?: number
   lastChunkPreview?: string
@@ -82,6 +84,9 @@ export interface MeetingRunState {
   lastOperatorUpdatePreview?: string
   lastCandidateEventAt?: number
   lastCandidateEventPreview?: string
+  lastPromotedCandidateAt?: number
+  lastPromotedCandidateFiberId?: string
+  lastPromotedCandidateAstraDecisionId?: string
   lastRetrievalRequestAt?: number
   lastRetrievalRequestPreview?: string
   lastError?: string
