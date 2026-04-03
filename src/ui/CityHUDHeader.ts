@@ -60,6 +60,7 @@ export class CityHUDHeader {
   private meetingState: ServerMeetingBridgeState | null = null
   private meetingActionInFlight = false
   private meetingUpdateDraft = ''
+  private meetingUpdateKind = 'correction'
   private meetingCandidateTitle = ''
   private meetingCandidateDraft = ''
   private meetingCandidateKind = 'note'
@@ -89,6 +90,7 @@ export class CityHUDHeader {
     this.meetingState = null
     this.meetingActionInFlight = false
     this.meetingUpdateDraft = ''
+    this.meetingUpdateKind = 'correction'
     this.meetingCandidateTitle = ''
     this.meetingCandidateDraft = ''
     this.meetingCandidateKind = 'note'
@@ -345,6 +347,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.retrievalEvidenceCount} evidence pull${cityMeeting.retrievalEvidenceCount === 1 ? '' : 's'}</span>
             <span>${escapeHtml(cityMeeting.sourceType)}</span>
           </div>
+          ${this.renderMeetingBrief(cityMeeting)}
           ${this.renderMeetingThread(cityMeeting)}
           ${cityMeeting.lastChunkPreview ? `<div class="hud-meeting-preview">${escapeHtml(cityMeeting.lastChunkPreview)}</div>` : ''}
           ${cityMeeting.lastOperatorUpdatePreview ? `
@@ -395,6 +398,11 @@ export class CityHUDHeader {
               ${this.renderMeetingRetrievalResults()}
             </div>
             <div class="hud-meeting-update">
+              <div class="hud-meeting-candidate-controls">
+                <select class="hud-meeting-update-kind" ${buttonsDisabled}>
+                  ${this.renderMeetingUpdateKindOptions()}
+                </select>
+              </div>
               <textarea class="hud-meeting-update-input" placeholder="Correct or steer the live meeting narrative…">${escapeHtml(this.meetingUpdateDraft)}</textarea>
               <div class="hud-meeting-update-actions">
                 <button class="hud-meeting-btn hud-meeting-send-update" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingUpdateDraft.trim())}>Send update</button>
@@ -465,6 +473,7 @@ export class CityHUDHeader {
     })
 
     const updateInput = container.querySelector<HTMLTextAreaElement>('.hud-meeting-update-input:not(.hud-meeting-candidate-input)')
+    const updateKind = container.querySelector<HTMLSelectElement>('.hud-meeting-update-kind')
     const retrievalInput = container.querySelector<HTMLInputElement>('.hud-meeting-retrieval-input')
     retrievalInput?.addEventListener('input', () => {
       this.meetingRetrievalDraft = retrievalInput.value
@@ -499,6 +508,10 @@ export class CityHUDHeader {
       event.stopPropagation()
       if (this.meetingActionInFlight || !this.meetingRetrievalDraft.trim()) return
       void this.sendMeetingRetrieval()
+    })
+
+    updateKind?.addEventListener('change', () => {
+      this.meetingUpdateKind = updateKind.value || 'correction'
     })
 
     updateInput?.addEventListener('input', () => {
@@ -657,6 +670,19 @@ export class CityHUDHeader {
       .join('')
   }
 
+  private renderMeetingUpdateKindOptions(): string {
+    const options = [
+      ['correction', 'Correction'],
+      ['narrative', 'Narrative state'],
+      ['redirect', 'Redirect'],
+      ['question', 'Open issue'],
+    ] as const
+
+    return options
+      .map(([value, label]) => `<option value="${value}"${this.meetingUpdateKind === value ? ' selected' : ''}>${escapeHtml(label)}</option>`)
+      .join('')
+  }
+
   private renderMeetingRetrievalResults(): string {
     if (!this.meetingRetrievalDraft.trim() && this.retrievalResults.length === 0 && !this.retrievalSearchPending) {
       return ''
@@ -723,6 +749,81 @@ export class CityHUDHeader {
         ${selectedParts.length > 0
           ? `<div class="hud-meeting-provenance-selection">${escapeHtml(selectedParts.join(' • '))}</div>`
           : `<div class="hud-meeting-provenance-empty">${escapeHtml(emptyMessage)}</div>`}
+      </div>
+    `
+  }
+
+  private renderMeetingBrief(meeting: ServerMeetingRunState): string {
+    const brief = meeting.liveBrief
+    const hasContent = !!brief.currentNarrative
+      || brief.decisions.length > 0
+      || brief.openQuestions.length > 0
+      || brief.actionItems.length > 0
+      || brief.acceptedNotes.length > 0
+      || brief.evidenceInView.length > 0
+
+    if (!hasContent) {
+      return ''
+    }
+
+    return `
+      <div class="hud-meeting-brief">
+        <div class="hud-meeting-update-label">current stance</div>
+        ${brief.currentNarrative ? `
+          <div class="hud-meeting-brief-narrative">
+            <div class="hud-meeting-thread-meta">
+              <span class="hud-meeting-thread-lane">operator</span>
+              <span>${escapeHtml(this.describeOperatorUpdate(brief.currentNarrative))}</span>
+              <span>${escapeHtml(this.relativeTime(brief.currentNarrative.receivedAt))}</span>
+            </div>
+            <div class="hud-meeting-thread-text">${escapeHtml(brief.currentNarrative.text)}</div>
+          </div>
+        ` : ''}
+        ${this.renderMeetingBriefLane('decisions', brief.decisions)}
+        ${this.renderMeetingBriefLane('open questions', brief.openQuestions)}
+        ${this.renderMeetingBriefLane('action items', brief.actionItems)}
+        ${this.renderMeetingBriefLane('accepted notes', brief.acceptedNotes)}
+        ${brief.evidenceInView.length > 0 ? `
+          <div class="hud-meeting-brief-section">
+            <div class="hud-meeting-update-label">evidence in view</div>
+            ${brief.evidenceInView.map((item) => `
+              <div class="hud-meeting-brief-item">
+                <div class="hud-meeting-thread-meta">
+                  <span class="hud-meeting-thread-lane">${escapeHtml(item.type)}</span>
+                  <span>${escapeHtml(item.title)}</span>
+                  <span>${escapeHtml(this.relativeTime(item.receivedAt))}</span>
+                </div>
+                ${item.match ? `<div class="hud-meeting-thread-text">${escapeHtml(item.match)}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+    `
+  }
+
+  private renderMeetingBriefLane(
+    label: string,
+    items: ServerMeetingRunState['liveBrief']['decisions'],
+  ): string {
+    if (items.length === 0) {
+      return ''
+    }
+
+    return `
+      <div class="hud-meeting-brief-section">
+        <div class="hud-meeting-update-label">${escapeHtml(label)}</div>
+        ${items.map((item) => `
+          <div class="hud-meeting-brief-item">
+            <div class="hud-meeting-thread-meta">
+              <span class="hud-meeting-thread-lane">${escapeHtml(item.kind)}</span>
+              <span>${escapeHtml(item.title ?? `candidate ${item.eventIndex}`)}</span>
+              <span>${escapeHtml(this.relativeTime(item.receivedAt))}</span>
+              ${item.promotedFiberId ? `<span class="hud-meeting-thread-select">promoted → ${escapeHtml(item.promotedFiberId)}${item.promotedAstraDecisionId ? ` • ASTRA ${escapeHtml(item.promotedAstraDecisionId)}` : ''}</span>` : ''}
+            </div>
+            <div class="hud-meeting-thread-text">${escapeHtml(item.text)}</div>
+          </div>
+        `).join('')}
       </div>
     `
   }
@@ -1030,7 +1131,7 @@ export class CityHUDHeader {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, kind: this.meetingUpdateKind }),
       })
 
       if (!response.ok) {

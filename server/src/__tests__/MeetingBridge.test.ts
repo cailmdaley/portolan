@@ -343,6 +343,11 @@ describe('MeetingBridge', () => {
         kind: 'correction',
       }),
     ]);
+    expect(updated.liveBrief.currentNarrative).toEqual(expect.objectContaining({
+      updateIndex: 1,
+      kind: 'correction',
+      text: 'No, the calibration comparison is still unresolved. Keep this tentative.',
+    }));
     expect(messenger.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ tmuxSession: 'worker-update' }),
       expect.stringContaining('Portolan Meeting Operator Update'),
@@ -474,6 +479,13 @@ describe('MeetingBridge', () => {
         transcriptChunkIndices: [1],
       }),
     ]);
+    expect(updated.liveBrief.openQuestions).toEqual([
+      expect.objectContaining({
+        eventIndex: 1,
+        kind: 'question',
+        title: 'Calibration comparison still open',
+      }),
+    ]);
     expect(messenger.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ tmuxSession: 'worker-candidate' }),
       expect.stringContaining('Portolan Meeting Candidate Event'),
@@ -544,6 +556,12 @@ describe('MeetingBridge', () => {
     expect(updated.promotedCandidateEventCount).toBe(1);
     expect(updated.lastPromotedCandidateFiberId).toBe('meeting-question-fiber');
     expect(updated.recentCandidateEvents).toEqual([
+      expect.objectContaining({
+        eventIndex: 1,
+        promotedFiberId: 'meeting-question-fiber',
+      }),
+    ]);
+    expect(updated.liveBrief.openQuestions).toEqual([
       expect.objectContaining({
         eventIndex: 1,
         promotedFiberId: 'meeting-question-fiber',
@@ -787,6 +805,13 @@ describe('MeetingBridge', () => {
         requestIndex: 1,
       }),
     ]);
+    expect(updated.liveBrief.evidenceInView).toEqual([
+      expect.objectContaining({
+        evidenceIndex: 1,
+        title: 'use-des-weights',
+        fiberId: 'use-des-weights',
+      }),
+    ]);
     expect(messenger.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ tmuxSession: 'worker-retrieval-evidence' }),
       expect.stringContaining('Portolan Meeting Retrieved Evidence'),
@@ -969,6 +994,13 @@ describe('MeetingBridge', () => {
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
+      liveBrief: {
+        acceptedNotes: [],
+        actionItems: [],
+        decisions: [],
+        evidenceInView: [],
+        openQuestions: [],
+      },
     });
   });
 
@@ -1008,6 +1040,13 @@ describe('MeetingBridge', () => {
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
+      liveBrief: {
+        acceptedNotes: [],
+        actionItems: [],
+        decisions: [],
+        evidenceInView: [],
+        openQuestions: [],
+      },
     });
     expect(recovered?.stoppedAt).toBeGreaterThanOrEqual(before);
     expect(recovered?.stoppedAt).toBeLessThanOrEqual(after);

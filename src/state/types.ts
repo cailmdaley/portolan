@@ -77,6 +77,73 @@ export interface ServerOrigin {
 }
 
 export interface ServerMeetingRunState {
+  liveBrief: {
+    currentNarrative?: {
+      updateIndex: number
+      receivedAt: number
+      kind?: string
+      text: string
+    }
+    decisions: Array<{
+      eventIndex: number
+      receivedAt: number
+      kind: string
+      title?: string
+      text: string
+      transcriptChunkIndices: number[]
+      operatorUpdateIndices: number[]
+      promotedAt?: number
+      promotedFiberId?: string
+      promotedAstraDecisionId?: string
+    }>
+    openQuestions: Array<{
+      eventIndex: number
+      receivedAt: number
+      kind: string
+      title?: string
+      text: string
+      transcriptChunkIndices: number[]
+      operatorUpdateIndices: number[]
+      promotedAt?: number
+      promotedFiberId?: string
+      promotedAstraDecisionId?: string
+    }>
+    actionItems: Array<{
+      eventIndex: number
+      receivedAt: number
+      kind: string
+      title?: string
+      text: string
+      transcriptChunkIndices: number[]
+      operatorUpdateIndices: number[]
+      promotedAt?: number
+      promotedFiberId?: string
+      promotedAstraDecisionId?: string
+    }>
+    acceptedNotes: Array<{
+      eventIndex: number
+      receivedAt: number
+      kind: string
+      title?: string
+      text: string
+      transcriptChunkIndices: number[]
+      operatorUpdateIndices: number[]
+      promotedAt?: number
+      promotedFiberId?: string
+      promotedAstraDecisionId?: string
+    }>
+    evidenceInView: Array<{
+      evidenceIndex: number
+      receivedAt: number
+      requestIndex?: number
+      type: 'fiber' | 'file'
+      title: string
+      fiberId?: string
+      path?: string
+      line?: number
+      match?: string
+    }>
+  }
   recentTranscriptChunks: Array<{
     chunkIndex: number
     receivedAt: number

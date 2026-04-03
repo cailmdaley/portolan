@@ -193,13 +193,14 @@ describe('HttpApi — meeting bridge endpoints', () => {
     api.setMeetingBridge(meetingBridge as any);
 
     const res = await httpRequest(api, 'POST', '/meeting-bridge/update', {
+      kind: 'correction',
       text: 'No, this belongs under calibration and remains unresolved.',
     });
 
     expect(res.status).toBe(200);
     expect(meetingBridge.ingestOperatorUpdate).toHaveBeenCalledWith({
       text: 'No, this belongs under calibration and remains unresolved.',
-      kind: undefined,
+      kind: 'correction',
     });
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', operatorUpdateCount: 2, status: 'running' });
   });

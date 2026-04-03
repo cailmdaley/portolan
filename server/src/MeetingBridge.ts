@@ -87,6 +87,28 @@ export interface MeetingRetrievedEvidenceEntry {
   match?: string;
 }
 
+export interface MeetingLiveBriefItem {
+  eventIndex: number;
+  receivedAt: number;
+  kind: string;
+  title?: string;
+  text: string;
+  transcriptChunkIndices: number[];
+  operatorUpdateIndices: number[];
+  promotedAt?: number;
+  promotedFiberId?: string;
+  promotedAstraDecisionId?: string;
+}
+
+export interface MeetingLiveBrief {
+  currentNarrative?: MeetingOperatorUpdateEntry;
+  decisions: MeetingLiveBriefItem[];
+  openQuestions: MeetingLiveBriefItem[];
+  actionItems: MeetingLiveBriefItem[];
+  acceptedNotes: MeetingLiveBriefItem[];
+  evidenceInView: MeetingRetrievedEvidenceEntry[];
+}
+
 export interface MeetingRunState {
   meetingId: string;
   status: 'running' | 'stopped' | 'error';
@@ -138,6 +160,7 @@ export interface MeetingRunState {
   recentCandidateEvents: MeetingCandidateEventEntry[];
   recentRetrievalRequests: MeetingRetrievalRequestEntry[];
   recentRetrievedEvidence: MeetingRetrievedEvidenceEntry[];
+  liveBrief: MeetingLiveBrief;
 }
 
 export interface MeetingBridgeState {
@@ -360,6 +383,11 @@ export class MeetingBridge {
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
       recentRetrievedEvidence: [],
+      liveBrief: buildMeetingLiveBrief({
+        recentOperatorUpdates: [],
+        recentCandidateEvents: [],
+        recentRetrievedEvidence: [],
+      }),
     };
 
     this.state.activeMeeting = run;
@@ -607,6 +635,7 @@ export class MeetingBridge {
       recentEvent.promotedFiberId = fiberId;
       recentEvent.promotedAstraDecisionId = astraPromotion?.decisionId;
     }
+    active.liveBrief = buildMeetingLiveBrief(active);
 
     appendJsonLine(active.candidatePromotionsPath, {
       meetingId: active.meetingId,
@@ -707,6 +736,7 @@ export class MeetingBridge {
         kind: update.kind ?? undefined,
         text: update.text,
       });
+      run.liveBrief = buildMeetingLiveBrief(run);
 
       const message = this.buildOperatorUpdateMessage(run, update);
       this.messenger.send(target, message, { pressEnter: true });
@@ -761,6 +791,7 @@ export class MeetingBridge {
         promotedAt: event.promotedAt ?? undefined,
         promotedFiberId: event.promotedFiberId ?? undefined,
       });
+      run.liveBrief = buildMeetingLiveBrief(run);
 
       const message = this.buildCandidateEventMessage(run, event);
       this.messenger.send(target, message, { pressEnter: true });
@@ -904,6 +935,7 @@ export class MeetingBridge {
         line: evidence.line ?? undefined,
         match: evidence.match ?? undefined,
       });
+      run.liveBrief = buildMeetingLiveBrief(run);
 
       const message = this.buildRetrievedEvidenceMessage(run, evidence);
       this.messenger.send(target, message, { pressEnter: true });
@@ -1535,7 +1567,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const resolvedRetrievalRequestsPath = retrievalRequestsPath ?? join(dirname(metadataPath), 'retrieval-requests.jsonl');
   const resolvedRetrievalEvidencePath = retrievalEvidencePath ?? join(dirname(metadataPath), 'retrieved-evidence.jsonl');
 
-  return {
+  const run: MeetingRunState = {
     meetingId,
     status,
     sourceType,
@@ -1580,6 +1612,11 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     lastRetrievedEvidenceAt: maybeNumber(value.lastRetrievedEvidenceAt) ?? undefined,
     lastRetrievedEvidencePreview: maybeString(value.lastRetrievedEvidencePreview) ?? undefined,
     lastError: maybeString(value.lastError) ?? undefined,
+    liveBrief: buildMeetingLiveBrief({
+      recentOperatorUpdates: [],
+      recentCandidateEvents: [],
+      recentRetrievedEvidence: [],
+    }),
     recentTranscriptChunks: parseTranscriptEntries(value.recentTranscriptChunks),
     recentOperatorUpdates: parseOperatorUpdateEntries(value.recentOperatorUpdates),
     recentAssistantResponses: parseAssistantResponseEntries(value.recentAssistantResponses),
@@ -1587,6 +1624,8 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     recentRetrievalRequests: parseRetrievalRequestEntries(value.recentRetrievalRequests),
     recentRetrievedEvidence: parseRetrievedEvidenceEntries(value.recentRetrievedEvidence),
   };
+  run.liveBrief = parseMeetingLiveBrief(value.liveBrief) ?? buildMeetingLiveBrief(run);
+  return run;
 }
 
 function maybeMeetingStatus(value: unknown): MeetingRunState['status'] | null {
@@ -1611,6 +1650,65 @@ function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
     })),
     recentRetrievalRequests: run.recentRetrievalRequests.map((request) => ({ ...request })),
     recentRetrievedEvidence: run.recentRetrievedEvidence.map((evidence) => ({ ...evidence })),
+    liveBrief: cloneMeetingLiveBrief(run.liveBrief),
+  };
+}
+
+function buildMeetingLiveBrief(state: {
+  recentOperatorUpdates: MeetingOperatorUpdateEntry[];
+  recentCandidateEvents: MeetingCandidateEventEntry[];
+  recentRetrievedEvidence: MeetingRetrievedEvidenceEntry[];
+}): MeetingLiveBrief {
+  const currentNarrative = [...state.recentOperatorUpdates]
+    .reverse()
+    .find((update) => update.kind === 'narrative' || update.kind === 'correction' || update.kind === 'redirect')
+    ?? state.recentOperatorUpdates.at(-1);
+
+  const items = state.recentCandidateEvents
+    .map<MeetingLiveBriefItem>((event) => ({
+      eventIndex: event.eventIndex,
+      receivedAt: event.receivedAt,
+      kind: event.kind,
+      title: event.title,
+      text: event.text,
+      transcriptChunkIndices: [...event.transcriptChunkIndices],
+      operatorUpdateIndices: [...event.operatorUpdateIndices],
+      promotedAt: event.promotedAt,
+      promotedFiberId: event.promotedFiberId,
+      promotedAstraDecisionId: event.promotedAstraDecisionId,
+    }))
+    .sort((left, right) => right.receivedAt - left.receivedAt);
+
+  return {
+    currentNarrative: currentNarrative ? { ...currentNarrative } : undefined,
+    decisions: items.filter((item) => item.kind === 'decision').slice(0, 3),
+    openQuestions: items.filter((item) => item.kind === 'question').slice(0, 3),
+    actionItems: items.filter((item) => item.kind === 'action-item').slice(0, 3),
+    acceptedNotes: items.filter((item) => item.kind === 'note').slice(0, 3),
+    evidenceInView: state.recentRetrievedEvidence
+      .slice()
+      .sort((left, right) => right.receivedAt - left.receivedAt)
+      .slice(0, 4)
+      .map((evidence) => ({ ...evidence })),
+  };
+}
+
+function cloneMeetingLiveBrief(brief: MeetingLiveBrief): MeetingLiveBrief {
+  return {
+    currentNarrative: brief.currentNarrative ? { ...brief.currentNarrative } : undefined,
+    decisions: brief.decisions.map((item) => cloneMeetingLiveBriefItem(item)),
+    openQuestions: brief.openQuestions.map((item) => cloneMeetingLiveBriefItem(item)),
+    actionItems: brief.actionItems.map((item) => cloneMeetingLiveBriefItem(item)),
+    acceptedNotes: brief.acceptedNotes.map((item) => cloneMeetingLiveBriefItem(item)),
+    evidenceInView: brief.evidenceInView.map((item) => ({ ...item })),
+  };
+}
+
+function cloneMeetingLiveBriefItem(item: MeetingLiveBriefItem): MeetingLiveBriefItem {
+  return {
+    ...item,
+    transcriptChunkIndices: [...item.transcriptChunkIndices],
+    operatorUpdateIndices: [...item.operatorUpdateIndices],
   };
 }
 
@@ -1662,6 +1760,56 @@ function parseOperatorUpdateEntries(value: unknown): MeetingOperatorUpdateEntry[
       text,
     }];
   }).slice(-MAX_RECENT_MEETING_ITEMS);
+}
+
+function parseMeetingLiveBrief(value: unknown): MeetingLiveBrief | null {
+  if (!isRecord(value)) return null;
+  return {
+    currentNarrative: parseOperatorUpdateEntry(value.currentNarrative) ?? undefined,
+    decisions: parseMeetingLiveBriefItems(value.decisions),
+    openQuestions: parseMeetingLiveBriefItems(value.openQuestions),
+    actionItems: parseMeetingLiveBriefItems(value.actionItems),
+    acceptedNotes: parseMeetingLiveBriefItems(value.acceptedNotes),
+    evidenceInView: parseRetrievedEvidenceEntries(value.evidenceInView),
+  };
+}
+
+function parseMeetingLiveBriefItems(value: unknown): MeetingLiveBriefItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const eventIndex = maybeNumber(entry.eventIndex);
+    const receivedAt = maybeNumber(entry.receivedAt);
+    const kind = maybeString(entry.kind);
+    const text = maybeString(entry.text);
+    if (eventIndex === null || receivedAt === null || kind === null || text === null) return [];
+    return [{
+      eventIndex,
+      receivedAt,
+      kind,
+      title: maybeString(entry.title) ?? undefined,
+      text,
+      transcriptChunkIndices: maybeNumberList(entry.transcriptChunkIndices) ?? [],
+      operatorUpdateIndices: maybeNumberList(entry.operatorUpdateIndices) ?? [],
+      promotedAt: maybeNumber(entry.promotedAt) ?? undefined,
+      promotedFiberId: maybeString(entry.promotedFiberId) ?? undefined,
+      promotedAstraDecisionId: maybeString(entry.promotedAstraDecisionId) ?? undefined,
+    }];
+  });
+}
+
+function parseOperatorUpdateEntry(value: unknown): MeetingOperatorUpdateEntry | null {
+  if (!isRecord(value)) return null;
+  const updateIndex = maybeNumber(value.updateIndex);
+  const receivedAt = maybeNumber(value.receivedAt);
+  const text = maybeString(value.text);
+  if (updateIndex === null || receivedAt === null || text === null) return null;
+  return {
+    updateIndex,
+    receivedAt,
+    kind: maybeString(value.kind) ?? undefined,
+    text,
+  };
 }
 
 function parseCandidateEventEntries(value: unknown): MeetingCandidateEventEntry[] {
