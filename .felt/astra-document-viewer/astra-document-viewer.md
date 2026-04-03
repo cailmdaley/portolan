@@ -168,10 +168,10 @@ MySTRA's content server API (already running):
 5. Build and point MySTRA's launcher at the fork
 6. MySTRA's `src/theme/launcher.ts` already supports custom theme directories
 
-### What's been built (as of 2026-04-02, updated 2026-04-02)
+### What's been built (as of 2026-04-02, updated 2026-04-04)
 
 **MySTRA content server** (`~/Documents/projects/MySTRA/`):
-- `GET /astra-graph.json` — walks analysis tree, emits nodes with real decision/insight counts, status inference (resolved if decisions have defaults or findings have evidence, suspicious if decisions lack defaults, open otherwise), tag lists, data-flow links. `src/server/routes/graph.ts`.
+- `GET /astra-graph.json` — walks analysis tree, emits nodes with separate `decisionCount`/`findingCount`, `verdict` (first insight claim or first decision rationale, ≤160 chars), status inference, tag lists, data-flow links. `src/server/routes/graph.ts`.
 - `insights→findings` normalization in yaml-loader — felt exports `insights`, ASTRA type system uses `findings`. See fiber `astra-insights-vs-findings`.
 
 **mystra-theme** (`~/Documents/projects/mystra-theme/`):
@@ -179,15 +179,15 @@ MySTRA's content server API (already running):
 - Proxy route: `themes/book/app/routes/api.astra-graph.tsx` — Remix route that proxies to content server. Needed because catch-all `$.tsx` route intercepts `*.json` URLs.
 - **Topological DAG layout**: X = data-flow depth (longest path from source), Y = tag-affinity sorted within column. Periphery (unconnected nodes) in rightmost column. Root anchored left. Replaced earlier two-column layout.
 - **Organic rendering** (portolan aesthetic): noise-deformed ellipses (`organicEllipse` with `noise2D`), concentric ring fills + strokes (`RING_SCALES = [1.0, 1.15]`), multi-strand cubic Bézier edges with sag/wobble per-strand, knockout backgrounds for edge overlap.
-- **Hover tooltips**: full node name, status, decision/finding count, tags. 250ms delay. Suppressed when detail panel is open.
+- **Hover tooltips**: full node name, status, separate decision/finding counts (joined with `·`), verdict sentence (italic), tags. 250ms delay. Suppressed when detail panel is open.
 - **Label wrapping**: two-line labels with `shortName` (strips Decision:/Finding: prefixes), adaptive truncation (22 chars minimap, 55 fullscreen).
 - **Status glyphs** (shape > color): ✓ resolved, ○ open, ? suspicious, ✕ blocked. Rendered below node labels in system-ui font.
-- **Fullscreen detail panel**: click node in fullscreen → slide-in panel from right with title, status badge (glyph + label), decision/finding count, tags, upstream/downstream data-flow links (clickable for graph navigation), "Open in Document" button (exits fullscreen + navigates). Gold highlight ring on selected node. Click-to-dismiss tooltip on node click.
+- **Fullscreen detail panel**: click node in fullscreen → slide-in panel from right with verdict paragraph (italic, first insight claim or decision rationale), status badge, separate decision/finding counts, tags, upstream/downstream data-flow links (clickable for graph navigation), "Open in Document" button. Gold highlight ring on selected node.
 - Fullscreen toggle with transitionend-based re-render (replaces 350ms delay — old SVG stays visible during CSS transition). Minimize button positioned below navbar (top: 64px).
 - Current page highlighting: gold stroke + glow ring (scale 1.25). Same treatment for selected node in fullscreen.
 - Porch-morning palette: teal (resolved), taupe (open), amber (suspicious), mauve (blocked), gold (root/active/selected).
 - **Edge hierarchy**: containment edges suppressed for DAG-connected nodes (only drawn to periphery). Data-flow edges in gold with increased stroke weight (1.2px vs 0.6px containment).
-- **Data-flow cross-references**: 6 links across 7 fibers — two clear chains: `350-mock→adopt-blind→{bb-covariance-blind, blind-b-is-physical}` and `switch-fiducial→{finding-v1-4-6-3, decision-drop}→blind-b-is-physical`. Click navigation confirmed working.
+- **Data-flow cross-references**: 31 links across 20 nodes. Full spine chain: `350-mock→covariance`, `switch-fiducial→data-vectors`, `{covariance,data-vectors}→scale-cuts`, `{scale-cuts,blind-b-is-physical}→paper-synthesis`. Click navigation confirmed working.
 - **Porch-morning document theme**: `themes/book/app/styles/porch-morning.css` (554 lines) — overrides entire MyST book-theme with warm antiquarian aesthetic. EB Garamond body + JetBrains Mono code. Parchment backgrounds (#FAFAF7 document, #F0EBE3 navbar/sidebar, #E8DDD0 active items). Gold links (#9A7B35), teal h3/cross-refs (#5A7B7B). Sidebar active items with gold border-left. Theme toggle hidden. Prose variables, admonitions, tabs, cards, tables all themed. Dark mode class overridden to always warm.
 - **Sidebar status glyphs**: `themes/book/app/components/SidebarStatusInjector.tsx` — DOM-injection component that fetches ASTRA graph, builds slug→status map, prepends status glyphs (✓ ○ ? ✕) to each sidebar navigation link. Uses `useAstraGraph` hook, runs on navigation and graph load. Porch-morning palette colors per status. Avoids modifying upstream `packages/site` by injecting into rendered DOM.
 
@@ -236,4 +236,4 @@ These are invitations, not blockers. The loop has creative agency — research t
 - **D3 vs canvas vs WebGL.** Start with D3 (organic SVG aesthetic). Switch if performance demands it.
 - **Live reload animation.** Try it. If transitions feel good, keep them. If they're distracting, hard-refresh.
 - **What makes position meaningful?** The constitution suggests data-flow direction, investigation depth, affinity clustering. But the loop may discover better axes. The constraint is: position must encode *something*, not be random.
-- **Keep enriching the analysis.** Only ~15 of 522 fibers are formalized. When the viewer needs richer content — real rationale, real evidence chains, not skeletons — formalize more from the source. Read the original fiber bodies; the whole investigation history is there. The viewer should always be tested against content worth reading.
+- **Keep enriching the analysis.** 20 nodes now formalized (was ~15). Spine is established: `covariance → data-vectors → scale-cuts → paper-synthesis` with `blind-b-is-physical` feeding into `paper-synthesis`. The tier:1 tags appear in detail panel and the scientific argument is readable left-to-right. Next: formalize the `version-comparisons` spine node (also tier:1, still no ASTRA frontmatter). Also consider formalizing 2-3 of the peripheral decision nodes (CCL offset, COSEBIS binning) to enrich the analysis depth.
