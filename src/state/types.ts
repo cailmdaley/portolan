@@ -196,6 +196,12 @@ export interface ServerMeetingRunState {
     line?: number
     match?: string
   }>
+  recentBriefPromotions: Array<{
+    promotionIndex: number
+    receivedAt: number
+    title: string
+    fiberId: string
+  }>
   meetingId: string
   status: 'running' | 'stopped' | 'error'
   sourceType: 'voiceink' | 'manual'
@@ -214,6 +220,7 @@ export interface ServerMeetingRunState {
   candidatePromotionsPath: string
   retrievalRequestsPath: string
   retrievalEvidencePath: string
+  briefPromotionsPath: string
   metadataPath: string
   bootstrapSentAt?: number
   chunkCount: number
@@ -224,6 +231,7 @@ export interface ServerMeetingRunState {
   promotedCandidateEventCount: number
   retrievalRequestCount: number
   retrievalEvidenceCount: number
+  briefPromotionCount: number
   lastChunkAt?: number
   lastChunkPreview?: string
   lastOperatorUpdateAt?: number
@@ -239,6 +247,8 @@ export interface ServerMeetingRunState {
   lastRetrievalRequestPreview?: string
   lastRetrievedEvidenceAt?: number
   lastRetrievedEvidencePreview?: string
+  lastBriefPromotionAt?: number
+  lastBriefPromotionFiberId?: string
   lastError?: string
 }
 

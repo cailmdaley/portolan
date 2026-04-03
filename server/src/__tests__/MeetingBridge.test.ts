@@ -700,6 +700,117 @@ describe('MeetingBridge', () => {
     );
   });
 
+  it('promotes the current live brief into felt and records the promotion provenance', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const fiberPromoter = {
+      createFiber: vi.fn(async () => 'meeting-brief-fiber'),
+    };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      fiberPromoter,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-brief-promote',
+        tmuxSession: 'worker-brief-promote',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({ id: 'chunk-1', text: 'We still need the DES calibration comparison before settling this.' });
+    bridge.ingestOperatorUpdate({ kind: 'narrative', text: 'Calibration remains open pending the DES comparison.' });
+    bridge.ingestCandidateEvent({
+      kind: 'question',
+      title: 'Does DES change calibration?',
+      text: 'Check whether the DES comparison changes the calibration conclusion.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestRetrievedEvidence({
+      type: 'fiber',
+      title: 'use-des-weights',
+      fiberId: 'use-des-weights',
+      match: 'Decision to use DES weights for the comparison run.',
+    });
+
+    const updated = await bridge.promoteLiveBrief();
+
+    expect(fiberPromoter.createFiber).toHaveBeenCalledWith(expect.objectContaining({
+      cityPath: '/project/portolan',
+      originId: 'local',
+      kind: 'task',
+      title: 'Meeting brief: Calibration remains open pending the DES comparison.',
+    }));
+    expect(fiberPromoter.createFiber).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('## Current narrative'),
+    }));
+    expect(fiberPromoter.createFiber).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('## Open questions'),
+    }));
+    expect(fiberPromoter.createFiber).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('use-des-weights'),
+    }));
+    expect(updated.briefPromotionCount).toBe(1);
+    expect(updated.lastBriefPromotionFiberId).toBe('meeting-brief-fiber');
+    expect(updated.recentBriefPromotions).toEqual([
+      expect.objectContaining({
+        promotionIndex: 1,
+        fiberId: 'meeting-brief-fiber',
+      }),
+    ]);
+
+    const promotions = readFileSync(run.briefPromotionsPath, 'utf-8').trim().split('\n');
+    expect(promotions).toHaveLength(1);
+    expect(JSON.parse(promotions[0])).toMatchObject({
+      meetingId: run.meetingId,
+      promotionIndex: 1,
+      fiberId: 'meeting-brief-fiber',
+    });
+  });
+
+  it('rejects promoting an empty live brief', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const fiberPromoter = {
+      createFiber: vi.fn(async () => 'meeting-brief-fiber'),
+    };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      fiberPromoter,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-empty-brief',
+        tmuxSession: 'worker-empty-brief',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    await expect(bridge.promoteLiveBrief()).rejects.toThrowError('Meeting live brief is empty');
+    expect(fiberPromoter.createFiber).not.toHaveBeenCalled();
+  });
+
   it('persists retrieval requests and injects them into the active worker thread', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const messenger = { send: vi.fn() };
@@ -986,14 +1097,17 @@ describe('MeetingBridge', () => {
       operatorUpdateCount: 0,
       candidateEventCount: 0,
       retrievalRequestCount: 0,
+      briefPromotionCount: 0,
       candidateEventsPath: join(meetingDir, 'candidate-events.jsonl'),
       updatesPath: join(meetingDir, 'operator-updates.jsonl'),
       retrievalRequestsPath: join(meetingDir, 'retrieval-requests.jsonl'),
+      briefPromotionsPath: join(meetingDir, 'brief-promotions.jsonl'),
       lastChunkPreview: 'Recovered chunk',
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
+      recentBriefPromotions: [],
       liveBrief: {
         acceptedNotes: [],
         actionItems: [],
@@ -1036,10 +1150,12 @@ describe('MeetingBridge', () => {
       injectedCount: 9,
       candidateEventCount: 0,
       retrievalRequestCount: 0,
+      briefPromotionCount: 0,
       recentTranscriptChunks: [],
       recentOperatorUpdates: [],
       recentCandidateEvents: [],
       recentRetrievalRequests: [],
+      recentBriefPromotions: [],
       liveBrief: {
         acceptedNotes: [],
         actionItems: [],

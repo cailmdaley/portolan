@@ -386,7 +386,14 @@ export class CityHUDHeader {
               <span>${escapeHtml(cityMeeting.lastRetrievedEvidencePreview)}</span>
             </div>
           ` : ''}
+          ${cityMeeting.lastBriefPromotionFiberId ? `
+            <div class="hud-meeting-update-preview">
+              <span class="hud-meeting-update-label">latest brief</span>
+              <span>${escapeHtml(cityMeeting.lastBriefPromotionFiberId)}</span>
+            </div>
+          ` : ''}
           ${cityMeeting.lastError ? `<div class="hud-meeting-error">${escapeHtml(cityMeeting.lastError)}</div>` : ''}
+          ${this.renderMeetingBrief(cityMeeting)}
           ${cityMeeting.status === 'running' ? `
             <div class="hud-meeting-update">
               <div class="hud-meeting-update-label">retrieval</div>
@@ -421,6 +428,9 @@ export class CityHUDHeader {
                 <button class="hud-meeting-btn hud-meeting-send-candidate" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.meetingCandidateDraft.trim() || !this.hasCandidateProvenanceSelection())}>Capture candidate</button>
               </div>
             </div>
+            <div class="hud-meeting-actions">
+              <button class="hud-meeting-btn hud-meeting-promote-brief" ${this.renderDisabledAttr(this.meetingActionInFlight || !this.hasPromotableMeetingBrief(cityMeeting))}>Promote brief</button>
+            </div>
           ` : ''}
           <div class="hud-meeting-actions">
             ${cityMeeting.status === 'running'
@@ -436,6 +446,7 @@ export class CityHUDHeader {
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.candidatePromotionsPath)}">Candidate promotions</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalRequestsPath)}">Retrieval requests</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.retrievalEvidencePath)}">Retrieved evidence</button>
+            <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.briefPromotionsPath)}">Brief promotions</button>
             <button class="hud-meeting-btn hud-meeting-open-log" data-path="${escapeHtml(cityMeeting.metadataPath)}">Meeting metadata</button>
           </div>
         </div>
@@ -567,6 +578,13 @@ export class CityHUDHeader {
       event.stopPropagation()
       if (this.meetingActionInFlight || !this.meetingCandidateDraft.trim()) return
       void this.sendMeetingCandidate()
+    })
+
+    container.querySelector('.hud-meeting-promote-brief')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      const meeting = this.selectMeetingForCurrentCity()
+      if (this.meetingActionInFlight || !meeting || !this.hasPromotableMeetingBrief(meeting)) return
+      void this.promoteMeetingBrief()
     })
 
     container.querySelector('.hud-meeting-clear-provenance')?.addEventListener('click', (event) => {
@@ -800,6 +818,16 @@ export class CityHUDHeader {
         ` : ''}
       </div>
     `
+  }
+
+  private hasPromotableMeetingBrief(meeting: ServerMeetingRunState): boolean {
+    const brief = meeting.liveBrief
+    return !!brief.currentNarrative
+      || brief.decisions.length > 0
+      || brief.openQuestions.length > 0
+      || brief.actionItems.length > 0
+      || brief.acceptedNotes.length > 0
+      || brief.evidenceInView.length > 0
   }
 
   private renderMeetingBriefLane(
@@ -1237,6 +1265,30 @@ export class CityHUDHeader {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       window.alert(`Failed to promote meeting candidate: ${message}`)
+    } finally {
+      this.meetingActionInFlight = false
+      this.renderMeeting()
+    }
+  }
+
+  private async promoteMeetingBrief(): Promise<void> {
+    this.meetingActionInFlight = true
+    this.renderMeeting()
+    try {
+      const response = await fetch(`${PORTOLAN_HTTP_BASE}/meeting-bridge/brief/promote`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      })
+
+      if (!response.ok) {
+        throw new Error(await this.readErrorMessage(response))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(`Failed to promote meeting brief: ${message}`)
     } finally {
       this.meetingActionInFlight = false
       this.renderMeeting()

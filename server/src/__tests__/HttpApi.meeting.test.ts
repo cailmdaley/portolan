@@ -403,6 +403,36 @@ describe('HttpApi — meeting bridge endpoints', () => {
     });
   });
 
+  it('routes live brief promotions into the active meeting bridge', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null })),
+      start: vi.fn(),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+      promoteLiveBrief: vi.fn(async () => ({
+        meetingId: 'meeting-1',
+        briefPromotionCount: 1,
+        status: 'running',
+      })),
+    };
+
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/brief/promote', {
+      title: 'Meeting brief: calibration still open',
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.promoteLiveBrief).toHaveBeenCalledWith('Meeting brief: calibration still open');
+    expect(res.data.meeting).toEqual({
+      meetingId: 'meeting-1',
+      briefPromotionCount: 1,
+      status: 'running',
+    });
+  });
+
   it('returns 400 when promoting an unknown candidate event', async () => {
     const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
     api.setMeetingBridge({
@@ -465,5 +495,22 @@ describe('HttpApi — meeting bridge endpoints', () => {
 
     expect(res.status).toBe(400);
     expect(res.data.error).toBe('Failed to ingest meeting retrieved evidence: Meeting retrieved evidence title is empty');
+  });
+
+  it('returns 400 when promoting an empty meeting brief', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    api.setMeetingBridge({
+      getState: () => ({ activeMeeting: { meetingId: 'meeting-1' }, lastMeeting: null }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      promoteLiveBrief: vi.fn(async () => {
+        throw new Error('Meeting live brief is empty');
+      }),
+    } as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/brief/promote', {});
+
+    expect(res.status).toBe(400);
+    expect(res.data.error).toBe('Failed to promote meeting brief: Meeting live brief is empty');
   });
 });

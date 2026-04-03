@@ -290,6 +290,33 @@ export class HttpApiMeeting {
     }
   }
 
+  async handlePromoteBrief(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.meetingBridge) {
+      this.sendJsonError(res, 500, 'Meeting bridge not initialized');
+      return;
+    }
+
+    const data = await this.parseJsonBody<{ title?: unknown }>(req, res);
+    if (!data) return;
+
+    try {
+      const meeting = await this.meetingBridge.promoteLiveBrief(
+        typeof data.title === 'string' ? data.title : undefined,
+      );
+      this.sendJsonSuccess(res, { success: true, meeting });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message === 'No active meeting bridge'
+        ? 409
+        : message === 'Meeting live brief is empty'
+          ? 400
+          : message === 'Remote origin not found'
+            ? 404
+            : 500;
+      this.sendJsonError(res, status, `Failed to promote meeting brief: ${message}`);
+    }
+  }
+
   async handleRetrieval(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.meetingBridge) {
       this.sendJsonError(res, 500, 'Meeting bridge not initialized');
