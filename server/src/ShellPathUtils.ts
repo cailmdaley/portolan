@@ -9,11 +9,14 @@ export function shellEscape(arg: string): string {
 }
 
 /**
- * Build an exact tmux target.
- * tmux treats bare targets as exact-or-prefix matches; prefixing with "=" forces exact.
+ * Build an exact tmux target referring to a session.
+ * tmux treats bare targets as exact-or-prefix matches; the "=" prefix forces exact.
+ * The trailing ":" disambiguates the target as a session reference — pane-target
+ * commands (paste-buffer, send-keys) otherwise try to match "=name" as a literal
+ * pane name and fail with "can't find pane".
  */
 export function exactTmuxTarget(sessionName: string): string {
-  return shellEscape(`=${sessionName}`);
+  return shellEscape(`=${sessionName}:`);
 }
 
 /**
