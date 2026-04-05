@@ -164,6 +164,7 @@ Core doc fibers. For more: `felt ls -s all pattern` or `felt ls -s all gotcha`.
 | Topic | Fiber |
 |-------|-------|
 | Architecture | `hexarchy-architecture-server` |
+| Activity Pipeline | `activity-pipeline` |
 | Interactions | `hexarchy-interactions-gesture` |
 | Visual Design | `hexarchy-visual-design-palette` |
 | Remote Agent | `hexarchy-remote-agent-setup-ssh` |
