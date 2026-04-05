@@ -86,6 +86,9 @@ const sessionLookup = {
   getAllSessions(): Session[] {
     return [...sessionTracker.getSessions(), ...remoteAgentCoordinator.getAllSessions()];
   },
+  findLocalByTmuxSession(tmuxSession: string): Session | undefined {
+    return sessionTracker.getSessions().find(s => s.tmuxSession === tmuxSession);
+  },
 };
 
 const cityLookup = {
@@ -339,6 +342,24 @@ sessionTracker.start(2000);
 eventWatcher.setSessionTracker(sessionTracker);
 eventWatcher.onActivity((activity) => {
   console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
+
+  // Feed the local recent-files tracker. Remote activity is fed via
+  // RemoteAgentCoordinator; EventWatcher only observes local events.jsonl,
+  // so any activity here belongs to a local tmux session.
+  if (
+    activity.fullPath &&
+    (activity.tool === 'Read' || activity.tool === 'Write' || activity.tool === 'Edit')
+  ) {
+    const session = sessionLookup.findLocalByTmuxSession(activity.tmuxSession);
+    if (session) {
+      recentFileTracker.recordTouch(
+        session.id,
+        activity.tool,
+        activity.fullPath,
+        activity.timestamp,
+      );
+    }
+  }
 
   browserStateCoordinator.broadcastActivity(activity, LOCAL_ORIGIN_ID);
 });

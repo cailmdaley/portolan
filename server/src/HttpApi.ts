@@ -323,11 +323,6 @@ export class HttpApi {
       return true;
     }
 
-    if (req.method === 'POST' && url.pathname === '/hook/file-touch') {
-      await this.hooksRuntimeApi.handleHookFileTouch(req, res);
-      return true;
-    }
-
     if (req.method === 'POST' && url.pathname === '/hook/assistant-turn') {
       await this.hooksRuntimeApi.handleHookAssistantTurn(req, res);
       return true;

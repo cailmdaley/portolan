@@ -1,5 +1,5 @@
 import { IncomingMessage, ServerResponse } from 'http';
-import { isAbsolute, normalize, resolve } from 'path';
+import { normalize } from 'path';
 import type { MeetingBridge } from './MeetingBridge.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
 import type { Session } from './SessionTracker.js';
@@ -65,86 +65,6 @@ export class HttpApiHooksRuntime {
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(10, limitRaw)) : 5;
     const files = this.recentFileTracker.getRecentFiles(sessionId, limit);
     this.sendJsonSuccess(res, { sessionId, files });
-  }
-
-  async handleHookFileTouch(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.recentFileTracker) {
-      this.sendJsonError(res, 500, 'Recent file tracker not configured');
-      return;
-    }
-    if (!this.sessionLookup) {
-      this.sendJsonError(res, 500, 'Session lookup not configured');
-      return;
-    }
-
-    const payload = await this.parseJsonBody<Record<string, unknown>>(req, res);
-    if (!payload) return;
-
-    const sessionIdRaw = typeof payload.session_id === 'string'
-      ? payload.session_id
-      : typeof payload.sessionId === 'string'
-        ? payload.sessionId
-        : '';
-    const toolNameRaw = typeof payload.tool_name === 'string'
-      ? payload.tool_name
-      : typeof payload.toolName === 'string'
-        ? payload.toolName
-        : '';
-
-    const toolInput = payload.tool_input && typeof payload.tool_input === 'object'
-      ? payload.tool_input as Record<string, unknown>
-      : payload.toolInput && typeof payload.toolInput === 'object'
-        ? payload.toolInput as Record<string, unknown>
-        : null;
-
-    const filePathRaw = toolInput && typeof toolInput.file_path === 'string'
-      ? toolInput.file_path
-      : toolInput && typeof toolInput.path === 'string'
-        ? toolInput.path
-        : '';
-    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-    const tmuxSessionRaw = typeof payload.tmux_session === 'string'
-      ? payload.tmux_session
-      : typeof payload.tmuxSession === 'string'
-        ? payload.tmuxSession
-        : '';
-    const originNameRaw = typeof payload.origin_name === 'string'
-      ? payload.origin_name
-      : typeof payload.originName === 'string'
-        ? payload.originName
-        : '';
-    const filePath = this.normalizeHookFilePath(filePathRaw, cwd);
-
-    if (!sessionIdRaw || !toolNameRaw || !filePath) {
-      this.sendJsonError(res, 400, 'Missing required fields: session_id, tool_name, tool_input.file_path');
-      return;
-    }
-
-    if (!['Read', 'Write', 'Edit'].includes(toolNameRaw)) {
-      this.sendJsonSuccess(res, { success: true, ignored: true, reason: 'tool-filter' });
-      return;
-    }
-
-    const resolvedSession = this.resolveWorkerSessionForHook(
-      sessionIdRaw,
-      cwd,
-      filePath,
-      tmuxSessionRaw,
-      originNameRaw,
-    );
-    if (!resolvedSession) {
-      this.sendJsonSuccess(res, { success: true, stored: false, reason: 'session-not-found' });
-      return;
-    }
-
-    this.hookSessionToWorkerSessionId.set(sessionIdRaw, resolvedSession.id);
-    this.recentFileTracker.recordTouch(resolvedSession.id, toolNameRaw, filePath);
-    this.sendJsonSuccess(res, {
-      success: true,
-      stored: true,
-      workerSessionId: resolvedSession.id,
-      tmuxSession: resolvedSession.tmuxSession,
-    });
   }
 
   async handleHookAssistantTurn(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -329,19 +249,4 @@ export class HttpApiHooksRuntime {
     return target.startsWith(`${base}/`);
   }
 
-  private normalizeHookFilePath(filePath: string, cwd: string): string {
-    const trimmedPath = filePath.trim();
-    if (!trimmedPath) return '';
-
-    if (isAbsolute(trimmedPath)) {
-      return normalize(trimmedPath);
-    }
-
-    const trimmedCwd = cwd.trim();
-    if (trimmedCwd && isAbsolute(trimmedCwd)) {
-      return normalize(resolve(trimmedCwd, trimmedPath));
-    }
-
-    return trimmedPath;
-  }
 }

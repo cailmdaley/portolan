@@ -16,7 +16,7 @@ Click worker → Kitty focuses that tab. Work happens in terminal, not here.
 
 ```bash
 ./dev.sh                    # Frontend + backend (recommended)
-cd server && npm test       # ~243 tests
+cd server && npm test       # ~282 tests
 ```
 
 Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
@@ -120,18 +120,14 @@ Requires `RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`. Common failure:
 Manual: `ssh -O exit host && ssh -N -f host`, then restart portolan-agent tmux session.
 Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-remoteforward-port`.
 
-## Remote File-Touch Hooks
+## Activity Pipeline
 
-Remote workers should post `PostToolUse` events directly to portolan over the existing SSH `RemoteForward`:
+One hook script on every host (`~/loom/hooks/portolan-hook.sh`) writes tool events to `~/.portolan/data/events.jsonl`. Two tailers converge on the same sinks:
 
-```json
-"PostToolUse": [{
-  "matcher": "Read|Write|Edit",
-  "hooks": [{ "type": "http", "url": "http://localhost:4004/hook/file-touch" }]
-}]
-```
+- **Local**: `EventWatcher` tails `events.jsonl` → `onActivity` callback in `index.ts` → `recordTouch` + `broadcastActivity`.
+- **Remote**: `portolan-agent` (`server/agent.js`) tails the remote `events.jsonl`, pushes `agent_activity` messages over the SSH `RemoteForward` WebSocket → `RemoteAgentCoordinator.handleAgentActivity` → same sinks.
 
-No agent-side hook proxy or transcript fallback is required.
+Same hook, same event stream, same sinks — the tailer just runs in a different process depending on where the worker lives. No Claude Code HTTP hooks are used for file-touch tracking.
 
 ## Gotchas
 
