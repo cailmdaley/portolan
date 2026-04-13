@@ -34,7 +34,8 @@
     "marked": "^17.0.1",
     "marked-katex-extension": "^5.1.6",
     "pdfjs-dist": "^5.4.624",
-    "three": "^0.172.0"
+    "three": "^0.172.0",
+    "vellum": "file:../lightcone/vellum"
   },
   "devDependencies": {
     "@types/d3-drag": "^3.0.7",
