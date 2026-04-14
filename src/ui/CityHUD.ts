@@ -127,17 +127,15 @@ export class CityHUD {
       const path = e.composedPath()
       if (path.includes(this.container)) return
       const target = e.target as HTMLElement
-      const fileViewer = document.querySelector('.file-viewer-modal.visible')
-      if (fileViewer?.contains(target)) return
-      const fileViewerBackdrop = document.querySelector('.file-viewer-backdrop.visible')
-      if (fileViewerBackdrop?.contains(target)) return
+      const vellumModal = document.querySelector('.vellum-modal-scrim')
+      if (vellumModal?.contains(target)) return
       this.hide()
     }
 
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !this.container.classList.contains('visible')) return
-      const fileViewer = document.querySelector('.file-viewer-modal.visible')
-      if (fileViewer) return
+      const vellumModal = document.querySelector('.vellum-modal-scrim')
+      if (vellumModal) return
       if (this.content.hasSearchActivity()) {
         this.content.clearSearch()
         return
