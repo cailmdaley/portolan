@@ -90,12 +90,13 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 // Each pin renders as a parchment card surface; title is looked up from the HUD
 // fiber list so cards read as "the fiber I pinned" rather than a raw slug.
 const pinRenderer = new PinRenderer(scene, {
-  fiberTitleFor: (slug) => {
+  fiberInfoFor: (slug) => {
     const fibers = cityPanel?.getFibers()
     if (!fibers) return null
     const hit =
       fibers.open.find(f => f.id === slug) ?? fibers.closed.find(f => f.id === slug)
-    return hit?.title ?? null
+    if (!hit) return null
+    return { title: hit.title, status: hit.status }
   },
 })
 let pinnedCityId: string | null = null

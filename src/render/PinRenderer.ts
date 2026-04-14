@@ -30,10 +30,18 @@ const ANCHOR_Y = 0.04
 const ANCHOR_RADIUS = 0.1
 const TEXTURE_WIDTH = 512
 const TEXTURE_HEIGHT = 192
+const HOVER_LIFT = 0.25
+const HOVER_SCALE = 1.18
+
+export interface PinFiberInfo {
+  title: string
+  /** felt status: 'open' | 'active' | 'closed' | other. Drives status glyph. */
+  status?: string
+}
 
 export interface PinRendererOptions {
-  /** Look up a fiber title for a slug. Return null if not yet available. */
-  fiberTitleFor?: (slug: string) => string | null
+  /** Look up a fiber's title + status for a slug. Return null if not yet available. */
+  fiberInfoFor?: (slug: string) => PinFiberInfo | null
 }
 
 interface PinEntry {
@@ -43,6 +51,7 @@ interface PinEntry {
   texture: CanvasTexture
   canvas: HTMLCanvasElement
   renderedTitle: string | null
+  renderedStatus: string | null
   x: number
   z: number
 }
@@ -50,11 +59,11 @@ interface PinEntry {
 export class PinRenderer {
   private readonly scene: Scene
   private readonly entries = new Map<string, PinEntry>()
-  private readonly fiberTitleFor: (slug: string) => string | null
+  private readonly fiberInfoFor: (slug: string) => PinFiberInfo | null
 
   constructor(scene: Scene, opts: PinRendererOptions = {}) {
     this.scene = scene
-    this.fiberTitleFor = opts.fiberTitleFor ?? (() => null)
+    this.fiberInfoFor = opts.fiberInfoFor ?? (() => null)
   }
 
   /** Replace all pins with the given set (diff by slug). */
@@ -94,13 +103,15 @@ export class PinRenderer {
     return hit
   }
 
-  /** Highlight a single pin (lift the card off the ground). Pass null to
-   *  clear. The anchor disc stays put so the pin-point remains visible. Safe
-   *  to call repeatedly with the same slug. */
+  /** Highlight a single pin: lift + gentle scale. Pass null to clear. The
+   *  anchor disc stays put so the pin-point remains visible. Safe to call
+   *  repeatedly with the same slug. */
   setHovered(slug: string | null): void {
     for (const entry of this.entries.values()) {
       const lifted = entry.slug === slug
-      entry.card.position.y = lifted ? CARD_Y + 0.25 : CARD_Y
+      entry.card.position.y = lifted ? CARD_Y + HOVER_LIFT : CARD_Y
+      const s = lifted ? HOVER_SCALE : 1
+      entry.card.scale.set(s, s, 1)
     }
   }
 
@@ -124,12 +135,17 @@ export class PinRenderer {
     for (const slug of [...this.entries.keys()]) this.remove(slug)
   }
 
-  /** Repaint cards whose title was a placeholder at upsert time. Call once
-   *  the fiber list lands for the city. */
+  /** Repaint cards whose title/status has changed since the last paint.
+   *  Call once the fiber list lands for the city, and whenever the HUD's
+   *  fiber list is re-fetched. */
   refreshTitles(): void {
     for (const entry of this.entries.values()) {
-      const title = this.fiberTitleFor(entry.slug)
-      if (title && title !== entry.renderedTitle) this.paintCard(entry)
+      const info = this.fiberInfoFor(entry.slug)
+      if (!info) continue
+      const status = info.status ?? null
+      if (info.title !== entry.renderedTitle || status !== entry.renderedStatus) {
+        this.paintCard(entry)
+      }
     }
   }
 
@@ -161,18 +177,44 @@ export class PinRenderer {
     anchor.position.y = ANCHOR_Y
     group.add(anchor)
 
-    return { slug, group, card, texture, canvas, renderedTitle: null, x: 0, z: 0 }
+    return {
+      slug, group, card, texture, canvas,
+      renderedTitle: null, renderedStatus: null, x: 0, z: 0,
+    }
   }
 
   private paintCard(entry: PinEntry): void {
-    const title = this.fiberTitleFor(entry.slug) ?? entry.slug
-    drawCardSurface(entry.canvas, title, entry.slug)
+    const info = this.fiberInfoFor(entry.slug)
+    const title = info?.title ?? entry.slug
+    const status = info?.status ?? null
+    drawCardSurface(entry.canvas, title, entry.slug, status)
     entry.texture.needsUpdate = true
     entry.renderedTitle = title
+    entry.renderedStatus = status
   }
 }
 
-function drawCardSurface(canvas: HTMLCanvasElement, title: string, slug: string): void {
+function statusGlyph(status: string | null): string | null {
+  if (status === 'active') return '◐'
+  if (status === 'closed') return '●'
+  if (status === 'open') return '○'
+  return null
+}
+
+function statusColor(status: string | null): string {
+  // Porch Morning palette: gold for active (living work), muted for open,
+  // dim for closed — echoes the HUD and tapestry conventions.
+  if (status === 'active') return '#9A7B35'
+  if (status === 'closed') return '#7A7368'
+  return '#2E2A26'
+}
+
+function drawCardSurface(
+  canvas: HTMLCanvasElement,
+  title: string,
+  slug: string,
+  status: string | null,
+): void {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   const w = canvas.width
@@ -192,6 +234,17 @@ function drawCardSurface(canvas: HTMLCanvasElement, title: string, slug: string)
   ctx.strokeStyle = 'rgba(140, 110, 80, 0.55)'
   roundRect(ctx, 4, 4, w - 8, h - 8, 16)
   ctx.stroke()
+
+  // Status glyph in the upper-left — matches the HUD's `· ○ ◐ ●` convention so
+  // pinned cards read the same as the fiber list at a glance.
+  const glyph = statusGlyph(status)
+  if (glyph) {
+    ctx.fillStyle = statusColor(status)
+    ctx.font = '600 34px "EB Garamond", Garamond, serif'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    ctx.fillText(glyph, 22, 16)
+  }
 
   // Title — EB Garamond if available, generous serif fallback.
   ctx.fillStyle = '#2E2A26'
