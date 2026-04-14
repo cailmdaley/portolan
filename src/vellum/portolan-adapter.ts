@@ -140,7 +140,35 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       const res = await fetch(`${API_BASE}/annotations?${params}`).catch(() => null);
       if (!res || !res.ok) return [];
       const data = await res.json();
-      return (data.annotations ?? []) as Annotation[];
+      // Server shape is file-anchored (filePath, from/to, line/endLine, etc.);
+      // vellum's Annotation is fiber-anchored (slug, paragraphIndex) but now
+      // carries the file-anchor fields as optionals. Project the server row
+      // onto vellum's shape so code renderers can read char offsets directly.
+      const rows = (data.annotations ?? []) as Array<Record<string, unknown>>;
+      return rows.map((r) => {
+        const selected = (r.originalText as string | undefined) ?? (r.selectedText as string | undefined) ?? '';
+        return {
+          id: String(r.id ?? ''),
+          slug: (r.filePath as string | undefined) ?? slug,
+          kind: r.isImageAnnotation ? 'image' : 'text',
+          selectedText: selected,
+          contextBefore: (r.contextBefore as string | undefined) ?? '',
+          contextAfter: (r.contextAfter as string | undefined) ?? '',
+          comment: String(r.comment ?? ''),
+          createdAt: Number(r.createdAt ?? 0),
+          // File-anchor passthrough
+          filePath: r.filePath as string | undefined,
+          originId: r.originId as string | undefined,
+          from: r.from as number | undefined,
+          to: r.to as number | undefined,
+          line: r.line as number | undefined,
+          endLine: r.endLine as number | undefined,
+          originalText: r.originalText as string | undefined,
+          // Image-anchor passthrough
+          x: r.x as number | undefined,
+          y: r.y as number | undefined,
+        } satisfies Annotation;
+      });
     },
 
     async searchFibers(_query: string): Promise<SearchHit[]> {
@@ -154,17 +182,21 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     async createAnnotation(input: CreateAnnotationInput): Promise<Annotation | null> {
       // Translate vellum's CreateAnnotationInput (slug-keyed, paragraphIndex) to
       // portolan's file-keyed schema. `slug` is the file path when called from
-      // the file viewer. `paragraphIndex` has no portolan equivalent; char
-      // offsets (from/to) aren't known at this seam — when annotations UI gets
-      // wired into vellum, the anchor info will need to flow in via an expanded
-      // CreateAnnotationInput. For now we persist the minimal record.
+      // the file viewer. The input now carries optional char-offset fields
+      // (from/to/line/endLine, originalText) populated by the CodeMirror
+      // annotation UI; pass them through verbatim. `paragraphIndex` has no
+      // portolan equivalent and is dropped.
       const body = {
-        filePath: input.slug,
-        originId: defaultOriginId,
+        filePath: input.filePath ?? input.slug,
+        originId: input.originId ?? defaultOriginId,
         comment: input.comment,
-        originalText: input.selectedText,
+        originalText: input.originalText ?? input.selectedText,
         contextBefore: input.contextBefore,
         contextAfter: input.contextAfter,
+        from: input.from,
+        to: input.to,
+        line: input.line,
+        endLine: input.endLine,
         isImageAnnotation: input.kind === 'image' || undefined,
         x: input.x,
         y: input.y,
