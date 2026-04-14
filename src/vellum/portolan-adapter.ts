@@ -67,6 +67,36 @@ function buildRawFileUrl(path: string, originId: string, cacheBust?: boolean): s
   return url;
 }
 
+/**
+ * Project a server-side annotation row onto vellum's Annotation shape. The
+ * server stores `originalText` / `filePath` etc. while vellum consumers also
+ * read `selectedText` and fiber-slug `slug`. Keeping this as a top-level
+ * helper lets get/create/update paths all round-trip through the same shape.
+ */
+function projectAnnotationRow(r: Record<string, unknown>, fallbackSlug: string): Annotation {
+  const selected =
+    (r.originalText as string | undefined) ?? (r.selectedText as string | undefined) ?? '';
+  return {
+    id: String(r.id ?? ''),
+    slug: (r.filePath as string | undefined) ?? fallbackSlug,
+    kind: r.isImageAnnotation ? 'image' : 'text',
+    selectedText: selected,
+    contextBefore: (r.contextBefore as string | undefined) ?? '',
+    contextAfter: (r.contextAfter as string | undefined) ?? '',
+    comment: String(r.comment ?? ''),
+    createdAt: Number(r.createdAt ?? 0),
+    filePath: r.filePath as string | undefined,
+    originId: r.originId as string | undefined,
+    from: r.from as number | undefined,
+    to: r.to as number | undefined,
+    line: r.line as number | undefined,
+    endLine: r.endLine as number | undefined,
+    originalText: r.originalText as string | undefined,
+    x: r.x as number | undefined,
+    y: r.y as number | undefined,
+  };
+}
+
 export interface PortolanAdapterOptions {
   /** City ID for graph-scoped queries. Optional because many calls are city-agnostic. */
   cityId?: string;
@@ -145,30 +175,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       // carries the file-anchor fields as optionals. Project the server row
       // onto vellum's shape so code renderers can read char offsets directly.
       const rows = (data.annotations ?? []) as Array<Record<string, unknown>>;
-      return rows.map((r) => {
-        const selected = (r.originalText as string | undefined) ?? (r.selectedText as string | undefined) ?? '';
-        return {
-          id: String(r.id ?? ''),
-          slug: (r.filePath as string | undefined) ?? slug,
-          kind: r.isImageAnnotation ? 'image' : 'text',
-          selectedText: selected,
-          contextBefore: (r.contextBefore as string | undefined) ?? '',
-          contextAfter: (r.contextAfter as string | undefined) ?? '',
-          comment: String(r.comment ?? ''),
-          createdAt: Number(r.createdAt ?? 0),
-          // File-anchor passthrough
-          filePath: r.filePath as string | undefined,
-          originId: r.originId as string | undefined,
-          from: r.from as number | undefined,
-          to: r.to as number | undefined,
-          line: r.line as number | undefined,
-          endLine: r.endLine as number | undefined,
-          originalText: r.originalText as string | undefined,
-          // Image-anchor passthrough
-          x: r.x as number | undefined,
-          y: r.y as number | undefined,
-        } satisfies Annotation;
-      });
+      return rows.map((r) => projectAnnotationRow(r, slug));
     },
 
     async searchFibers(_query: string): Promise<SearchHit[]> {
@@ -208,7 +215,8 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       }).catch(() => null);
       if (!res || !res.ok) return null;
       const data = await res.json();
-      return (data.annotation ?? null) as Annotation | null;
+      const row = data.annotation as Record<string, unknown> | null | undefined;
+      return row ? projectAnnotationRow(row, body.filePath) : null;
     },
 
     async updateAnnotation(id: string, comment: string): Promise<Annotation | null> {
@@ -219,7 +227,10 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       }).catch(() => null);
       if (!res || !res.ok) return null;
       const data = await res.json();
-      return (data.annotation ?? null) as Annotation | null;
+      const row = data.annotation as Record<string, unknown> | null | undefined;
+      if (!row) return null;
+      const slug = (row.filePath as string | undefined) ?? '';
+      return projectAnnotationRow(row, slug);
     },
 
     async deleteAnnotation(id: string): Promise<boolean> {
