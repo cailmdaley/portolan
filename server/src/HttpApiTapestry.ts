@@ -227,7 +227,9 @@ export class HttpApiTapestry {
         }
       }
 
-      this.sendJsonSuccess(res, { nodes, links });
+      const rootSlug = resolveRootSlug(cityId, fiberIds, allFibers);
+
+      this.sendJsonSuccess(res, { nodes, links, rootSlug });
     } catch (error: any) {
       console.error('Failed to build astra graph:', error);
       this.sendJsonError(res, 500, 'Failed to build astra graph: ' + error.message);
@@ -585,6 +587,24 @@ export class HttpApiTapestry {
       res.end('Failed to read asset');
     }
   }
+}
+
+/**
+ * Pick the fiber a vellum workspace should land on for a city. Convention
+ * from CLAUDE.md: each project has a root fiber at `.felt/{project}/{project}.md`
+ * — `readAllFibers` keys that by the directory name, so the id equals the
+ * cityId. Falls through to the nested path (for non-conforming projects) and
+ * then to any fiber. Returns null only when the city has no fibers at all.
+ */
+function resolveRootSlug(
+  cityId: string,
+  fiberIds: Set<string>,
+  allFibers: Fiber[],
+): string | null {
+  if (fiberIds.has(cityId)) return cityId;
+  const nested = `${cityId}/${cityId}`;
+  if (fiberIds.has(nested)) return nested;
+  return allFibers[0]?.id ?? null;
 }
 
 const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;

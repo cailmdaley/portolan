@@ -132,6 +132,47 @@ depends-on:
     ]);
   });
 
+  it('resolves rootSlug to a fiber matching the cityId (loom root-fiber convention)', async () => {
+    writeFiber(FELT_DIR, 'test', `---
+title: Root
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+    writeFiber(FELT_DIR, 'other', `---
+title: Other
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-02T00:00:00Z
+---
+`);
+
+    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    expect(res.data.rootSlug).toBe('test');
+  });
+
+  it('rootSlug falls back to the first fiber when no id matches the cityId', async () => {
+    writeFiber(FELT_DIR, 'alpha', `---
+title: Alpha
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+
+    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    expect(res.data.rootSlug).toBe('alpha');
+  });
+
+  it('rootSlug is null when the city has no fibers', async () => {
+    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    expect(res.data.rootSlug).toBeNull();
+  });
+
   it('drops edges that point to fibers outside the city', async () => {
     writeFiber(FELT_DIR, 'orphan-dep', `---
 title: Orphan

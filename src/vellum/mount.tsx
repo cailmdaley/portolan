@@ -150,7 +150,10 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     defaultOriginId: opts.originId,
   })
 
+  let closed = false
   const close = () => {
+    if (closed) return
+    closed = true
     root.unmount()
     container.remove()
     document.removeEventListener('keydown', onKey, true)
@@ -165,17 +168,37 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   }
   document.addEventListener('keydown', onKey, true)
 
-  const initialSlug = opts.initialSlug ?? `${opts.cityId}/${opts.cityId}`
+  const mountWith = (initialSlug: string) => {
+    if (closed) return
+    root.render(
+      <StrictMode>
+        <AdapterProvider adapter={adapter}>
+          <WorkspaceMount initialSlug={initialSlug} />
+        </AdapterProvider>
+      </StrictMode>,
+    )
+  }
 
-  root.render(
-    <StrictMode>
-      <AdapterProvider adapter={adapter}>
-        <WorkspaceMount initialSlug={initialSlug} />
-      </AdapterProvider>
-    </StrictMode>,
-  )
+  if (opts.initialSlug) {
+    mountWith(opts.initialSlug)
+  } else {
+    // Ask the server which fiber is the city's root (handles projects whose
+    // root slug isn't `{cityId}/{cityId}`); fall back to the convention on
+    // network error. See fiber city-to-fiber-slug-mapping.
+    resolveCityRootSlug(opts.cityId)
+      .then((slug) => mountWith(slug ?? `${opts.cityId}/${opts.cityId}`))
+      .catch(() => mountWith(`${opts.cityId}/${opts.cityId}`))
+  }
 
   return { close }
+}
+
+async function resolveCityRootSlug(cityId: string): Promise<string | null> {
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+  const res = await fetch(`http://${host}:4004/astra/graph?cityId=${encodeURIComponent(cityId)}`)
+  if (!res.ok) return null
+  const data = await res.json()
+  return typeof data.rootSlug === 'string' ? data.rootSlug : null
 }
 
 export interface OpenStaticFileModalOptions {
