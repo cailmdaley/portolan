@@ -303,6 +303,29 @@ export class MapInteractionController {
     this.canvas.style.cursor = ''
   }
 
+  /** Re-run the pin hover hit-test using the last-known cursor position.
+   *  Call from the render loop so that camera pan/zoom (which don't fire
+   *  mousemove) keep the hover state in sync — without this, zooming leaves
+   *  a lifted+scaled card under a cursor that's no longer over it, and the
+   *  tooltip stays open for a card the user has scrolled away from. */
+  recomputeHover(): void {
+    if (
+      this.camera.dragging ||
+      this.getMovingCityId() ||
+      this.getMovingPinSlug?.() ||
+      document.body.classList.contains('pin-dragging')
+    ) return
+    if (!this.findPinAtWorldPos) return
+    // Guard against the case where the cursor hasn't been over the canvas yet.
+    if (this.forceMouseX === 0 && this.forceMouseY === 0) return
+    const worldPos = this.camera.screenToWorld(this.forceMouseX, this.forceMouseY)
+    const pinSlug = this.findPinAtWorldPos(worldPos.x, worldPos.z) ?? null
+    if (pinSlug !== this.hoveredPinSlug) {
+      this.hoveredPinSlug = pinSlug
+      this.onPinHoverChange?.(pinSlug)
+    }
+  }
+
   private readonly onCanvasMouseLeave = (): void => {
     this.zoneRenderer.clearWorkerFileHover()
     if (this.hoveredPinSlug !== null) {

@@ -588,8 +588,12 @@ const appRuntime = new FrontendAppRuntime({
     zoneRenderer.updateState(cities, sessions)
   },
   onFrame: () => {
+    // Camera pan/zoom doesn't emit mousemove, so re-test hover from the
+    // last-known cursor position — otherwise zooming leaves the previous
+    // pin lifted under a cursor that's no longer over it.
+    mapInteractions.recomputeHover()
     // Keep the pin hover tooltip anchored to its card while the camera is
-    // panning or zooming (mousemove isn't reliably fired during wheel/pinch).
+    // panning or zooming.
     const slug = pinHoverPreview.getVisibleSlug()
     if (!slug) return
     const worldPos = pinRenderer.getAnchor(slug)
