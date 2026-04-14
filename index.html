@@ -2230,6 +2230,17 @@
       .hud-fiber-item.question .hud-fiber-kind { color: #7b5a8a; }
       .hud-fiber-item.doc .hud-fiber-kind { color: #5a6b8a; }
 
+      /* Fiber is already pinned on the map — subtle gold inset bar on the
+         left so the HUD stays quiet but you can see at a glance which fibers
+         already have a card placed. Matches the sepia-accent / city-hex palette. */
+      .hud-fiber-item.pinned {
+        box-shadow: inset 3px 0 0 var(--sepia-accent);
+      }
+      .hud-fiber-item.pinned .hud-fiber-title::after {
+        content: " ·";
+        color: var(--sepia-accent);
+      }
+
       .hud-fiber-handoff {
         flex-shrink: 0;
         background: none;

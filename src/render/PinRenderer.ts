@@ -137,6 +137,12 @@ export class PinRenderer {
     return this.entries.has(slug)
   }
 
+  /** Slugs of all currently-rendered pins. Used by the HUD to badge fibers
+   *  that already have a map-pinned card, so drag-to-pin doesn't duplicate. */
+  getSlugs(): string[] {
+    return [...this.entries.keys()]
+  }
+
   /** World-space position of a pin's card center, or null if not pinned. */
   getAnchor(slug: string): { x: number; z: number } | null {
     const entry = this.entries.get(slug)

@@ -32,6 +32,7 @@ export class CityHUDContent {
   private fibersCallback: ((response: FibersResponse) => void) | null = null
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
+  private pinnedSlugs: Set<string> = new Set()
   private search: CityHUDSearch
 
   constructor(host: CityHUDContentHost) {
@@ -47,6 +48,7 @@ export class CityHUDContent {
       getCurrentTab: () => this.host.getCurrentTab(),
       getWebSocket: () => this.host.getWebSocket(),
       getFibers: () => ({ open: this.openFibers, closed: this.closedFibers }),
+      getPinnedSlugs: () => this.pinnedSlugs,
       onOpenFiber: (fiberId) => this.openFiber(fiberId),
       onOpenFile: (fullPath, line) => this.openFile(fullPath, line),
       onOpenDirectory: (fullPath) => this.openDirectory(fullPath),
@@ -88,6 +90,13 @@ export class CityHUDContent {
     return {
       open: this.openFibers,
       closed: this.closedFibers,
+    }
+  }
+
+  setPinnedSlugs(slugs: Set<string>): void {
+    this.pinnedSlugs = slugs
+    if (this.openFibers.length || this.closedFibers.length) {
+      this.renderFibers(this.openFibers, this.closedFibers)
     }
   }
 
@@ -164,8 +173,9 @@ export class CityHUDContent {
 
   private renderFiberItem(fiber: Fiber): string {
     const kind = fiber.kind || 'task'
+    const pinned = this.pinnedSlugs.has(fiber.id) ? ' pinned' : ''
     return `
-      <li class="hud-fiber-item ${kind}" data-fiber-id="${fiber.id}">
+      <li class="hud-fiber-item ${kind}${pinned}" data-fiber-id="${fiber.id}">
         <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
         <span class="hud-fiber-title">${escapeHtml(fiber.title)}</span>
         <span class="hud-fiber-kind">${kind}</span>

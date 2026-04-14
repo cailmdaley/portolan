@@ -134,9 +134,16 @@ async function loadPinsForCity(cityId: string): Promise<void> {
     const pins = await listPins(cityId)
     if (pinnedCityId !== cityId) return // city changed mid-flight
     pinRenderer.setPins(pins)
+    syncPinnedSlugs()
   } catch (err) {
     console.error('[pins] load failed for', cityId, err)
   }
+}
+
+/** Push the current set of pinned slugs to the HUD so fiber items can badge
+ *  themselves as already pinned on the map. Call after any pin mutation. */
+function syncPinnedSlugs(): void {
+  cityPanel.setPinnedSlugs(new Set(pinRenderer.getSlugs()))
 }
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
@@ -195,6 +202,7 @@ function handleCityClick(city: City): void {
     pinnedCityId = city.id
     pinRenderer.clear()
     pinHoverPreview.hide()
+    syncPinnedSlugs()
     void loadPinsForCity(city.id)
   }
 }
@@ -499,6 +507,7 @@ const mapInteractions = new MapInteractionController({
         action: () => {
           pinRenderer.remove(slug)
           pinHoverPreview.hide()
+          syncPinnedSlugs()
           void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
         },
         danger: true,
@@ -636,7 +645,10 @@ const pinDragController = new PinDragController({
   getPinnedCityId: () => pinnedCityId,
   onPinned: (pin) => {
     const currentCity = cityPanel.getCurrentCity()?.id ?? pinnedCityId
-    if (currentCity === pinnedCityId) pinRenderer.upsert(pin)
+    if (currentCity === pinnedCityId) {
+      pinRenderer.upsert(pin)
+      syncPinnedSlugs()
+    }
   },
 })
 
@@ -655,14 +667,20 @@ pinWindow.__portolanPin = async (slug, x, z, cityId) => {
   const targetCity = cityId ?? cityPanel.getCurrentCity()?.id ?? pinnedCityId
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   const pin = await putPin(targetCity, slug, { x, z })
-  if (pinnedCityId === targetCity) pinRenderer.upsert(pin)
+  if (pinnedCityId === targetCity) {
+    pinRenderer.upsert(pin)
+    syncPinnedSlugs()
+  }
   console.log('[pins] placed', pin)
 }
 pinWindow.__portolanUnpin = async (slug, cityId) => {
   const targetCity = cityId ?? cityPanel.getCurrentCity()?.id ?? pinnedCityId
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   await deletePin(targetCity, slug)
-  if (pinnedCityId === targetCity) pinRenderer.remove(slug)
+  if (pinnedCityId === targetCity) {
+    pinRenderer.remove(slug)
+    syncPinnedSlugs()
+  }
 }
 
 // HMR cleanup

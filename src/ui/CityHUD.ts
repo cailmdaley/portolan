@@ -239,6 +239,10 @@ export class CityHUD {
     return this.content.getFibers()
   }
 
+  setPinnedSlugs(slugs: Set<string>): void {
+    this.content.setPinnedSlugs(slugs)
+  }
+
   getRuntimeStats(): {
     visible: boolean
     activeTab: 'fibers' | 'files'

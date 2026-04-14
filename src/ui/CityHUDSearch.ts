@@ -22,8 +22,10 @@ interface CityHUDSearchHost {
   getCurrentTab: () => HudTab
   getWebSocket: () => WebSocket | null
   getFibers: () => { open: Fiber[]; closed: Fiber[] }
+  getPinnedSlugs: () => Set<string>
   onOpenFiber: (fiberId: string | undefined) => void
   onOpenFile: (fullPath: string | undefined, line?: number) => void
+  onOpenDirectory: (fullPath: string | undefined) => void
   renderEmptyFileSearchState: () => void
 }
 
@@ -132,6 +134,10 @@ export class CityHUDSearch {
         this.host.onOpenFile(item.dataset.path, line)
         return
       }
+      if (item.dataset.type === 'dir') {
+        this.host.onOpenDirectory(item.dataset.path)
+        return
+      }
       if (item.dataset.type === 'fiber') {
         this.host.onOpenFiber(item.dataset.fiberId)
       }
@@ -214,10 +220,12 @@ export class CityHUDSearch {
 
     let html = ''
 
+    const pinnedSlugs = this.host.getPinnedSlugs()
     for (const fiber of fibers.slice(0, 20)) {
       const kind = fiber.kind || 'task'
+      const pinned = pinnedSlugs.has(fiber.id) ? ' pinned' : ''
       html += `
-        <li class="hud-search-item hud-fiber-item ${kind}" data-type="fiber" data-fiber-id="${fiber.id}">
+        <li class="hud-search-item hud-fiber-item ${kind}${pinned}" data-type="fiber" data-fiber-id="${fiber.id}">
           <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
           <span class="hud-fiber-title">${escapeHtml(fiber.title)}</span>
           <span class="hud-fiber-kind">${kind}</span>
@@ -228,10 +236,13 @@ export class CityHUDSearch {
       const fileName = result.path.split('/').pop() || result.path
       const lineInfo = result.line !== undefined ? `:${result.line}` : ''
       const lineAttr = result.line !== undefined ? ` data-line="${result.line}"` : ''
+      const itemType = result.type === 'dir' ? 'dir' : 'file'
+      const icon = result.type === 'dir' ? '▸' : '▹'
+      const displayName = result.type === 'dir' ? `${fileName}/` : `${fileName}${lineInfo}`
       html += `
-        <li class="hud-search-item hud-fiber-item file" data-type="file" data-path="${escapeHtml(result.fullPath)}"${lineAttr}>
-          <span class="hud-search-icon">▹</span>
-          <span class="hud-fiber-title mono">${escapeHtml(fileName)}${lineInfo}</span>
+        <li class="hud-search-item hud-fiber-item ${itemType}" data-type="${itemType}" data-path="${escapeHtml(result.fullPath)}"${lineAttr}>
+          <span class="hud-search-icon">${icon}</span>
+          <span class="hud-fiber-title mono">${escapeHtml(displayName)}</span>
         </li>`
     }
 
