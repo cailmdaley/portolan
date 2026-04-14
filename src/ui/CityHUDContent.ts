@@ -178,7 +178,7 @@ export class CityHUDContent {
     const currentCity = this.host.getCurrentCity()
     const onOpenFile = this.host.getOnOpenFile()
     if (!fiberId || !currentCity || !onOpenFile) return
-    onOpenFile(`${currentCity.path}/.felt/${fiberId}.md`, currentCity.originId, currentCity.path, currentCity.id)
+    onOpenFile(`${currentCity.path}/.felt/${fiberId}/${fiberId}.md`, currentCity.originId, currentCity.path, currentCity.id)
   }
 
   private openFile(fullPath: string | undefined, line?: number): void {

@@ -17,6 +17,7 @@
 import { StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { AdapterProvider, FileViewerModal, FileViewerPage } from 'vellum'
+import 'vellum/css'
 import { createPortolanAdapter } from './portolan-adapter'
 
 export interface MountFileViewerOptions {
