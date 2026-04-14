@@ -18,7 +18,7 @@ import { StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { AdapterProvider, FileViewerModal, FileViewerPage } from 'vellum'
 import 'vellum/css'
-import { createPortolanAdapter } from './portolan-adapter'
+import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
 
 export interface MountFileViewerOptions {
   container: HTMLElement
@@ -109,6 +109,48 @@ export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHand
           originId={opts.originId}
           cityId={opts.cityId}
           editable={opts.editable}
+          jumpToLine={opts.jumpToLine}
+          onClose={close}
+        />
+      </AdapterProvider>
+    </StrictMode>,
+  )
+
+  return { close }
+}
+
+export interface OpenStaticFileModalOptions {
+  /** File href as it appears in the tapestry export (absolute, `./`, or relative). */
+  path: string
+  /** Base URL for the static tapestry export (e.g. "./data/pure_eb"). */
+  staticDataBase: string
+  jumpToLine?: number
+}
+
+/**
+ * Full-viewport vellum file modal backed by a read-only static adapter. Used
+ * by the GitHub Pages tapestry deploy where no server is available — files
+ * come from the flat `${staticDataBase}/files/` tree written by
+ * `felt export --format tapestry`.
+ */
+export function openVellumStaticFileModal(opts: OpenStaticFileModalOptions): VellumModalHandle {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  const adapter = createPortolanStaticAdapter({ staticDataBase: opts.staticDataBase })
+
+  const close = () => {
+    root.unmount()
+    container.remove()
+  }
+
+  root.render(
+    <StrictMode>
+      <AdapterProvider adapter={adapter}>
+        <FileViewerModal
+          path={opts.path}
+          editable={false}
           jumpToLine={opts.jumpToLine}
           onClose={close}
         />

@@ -16,15 +16,16 @@
  * "not implemented" from "no content".
  */
 
-import type {
-  Adapter,
-  CreateAnnotationInput,
-  FrontmatterPatch,
-  GetAnnotationsOptions,
-  GetFileOptions,
-  ReadOnlyAdapter,
-  ReadOnlyAdapterError,
-  SaveFileOptions,
+import {
+  asReadOnlyAdapter,
+  type Adapter,
+  type CreateAnnotationInput,
+  type FrontmatterPatch,
+  type GetAnnotationsOptions,
+  type GetFileOptions,
+  type ReadOnlyAdapter,
+  type ReadOnlyAdapterError,
+  type SaveFileOptions,
 } from 'vellum/adapter';
 import type {
   Annotation,
@@ -291,3 +292,82 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
 }
 
 export type { ReadOnlyAdapterError };
+
+export interface PortolanStaticAdapterOptions {
+  /**
+   * Base URL for the static tapestry export (e.g. "./data/pure_eb"). File
+   * hrefs are flattened (`/` → `_`) and looked up under `${base}/files/`.
+   * Matches what `felt export --format tapestry` writes and what the old
+   * hand-rolled TapestryStaticFileModal resolved.
+   */
+  staticDataBase: string;
+}
+
+function flatFileUrl(staticDataBase: string, path: string): string {
+  const flat = path.replace(/^\.{0,2}\//, '').replace(/\//g, '_');
+  return `${staticDataBase}/files/${flat}`;
+}
+
+/**
+ * Read-only adapter for the static tapestry deploy. The static export bakes
+ * files into `${staticDataBase}/files/` with `/` → `_`; no server round-trip.
+ * Fiber- and graph-shaped endpoints are not yet prebaked, so they return
+ * empty sentinels.
+ *
+ * Returned as a full `Adapter` (write methods throw `ReadOnlyAdapterError`)
+ * so it drops into any `<AdapterProvider>` without a separate code path.
+ */
+export function createPortolanStaticAdapter(opts: PortolanStaticAdapterOptions): Adapter {
+  const ro: ReadOnlyAdapter = {
+    async getFile(path: string): Promise<FileContent | null> {
+      const kind = classifyFile(path);
+      const url = flatFileUrl(opts.staticDataBase, path);
+
+      if (kind === 'pdf' || kind === 'image' || kind === 'html') {
+        // Guard pdf: if the asset is missing the static host may return an
+        // HTML 404 page. Let the reader surface "file not found" rather than
+        // feeding garbage into pdf.js.
+        if (kind === 'pdf') {
+          const probe = await fetch(url, { method: 'HEAD' }).catch(() => null);
+          const ct = probe?.headers.get('content-type') ?? '';
+          if (!probe?.ok || !ct.includes('application/pdf')) return null;
+        }
+        return { path, kind, language: '', content: '', url };
+      }
+
+      const res = await fetch(url).catch(() => null);
+      if (!res || !res.ok) return null;
+      const ct = res.headers.get('content-type') ?? '';
+      // SPA catch-all: text/markdown files arrived as an HTML fallback page.
+      if (ct.includes('text/html')) return null;
+      const text = await res.text();
+      return { path, kind, language: '', content: text };
+    },
+
+    async getFiberContent(): Promise<FiberContent | null> {
+      return null;
+    },
+
+    async getAstraGraph(): Promise<AstraGraph> {
+      return { nodes: [], links: [] };
+    },
+
+    async getRawFiber(): Promise<RawFiber | null> {
+      return null;
+    },
+
+    async getAnnotations(): Promise<Annotation[]> {
+      return [];
+    },
+
+    async searchFibers(): Promise<SearchHit[]> {
+      return [];
+    },
+
+    async getDeltaSince(since: string): Promise<LogResponse> {
+      return { since, count: 0, events: [] };
+    },
+  };
+
+  return asReadOnlyAdapter(ro);
+}
