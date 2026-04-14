@@ -175,18 +175,89 @@ export class DomPinLayer {
       left: '0',
       pointerEvents: 'auto',
       transition: 'transform 80ms linear',
+      display: 'flex',
+      flexDirection: 'column',
     })
+
+    // Chrome strip — a pointer-event handle that stays *outside* the iframe's
+    // own event scope. Right-click or clicking the ⋮ opens the host context
+    // menu; dragging/scrolling the iframe below never reaches the wrapper, so
+    // this strip is the only reliable unpin affordance for iframe-backed pins
+    // (PDF/HTML). See tapestry-dissolves: "right-click unpin from a PDF that
+    // swallows pointer events."
+    const chrome = renderChrome(pin)
+    el.appendChild(chrome)
+
     const inner = renderInner(pin, url)
     el.appendChild(inner)
+
     if (this.onContextMenu) {
+      const openMenu = (clientX: number, clientY: number) => {
+        this.onContextMenu?.(pin.slug, clientX, clientY)
+      }
       el.addEventListener('contextmenu', (event) => {
         event.preventDefault()
         event.stopPropagation()
-        this.onContextMenu?.(pin.slug, event.clientX, event.clientY)
+        openMenu(event.clientX, event.clientY)
+      })
+      const handle = chrome.querySelector<HTMLElement>('.dom-pin-menu-handle')
+      handle?.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        openMenu(event.clientX, event.clientY)
       })
     }
     return { slug: pin.slug, pin, el, inner, hovered: false }
   }
+}
+
+function renderChrome(pin: Pin): HTMLElement {
+  const bar = document.createElement('div')
+  bar.className = 'dom-pin-chrome'
+  Object.assign(bar.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '3px 6px 3px 8px',
+    fontFamily: '"EB Garamond", Garamond, serif',
+    fontSize: '11px',
+    lineHeight: '1.1',
+    color: '#2E2A26',
+    background: 'rgba(200, 184, 168, 0.92)',
+    borderTopLeftRadius: '6px',
+    borderTopRightRadius: '6px',
+    borderBottom: '1px solid rgba(140, 110, 80, 0.45)',
+    userSelect: 'none',
+  })
+  const title = document.createElement('span')
+  title.className = 'dom-pin-chrome-title'
+  title.textContent = pin.slug
+  Object.assign(title.style, {
+    flex: '1',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontVariant: 'small-caps',
+    letterSpacing: '0.03em',
+  })
+  bar.appendChild(title)
+  const handle = document.createElement('button')
+  handle.type = 'button'
+  handle.className = 'dom-pin-menu-handle'
+  handle.textContent = '⋮'
+  handle.title = 'Pin menu'
+  Object.assign(handle.style, {
+    appearance: 'none',
+    border: 'none',
+    background: 'transparent',
+    color: '#2E2A26',
+    cursor: 'pointer',
+    fontSize: '16px',
+    lineHeight: '1',
+    padding: '0 4px',
+  })
+  bar.appendChild(handle)
+  return bar
 }
 
 function sourceKey(pin: Pin): string {
@@ -208,7 +279,9 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       width: kind === 'pdf' ? '320px' : '420px',
       height: kind === 'pdf' ? '420px' : '300px',
       border: '1px solid rgba(140, 110, 80, 0.55)',
-      borderRadius: '6px',
+      borderTop: 'none',
+      borderBottomLeftRadius: '6px',
+      borderBottomRightRadius: '6px',
       background: 'rgba(248, 240, 225, 0.97)',
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
@@ -224,7 +297,9 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       maxWidth: '320px',
       maxHeight: '320px',
       border: '1px solid rgba(140, 110, 80, 0.55)',
-      borderRadius: '6px',
+      borderTop: 'none',
+      borderBottomLeftRadius: '6px',
+      borderBottomRightRadius: '6px',
       background: 'rgba(248, 240, 225, 0.97)',
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
@@ -254,7 +329,9 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
     textDecoration: 'none',
     background: 'rgba(248, 240, 225, 0.97)',
     border: '1px solid rgba(140, 110, 80, 0.55)',
-    borderRadius: '6px',
+    borderTop: 'none',
+    borderBottomLeftRadius: '6px',
+    borderBottomRightRadius: '6px',
     boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
   })
   return a
@@ -270,7 +347,9 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
     color: '#7A7368',
     background: 'rgba(248, 240, 225, 0.85)',
     border: '1px dashed rgba(140, 110, 80, 0.55)',
-    borderRadius: '4px',
+    borderTop: 'none',
+    borderBottomLeftRadius: '4px',
+    borderBottomRightRadius: '4px',
   })
   return div
 }
