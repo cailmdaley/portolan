@@ -102,6 +102,13 @@ const pinRenderer = new PinRenderer(scene, {
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
+// Repaint pin cards once EB Garamond has loaded. Initial paints happen before
+// the webfont resolves, so cards land in system serif with slightly different
+// word-wrap metrics than the HUD. See tapestry-dissolves.
+if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+  void document.fonts.ready.then(() => pinRenderer.repaintAll())
+}
+
 // Extended-hover tooltip for pinned cards. Mounts vellum's FiberCard so the
 // hover preview shows the same primitive the reader uses. The GraphNode is
 // built from the city HUD's fiber list (portolan's Fiber shape) — enough for

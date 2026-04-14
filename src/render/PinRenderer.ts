@@ -186,6 +186,14 @@ export class PinRenderer {
     }
   }
 
+  /** Force every card to repaint regardless of content change. Used after
+   *  EB Garamond finishes loading — initial paints fall back to system serif
+   *  if the webfont hasn't resolved yet, and word-wrap measurements differ
+   *  between serif families. */
+  repaintAll(): void {
+    for (const entry of this.entries.values()) this.paintCard(entry)
+  }
+
   private build(slug: string): PinEntry {
     const group = new Group()
 
