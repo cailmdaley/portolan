@@ -1,17 +1,22 @@
 /**
- * mountVellumFileViewer — portolan's React seam.
+ * Vellum mount seams for portolan.
  *
- * Mounts vellum's FileViewerPage inside a DOM node, wrapped in the
- * AdapterProvider with a PortolanAdapter. Returns an unmount handle so the
- * host (modal shell, panel, etc.) can tear the root down.
+ * Two entry points:
  *
- * The rest of the app stays vanilla TS/Three.js. React only lives inside the
- * node handed here — see vellum-in-portolan constitution for the seam rules.
+ *   - mountVellumFileViewer(container, …) — raw page mount, used when the
+ *     host already owns a container and wants FileViewerPage inside it
+ *     (e.g. inline panels, debug surfaces).
+ *   - openVellumFileModal({ path, … }) — full-viewport modal: creates a scrim
+ *     container, mounts vellum's FileViewerModal inside, and returns a close
+ *     handle. Replaces the hand-rolled overlay main.ts used to roll itself.
+ *
+ * Everything outside this file stays vanilla TS/Three.js. React only lives
+ * inside the React root this file creates — see vellum-in-portolan.
  */
 
 import { StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { AdapterProvider, FileViewerPage } from 'vellum'
+import { AdapterProvider, FileViewerModal, FileViewerPage } from 'vellum'
 import { createPortolanAdapter } from './portolan-adapter'
 
 export interface MountFileViewerOptions {
@@ -60,4 +65,51 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
       root.unmount()
     },
   }
+}
+
+export interface OpenFileModalOptions {
+  path: string
+  originId?: string
+  cityId?: string
+  editable?: boolean
+}
+
+export interface VellumModalHandle {
+  close(): void
+}
+
+/**
+ * Full-viewport vellum file modal. Creates its own container, mounts
+ * FileViewerModal with an AdapterProvider, and tears down on close.
+ */
+export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHandle {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  const adapter = createPortolanAdapter({
+    cityId: opts.cityId,
+    defaultOriginId: opts.originId,
+  })
+
+  const close = () => {
+    root.unmount()
+    container.remove()
+  }
+
+  root.render(
+    <StrictMode>
+      <AdapterProvider adapter={adapter}>
+        <FileViewerModal
+          path={opts.path}
+          originId={opts.originId}
+          cityId={opts.cityId}
+          editable={opts.editable}
+          onClose={close}
+        />
+      </AdapterProvider>
+    </StrictMode>,
+  )
+
+  return { close }
 }
