@@ -67,7 +67,7 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 
 Server polls tmux → builds state → broadcasts. File touches flow via hooks (POST `/hook/file-touch` → `RecentFileTracker`). Browser renders → user clicks → routes to Kitty.
 
-**File viewer = vellum.** Main app opens files via `openVellumFileModal()` in `src/vellum/mount.tsx` → vellum's `FileViewerModal` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js. Static GitHub Pages viewer still uses `TapestryStaticFileModal` (read-only, `src/ui/tapestry-file-modal.css`, `.tapestry-file-*`) — collapsing that into vellum + `ReadOnlyAdapter` is the next step.
+**File viewer = vellum.** Main app opens files via `openVellumFileModal()` in `src/vellum/mount.tsx` → vellum's `FileViewerModal` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js. The static GitHub Pages viewer uses `openVellumStaticFileModal()` with `createPortolanStaticAdapter` — same vellum modal, read-only adapter that resolves flat files under `${staticDataBase}/files/`.
 
 ## Visual Language
 
