@@ -120,6 +120,16 @@ const domPinLayer = new DomPinLayer({
     if (!city) return
     contextMenu.show(clientX, clientY, [
       {
+        label: 'Move Pin',
+        action: () => {
+          // Move-on-next-canvas-click flow lives in MapInteractionController;
+          // the DOM-pin menu participates in it by setting the same shared slug.
+          // Cursor reverts on commit/escape via setMovingPinSlug.
+          movingPinSlug = slug
+          document.body.style.cursor = 'crosshair'
+        },
+      },
+      {
         label: 'Unpin Card',
         action: () => {
           removePin(slug)

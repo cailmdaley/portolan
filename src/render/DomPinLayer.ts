@@ -17,6 +17,14 @@ import type { Pin, PinKind } from '../state/layoutClient'
 
 const DOM_KINDS: ReadonlySet<PinKind> = new Set(['pdf', 'html', 'image', 'markdown', 'other'])
 
+// Reference zoom (camera half-width in world units) at which a DOM pin renders
+// at its intrinsic CSS size — i.e. scale = 1. Picked near the middle of the
+// effective zoom range (Camera clamps to [2, 15]) so PDFs render at "natural"
+// readable size at a typical city-level view, then shrink as you pull out and
+// grow as you push in. Matches the spatial-scale behavior of three.js
+// `PinRenderer` cards under orthographic zoom. See tapestry-dissolves Open Q (c).
+const REFERENCE_ZOOM = 8
+
 /** True if a pin should render via the DOM layer rather than PinRenderer. */
 export function isDomPinKind(pin: Pin): boolean {
   if (!pin.kind) return false
@@ -147,8 +155,13 @@ export class DomPinLayer {
 
   private position(entry: DomPinEntry): void {
     const { x, y } = this.camera.worldToScreen(entry.pin.x, 0.05, entry.pin.z)
-    // CSS transform centers the pin on its anchor point.
-    entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
+    const zoom = this.camera.cameraDistance
+    const scale = REFERENCE_ZOOM / Math.max(zoom, 0.0001)
+    // CSS transform centers the pin on its anchor, then scales around that
+    // center so the DOM card grows/shrinks together with the canvas pins as
+    // the camera zooms.
+    entry.el.style.transform =
+      `translate(${x}px, ${y}px) translate(-50%, -50%) scale(${scale.toFixed(4)})`
   }
 
   private build(pin: Pin): DomPinEntry {
