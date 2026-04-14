@@ -20,6 +20,7 @@ export class FileViewerModal {
   private saveBtn: HTMLElement
   private sendBtn: HTMLElement
   private fiberBtn: HTMLElement
+  private vellumBtn: HTMLElement
   private closeBtn: HTMLElement
   // @ts-expect-error Stored for potential future layout changes
   private contentWrapper: HTMLElement
@@ -44,6 +45,7 @@ export class FileViewerModal {
     this.saveBtn = this.modal.querySelector('.file-viewer-save')!
     this.sendBtn = this.modal.querySelector('.file-viewer-send')!
     this.fiberBtn = this.modal.querySelector('.file-viewer-fiber')!
+    this.vellumBtn = this.modal.querySelector('.file-viewer-vellum')!
     this.closeBtn = this.modal.querySelector('.file-viewer-close')!
     this.contentWrapper = this.modal.querySelector('.file-viewer-content-wrapper')!
     this.contentEl = this.modal.querySelector('.file-viewer-content')!
@@ -150,6 +152,7 @@ export class FileViewerModal {
           <button class="file-viewer-btn file-viewer-save" style="display: none;">Save</button>
           <button class="file-viewer-btn file-viewer-fiber" style="display: none;">File as Fiber</button>
           <button class="file-viewer-btn file-viewer-send" style="display: none;">Send to Worker</button>
+          <button class="file-viewer-btn file-viewer-vellum" title="Open in vellum reader (experimental)">Vellum</button>
           <button class="file-viewer-btn file-viewer-refresh" title="Refresh file">\u21BB</button>
           <button class="file-viewer-btn file-viewer-copy">Copy</button>
           <button class="file-viewer-btn file-viewer-download">Download</button>
@@ -194,6 +197,27 @@ export class FileViewerModal {
 
     // Save button
     this.saveBtn.addEventListener('click', () => this.textEditor.save())
+
+    // Vellum (experimental): open current file in the vellum reader overlay.
+    // Uses the global seam installed in main.ts (`__mountVellumFileViewer`) so
+    // this button is a pure host-side hop; see vellum-in-portolan step 3.
+    this.vellumBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const path = this.contentPresenter.getCurrentPath()
+      if (!path) return
+      const mount = (window as unknown as {
+        __mountVellumFileViewer?: (opts: { path: string; originId?: string; cityId?: string }) => void
+      }).__mountVellumFileViewer
+      if (!mount) {
+        console.warn('[FileViewerModal] vellum mount seam not installed')
+        return
+      }
+      mount({
+        path,
+        originId: this.contentPresenter.getCurrentOriginId(),
+        cityId: this.contentPresenter.getCurrentCityId() || undefined,
+      })
+    })
 
     // Document-level handlers are attached in the runtime during show()/hide().
     // This prevents HMR stacking where old listeners accumulate across hot reloads.
