@@ -115,6 +115,11 @@ export class PinRenderer {
     }
   }
 
+  /** Does a card with this slug currently exist? */
+  has(slug: string): boolean {
+    return this.entries.has(slug)
+  }
+
   remove(slug: string): void {
     const entry = this.entries.get(slug)
     if (!entry) return

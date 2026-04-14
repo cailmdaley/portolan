@@ -100,6 +100,7 @@ const pinRenderer = new PinRenderer(scene, {
   },
 })
 let pinnedCityId: string | null = null
+let movingPinSlug: string | null = null
 
 async function loadPinsForCity(cityId: string): Promise<void> {
   try {
@@ -446,6 +447,13 @@ const mapInteractions = new MapInteractionController({
         }),
       },
       {
+        label: 'Move Pin',
+        action: () => {
+          movingPinSlug = slug
+          document.body.style.cursor = 'crosshair'
+        },
+      },
+      {
         label: 'Unpin Card',
         action: () => {
           pinRenderer.remove(slug)
@@ -454,6 +462,15 @@ const mapInteractions = new MapInteractionController({
         danger: true,
       },
     ])
+  },
+  getMovingPinSlug: () => movingPinSlug,
+  setMovingPinSlug: (slug) => { movingPinSlug = slug },
+  movePin: (slug, x, z) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    void putPin(city.id, slug, { x, z })
+      .then(pin => { if (pinnedCityId === city.id) pinRenderer.upsert(pin) })
+      .catch(err => console.error('[pins] move failed', err))
   },
 })
 

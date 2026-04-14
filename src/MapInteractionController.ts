@@ -35,6 +35,12 @@ interface MapInteractionControllerOptions {
   onPinHoverChange?: (slug: string | null) => void
   /** Right-click over a pinned card. Handler shows its own context menu. */
   onPinContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  /** Current slug being relocated via "Move Pin", or null. */
+  getMovingPinSlug?: () => string | null
+  /** Toggle the move-pin state (null to cancel). */
+  setMovingPinSlug?: (slug: string | null) => void
+  /** Commit the move: reposition an existing pin to a new world point. */
+  movePin?: (slug: string, x: number, z: number) => void
 }
 
 export class MapInteractionController {
@@ -61,6 +67,9 @@ export class MapInteractionController {
   private readonly handlePinClick?: (slug: string) => void
   private readonly onPinHoverChange?: (slug: string | null) => void
   private readonly onPinContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  private readonly getMovingPinSlug?: () => string | null
+  private readonly setMovingPinSlug?: (slug: string | null) => void
+  private readonly movePin?: (slug: string, x: number, z: number) => void
   private hoveredPinSlug: string | null = null
 
   private forceMouseX = 0
@@ -93,6 +102,9 @@ export class MapInteractionController {
     this.handlePinClick = options.handlePinClick
     this.onPinHoverChange = options.onPinHoverChange
     this.onPinContextMenu = options.onPinContextMenu
+    this.getMovingPinSlug = options.getMovingPinSlug
+    this.setMovingPinSlug = options.setMovingPinSlug
+    this.movePin = options.movePin
 
     document.addEventListener('contextmenu', this.onDocumentContextMenu)
     document.addEventListener('click', this.onForceClickCapture, true)
@@ -152,6 +164,14 @@ export class MapInteractionController {
     if (movingCityId) {
       this.moveCity(movingCityId, hex)
       this.setMovingCityId(null)
+      document.body.style.cursor = ''
+      return
+    }
+
+    const movingPinSlug = this.getMovingPinSlug?.() ?? null
+    if (movingPinSlug && this.movePin) {
+      this.movePin(movingPinSlug, worldPos.x, worldPos.z)
+      this.setMovingPinSlug?.(null)
       document.body.style.cursor = ''
       return
     }
@@ -317,6 +337,10 @@ export class MapInteractionController {
 
     if (this.getMovingCityId()) {
       this.setMovingCityId(null)
+      document.body.style.cursor = ''
+    }
+    if (this.getMovingPinSlug?.()) {
+      this.setMovingPinSlug?.(null)
       document.body.style.cursor = ''
     }
     this.zoneRenderer.clearWorkerFileHover(true)
