@@ -178,6 +178,39 @@
         pointer-events: none;
       }
 
+      /* Drag-to-pin ghost — follows the cursor while a fiber is being
+         dragged from the HUD onto the map. pointer-events:none so
+         elementFromPoint resolves to the actual drop target underneath. */
+      .pin-drag-ghost {
+        position: fixed;
+        z-index: 10000;
+        pointer-events: none;
+        transform: translate(-50%, -100%);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px 4px 6px;
+        background: rgba(248, 240, 228, 0.95);
+        border: 1px solid rgba(140, 110, 80, 0.55);
+        border-radius: 12px;
+        box-shadow: 0 4px 10px rgba(30, 20, 10, 0.18);
+        font-family: 'EB Garamond', Garamond, serif;
+        font-size: 14px;
+        color: #2E2A26;
+        white-space: nowrap;
+        max-width: 320px;
+      }
+      .pin-drag-ghost .pin-drag-pin { font-size: 16px; }
+      .pin-drag-ghost .pin-drag-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      body.pin-dragging, body.pin-dragging * {
+        cursor: grabbing !important;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
       .worker-label {
         font-family: 'EB Garamond', Garamond, serif;
         font-weight: 500;

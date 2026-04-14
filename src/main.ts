@@ -13,6 +13,7 @@ import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { PinRenderer } from './render/PinRenderer'
 import { listPins, putPin, deletePin } from './state/layoutClient'
+import { PinDragController } from './PinDragController'
 import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
@@ -503,6 +504,19 @@ installFrontendRuntimeDiagnostics({
 stateSync.connect()
 appRuntime.start()
 
+// Drag-to-pin: long-press a fiber in the HUD, drop on the map to pin. Ghost
+// element follows the cursor; release over the canvas calls screenToWorld +
+// putPin. See tapestry-dissolves.
+const pinDragController = new PinDragController({
+  canvas,
+  screenToWorld: (x, y) => camera.screenToWorld(x, y),
+  getPinnedCityId: () => pinnedCityId,
+  onPinned: (pin) => {
+    const currentCity = cityPanel.getCurrentCity()?.id ?? pinnedCityId
+    if (currentCity === pinnedCityId) pinRenderer.upsert(pin)
+  },
+})
+
 // Dev helpers for pins (milestone 1 of tapestry-dissolves). Not a stable API —
 // here so we can poke at world-space card positioning from the console before
 // drag-to-pin lands.
@@ -535,6 +549,7 @@ if (import.meta.hot) {
     window.removeEventListener('keydown', onGlobalHotkeys)
     globalSearchPalette.hide()
     recentWorkerBar.dispose()
+    pinDragController.dispose()
     appRuntime.dispose()
   })
 }
