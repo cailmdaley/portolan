@@ -13,6 +13,10 @@ import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { PinRenderer } from './render/PinRenderer'
 import { DomPinLayer, isDomPinKind } from './render/DomPinLayer'
+
+// Hoisted: lazy import the vellum mount module so DomPinLayer (built below)
+// can close over it for inline markdown rendering.
+const vellumMountPromise = import('./vellum/mount')
 import { PinHoverPreview } from './ui/PinHoverPreview'
 import { listPins, putPin, pinFile, deletePin, type Pin, type PinKind, type PinSource } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
@@ -140,6 +144,23 @@ const domPinLayer = new DomPinLayer({
         danger: true,
       },
     ])
+  },
+  cityIdFor: () => cityPanel.getCurrentCity()?.id ?? pinnedCityId ?? undefined,
+  // Lazy: vellum module is async-imported. Until it resolves, markdown pins
+  // fall back to the link-card stub. See [[file-view-as-floating-card]].
+  mountVellumSurface: (container, opts) => {
+    let unmounted = false
+    let handle: { unmount(): void } | null = null
+    void vellumMountPromise.then(({ mountVellumFileSurface }) => {
+      if (unmounted) return
+      handle = mountVellumFileSurface(container, opts)
+    })
+    return {
+      unmount() {
+        unmounted = true
+        handle?.unmount()
+      },
+    }
   },
 })
 
@@ -276,7 +297,8 @@ function handleCityClick(city: City): void {
 // Vellum is the file viewer. React modal mounted via openVellumFileModal.
 // See vellum-in-portolan: portolan's FileViewerModal has been retired from the
 // user-facing path; all file opens go through vellum + PortolanAdapter.
-const vellumMountPromise = import('./vellum/mount')
+// (Note: vellumMountPromise itself is hoisted above DomPinLayer construction
+// so the inline-vellum mount factory can close over it.)
 
 interface OpenFileArgs {
   path: string

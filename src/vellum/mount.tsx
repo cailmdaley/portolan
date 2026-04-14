@@ -78,6 +78,66 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
   }
 }
 
+export interface MountFileSurfaceOptions {
+  /** File path resolved by the active adapter. */
+  path: string
+  originId?: string
+  cityId?: string
+  editable?: boolean
+  jumpToLine?: number
+}
+
+export interface VellumFileSurfaceHandle {
+  /** Re-render with new file/options. */
+  update(opts: MountFileSurfaceOptions): void
+  unmount(): void
+}
+
+/**
+ * Non-modal mount of vellum's `FileViewerPage` into an arbitrary container.
+ * Same fetch + render pipeline as `openVellumFileModal`, no scrim or chrome.
+ *
+ * Used by the floating-card primitive (see [[file-view-as-floating-card]]) and
+ * any other host that wants vellum's file rendering inline. The container
+ * controls sizing; vellum fills it.
+ */
+export function mountVellumFileSurface(
+  container: HTMLElement,
+  opts: MountFileSurfaceOptions,
+): VellumFileSurfaceHandle {
+  const root = createRoot(container)
+
+  const render = (next: MountFileSurfaceOptions) => {
+    const adapter = createPortolanAdapter({
+      cityId: next.cityId,
+      defaultOriginId: next.originId,
+    })
+    root.render(
+      <StrictMode>
+        <AdapterProvider adapter={adapter}>
+          <FileViewerPage
+            path={next.path}
+            originId={next.originId}
+            editable={next.editable}
+            jumpToLine={next.jumpToLine}
+          />
+        </AdapterProvider>
+      </StrictMode>,
+    )
+  }
+
+  render(opts)
+
+  return {
+    update(next) {
+      render(next)
+    },
+    unmount() {
+      root.unmount()
+    },
+  }
+}
+
 export interface OpenFileModalOptions {
   path: string
   originId?: string

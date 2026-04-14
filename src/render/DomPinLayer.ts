@@ -31,6 +31,20 @@ export function isDomPinKind(pin: Pin): boolean {
   return DOM_KINDS.has(pin.kind)
 }
 
+/**
+ * Mount a vellum file surface (FileViewerPage) into a host container. Optional
+ * — when provided, markdown pins render their content inline via vellum
+ * instead of falling back to the link-card stub. See [[file-view-as-floating-card]].
+ */
+export interface VellumSurfaceMount {
+  unmount(): void
+}
+
+export type MountVellumFileSurface = (
+  container: HTMLElement,
+  opts: { path: string; originId?: string; cityId?: string },
+) => VellumSurfaceMount
+
 export interface DomPinLayerOptions {
   camera: Camera
   /** Map a pin's `source` into a fetchable URL. Returns null when the source
@@ -39,6 +53,10 @@ export interface DomPinLayerOptions {
   resolveSource: (pin: Pin) => string | null
   /** Right-click on a DOM pin → host opens a context menu (unpin, …). */
   onContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  /** Inline vellum mount for markdown (and future fiber) pins. */
+  mountVellumSurface?: MountVellumFileSurface
+  /** Default cityId threaded into vellum mounts when a pin lacks an originId hint. */
+  cityIdFor?: () => string | undefined
 }
 
 interface DomPinEntry {
@@ -47,12 +65,15 @@ interface DomPinEntry {
   el: HTMLDivElement
   inner: HTMLElement
   hovered: boolean
+  vellumMount: VellumSurfaceMount | null
 }
 
 export class DomPinLayer {
   private readonly camera: Camera
   private readonly resolveSource: (pin: Pin) => string | null
   private readonly onContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  private readonly mountVellumSurface?: MountVellumFileSurface
+  private readonly cityIdFor?: () => string | undefined
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -61,6 +82,8 @@ export class DomPinLayer {
     this.camera = opts.camera
     this.resolveSource = opts.resolveSource
     this.onContextMenu = opts.onContextMenu
+    this.mountVellumSurface = opts.mountVellumSurface
+    this.cityIdFor = opts.cityIdFor
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -112,6 +135,7 @@ export class DomPinLayer {
   remove(slug: string): void {
     const entry = this.entries.get(slug)
     if (!entry) return
+    entry.vellumMount?.unmount()
     entry.el.remove()
     this.entries.delete(slug)
     if (this.hoveredSlug === slug) this.hoveredSlug = null
@@ -188,7 +212,18 @@ export class DomPinLayer {
     const chrome = renderChrome(pin)
     el.appendChild(chrome)
 
-    const inner = renderInner(pin, url)
+    let vellumMount: VellumSurfaceMount | null = null
+    let inner: HTMLElement
+    if (pin.kind === 'markdown' && pin.source?.path && this.mountVellumSurface) {
+      inner = renderVellumShell()
+      vellumMount = this.mountVellumSurface(inner, {
+        path: pin.source.path,
+        originId: pin.source.originId,
+        cityId: this.cityIdFor?.(),
+      })
+    } else {
+      inner = renderInner(pin, url)
+    }
     el.appendChild(inner)
 
     if (this.onContextMenu) {
@@ -207,8 +242,27 @@ export class DomPinLayer {
         openMenu(event.clientX, event.clientY)
       })
     }
-    return { slug: pin.slug, pin, el, inner, hovered: false }
+    return { slug: pin.slug, pin, el, inner, hovered: false, vellumMount }
   }
+}
+
+function renderVellumShell(): HTMLElement {
+  const div = document.createElement('div')
+  div.className = 'dom-pin-vellum-shell'
+  Object.assign(div.style, {
+    width: '420px',
+    height: '420px',
+    overflow: 'auto',
+    border: '1px solid rgba(140, 110, 80, 0.55)',
+    borderTop: 'none',
+    borderBottomLeftRadius: '6px',
+    borderBottomRightRadius: '6px',
+    background: 'rgba(248, 240, 225, 0.97)',
+    boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
+    color: '#2E2A26',
+    fontFamily: '"EB Garamond", Garamond, serif',
+  })
+  return div
 }
 
 function renderChrome(pin: Pin): HTMLElement {
