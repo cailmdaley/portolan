@@ -18,7 +18,6 @@ import { getActivitySessionKey } from './runtime/FrontendActivityStore'
 import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { CityHUD } from './ui/CityHUD'
-import { FileViewerModal } from './ui/FileViewerModal'
 import { ContextMenu } from './ui/ContextMenu'
 import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
@@ -137,56 +136,55 @@ function handleCityClick(city: City): void {
   }
 }
 
-// Setup file viewer modal
-const fileViewerModal = new FileViewerModal()
+// Vellum is the file viewer. React modal mounted via openVellumFileModal.
+// See vellum-in-portolan: portolan's FileViewerModal has been retired from the
+// user-facing path; all file opens go through vellum + PortolanAdapter.
+const vellumMountPromise = import('./vellum/mount')
 
-// Vellum seam: open vellum's React FileViewerModal against the portolan adapter.
-// Activated via ?vellumDebug=<encoded-path>[&vellumOrigin=<id>][&vellumCity=<id>]
-// or window.__mountVellumFileViewer({ path, originId?, cityId?, editable? }).
-// See vellum-in-portolan fiber; the shell lives in vellum (FileViewerModal), the
-// host only installs the global seam and URL-param auto-open.
-void installVellumSeam()
-async function installVellumSeam(): Promise<void> {
-  const { openVellumFileModal } = await import('./vellum/mount')
-  ;(window as unknown as {
-    __mountVellumFileViewer: (opts: { path: string; originId?: string; cityId?: string; editable?: boolean; jumpToLine?: number }) => void
-  }).__mountVellumFileViewer = (opts) => { openVellumFileModal(opts) }
-
-  const params = new URLSearchParams(window.location.search)
-  const debugPath = params.get('vellumDebug')
-  if (debugPath) {
-    const lineParam = params.get('vellumLine')
-    const jumpToLine = lineParam ? Number(lineParam) : undefined
-    openVellumFileModal({
-      path: debugPath,
-      originId: params.get('vellumOrigin') ?? undefined,
-      cityId: params.get('vellumCity') ?? undefined,
-      editable: params.get('vellumEdit') === '1',
-      jumpToLine: Number.isFinite(jumpToLine) ? jumpToLine : undefined,
-    })
-  }
+interface OpenFileArgs {
+  path: string
+  originId?: string
+  cityId?: string
+  jumpToLine?: number
+  editable?: boolean
 }
 
-// Wire up file click from worker hover tooltip to file viewer
-zoneRenderer.setWorkerFileClickHandler((fullPath, originId, workerId) => {
+function openFile(args: OpenFileArgs): void {
+  void vellumMountPromise.then(({ openVellumFileModal }) => {
+    openVellumFileModal({
+      path: args.path,
+      originId: args.originId,
+      cityId: args.cityId,
+      jumpToLine: args.jumpToLine,
+      editable: args.editable ?? true,
+    })
+  })
+}
+
+// URL-param auto-open retained for deep-linking and debugging.
+const initialParams = new URLSearchParams(window.location.search)
+const debugPath = initialParams.get('vellumDebug')
+if (debugPath) {
+  const lineParam = initialParams.get('vellumLine')
+  const jumpToLine = lineParam ? Number(lineParam) : undefined
+  openFile({
+    path: debugPath,
+    originId: initialParams.get('vellumOrigin') ?? undefined,
+    cityId: initialParams.get('vellumCity') ?? undefined,
+    editable: initialParams.get('vellumEdit') !== '0',
+    jumpToLine: Number.isFinite(jumpToLine) ? jumpToLine : undefined,
+  })
+}
+
+// Wire up file click from worker hover tooltip to vellum.
+zoneRenderer.setWorkerFileClickHandler((fullPath, originId, _workerId) => {
   const city = findBestMatchingCity(cities, originId, fullPath)
-  fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path, city?.id)
+  openFile({ path: fullPath, originId, cityId: city?.id })
 })
 
-// Wire up worker lookup for send-to-worker feature
-fileViewerModal.setOnGetWorkers(async (originId: string, path: string) => {
-  const city = findBestMatchingCity(cities, originId, path)
-  if (!city) return []
-
-  // Return workers (sessions) assigned to this city
-  return sessions
-    .filter(s => s.cityId === city.id && s.originId === originId)
-    .map(s => ({ id: s.id, name: s.name, tmuxSession: s.tmuxSession }))
-})
-
-// Wire up file search click from city panel to file viewer
-cityPanel.setOnOpenFile((fullPath, originId, cityPath, cityId, line) => {
-  fileViewerModal.show(fullPath, originId, undefined, undefined, cityPath, cityId, line)
+// Wire up file search click from city panel to vellum.
+cityPanel.setOnOpenFile((fullPath, originId, _cityPath, cityId, line) => {
+  openFile({ path: fullPath, originId, cityId, jumpToLine: line })
 })
 
 // Setup context menu
@@ -215,9 +213,9 @@ cityPanel.setOnViewClaims((city) => {
 // Wire up worker lookup for tapestry view
 tapestryView.setOnGetWorkers((city) => getCityWorkers(city, sessions))
 
-// Wire up file navigation from tapestry view — open files in file viewer
+// Wire up file navigation from tapestry view — open files in vellum.
 tapestryView.setOnOpenFile((filePath, city, line) => {
-  fileViewerModal.show(filePath, city.originId, undefined, undefined, city.path, city.id, line)
+  openFile({ path: filePath, originId: city.originId, cityId: city.id, jumpToLine: line })
 })
 
 // Setup playground viewer
@@ -248,9 +246,9 @@ const recentWorkerBar = new RecentWorkerBar({
     }
     mapActions?.focusKittyTab(session.id)
   },
-  onFileClick: (fullPath, originId, workerId) => {
+  onFileClick: (fullPath, originId, _workerId) => {
     const city = findBestMatchingCity(cities, originId, fullPath)
-    fileViewerModal.show(fullPath, originId, workerId, undefined, city?.path, city?.id)
+    openFile({ path: fullPath, originId, cityId: city?.id })
   },
 })
 
@@ -421,7 +419,6 @@ const appRuntime = new FrontendAppRuntime({
   stateSync,
   mapInteractions,
   cityPanel,
-  fileViewerModal,
   contextMenu,
   newWorkerDialog,
   tapestryView,
@@ -441,7 +438,6 @@ installFrontendRuntimeDiagnostics({
   renderer,
   zoneRenderer,
   cityPanel,
-  fileViewerModal,
   tapestryView,
   playgroundViewer,
   getArtifactMediaCacheStats,

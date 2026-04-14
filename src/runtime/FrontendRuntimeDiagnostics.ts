@@ -1,7 +1,6 @@
 import type { WebGLRenderer } from 'three'
 import type { ZoneRenderer } from '../render/ZoneRenderer'
 import type { CityHUD } from '../ui/CityHUD'
-import type { FileViewerModal } from '../ui/FileViewerModal'
 import type { TapestryView } from '../ui/TapestryView'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
@@ -54,7 +53,6 @@ export interface FrontendRuntimeDiagnostics {
   artifactMediaCaches: ReturnType<typeof getArtifactMediaCacheStats>
   views: {
     cityHud: ReturnType<CityHUD['getRuntimeStats']>
-    fileViewer: ReturnType<FileViewerModal['getRuntimeStats']>
     tapestry: ReturnType<TapestryView['getRuntimeStats']>
     playground: ReturnType<PlaygroundViewer['getRuntimeStats']>
   }
@@ -71,7 +69,6 @@ interface InstallFrontendRuntimeDiagnosticsOptions {
   renderer: WebGLRenderer
   zoneRenderer: ZoneRenderer
   cityPanel: CityHUD
-  fileViewerModal: FileViewerModal
   tapestryView: TapestryView
   playgroundViewer: PlaygroundViewer
   getArtifactMediaCacheStats: () => ReturnType<typeof getArtifactMediaCacheStats>
@@ -153,7 +150,6 @@ export function installFrontendRuntimeDiagnostics(
       artifactMediaCaches: options.getArtifactMediaCacheStats(),
       views: {
         cityHud: options.cityPanel.getRuntimeStats(),
-        fileViewer: options.fileViewerModal.getRuntimeStats(),
         tapestry: options.tapestryView.getRuntimeStats(),
         playground: options.playgroundViewer.getRuntimeStats(),
       },

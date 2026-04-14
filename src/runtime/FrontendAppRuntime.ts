@@ -5,7 +5,6 @@ import type { ZoneRenderer } from '../render/ZoneRenderer'
 import type { FrontendStateSync } from './FrontendStateSync'
 import type { MapInteractionController } from '../MapInteractionController'
 import type { CityHUD } from '../ui/CityHUD'
-import type { FileViewerModal } from '../ui/FileViewerModal'
 import type { ContextMenu } from '../ui/ContextMenu'
 import type { NewWorkerDialog } from '../ui/NewWorkerDialog'
 import type { TapestryView } from '../ui/TapestryView'
@@ -21,7 +20,6 @@ interface FrontendAppRuntimeOptions {
   stateSync: FrontendStateSync
   mapInteractions: MapInteractionController
   cityPanel: CityHUD
-  fileViewerModal: FileViewerModal
   contextMenu: ContextMenu
   newWorkerDialog: NewWorkerDialog
   tapestryView: TapestryView
@@ -76,7 +74,6 @@ export class FrontendAppRuntime {
     window.removeEventListener('resize', this.onResize)
 
     this.options.cityPanel.dispose()
-    this.options.fileViewerModal.dispose()
     this.options.contextMenu.dispose()
     this.options.newWorkerDialog.dispose()
     this.options.tapestryView.dispose()

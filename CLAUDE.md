@@ -67,14 +67,7 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 
 Server polls tmux → builds state → broadcasts. File touches flow via hooks (POST `/hook/file-touch` → `RecentFileTracker`). Browser renders → user clicks → routes to Kitty.
 
-**Two file viewer modals — know which one you're editing:**
-| | `FileViewerModal` | `TapestryStaticFileModal` |
-|---|---|---|
-| Used by | Main app (localhost:5173) | Static GitHub Pages viewer |
-| Routing | `TapestryView.openFileFromLink` → `onOpenFile` → `fileViewerModal.show()` | `TapestryView.openFileFromLink` → `runtime.openStaticFile()` (only when `staticMode`) |
-| Files backed by | Server API (`/project-file/`, `/raw-file/`) | Static fetch from `files/` directory |
-| Styles | Inline in root `index.html` (`.file-viewer-*`) | `src/ui/tapestry-file-modal.css` (`.tapestry-file-*`) |
-| Features | CodeMirror editor, annotations, save, vim mode | Read-only: PDF.js, Prism highlighting |
+**File viewer = vellum.** Main app opens files via `openVellumFileModal()` in `src/vellum/mount.tsx` → vellum's `FileViewerModal` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js. Static GitHub Pages viewer still uses `TapestryStaticFileModal` (read-only, `src/ui/tapestry-file-modal.css`, `.tapestry-file-*`) — collapsing that into vellum + `ReadOnlyAdapter` is the next step.
 
 ## Visual Language
 
@@ -151,7 +144,6 @@ One-liners. Fiber has the full story. `felt ls -s all gotcha` for more.
 - **CSS context rules override class selectors.** Qualify selector. `css-specificity-gotcha-context`
 - **`staticDataBase` regex over-strips.** Use `/\/tapestry$/` not `/\/[^/]+\/tapestry$/`. `fix-staticdatabase-url`
 - **tmux `=` prefix needs trailing `:` for pane-target commands.** `paste-buffer`/`send-keys` parse `-t` as a pane target; bare `=name` is matched literally as a pane. Use `=name:`. `tmux-prefix-breaks-paste-buffer`
-- **Two file viewer modals.** `FileViewerModal` (main app, `.file-viewer-*`) vs `TapestryStaticFileModal` (static deploy, `.tapestry-file-*`). If on localhost, you're editing the wrong one. See Architecture.
 - **`show()` strips URL hash.** `hideDetail()` → `pushHash(null)` before `showCity` reads it. Capture hash first. `hash-stripped-on-tapestry-show`
 - **`reconnectTunnel` must kill ControlMaster first.** `ssh -fN` alone multiplexes through the stale master. `stale-controlmaster-breaks`
 - **Remote origin ID derived from sshHost, not hostname.** Raw hostname (e.g. `login07.leonardo.local`) doesn't match persisted `remote-cineca`. `remote-origin-id-mismatch`
