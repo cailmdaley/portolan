@@ -12,6 +12,7 @@ import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { PinRenderer } from './render/PinRenderer'
+import { PinHoverPreview } from './ui/PinHoverPreview'
 import { listPins, putPin, deletePin } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
 import { MapInteractionController } from './MapInteractionController'
@@ -102,6 +103,43 @@ const pinRenderer = new PinRenderer(scene, {
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
+// Extended-hover tooltip (title + lede) for pinned cards. See tapestry-dissolves.
+const pinHoverPreview = new PinHoverPreview({
+  infoFor: (slug) => {
+    const fibers = cityPanel?.getFibers()
+    if (!fibers) return null
+    const hit =
+      fibers.open.find(f => f.id === slug) ?? fibers.closed.find(f => f.id === slug)
+    if (!hit) return null
+    const source = hit.body ?? hit.reason ?? ''
+    return { title: hit.title, lede: extractLede(source), status: hit.status }
+  },
+})
+
+function extractLede(source: string): string {
+  if (!source) return ''
+  // First non-empty paragraph, skipping ATX headings and frontmatter-ish lines.
+  const paragraphs = source.split(/\n\s*\n/)
+  let lede = ''
+  for (const raw of paragraphs) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    if (trimmed.startsWith('#')) continue
+    lede = trimmed
+    break
+  }
+  if (!lede) lede = source.trim()
+  // Flatten newlines, strip wikilink pipes/brackets, collapse whitespace.
+  lede = lede
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, a, b) => b ?? a)
+    .replace(/[`*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const MAX = 220
+  if (lede.length > MAX) lede = lede.slice(0, MAX - 1).trimEnd() + '…'
+  return lede
+}
+
 async function loadPinsForCity(cityId: string): Promise<void> {
   try {
     const pins = await listPins(cityId)
@@ -167,6 +205,7 @@ function handleCityClick(city: City): void {
   if (pinnedCityId !== city.id) {
     pinnedCityId = city.id
     pinRenderer.clear()
+    pinHoverPreview.hide()
     void loadPinsForCity(city.id)
   }
 }
@@ -433,7 +472,17 @@ const mapInteractions = new MapInteractionController({
       cityId: city.id,
     })
   },
-  onPinHoverChange: (slug) => pinRenderer.setHovered(slug),
+  onPinHoverChange: (slug) => {
+    pinRenderer.setHovered(slug)
+    if (!slug) {
+      pinHoverPreview.setHover(null, null)
+      return
+    }
+    const worldPos = pinRenderer.getAnchor(slug)
+    if (!worldPos) return
+    const screen = camera.worldToScreen(worldPos.x, 0.05, worldPos.z)
+    pinHoverPreview.setHover(slug, screen)
+  },
   onPinContextMenu: (slug, clientX, clientY) => {
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return

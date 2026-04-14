@@ -120,6 +120,13 @@ export class PinRenderer {
     return this.entries.has(slug)
   }
 
+  /** World-space position of a pin's card center, or null if not pinned. */
+  getAnchor(slug: string): { x: number; z: number } | null {
+    const entry = this.entries.get(slug)
+    if (!entry) return null
+    return { x: entry.x, z: entry.z }
+  }
+
   remove(slug: string): void {
     const entry = this.entries.get(slug)
     if (!entry) return
