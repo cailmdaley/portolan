@@ -27,6 +27,12 @@ interface MapInteractionControllerOptions {
   killWorker: (sessionId: string) => void
   moveCity: (cityId: string, hex: HexCoord) => void
   findNearestCity: (hex: HexCoord) => City | null
+  /** Optional hit test for map-pinned vellum cards (tapestry-dissolves). */
+  findPinAtWorldPos?: (x: number, z: number) => string | null
+  /** Called when a pinned card is clicked. Return value unused. */
+  handlePinClick?: (slug: string) => void
+  /** Called on mouse move with the slug of the hovered pin, or null. */
+  onPinHoverChange?: (slug: string | null) => void
 }
 
 export class MapInteractionController {
@@ -49,6 +55,10 @@ export class MapInteractionController {
   private readonly killWorker: (sessionId: string) => void
   private readonly moveCity: (cityId: string, hex: HexCoord) => void
   private readonly findNearestCity: (hex: HexCoord) => City | null
+  private readonly findPinAtWorldPos?: (x: number, z: number) => string | null
+  private readonly handlePinClick?: (slug: string) => void
+  private readonly onPinHoverChange?: (slug: string | null) => void
+  private hoveredPinSlug: string | null = null
 
   private forceMouseX = 0
   private forceMouseY = 0
@@ -76,6 +86,9 @@ export class MapInteractionController {
     this.killWorker = options.killWorker
     this.moveCity = options.moveCity
     this.findNearestCity = options.findNearestCity
+    this.findPinAtWorldPos = options.findPinAtWorldPos
+    this.handlePinClick = options.handlePinClick
+    this.onPinHoverChange = options.onPinHoverChange
 
     document.addEventListener('contextmenu', this.onDocumentContextMenu)
     document.addEventListener('click', this.onForceClickCapture, true)
@@ -139,6 +152,14 @@ export class MapInteractionController {
       return
     }
 
+    // Pin card hit-test runs first: pinned vellum cards sit on top of the hex
+    // world and should "win" over the underlying city/worker for click.
+    const pinHit = this.findPinAtWorldPos?.(worldPos.x, worldPos.z)
+    if (pinHit && this.handlePinClick) {
+      this.handlePinClick(pinHit)
+      return
+    }
+
     const workerHit = this.zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
     if (workerHit) {
       const session = this.getSessions().find(s => s.id === workerHit.workerId)
@@ -173,6 +194,9 @@ export class MapInteractionController {
 
     const worldPos = this.camera.screenToWorld(e.clientX, e.clientY)
     const hex = this.hexGrid.cartesianToHex(worldPos.x, worldPos.z)
+    // Pin-hit short-circuit: a second click on the same card shouldn't fall
+    // through to promptNewWorker for an underlying city.
+    if (this.findPinAtWorldPos?.(worldPos.x, worldPos.z)) return
     const workerHit = this.zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
     if (workerHit) {
       this.focusKittyTab(workerHit.workerId)
@@ -210,6 +234,16 @@ export class MapInteractionController {
     }
 
     const worldPos = this.camera.screenToWorld(e.clientX, e.clientY)
+    const pinSlug = this.findPinAtWorldPos?.(worldPos.x, worldPos.z) ?? null
+    if (pinSlug !== this.hoveredPinSlug) {
+      this.hoveredPinSlug = pinSlug
+      this.onPinHoverChange?.(pinSlug)
+    }
+    if (pinSlug) {
+      this.canvas.style.cursor = 'pointer'
+      this.zoneRenderer.clearWorkerFileHover()
+      return
+    }
     const workerHit = this.zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
     if (workerHit) {
       this.canvas.style.cursor = 'grab'
@@ -238,6 +272,10 @@ export class MapInteractionController {
 
   private readonly onCanvasMouseLeave = (): void => {
     this.zoneRenderer.clearWorkerFileHover()
+    if (this.hoveredPinSlug !== null) {
+      this.hoveredPinSlug = null
+      this.onPinHoverChange?.(null)
+    }
     if (!this.getMovingCityId()) {
       this.canvas.style.cursor = ''
     }

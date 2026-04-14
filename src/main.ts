@@ -421,6 +421,17 @@ const mapInteractions = new MapInteractionController({
   killWorker: (sessionId) => mapActions!.killWorker(sessionId),
   moveCity: (cityId, hex) => mapActions!.moveCity(cityId, hex),
   findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
+  findPinAtWorldPos: (x, z) => pinRenderer.pickAtWorld(x, z),
+  handlePinClick: (slug) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    openFile({
+      path: `${city.path}/.felt/${slug}/${slug}.md`,
+      originId: city.originId,
+      cityId: city.id,
+    })
+  },
+  onPinHoverChange: (slug) => pinRenderer.setHovered(slug),
 })
 
 mapActions = new FrontendMapActions({

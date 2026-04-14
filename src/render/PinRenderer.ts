@@ -43,6 +43,8 @@ interface PinEntry {
   texture: CanvasTexture
   canvas: HTMLCanvasElement
   renderedTitle: string | null
+  x: number
+  z: number
 }
 
 export class PinRenderer {
@@ -72,7 +74,33 @@ export class PinRenderer {
       this.entries.set(pin.slug, entry)
     }
     entry.group.position.set(pin.x, 0, pin.z)
+    entry.x = pin.x
+    entry.z = pin.z
     this.paintCard(entry)
+  }
+
+  /** Return the slug of the topmost pinned card under the given world point,
+   *  or null. Cards are axis-aligned rectangles on the y=0 plane, so this is a
+   *  simple bounds test. Last-painted wins when rectangles overlap. */
+  pickAtWorld(worldX: number, worldZ: number): string | null {
+    const halfW = CARD_WIDTH / 2
+    const halfH = CARD_HEIGHT / 2
+    let hit: string | null = null
+    for (const entry of this.entries.values()) {
+      const dx = worldX - entry.x
+      const dz = worldZ - entry.z
+      if (Math.abs(dx) <= halfW && Math.abs(dz) <= halfH) hit = entry.slug
+    }
+    return hit
+  }
+
+  /** Highlight a single pin (raise it slightly + tint anchor). Pass null to
+   *  clear. Safe to call repeatedly with the same slug. */
+  setHovered(slug: string | null): void {
+    for (const entry of this.entries.values()) {
+      const lift = entry.slug === slug ? 0.25 : 0
+      entry.group.position.y = lift
+    }
   }
 
   remove(slug: string): void {
@@ -132,7 +160,7 @@ export class PinRenderer {
     anchor.position.y = ANCHOR_Y
     group.add(anchor)
 
-    return { slug, group, card, texture, canvas, renderedTitle: null }
+    return { slug, group, card, texture, canvas, renderedTitle: null, x: 0, z: 0 }
   }
 
   private paintCard(entry: PinEntry): void {
