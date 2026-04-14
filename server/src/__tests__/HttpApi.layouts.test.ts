@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { HttpApi } from '../HttpApi.js';
@@ -23,7 +23,7 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
 
   beforeEach(() => {
     api = new HttpApi(
-      makeCityLookup('test', '/tmp/irrelevant') as any,
+      makeCityLookup('city-a', '/tmp/test-portolan-city') as any,
       stubOriginLookup as any,
       stubPersistenceLookup as any,
     );
@@ -57,6 +57,21 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
   it('PUT with bad body returns 400', async () => {
     const res = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 'oops' } as any);
     expect(res.status).toBe(400);
+  });
+
+  it('PUT records cityKey from cityLookup so orphan files trace back to a path', async () => {
+    await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 1, z: 1 });
+    const file = join(TEST_DIR, 'layouts', 'city-a.json');
+    const data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.cityKey).toBe('local:/tmp/test-portolan-city');
+  });
+
+  it('PUT against unknown cityId still upserts but writes no cityKey', async () => {
+    await httpRequest(api, 'PUT', '/layouts/city-unknown/pins/fiber-1', { x: 1, z: 1 });
+    const file = join(TEST_DIR, 'layouts', 'city-unknown.json');
+    const data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.cityKey).toBeUndefined();
+    expect(data.pins).toHaveLength(1);
   });
 
   it('DELETE removes the pin', async () => {

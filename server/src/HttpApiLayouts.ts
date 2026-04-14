@@ -8,17 +8,23 @@
  */
 
 import { IncomingMessage, ServerResponse } from 'http';
-import type { LayoutStore, PinPosition } from './LayoutStore.js';
+import type { LayoutStore, PinMeta, PinPosition } from './LayoutStore.js';
 
 type JsonBodyParser = <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
 type JsonErrorSender = (res: ServerResponse, status: number, error: string) => void;
 type JsonSuccessSender = (res: ServerResponse, data: Record<string, unknown>) => void;
+
+interface CityLookup {
+  getCityById(cityId: string): { path: string; originId: string } | null;
+}
 
 interface Options {
   layoutStore: LayoutStore;
   parseJsonBody: JsonBodyParser;
   sendJsonError: JsonErrorSender;
   sendJsonSuccess: JsonSuccessSender;
+  /** Optional: if provided, PUT records `${originId}:${path}` as the layout's cityKey. */
+  cityLookup?: CityLookup;
 }
 
 const PIN_PATH_RE = /^\/layouts\/([^/]+)\/pins\/([^/]+)$/;
@@ -29,12 +35,14 @@ export class HttpApiLayouts {
   private readonly parseJsonBody: JsonBodyParser;
   private readonly sendJsonError: JsonErrorSender;
   private readonly sendJsonSuccess: JsonSuccessSender;
+  private readonly cityLookup?: CityLookup;
 
   constructor(options: Options) {
     this.layoutStore = options.layoutStore;
     this.parseJsonBody = options.parseJsonBody;
     this.sendJsonError = options.sendJsonError;
     this.sendJsonSuccess = options.sendJsonSuccess;
+    this.cityLookup = options.cityLookup;
   }
 
   /** Returns true if the request was handled. */
@@ -60,7 +68,10 @@ export class HttpApiLayouts {
           this.sendJsonError(res, 400, 'Expected body { x: number, z: number }');
           return true;
         }
-        const pin = this.layoutStore.setPin(cityId, slug, { x: body.x, z: body.z });
+        const meta: PinMeta = {};
+        const city = this.cityLookup?.getCityById(cityId);
+        if (city) meta.cityKey = `${city.originId}:${city.path}`;
+        const pin = this.layoutStore.setPin(cityId, slug, { x: body.x, z: body.z }, meta);
         if (!pin) {
           this.sendJsonError(res, 400, 'Invalid cityId, slug, or coordinates');
           return true;

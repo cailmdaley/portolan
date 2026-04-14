@@ -89,4 +89,47 @@ describe('LayoutStore', () => {
     expect(store.getPin('city-a', 'fiber-1')?.x).toBe(1);
     expect(store.getPin('city-b', 'fiber-1')?.x).toBe(2);
   });
+
+  it('records cityKey when provided and preserves it across writes', () => {
+    const store = makeStore();
+    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, { cityKey: 'local:/abs/path' });
+    const file = join(TEST_DIR, 'layouts', 'city-a.json');
+    let data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.cityKey).toBe('local:/abs/path');
+
+    store.setPin('city-a', 'fiber-2', { x: 2, z: 2 });
+    data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.cityKey).toBe('local:/abs/path');
+    expect(data.pins).toHaveLength(2);
+  });
+
+  it('omits cityKey when never provided', () => {
+    const store = makeStore();
+    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 });
+    const file = join(TEST_DIR, 'layouts', 'city-a.json');
+    const data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.cityKey).toBeUndefined();
+  });
+
+  it('reloads cityKey from existing layout file', () => {
+    const a = makeStore();
+    a.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, { cityKey: 'local:/orig/path' });
+
+    const b = makeStore();
+    // Trigger load, then write a new pin without supplying meta — cityKey must persist.
+    b.setPin('city-a', 'fiber-2', { x: 2, z: 2 });
+    const file = join(TEST_DIR, 'layouts', 'city-a.json');
+    const data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.cityKey).toBe('local:/orig/path');
+  });
+
+  it('scanLayouts surfaces every layout file with its cityKey', () => {
+    const store = makeStore();
+    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, { cityKey: 'local:/a' });
+    store.setPin('city-b', 'fiber-1', { x: 0, z: 0 });
+    const entries = store.scanLayouts().sort((p, q) => p.cityId.localeCompare(q.cityId));
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ cityId: 'city-a', cityKey: 'local:/a' });
+    expect(entries[1]).toMatchObject({ cityId: 'city-b', cityKey: null });
+  });
 });
