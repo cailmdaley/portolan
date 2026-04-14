@@ -228,7 +228,7 @@ export function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString()
 }
 
-/** Staleness → color map, shared between TapestryView and FileViewerModal. */
+/** Staleness → color map used by TapestryView. */
 export const STALENESS_COLORS: Record<string, string> = {
   'fresh': '#5A7B7B',
   'stale': '#A87070',
