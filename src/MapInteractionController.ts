@@ -325,6 +325,12 @@ export class MapInteractionController {
     if (pinSlug !== this.hoveredPinSlug) {
       this.hoveredPinSlug = pinSlug
       this.onPinHoverChange?.(pinSlug)
+      // Zoom/pan doesn't fire mousemove, so the 'pointer' cursor set while
+      // hovering a card can linger after the card slides out from under the
+      // cursor. Clear it here when we transition off a pin.
+      if (!pinSlug && this.canvas.style.cursor === 'pointer') {
+        this.canvas.style.cursor = ''
+      }
     }
   }
 
