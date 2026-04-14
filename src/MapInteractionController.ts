@@ -33,6 +33,8 @@ interface MapInteractionControllerOptions {
   handlePinClick?: (slug: string) => void
   /** Called on mouse move with the slug of the hovered pin, or null. */
   onPinHoverChange?: (slug: string | null) => void
+  /** Right-click over a pinned card. Handler shows its own context menu. */
+  onPinContextMenu?: (slug: string, clientX: number, clientY: number) => void
 }
 
 export class MapInteractionController {
@@ -58,6 +60,7 @@ export class MapInteractionController {
   private readonly findPinAtWorldPos?: (x: number, z: number) => string | null
   private readonly handlePinClick?: (slug: string) => void
   private readonly onPinHoverChange?: (slug: string | null) => void
+  private readonly onPinContextMenu?: (slug: string, clientX: number, clientY: number) => void
   private hoveredPinSlug: string | null = null
 
   private forceMouseX = 0
@@ -89,6 +92,7 @@ export class MapInteractionController {
     this.findPinAtWorldPos = options.findPinAtWorldPos
     this.handlePinClick = options.handlePinClick
     this.onPinHoverChange = options.onPinHoverChange
+    this.onPinContextMenu = options.onPinContextMenu
 
     document.addEventListener('contextmenu', this.onDocumentContextMenu)
     document.addEventListener('click', this.onForceClickCapture, true)
@@ -352,6 +356,13 @@ export class MapInteractionController {
     if (this.camera.dragging) return
 
     const worldPos = this.camera.screenToWorld(clientX, clientY)
+    // Pin context menu takes precedence over underlying city/worker — same as
+    // the click path, so right-click on a pinned card always targets the pin.
+    const pinHit = this.findPinAtWorldPos?.(worldPos.x, worldPos.z)
+    if (pinHit && this.onPinContextMenu) {
+      this.onPinContextMenu(pinHit, clientX, clientY)
+      return
+    }
     const hex = this.hexGrid.cartesianToHex(worldPos.x, worldPos.z)
     const cityHit = this.zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
 

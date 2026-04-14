@@ -432,6 +432,28 @@ const mapInteractions = new MapInteractionController({
     })
   },
   onPinHoverChange: (slug) => pinRenderer.setHovered(slug),
+  onPinContextMenu: (slug, clientX, clientY) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    contextMenu.show(clientX, clientY, [
+      {
+        label: 'Open Fiber',
+        action: () => openFile({
+          path: `${city.path}/.felt/${slug}/${slug}.md`,
+          originId: city.originId,
+          cityId: city.id,
+        }),
+      },
+      {
+        label: 'Unpin Card',
+        action: () => {
+          pinRenderer.remove(slug)
+          void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
+        },
+        danger: true,
+      },
+    ])
+  },
 })
 
 mapActions = new FrontendMapActions({
