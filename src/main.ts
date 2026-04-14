@@ -16,6 +16,7 @@ import { DomPinLayer, isDomPinKind } from './render/DomPinLayer'
 import { PinHoverPreview } from './ui/PinHoverPreview'
 import { listPins, putPin, pinFile, deletePin, type Pin, type PinKind, type PinSource } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
+import { FileDropController } from './FileDropController'
 import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
@@ -711,6 +712,23 @@ const pinDragController = new PinDragController({
   },
 })
 
+// File drop: drag a tab/link or local file from outside the browser onto the
+// canvas to pin it. URL drops route through pinFile({ url }); local-file drops
+// rely on Electron-style File.path (absent in plain Chromium — see Open Q3 of
+// tapestry-dissolves for the storage decision).
+const fileDropController = new FileDropController({
+  canvas,
+  screenToWorld: (x, y) => camera.screenToWorld(x, y),
+  getPinnedCityId: () => pinnedCityId,
+  onPinned: (pin) => {
+    const currentCity = cityPanel.getCurrentCity()?.id ?? pinnedCityId
+    if (currentCity === pinnedCityId) {
+      upsertPin(pin)
+      syncPinnedSlugs()
+    }
+  },
+})
+
 // Dev helpers for pins (milestone 1 of tapestry-dissolves). Not a stable API —
 // here so we can poke at world-space card positioning from the console before
 // drag-to-pin lands.
@@ -770,6 +788,7 @@ if (import.meta.hot) {
     globalSearchPalette.hide()
     recentWorkerBar.dispose()
     pinDragController.dispose()
+    fileDropController.dispose()
     appRuntime.dispose()
   })
 }
