@@ -149,17 +149,20 @@ void installVellumSeam()
 async function installVellumSeam(): Promise<void> {
   const { openVellumFileModal } = await import('./vellum/mount')
   ;(window as unknown as {
-    __mountVellumFileViewer: (opts: { path: string; originId?: string; cityId?: string; editable?: boolean }) => void
+    __mountVellumFileViewer: (opts: { path: string; originId?: string; cityId?: string; editable?: boolean; jumpToLine?: number }) => void
   }).__mountVellumFileViewer = (opts) => { openVellumFileModal(opts) }
 
   const params = new URLSearchParams(window.location.search)
   const debugPath = params.get('vellumDebug')
   if (debugPath) {
+    const lineParam = params.get('vellumLine')
+    const jumpToLine = lineParam ? Number(lineParam) : undefined
     openVellumFileModal({
       path: debugPath,
       originId: params.get('vellumOrigin') ?? undefined,
       cityId: params.get('vellumCity') ?? undefined,
       editable: params.get('vellumEdit') === '1',
+      jumpToLine: Number.isFinite(jumpToLine) ? jumpToLine : undefined,
     })
   }
 }

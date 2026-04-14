@@ -26,6 +26,7 @@ export interface MountFileViewerOptions {
   cityId?: string
   cacheBust?: boolean
   editable?: boolean
+  jumpToLine?: number
 }
 
 export interface VellumMountHandle {
@@ -49,6 +50,7 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
             originId={opts.originId}
             cacheBust={opts.cacheBust}
             editable={opts.editable}
+            jumpToLine={opts.jumpToLine}
           />
         </AdapterProvider>
       </StrictMode>,
@@ -72,6 +74,7 @@ export interface OpenFileModalOptions {
   originId?: string
   cityId?: string
   editable?: boolean
+  jumpToLine?: number
 }
 
 export interface VellumModalHandle {
@@ -105,6 +108,7 @@ export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHand
           originId={opts.originId}
           cityId={opts.cityId}
           editable={opts.editable}
+          jumpToLine={opts.jumpToLine}
           onClose={close}
         />
       </AdapterProvider>

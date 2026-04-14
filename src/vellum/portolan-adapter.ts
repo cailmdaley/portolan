@@ -130,7 +130,11 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getAnnotations(slug: string, annOpts: GetAnnotationsOptions = {}): Promise<Annotation[]> {
-      const params = new URLSearchParams({ slug });
+      // Portolan's annotation store is file-keyed (filePath + originId). In the
+      // file-viewer context vellum hands us the file path as `slug`; we forward
+      // it as `path=` on the wire. `imageSrc`/`kind` are not portolan concepts
+      // today but are preserved in the query string for forward compat.
+      const params = new URLSearchParams({ path: slug, originId: defaultOriginId });
       if (annOpts.kind) params.set('kind', annOpts.kind);
       if (annOpts.imageSrc) params.set('imageSrc', annOpts.imageSrc);
       const res = await fetch(`${API_BASE}/annotations?${params}`).catch(() => null);
@@ -148,10 +152,27 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async createAnnotation(input: CreateAnnotationInput): Promise<Annotation | null> {
+      // Translate vellum's CreateAnnotationInput (slug-keyed, paragraphIndex) to
+      // portolan's file-keyed schema. `slug` is the file path when called from
+      // the file viewer. `paragraphIndex` has no portolan equivalent; char
+      // offsets (from/to) aren't known at this seam — when annotations UI gets
+      // wired into vellum, the anchor info will need to flow in via an expanded
+      // CreateAnnotationInput. For now we persist the minimal record.
+      const body = {
+        filePath: input.slug,
+        originId: defaultOriginId,
+        comment: input.comment,
+        originalText: input.selectedText,
+        contextBefore: input.contextBefore,
+        contextAfter: input.contextAfter,
+        isImageAnnotation: input.kind === 'image' || undefined,
+        x: input.x,
+        y: input.y,
+      };
       const res = await fetch(`${API_BASE}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
+        body: JSON.stringify(body),
       }).catch(() => null);
       if (!res || !res.ok) return null;
       const data = await res.json();

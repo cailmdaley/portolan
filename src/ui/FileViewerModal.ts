@@ -206,17 +206,21 @@ export class FileViewerModal {
       const path = this.contentPresenter.getCurrentPath()
       if (!path) return
       const mount = (window as unknown as {
-        __mountVellumFileViewer?: (opts: { path: string; originId?: string; cityId?: string; editable?: boolean }) => void
+        __mountVellumFileViewer?: (opts: { path: string; originId?: string; cityId?: string; editable?: boolean; jumpToLine?: number }) => void
       }).__mountVellumFileViewer
       if (!mount) {
         console.warn('[FileViewerModal] vellum mount seam not installed')
         return
       }
+      const view = this.textEditor.getEditorView()
+      const head = view?.state.selection.main.head
+      const jumpToLine = view && typeof head === 'number' ? view.state.doc.lineAt(head).number : undefined
       mount({
         path,
         originId: this.contentPresenter.getCurrentOriginId(),
         cityId: this.contentPresenter.getCurrentCityId() || undefined,
         editable: true,
+        jumpToLine,
       })
       if (this.textEditor.getIsDirty()) {
         console.warn('[FileViewerModal] vellum opened with unsaved portolan edits; not auto-closing')
