@@ -218,6 +218,11 @@ export class FileViewerModal {
         cityId: this.contentPresenter.getCurrentCityId() || undefined,
         editable: true,
       })
+      if (this.textEditor.getIsDirty()) {
+        console.warn('[FileViewerModal] vellum opened with unsaved portolan edits; not auto-closing')
+        return
+      }
+      this.hide()
     })
 
     // Document-level handlers are attached in the runtime during show()/hide().
