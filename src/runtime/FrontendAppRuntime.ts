@@ -29,6 +29,10 @@ interface FrontendAppRuntimeOptions {
   updateWorkerHud: () => void
   isWorkerHudVisible: () => boolean
   applyMockState: (cities: City[], sessions: Session[]) => void
+  /** Optional per-frame hook, called after scene render. Useful for DOM
+   *  overlays that need to track world-anchored points through camera changes
+   *  (e.g. pin hover tooltip re-anchoring during pan/zoom). */
+  onFrame?: () => void
 }
 
 export class FrontendAppRuntime {
@@ -122,6 +126,7 @@ export class FrontendAppRuntime {
     this.options.zoneRenderer.animate(this.options.camera.cameraDistance)
     this.options.renderer.render(this.options.scene, this.options.camera.camera)
     this.options.labelRenderer.render(this.options.scene, this.options.camera.camera)
+    this.options.onFrame?.()
   }
 
   private scheduleMockDataFallback(): void {

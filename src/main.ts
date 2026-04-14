@@ -587,6 +587,16 @@ const appRuntime = new FrontendAppRuntime({
     sessions = mockSessions
     zoneRenderer.updateState(cities, sessions)
   },
+  onFrame: () => {
+    // Keep the pin hover tooltip anchored to its card while the camera is
+    // panning or zooming (mousemove isn't reliably fired during wheel/pinch).
+    const slug = pinHoverPreview.getVisibleSlug()
+    if (!slug) return
+    const worldPos = pinRenderer.getAnchor(slug)
+    if (!worldPos) return
+    const screen = camera.worldToScreen(worldPos.x, 0.05, worldPos.z)
+    pinHoverPreview.reanchor(screen)
+  },
 })
 
 installFrontendRuntimeDiagnostics({

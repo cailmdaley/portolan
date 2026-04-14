@@ -105,6 +105,21 @@ export class PinHoverPreview {
     if (this.handle) this.handle.update(null)
   }
 
+  /** Re-anchor the visible tooltip to `anchor` without disturbing its React
+   *  subtree. Called per-frame while the camera may be panning/zooming so the
+   *  tooltip tracks the pin instead of lingering at its original screen spot. */
+  reanchor(anchor: { x: number; y: number }): void {
+    if (!this.activeSlug || this.el.style.display === 'none') return
+    this.position(anchor)
+  }
+
+  /** Slug of the card the tooltip is currently showing (after the hover
+   *  delay elapsed and the card was rendered), or null. */
+  getVisibleSlug(): string | null {
+    if (this.el.style.display === 'none') return null
+    return this.activeSlug
+  }
+
   private clearTimer(): void {
     if (this.showTimer !== null) {
       window.clearTimeout(this.showTimer)
