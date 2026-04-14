@@ -20,8 +20,10 @@ import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
+import { HttpApiLayouts } from './HttpApiLayouts.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
 import { HttpApiTapestry } from './HttpApiTapestry.js';
+import { LayoutStore } from './LayoutStore.js';
 import type { MeetingBridge } from './MeetingBridge.js';
 
 // ============================================================================
@@ -63,6 +65,8 @@ export class HttpApi {
   private activationApi: HttpApiActivation;
   private playgroundApi: HttpApiPlayground;
   private tapestryApi: HttpApiTapestry;
+  private layoutsApi: HttpApiLayouts;
+  private layoutStore: LayoutStore;
 
   constructor(
     cityLookup: CityLookup,
@@ -109,6 +113,13 @@ export class HttpApi {
       cityLookup,
       fileContentApi: this.fileContentApi,
       getSshHost: (city) => this.getSshHost(city),
+      sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
+      sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    this.layoutStore = new LayoutStore();
+    this.layoutsApi = new HttpApiLayouts({
+      layoutStore: this.layoutStore,
+      parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
@@ -257,6 +268,11 @@ export class HttpApi {
     if (url.pathname === '/promote-to-felt' && req.method === 'POST') {
       await this.annotationsApi.handlePromoteToFelt(req, res);
       return true;
+    }
+
+    if (url.pathname.startsWith('/layouts/')) {
+      const handled = await this.layoutsApi.handle(url, req, res);
+      if (handled) return true;
     }
 
     if (url.pathname === '/playground-list') {
