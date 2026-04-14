@@ -1,7 +1,7 @@
 /**
  * HttpApi tapestry endpoint tests
  *
- * Tests the /tapestry endpoint that returns the full DAG for TapestryView:
+ * Tests the /tapestry endpoint that returns the full DAG (consumed by the static export):
  * - Fibers with tapestry: tags, edges, evidence, staleness
  * - /tapestry-asset/* artifact serving
  */

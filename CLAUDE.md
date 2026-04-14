@@ -58,7 +58,7 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 ├── SessionTracker            ├── ZoneRenderer (hex meshes)
 ├── CityManager               ├── Camera (sieve drag)
 ├── OriginManager (remote)    ├── CityHUD (fibers, search)
-├── FiberReader               ├── TapestryView (D3 DAG)
+├── FiberReader               ├── VellumWorkspace (reader, on `t`)
 ├── EvidenceReader            ├── GlobalSearchPalette (/ key)
 ├── RecentFileTracker         ├── RecentWorkerBar (top wire)
 ├── KittyIntegration          ├── ContextMenu
@@ -144,7 +144,6 @@ One-liners. Fiber has the full story. `felt ls -s all gotcha` for more.
 - **CSS context rules override class selectors.** Qualify selector. `css-specificity-gotcha-context`
 - **`staticDataBase` regex over-strips.** Use `/\/tapestry$/` not `/\/[^/]+\/tapestry$/`. `fix-staticdatabase-url`
 - **tmux `=` prefix needs trailing `:` for pane-target commands.** `paste-buffer`/`send-keys` parse `-t` as a pane target; bare `=name` is matched literally as a pane. Use `=name:`. `tmux-prefix-breaks-paste-buffer`
-- **`show()` strips URL hash.** `hideDetail()` → `pushHash(null)` before `showCity` reads it. Capture hash first. `hash-stripped-on-tapestry-show`
 - **`reconnectTunnel` must kill ControlMaster first.** `ssh -fN` alone multiplexes through the stale master. `stale-controlmaster-breaks`
 - **Remote origin ID derived from sshHost, not hostname.** Raw hostname (e.g. `login07.leonardo.local`) doesn't match persisted `remote-cineca`. `remote-origin-id-mismatch`
 - **Dormant remote cities need `hasClaims` default.** No active session → agent never reports `hasClaims`. Pinned remote cities default `true`. `dormant-remote-cities-lack`
@@ -162,7 +161,7 @@ Core doc fibers. For more: `felt ls -s all pattern` or `felt ls -s all gotcha`.
 | Remote Agent | `hexarchy-remote-agent-setup-ssh` |
 | Remote Proxying | `pattern-hexarchy-remote-content` |
 | Worker Swarms | `murmuration-workers` |
-| Tapestry DAG | `absorb-claims-dashboard-into` |
-| Tapestry Sidebar | `tapestry-fiber-sidebar` |
+| Tapestry → Vellum | `tapestry-dissolves` |
+| DAG Export (/tapestry) | `absorb-claims-dashboard-into` |
 | Static Tapestry | `static-rhizome-dashboard-on` |
 | Extraction Pattern | `extraction-pattern` |
