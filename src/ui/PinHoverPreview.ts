@@ -50,6 +50,12 @@ export class PinHoverPreview {
     this.el = document.createElement('div')
     this.el.className = 'pin-hover-preview'
     this.el.style.display = 'none'
+    this.el.style.position = 'fixed'
+    this.el.style.zIndex = '60'
+    this.el.style.pointerEvents = 'none'
+    this.el.style.width = `${this.width}px`
+    this.el.style.maxHeight = '70vh'
+    this.el.style.overflow = 'hidden'
     document.body.appendChild(this.el)
   }
 
