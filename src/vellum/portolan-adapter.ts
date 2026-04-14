@@ -51,9 +51,18 @@ function classifyFile(path: string): FileContent['kind'] {
 }
 
 function buildRawFileUrl(path: string, originId: string, cacheBust?: boolean): string {
-  let url = `${API_BASE}/file-content?path=${encodeURIComponent(path)}&raw=true`;
-  if (originId && originId !== 'local') url += `&originId=${encodeURIComponent(originId)}`;
-  if (cacheBust) url += `&_t=${Date.now()}`;
+  // Use /project-file/{originId}{absPath}. It streams pdf/image/html with
+  // the right Content-Type and injects a bridge script into html. The
+  // /file-content?raw=true path only handles BINARY_EXTENSIONS on the server
+  // and returns JSON for html, which iframe embedding cannot consume.
+  const origin = originId || 'local';
+  const absPath = path.startsWith('/') ? path : `/${path}`;
+  const encodedPath = absPath
+    .split('/')
+    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+    .join('/');
+  let url = `${API_BASE}/project-file/${encodeURIComponent(origin)}${encodedPath}`;
+  if (cacheBust) url += `?_t=${Date.now()}`;
   return url;
 }
 
