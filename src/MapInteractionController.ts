@@ -252,7 +252,12 @@ export class MapInteractionController {
     this.forceMouseX = e.clientX
     this.forceMouseY = e.clientY
 
-    if (this.camera.dragging || this.getMovingCityId() || this.getMovingPinSlug?.()) {
+    if (
+      this.camera.dragging ||
+      this.getMovingCityId() ||
+      this.getMovingPinSlug?.() ||
+      document.body.classList.contains('pin-dragging')
+    ) {
       this.zoneRenderer.clearWorkerFileHover()
       if (this.hoveredPinSlug !== null) {
         this.hoveredPinSlug = null
