@@ -89,16 +89,24 @@ export class PinRenderer {
   }
 
   /** Return the slug of the topmost pinned card under the given world point,
-   *  or null. Cards are axis-aligned rectangles on the y=0 plane, so this is a
-   *  simple bounds test. Last-painted wins when rectangles overlap. */
+   *  or null. Cards are axis-aligned rectangles on the y=0 plane. When two
+   *  cards overlap, the card whose center is closest to the hit point wins —
+   *  picking the one the cursor is most directly aiming at, regardless of
+   *  iteration order. */
   pickAtWorld(worldX: number, worldZ: number): string | null {
     const halfW = CARD_WIDTH / 2
     const halfH = CARD_HEIGHT / 2
     let hit: string | null = null
+    let bestDistSq = Infinity
     for (const entry of this.entries.values()) {
       const dx = worldX - entry.x
       const dz = worldZ - entry.z
-      if (Math.abs(dx) <= halfW && Math.abs(dz) <= halfH) hit = entry.slug
+      if (Math.abs(dx) > halfW || Math.abs(dz) > halfH) continue
+      const distSq = dx * dx + dz * dz
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq
+        hit = entry.slug
+      }
     }
     return hit
   }
