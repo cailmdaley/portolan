@@ -6,9 +6,8 @@
  *   - getFile wraps /file-content and /project-file
  *   - getAnnotations / createAnnotation etc. wrap /annotations (file-keyed today;
  *     fiber-slug keying TODO on server side)
- *   - getFiberContent hits a /fiber/:slug endpoint that runs mystra on demand
- *     (TODO server side)
- *   - getAstraGraph reshapes /tapestry?cityId=X (TODO: expose /astra/graph)
+ *   - getFiberContent hits /fiber/:slug (remark + wikilink transform on demand)
+ *   - getAstraGraph hits /astra/graph?cityId=X
  *   - searchFibers, getDeltaSince, getRawFiber return empty/null until the
  *     server grows matching endpoints.
  *
@@ -37,6 +36,10 @@ import type {
 } from 'vellum';
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`;
+
+function encodeSlug(slug: string): string {
+  return slug.split('/').map(encodeURIComponent).join('%2F');
+}
 
 function classifyFile(path: string): FileContent['kind'] {
   const ext = (path.match(/\.[^.]+$/)?.[0] ?? '').toLowerCase();
@@ -95,7 +98,9 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getFiberContent(slug: string): Promise<FiberContent | null> {
-      const res = await fetch(`${API_BASE}/fiber/${encodeURIComponent(slug)}`).catch(() => null);
+      if (!opts.cityId) return null;
+      const url = `${API_BASE}/fiber/${encodeSlug(slug)}?cityId=${encodeURIComponent(opts.cityId)}`;
+      const res = await fetch(url).catch(() => null);
       if (!res || res.status === 404 || !res.ok) return null;
       return res.json() as Promise<FiberContent>;
     },

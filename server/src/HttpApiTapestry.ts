@@ -6,7 +6,9 @@ import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
+import { markdownToMdast } from './MarkdownToMdast.js';
 import { shellEscape } from './ShellPathUtils.js';
+import { parse as parseYaml } from 'yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -232,6 +234,63 @@ export class HttpApiTapestry {
     }
   }
 
+  /**
+   * /fiber/:slug?cityId=X — vellum-shaped FiberContent.
+   *
+   * Finds the fiber by id within the given city, parses frontmatter as YAML,
+   * and transforms the body to mdast via remark + a wikilink plugin (mirror of
+   * mystra's markdownToMystAST). Returns null (404) when the fiber is absent.
+   *
+   * Hybrid HTTP content channel per [[vellum-portolan-adapter-data-gap]]:
+   * content is served on demand; WS stays the liveness channel.
+   */
+  async handleFiberContent(url: URL, slug: string, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+    if (!slug) {
+      this.sendJsonError(res, 400, 'Missing fiber slug');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      const raw = await this.readFiberFile(city.path, slug, sshHost);
+      if (raw === null) {
+        this.sendJsonError(res, 404, `Fiber "${slug}" not found in city`);
+        return;
+      }
+
+      const { frontmatter, body } = splitFrontmatter(raw);
+      const mdast = body.trim() ? markdownToMdast(body) : undefined;
+      const dependsOn: string[] = Array.isArray(frontmatter['depends-on'])
+        ? frontmatter['depends-on']
+            .map((dep: any) => (typeof dep === 'string' ? dep : dep?.id))
+            .filter((dep: unknown): dep is string => typeof dep === 'string')
+        : [];
+
+      this.sendJsonSuccess(res, {
+        slug,
+        kind: typeof frontmatter['kind'] === 'string' ? frontmatter['kind'] : undefined,
+        mdast,
+        frontmatter,
+        dependencies: dependsOn,
+      });
+    } catch (error: any) {
+      console.error('Failed to render fiber content:', error);
+      this.sendJsonError(res, 500, 'Failed to render fiber content: ' + error.message);
+    }
+  }
+
   async handleTapestryAsset(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
     const rawPath = url.pathname.replace('/tapestry-asset/', '');
@@ -253,6 +312,34 @@ export class HttpApiTapestry {
     }
 
     await this.serveTapestryAsset(cityId, assetPath, res);
+  }
+
+  private async readFiberFile(
+    cityPath: string,
+    slug: string,
+    sshHost?: string,
+  ): Promise<string | null> {
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
+      return null;
+    }
+    const relative = `.felt/${slug}/${slug.split('/').pop()}.md`;
+    if (!sshHost) {
+      try {
+        return await readFile(`${cityPath}/${relative}`, 'utf-8');
+      } catch {
+        return null;
+      }
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        'ssh',
+        [sshHost, `cat ${shellEscape(`${cityPath}/${relative}`)} 2>/dev/null`],
+        { maxBuffer: 5 * 1024 * 1024, timeout: 15000 },
+      );
+      return stdout || null;
+    } catch {
+      return null;
+    }
   }
 
   private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
@@ -498,4 +585,23 @@ export class HttpApiTapestry {
       res.end('Failed to read asset');
     }
   }
+}
+
+const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+
+function splitFrontmatter(raw: string): { frontmatter: Record<string, any>; body: string } {
+  const match = raw.match(FRONTMATTER_RE);
+  if (!match) {
+    return { frontmatter: {}, body: raw };
+  }
+  let frontmatter: Record<string, any> = {};
+  try {
+    const parsed = parseYaml(match[1]);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      frontmatter = parsed as Record<string, any>;
+    }
+  } catch {
+    frontmatter = {};
+  }
+  return { frontmatter, body: raw.slice(match[0].length) };
 }
