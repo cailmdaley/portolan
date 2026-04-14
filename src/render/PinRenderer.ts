@@ -94,12 +94,13 @@ export class PinRenderer {
     return hit
   }
 
-  /** Highlight a single pin (raise it slightly + tint anchor). Pass null to
-   *  clear. Safe to call repeatedly with the same slug. */
+  /** Highlight a single pin (lift the card off the ground). Pass null to
+   *  clear. The anchor disc stays put so the pin-point remains visible. Safe
+   *  to call repeatedly with the same slug. */
   setHovered(slug: string | null): void {
     for (const entry of this.entries.values()) {
-      const lift = entry.slug === slug ? 0.25 : 0
-      entry.group.position.y = lift
+      const lifted = entry.slug === slug
+      entry.card.position.y = lifted ? CARD_Y + 0.25 : CARD_Y
     }
   }
 
