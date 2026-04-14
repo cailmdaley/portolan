@@ -23,14 +23,13 @@ import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { CityHUD } from './ui/CityHUD'
 import { ContextMenu } from './ui/ContextMenu'
-import { TapestryView } from './ui/TapestryView'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
 import { RecentWorkerBar } from './ui/RecentWorkerBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
-import { findBestMatchingCity, findNearestCity, getCityWorkers } from './state/cityLookup'
+import { findBestMatchingCity, findNearestCity } from './state/cityLookup'
 import { PALETTE } from './state/types'
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
@@ -183,8 +182,6 @@ const cityPanel = new CityHUD()
 
 // Shared handler for city clicks (used by sprite click and label click)
 function handleCityClick(city: City): void {
-  if (tapestryView.isVisible()) return
-
   selectedHex = city.hex
 
   // Focus on city and zoom to detail level
@@ -289,22 +286,9 @@ cityPanel.setOnFocusWorker((sessionId) => {
   mapActions?.focusKittyTab(sessionId)
 })
 
-// Tapestry view — retained under a legacy flag for side-by-side comparison
-// during the tapestry-dissolves migration. Default path is vellum's workspace.
-// TODO(tapestry-dissolves): delete TapestryView + friends once vellum workspace is proven.
-const tapestryView = new TapestryView()
-tapestryView.setOnGetWorkers((city) => getCityWorkers(city, sessions))
-tapestryView.setOnOpenFile((filePath, city, line) => {
-  openFile({ path: filePath, originId: city.originId, cityId: city.id, jumpToLine: line })
-})
-
-const useLegacyTapestry = new URLSearchParams(window.location.search).has('legacyTapestry')
-
-// View Claims button → vellum workspace (or legacy TapestryView when flagged).
 cityPanel.setOnViewClaims((city) => {
   cityPanel.hide()
-  if (useLegacyTapestry) tapestryView.show(city)
-  else openCityWorkspace(city)
+  openCityWorkspace(city)
 })
 
 // Setup playground viewer
@@ -417,8 +401,7 @@ const stateSync = new FrontendStateSync({
     const urlCity = cities.find(c => c.id === urlCityId)
     if (!urlCity) return
     cityPanel.hide()
-    if (useLegacyTapestry) tapestryView.show(urlCity)
-    else openCityWorkspace(urlCity)
+    openCityWorkspace(urlCity)
   },
   onActivity: ({ activitySessionKey, activities }) => {
     zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
@@ -446,8 +429,7 @@ const mapInteractions = new MapInteractionController({
     handleCityClick(city)
     if (city.hasClaims) {
       cityPanel.hide()
-      if (useLegacyTapestry) tapestryView.show(city)
-      else openCityWorkspace(city)
+      openCityWorkspace(city)
     } else {
       playgroundViewer.show(city)
     }
@@ -567,8 +549,7 @@ const onGlobalHotkeys = (event: KeyboardEvent): void => {
   if (event.key === 't' && city && cityPanel.isVisible()) {
     event.preventDefault()
     cityPanel.hide()
-    if (useLegacyTapestry) tapestryView.show(city)
-    else openCityWorkspace(city)
+    openCityWorkspace(city)
   }
 }
 
@@ -585,7 +566,6 @@ const appRuntime = new FrontendAppRuntime({
   cityPanel,
   contextMenu,
   newWorkerDialog,
-  tapestryView,
   playgroundViewer,
   clearArtifactMediaCaches,
   getCities: () => cities,
@@ -616,7 +596,6 @@ installFrontendRuntimeDiagnostics({
   renderer,
   zoneRenderer,
   cityPanel,
-  tapestryView,
   playgroundViewer,
   getArtifactMediaCacheStats,
   getRuntimeDisposed: () => appRuntime.isDisposed(),

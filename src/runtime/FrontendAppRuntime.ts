@@ -7,7 +7,6 @@ import type { MapInteractionController } from '../MapInteractionController'
 import type { CityHUD } from '../ui/CityHUD'
 import type { ContextMenu } from '../ui/ContextMenu'
 import type { NewWorkerDialog } from '../ui/NewWorkerDialog'
-import type { TapestryView } from '../ui/TapestryView'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { City, Session } from '../state/types'
 
@@ -22,7 +21,6 @@ interface FrontendAppRuntimeOptions {
   cityPanel: CityHUD
   contextMenu: ContextMenu
   newWorkerDialog: NewWorkerDialog
-  tapestryView: TapestryView
   playgroundViewer: PlaygroundViewer
   clearArtifactMediaCaches: () => void
   getCities: () => City[]
@@ -80,7 +78,6 @@ export class FrontendAppRuntime {
     this.options.cityPanel.dispose()
     this.options.contextMenu.dispose()
     this.options.newWorkerDialog.dispose()
-    this.options.tapestryView.dispose()
     this.options.playgroundViewer.dispose()
 
     this.options.camera.dispose()
