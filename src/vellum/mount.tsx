@@ -20,6 +20,7 @@ export interface MountFileViewerOptions {
   originId?: string
   cityId?: string
   cacheBust?: boolean
+  editable?: boolean
 }
 
 export interface VellumMountHandle {
@@ -42,6 +43,7 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
             path={opts.path}
             originId={opts.originId}
             cacheBust={opts.cacheBust}
+            editable={opts.editable}
           />
         </AdapterProvider>
       </StrictMode>,

@@ -148,7 +148,7 @@ const fileViewerModal = new FileViewerModal()
 void installVellumDebugMount()
 async function installVellumDebugMount(): Promise<void> {
   const { mountVellumFileViewer } = await import('./vellum/mount')
-  const openDebug = (opts: { path: string; originId?: string; cityId?: string }) => {
+  const openDebug = (opts: { path: string; originId?: string; cityId?: string; editable?: boolean }) => {
     const overlay = document.createElement('div')
     overlay.className = 'vellum-debug-overlay'
     Object.assign(overlay.style, {
@@ -190,6 +190,7 @@ async function installVellumDebugMount(): Promise<void> {
       path: debugPath,
       originId: params.get('vellumOrigin') ?? undefined,
       cityId: params.get('vellumCity') ?? undefined,
+      editable: params.get('vellumEdit') === '1',
     })
   }
 }

@@ -24,6 +24,7 @@ import type {
   GetFileOptions,
   ReadOnlyAdapter,
   ReadOnlyAdapterError,
+  SaveFileOptions,
 } from 'vellum/adapter';
 import type {
   Annotation,
@@ -181,6 +182,19 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
 
     async putRawFiber(_slug: string, _body: string): Promise<void> {
       throw new Error('putRawFiber: portolan server endpoint not implemented');
+    },
+
+    async saveFile(path: string, content: string, saveOpts: SaveFileOptions = {}): Promise<void> {
+      const originId = saveOpts.originId ?? defaultOriginId;
+      const res = await fetch(`${API_BASE}/save-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, content, originId }),
+      }).catch(() => null);
+      if (!res || !res.ok) {
+        const body = await res?.json().catch(() => ({} as { error?: string })) ?? {};
+        throw new Error((body as { error?: string }).error ?? `save failed${res ? ` (${res.status})` : ''}`);
+      }
     },
   };
 }

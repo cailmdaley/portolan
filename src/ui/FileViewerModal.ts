@@ -206,7 +206,7 @@ export class FileViewerModal {
       const path = this.contentPresenter.getCurrentPath()
       if (!path) return
       const mount = (window as unknown as {
-        __mountVellumFileViewer?: (opts: { path: string; originId?: string; cityId?: string }) => void
+        __mountVellumFileViewer?: (opts: { path: string; originId?: string; cityId?: string; editable?: boolean }) => void
       }).__mountVellumFileViewer
       if (!mount) {
         console.warn('[FileViewerModal] vellum mount seam not installed')
@@ -216,6 +216,7 @@ export class FileViewerModal {
         path,
         originId: this.contentPresenter.getCurrentOriginId(),
         cityId: this.contentPresenter.getCurrentCityId() || undefined,
+        editable: true,
       })
     })
 
