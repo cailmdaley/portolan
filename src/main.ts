@@ -87,9 +87,17 @@ const camera = new Camera(canvas, canvasOverlay)
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
 // World-space pin renderer (map-pinned vellum cards, see fiber tapestry-dissolves).
-// Milestone 1: render markers at persisted positions — drag-to-pin lives in a
-// later iteration. Kept in its own renderer so TapestryView can stay untouched.
-const pinRenderer = new PinRenderer(scene)
+// Each pin renders as a parchment card surface; title is looked up from the HUD
+// fiber list so cards read as "the fiber I pinned" rather than a raw slug.
+const pinRenderer = new PinRenderer(scene, {
+  fiberTitleFor: (slug) => {
+    const fibers = cityPanel?.getFibers()
+    if (!fibers) return null
+    const hit =
+      fibers.open.find(f => f.id === slug) ?? fibers.closed.find(f => f.id === slug)
+    return hit?.title ?? null
+  },
+})
 let pinnedCityId: string | null = null
 
 async function loadPinsForCity(cityId: string): Promise<void> {
@@ -311,7 +319,15 @@ let mapActions: FrontendMapActions | null = null
 let movingCityId: string | null = null
 
 const stateSync = new FrontendStateSync({
-  handlePanelMessage: (message) => cityPanel.handleMessage(message),
+  handlePanelMessage: (message) => {
+    const handled = cityPanel.handleMessage(message)
+    // When the fiber list lands, repaint any pin cards whose titles were
+    // placeholders (slug-only) at load time.
+    if (handled && (message as { type?: string })?.type === 'fibers') {
+      pinRenderer.refreshTitles()
+    }
+    return handled
+  },
   onSocketOpen: (socket) => {
     cityPanel.setWebSocket(socket)
   },

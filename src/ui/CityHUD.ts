@@ -235,6 +235,10 @@ export class CityHUD {
     return this.currentCity
   }
 
+  getFibers(): { open: Fiber[]; closed: Fiber[] } {
+    return this.content.getFibers()
+  }
+
   getRuntimeStats(): {
     visible: boolean
     activeTab: 'fibers' | 'files'

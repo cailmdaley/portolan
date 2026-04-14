@@ -1,68 +1,58 @@
-// PinRenderer.ts - World-space pins for vellum cards on the hex map.
+// PinRenderer.ts - World-space card surfaces for pinned vellum cards.
 //
-// First milestone of fiber `tapestry-dissolves`: render a marker at a fixed
-// world position and watch how it feels through camera zoom. Pure three.js
-// geometry; the card surface layers on in a later milestone.
+// Milestone of fiber `tapestry-dissolves`: each pin is a parchment card lying
+// flat on the hex world, with the fiber title rendered to a canvas texture.
+// Pure three.js — the card is a scene object, so orthographic zoom scales it
+// naturally (Open Question 1: resolved via world-space). A small anchor disc
+// marks the exact pinned point under the card.
 //
-// Markers are small parchment-gold cones tipped downward to the pinned point,
-// topped by a little sphere. They live directly in the scene (no parent hex
-// group), so their cartesian {x, z} matches the server's LayoutStore exactly.
+// Title comes from a lookup closure (fiberTitleFor). When the lookup is empty
+// at upsert time (fibers still loading), the slug is drawn as a placeholder
+// and the card re-renders when refreshTitles() is called.
 
 import {
+  CanvasTexture,
+  CircleGeometry,
+  DoubleSide,
   Group,
   Mesh,
-  MeshStandardMaterial,
-  ConeGeometry,
-  SphereGeometry,
-  Object3D,
+  MeshBasicMaterial,
+  PlaneGeometry,
+  type Scene,
 } from 'three'
-import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import type { Scene } from 'three'
 import type { Pin } from '../state/layoutClient'
 import { PALETTE } from '../state/types'
 
-const PIN_HEIGHT = 0.55
-const PIN_RADIUS = 0.12
-const HEAD_RADIUS = 0.14
+const CARD_WIDTH = 3.2
+const CARD_HEIGHT = 1.2
+const CARD_Y = 0.03 // just above ground plane
+const ANCHOR_Y = 0.04
+const ANCHOR_RADIUS = 0.1
+const TEXTURE_WIDTH = 512
+const TEXTURE_HEIGHT = 192
 
-function buildPinMesh(): Object3D {
-  const group = new Group()
-
-  // Shared materials within a single pin (cheap; one material per pin is fine
-  // for the card counts we expect — tens, not thousands).
-  const gold = new MeshStandardMaterial({
-    color: PALETTE.cityHex,
-    roughness: 0.6,
-    metalness: 0.3,
-  })
-
-  // Cone: point down, base up. Three.js cone points +Y by default; flip.
-  const cone = new Mesh(new ConeGeometry(PIN_RADIUS, PIN_HEIGHT, 12), gold)
-  cone.rotation.x = Math.PI
-  cone.position.y = PIN_HEIGHT / 2
-  group.add(cone)
-
-  // Head sphere on top.
-  const head = new Mesh(new SphereGeometry(HEAD_RADIUS, 16, 12), gold)
-  head.position.y = PIN_HEIGHT + HEAD_RADIUS * 0.6
-  group.add(head)
-
-  return group
+export interface PinRendererOptions {
+  /** Look up a fiber title for a slug. Return null if not yet available. */
+  fiberTitleFor?: (slug: string) => string | null
 }
 
 interface PinEntry {
   slug: string
   group: Group
-  label?: CSS2DObject
+  card: Mesh
+  texture: CanvasTexture
+  canvas: HTMLCanvasElement
+  renderedTitle: string | null
 }
 
 export class PinRenderer {
   private readonly scene: Scene
   private readonly entries = new Map<string, PinEntry>()
-  private showLabels = true
+  private readonly fiberTitleFor: (slug: string) => string | null
 
-  constructor(scene: Scene) {
+  constructor(scene: Scene, opts: PinRendererOptions = {}) {
     this.scene = scene
+    this.fiberTitleFor = opts.fiberTitleFor ?? (() => null)
   }
 
   /** Replace all pins with the given set (diff by slug). */
@@ -77,19 +67,12 @@ export class PinRenderer {
   upsert(pin: Pin): void {
     let entry = this.entries.get(pin.slug)
     if (!entry) {
-      const group = new Group()
-      group.add(buildPinMesh())
-      if (this.showLabels) {
-        const label = this.makeLabel(pin.slug)
-        group.add(label)
-        entry = { slug: pin.slug, group, label }
-      } else {
-        entry = { slug: pin.slug, group }
-      }
-      this.scene.add(group)
+      entry = this.build(pin.slug)
+      this.scene.add(entry.group)
       this.entries.set(pin.slug, entry)
     }
     entry.group.position.set(pin.x, 0, pin.z)
+    this.paintCard(entry)
   }
 
   remove(slug: string): void {
@@ -99,13 +82,12 @@ export class PinRenderer {
     entry.group.traverse((obj) => {
       if (obj instanceof Mesh) {
         obj.geometry.dispose()
-        if (Array.isArray(obj.material)) {
-          for (const m of obj.material) m.dispose()
-        } else {
-          obj.material.dispose()
-        }
+        const mat = obj.material
+        if (Array.isArray(mat)) for (const m of mat) m.dispose()
+        else mat.dispose()
       }
     })
+    entry.texture.dispose()
     this.entries.delete(slug)
   }
 
@@ -113,12 +95,147 @@ export class PinRenderer {
     for (const slug of [...this.entries.keys()]) this.remove(slug)
   }
 
-  private makeLabel(slug: string): CSS2DObject {
-    const div = document.createElement('div')
-    div.className = 'pin-label'
-    div.textContent = slug
-    const obj = new CSS2DObject(div)
-    obj.position.set(0, PIN_HEIGHT + HEAD_RADIUS * 2 + 0.15, 0)
-    return obj
+  /** Repaint cards whose title was a placeholder at upsert time. Call once
+   *  the fiber list lands for the city. */
+  refreshTitles(): void {
+    for (const entry of this.entries.values()) {
+      const title = this.fiberTitleFor(entry.slug)
+      if (title && title !== entry.renderedTitle) this.paintCard(entry)
+    }
   }
+
+  private build(slug: string): PinEntry {
+    const group = new Group()
+
+    const canvas = document.createElement('canvas')
+    canvas.width = TEXTURE_WIDTH
+    canvas.height = TEXTURE_HEIGHT
+    const texture = new CanvasTexture(canvas)
+    texture.anisotropy = 4
+
+    const cardMat = new MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      side: DoubleSide,
+      depthWrite: false,
+    })
+    const card = new Mesh(new PlaneGeometry(CARD_WIDTH, CARD_HEIGHT), cardMat)
+    card.rotation.x = -Math.PI / 2
+    card.position.y = CARD_Y
+    group.add(card)
+
+    const anchor = new Mesh(
+      new CircleGeometry(ANCHOR_RADIUS, 16),
+      new MeshBasicMaterial({ color: PALETTE.cityHex, transparent: true, opacity: 0.9 }),
+    )
+    anchor.rotation.x = -Math.PI / 2
+    anchor.position.y = ANCHOR_Y
+    group.add(anchor)
+
+    return { slug, group, card, texture, canvas, renderedTitle: null }
+  }
+
+  private paintCard(entry: PinEntry): void {
+    const title = this.fiberTitleFor(entry.slug) ?? entry.slug
+    drawCardSurface(entry.canvas, title, entry.slug)
+    entry.texture.needsUpdate = true
+    entry.renderedTitle = title
+  }
+}
+
+function drawCardSurface(canvas: HTMLCanvasElement, title: string, slug: string): void {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  // Parchment fill with a slight warm gradient.
+  const grad = ctx.createLinearGradient(0, 0, 0, h)
+  grad.addColorStop(0, 'rgba(248, 240, 225, 0.97)')
+  grad.addColorStop(1, 'rgba(233, 220, 198, 0.97)')
+  ctx.fillStyle = grad
+  roundRect(ctx, 4, 4, w - 8, h - 8, 16)
+  ctx.fill()
+
+  // Border.
+  ctx.lineWidth = 3
+  ctx.strokeStyle = 'rgba(140, 110, 80, 0.55)'
+  roundRect(ctx, 4, 4, w - 8, h - 8, 16)
+  ctx.stroke()
+
+  // Title — EB Garamond if available, generous serif fallback.
+  ctx.fillStyle = '#2E2A26'
+  ctx.font = '600 52px "EB Garamond", Garamond, serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const wrapped = wrapLines(ctx, title, w - 56, 2)
+  const lineHeight = 58
+  const totalHeight = wrapped.length * lineHeight
+  let y = h / 2 - totalHeight / 2 + lineHeight / 2 - 6
+  for (const line of wrapped) {
+    ctx.fillText(line, w / 2, y)
+    y += lineHeight
+  }
+
+  // Slug caption (small, muted) — helps identify when the title wraps to a
+  // generic label.
+  if (slug !== title) {
+    ctx.fillStyle = '#7A7368'
+    ctx.font = '500 22px "JetBrains Mono", monospace'
+    ctx.textBaseline = 'bottom'
+    ctx.fillText(slug, w / 2, h - 18)
+  }
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
+function wrapLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+): string[] {
+  const words = text.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return [text]
+  const lines: string[] = []
+  let current = ''
+  for (const word of words) {
+    const trial = current ? `${current} ${word}` : word
+    if (ctx.measureText(trial).width <= maxWidth || !current) {
+      current = trial
+    } else {
+      lines.push(current)
+      current = word
+      if (lines.length === maxLines) break
+    }
+  }
+  if (lines.length < maxLines && current) lines.push(current)
+  // Truncate last line with ellipsis if it's still too long.
+  if (lines.length) {
+    const last = lines[lines.length - 1]
+    if (ctx.measureText(last).width > maxWidth) {
+      let trimmed = last
+      while (trimmed.length > 1 && ctx.measureText(trimmed + '…').width > maxWidth) {
+        trimmed = trimmed.slice(0, -1)
+      }
+      lines[lines.length - 1] = trimmed + '…'
+    }
+  }
+  return lines
 }
