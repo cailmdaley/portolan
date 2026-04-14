@@ -12,8 +12,9 @@ import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { PinRenderer } from './render/PinRenderer'
+import { DomPinLayer, isDomPinKind } from './render/DomPinLayer'
 import { PinHoverPreview } from './ui/PinHoverPreview'
-import { listPins, putPin, deletePin } from './state/layoutClient'
+import { listPins, putPin, pinFile, deletePin, type Pin, type PinKind, type PinSource } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
 import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
@@ -102,6 +103,20 @@ const pinRenderer = new PinRenderer(scene, {
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
+// DOM-overlay surface for non-fiber pins (PDFs, images, html, …). Routed by
+// `pin.kind` — PinRenderer keeps fiber-kind pins; everything else lives in
+// here. Reanchored each frame via `camera.worldToScreen`. See [[pin-any-file-type]].
+const domPinLayer = new DomPinLayer({
+  camera,
+  resolveSource: (pin) => {
+    const src = pin.source
+    if (!src) return null
+    if (src.url) return src.url
+    if (!src.path || !src.originId) return null
+    return `http://${window.location.hostname}:4004/project-file/${encodeURIComponent(src.originId)}${src.path}`
+  },
+})
+
 // Repaint pin cards once EB Garamond has loaded. Initial paints happen before
 // the webfont resolves, so cards land in system serif with slightly different
 // word-wrap metrics than the HUD. See tapestry-dissolves.
@@ -139,7 +154,8 @@ async function loadPinsForCity(cityId: string): Promise<void> {
   try {
     const pins = await listPins(cityId)
     if (pinnedCityId !== cityId) return // city changed mid-flight
-    pinRenderer.setPins(pins)
+    pinRenderer.setPins(pins.filter(p => !isDomPinKind(p)))
+    domPinLayer.setPins(pins)
     syncPinnedSlugs()
   } catch (err) {
     console.error('[pins] load failed for', cityId, err)
@@ -149,7 +165,26 @@ async function loadPinsForCity(cityId: string): Promise<void> {
 /** Push the current set of pinned slugs to the HUD so fiber items can badge
  *  themselves as already pinned on the map. Call after any pin mutation. */
 function syncPinnedSlugs(): void {
-  cityPanel.setPinnedSlugs(new Set(pinRenderer.getSlugs()))
+  const slugs = new Set<string>(pinRenderer.getSlugs())
+  for (const slug of domPinLayer.getSlugs()) slugs.add(slug)
+  cityPanel.setPinnedSlugs(slugs)
+}
+
+/** Insert a pin into whichever layer owns its kind. */
+function upsertPin(pin: Pin): void {
+  if (isDomPinKind(pin)) {
+    pinRenderer.remove(pin.slug)
+    domPinLayer.upsert(pin)
+  } else {
+    domPinLayer.remove(pin.slug)
+    pinRenderer.upsert(pin)
+  }
+}
+
+/** Remove from whichever layer holds it. */
+function removePin(slug: string): void {
+  pinRenderer.remove(slug)
+  domPinLayer.remove(slug)
 }
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
@@ -205,6 +240,7 @@ function handleCityClick(city: City): void {
   if (pinnedCityId !== city.id) {
     pinnedCityId = city.id
     pinRenderer.clear()
+    domPinLayer.clear()
     pinHoverPreview.hide()
     syncPinnedSlugs()
     void loadPinsForCity(city.id)
@@ -503,7 +539,7 @@ const mapInteractions = new MapInteractionController({
       {
         label: 'Unpin Card',
         action: () => {
-          pinRenderer.remove(slug)
+          removePin(slug)
           pinHoverPreview.hide()
           syncPinnedSlugs()
           void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
@@ -518,7 +554,7 @@ const mapInteractions = new MapInteractionController({
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return
     void putPin(city.id, slug, { x, z })
-      .then(pin => { if (pinnedCityId === city.id) pinRenderer.upsert(pin) })
+      .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
       .catch(err => console.error('[pins] move failed', err))
   },
 })
@@ -597,6 +633,9 @@ const appRuntime = new FrontendAppRuntime({
     // last-known cursor position — otherwise zooming leaves the previous
     // pin lifted under a cursor that's no longer over it.
     mapInteractions.recomputeHover()
+    // DOM-overlay pins (PDFs, images, …) re-project to screen pixels each
+    // frame so they track the camera through pan/zoom.
+    domPinLayer.reanchorAll()
     // Keep the pin hover tooltip anchored to its card while the camera is
     // panning or zooming.
     const slug = pinHoverPreview.getVisibleSlug()
@@ -641,7 +680,7 @@ const pinDragController = new PinDragController({
   onPinned: (pin) => {
     const currentCity = cityPanel.getCurrentCity()?.id ?? pinnedCityId
     if (currentCity === pinnedCityId) {
-      pinRenderer.upsert(pin)
+      upsertPin(pin)
       syncPinnedSlugs()
     }
   },
@@ -656,6 +695,13 @@ const pinDragController = new PinDragController({
 interface PortolanPinWindow {
   __portolanPin: (slug: string, x: number, z: number, cityId?: string) => Promise<void>
   __portolanUnpin: (slug: string, cityId?: string) => Promise<void>
+  __portolanPinFile: (
+    source: PinSource,
+    x: number,
+    z: number,
+    kind?: PinKind,
+    cityId?: string,
+  ) => Promise<void>
 }
 const pinWindow = window as unknown as PortolanPinWindow
 pinWindow.__portolanPin = async (slug, x, z, cityId) => {
@@ -663,7 +709,7 @@ pinWindow.__portolanPin = async (slug, x, z, cityId) => {
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   const pin = await putPin(targetCity, slug, { x, z })
   if (pinnedCityId === targetCity) {
-    pinRenderer.upsert(pin)
+    upsertPin(pin)
     syncPinnedSlugs()
   }
   console.log('[pins] placed', pin)
@@ -673,9 +719,22 @@ pinWindow.__portolanUnpin = async (slug, cityId) => {
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   await deletePin(targetCity, slug)
   if (pinnedCityId === targetCity) {
-    pinRenderer.remove(slug)
+    removePin(slug)
     syncPinnedSlugs()
   }
+}
+// __portolanPinFile({ originId: 'local', path: '/abs/path/foo.pdf' }, 3, -2, 'pdf')
+// __portolanPinFile({ url: 'https://...' }, 3, -2, 'html')
+// Slug derives server-side from the source — re-pinning is idempotent.
+pinWindow.__portolanPinFile = async (source, x, z, kind, cityId) => {
+  const targetCity = cityId ?? cityPanel.getCurrentCity()?.id ?? pinnedCityId
+  if (!targetCity) { console.warn('[pins] no city selected'); return }
+  const pin = await pinFile(targetCity, { x, z }, source, kind)
+  if (pinnedCityId === targetCity) {
+    upsertPin(pin)
+    syncPinnedSlugs()
+  }
+  console.log('[pins] placed file pin', pin)
 }
 
 // HMR cleanup
