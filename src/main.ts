@@ -11,6 +11,8 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
+import { PinRenderer } from './render/PinRenderer'
+import { listPins, putPin, deletePin } from './state/layoutClient'
 import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
@@ -83,6 +85,22 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
+// World-space pin renderer (map-pinned vellum cards, see fiber tapestry-dissolves).
+// Milestone 1: render markers at persisted positions — drag-to-pin lives in a
+// later iteration. Kept in its own renderer so TapestryView can stay untouched.
+const pinRenderer = new PinRenderer(scene)
+let pinnedCityId: string | null = null
+
+async function loadPinsForCity(cityId: string): Promise<void> {
+  try {
+    const pins = await listPins(cityId)
+    if (pinnedCityId !== cityId) return // city changed mid-flight
+    pinRenderer.setPins(pins)
+  } catch (err) {
+    console.error('[pins] load failed for', cityId, err)
+  }
+}
+
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
   mapActions?.focusKittyTab(workerId)
@@ -133,6 +151,12 @@ function handleCityClick(city: City): void {
   } else {
     cityPanel.show(city)
     cityPanel.updateWorkers(sessions)
+  }
+
+  if (pinnedCityId !== city.id) {
+    pinnedCityId = city.id
+    pinRenderer.clear()
+    void loadPinsForCity(city.id)
   }
 }
 
@@ -478,6 +502,31 @@ installFrontendRuntimeDiagnostics({
 
 stateSync.connect()
 appRuntime.start()
+
+// Dev helpers for pins (milestone 1 of tapestry-dissolves). Not a stable API —
+// here so we can poke at world-space card positioning from the console before
+// drag-to-pin lands.
+//   __portolanPin('some-fiber', 3, -2)    // place pin at world (x=3, z=-2)
+//   __portolanUnpin('some-fiber')         // remove it
+// Target city defaults to the currently-open HUD; override with the 4th arg.
+interface PortolanPinWindow {
+  __portolanPin: (slug: string, x: number, z: number, cityId?: string) => Promise<void>
+  __portolanUnpin: (slug: string, cityId?: string) => Promise<void>
+}
+const pinWindow = window as unknown as PortolanPinWindow
+pinWindow.__portolanPin = async (slug, x, z, cityId) => {
+  const targetCity = cityId ?? cityPanel.getCurrentCity()?.id ?? pinnedCityId
+  if (!targetCity) { console.warn('[pins] no city selected'); return }
+  const pin = await putPin(targetCity, slug, { x, z })
+  if (pinnedCityId === targetCity) pinRenderer.upsert(pin)
+  console.log('[pins] placed', pin)
+}
+pinWindow.__portolanUnpin = async (slug, cityId) => {
+  const targetCity = cityId ?? cityPanel.getCurrentCity()?.id ?? pinnedCityId
+  if (!targetCity) { console.warn('[pins] no city selected'); return }
+  await deletePin(targetCity, slug)
+  if (pinnedCityId === targetCity) pinRenderer.remove(slug)
+}
 
 // HMR cleanup
 if (import.meta.hot) {
