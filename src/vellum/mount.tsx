@@ -16,7 +16,14 @@
 
 import { StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { AdapterProvider, FileViewerModal, FileViewerPage, WorkspaceMount } from 'vellum'
+import {
+  AdapterProvider,
+  FiberCard,
+  FileViewerModal,
+  FileViewerPage,
+  WorkspaceMount,
+  type GraphNode,
+} from 'vellum'
 import 'vellum/css'
 import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
 
@@ -215,6 +222,59 @@ export interface OpenStaticFileModalOptions {
  * come from the flat `${staticDataBase}/files/` tree written by
  * `felt export --format tapestry`.
  */
+export interface FiberCardPreviewOptions {
+  cityId?: string
+  originId?: string
+  width?: number
+}
+
+export interface FiberCardPreviewHandle {
+  /** Render the card for a new GraphNode. Passing null unmounts the card. */
+  update(node: GraphNode | null, width?: number): void
+  unmount(): void
+}
+
+/**
+ * Mount vellum's FiberCard into an arbitrary container. Intended for the
+ * pinned-card hover preview on the portolan map — the same fiber primitive
+ * the reader uses, rendered in a small tooltip-sized surface so the map
+ * previews what the reader would open. See tapestry-dissolves.
+ */
+export function mountVellumFiberCardPreview(
+  container: HTMLElement,
+  opts: FiberCardPreviewOptions = {},
+): FiberCardPreviewHandle {
+  const root = createRoot(container)
+  const adapter = createPortolanAdapter({
+    cityId: opts.cityId,
+    defaultOriginId: opts.originId,
+  })
+  const defaultWidth = opts.width ?? 280
+
+  const render = (node: GraphNode | null, width: number) => {
+    if (!node) {
+      root.render(<StrictMode />)
+      return
+    }
+    root.render(
+      <StrictMode>
+        <AdapterProvider adapter={adapter}>
+          <FiberCard node={node} width={width} />
+        </AdapterProvider>
+      </StrictMode>,
+    )
+  }
+
+  return {
+    update(node, width) {
+      render(node, width ?? defaultWidth)
+    },
+    unmount() {
+      root.unmount()
+    },
+  }
+}
+
 export function openVellumStaticFileModal(opts: OpenStaticFileModalOptions): VellumModalHandle {
   const container = document.createElement('div')
   document.body.appendChild(container)

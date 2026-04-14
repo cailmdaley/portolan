@@ -103,42 +103,31 @@ const pinRenderer = new PinRenderer(scene, {
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
-// Extended-hover tooltip (title + lede) for pinned cards. See tapestry-dissolves.
+// Extended-hover tooltip for pinned cards. Mounts vellum's FiberCard so the
+// hover preview shows the same primitive the reader uses. The GraphNode is
+// built from the city HUD's fiber list (portolan's Fiber shape) — enough for
+// the preview variant (title + outcome + highlight) without fetching mdast.
+// See tapestry-dissolves and map-pinned-card-is-canvas-texture-not-dom.
 const pinHoverPreview = new PinHoverPreview({
-  infoFor: (slug) => {
+  nodeFor: (slug) => {
     const fibers = cityPanel?.getFibers()
     if (!fibers) return null
     const hit =
       fibers.open.find(f => f.id === slug) ?? fibers.closed.find(f => f.id === slug)
     if (!hit) return null
-    const source = hit.body ?? hit.reason ?? ''
-    return { title: hit.title, lede: extractLede(source), status: hit.status }
+    return {
+      id: hit.id,
+      slug: hit.id,
+      label: hit.title,
+      status: hit.status,
+      kind: hit.kind,
+      tags: [],
+      verdict: hit.reason,
+      createdAt: hit.createdAt,
+    }
   },
+  cityIdFor: () => pinnedCityId ?? undefined,
 })
-
-function extractLede(source: string): string {
-  if (!source) return ''
-  // First non-empty paragraph, skipping ATX headings and frontmatter-ish lines.
-  const paragraphs = source.split(/\n\s*\n/)
-  let lede = ''
-  for (const raw of paragraphs) {
-    const trimmed = raw.trim()
-    if (!trimmed) continue
-    if (trimmed.startsWith('#')) continue
-    lede = trimmed
-    break
-  }
-  if (!lede) lede = source.trim()
-  // Flatten newlines, strip wikilink pipes/brackets, collapse whitespace.
-  lede = lede
-    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, a, b) => b ?? a)
-    .replace(/[`*_]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-  const MAX = 220
-  if (lede.length > MAX) lede = lede.slice(0, MAX - 1).trimEnd() + '…'
-  return lede
-}
 
 async function loadPinsForCity(cityId: string): Promise<void> {
   try {

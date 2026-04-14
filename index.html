@@ -235,36 +235,14 @@
         display: none !important;
       }
 
-      /* Worker file hover tooltip */
+      /* Pinned-card hover preview — mounts a vellum FiberCard. The wrapper is
+         a pure positioner: the card paints its own parchment surface via
+         vellum.css, so the wrapper only contributes drop-shadow + layering. */
       .pin-hover-preview {
         position: fixed;
         z-index: 3000;
-        min-width: 220px;
-        max-width: 320px;
-        padding: 9px 11px;
-        background: linear-gradient(180deg, #F8F0E1 0%, #E9DCC6 100%);
-        border: 1px solid rgba(140, 110, 80, 0.55);
-        border-radius: 6px;
-        box-shadow:
-          inset 0 0 0 1px rgba(255, 255, 255, 0.4),
-          0 8px 18px rgba(30, 20, 10, 0.25);
         pointer-events: none;
-        color: var(--ink-dark, #2E2A26);
-      }
-
-      .pin-hover-preview-title {
-        font-family: var(--font-main);
-        font-size: 14px;
-        font-weight: 600;
-        line-height: 1.25;
-        margin-bottom: 5px;
-      }
-
-      .pin-hover-preview-lede {
-        font-family: var(--font-main);
-        font-size: 12.5px;
-        line-height: 1.4;
-        color: var(--ink-muted, #5A4E3E);
+        filter: drop-shadow(0 8px 18px rgba(30, 20, 10, 0.25));
       }
 
       .worker-file-tooltip {

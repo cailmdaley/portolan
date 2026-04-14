@@ -1,32 +1,51 @@
 // PinHoverPreview.ts — extended-hover tooltip for map-pinned vellum cards.
 //
 // Milestone of fiber `tapestry-dissolves`: after ~550ms of hover on a pinned
-// card, a small parchment tooltip fades in with the fiber's title + lede.
-// Gives the user a glance-level answer ("what is this pin about") before
-// committing to a click — the spatial map stays uncluttered by default.
+// card, vellum's FiberCard fades in with the fiber's title, outcome, and
+// tags — the same primitive the reader uses, rendered in tooltip scale so
+// the map previews what opening the pin would show.
+//
+// The tooltip mounts a React island via `mountVellumFiberCardPreview` from
+// the portolan vellum seam; see [[map-pinned-card-is-canvas-texture-not-dom]]
+// for why the map-pinned card itself stays a three.js CanvasTexture while the
+// hover preview can adopt vellum's DOM Card primitive.
 
-export interface PinHoverInfo {
-  title: string
-  lede: string
-  status?: string
-}
+import type { GraphNode } from 'vellum'
+import {
+  mountVellumFiberCardPreview,
+  type FiberCardPreviewHandle,
+} from '../vellum/mount'
 
 export interface PinHoverPreviewOptions {
-  /** Resolve the tooltip content for a slug. Return null to skip showing. */
-  infoFor: (slug: string) => PinHoverInfo | null
+  /** Resolve a GraphNode for a slug. Return null to skip showing. */
+  nodeFor: (slug: string) => GraphNode | null
+  /** Optional city/origin context threaded into the adapter. */
+  cityIdFor?: () => string | undefined
+  originIdFor?: () => string | undefined
+  /** Card width in px — drives FiberCard's pretext line wrapping. */
+  width?: number
 }
 
 const HOVER_DELAY_MS = 550
 const ANCHOR_OFFSET_Y = 18
+const DEFAULT_WIDTH = 300
 
 export class PinHoverPreview {
   private readonly el: HTMLDivElement
-  private readonly infoFor: (slug: string) => PinHoverInfo | null
+  private readonly nodeFor: (slug: string) => GraphNode | null
+  private readonly cityIdFor?: () => string | undefined
+  private readonly originIdFor?: () => string | undefined
+  private readonly width: number
   private activeSlug: string | null = null
   private showTimer: number | null = null
+  private handle: FiberCardPreviewHandle | null = null
+  private mountedForCity: string | undefined = undefined
 
   constructor(opts: PinHoverPreviewOptions) {
-    this.infoFor = opts.infoFor
+    this.nodeFor = opts.nodeFor
+    this.cityIdFor = opts.cityIdFor
+    this.originIdFor = opts.originIdFor
+    this.width = opts.width ?? DEFAULT_WIDTH
     this.el = document.createElement('div')
     this.el.className = 'pin-hover-preview'
     this.el.style.display = 'none'
@@ -51,11 +70,15 @@ export class PinHoverPreview {
     this.showTimer = window.setTimeout(() => {
       this.showTimer = null
       if (this.activeSlug !== pending) return
-      const info = this.infoFor(pending)
-      if (!info) return
-      this.paint(info)
-      this.position(pendingAnchor)
+      const node = this.nodeFor(pending)
+      if (!node) return
+      this.ensureHandle()
+      this.handle!.update(node, this.width)
       this.el.style.display = 'block'
+      // Position after React commits so measured offsetWidth/Height are valid.
+      requestAnimationFrame(() => {
+        if (this.activeSlug === pending) this.position(pendingAnchor)
+      })
     }, HOVER_DELAY_MS)
   }
 
@@ -63,6 +86,7 @@ export class PinHoverPreview {
     this.clearTimer()
     this.activeSlug = null
     this.el.style.display = 'none'
+    if (this.handle) this.handle.update(null)
   }
 
   private clearTimer(): void {
@@ -72,18 +96,23 @@ export class PinHoverPreview {
     }
   }
 
-  private paint(info: PinHoverInfo): void {
-    const titleEl = document.createElement('div')
-    titleEl.className = 'pin-hover-preview-title'
-    titleEl.textContent = info.title
-    const ledeEl = document.createElement('div')
-    ledeEl.className = 'pin-hover-preview-lede'
-    ledeEl.textContent = info.lede
-    this.el.replaceChildren(titleEl, ledeEl)
+  private ensureHandle(): void {
+    const cityId = this.cityIdFor?.()
+    if (this.handle && this.mountedForCity === cityId) return
+    if (this.handle) {
+      this.handle.unmount()
+      this.handle = null
+    }
+    this.mountedForCity = cityId
+    this.handle = mountVellumFiberCardPreview(this.el, {
+      cityId,
+      originId: this.originIdFor?.(),
+      width: this.width,
+    })
   }
 
   private position(anchor: { x: number; y: number }): void {
-    const width = this.el.offsetWidth || 280
+    const width = this.el.offsetWidth || this.width
     const height = this.el.offsetHeight || 80
     const margin = 8
     let left = anchor.x - width / 2
