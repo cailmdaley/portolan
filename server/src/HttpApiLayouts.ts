@@ -8,7 +8,8 @@
  */
 
 import { IncomingMessage, ServerResponse } from 'http';
-import type { LayoutStore, PinMeta, PinPosition } from './LayoutStore.js';
+import type { LayoutStore, PinExtras, PinKind, PinMeta, PinPosition, PinSource } from './LayoutStore.js';
+import { kindFromPath, PIN_KINDS, slugForSource } from './LayoutStore.js';
 import { stableCityId } from './CityManager.js';
 
 type JsonBodyParser = <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
@@ -33,7 +34,18 @@ interface Options {
 }
 
 const PIN_PATH_RE = /^\/layouts\/([^/]+)\/pins\/([^/]+)$/;
+const FILES_PATH_RE = /^\/layouts\/([^/]+)\/files$/;
 const LIST_PATH_RE = /^\/layouts\/([^/]+)$/;
+
+interface PinPutBody extends PinPosition {
+  kind?: PinKind;
+  source?: PinSource;
+}
+
+interface FilePinBody extends PinPosition {
+  source: PinSource;
+  kind?: PinKind;
+}
 
 export class HttpApiLayouts {
   private readonly layoutStore: LayoutStore;
@@ -72,22 +84,24 @@ export class HttpApiLayouts {
       const slug = decodeURIComponent(pinMatch[2]);
 
       if (method === 'PUT') {
-        const body = await this.parseJsonBody<PinPosition>(req, res);
+        const body = await this.parseJsonBody<PinPutBody>(req, res);
         if (body === null) return true;
         if (typeof body.x !== 'number' || typeof body.z !== 'number') {
           this.sendJsonError(res, 400, 'Expected body { x: number, z: number }');
           return true;
         }
-        const meta: PinMeta = {};
-        const cityKey = this.cityLookup?.getCityKey?.(cityId)
-          ?? (() => {
-            const city = this.cityLookup?.getCityById(cityId);
-            return city ? `${city.originId}:${city.path}` : null;
-          })();
-        if (cityKey) meta.cityKey = cityKey;
-        const pin = this.layoutStore.setPin(cityId, slug, { x: body.x, z: body.z }, meta);
+        if (body.kind && !PIN_KINDS.includes(body.kind)) {
+          this.sendJsonError(res, 400, `Unknown kind: ${body.kind}`);
+          return true;
+        }
+        const extras: PinExtras = {};
+        if (body.kind) extras.kind = body.kind;
+        if (body.source) extras.source = body.source;
+        const pin = this.layoutStore.setPin(
+          cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId), extras,
+        );
         if (!pin) {
-          this.sendJsonError(res, 400, 'Invalid cityId, slug, or coordinates');
+          this.sendJsonError(res, 400, 'Invalid cityId, slug, coordinates, or source');
           return true;
         }
         this.sendJsonSuccess(res, { pin });
@@ -101,7 +115,55 @@ export class HttpApiLayouts {
       }
     }
 
+    // POST /layouts/:cityId/files — pin a file (or URL). Server derives a stable
+    // slug from the source so re-pinning is idempotent. See [[pin-any-file-type]].
+    const filesMatch = url.pathname.match(FILES_PATH_RE);
+    if (filesMatch && method === 'POST') {
+      const cityId = decodeURIComponent(filesMatch[1]);
+      const body = await this.parseJsonBody<FilePinBody>(req, res);
+      if (body === null) return true;
+      if (typeof body.x !== 'number' || typeof body.z !== 'number') {
+        this.sendJsonError(res, 400, 'Expected body { x, z, source }');
+        return true;
+      }
+      if (!body.source || typeof body.source !== 'object') {
+        this.sendJsonError(res, 400, 'Expected source { originId, path } or { url }');
+        return true;
+      }
+      const slug = slugForSource(body.source);
+      if (!slug) {
+        this.sendJsonError(res, 400, 'Invalid source: provide either {originId,path} or {url}, not both');
+        return true;
+      }
+      const kind = body.kind ?? (body.source.path ? kindFromPath(body.source.path) : 'other');
+      if (!PIN_KINDS.includes(kind)) {
+        this.sendJsonError(res, 400, `Unknown kind: ${kind}`);
+        return true;
+      }
+      const pin = this.layoutStore.setPin(
+        cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId),
+        { kind, source: body.source },
+      );
+      if (!pin) {
+        this.sendJsonError(res, 400, 'Invalid cityId, coordinates, or source');
+        return true;
+      }
+      this.sendJsonSuccess(res, { pin });
+      return true;
+    }
+
     return false;
+  }
+
+  private metaFor(cityId: string): PinMeta {
+    const meta: PinMeta = {};
+    const cityKey = this.cityLookup?.getCityKey?.(cityId)
+      ?? (() => {
+        const city = this.cityLookup?.getCityById(cityId);
+        return city ? `${city.originId}:${city.path}` : null;
+      })();
+    if (cityKey) meta.cityKey = cityKey;
+    return meta;
   }
 
   /**

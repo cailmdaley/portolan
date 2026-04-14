@@ -142,6 +142,59 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
     expect(byStatus.live.pinCount).toBe(1);
   });
 
+  it('PUT accepts kind and source extras for non-fiber pins', async () => {
+    const source = { originId: 'local', path: '/abs/paper.pdf' };
+    const put = await httpRequest(api, 'PUT', '/layouts/city-a/pins/file-deadbeef', {
+      x: 1, z: 2, kind: 'pdf', source,
+    });
+    expect(put.status).toBe(200);
+    expect(put.data.pin).toMatchObject({ slug: 'file-deadbeef', kind: 'pdf', source });
+  });
+
+  it('PUT rejects unknown kind', async () => {
+    const res = await httpRequest(api, 'PUT', '/layouts/city-a/pins/p', {
+      x: 0, z: 0, kind: 'spaceship',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /files derives a stable slug and persists the pin', async () => {
+    const source = { originId: 'local', path: '/abs/paper.pdf' };
+    const first = await httpRequest(api, 'POST', '/layouts/city-a/files', {
+      x: 4, z: -2, source,
+    });
+    expect(first.status).toBe(200);
+    expect(first.data.pin.slug).toMatch(/^file-/);
+    expect(first.data.pin.kind).toBe('pdf'); // inferred from extension
+    expect(first.data.pin.source).toEqual(source);
+
+    // Re-pinning the same source updates in place — same slug.
+    const second = await httpRequest(api, 'POST', '/layouts/city-a/files', {
+      x: 5, z: 5, source,
+    });
+    expect(second.data.pin.slug).toBe(first.data.pin.slug);
+    expect(second.data.pin.x).toBe(5);
+
+    const list = await httpRequest(api, 'GET', '/layouts/city-a');
+    expect(list.data.pins).toHaveLength(1);
+  });
+
+  it('POST /files accepts a URL source and infers kind=other', async () => {
+    const res = await httpRequest(api, 'POST', '/layouts/city-a/files', {
+      x: 0, z: 0, source: { url: 'https://arxiv.org/abs/2401.00001' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.data.pin.slug).toMatch(/^url-/);
+    expect(res.data.pin.kind).toBe('other');
+  });
+
+  it('POST /files rejects ambiguous source', async () => {
+    const res = await httpRequest(api, 'POST', '/layouts/city-a/files', {
+      x: 0, z: 0, source: { originId: 'local', path: '/a', url: 'https://x' },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('DELETE removes the pin', async () => {
     await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 0, z: 0 });
     const del = await httpRequest(api, 'DELETE', '/layouts/city-a/pins/fiber-1');
