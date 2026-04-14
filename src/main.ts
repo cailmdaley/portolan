@@ -486,6 +486,8 @@ const mapInteractions = new MapInteractionController({
   onPinContextMenu: (slug, clientX, clientY) => {
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return
+    // The menu is the primary surface; the hover tooltip only clutters it.
+    pinHoverPreview.hide()
     contextMenu.show(clientX, clientY, [
       {
         label: 'Open Fiber',
@@ -500,12 +502,14 @@ const mapInteractions = new MapInteractionController({
         action: () => {
           movingPinSlug = slug
           document.body.style.cursor = 'crosshair'
+          pinRenderer.setHovered(null)
         },
       },
       {
         label: 'Unpin Card',
         action: () => {
           pinRenderer.remove(slug)
+          pinHoverPreview.hide()
           void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
         },
         danger: true,
