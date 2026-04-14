@@ -9,6 +9,7 @@
 
 import { IncomingMessage, ServerResponse } from 'http';
 import type { LayoutStore, PinMeta, PinPosition } from './LayoutStore.js';
+import { stableCityId } from './CityManager.js';
 
 type JsonBodyParser = <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
 type JsonErrorSender = (res: ServerResponse, status: number, error: string) => void;
@@ -16,6 +17,10 @@ type JsonSuccessSender = (res: ServerResponse, data: Record<string, unknown>) =>
 
 interface CityLookup {
   getCityById(cityId: string): { path: string; originId: string } | null;
+  /** Optional: returns the normalized `${originId}:${path}` cityKey for a known cityId. */
+  getCityKey?(cityId: string): string | null;
+  /** Optional: lists every known city — used by the /layouts/_diagnostics endpoint. */
+  getCities?(): Array<{ id: string; path: string; originId: string }>;
 }
 
 interface Options {
@@ -49,6 +54,11 @@ export class HttpApiLayouts {
   async handle(url: URL, req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const method = req.method ?? 'GET';
 
+    if (url.pathname === '/layouts/_diagnostics' && method === 'GET') {
+      this.sendJsonSuccess(res, { layouts: this.diagnose() });
+      return true;
+    }
+
     const listMatch = url.pathname.match(LIST_PATH_RE);
     if (listMatch && method === 'GET') {
       const cityId = decodeURIComponent(listMatch[1]);
@@ -69,8 +79,12 @@ export class HttpApiLayouts {
           return true;
         }
         const meta: PinMeta = {};
-        const city = this.cityLookup?.getCityById(cityId);
-        if (city) meta.cityKey = `${city.originId}:${city.path}`;
+        const cityKey = this.cityLookup?.getCityKey?.(cityId)
+          ?? (() => {
+            const city = this.cityLookup?.getCityById(cityId);
+            return city ? `${city.originId}:${city.path}` : null;
+          })();
+        if (cityKey) meta.cityKey = cityKey;
         const pin = this.layoutStore.setPin(cityId, slug, { x: body.x, z: body.z }, meta);
         if (!pin) {
           this.sendJsonError(res, 400, 'Invalid cityId, slug, or coordinates');
@@ -88,5 +102,46 @@ export class HttpApiLayouts {
     }
 
     return false;
+  }
+
+  /**
+   * Classify every layout file on disk against the live city set.
+   *
+   * Status:
+   *   - `live`    — cityId matches a known city, cityKey (if recorded) hashes to it
+   *   - `mismatch`— cityKey is recorded but does NOT hash to cityId (corrupted file)
+   *   - `orphan`  — cityKey is recorded and well-formed, but no current city has that id
+   *   - `unkeyed` — pre-2026-04 file with no cityKey; cannot diagnose without a write
+   */
+  private diagnose(): Array<{
+    cityId: string;
+    cityKey: string | null;
+    pinCount: number;
+    file: string;
+    status: 'live' | 'mismatch' | 'orphan' | 'unkeyed';
+    currentCityName?: string;
+  }> {
+    const cities = this.cityLookup?.getCities?.() ?? [];
+    const cityById = new Map(cities.map(c => [c.id, c]));
+    return this.layoutStore.scanLayouts().map(({ cityId, cityKey, file }) => {
+      const pinCount = this.layoutStore.getPins(cityId).length;
+      const liveCity = cityById.get(cityId);
+      let status: 'live' | 'mismatch' | 'orphan' | 'unkeyed';
+      if (cityKey === null) {
+        status = liveCity ? 'live' : 'unkeyed';
+      } else if (stableCityId(cityKey) !== cityId) {
+        status = 'mismatch';
+      } else {
+        status = liveCity ? 'live' : 'orphan';
+      }
+      return {
+        cityId,
+        cityKey,
+        pinCount,
+        file,
+        status,
+        ...(liveCity ? { currentCityName: liveCity.path } : {}),
+      };
+    });
   }
 }

@@ -18,7 +18,7 @@ import { resolve, basename } from 'path';
 import { createHash } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 
-function stableCityId(key: string): string {
+export function stableCityId(key: string): string {
   return createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 import type { GitStatus } from './GitStatusManager.js';
@@ -238,6 +238,18 @@ export class CityManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Public: cityKey for a known cityId. Returns the same normalized
+   * `${originId}:${path}` string that hashes to the cityId. Used by
+   * LayoutStore via HttpApiLayouts to record the key on each pin write,
+   * so a later orphan-detection pass can verify cityId = stableCityId(cityKey).
+   */
+  getCityKey(cityId: string): string | null {
+    const city = this.getCityById(cityId);
+    if (!city) return null;
+    return this.makeKey(city.originId, city.path);
   }
 
   /**
