@@ -115,6 +115,21 @@ const domPinLayer = new DomPinLayer({
     if (!src.path || !src.originId) return null
     return `http://${window.location.hostname}:4004/project-file/${encodeURIComponent(src.originId)}${src.path}`
   },
+  onContextMenu: (slug, clientX, clientY) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    contextMenu.show(clientX, clientY, [
+      {
+        label: 'Unpin Card',
+        action: () => {
+          removePin(slug)
+          syncPinnedSlugs()
+          void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
+        },
+        danger: true,
+      },
+    ])
+  },
 })
 
 // Repaint pin cards once EB Garamond has loaded. Initial paints happen before

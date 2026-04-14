@@ -29,6 +29,8 @@ export interface DomPinLayerOptions {
    *  can't be resolved (unknown originId, missing fields, etc.) — the pin is
    *  rendered as a stub placeholder so the user still sees it on the map. */
   resolveSource: (pin: Pin) => string | null
+  /** Right-click on a DOM pin → host opens a context menu (unpin, …). */
+  onContextMenu?: (slug: string, clientX: number, clientY: number) => void
 }
 
 interface DomPinEntry {
@@ -42,6 +44,7 @@ interface DomPinEntry {
 export class DomPinLayer {
   private readonly camera: Camera
   private readonly resolveSource: (pin: Pin) => string | null
+  private readonly onContextMenu?: (slug: string, clientX: number, clientY: number) => void
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -49,6 +52,7 @@ export class DomPinLayer {
   constructor(opts: DomPinLayerOptions) {
     this.camera = opts.camera
     this.resolveSource = opts.resolveSource
+    this.onContextMenu = opts.onContextMenu
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -161,6 +165,13 @@ export class DomPinLayer {
     })
     const inner = renderInner(pin, url)
     el.appendChild(inner)
+    if (this.onContextMenu) {
+      el.addEventListener('contextmenu', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        this.onContextMenu?.(pin.slug, event.clientX, event.clientY)
+      })
+    }
     return { slug: pin.slug, pin, el, inner, hovered: false }
   }
 }
