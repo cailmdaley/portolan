@@ -140,6 +140,60 @@ function handleCityClick(city: City): void {
 // Setup file viewer modal
 const fileViewerModal = new FileViewerModal()
 
+// Debug seam: mount vellum's React FileViewerPage against the portolan adapter.
+// Activated via ?vellumDebug=<encoded-path>[&vellumOrigin=<id>][&vellumCity=<id>]
+// or window.__mountVellumFileViewer({ path, originId?, cityId? }).
+// See vellum-in-portolan fiber; this is how we exercise the React + adapter seam
+// before FileViewerModal itself gets absorbed.
+void installVellumDebugMount()
+async function installVellumDebugMount(): Promise<void> {
+  const { mountVellumFileViewer } = await import('./vellum/mount')
+  const openDebug = (opts: { path: string; originId?: string; cityId?: string }) => {
+    const overlay = document.createElement('div')
+    overlay.className = 'vellum-debug-overlay'
+    Object.assign(overlay.style, {
+      position: 'fixed', inset: '0', background: 'rgba(20,18,16,0.82)',
+      zIndex: '9999', display: 'flex', alignItems: 'stretch', justifyContent: 'stretch',
+    } as CSSStyleDeclaration)
+    const shell = document.createElement('div')
+    Object.assign(shell.style, {
+      margin: '40px', flex: '1', background: '#EDE8E0', color: '#2E2A26',
+      borderRadius: '6px', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column',
+    } as CSSStyleDeclaration)
+    const header = document.createElement('div')
+    header.textContent = `vellum debug — ${opts.path}`
+    Object.assign(header.style, {
+      padding: '8px 12px', borderBottom: '1px solid rgba(0,0,0,0.1)',
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: '#7A7368',
+    } as CSSStyleDeclaration)
+    const close = document.createElement('button')
+    close.textContent = '×'
+    Object.assign(close.style, {
+      position: 'absolute', right: '8px', top: '4px', border: '0', background: 'transparent',
+      fontSize: '22px', cursor: 'pointer', color: '#7A7368',
+    } as CSSStyleDeclaration)
+    const host = document.createElement('div')
+    Object.assign(host.style, { flex: '1', overflow: 'auto' } as CSSStyleDeclaration)
+    shell.append(header, close, host)
+    overlay.append(shell)
+    document.body.appendChild(overlay)
+    const handle = mountVellumFileViewer({ container: host, ...opts })
+    const teardown = () => { handle.unmount(); overlay.remove() }
+    close.addEventListener('click', teardown)
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) teardown() })
+  }
+  ;(window as unknown as { __mountVellumFileViewer: typeof openDebug }).__mountVellumFileViewer = openDebug
+  const params = new URLSearchParams(window.location.search)
+  const debugPath = params.get('vellumDebug')
+  if (debugPath) {
+    openDebug({
+      path: debugPath,
+      originId: params.get('vellumOrigin') ?? undefined,
+      cityId: params.get('vellumCity') ?? undefined,
+    })
+  }
+}
+
 // Wire up file click from worker hover tooltip to file viewer
 zoneRenderer.setWorkerFileClickHandler((fullPath, originId, workerId) => {
   const city = findBestMatchingCity(cities, originId, fullPath)
