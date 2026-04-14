@@ -60,6 +60,7 @@ export class PinRenderer {
   private readonly scene: Scene
   private readonly entries = new Map<string, PinEntry>()
   private readonly fiberInfoFor: (slug: string) => PinFiberInfo | null
+  private hoveredSlug: string | null = null
 
   constructor(scene: Scene, opts: PinRendererOptions = {}) {
     this.scene = scene
@@ -94,13 +95,20 @@ export class PinRenderer {
    *  picking the one the cursor is most directly aiming at, regardless of
    *  iteration order. */
   pickAtWorld(worldX: number, worldZ: number): string | null {
-    const halfW = CARD_WIDTH / 2
-    const halfH = CARD_HEIGHT / 2
+    const baseHalfW = CARD_WIDTH / 2
+    const baseHalfH = CARD_HEIGHT / 2
+    // Currently-hovered card uses its scaled bounds so small cursor drifts
+    // beyond the unscaled rect don't un-hover the visibly-larger card.
+    const hoveredHalfW = baseHalfW * HOVER_SCALE
+    const hoveredHalfH = baseHalfH * HOVER_SCALE
     let hit: string | null = null
     let bestDistSq = Infinity
     for (const entry of this.entries.values()) {
       const dx = worldX - entry.x
       const dz = worldZ - entry.z
+      const isHovered = entry.slug === this.hoveredSlug
+      const halfW = isHovered ? hoveredHalfW : baseHalfW
+      const halfH = isHovered ? hoveredHalfH : baseHalfH
       if (Math.abs(dx) > halfW || Math.abs(dz) > halfH) continue
       const distSq = dx * dx + dz * dz
       if (distSq < bestDistSq) {
@@ -115,6 +123,7 @@ export class PinRenderer {
    *  anchor disc stays put so the pin-point remains visible. Safe to call
    *  repeatedly with the same slug. */
   setHovered(slug: string | null): void {
+    this.hoveredSlug = slug
     for (const entry of this.entries.values()) {
       const lifted = entry.slug === slug
       entry.card.position.y = lifted ? CARD_Y + HOVER_LIFT : CARD_Y
@@ -149,9 +158,11 @@ export class PinRenderer {
     })
     entry.texture.dispose()
     this.entries.delete(slug)
+    if (this.hoveredSlug === slug) this.hoveredSlug = null
   }
 
   clear(): void {
+    this.hoveredSlug = null
     for (const slug of [...this.entries.keys()]) this.remove(slug)
   }
 
