@@ -161,6 +161,23 @@ function openFile(args: OpenFileArgs): void {
   })
 }
 
+// Vellum workspace modal for a city — narrative / workspace / delta / map modes
+// against the PortolanAdapter. Replaces TapestryView on `t` / deep-press; see
+// tapestry-dissolves. Single-instance: close the previous handle before opening
+// a new city.
+let activeWorkspaceHandle: { close(): void } | null = null
+function openCityWorkspace(city: City): void {
+  activeWorkspaceHandle?.close()
+  activeWorkspaceHandle = null
+  void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
+    const handle = openVellumWorkspaceModal({
+      cityId: city.id,
+      originId: city.originId,
+    })
+    activeWorkspaceHandle = handle
+  })
+}
+
 // URL-param auto-open retained for deep-linking and debugging.
 const initialParams = new URLSearchParams(window.location.search)
 const debugPath = initialParams.get('vellumDebug')
@@ -201,21 +218,22 @@ cityPanel.setOnFocusWorker((sessionId) => {
   mapActions?.focusKittyTab(sessionId)
 })
 
-// Tapestry view — native DAG visualization for fibers
+// Tapestry view — retained under a legacy flag for side-by-side comparison
+// during the tapestry-dissolves migration. Default path is vellum's workspace.
+// TODO(tapestry-dissolves): delete TapestryView + friends once vellum workspace is proven.
 const tapestryView = new TapestryView()
-
-// Wire up View Claims button — uses native TapestryView
-cityPanel.setOnViewClaims((city) => {
-  cityPanel.hide()
-  tapestryView.show(city)
-})
-
-// Wire up worker lookup for tapestry view
 tapestryView.setOnGetWorkers((city) => getCityWorkers(city, sessions))
-
-// Wire up file navigation from tapestry view — open files in vellum.
 tapestryView.setOnOpenFile((filePath, city, line) => {
   openFile({ path: filePath, originId: city.originId, cityId: city.id, jumpToLine: line })
+})
+
+const useLegacyTapestry = new URLSearchParams(window.location.search).has('legacyTapestry')
+
+// View Claims button → vellum workspace (or legacy TapestryView when flagged).
+cityPanel.setOnViewClaims((city) => {
+  cityPanel.hide()
+  if (useLegacyTapestry) tapestryView.show(city)
+  else openCityWorkspace(city)
 })
 
 // Setup playground viewer
@@ -320,7 +338,8 @@ const stateSync = new FrontendStateSync({
     const urlCity = cities.find(c => c.id === urlCityId)
     if (!urlCity) return
     cityPanel.hide()
-    tapestryView.show(urlCity)
+    if (useLegacyTapestry) tapestryView.show(urlCity)
+    else openCityWorkspace(urlCity)
   },
   onActivity: ({ activitySessionKey, activities }) => {
     zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
@@ -348,7 +367,8 @@ const mapInteractions = new MapInteractionController({
     handleCityClick(city)
     if (city.hasClaims) {
       cityPanel.hide()
-      tapestryView.show(city)
+      if (useLegacyTapestry) tapestryView.show(city)
+      else openCityWorkspace(city)
     } else {
       playgroundViewer.show(city)
     }
@@ -404,7 +424,8 @@ const onGlobalHotkeys = (event: KeyboardEvent): void => {
   if (event.key === 't' && city && cityPanel.isVisible()) {
     event.preventDefault()
     cityPanel.hide()
-    tapestryView.show(city)
+    if (useLegacyTapestry) tapestryView.show(city)
+    else openCityWorkspace(city)
   }
 }
 

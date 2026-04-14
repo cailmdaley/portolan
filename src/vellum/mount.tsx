@@ -16,7 +16,7 @@
 
 import { StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { AdapterProvider, FileViewerModal, FileViewerPage } from 'vellum'
+import { AdapterProvider, FileViewerModal, FileViewerPage, WorkspaceMount } from 'vellum'
 import 'vellum/css'
 import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
 
@@ -112,6 +112,65 @@ export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHand
           jumpToLine={opts.jumpToLine}
           onClose={close}
         />
+      </AdapterProvider>
+    </StrictMode>,
+  )
+
+  return { close }
+}
+
+export interface OpenWorkspaceModalOptions {
+  cityId: string
+  /** Initial fiber slug to land on. Typically `<cityId>/<cityId>` (the city's root fiber). */
+  initialSlug?: string
+  originId?: string
+}
+
+/**
+ * Full-viewport vellum workspace modal for a portolan city. Mounts
+ * vellum's WorkspaceMount (narrative / workspace / delta / map modes) against
+ * the PortolanAdapter for the given city. Replaces the native TapestryView
+ * on `t` / deep-press; see tapestry-dissolves.
+ */
+export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): VellumModalHandle {
+  const container = document.createElement('div')
+  container.className = 'vellum-workspace-modal-container'
+  Object.assign(container.style, {
+    position: 'fixed',
+    inset: '0',
+    zIndex: '1000',
+    background: 'var(--porch-panel, #ede8e0)',
+    overflow: 'hidden',
+  })
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  const adapter = createPortolanAdapter({
+    cityId: opts.cityId,
+    defaultOriginId: opts.originId,
+  })
+
+  const close = () => {
+    root.unmount()
+    container.remove()
+    document.removeEventListener('keydown', onKey, true)
+  }
+
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    }
+  }
+  document.addEventListener('keydown', onKey, true)
+
+  const initialSlug = opts.initialSlug ?? `${opts.cityId}/${opts.cityId}`
+
+  root.render(
+    <StrictMode>
+      <AdapterProvider adapter={adapter}>
+        <WorkspaceMount initialSlug={initialSlug} />
       </AdapterProvider>
     </StrictMode>,
   )
