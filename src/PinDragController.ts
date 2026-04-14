@@ -1,17 +1,19 @@
-// PinDragController.ts - Long-press a fiber in the HUD, drag onto the map,
-// release over a hex to pin the fiber at that world position. Milestone 2 of
+// PinDragController.ts - Click a fiber in the HUD, drag onto the map, release
+// over a hex to pin the fiber at that world position. Milestone 2 of
 // `tapestry-dissolves`: drag-to-pin replacing the dev helpers on `window`.
 //
 // Flow:
-//   1. pointerdown on `.hud-fiber-item` → arm a timer (LONG_PRESS_MS).
-//   2. If the pointer moves more than MOVE_CANCEL_PX before the timer fires,
-//      cancel so the user can still scroll the fiber list.
-//   3. Timer fires → enter drag mode: build a ghost element that follows the
-//      cursor, add a `.pin-dragging` class on <body> to hide normal cursors.
-//   4. On pointerup: if the release is over the canvas and camera.screenToWorld
-//      returns a point, persist via putPin + upsert the renderer. Otherwise
-//      cancel cleanly.
-//   5. Escape cancels at any stage.
+//   1. pointerdown on `.hud-fiber-item` → arm. No timer.
+//   2. First pointermove past DRAG_THRESHOLD_PX enters drag mode: build a
+//      ghost that follows the cursor; add `.pin-dragging` on <body>.
+//   3. On pointerup: if screenToWorld returns a finite point inside the canvas
+//      bounding rect, persist via putPin + upsert the renderer.
+//   4. Escape cancels at any stage.
+//
+// Why no long-press: user feedback 2026-04-14 — "super not intuitive it should
+// just be click and drag, no long-press." HUD rows have their own click path
+// (opening the fiber), but that fires on pointerup with no movement, so a
+// pure move-threshold gesture coexists cleanly.
 //
 // Lives at the main-bootstrap layer because it needs the pin renderer, the
 // camera (for screenToWorld), and the currently pinned city id — all of which
@@ -19,8 +21,7 @@
 import type { Pin } from './state/layoutClient'
 import { putPin } from './state/layoutClient'
 
-const LONG_PRESS_MS = 400
-const MOVE_CANCEL_PX = 6
+const DRAG_THRESHOLD_PX = 4
 
 interface PinDragOptions {
   canvas: HTMLCanvasElement
@@ -34,8 +35,8 @@ type Phase = 'idle' | 'arming' | 'dragging'
 export class PinDragController {
   private readonly opts: PinDragOptions
   private phase: Phase = 'idle'
-  private pressTimer: number | null = null
   private activeSlug: string | null = null
+  private armedItem: HTMLElement | null = null
   private startX = 0
   private startY = 0
   private ghost: HTMLElement | null = null
@@ -67,17 +68,19 @@ export class PinDragController {
     const slug = item.dataset.fiberId
     if (!slug) return
     this.activeSlug = slug
+    this.armedItem = item
     this.startX = e.clientX
     this.startY = e.clientY
     this.phase = 'arming'
-    this.pressTimer = window.setTimeout(() => this.startDrag(item), LONG_PRESS_MS)
   }
 
   private onPointerMove = (e: PointerEvent): void => {
     if (this.phase === 'arming') {
       const dx = e.clientX - this.startX
       const dy = e.clientY - this.startY
-      if (dx * dx + dy * dy > MOVE_CANCEL_PX * MOVE_CANCEL_PX) this.cancel()
+      if (dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+        if (this.armedItem) this.startDrag(this.armedItem)
+      }
       return
     }
     if (this.phase === 'dragging' && this.ghost) {
@@ -88,16 +91,39 @@ export class PinDragController {
 
   private onPointerUp = (e: PointerEvent): void => {
     if (this.phase !== 'dragging') {
+      // Plain click (no drag) — let the HUD's own click handler run.
       this.cancel()
       return
     }
+    // Suppress the synthetic click that follows pointerup so the HUD's fiber
+    // click handler (opens the file) doesn't fire after a drag completes.
+    const suppressClick = (ev: Event): void => {
+      ev.stopPropagation()
+      ev.preventDefault()
+      window.removeEventListener('click', suppressClick, true)
+    }
+    window.addEventListener('click', suppressClick, true)
+    window.setTimeout(() => window.removeEventListener('click', suppressClick, true), 0)
     const slug = this.activeSlug
     const cityId = this.opts.getPinnedCityId()
     this.cancel()
-    if (!slug || !cityId) return
-    if (!this.isOverCanvas(e)) return
+    if (!slug) {
+      console.warn('[pins] drag-to-pin: no active slug')
+      return
+    }
+    if (!cityId) {
+      console.warn('[pins] drag-to-pin: no pinned city; open a city first')
+      return
+    }
+    if (!this.isOverCanvas(e)) {
+      console.warn('[pins] drag-to-pin: release not over canvas bounds')
+      return
+    }
     const world = this.opts.screenToWorld(e.clientX, e.clientY)
-    if (!Number.isFinite(world.x) || !Number.isFinite(world.z)) return
+    if (!Number.isFinite(world.x) || !Number.isFinite(world.z)) {
+      console.warn('[pins] drag-to-pin: screenToWorld returned non-finite', world)
+      return
+    }
     void putPin(cityId, slug, { x: world.x, z: world.z })
       .then(pin => this.opts.onPinned(pin))
       .catch(err => console.error('[pins] drag-to-pin failed', err))
@@ -108,10 +134,6 @@ export class PinDragController {
   }
 
   private cancel = (): void => {
-    if (this.pressTimer !== null) {
-      clearTimeout(this.pressTimer)
-      this.pressTimer = null
-    }
     if (this.ghost) {
       this.ghost.remove()
       this.ghost = null
@@ -119,10 +141,10 @@ export class PinDragController {
     document.body.classList.remove('pin-dragging')
     this.phase = 'idle'
     this.activeSlug = null
+    this.armedItem = null
   }
 
   private startDrag(item: HTMLElement): void {
-    this.pressTimer = null
     if (this.phase !== 'arming' || !this.activeSlug) return
     this.phase = 'dragging'
     this.ghost = this.buildGhost(this.activeSlug, item)
@@ -141,10 +163,19 @@ export class PinDragController {
   }
 
   private isOverCanvas(e: PointerEvent): boolean {
-    // elementFromPoint respects stacking context — any HUD/modal above the
-    // canvas wins, which is exactly what we want (don't pin through a modal).
-    const el = document.elementFromPoint(e.clientX, e.clientY)
-    return el === this.opts.canvas
+    // Geometry, not stacking. The canvas fills the window but the HUD sidebar,
+    // top bar, menus, and the drag ghost itself all overlay it — strict
+    // elementFromPoint equality silently rejected drops released on top of any
+    // of those. If the pointer is inside the canvas's bounding rect, treat it
+    // as a valid drop; upstream modals that want to block drops can stop the
+    // event before we see it.
+    const rect = this.opts.canvas.getBoundingClientRect()
+    return (
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom
+    )
   }
 }
 
