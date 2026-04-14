@@ -170,6 +170,68 @@ export class HttpApiTapestry {
     }
   }
 
+  /**
+   * /astra/graph?cityId=X — vellum-shaped AstraGraph (nodes + links).
+   *
+   * Reshapes the same fiber data /tapestry reads, but emits vellum's
+   * GraphNode/GraphLink types (see lightcone/vellum/src/utils/content-types.ts).
+   * Unlike /tapestry this returns *all* fibers, not only those tagged
+   * `tapestry:`/`rule:`, because vellum's graph view handles filtering itself.
+   *
+   * First-pass fields: id, slug, label, status, tags, kind, createdAt.
+   * Links default to kind 'data-flow' (from dependsOn). ASTRA extras
+   * (decisions/findings/inputs/outputs, tempered, nested containment, wikilink
+   * cites) are intentionally stubbed — they grow in as mystra-on-fiber lands.
+   */
+  async handleAstraGraph(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const fiberIds = new Set(allFibers.map((fiber) => fiber.id));
+
+      const nodes = allFibers.map((fiber) => ({
+        id: fiber.id,
+        slug: fiber.id,
+        label: fiber.title,
+        status: fiber.status,
+        tags: fiber.tags ?? [],
+        kind: fiber.kind,
+        createdAt: fiber.createdAt || undefined,
+        tempered: false,
+        hasASTRA: false,
+        decisionCount: 0,
+        findingCount: 0,
+      }));
+
+      const links: Array<{ source: string; target: string; kind: 'data-flow' }> = [];
+      for (const fiber of allFibers) {
+        for (const dependency of fiber.dependsOn ?? []) {
+          if (fiberIds.has(dependency)) {
+            links.push({ source: dependency, target: fiber.id, kind: 'data-flow' });
+          }
+        }
+      }
+
+      this.sendJsonSuccess(res, { nodes, links });
+    } catch (error: any) {
+      console.error('Failed to build astra graph:', error);
+      this.sendJsonError(res, 500, 'Failed to build astra graph: ' + error.message);
+    }
+  }
+
   async handleTapestryAsset(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
     const rawPath = url.pathname.replace('/tapestry-asset/', '');

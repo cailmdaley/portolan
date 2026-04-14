@@ -180,6 +180,11 @@ export class HttpApi {
       return true;
     }
 
+    if (url.pathname === '/astra/graph') {
+      await this.tapestryApi.handleAstraGraph(url, res);
+      return true;
+    }
+
     if (url.pathname.startsWith('/tapestry-asset/')) {
       await this.tapestryApi.handleTapestryAsset(url, res);
       return true;
