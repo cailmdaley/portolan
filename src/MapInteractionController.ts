@@ -74,6 +74,7 @@ export class MapInteractionController {
 
   private forceMouseX = 0
   private forceMouseY = 0
+  private hasForceCursor = false
   private forceTouchFired = false
   private workerCycleIndex = -1
   private cityCycleIndex = -1
@@ -251,6 +252,7 @@ export class MapInteractionController {
   private readonly onCanvasMouseMove = (e: MouseEvent): void => {
     this.forceMouseX = e.clientX
     this.forceMouseY = e.clientY
+    this.hasForceCursor = true
 
     if (
       this.camera.dragging ||
@@ -317,7 +319,7 @@ export class MapInteractionController {
     ) return
     if (!this.findPinAtWorldPos) return
     // Guard against the case where the cursor hasn't been over the canvas yet.
-    if (this.forceMouseX === 0 && this.forceMouseY === 0) return
+    if (!this.hasForceCursor) return
     const worldPos = this.camera.screenToWorld(this.forceMouseX, this.forceMouseY)
     const pinSlug = this.findPinAtWorldPos(worldPos.x, worldPos.z) ?? null
     if (pinSlug !== this.hoveredPinSlug) {
@@ -332,6 +334,7 @@ export class MapInteractionController {
       this.hoveredPinSlug = null
       this.onPinHoverChange?.(null)
     }
+    this.hasForceCursor = false
     if (!this.getMovingCityId()) {
       this.canvas.style.cursor = ''
     }

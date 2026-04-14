@@ -31,6 +31,7 @@ export class CityHUD {
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null = null
   private onOpenDirectory: ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null = null
   private onFocusWorker: ((sessionId: string) => void) | null = null
+  private onPinnedFiberHover: ((slug: string | null) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
   constructor() {
@@ -67,6 +68,7 @@ export class CityHUD {
       getWebSocket: () => this.ws,
       getOnOpenFile: () => this.onOpenFile,
       getOnOpenDirectory: () => this.onOpenDirectory,
+      getOnPinnedFiberHover: () => this.onPinnedFiberHover,
       renderEmptyFileSearchState: () => this.fileTree.renderEmptySearchState(),
     })
     this.setupEventHandlers()
@@ -291,6 +293,10 @@ export class CityHUD {
 
   setNewWorkerDialog(dialog: NewWorkerDialog): void {
     this.newWorkerDialog = dialog
+  }
+
+  setOnPinnedFiberHover(callback: (slug: string | null) => void): void {
+    this.onPinnedFiberHover = callback
   }
 
   setOnFocusWorker(callback: (sessionId: string) => void): void {

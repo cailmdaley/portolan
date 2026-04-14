@@ -286,6 +286,14 @@ cityPanel.setOnFocusWorker((sessionId) => {
   mapActions?.focusKittyTab(sessionId)
 })
 
+// HUD→map hover bridge: hovering a pinned fiber in the HUD lifts its card on
+// the map. The canvas's own hover state clears whenever the cursor enters the
+// HUD (canvas mouseleave), so this doesn't fight the on-map hover system —
+// see tapestry-dissolves.
+cityPanel.setOnPinnedFiberHover((slug) => {
+  pinRenderer.setHovered(slug)
+})
+
 cityPanel.setOnViewClaims((city) => {
   cityPanel.hide()
   openCityWorkspace(city)

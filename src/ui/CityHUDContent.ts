@@ -24,6 +24,7 @@ interface CityHUDContentHost {
   getWebSocket: () => WebSocket | null
   getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   getOnOpenDirectory: () => ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null
+  getOnPinnedFiberHover: () => ((slug: string | null) => void) | null
   renderEmptyFileSearchState: () => void
 }
 
@@ -135,6 +136,31 @@ export class CityHUDContent {
   }
 
   private setupDelegatedListeners(): void {
+    // HUD→map pin hover bridge: when the cursor passes over a pinned fiber
+    // entry (either in the open fiber list or a search result), lift its
+    // corresponding card on the map. Closes the HUD↔map coherence loop that
+    // the `pinned` badge established visually — see tapestry-dissolves.
+    // mouseover/mouseout bubble, so a single listener on the sidebar covers
+    // both fiberList and searchResultsList.
+    let hoveredPinnedSlug: string | null = null
+    const setHoveredPinned = (slug: string | null): void => {
+      if (slug === hoveredPinnedSlug) return
+      hoveredPinnedSlug = slug
+      this.host.getOnPinnedFiberHover()?.(slug)
+    }
+    this.host.sidebar.addEventListener('mouseover', (event) => {
+      const item = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-item.pinned')
+      setHoveredPinned(item?.dataset.fiberId ?? null)
+    })
+    this.host.sidebar.addEventListener('mouseout', (event) => {
+      // If the relatedTarget (where the cursor moved to) is still inside a
+      // pinned item, mouseover will handle the transition. Only clear when
+      // leaving pinned items entirely.
+      const related = event.relatedTarget as HTMLElement | null
+      if (related?.closest?.('.hud-fiber-item.pinned')) return
+      setHoveredPinned(null)
+    })
+
     this.host.fiberList.addEventListener('click', (event) => {
       const handoff = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-handoff')
       if (handoff) {
