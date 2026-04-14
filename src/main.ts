@@ -461,6 +461,7 @@ const mapInteractions = new MapInteractionController({
   },
   onPinHoverChange: (slug) => {
     pinRenderer.setHovered(slug)
+    cityPanel.setMapHoveredFiber(slug)
     if (!slug) {
       pinHoverPreview.setHover(null, null)
       return

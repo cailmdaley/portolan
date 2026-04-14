@@ -245,6 +245,20 @@ export class CityHUD {
     this.content.setPinnedSlugs(slugs)
   }
 
+  /** Reflect map-pin hover back into the HUD: the matching `.hud-fiber-item`
+   *  gets a `.map-hovered` class so the user can see which HUD entry
+   *  corresponds to the lifted card on the map. Pair to
+   *  `setOnPinnedFiberHover`, which bridges the other direction. */
+  setMapHoveredFiber(slug: string | null): void {
+    const prev = this.sidebar.querySelectorAll<HTMLElement>('.hud-fiber-item.map-hovered')
+    prev.forEach((el) => el.classList.remove('map-hovered'))
+    if (!slug) return
+    const next = this.sidebar.querySelectorAll<HTMLElement>(
+      `.hud-fiber-item[data-fiber-id="${CSS.escape(slug)}"]`,
+    )
+    next.forEach((el) => el.classList.add('map-hovered'))
+  }
+
   getRuntimeStats(): {
     visible: boolean
     activeTab: 'fibers' | 'files'

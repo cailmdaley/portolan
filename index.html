@@ -2241,6 +2241,13 @@
         color: var(--sepia-accent);
       }
 
+      /* Mirror of on-map pin hover: when the pin card on the map is lifted,
+         its corresponding HUD entry gets the same faint gold wash so the two
+         surfaces feel stitched together. */
+      .hud-fiber-item.map-hovered {
+        background: rgba(154, 123, 53, 0.14);
+      }
+
       .hud-fiber-handoff {
         flex-shrink: 0;
         background: none;
