@@ -10,7 +10,7 @@
 // for why the map-pinned card itself stays a three.js CanvasTexture while the
 // hover preview can adopt vellum's DOM Card primitive.
 
-import type { GraphNode } from 'vellum'
+import type { FiberContent, GraphNode } from 'vellum'
 import {
   mountVellumFiberCardPreview,
   type FiberCardPreviewHandle,
@@ -40,6 +40,7 @@ export class PinHoverPreview {
   private showTimer: number | null = null
   private handle: FiberCardPreviewHandle | null = null
   private mountedForCity: string | undefined = undefined
+  private contentCache = new Map<string, FiberContent>()
 
   constructor(opts: PinHoverPreviewOptions) {
     this.nodeFor = opts.nodeFor
@@ -73,12 +74,27 @@ export class PinHoverPreview {
       const node = this.nodeFor(pending)
       if (!node) return
       this.ensureHandle()
-      this.handle!.update(node, this.width)
+      const cached = this.contentCache.get(pending) ?? null
+      this.handle!.update(node, this.width, cached)
       this.el.style.display = 'block'
       // Position after React commits so measured offsetWidth/Height are valid.
       requestAnimationFrame(() => {
         if (this.activeSlug === pending) this.position(pendingAnchor)
       })
+      // If we don't yet have the prose body for this slug, fetch and re-render
+      // so the lede paragraph appears below the pretext lockup. The pretext-only
+      // variant stays as the first paint so the tooltip feels instant.
+      if (!cached) {
+        this.handle!.fetchContent(pending).then((content) => {
+          if (!content) return
+          this.contentCache.set(pending, content)
+          if (this.activeSlug !== pending || !this.handle) return
+          this.handle.update(node, this.width, content)
+          requestAnimationFrame(() => {
+            if (this.activeSlug === pending) this.position(pendingAnchor)
+          })
+        })
+      }
     }, HOVER_DELAY_MS)
   }
 
@@ -104,6 +120,7 @@ export class PinHoverPreview {
       this.handle = null
     }
     this.mountedForCity = cityId
+    this.contentCache.clear()
     this.handle = mountVellumFiberCardPreview(this.el, {
       cityId,
       originId: this.originIdFor?.(),

@@ -22,6 +22,7 @@ import {
   FileViewerModal,
   FileViewerPage,
   WorkspaceMount,
+  type FiberContent,
   type GraphNode,
 } from 'vellum'
 import 'vellum/css'
@@ -229,8 +230,14 @@ export interface FiberCardPreviewOptions {
 }
 
 export interface FiberCardPreviewHandle {
-  /** Render the card for a new GraphNode. Passing null unmounts the card. */
-  update(node: GraphNode | null, width?: number): void
+  /**
+   * Render the card for a new GraphNode. Passing null clears the card.
+   * Optional `content` threads the fiber body's mdast through so FiberCard
+   * renders the prose lede below the pretext lockup.
+   */
+  update(node: GraphNode | null, width?: number, content?: FiberContent | null): void
+  /** Fetch the fiber body via the mounted adapter. Returns null on miss. */
+  fetchContent(slug: string): Promise<FiberContent | null>
   unmount(): void
 }
 
@@ -251,7 +258,7 @@ export function mountVellumFiberCardPreview(
   })
   const defaultWidth = opts.width ?? 280
 
-  const render = (node: GraphNode | null, width: number) => {
+  const render = (node: GraphNode | null, width: number, content: FiberContent | null) => {
     if (!node) {
       root.render(<StrictMode />)
       return
@@ -259,15 +266,23 @@ export function mountVellumFiberCardPreview(
     root.render(
       <StrictMode>
         <AdapterProvider adapter={adapter}>
-          <FiberCard node={node} width={width} />
+          <FiberCard node={node} width={width} content={content ?? undefined} />
         </AdapterProvider>
       </StrictMode>,
     )
   }
 
   return {
-    update(node, width) {
-      render(node, width ?? defaultWidth)
+    update(node, width, content) {
+      render(node, width ?? defaultWidth, content ?? null)
+    },
+    async fetchContent(slug) {
+      if (!adapter.getFiberContent) return null
+      try {
+        return await adapter.getFiberContent(slug)
+      } catch {
+        return null
+      }
     },
     unmount() {
       root.unmount()
