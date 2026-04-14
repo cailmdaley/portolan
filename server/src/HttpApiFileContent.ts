@@ -6,6 +6,7 @@ import { extname } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Origin } from './OriginManager.js';
 import { shellEscape } from './ShellPathUtils.js';
+import { markdownToMdast } from './MarkdownToMdast.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -210,12 +211,23 @@ export class HttpApiFileContent {
       }
 
       const language = this.extToLanguage(ext);
+      // Parse markdown bodies on the wire so the vellum reader can render via
+      // myst-to-react without pulling a remark stack into the browser bundle.
+      // Quiet failures fall back to source view (vellum handles missing mdast).
+      let mdast: unknown = undefined;
+      if ((ext === 'md' || ext === 'markdown') && content.trim()) {
+        try {
+          mdast = markdownToMdast(content);
+        } catch (parseErr: any) {
+          console.warn('markdownToMdast failed for', filePath, parseErr?.message ?? parseErr);
+        }
+      }
 
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(JSON.stringify({ content, language, path: filePath }));
+      res.end(JSON.stringify({ content, language, path: filePath, mdast }));
     } catch (error: any) {
       console.error('Failed to fetch file content:', error.message);
       const statusCode = error.code === 'ENOENT' ? 404 : 500;

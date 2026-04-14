@@ -103,6 +103,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         kind,
         language: data.language ?? '',
         content: data.content ?? '',
+        mdast: data.mdast,
       };
     },
 
