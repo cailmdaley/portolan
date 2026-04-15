@@ -17,6 +17,17 @@ const DOM_KINDS: ReadonlySet<PinKind> = new Set([
   'fiber', 'pdf', 'html', 'image', 'markdown', 'other',
 ])
 
+export type FiberStatus = 'open' | 'active' | 'closed'
+
+/** Status → glyph + color. Mirrors the felt CLI legend
+ *  ("· untracked, ○ open, ◐ active, ● closed") and the palette canvas pins
+ *  used before the DomPinLayer migration retired them. */
+const STATUS_GLYPHS: Record<FiberStatus, { glyph: string; color: string; label: string }> = {
+  open:   { glyph: '○', color: '#5A7B7B', label: 'open' },
+  active: { glyph: '◐', color: '#9A7B35', label: 'active' },
+  closed: { glyph: '●', color: '#2E2A26', label: 'closed' },
+}
+
 // Reference zoom (camera half-width in world units) at which a DOM pin renders
 // at its intrinsic CSS size — i.e. scale = 1. Picked near the middle of the
 // effective zoom range (Camera clamps to [2, 15]) so PDFs render at "natural"
@@ -93,10 +104,12 @@ export interface DomPinLayerOptions {
   /** Persist a pin's new intrinsic CSS size after a resize-handle drag completes.
    *  See [[file-view-as-floating-card]]. */
   onPinResized?: (slug: string, width: number, height: number) => void
-  /** Resolve a pin's display title asynchronously. Used so fiber pins can show
-   *  their frontmatter `name` in the chrome strip instead of the raw slug.
-   *  Returns null to fall back to the sync `titleForPin` default. */
-  resolveTitle?: (pin: Pin) => Promise<string | null>
+  /** Resolve a pin's display title and (for fiber pins) status asynchronously.
+   *  Title fills the chrome strip in place of the raw slug; status paints a
+   *  glyph on the chrome's left side so the user sees a fiber's open/active/
+   *  closed state without opening the card. Either field returning null falls
+   *  back to its default (sync `titleForPin`; no glyph). */
+  resolveFiberMeta?: (pin: Pin) => Promise<{ name?: string | null; status?: FiberStatus | null } | null>
   /** Map→HUD hover bridge: fires when the cursor enters or leaves a pin element.
    *  DOM pins sit above the canvas and swallow pointer events, so the canvas
    *  hit-test in MapInteractionController never sees hovers over a pin. This
@@ -125,7 +138,7 @@ export class DomPinLayer {
   private readonly screenToWorld?: (x: number, y: number) => { x: number; z: number }
   private readonly onPinMoved?: (slug: string, x: number, z: number) => void
   private readonly onPinResized?: (slug: string, width: number, height: number) => void
-  private readonly resolveTitle?: (pin: Pin) => Promise<string | null>
+  private readonly resolveFiberMeta?: (pin: Pin) => Promise<{ name?: string | null; status?: FiberStatus | null } | null>
   private readonly onHover?: (slug: string | null) => void
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
@@ -143,7 +156,7 @@ export class DomPinLayer {
     this.screenToWorld = opts.screenToWorld
     this.onPinMoved = opts.onPinMoved
     this.onPinResized = opts.onPinResized
-    this.resolveTitle = opts.resolveTitle
+    this.resolveFiberMeta = opts.resolveFiberMeta
     this.onHover = opts.onHover
 
     this.container = document.createElement('div')
@@ -310,12 +323,13 @@ export class DomPinLayer {
     // swallows pointer events."
     const chrome = renderChrome(pin, titleForPin(pin))
     el.appendChild(chrome)
-    if (this.resolveTitle) {
-      void this.resolveTitle(pin).then((resolved) => {
-        if (!resolved) return
+    if (this.resolveFiberMeta) {
+      void this.resolveFiberMeta(pin).then((meta) => {
+        if (!meta) return
         // Entry may have been removed by the time the promise resolves.
         if (this.entries.get(pin.slug)?.el !== el) return
-        setChromeTitle(chrome, resolved, pin.slug)
+        if (meta.name) setChromeTitle(chrome, meta.name, pin.slug)
+        if (meta.status) setChromeStatus(chrome, meta.status)
       }).catch(() => {})
     }
 
@@ -661,7 +675,7 @@ function decodeSafely(s: string): string {
 
 /** Sync fallback title for the chrome strip. For file handles we show the
  *  basename, for URLs the hostname, and for unresolved/empty sources the raw
- *  slug. Fiber pins use this as a placeholder until the async `resolveTitle`
+ *  slug. Fiber pins use this as a placeholder until the async `resolveFiberMeta`
  *  hook returns the fiber's frontmatter `name`. */
 function titleForPin(pin: Pin): string {
   const s = pin.source
@@ -702,10 +716,24 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
     borderBottom: '1px solid rgba(140, 110, 80, 0.45)',
     userSelect: 'none',
   })
+  // Status glyph: empty until `resolveFiberMeta` paints one (fiber pins only).
+  // Width reserved so the title doesn't shift when the glyph appears.
+  const status = document.createElement('span')
+  status.className = 'dom-pin-chrome-status'
+  Object.assign(status.style, {
+    display: 'inline-block',
+    width: '12px',
+    fontSize: '13px',
+    lineHeight: '1',
+    textAlign: 'center',
+    color: 'transparent',
+  })
+  status.textContent = '·'
+  bar.appendChild(status)
   const title = document.createElement('span')
   title.className = 'dom-pin-chrome-title'
   title.textContent = displayTitle
-  title.title = `${displayTitle} · ${pin.slug}`
+  title.title = displayTitle === pin.slug ? pin.slug : `${displayTitle} · ${pin.slug}`
   Object.assign(title.style, {
     flex: '1',
     overflow: 'hidden',
@@ -742,7 +770,17 @@ function setChromeTitle(chrome: HTMLElement, displayTitle: string, slug: string)
   const title = chrome.querySelector<HTMLElement>('.dom-pin-chrome-title')
   if (!title) return
   title.textContent = displayTitle
-  title.title = `${displayTitle} · ${slug}`
+  title.title = displayTitle === slug ? slug : `${displayTitle} · ${slug}`
+}
+
+function setChromeStatus(chrome: HTMLElement, status: FiberStatus): void {
+  const el = chrome.querySelector<HTMLElement>('.dom-pin-chrome-status')
+  if (!el) return
+  const meta = STATUS_GLYPHS[status]
+  if (!meta) return
+  el.textContent = meta.glyph
+  el.style.color = meta.color
+  el.title = meta.label
 }
 
 function sourceKey(pin: Pin): string {

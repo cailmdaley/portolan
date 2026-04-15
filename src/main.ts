@@ -210,11 +210,13 @@ const domPinLayer = new DomPinLayer({
       .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] resize failed', err))
   },
-  // Chrome-strip title resolver. For fiber pins, look up the fiber's
-  // frontmatter `name` so the chrome shows "Pin any file type on the map"
-  // instead of the raw slug "pin-any-file-type". Non-fiber pins keep the
-  // source-derived default (basename / hostname).
-  resolveTitle: async (pin) => {
+  // Chrome-strip metadata resolver. For fiber pins, look up the fiber's
+  // frontmatter `name` (so the chrome shows "Pin any file type on the map"
+  // instead of the raw slug) and `status` (so the chrome paints an open/
+  // active/closed glyph — restoring the at-a-glance signal that retired with
+  // the canvas-pin status painter). Non-fiber pins return null and keep the
+  // source-derived default title with no glyph.
+  resolveFiberMeta: async (pin) => {
     if (pin.kind !== 'fiber') return null
     const cityId = cityPanel.getCurrentCity()?.id ?? pinnedCityId
     const url = cityId
@@ -225,7 +227,12 @@ const domPinLayer = new DomPinLayer({
       if (!res.ok) return null
       const body = await res.json()
       const name = body?.frontmatter?.name
-      return typeof name === 'string' && name.trim() ? name : null
+      const rawStatus = body?.frontmatter?.status
+      const status = rawStatus === 'active' || rawStatus === 'closed' ? rawStatus : 'open'
+      return {
+        name: typeof name === 'string' && name.trim() ? name : null,
+        status,
+      }
     } catch {
       return null
     }
