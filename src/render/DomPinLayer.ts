@@ -75,7 +75,7 @@ export type MountVellumFileSurface = (
  */
 export type MountVellumFiberSurface = (
   container: HTMLElement,
-  opts: { slug: string; cityId?: string; originId?: string },
+  opts: { slug: string; cityId?: string; originId?: string; hideTitle?: boolean },
 ) => VellumSurfaceMount
 
 export interface DomPinLayerOptions {
@@ -340,6 +340,10 @@ export class DomPinLayer {
       vellumMount = this.mountVellumFiberSurface(inner, {
         slug: pin.slug,
         cityId: this.cityIdFor?.(),
+        // Chrome strip above the card already carries the fiber name +
+        // status glyph; suppress FiberCard's own title to avoid duplication.
+        // See fiber-pin-title-duplication.
+        hideTitle: true,
       })
     } else if (pin.kind === 'markdown' && pin.source?.path && this.mountVellumSurface) {
       inner = renderVellumShell()

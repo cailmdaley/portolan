@@ -360,6 +360,12 @@ export interface MountFiberSurfaceOptions {
    *  title/status immediately instead of flashing empty. */
   seedNode?: GraphNode | null
   onNavigate?: (slug: string) => void
+  /** When true, the FiberCard's title lockup line is suppressed. Used by
+   *  the portolan floating-card primitive, where the chrome strip above
+   *  the card already carries the fiber name + status glyph, so repeating
+   *  it inside the card body is pure duplication. See
+   *  fiber-pin-title-duplication. */
+  hideTitle?: boolean
 }
 
 export interface VellumFiberSurfaceHandle {
@@ -406,6 +412,7 @@ export function mountVellumFiberSurface(
               width={width}
               content={content ?? undefined}
               onNavigate={next.onNavigate}
+              hideTitle={next.hideTitle}
             />
           </AdapterProvider>
         </StrictMode>,
