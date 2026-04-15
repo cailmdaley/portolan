@@ -273,11 +273,14 @@ export class DomPinLayer {
       top: '0',
       left: '0',
       pointerEvents: 'auto',
-      transition: 'transform 80ms linear',
       display: 'flex',
       flexDirection: 'column',
       // Intrinsic size lives on the wrapper; inner bodies fill it via flex:1.
       // Camera-zoom scale is applied by `position()` and multiplies these.
+      // No `transition` on transform: `reanchorAll()` pushes a fresh transform
+      // every frame (60fps), so any transition just makes the pin lag behind
+      // the camera during zoom/pan. Discrete state changes (hover, pulse) use
+      // other properties (filter, opacity).
       boxSizing: 'border-box',
     })
     const size = resolveSize(pin)
@@ -401,7 +404,6 @@ export class DomPinLayer {
           active = true
           entry.dragging = true
           entry.el.classList.add('dom-pin--dragging')
-          entry.el.style.transition = 'none'
           chrome.style.cursor = 'grabbing'
           document.body.style.cursor = 'grabbing'
           // Reuse the drag-to-pin suppression flag so MapInteractionController's
@@ -420,7 +422,6 @@ export class DomPinLayer {
         if (!active) return
         entry.dragging = false
         entry.el.classList.remove('dom-pin--dragging')
-        entry.el.style.transition = 'transform 80ms linear'
         chrome.style.cursor = 'grab'
         document.body.style.cursor = ''
         document.body.classList.remove('pin-dragging')
@@ -465,7 +466,6 @@ export class DomPinLayer {
           if (Math.hypot(dxScreen, dyScreen) < 2) return
           active = true
           entry.el.classList.add('dom-pin--resizing')
-          entry.el.style.transition = 'none'
           document.body.style.cursor = 'nwse-resize'
           // Reuse the same suppression flag as drag-to-pin / chrome-drag so
           // pin-hover and canvas interactions don't interfere mid-resize.
@@ -482,7 +482,6 @@ export class DomPinLayer {
         window.removeEventListener('pointercancel', onUp, true)
         if (!active) return
         entry.el.classList.remove('dom-pin--resizing')
-        entry.el.style.transition = 'transform 80ms linear'
         document.body.style.cursor = ''
         document.body.classList.remove('pin-dragging')
         this.onPinResized!(entry.slug, entry.width, entry.height)
@@ -511,6 +510,24 @@ function ensurePulseStyles(): void {
     }
     .dom-pin--pulsing {
       animation: dom-pin-pulse 600ms ease-out;
+    }
+    /* Resize handle: faint dimple by default, prominent on card hover so it
+       never clutters a quiet map but is obvious the moment you reach for it. */
+    .dom-pin .dom-pin-resize {
+      opacity: 0.35;
+      transition: opacity 120ms ease-out;
+    }
+    .dom-pin:hover .dom-pin-resize,
+    .dom-pin--hovered .dom-pin-resize,
+    .dom-pin--resizing .dom-pin-resize {
+      opacity: 1;
+    }
+    /* Hover state from the HUD bridge (setHovered) adds the class; browser
+       :hover handles the on-map case. Both raise the pin slightly and deepen
+       the shadow so the user sees "yes, that one." */
+    .dom-pin:hover,
+    .dom-pin--hovered {
+      filter: drop-shadow(0 6px 12px rgba(46, 42, 38, 0.28));
     }
   `
   document.head.appendChild(style)
@@ -715,11 +732,11 @@ function renderResizeHandle(): HTMLElement {
     position: 'absolute',
     right: '0',
     bottom: '0',
-    width: '14px',
-    height: '14px',
+    width: '18px',
+    height: '18px',
     cursor: 'nwse-resize',
     background:
-      'linear-gradient(135deg, transparent 0%, transparent 50%, rgba(140, 110, 80, 0.55) 50%, rgba(140, 110, 80, 0.55) 65%, transparent 65%, transparent 75%, rgba(140, 110, 80, 0.55) 75%, rgba(140, 110, 80, 0.55) 90%, transparent 90%)',
+      'linear-gradient(135deg, transparent 0%, transparent 55%, rgba(140, 110, 80, 0.65) 55%, rgba(140, 110, 80, 0.65) 68%, transparent 68%, transparent 78%, rgba(140, 110, 80, 0.65) 78%, rgba(140, 110, 80, 0.65) 91%, transparent 91%)',
     touchAction: 'none',
     zIndex: '2',
   })
