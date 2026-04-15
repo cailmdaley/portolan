@@ -333,7 +333,7 @@ export class DomPinLayer {
         if (!meta) return
         // Entry may have been removed by the time the promise resolves.
         if (this.entries.get(pin.slug)?.el !== el) return
-        if (meta.name) setChromeTitle(chrome, meta.name, pin.slug)
+        if (meta.name) setChromeTitle(chrome, meta.name, pin)
         if (meta.status) setChromeStatus(chrome, meta.status)
       }).catch(() => {})
     }
@@ -742,6 +742,20 @@ function titleForPin(pin: Pin): string {
   return pin.slug
 }
 
+/** Authoritative long-form identifier for the chrome title tooltip. Fiber pins
+ *  anchor on the slug (a meaningful short name). File and URL pins anchor on
+ *  the full path/URL — their slugs are sha16 hashes that carry no information
+ *  for the user. Shown as `displayTitle · anchor` when they differ, or just
+ *  the anchor when the chrome already shows it. */
+function chromeTooltip(pin: Pin, displayTitle: string): string {
+  const anchor = pin.source?.path
+    ? decodeSafely(pin.source.path)
+    : pin.source?.url
+      ? decodeSafely(pin.source.url)
+      : pin.slug
+  return displayTitle === anchor ? anchor : `${displayTitle} · ${anchor}`
+}
+
 function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   const bar = document.createElement('div')
   bar.className = 'dom-pin-chrome'
@@ -781,7 +795,7 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   const title = document.createElement('span')
   title.className = 'dom-pin-chrome-title'
   title.textContent = displayTitle
-  title.title = displayTitle === pin.slug ? pin.slug : `${displayTitle} · ${pin.slug}`
+  title.title = chromeTooltip(pin, displayTitle)
   Object.assign(title.style, {
     flex: '1',
     overflow: 'hidden',
@@ -814,12 +828,12 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   return bar
 }
 
-function setChromeTitle(chrome: HTMLElement, displayTitle: string, slug: string): void {
+function setChromeTitle(chrome: HTMLElement, displayTitle: string, pin: Pin): void {
   const title = chrome.querySelector<HTMLElement>('.dom-pin-chrome-title')
   if (!title) return
   title.textContent = displayTitle
-  title.title = displayTitle === slug ? slug : `${displayTitle} · ${slug}`
-  applyChromeTitleCasing(title, displayTitle, slug)
+  title.title = chromeTooltip(pin, displayTitle)
+  applyChromeTitleCasing(title, displayTitle, pin.slug)
 }
 
 /** Small-caps + letter-spacing is the portolan title treatment — it flatters
