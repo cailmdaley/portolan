@@ -1,16 +1,14 @@
-// DomPinLayer.ts - DOM-overlay surface for non-fiber pinned files.
+// DomPinLayer.ts — unified DOM overlay for every pinned card, fiber and file.
 //
-// Companion to PinRenderer (which owns three.js card surfaces for fiber pins).
-// Where the canvas card is a single texture, these are real DOM nodes —
-// iframes for PDFs and HTML, <img> for raster images, etc. — anchored to
-// world-space `{x, z}` and reanchored each frame via Camera.worldToScreen.
+// Real DOM nodes anchored to world-space `{x, z}` and reprojected each frame
+// via `Camera.worldToScreen`. Fiber pins mount vellum's FiberCard; markdown
+// pins mount vellum's FileViewerPage; pdf/html render into an iframe; images
+// into an <img>; other kinds fall back to a link card.
 //
 // Sits in a sibling overlay above the canvas. Wrapper is `pointer-events: none`
 // so empty space falls through to the map; each pin element opts back in to
-// `pointer-events: auto`. PinRenderer skips slugs the DOM layer owns; main.ts
-// routes by `pin.kind` (fiber → PinRenderer, everything else → here).
-//
-// See fiber `tapestry-dissolves`, open question 3 (`pin-any-file-type`).
+// `pointer-events: auto`. `PinRenderer` (three.js fiber cards) has been
+// retired — all kinds route here. See fiber `tapestry-dissolves`.
 
 import type { Camera } from './Camera'
 import type { Pin, PinKind } from '../state/layoutClient'
@@ -23,8 +21,7 @@ const DOM_KINDS: ReadonlySet<PinKind> = new Set([
 // at its intrinsic CSS size — i.e. scale = 1. Picked near the middle of the
 // effective zoom range (Camera clamps to [2, 15]) so PDFs render at "natural"
 // readable size at a typical city-level view, then shrink as you pull out and
-// grow as you push in. Matches the spatial-scale behavior of three.js
-// `PinRenderer` cards under orthographic zoom. See tapestry-dissolves Open Q (c).
+// grow as you push in.
 const REFERENCE_ZOOM = 8
 
 /** Kind-specific default intrinsic CSS sizes — applied when a pin has no
@@ -147,9 +144,6 @@ export class DomPinLayer {
     ensurePulseStyles()
   }
 
-  /** Brief visual pulse on an existing DOM pin — "yes, that's the one."
-   *  Uses `filter: drop-shadow` via a CSS class so we don't fight the
-   *  transform-based positioning that runs every frame. */
   /** Raise a pin above its siblings so stacked pins can be surfaced. Uses a
    *  monotonic counter on z-index so last-touched wins. Called on pointerdown
    *  anywhere on a pin element. */
@@ -158,6 +152,9 @@ export class DomPinLayer {
     entry.el.style.zIndex = String(this.zCounter)
   }
 
+  /** Brief visual pulse on an existing DOM pin — "yes, that's the one."
+   *  Uses `filter: drop-shadow` via a CSS class so we don't fight the
+   *  transform-based positioning that runs every frame. */
   pulse(slug: string): void {
     const entry = this.entries.get(slug)
     if (!entry) return
@@ -570,7 +567,11 @@ function ensurePulseStyles(): void {
     }
     /* Hover state from the HUD bridge (setHovered) adds the class; browser
        :hover handles the on-map case. Both raise the pin slightly and deepen
-       the shadow so the user sees "yes, that one." */
+       the shadow so the user sees "yes, that one." Filter transitions without
+       touching transform, which is rewritten every frame by reanchorAll(). */
+    .dom-pin {
+      transition: filter 140ms ease-out;
+    }
     .dom-pin:hover,
     .dom-pin--hovered {
       filter: drop-shadow(0 6px 12px rgba(46, 42, 38, 0.28));
@@ -598,9 +599,10 @@ function renderVellumShell(): HTMLElement {
   return div
 }
 
-/** Derive a human-readable chrome-strip title from a DOM pin's source.
- *  Fiber pins never reach this layer; for file handles we show the basename,
- *  for URLs the hostname, and for unresolved/empty sources the raw slug. */
+/** Sync fallback title for the chrome strip. For file handles we show the
+ *  basename, for URLs the hostname, and for unresolved/empty sources the raw
+ *  slug. Fiber pins use this as a placeholder until the async `resolveTitle`
+ *  hook returns the fiber's frontmatter `name`. */
 function titleForPin(pin: Pin): string {
   const s = pin.source
   if (!s) return pin.slug
