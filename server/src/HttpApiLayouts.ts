@@ -102,7 +102,7 @@ export class HttpApiLayouts {
         if (typeof body.width === 'number') extras.width = body.width;
         if (typeof body.height === 'number') extras.height = body.height;
         const pin = this.layoutStore.setPin(
-          cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId) ?? undefined, extras,
+          cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId), extras,
         );
         if (!pin) {
           this.sendJsonError(res, 400, 'Invalid cityId, slug, coordinates, or source');
@@ -145,7 +145,7 @@ export class HttpApiLayouts {
         return true;
       }
       const pin = this.layoutStore.setPin(
-        cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId) ?? undefined,
+        cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId),
         { kind, source: body.source },
       );
       if (!pin) {
@@ -159,13 +159,13 @@ export class HttpApiLayouts {
     return false;
   }
 
-  private metaFor(cityId: string): PinMeta | null {
+  private metaFor(cityId: string): PinMeta | undefined {
     const cityKey = this.cityLookup?.getCityKey?.(cityId)
       ?? (() => {
         const city = this.cityLookup?.getCityById(cityId);
         return city ? `${city.originId}:${city.path}` : null;
       })();
-    return cityKey ? { cityKey } : null;
+    return cityKey ? { cityKey } : undefined;
   }
 
   /**
