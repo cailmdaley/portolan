@@ -235,6 +235,38 @@ async function loadPinsForCity(cityId: string): Promise<void> {
   }
 }
 
+/** Translate every pin owned by `cityId` by the world-space delta. Used when a
+ *  city is moved — the pins follow along. Serial PUTs keep the persisted state
+ *  coherent even if one write fails; upsert as each commits so the on-screen
+ *  cards slide together rather than jumping at the end. */
+async function translatePinsBy(cityId: string, dx: number, dz: number): Promise<void> {
+  try {
+    const pins = await listPins(cityId)
+    for (const pin of pins) {
+      if (pinnedCityId !== cityId) return
+      try {
+        const moved = await putPin(
+          cityId,
+          pin.slug,
+          { x: pin.x + dx, z: pin.z + dz },
+          {
+            kind: pin.kind,
+            source: pin.source,
+            width: pin.width,
+            height: pin.height,
+          },
+        )
+        upsertPin(moved)
+      } catch (err) {
+        console.error('[pins] translate failed for', pin.slug, err)
+      }
+    }
+    syncPinnedSlugs()
+  } catch (err) {
+    console.error('[pins] translate listPins failed for', cityId, err)
+  }
+}
+
 /** Push the current set of pinned slugs to the HUD so fiber items can badge
  *  themselves as already pinned on the map. Call after any pin mutation. */
 function syncPinnedSlugs(): void {
@@ -564,7 +596,22 @@ const mapInteractions = new MapInteractionController({
   unpinCity: (cityId) => mapActions!.unpinCity(cityId),
   focusKittyTab: (sessionId) => mapActions!.focusKittyTab(sessionId),
   killWorker: (sessionId) => mapActions!.killWorker(sessionId),
-  moveCity: (cityId, hex) => mapActions!.moveCity(cityId, hex),
+  moveCity: (cityId, hex) => {
+    // Pins follow their city: "cities are what defines place." Compute the
+    // world-space delta from the city's current hex to the new one, then
+    // translate every pin owned by this city by that delta. Fire-and-forget
+    // after the RPC; the server doesn't know hex→world, so translation lives
+    // client-side. See [[tapestry-dissolves]] Open Q1 (resolved 2026-04-15).
+    const city = cities.find(c => c.id === cityId)
+    mapActions!.moveCity(cityId, hex)
+    if (!city || pinnedCityId !== cityId) return
+    const oldWorld = hexGrid.axialToCartesian(city.hex)
+    const newWorld = hexGrid.axialToCartesian(hex)
+    const dx = newWorld.x - oldWorld.x
+    const dz = newWorld.z - oldWorld.z
+    if (dx === 0 && dz === 0) return
+    void translatePinsBy(cityId, dx, dz)
+  },
   findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
   findPinAtWorldPos: (x, z) => pinRenderer.pickAtWorld(x, z),
   handlePinClick: (slug) => {
