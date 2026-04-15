@@ -156,6 +156,26 @@ const domPinLayer = new DomPinLayer({
     )
     contextMenu.show(clientX, clientY, items)
   },
+  // Double-click on chrome → same "Open" action as the context menu offers, so
+  // opening a pin isn't hidden behind right-click. Fiber → workspace; path →
+  // vellum file modal; url → new tab.
+  onPrimaryOpen: (slug) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    const pin = domPinLayer.getPin(slug)
+    if (!pin) return
+    if (pin.kind === 'fiber') {
+      openCityWorkspace(city, slug)
+    } else if (pin.source?.path) {
+      openFile({
+        path: pin.source.path,
+        originId: pin.source.originId,
+        cityId: city.id,
+      })
+    } else if (pin.source?.url) {
+      window.open(pin.source.url, '_blank', 'noopener,noreferrer')
+    }
+  },
   cityIdFor: () => cityPanel.getCurrentCity()?.id ?? pinnedCityId ?? undefined,
   screenToWorld: (x, y) => camera.screenToWorld(x, y),
   // Chrome-strip drag: pointer-down on the title bar of a DOM pin repositions

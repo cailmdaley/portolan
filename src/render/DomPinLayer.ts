@@ -75,6 +75,11 @@ export interface DomPinLayerOptions {
   resolveSource: (pin: Pin) => string | null
   /** Right-click on a DOM pin → host opens a context menu (unpin, …). */
   onContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  /** Double-click on the chrome strip → host opens the pin's primary surface
+   *  (fiber workspace, vellum file modal, external URL — whatever "Open" means
+   *  for this kind). Discoverability shortcut so the Open action doesn't live
+   *  behind right-click only. */
+  onPrimaryOpen?: (slug: string) => void
   /** Inline vellum mount for markdown file pins. */
   mountVellumSurface?: MountVellumFileSurface
   /** Inline vellum mount for fiber pins (renders vellum's FiberCard). */
@@ -108,6 +113,7 @@ export class DomPinLayer {
   private readonly camera: Camera
   private readonly resolveSource: (pin: Pin) => string | null
   private readonly onContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  private readonly onPrimaryOpen?: (slug: string) => void
   private readonly mountVellumSurface?: MountVellumFileSurface
   private readonly mountVellumFiberSurface?: MountVellumFiberSurface
   private readonly cityIdFor?: () => string | undefined
@@ -124,6 +130,7 @@ export class DomPinLayer {
     this.camera = opts.camera
     this.resolveSource = opts.resolveSource
     this.onContextMenu = opts.onContextMenu
+    this.onPrimaryOpen = opts.onPrimaryOpen
     this.mountVellumSurface = opts.mountVellumSurface
     this.mountVellumFiberSurface = opts.mountVellumFiberSurface
     this.cityIdFor = opts.cityIdFor
@@ -358,6 +365,17 @@ export class DomPinLayer {
     this.raise(entry)
     this.attachChromeDrag(chrome, entry)
     this.attachChromeScale(chrome, entry)
+    if (this.onPrimaryOpen) {
+      // Double-click on chrome → host's "Open" action (fiber workspace, vellum
+      // modal, external URL). Chrome-only so iframe/body scroll-regions never
+      // eat the gesture, and so double-clicking text inside a fiber card
+      // doesn't accidentally open the workspace.
+      chrome.addEventListener('dblclick', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        this.onPrimaryOpen!(entry.slug)
+      })
+    }
     // Resize handle lives above the inner body so it stays above iframe event
     // scope. Dragging it updates width/height live and commits on release.
     const resizeHandle = renderResizeHandle()
@@ -626,6 +644,7 @@ function titleForPin(pin: Pin): string {
 function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   const bar = document.createElement('div')
   bar.className = 'dom-pin-chrome'
+  bar.title = 'Drag to move · double-click to open · right-click for menu'
   Object.assign(bar.style, {
     display: 'flex',
     alignItems: 'center',
