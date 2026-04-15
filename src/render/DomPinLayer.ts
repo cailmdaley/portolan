@@ -632,6 +632,13 @@ function renderVellumShell(): HTMLElement {
   return div
 }
 
+/** Decode percent-encoded URL segments for display, but fall back to the raw
+ *  string if decoding fails (malformed %-sequence). Keeps chrome titles human
+ *  readable instead of showing e.g. `Cantino_planisphere_%281502%29.jpg`. */
+function decodeSafely(s: string): string {
+  try { return decodeURIComponent(s) } catch { return s }
+}
+
 /** Sync fallback title for the chrome strip. For file handles we show the
  *  basename, for URLs the hostname, and for unresolved/empty sources the raw
  *  slug. Fiber pins use this as a placeholder until the async `resolveTitle`
@@ -641,13 +648,13 @@ function titleForPin(pin: Pin): string {
   if (!s) return pin.slug
   if (s.path) {
     const base = s.path.split('/').filter(Boolean).pop()
-    if (base) return base
+    if (base) return decodeSafely(base)
   }
   if (s.url) {
     try {
       const u = new URL(s.url)
       const path = u.pathname.replace(/\/$/, '')
-      const base = path ? path.split('/').filter(Boolean).pop() : ''
+      const base = path ? decodeSafely(path.split('/').filter(Boolean).pop() ?? '') : ''
       return base ? `${u.hostname} / ${base}` : u.hostname
     } catch {
       return s.url
@@ -751,7 +758,7 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
   if (kind === 'image') {
     const img = document.createElement('img')
     img.src = url
-    img.alt = pin.slug
+    img.alt = titleForPin(pin)
     Object.assign(img.style, {
       flex: '1 1 auto',
       width: '100%',
@@ -764,6 +771,13 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       background: 'rgba(248, 240, 225, 0.97)',
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
+    })
+    // Hotlinks (wikipedia, many CDNs) frequently reject cross-origin <img>
+    // requests. A naked broken-image icon + raw slug looks worse than a
+    // labelled fallback card — swap in a link-card so the pin stays useful.
+    img.addEventListener('error', () => {
+      const fallback = renderLinkCard(pin, url)
+      img.replaceWith(fallback)
     })
     return img
   }
@@ -778,7 +792,10 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
   a.href = url
   a.target = '_blank'
   a.rel = 'noopener noreferrer'
-  a.textContent = pin.slug
+  // Prefer the humanised source title over the derived slug — the slug is a
+  // content hash for file pins (e.g. `url-4617ad90bc5e995f`), useless as a
+  // label. titleForPin decodes percent-encoding and prefers hostname/basename.
+  a.textContent = titleForPin(pin)
   Object.assign(a.style, {
     display: 'flex',
     alignItems: 'center',

@@ -57,6 +57,13 @@ labelRenderer.domElement.style.top = '0'
 labelRenderer.domElement.style.left = '0'
 labelRenderer.domElement.style.pointerEvents = 'none'
 labelRenderer.domElement.style.userSelect = 'none'
+// CSS2DRenderer assigns each label a per-frame z-index from its camera depth
+// (range roughly 0..100000). Confine that range with `isolation: isolate` so
+// CSS2D labels can never punch up through the DOM pin layer (z-index 20) or
+// HUD panels. Without this, labels from neighbouring cities would render on
+// top of open pin cards. [[floating-card-feel]]
+labelRenderer.domElement.style.zIndex = '10'
+labelRenderer.domElement.style.isolation = 'isolate'
 labelRenderer.domElement.classList.add('label-container')
 document.body.appendChild(labelRenderer.domElement)
 
