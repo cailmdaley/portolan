@@ -16,7 +16,7 @@ import { DomPinLayer } from './render/DomPinLayer'
 // Hoisted: lazy import the vellum mount module so DomPinLayer (built below)
 // can close over it for inline markdown + fiber rendering.
 const vellumMountPromise = import('./vellum/mount')
-import { listPins, putPin, pinFile, deletePin, type PinKind, type PinSource } from './state/layoutClient'
+import { listPins, putPin, pinFile, deletePin, type Pin, type PinKind, type PinSource } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
 import { FileDropController } from './FileDropController'
 import { MapInteractionController } from './MapInteractionController'
@@ -282,11 +282,57 @@ async function loadPinsForCity(cityId: string): Promise<void> {
   try {
     const pins = await listPins(cityId)
     if (pinnedCityId !== cityId) return // city changed mid-flight
-    domPinLayer.setPins(pins)
+    const unstacked = await unstackColocatedPins(cityId, pins)
+    if (pinnedCityId !== cityId) return
+    domPinLayer.setPins(unstacked)
     syncPinnedSlugs()
   } catch (err) {
     console.error('[pins] load failed for', cityId, err)
   }
+}
+
+/** Fan out pins that persist at identical (x,z) coords. Keeps the first pin in
+ *  each colocated group at its anchor; displaces the rest onto a 2.2-unit ring
+ *  (same cadence as spawnPositionForCity) and persists the new position so the
+ *  unstack is sticky. Legacy layouts from before the click-spawn fan-out could
+ *  park multiple pins at a city's hex; this heals them on first load without
+ *  forcing the user to drag each one. See fiber-pins-overlap-at-same-coords. */
+async function unstackColocatedPins(
+  cityId: string,
+  pins: Pin[],
+): Promise<Pin[]> {
+  const groups = new Map<string, Pin[]>()
+  for (const pin of pins) {
+    const key = `${pin.x.toFixed(3)}:${pin.z.toFixed(3)}`
+    const group = groups.get(key)
+    if (group) group.push(pin)
+    else groups.set(key, [pin])
+  }
+  const result = [...pins]
+  const byslug = new Map(result.map((p, i) => [p.slug, i]))
+  for (const group of groups.values()) {
+    if (group.length < 2) continue
+    for (let i = 1; i < group.length; i++) {
+      const pin = group[i]
+      const angle = ((i - 1) / 6) * Math.PI * 2
+      const radius = 2.2 * (Math.floor((i - 1) / 6) + 1)
+      const x = pin.x + Math.cos(angle) * radius
+      const z = pin.z + Math.sin(angle) * radius
+      try {
+        const moved = await putPin(cityId, pin.slug, { x, z }, {
+          kind: pin.kind,
+          source: pin.source,
+          width: pin.width,
+          height: pin.height,
+        })
+        const idx = byslug.get(pin.slug)
+        if (idx !== undefined) result[idx] = moved
+      } catch (err) {
+        console.error('[pins] unstack failed for', pin.slug, err)
+      }
+    }
+  }
+  return result
 }
 
 /** Translate every pin owned by `cityId` by the world-space delta. Used when a
