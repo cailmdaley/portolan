@@ -652,6 +652,21 @@ function ensurePulseStyles(): void {
       background: rgba(46, 42, 38, 0.12) !important;
       outline: none;
     }
+    /* External-open affordance on URL pins: faint until the chrome is hovered
+       so it doesn't clutter a quiet map, obvious the moment the user reaches
+       for it. Matches the resize-handle reveal pattern. */
+    .dom-pin-chrome-ext {
+      opacity: 0.55;
+      transition: opacity 120ms ease-out, background-color 120ms ease-out;
+    }
+    .dom-pin-chrome:hover .dom-pin-chrome-ext,
+    .dom-pin-chrome-ext:focus-visible {
+      opacity: 1;
+      outline: none;
+    }
+    .dom-pin-chrome-ext:hover {
+      background: rgba(46, 42, 38, 0.12) !important;
+    }
     /* Hover state from the HUD bridge (setHovered) adds the class; browser
        :hover handles the on-map case. Both raise the pin slightly and deepen
        the shadow so the user sees "yes, that one." Filter transitions without
@@ -804,6 +819,41 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   })
   applyChromeTitleCasing(title, displayTitle, pin.slug)
   bar.appendChild(title)
+  // External-open affordance for URL pins. Iframe-blocked sites (X-Frame-Options
+  // / CSP) render as a blank body and there's no reliable way to detect the
+  // block from a cross-origin parent, so the pin can look broken at a glance.
+  // A persistent ↗ button next to the ⋮ handle gives users an always-visible
+  // escape hatch without waiting for dblclick-chrome or the right-click menu.
+  // See iframe-blocked-not-detectable.
+  if (pin.source?.url) {
+    const ext = document.createElement('a')
+    ext.className = 'dom-pin-chrome-ext'
+    ext.href = pin.source.url
+    ext.target = '_blank'
+    ext.rel = 'noopener noreferrer'
+    ext.textContent = '↗'
+    ext.title = 'Open in browser'
+    ext.setAttribute('aria-label', 'Open in browser')
+    ext.tabIndex = -1
+    Object.assign(ext.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: '18px',
+      height: '18px',
+      borderRadius: '4px',
+      color: '#2E2A26',
+      fontSize: '13px',
+      lineHeight: '1',
+      textDecoration: 'none',
+      cursor: 'pointer',
+    })
+    // Swallow pointerdown/click so the chrome-drag handler doesn't treat this
+    // as a grab; the anchor's default click still opens the URL.
+    ext.addEventListener('pointerdown', (e) => { e.stopPropagation() })
+    ext.addEventListener('click', (e) => { e.stopPropagation() })
+    bar.appendChild(ext)
+  }
   const handle = document.createElement('button')
   handle.type = 'button'
   handle.className = 'dom-pin-menu-handle'
