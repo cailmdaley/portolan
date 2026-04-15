@@ -10,6 +10,7 @@ export interface MenuItem {
 export class ContextMenu {
   private menu: HTMLElement
   private closeHandler: ((e: MouseEvent) => void) | null = null
+  private keyHandler: ((e: KeyboardEvent) => void) | null = null
 
   constructor() {
     this.menu = this.createMenu()
@@ -92,20 +93,28 @@ export class ContextMenu {
     this.menu.style.left = `${posX}px`
     this.menu.style.top = `${posY}px`
 
-    // Add close handler (click outside to close)
+    // Add close handler (click outside to close, Escape to dismiss)
     this.removeCloseHandler()
     this.closeHandler = (e: MouseEvent) => {
       if (!this.menu.contains(e.target as Node)) {
         this.hide()
       }
     }
+    this.keyHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.hide()
+    }
     document.addEventListener('click', this.closeHandler)
+    document.addEventListener('keydown', this.keyHandler)
   }
 
   private removeCloseHandler(): void {
     if (this.closeHandler) {
       document.removeEventListener('click', this.closeHandler)
       this.closeHandler = null
+    }
+    if (this.keyHandler) {
+      document.removeEventListener('keydown', this.keyHandler)
+      this.keyHandler = null
     }
   }
 

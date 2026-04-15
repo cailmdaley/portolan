@@ -123,6 +123,7 @@ export class DomPinLayer {
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
+  private zCounter = 0
 
   constructor(opts: DomPinLayerOptions) {
     this.camera = opts.camera
@@ -151,6 +152,14 @@ export class DomPinLayer {
   /** Brief visual pulse on an existing DOM pin — "yes, that's the one."
    *  Uses `filter: drop-shadow` via a CSS class so we don't fight the
    *  transform-based positioning that runs every frame. */
+  /** Raise a pin above its siblings so stacked pins can be surfaced. Uses a
+   *  monotonic counter on z-index so last-touched wins. Called on pointerdown
+   *  anywhere on a pin element. */
+  private raise(entry: DomPinEntry): void {
+    this.zCounter += 1
+    entry.el.style.zIndex = String(this.zCounter)
+  }
+
   pulse(slug: string): void {
     const entry = this.entries.get(slug)
     if (!entry) return
@@ -356,6 +365,11 @@ export class DomPinLayer {
       height: size.height,
     }
     applySize(entry)
+    // Bring-to-front on any interaction — stacked pins (e.g. a large markdown
+    // card over a fiber pin) need a way to surface. Capture phase so we raise
+    // before downstream drag/resize/chrome handlers consume the event.
+    el.addEventListener('pointerdown', () => this.raise(entry), true)
+    this.raise(entry)
     this.attachChromeDrag(chrome, entry)
     this.attachChromeScale(chrome, entry)
     // Resize handle lives above the inner body so it stays above iframe event
