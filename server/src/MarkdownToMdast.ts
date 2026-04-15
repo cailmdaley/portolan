@@ -14,6 +14,24 @@ import remarkGfm from 'remark-gfm';
 
 const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|([^\]]*?))?\]\]/g;
 
+// MyST target: `(label)=` on its own line. Remark parses it as a paragraph
+// with a single text child. Strip these so they don't render as literal
+// `(label)=` artifacts in card bodies.
+const MYST_TARGET_RE = /^\(([^\s()]+)\)=\s*$/;
+
+function remarkStripMystTargets() {
+  return (tree: any) => {
+    if (!Array.isArray(tree.children)) return;
+    tree.children = tree.children.filter((node: any) => {
+      if (node.type !== 'paragraph') return true;
+      if (!Array.isArray(node.children) || node.children.length !== 1) return true;
+      const only = node.children[0];
+      if (only?.type !== 'text' || typeof only.value !== 'string') return true;
+      return !MYST_TARGET_RE.test(only.value);
+    });
+  };
+}
+
 function remarkWikiLinks() {
   return (tree: any) => {
     transformNode(tree);
@@ -73,7 +91,11 @@ function splitTextNode(value: string): any[] {
 }
 
 export function markdownToMdast(content: string): unknown {
-  const processor = unified().use(remarkParse).use(remarkGfm).use(remarkWikiLinks);
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkStripMystTargets)
+    .use(remarkWikiLinks);
   const tree = processor.parse(content);
   return processor.runSync(tree);
 }
