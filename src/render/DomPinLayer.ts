@@ -486,8 +486,9 @@ export class DomPinLayer {
    *  the card's intrinsic size. Screen-pixel deltas are divided by the current
    *  camera-zoom scale so one screen pixel of drag equals one CSS pixel of
    *  size change (otherwise resizing would feel faster/slower at different
-   *  zoom levels). Commits via `onPinResized`; skipped if the host didn't
-   *  provide the callback. */
+   *  zoom levels). Hold Shift (or resize images — which have an intrinsic
+   *  aspect) to preserve the card's starting aspect ratio. Commits via
+   *  `onPinResized`; skipped if the host didn't provide the callback. */
   private attachResize(handle: HTMLElement, entry: DomPinEntry): void {
     if (!this.onPinResized) return
 
@@ -497,6 +498,7 @@ export class DomPinLayer {
       const startY = event.clientY
       const startW = entry.width
       const startH = entry.height
+      const aspect = startW / Math.max(startH, 1)
       const zoom = this.camera.cameraDistance
       const scale = REFERENCE_ZOOM / Math.max(zoom, 0.0001)
       let active = false
@@ -513,8 +515,21 @@ export class DomPinLayer {
           // pin-hover and canvas interactions don't interfere mid-resize.
           document.body.classList.add('pin-dragging')
         }
-        entry.width = clampSize(startW + dxScreen / scale)
-        entry.height = clampSize(startH + dyScreen / scale)
+        let nextW = startW + dxScreen / scale
+        let nextH = startH + dyScreen / scale
+        // Shift locks aspect ratio; images lock by default so their intrinsic
+        // proportions don't distort on casual resize. The dominant-axis delta
+        // drives the minor axis so the handle still tracks the cursor roughly.
+        const lockAspect = ev.shiftKey || entry.pin.kind === 'image'
+        if (lockAspect) {
+          if (Math.abs(dxScreen) >= Math.abs(dyScreen)) {
+            nextH = nextW / aspect
+          } else {
+            nextW = nextH * aspect
+          }
+        }
+        entry.width = clampSize(nextW)
+        entry.height = clampSize(nextH)
         applySize(entry)
       }
 
@@ -678,6 +693,10 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   handle.className = 'dom-pin-menu-handle'
   handle.textContent = '⋮'
   handle.title = 'Pin menu'
+  // Keep the button off the tab sequence — with many pins on the map, tabbing
+  // through every ⋮ button ahead of actual page controls is pure noise. The
+  // menu is still reachable via right-click or the button itself.
+  handle.tabIndex = -1
   Object.assign(handle.style, {
     appearance: 'none',
     border: 'none',
@@ -802,6 +821,7 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
 function renderResizeHandle(): HTMLElement {
   const h = document.createElement('div')
   h.className = 'dom-pin-resize'
+  h.title = 'Drag to resize · hold Shift to lock aspect ratio'
   Object.assign(h.style, {
     position: 'absolute',
     right: '0',
