@@ -920,7 +920,11 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
     fontFamily: '"JetBrains Mono", monospace',
     fontSize: '11px',
     color: '#2E2A26',
-    wordBreak: 'break-all',
+    // `overflow-wrap: anywhere` lets long URLs wrap at slashes and hyphens
+    // first, falling back to mid-segment breaks only when a run has no soft
+    // boundary. `word-break: break-all` ignores these opportunities and
+    // produces ragged, mid-word splits even when cleaner breaks exist.
+    overflowWrap: 'anywhere',
     lineHeight: '1.4',
   })
   a.appendChild(action)
