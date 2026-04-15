@@ -313,65 +313,89 @@ export function mountVellumFiberSurface(
 ): VellumFiberSurfaceHandle {
   const root = createRoot(container)
   let unmounted = false
-  let currentSlug = opts.slug
+  let currentOpts = opts
+  let cachedContent: FiberContent | null = null
+  let cachedNode: GraphNode | null = opts.seedNode ?? null
+  let adapter = createPortolanAdapter({
+    cityId: opts.cityId,
+    defaultOriginId: opts.originId,
+  })
 
-  const render = (next: MountFiberSurfaceOptions) => {
-    currentSlug = next.slug
-    const width = next.width ?? 320
-    const adapter = createPortolanAdapter({
-      cityId: next.cityId,
-      defaultOriginId: next.originId,
-    })
-    const paint = (node: GraphNode | null, content: FiberContent | null) => {
-      if (unmounted) return
-      if (!node) {
-        root.render(<StrictMode />)
-        return
-      }
-      root.render(
-        <StrictMode>
-          <AdapterProvider adapter={adapter}>
-            <FiberCard
-              node={node}
-              width={width}
-              content={content ?? undefined}
-              onNavigate={next.onNavigate}
-              hideTitle={next.hideTitle}
-            />
-          </AdapterProvider>
-        </StrictMode>,
-      )
+  const paint = () => {
+    if (unmounted) return
+    const width = currentOpts.width ?? 320
+    if (!cachedNode) {
+      root.render(<StrictMode />)
+      return
     }
-    paint(next.seedNode ?? null, null)
-    if (adapter.getFiberContent) {
-      void adapter.getFiberContent(next.slug).then((content) => {
-        if (unmounted || currentSlug !== next.slug) return
-        // Without a seedNode, derive the node from the fiber's frontmatter so
-        // tags, status, and outcome actually land in FiberCard. The prior
-        // fallback constructed an empty-looking node (status:'open', tags:[],
-        // label:slug) that dropped everything FiberCard needs to render.
-        const fm = content?.frontmatter ?? {}
-        const node =
-          next.seedNode ??
-          ({
-            id: next.slug,
-            slug: next.slug,
-            label: typeof fm.name === 'string' && fm.name.length > 0 ? fm.name : next.slug,
-            status: typeof fm.status === 'string' ? fm.status : 'open',
-            kind: 'fiber',
-            tags: Array.isArray(fm.tags) ? fm.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
-            verdict: typeof fm.outcome === 'string' ? fm.outcome : undefined,
-            tempered: fm.tempered === true,
-          } as GraphNode)
-        paint(node, content ?? null)
-      }).catch(() => {})
-    }
+    root.render(
+      <StrictMode>
+        <AdapterProvider adapter={adapter}>
+          <FiberCard
+            node={cachedNode}
+            width={width}
+            content={cachedContent ?? undefined}
+            onNavigate={currentOpts.onNavigate}
+            hideTitle={currentOpts.hideTitle}
+          />
+        </AdapterProvider>
+      </StrictMode>,
+    )
   }
 
-  render(opts)
+  const fetchContent = (slug: string) => {
+    if (!adapter.getFiberContent) return
+    void adapter.getFiberContent(slug).then((content) => {
+      if (unmounted || currentOpts.slug !== slug) return
+      cachedContent = content ?? null
+      // Without a seedNode, derive the node from the fiber's frontmatter so
+      // tags, status, and outcome actually land in FiberCard. The prior
+      // fallback constructed an empty-looking node (status:'open', tags:[],
+      // label:slug) that dropped everything FiberCard needs to render.
+      const fm = content?.frontmatter ?? {}
+      cachedNode =
+        currentOpts.seedNode ??
+        ({
+          id: slug,
+          slug,
+          label: typeof fm.name === 'string' && fm.name.length > 0 ? fm.name : slug,
+          status: typeof fm.status === 'string' ? fm.status : 'open',
+          kind: 'fiber',
+          tags: Array.isArray(fm.tags) ? fm.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
+          verdict: typeof fm.outcome === 'string' ? fm.outcome : undefined,
+          tempered: fm.tempered === true,
+        } as GraphNode)
+      paint()
+    }).catch(() => {})
+  }
+
+  const applyUpdate = (next: MountFiberSurfaceOptions) => {
+    const prev = currentOpts
+    currentOpts = next
+    const slugChanged = prev.slug !== next.slug
+    const cityChanged = prev.cityId !== next.cityId || prev.originId !== next.originId
+    if (slugChanged || cityChanged) {
+      if (cityChanged) {
+        adapter = createPortolanAdapter({
+          cityId: next.cityId,
+          defaultOriginId: next.originId,
+        })
+      }
+      cachedContent = null
+      cachedNode = next.seedNode ?? null
+      paint()
+      fetchContent(next.slug)
+      return
+    }
+    // Width / hideTitle / onNavigate tweak only — re-render with cached content.
+    paint()
+  }
+
+  paint()
+  fetchContent(opts.slug)
 
   return {
-    update(next) { render(next) },
+    update(next) { applyUpdate(next) },
     unmount() {
       unmounted = true
       root.unmount()

@@ -264,15 +264,20 @@ const domPinLayer = new DomPinLayer({
   // uses, rendered in the pin's DOM surface. See tapestry-dissolves Next.
   mountVellumFiberSurface: (container, opts) => {
     let unmounted = false
-    let handle: { unmount(): void } | null = null
+    let handle: { unmount(): void; update(next: typeof opts): void } | null = null
+    let latest = opts
     void vellumMountPromise.then(({ mountVellumFiberSurface }) => {
       if (unmounted) return
-      handle = mountVellumFiberSurface(container, opts)
+      handle = mountVellumFiberSurface(container, latest)
     })
     return {
       unmount() {
         unmounted = true
         handle?.unmount()
+      },
+      resize(width: number) {
+        latest = { ...latest, width }
+        handle?.update(latest)
       },
     }
   },

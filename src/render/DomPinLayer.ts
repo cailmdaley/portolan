@@ -62,6 +62,11 @@ export function isDomPinKind(pin: Pin): boolean {
  */
 export interface VellumSurfaceMount {
   unmount(): void
+  /** Reflow the mounted surface to a new CSS width. Called while the user
+   *  resizes the pin so content (pretext line wrapping, prose column) tracks
+   *  the card instead of stranding empty space. Only fiber mounts currently
+   *  react; file surfaces ignore the hint (they already fill via CSS). */
+  resize?(width: number): void
 }
 
 export type MountVellumFileSurface = (
@@ -75,7 +80,7 @@ export type MountVellumFileSurface = (
  */
 export type MountVellumFiberSurface = (
   container: HTMLElement,
-  opts: { slug: string; cityId?: string; originId?: string; hideTitle?: boolean },
+  opts: { slug: string; cityId?: string; originId?: string; hideTitle?: boolean; width?: number },
 ) => VellumSurfaceMount
 
 export interface DomPinLayerOptions {
@@ -340,6 +345,7 @@ export class DomPinLayer {
       vellumMount = this.mountVellumFiberSurface(inner, {
         slug: pin.slug,
         cityId: this.cityIdFor?.(),
+        width: size.width,
         // Chrome strip above the card already carries the fiber name +
         // status glyph; suppress FiberCard's own title to avoid duplication.
         // See fiber-pin-title-duplication.
@@ -1011,4 +1017,9 @@ function clampSize(n: number): number {
 function applySize(entry: DomPinEntry): void {
   entry.el.style.width = `${entry.width}px`
   entry.el.style.height = `${entry.height}px`
+  // Reflow the inner vellum surface so FiberCard's pretext line wrapping tracks
+  // the new card width instead of stranding empty space to the right of the
+  // column. The vellum mount caches content so repeated width updates don't
+  // re-fetch the fiber body.
+  entry.vellumMount?.resize?.(entry.width)
 }
