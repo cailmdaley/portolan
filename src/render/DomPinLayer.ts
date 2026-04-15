@@ -850,18 +850,37 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
   a.href = url
   a.target = '_blank'
   a.rel = 'noopener noreferrer'
-  // Prefer the humanised source title over the derived slug — the slug is a
-  // content hash for file pins (e.g. `url-4617ad90bc5e995f`), useless as a
-  // label. titleForPin decodes percent-encoding and prefers hostname/basename.
-  a.textContent = titleForPin(pin)
+  // Chrome already shows the humanised source title; repeating it here wastes
+  // the body. Show an action affordance + the full URL/path in mono — visually
+  // distinct from chrome and carries information the user can't otherwise see.
+  const action = document.createElement('div')
+  action.textContent = '↗ Open externally'
+  Object.assign(action.style, {
+    fontFamily: '"EB Garamond", Garamond, serif',
+    fontSize: '14px',
+    color: '#7A7368',
+    marginBottom: '6px',
+    letterSpacing: '0.02em',
+  })
+  const full = document.createElement('div')
+  const rawSource = pin.source?.path ?? pin.source?.url ?? url
+  full.textContent = decodeSafely(rawSource)
+  Object.assign(full.style, {
+    fontFamily: '"JetBrains Mono", monospace',
+    fontSize: '11px',
+    color: '#2E2A26',
+    wordBreak: 'break-all',
+    lineHeight: '1.4',
+  })
+  a.appendChild(action)
+  a.appendChild(full)
   Object.assign(a.style, {
     display: 'flex',
-    alignItems: 'center',
+    flexDirection: 'column',
+    justifyContent: 'center',
     flex: '1 1 auto',
     minHeight: '0',
     padding: '12px 18px',
-    fontFamily: '"EB Garamond", Garamond, serif',
-    fontSize: '18px',
     color: '#2E2A26',
     textDecoration: 'none',
     background: 'rgba(248, 240, 225, 0.97)',
