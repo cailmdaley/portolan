@@ -292,6 +292,96 @@ function removePin(slug: string): void {
   domPinLayer.remove(slug)
 }
 
+/** Pulse whichever layer currently owns the pin. No-op if unknown. */
+function pulsePin(slug: string): void {
+  if (domPinLayer.has(slug)) domPinLayer.pulse(slug)
+  else if (pinRenderer.has(slug)) pinRenderer.pulse(slug)
+}
+
+/** Pan camera to a pin's anchor and pulse it. Used as "already pinned — here
+ *  it is" feedback for the click-spawns-card gesture. */
+function panAndPulse(slug: string): void {
+  let anchor = pinRenderer.getAnchor(slug)
+  if (!anchor) {
+    const domPin = domPinLayer.getPin(slug)
+    if (domPin) anchor = { x: domPin.x, z: domPin.z }
+  }
+  if (anchor) camera.focusOn({ x: anchor.x, z: anchor.z })
+  pulsePin(slug)
+}
+
+/** Compute a fan-out spawn position at a city. Fiber and file pins land at the
+ *  city's hex; subsequent pins get a small ring offset so they don't stack
+ *  exactly. Offsets are based on the current pin count in the city's layers. */
+function spawnPositionForCity(city: City): { x: number; z: number } {
+  const base = hexGrid.axialToCartesian(city.hex)
+  const count = pinRenderer.getSlugs().length + domPinLayer.getSlugs().length
+  if (count === 0) return { x: base.x, z: base.z }
+  const ring = Math.floor((count - 1) / 6) + 1
+  const indexInRing = (count - 1) % 6
+  const angle = (indexInRing / 6) * Math.PI * 2
+  const radius = 2.2 * ring
+  return {
+    x: base.x + Math.cos(angle) * radius,
+    z: base.z + Math.sin(angle) * radius,
+  }
+}
+
+/** Spawn or pulse a pin at the city's hex in response to an onOpenFile event.
+ *  Fiber paths (`.felt/<slug>/<slug>.md`) pin under the fiber slug. All other
+ *  paths go through pinFile so the server derives a stable content-addressed
+ *  slug (idempotent re-pin). See tapestry-dissolves Next: click-spawns-card. */
+async function spawnOrPulseCardAtCity(
+  city: City,
+  fullPath: string,
+  originId: string,
+): Promise<void> {
+  const fiberMatch = /\/\.felt\/([^/]+)\/\1\.md$/.exec(fullPath)
+  const pos = spawnPositionForCity(city)
+  try {
+    if (fiberMatch) {
+      const slug = fiberMatch[1]
+      if (pinRenderer.has(slug) || domPinLayer.has(slug)) {
+        panAndPulse(slug)
+        return
+      }
+      const pin = await putPin(city.id, slug, pos)
+      if (pinnedCityId === city.id) {
+        upsertPin(pin)
+        syncPinnedSlugs()
+        window.setTimeout(() => panAndPulse(pin.slug), 0)
+      }
+      return
+    }
+    const source: PinSource = { originId, path: fullPath }
+    const kind = inferPinKindFromPath(fullPath)
+    const pin = await pinFile(city.id, pos, source, kind)
+    // pinFile is idempotent server-side — if the slug came back already
+    // present, treat the spawn as a "find it" gesture.
+    const alreadyHere = pinRenderer.has(pin.slug) || domPinLayer.has(pin.slug)
+    if (pinnedCityId === city.id) {
+      upsertPin(pin)
+      syncPinnedSlugs()
+    }
+    if (alreadyHere) {
+      panAndPulse(pin.slug)
+    } else {
+      window.setTimeout(() => panAndPulse(pin.slug), 0)
+    }
+  } catch (err) {
+    console.error('[pins] click-spawn failed', err)
+  }
+}
+
+function inferPinKindFromPath(path: string): PinKind | undefined {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
+  if (lower.endsWith('.pdf')) return 'pdf'
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html'
+  if (/\.(png|jpe?g|gif|webp|svg|bmp)$/.test(lower)) return 'image'
+  return undefined
+}
+
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
   mapActions?.focusKittyTab(workerId)
@@ -416,9 +506,13 @@ zoneRenderer.setWorkerFileClickHandler((fullPath, originId, _workerId) => {
   openFile({ path: fullPath, originId, cityId: city?.id })
 })
 
-// Wire up file search click from city panel to vellum.
-cityPanel.setOnOpenFile((fullPath, originId, _cityPath, cityId, line) => {
-  openFile({ path: fullPath, originId, cityId, jumpToLine: line })
+// Click-spawns-card: HUD fiber clicks and file-search clicks place a floating
+// card at the city's hex instead of opening a modal. If the thing is already
+// pinned, pan camera and pulse it instead of duplicating. See tapestry-dissolves.
+cityPanel.setOnOpenFile((fullPath, originId, _cityPath, cityId, _line) => {
+  const city = cities.find(c => c.id === cityId)
+  if (!city) return
+  void spawnOrPulseCardAtCity(city, fullPath, originId)
 })
 
 // Setup context menu
@@ -615,13 +709,10 @@ const mapInteractions = new MapInteractionController({
   findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
   findPinAtWorldPos: (x, z) => pinRenderer.pickAtWorld(x, z),
   handlePinClick: (slug) => {
-    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
-    if (!city) return
-    openFile({
-      path: `${city.path}/.felt/${slug}/${slug}.md`,
-      originId: city.originId,
-      cityId: city.id,
-    })
+    // Click-spawns-card makes the modal unreachable via click: a click on an
+    // existing pin just confirms "yes, that's the one" — pan to it and pulse.
+    // See tapestry-dissolves.
+    panAndPulse(slug)
   },
   onPinHoverChange: (slug) => {
     pinRenderer.setHovered(slug)

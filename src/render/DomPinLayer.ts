@@ -125,6 +125,22 @@ export class DomPinLayer {
       zIndex: '20',
     })
     document.body.appendChild(this.container)
+    ensurePulseStyles()
+  }
+
+  /** Brief visual pulse on an existing DOM pin — "yes, that's the one."
+   *  Uses `filter: drop-shadow` via a CSS class so we don't fight the
+   *  transform-based positioning that runs every frame. */
+  pulse(slug: string): void {
+    const entry = this.entries.get(slug)
+    if (!entry) return
+    entry.el.classList.remove('dom-pin--pulsing')
+    // Force reflow so re-adding the class restarts the animation.
+    void entry.el.offsetWidth
+    entry.el.classList.add('dom-pin--pulsing')
+    window.setTimeout(() => {
+      entry.el.classList.remove('dom-pin--pulsing')
+    }, 650)
   }
 
   setPins(pins: Pin[]): void {
@@ -460,6 +476,24 @@ export class DomPinLayer {
       event.stopPropagation()
     })
   }
+}
+
+let pulseStylesInjected = false
+function ensurePulseStyles(): void {
+  if (pulseStylesInjected) return
+  pulseStylesInjected = true
+  const style = document.createElement('style')
+  style.textContent = `
+    @keyframes dom-pin-pulse {
+      0% { filter: drop-shadow(0 0 0 rgba(154, 123, 53, 0)); }
+      30% { filter: drop-shadow(0 0 18px rgba(154, 123, 53, 0.85)); }
+      100% { filter: drop-shadow(0 0 0 rgba(154, 123, 53, 0)); }
+    }
+    .dom-pin--pulsing {
+      animation: dom-pin-pulse 600ms ease-out;
+    }
+  `
+  document.head.appendChild(style)
 }
 
 function renderVellumShell(): HTMLElement {

@@ -119,6 +119,35 @@ export class PinRenderer {
     return hit
   }
 
+  /** Visual pulse: briefly scale up + lift a pin, then settle back to its
+   *  hover-or-idle baseline. Used as "click landed on existing pin" feedback —
+   *  see tapestry-dissolves Next: click-spawns-card. */
+  pulse(slug: string): void {
+    const entry = this.entries.get(slug)
+    if (!entry) return
+    const start = performance.now()
+    const DURATION = 600
+    const PEAK = 1.45
+    const tick = (): void => {
+      const current = this.entries.get(slug)
+      if (!current || current !== entry) return
+      const t = Math.min(1, (performance.now() - start) / DURATION)
+      const lifted = this.hoveredSlug === slug
+      const base = lifted ? HOVER_SCALE : 1
+      const bump = Math.sin(Math.PI * t) * (PEAK - base)
+      const s = base + bump
+      entry.card.scale.set(s, s, 1)
+      entry.card.position.y =
+        CARD_Y + (lifted ? HOVER_LIFT : 0) + Math.sin(Math.PI * t) * 0.3
+      if (t < 1) requestAnimationFrame(tick)
+      else {
+        entry.card.scale.set(base, base, 1)
+        entry.card.position.y = CARD_Y + (lifted ? HOVER_LIFT : 0)
+      }
+    }
+    requestAnimationFrame(tick)
+  }
+
   /** Highlight a single pin: lift + gentle scale. Pass null to clear. The
    *  anchor disc stays put so the pin-point remains visible. Safe to call
    *  repeatedly with the same slug. */
