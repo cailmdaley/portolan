@@ -650,23 +650,26 @@ const stateSync = new FrontendStateSync({
       }
     }
 
-    const targetCity = mostRecentCity || cities[0]
+    // `?city=X` wins over most-recent-activity heuristic. Without this, deep
+    // links opened the workspace but never ran handleCityClick — HUD stayed
+    // empty and pins never loaded until the user clicked the hex. See
+    // hash-restore-does-not-select-city.
+    const urlCity = urlCityId ? cities.find(c => c.id === urlCityId) ?? null : null
+    const targetCity = urlCity || mostRecentCity || cities[0]
     console.log(
       '[InitialFocus]',
-      mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
+      urlCity ? `URL: ${targetCity.name}` : mostRecentCity ? `Most recent: ${targetCity.name}` : `Fallback: ${targetCity.name}`,
       sessions.length,
       'sessions,',
       sessions.filter(s => s.cityId).length,
       'with cityId'
     )
-    const pos = hexGrid.axialToCartesian(targetCity.hex)
-    camera.focusAndZoom(pos, 6, 0.95)
+    handleCityClick(targetCity)
 
-    if (!urlCityId) return
-    const urlCity = cities.find(c => c.id === urlCityId)
-    if (!urlCity) return
-    cityPanel.hide()
-    openCityWorkspace(urlCity)
+    if (urlCity) {
+      cityPanel.hide()
+      openCityWorkspace(urlCity)
+    }
   },
   onActivity: ({ activitySessionKey, activities }) => {
     zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
