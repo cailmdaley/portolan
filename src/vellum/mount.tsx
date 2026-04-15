@@ -277,79 +277,6 @@ export interface OpenStaticFileModalOptions {
   jumpToLine?: number
 }
 
-/**
- * Full-viewport vellum file modal backed by a read-only static adapter. Used
- * by the GitHub Pages tapestry deploy where no server is available — files
- * come from the flat `${staticDataBase}/files/` tree written by
- * `felt export --format tapestry`.
- */
-export interface FiberCardPreviewOptions {
-  cityId?: string
-  originId?: string
-  width?: number
-}
-
-export interface FiberCardPreviewHandle {
-  /**
-   * Render the card for a new GraphNode. Passing null clears the card.
-   * Optional `content` threads the fiber body's mdast through so FiberCard
-   * renders the prose lede below the pretext lockup.
-   */
-  update(node: GraphNode | null, width?: number, content?: FiberContent | null): void
-  /** Fetch the fiber body via the mounted adapter. Returns null on miss. */
-  fetchContent(slug: string): Promise<FiberContent | null>
-  unmount(): void
-}
-
-/**
- * Mount vellum's FiberCard into an arbitrary container. Intended for the
- * pinned-card hover preview on the portolan map — the same fiber primitive
- * the reader uses, rendered in a small tooltip-sized surface so the map
- * previews what the reader would open. See tapestry-dissolves.
- */
-export function mountVellumFiberCardPreview(
-  container: HTMLElement,
-  opts: FiberCardPreviewOptions = {},
-): FiberCardPreviewHandle {
-  const root = createRoot(container)
-  const adapter = createPortolanAdapter({
-    cityId: opts.cityId,
-    defaultOriginId: opts.originId,
-  })
-  const defaultWidth = opts.width ?? 280
-
-  const render = (node: GraphNode | null, width: number, content: FiberContent | null) => {
-    if (!node) {
-      root.render(<StrictMode />)
-      return
-    }
-    root.render(
-      <StrictMode>
-        <AdapterProvider adapter={adapter}>
-          <FiberCard node={node} width={width} content={content ?? undefined} />
-        </AdapterProvider>
-      </StrictMode>,
-    )
-  }
-
-  return {
-    update(node, width, content) {
-      render(node, width ?? defaultWidth, content ?? null)
-    },
-    async fetchContent(slug) {
-      if (!adapter.getFiberContent) return null
-      try {
-        return await adapter.getFiberContent(slug)
-      } catch {
-        return null
-      }
-    },
-    unmount() {
-      root.unmount()
-    },
-  }
-}
-
 export interface MountFiberSurfaceOptions {
   slug: string
   cityId?: string
@@ -379,9 +306,6 @@ export interface VellumFiberSurfaceHandle {
  * (pretext lockup + prose lede + tags). Used by the floating-card primitive
  * for fiber-kind pins — see [[file-view-as-floating-card]] and
  * `tapestry-dissolves` Next: "Fiber pins as DOM cards too."
- *
- * Sibling of `mountVellumFiberCardPreview` (hover tooltip). Difference: this
- * returns an update() that re-renders for a new slug on the same container.
  */
 export function mountVellumFiberSurface(
   container: HTMLElement,
