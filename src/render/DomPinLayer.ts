@@ -943,15 +943,21 @@ function renderResizeHandle(): HTMLElement {
   const h = document.createElement('div')
   h.className = 'dom-pin-resize'
   h.title = 'Drag to resize · hold Shift to lock aspect ratio'
+  // Hit area is 24×24 so the corner is forgiving to grab; the visible dimple
+  // lives in the bottom-right ~16px of that via a background-size that keeps
+  // the diagonal stripes from stretching across the whole square. Prior
+  // 18×18 size was fiddly to catch on a first grab, especially near the
+  // chrome strip above.
   Object.assign(h.style, {
     position: 'absolute',
     right: '0',
     bottom: '0',
-    width: '18px',
-    height: '18px',
+    width: '24px',
+    height: '24px',
     cursor: 'nwse-resize',
     background:
-      'linear-gradient(135deg, transparent 0%, transparent 55%, rgba(140, 110, 80, 0.65) 55%, rgba(140, 110, 80, 0.65) 68%, transparent 68%, transparent 78%, rgba(140, 110, 80, 0.65) 78%, rgba(140, 110, 80, 0.65) 91%, transparent 91%)',
+      'linear-gradient(135deg, transparent 0%, transparent 55%, rgba(140, 110, 80, 0.65) 55%, rgba(140, 110, 80, 0.65) 68%, transparent 68%, transparent 78%, rgba(140, 110, 80, 0.65) 78%, rgba(140, 110, 80, 0.65) 91%, transparent 91%) no-repeat right bottom',
+    backgroundSize: '16px 16px',
     touchAction: 'none',
     zIndex: '2',
   })
