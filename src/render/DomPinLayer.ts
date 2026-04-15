@@ -739,9 +739,8 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    fontVariant: 'small-caps',
-    letterSpacing: '0.03em',
   })
+  applyChromeTitleCasing(title, displayTitle, pin.slug)
   bar.appendChild(title)
   const handle = document.createElement('button')
   handle.type = 'button'
@@ -771,6 +770,24 @@ function setChromeTitle(chrome: HTMLElement, displayTitle: string, slug: string)
   if (!title) return
   title.textContent = displayTitle
   title.title = displayTitle === slug ? slug : `${displayTitle} · ${slug}`
+  applyChromeTitleCasing(title, displayTitle, slug)
+}
+
+/** Small-caps + letter-spacing is the portolan title treatment — it flatters
+ *  lowercase slugs (`tapestry-dissolves` → `TAPESTRY-DISSOLVES`) but reads as
+ *  shouty when applied to human-shaped titles: fiber frontmatter names
+ *  ("Pin any file type"), file basenames (`CLAUDE.md`), and especially long
+ *  URL paths (`1200px-Cantino_planisphere_(1502).jpg`). Apply the styling
+ *  only when the chrome is still showing the bare slug; drop it the moment
+ *  a humanised title takes over. */
+function applyChromeTitleCasing(
+  title: HTMLElement,
+  displayTitle: string,
+  slug: string,
+): void {
+  const isSlug = displayTitle === slug
+  title.style.fontVariant = isSlug ? 'small-caps' : 'normal'
+  title.style.letterSpacing = isSlug ? '0.03em' : '0'
 }
 
 function setChromeStatus(chrome: HTMLElement, status: FiberStatus): void {
