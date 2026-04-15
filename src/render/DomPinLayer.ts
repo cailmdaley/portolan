@@ -751,9 +751,12 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
     userSelect: 'none',
   })
   // Status glyph: empty until `resolveFiberMeta` paints one (fiber pins only).
-  // Width reserved so the title doesn't shift when the glyph appears.
+  // Width reserved so the title doesn't shift when the glyph appears. The slot
+  // is decorative — hide it from assistive tech so screen readers don't
+  // announce the placeholder dot on every non-fiber pin.
   const status = document.createElement('span')
   status.className = 'dom-pin-chrome-status'
+  status.setAttribute('aria-hidden', 'true')
   Object.assign(status.style, {
     display: 'inline-block',
     width: '12px',
@@ -781,6 +784,7 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   handle.className = 'dom-pin-menu-handle'
   handle.textContent = '⋮'
   handle.title = 'Pin menu'
+  handle.setAttribute('aria-label', 'Pin menu')
   // Keep the button off the tab sequence — with many pins on the map, tabbing
   // through every ⋮ button ahead of actual page controls is pure noise. The
   // menu is still reachable via right-click or the button itself.
