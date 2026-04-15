@@ -418,6 +418,13 @@ export class DomPinLayer {
 
       const startX = event.clientX
       const startY = event.clientY
+      // Capture the offset from cursor world to pin anchor at drag start so the
+      // card doesn't snap-recentre under the cursor. Without this, grabbing the
+      // chrome strip (top of card) re-anchors the card center to the cursor on
+      // the first move, jerking the card downward before it starts tracking.
+      const startWorld = this.screenToWorld!(startX, startY)
+      const offsetX = entry.pin.x - startWorld.x
+      const offsetZ = entry.pin.z - startWorld.z
       let active = false
 
       const onMove = (ev: PointerEvent) => {
@@ -432,7 +439,7 @@ export class DomPinLayer {
           document.body.classList.add('pin-dragging')
         }
         const world = this.screenToWorld!(ev.clientX, ev.clientY)
-        entry.pin = { ...entry.pin, x: world.x, z: world.z }
+        entry.pin = { ...entry.pin, x: world.x + offsetX, z: world.z + offsetZ }
         this.position(entry)
       }
 
@@ -448,7 +455,7 @@ export class DomPinLayer {
         // Commit final world position. Read from the last pointer event
         // because `entry.pin` was updated per-move above.
         const world = this.screenToWorld!(ev.clientX, ev.clientY)
-        this.onPinMoved!(entry.slug, world.x, world.z)
+        this.onPinMoved!(entry.slug, world.x + offsetX, world.z + offsetZ)
       }
 
       window.addEventListener('pointermove', onMove, true)
