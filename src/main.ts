@@ -146,6 +146,17 @@ const domPinLayer = new DomPinLayer({
     ])
   },
   cityIdFor: () => cityPanel.getCurrentCity()?.id ?? pinnedCityId ?? undefined,
+  screenToWorld: (x, y) => camera.screenToWorld(x, y),
+  // Chrome-strip drag: pointer-down on the title bar of a DOM pin repositions
+  // the card live; release commits via putPin. Foundational move toward the
+  // floating-card primitive. See [[file-view-as-floating-card]].
+  onPinMoved: (slug, x, z) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    void putPin(city.id, slug, { x, z })
+      .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
+      .catch(err => console.error('[pins] drag-move failed', err))
+  },
   // Lazy: vellum module is async-imported. Until it resolves, markdown pins
   // fall back to the link-card stub. See [[file-view-as-floating-card]].
   mountVellumSurface: (container, opts) => {

@@ -57,6 +57,10 @@ export interface DomPinLayerOptions {
   mountVellumSurface?: MountVellumFileSurface
   /** Default cityId threaded into vellum mounts when a pin lacks an originId hint. */
   cityIdFor?: () => string | undefined
+  /** Convert screen pixels to world coords. Required for chrome-strip drag. */
+  screenToWorld?: (x: number, y: number) => { x: number; z: number }
+  /** Persist a pin's new world position after a chrome-strip drag completes. */
+  onPinMoved?: (slug: string, x: number, z: number) => void
 }
 
 interface DomPinEntry {
@@ -65,6 +69,7 @@ interface DomPinEntry {
   el: HTMLDivElement
   inner: HTMLElement
   hovered: boolean
+  dragging: boolean
   vellumMount: VellumSurfaceMount | null
 }
 
@@ -74,6 +79,8 @@ export class DomPinLayer {
   private readonly onContextMenu?: (slug: string, clientX: number, clientY: number) => void
   private readonly mountVellumSurface?: MountVellumFileSurface
   private readonly cityIdFor?: () => string | undefined
+  private readonly screenToWorld?: (x: number, y: number) => { x: number; z: number }
+  private readonly onPinMoved?: (slug: string, x: number, z: number) => void
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -84,6 +91,8 @@ export class DomPinLayer {
     this.onContextMenu = opts.onContextMenu
     this.mountVellumSurface = opts.mountVellumSurface
     this.cityIdFor = opts.cityIdFor
+    this.screenToWorld = opts.screenToWorld
+    this.onPinMoved = opts.onPinMoved
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -242,7 +251,81 @@ export class DomPinLayer {
         openMenu(event.clientX, event.clientY)
       })
     }
-    return { slug: pin.slug, pin, el, inner, hovered: false, vellumMount }
+    const entry: DomPinEntry = {
+      slug: pin.slug,
+      pin,
+      el,
+      inner,
+      hovered: false,
+      dragging: false,
+      vellumMount,
+    }
+    this.attachChromeDrag(chrome, entry)
+    return entry
+  }
+
+  /** Wire a pointerdown on the chrome strip into a drag gesture that updates
+   *  the pin's world position live and persists on release. Skipped if the host
+   *  didn't provide `screenToWorld` / `onPinMoved`. Primary pointer only;
+   *  right-click and the menu-handle button are excluded so the context-menu
+   *  path still works. */
+  private attachChromeDrag(chrome: HTMLElement, entry: DomPinEntry): void {
+    if (!this.screenToWorld || !this.onPinMoved) return
+
+    const DRAG_THRESHOLD_PX = 3
+    chrome.style.cursor = 'grab'
+
+    chrome.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return
+      const target = event.target as Element | null
+      if (target?.closest('.dom-pin-menu-handle')) return
+
+      const startX = event.clientX
+      const startY = event.clientY
+      let active = false
+
+      const onMove = (ev: PointerEvent) => {
+        if (!active) {
+          if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD_PX) return
+          active = true
+          entry.dragging = true
+          entry.el.classList.add('dom-pin--dragging')
+          entry.el.style.transition = 'none'
+          chrome.style.cursor = 'grabbing'
+          document.body.style.cursor = 'grabbing'
+          // Reuse the drag-to-pin suppression flag so MapInteractionController's
+          // canvas-hover early-returns apply to chrome-strip drags too.
+          document.body.classList.add('pin-dragging')
+        }
+        const world = this.screenToWorld!(ev.clientX, ev.clientY)
+        entry.pin = { ...entry.pin, x: world.x, z: world.z }
+        this.position(entry)
+      }
+
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener('pointermove', onMove, true)
+        window.removeEventListener('pointerup', onUp, true)
+        window.removeEventListener('pointercancel', onUp, true)
+        if (!active) return
+        entry.dragging = false
+        entry.el.classList.remove('dom-pin--dragging')
+        entry.el.style.transition = 'transform 80ms linear'
+        chrome.style.cursor = 'grab'
+        document.body.style.cursor = ''
+        document.body.classList.remove('pin-dragging')
+        // Commit final world position. Read from the last pointer event
+        // because `entry.pin` was updated per-move above.
+        const world = this.screenToWorld!(ev.clientX, ev.clientY)
+        this.onPinMoved!(entry.slug, world.x, world.z)
+      }
+
+      window.addEventListener('pointermove', onMove, true)
+      window.addEventListener('pointerup', onUp, true)
+      window.addEventListener('pointercancel', onUp, true)
+
+      event.preventDefault()
+      event.stopPropagation()
+    })
   }
 }
 
