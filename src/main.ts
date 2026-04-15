@@ -297,7 +297,6 @@ async function translatePinsBy(cityId: string, dx: number, dz: number): Promise<
   try {
     const pins = await listPins(cityId)
     for (const pin of pins) {
-      if (pinnedCityId !== cityId) return
       try {
         const moved = await putPin(
           cityId,
@@ -310,12 +309,12 @@ async function translatePinsBy(cityId: string, dx: number, dz: number): Promise<
             height: pin.height,
           },
         )
-        domPinLayer.upsert(moved)
+        if (pinnedCityId === cityId) domPinLayer.upsert(moved)
       } catch (err) {
         console.error('[pins] translate failed for', pin.slug, err)
       }
     }
-    syncPinnedSlugs()
+    if (pinnedCityId === cityId) syncPinnedSlugs()
   } catch (err) {
     console.error('[pins] translate listPins failed for', cityId, err)
   }
@@ -715,7 +714,7 @@ const mapInteractions = new MapInteractionController({
     // client-side. See [[tapestry-dissolves]] Open Q1 (resolved 2026-04-15).
     const city = cities.find(c => c.id === cityId)
     mapActions!.moveCity(cityId, hex)
-    if (!city || pinnedCityId !== cityId) return
+    if (!city) return
     const oldWorld = hexGrid.axialToCartesian(city.hex)
     const newWorld = hexGrid.axialToCartesian(hex)
     const dx = newWorld.x - oldWorld.x
