@@ -102,8 +102,6 @@ interface DomPinEntry {
   pin: Pin
   el: HTMLDivElement
   inner: HTMLElement
-  hovered: boolean
-  dragging: boolean
   vellumMount: VellumSurfaceMount | null
   width: number
   height: number
@@ -252,18 +250,11 @@ export class DomPinLayer {
     if (this.hoveredSlug === slug) return
     if (this.hoveredSlug) {
       const prev = this.entries.get(this.hoveredSlug)
-      if (prev) {
-        prev.hovered = false
-        prev.el.classList.remove('dom-pin--hovered')
-      }
+      prev?.el.classList.remove('dom-pin--hovered')
     }
     this.hoveredSlug = slug
     if (slug) {
-      const entry = this.entries.get(slug)
-      if (entry) {
-        entry.hovered = true
-        entry.el.classList.add('dom-pin--hovered')
-      }
+      this.entries.get(slug)?.el.classList.add('dom-pin--hovered')
     }
   }
 
@@ -358,8 +349,6 @@ export class DomPinLayer {
       pin,
       el,
       inner,
-      hovered: false,
-      dragging: false,
       vellumMount,
       width: size.width,
       height: size.height,
@@ -383,18 +372,23 @@ export class DomPinLayer {
   /** Scroll-wheel over the chrome strip scales the card's intrinsic size. The
    *  chrome is a DOM sibling of the canvas, so camera-wheel never fires here —
    *  but we still stopPropagation/preventDefault so page-level scroll doesn't
-   *  kick in. Gentle exponential scale matches the camera zoom feel; commit is
-   *  debounced so a wheel gesture fires one persisted write on release, not one
-   *  per tick. See [[file-view-as-floating-card]]: zoom-over-header. */
+   *  kick in. Scale factor is proportional to `deltaY` so trackpad two-finger
+   *  scrolls feel continuous instead of each tick jumping a fixed 5% — mouse
+   *  wheels still get their discrete step because browsers synthesize one
+   *  sizable deltaY per notch. Commit is debounced so a gesture fires one
+   *  persisted write on release, not one per frame. See
+   *  [[file-view-as-floating-card]]: zoom-over-header. */
   private attachChromeScale(chrome: HTMLElement, entry: DomPinEntry): void {
     if (!this.onPinResized) return
-    const STEP_IN = 1.05
-    const STEP_OUT = 1 / STEP_IN
+    // e^(deltaY * RATE) — ≈0.1% per deltaY pixel. A typical 100px trackpad
+    // flick ends near 90% size; a single mouse-wheel notch (deltaY ≈ 100) is
+    // the same ~10% step that the fixed-per-tick version delivered.
+    const RATE = 0.001
     let commitTimer: number | null = null
     chrome.addEventListener('wheel', (event) => {
       event.preventDefault()
       event.stopPropagation()
-      const factor = event.deltaY > 0 ? STEP_OUT : STEP_IN
+      const factor = Math.exp(-event.deltaY * RATE)
       entry.width = clampSize(entry.width * factor)
       entry.height = clampSize(entry.height * factor)
       applySize(entry)
@@ -430,7 +424,6 @@ export class DomPinLayer {
         if (!active) {
           if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD_PX) return
           active = true
-          entry.dragging = true
           entry.el.classList.add('dom-pin--dragging')
           chrome.style.cursor = 'grabbing'
           document.body.style.cursor = 'grabbing'
@@ -448,7 +441,6 @@ export class DomPinLayer {
         window.removeEventListener('pointerup', onUp, true)
         window.removeEventListener('pointercancel', onUp, true)
         if (!active) return
-        entry.dragging = false
         entry.el.classList.remove('dom-pin--dragging')
         chrome.style.cursor = 'grab'
         document.body.style.cursor = ''
@@ -549,6 +541,25 @@ function ensurePulseStyles(): void {
     .dom-pin--hovered .dom-pin-resize,
     .dom-pin--resizing .dom-pin-resize {
       opacity: 1;
+    }
+    /* Chrome strip hover: darken slightly so the grab surface advertises itself
+       when the cursor enters it. Transition short so it doesn't feel sluggish. */
+    .dom-pin-chrome {
+      transition: background-color 120ms ease-out;
+    }
+    .dom-pin-chrome:hover {
+      background: rgba(184, 168, 150, 0.96) !important;
+    }
+    /* Menu handle (⋮): soft round background on hover/focus so it reads as a
+       real button rather than inert text. */
+    .dom-pin-menu-handle {
+      border-radius: 4px;
+      transition: background-color 120ms ease-out;
+    }
+    .dom-pin-menu-handle:hover,
+    .dom-pin-menu-handle:focus-visible {
+      background: rgba(46, 42, 38, 0.12) !important;
+      outline: none;
     }
     /* Hover state from the HUD bridge (setHovered) adds the class; browser
        :hover handles the on-map case. Both raise the pin slightly and deepen
