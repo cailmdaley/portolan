@@ -117,6 +117,22 @@ const domPinLayer = new DomPinLayer({
         label: 'Open Fiber',
         action: () => openCityWorkspace(city, slug),
       })
+    } else if (pin?.source?.path) {
+      // Non-fiber file pin — open the file in vellum's full modal viewer.
+      // The inline pin is a peek; the modal is the full reading surface.
+      items.push({
+        label: 'Open File',
+        action: () => openFile({
+          path: pin.source!.path!,
+          originId: pin.source!.originId,
+          cityId: city.id,
+        }),
+      })
+    } else if (pin?.source?.url) {
+      items.push({
+        label: 'Open in Browser',
+        action: () => window.open(pin.source!.url!, '_blank', 'noopener,noreferrer'),
+      })
     }
     items.push(
       {
