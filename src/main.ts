@@ -292,11 +292,14 @@ async function loadPinsForCity(cityId: string): Promise<void> {
 }
 
 /** Fan out pins that persist at identical (x,z) coords. Keeps the first pin in
- *  each colocated group at its anchor; displaces the rest onto a 2.2-unit ring
- *  (same cadence as spawnPositionForCity) and persists the new position so the
- *  unstack is sticky. Legacy layouts from before the click-spawn fan-out could
- *  park multiple pins at a city's hex; this heals them on first load without
- *  forcing the user to drag each one. See fiber-pins-overlap-at-same-coords. */
+ *  each colocated group at its anchor; displaces the rest onto a ring sized to
+ *  the pin's card width so neighbors sit edge-to-edge rather than overlapping.
+ *  Persists the new position so the unstack is sticky. Legacy layouts from
+ *  before the click-spawn fan-out could park multiple pins at a city's hex;
+ *  this heals them on first load without forcing the user to drag each one.
+ *  See fiber-pins-overlap-at-same-coords. We match on exact coords rather
+ *  than proximity because manually-placed pins naturally sit within a card
+ *  width of each other and must not be re-separated. */
 async function unstackColocatedPins(
   cityId: string,
   pins: Pin[],
@@ -315,7 +318,7 @@ async function unstackColocatedPins(
     for (let i = 1; i < group.length; i++) {
       const pin = group[i]
       const angle = ((i - 1) / 6) * Math.PI * 2
-      const radius = 2.2 * (Math.floor((i - 1) / 6) + 1)
+      const radius = fanOutRadius(pin) * (Math.floor((i - 1) / 6) + 1)
       const x = pin.x + Math.cos(angle) * radius
       const z = pin.z + Math.sin(angle) * radius
       try {
@@ -380,17 +383,51 @@ function panAndPulse(slug: string): void {
   domPinLayer.pulse(slug)
 }
 
+/** Fan-out ring radius in world units, scaled to the pin's card width so
+ *  adjacent ring slots sit edge-to-edge instead of overlapping. Ring chord
+ *  equals radius for 6 slots (2R·sin(30°) = R), so we size the radius to the
+ *  card's world-unit width plus a small gap. Card width in world units ≈
+ *  CSS-width / pxPerUnit-at-reference-zoom; camera math puts pxPerUnit ≈ 50
+ *  at REFERENCE_ZOOM, but we avoid coupling to camera state by using a fixed
+ *  divisor tuned to match the rendered scale. */
+const FAN_OUT_PX_PER_UNIT = 50
+const FAN_OUT_GAP_UNITS = 0.5
+const FAN_OUT_MIN_RADIUS = 2.2
+
+function fanOutRadius(pin: { kind?: PinKind; width?: number }): number {
+  const kind = (pin.kind ?? 'other') as PinKind
+  const defaultWidth = DEFAULT_PIN_WIDTH[kind] ?? DEFAULT_PIN_WIDTH.other
+  const widthPx = pin.width ?? defaultWidth
+  const widthUnits = widthPx / FAN_OUT_PX_PER_UNIT
+  return Math.max(FAN_OUT_MIN_RADIUS, widthUnits + FAN_OUT_GAP_UNITS)
+}
+
+/** Kind-default widths mirroring DomPinLayer.DEFAULT_SIZE — duplicated here
+ *  to keep fan-out geometry independent of the render layer's internals. */
+const DEFAULT_PIN_WIDTH: Record<PinKind, number> = {
+  fiber: 320,
+  markdown: 420,
+  pdf: 320,
+  html: 420,
+  image: 320,
+  other: 260,
+}
+
 /** Compute a fan-out spawn position at a city. Fiber and file pins land at the
- *  city's hex; subsequent pins get a small ring offset so they don't stack
- *  exactly. Offsets are based on the current pin count in the city's layer. */
-function spawnPositionForCity(city: City): { x: number; z: number } {
+ *  city's hex; subsequent pins get a ring offset sized to the new pin's card
+ *  so cards sit beside each other rather than overlapping. Offsets are based
+ *  on the current pin count in the city's layer. */
+function spawnPositionForCity(
+  city: City,
+  pin: { kind?: PinKind; width?: number } = {},
+): { x: number; z: number } {
   const base = hexGrid.axialToCartesian(city.hex)
   const count = domPinLayer.getSlugs().length
   if (count === 0) return { x: base.x, z: base.z }
   const ring = Math.floor((count - 1) / 6) + 1
   const indexInRing = (count - 1) % 6
   const angle = (indexInRing / 6) * Math.PI * 2
-  const radius = 2.2 * ring
+  const radius = fanOutRadius(pin) * ring
   return {
     x: base.x + Math.cos(angle) * radius,
     z: base.z + Math.sin(angle) * radius,
@@ -407,7 +444,8 @@ async function spawnOrPulseCardAtCity(
   originId: string,
 ): Promise<void> {
   const fiberMatch = /\/\.felt\/([^/]+)\/\1\.md$/.exec(fullPath)
-  const pos = spawnPositionForCity(city)
+  const kind = fiberMatch ? ('fiber' as PinKind) : inferPinKindFromPath(fullPath)
+  const pos = spawnPositionForCity(city, { kind })
   try {
     if (fiberMatch) {
       const slug = fiberMatch[1]
@@ -424,7 +462,6 @@ async function spawnOrPulseCardAtCity(
       return
     }
     const source: PinSource = { originId, path: fullPath }
-    const kind = inferPinKindFromPath(fullPath)
     const pin = await pinFile(city.id, pos, source, kind)
     // pinFile is idempotent server-side — if the slug came back already
     // present, treat the spawn as a "find it" gesture.
