@@ -657,6 +657,25 @@ function ensurePulseStyles(): void {
     .dom-pin--hovered {
       filter: drop-shadow(0 6px 12px rgba(46, 42, 38, 0.28));
     }
+    /* Heading tame-down inside pin bodies: MyST renders h1 at ~2x body, which
+       dominates a small card. Scale headings toward body size so the lede
+       reads first, not the title. Anchors (the MyST ¶/# cross-reference
+       hover links) aren't useful in a spatial reader — always hide them. */
+    .dom-pin-vellum-shell h1 { font-size: 1.25em; line-height: 1.25; margin: 0.25em 0 0.35em; }
+    .dom-pin-vellum-shell h2 { font-size: 1.15em; line-height: 1.25; margin: 0.5em 0 0.3em; }
+    .dom-pin-vellum-shell h3 { font-size: 1.05em; line-height: 1.3; margin: 0.5em 0 0.25em; }
+    .dom-pin-vellum-shell h4, .dom-pin-vellum-shell h5, .dom-pin-vellum-shell h6 {
+      font-size: 1em; margin: 0.4em 0 0.2em;
+    }
+    .dom-pin-vellum-shell a.anchor,
+    .dom-pin-vellum-shell h1 > a[href^="#"],
+    .dom-pin-vellum-shell h2 > a[href^="#"],
+    .dom-pin-vellum-shell h3 > a[href^="#"],
+    .dom-pin-vellum-shell h4 > a[href^="#"],
+    .dom-pin-vellum-shell h5 > a[href^="#"],
+    .dom-pin-vellum-shell h6 > a[href^="#"] {
+      display: none !important;
+    }
   `
   document.head.appendChild(style)
 }
