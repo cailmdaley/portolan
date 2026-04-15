@@ -157,6 +157,21 @@ const domPinLayer = new DomPinLayer({
       .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
       .catch(err => console.error('[pins] drag-move failed', err))
   },
+  // Resize-handle drag: persist the new CSS-pixel intrinsic size via putPin,
+  // which preserves x/z/kind/source server-side. Foundational for the
+  // floating-card primitive — see [[file-view-as-floating-card]].
+  onPinResized: (slug, width, height) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    // Read current position from the live pin — chrome-strip drags update it
+    // locally between server commits, so using the in-memory copy avoids a
+    // stale-coord round-trip if a resize follows a move before the PUT settles.
+    const live = domPinLayer.getPin(slug)
+    if (!live) return
+    void putPin(city.id, slug, { x: live.x, z: live.z }, { width, height })
+      .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
+      .catch(err => console.error('[pins] resize failed', err))
+  },
   // Lazy: vellum module is async-imported. Until it resolves, markdown pins
   // fall back to the link-card stub. See [[file-view-as-floating-card]].
   mountVellumSurface: (container, opts) => {

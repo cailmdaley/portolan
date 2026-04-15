@@ -54,6 +54,24 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
     expect(list.data.pins[0]).toMatchObject({ slug: 'fiber-1', x: 4, z: -2 });
   });
 
+  it('PUT accepts width/height and persists them', async () => {
+    const put = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', {
+      x: 4, z: -2, width: 520, height: 360,
+    } as any);
+    expect(put.status).toBe(200);
+    expect(put.data.pin).toMatchObject({ width: 520, height: 360 });
+    // A second PUT that omits size must preserve the previous dimensions.
+    const reposition = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 1, z: 1 });
+    expect(reposition.data.pin).toMatchObject({ x: 1, z: 1, width: 520, height: 360 });
+  });
+
+  it('PUT rejects out-of-bounds width/height with 400', async () => {
+    const tooBig = await httpRequest(api, 'PUT', '/layouts/city-a/pins/s', {
+      x: 0, z: 0, width: 99999,
+    } as any);
+    expect(tooBig.status).toBe(400);
+  });
+
   it('PUT with bad body returns 400', async () => {
     const res = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 'oops' } as any);
     expect(res.status).toBe(400);

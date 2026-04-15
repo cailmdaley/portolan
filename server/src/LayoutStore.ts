@@ -51,12 +51,22 @@ export interface Pin extends PinPosition {
   kind?: PinKind;
   /** Optional source handle for non-fiber pins. Absent = the slug IS the fiber identifier. */
   source?: PinSource;
+  /** Optional intrinsic width / height in CSS pixels (before camera-zoom scale).
+   *  Foundational for the floating-card primitive — see [[file-view-as-floating-card]].
+   *  Absent = renderer falls back to its kind-specific default. */
+  width?: number;
+  height?: number;
 }
 
 export interface PinExtras {
   kind?: PinKind;
   source?: PinSource;
+  width?: number;
+  height?: number;
 }
+
+const MIN_SIZE_PX = 40;
+const MAX_SIZE_PX = 4000;
 
 interface LayoutFile {
   version: 1;
@@ -179,8 +189,12 @@ export class LayoutStore {
     if (extras?.kind && !PIN_KINDS.includes(extras.kind)) return null;
     const cleanSource = extras?.source ? sanitizeSource(extras.source) : undefined;
     if (extras?.source && !cleanSource) return null;
+    if (extras?.width !== undefined && !isSafeSize(extras.width)) return null;
+    if (extras?.height !== undefined && !isSafeSize(extras.height)) return null;
     const pins = this.loadCity(cityId);
     const existing = pins.get(slug);
+    const nextWidth = extras?.width ?? existing?.width;
+    const nextHeight = extras?.height ?? existing?.height;
     const pin: Pin = {
       slug,
       x: pos.x,
@@ -189,6 +203,8 @@ export class LayoutStore {
       // Extras update if provided, otherwise preserve what's already on disk.
       ...((extras?.kind ?? existing?.kind) ? { kind: (extras?.kind ?? existing?.kind)! } : {}),
       ...((cleanSource ?? existing?.source) ? { source: (cleanSource ?? existing?.source)! } : {}),
+      ...(nextWidth !== undefined ? { width: nextWidth } : {}),
+      ...(nextHeight !== undefined ? { height: nextHeight } : {}),
     };
     pins.set(slug, pin);
     if (meta?.cityKey) this.cityKeys.set(cityId, meta.cityKey);
@@ -287,5 +303,11 @@ function normalizeStoredPin(raw: Pin): Pin {
     const clean = sanitizeSource(raw.source);
     if (clean) out.source = clean;
   }
+  if (raw.width !== undefined && isSafeSize(raw.width)) out.width = raw.width;
+  if (raw.height !== undefined && isSafeSize(raw.height)) out.height = raw.height;
   return out;
+}
+
+function isSafeSize(n: number): boolean {
+  return typeof n === 'number' && Number.isFinite(n) && n >= MIN_SIZE_PX && n <= MAX_SIZE_PX;
 }

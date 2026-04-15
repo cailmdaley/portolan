@@ -25,6 +25,21 @@ const DOM_KINDS: ReadonlySet<PinKind> = new Set(['pdf', 'html', 'image', 'markdo
 // `PinRenderer` cards under orthographic zoom. See tapestry-dissolves Open Q (c).
 const REFERENCE_ZOOM = 8
 
+/** Kind-specific default intrinsic CSS sizes — applied when a pin has no
+ *  persisted width/height. Matches the pre-existing inline iframe/img defaults
+ *  below, so pins that pre-date size-persistence render at identical size. */
+interface KindSize { width: number; height: number }
+const DEFAULT_SIZE: Record<PinKind, KindSize> = {
+  fiber: { width: 320, height: 320 },
+  markdown: { width: 420, height: 420 },
+  pdf: { width: 320, height: 420 },
+  html: { width: 420, height: 300 },
+  image: { width: 320, height: 320 },
+  other: { width: 260, height: 120 },
+}
+const MIN_SIZE = 120
+const MAX_SIZE = 1600
+
 /** True if a pin should render via the DOM layer rather than PinRenderer. */
 export function isDomPinKind(pin: Pin): boolean {
   if (!pin.kind) return false
@@ -61,6 +76,9 @@ export interface DomPinLayerOptions {
   screenToWorld?: (x: number, y: number) => { x: number; z: number }
   /** Persist a pin's new world position after a chrome-strip drag completes. */
   onPinMoved?: (slug: string, x: number, z: number) => void
+  /** Persist a pin's new intrinsic CSS size after a resize-handle drag completes.
+   *  See [[file-view-as-floating-card]]. */
+  onPinResized?: (slug: string, width: number, height: number) => void
 }
 
 interface DomPinEntry {
@@ -71,6 +89,8 @@ interface DomPinEntry {
   hovered: boolean
   dragging: boolean
   vellumMount: VellumSurfaceMount | null
+  width: number
+  height: number
 }
 
 export class DomPinLayer {
@@ -81,6 +101,7 @@ export class DomPinLayer {
   private readonly cityIdFor?: () => string | undefined
   private readonly screenToWorld?: (x: number, y: number) => { x: number; z: number }
   private readonly onPinMoved?: (slug: string, x: number, z: number) => void
+  private readonly onPinResized?: (slug: string, width: number, height: number) => void
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -93,6 +114,7 @@ export class DomPinLayer {
     this.cityIdFor = opts.cityIdFor
     this.screenToWorld = opts.screenToWorld
     this.onPinMoved = opts.onPinMoved
+    this.onPinResized = opts.onPinResized
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -131,6 +153,14 @@ export class DomPinLayer {
         this.remove(pin.slug)
       } else {
         existing.pin = pin
+        // Size may have changed server-side (e.g. after a resize commit from
+        // another surface); reflect it live before repositioning.
+        const nextSize = resolveSize(pin)
+        if (existing.width !== nextSize.width || existing.height !== nextSize.height) {
+          existing.width = nextSize.width
+          existing.height = nextSize.height
+          applySize(existing)
+        }
         this.position(existing)
         return
       }
@@ -160,6 +190,12 @@ export class DomPinLayer {
 
   getSlugs(): string[] {
     return [...this.entries.keys()]
+  }
+
+  /** Read back a pin's current live state (includes live-mutated position from
+   *  chrome-strip drags). Null when this layer doesn't own the slug. */
+  getPin(slug: string): Pin | null {
+    return this.entries.get(slug)?.pin ?? null
   }
 
   /** Per-frame: re-project every pin's world position to screen pixels. */
@@ -210,7 +246,11 @@ export class DomPinLayer {
       transition: 'transform 80ms linear',
       display: 'flex',
       flexDirection: 'column',
+      // Intrinsic size lives on the wrapper; inner bodies fill it via flex:1.
+      // Camera-zoom scale is applied by `position()` and multiplies these.
+      boxSizing: 'border-box',
     })
+    const size = resolveSize(pin)
 
     // Chrome strip — a pointer-event handle that stays *outside* the iframe's
     // own event scope. Right-click or clicking the ⋮ opens the host context
@@ -259,8 +299,16 @@ export class DomPinLayer {
       hovered: false,
       dragging: false,
       vellumMount,
+      width: size.width,
+      height: size.height,
     }
+    applySize(entry)
     this.attachChromeDrag(chrome, entry)
+    // Resize handle lives above the inner body so it stays above iframe event
+    // scope. Dragging it updates width/height live and commits on release.
+    const resizeHandle = renderResizeHandle()
+    el.appendChild(resizeHandle)
+    this.attachResize(resizeHandle, entry)
     return entry
   }
 
@@ -327,14 +375,72 @@ export class DomPinLayer {
       event.stopPropagation()
     })
   }
+
+  /** Wire pointerdown on the bottom-right resize handle into a drag that scales
+   *  the card's intrinsic size. Screen-pixel deltas are divided by the current
+   *  camera-zoom scale so one screen pixel of drag equals one CSS pixel of
+   *  size change (otherwise resizing would feel faster/slower at different
+   *  zoom levels). Commits via `onPinResized`; skipped if the host didn't
+   *  provide the callback. */
+  private attachResize(handle: HTMLElement, entry: DomPinEntry): void {
+    if (!this.onPinResized) return
+
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return
+      const startX = event.clientX
+      const startY = event.clientY
+      const startW = entry.width
+      const startH = entry.height
+      const zoom = this.camera.cameraDistance
+      const scale = REFERENCE_ZOOM / Math.max(zoom, 0.0001)
+      let active = false
+
+      const onMove = (ev: PointerEvent) => {
+        const dxScreen = ev.clientX - startX
+        const dyScreen = ev.clientY - startY
+        if (!active) {
+          if (Math.hypot(dxScreen, dyScreen) < 2) return
+          active = true
+          entry.el.classList.add('dom-pin--resizing')
+          entry.el.style.transition = 'none'
+          document.body.style.cursor = 'nwse-resize'
+          // Reuse the same suppression flag as drag-to-pin / chrome-drag so
+          // pin-hover and canvas interactions don't interfere mid-resize.
+          document.body.classList.add('pin-dragging')
+        }
+        entry.width = clampSize(startW + dxScreen / scale)
+        entry.height = clampSize(startH + dyScreen / scale)
+        applySize(entry)
+      }
+
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove, true)
+        window.removeEventListener('pointerup', onUp, true)
+        window.removeEventListener('pointercancel', onUp, true)
+        if (!active) return
+        entry.el.classList.remove('dom-pin--resizing')
+        entry.el.style.transition = 'transform 80ms linear'
+        document.body.style.cursor = ''
+        document.body.classList.remove('pin-dragging')
+        this.onPinResized!(entry.slug, entry.width, entry.height)
+      }
+
+      window.addEventListener('pointermove', onMove, true)
+      window.addEventListener('pointerup', onUp, true)
+      window.addEventListener('pointercancel', onUp, true)
+
+      event.preventDefault()
+      event.stopPropagation()
+    })
+  }
 }
 
 function renderVellumShell(): HTMLElement {
   const div = document.createElement('div')
   div.className = 'dom-pin-vellum-shell'
   Object.assign(div.style, {
-    width: '420px',
-    height: '420px',
+    flex: '1 1 auto',
+    minHeight: '0',
     overflow: 'auto',
     border: '1px solid rgba(140, 110, 80, 0.55)',
     borderTop: 'none',
@@ -413,8 +519,9 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
     iframe.src = url
     iframe.title = pin.slug
     Object.assign(iframe.style, {
-      width: kind === 'pdf' ? '320px' : '420px',
-      height: kind === 'pdf' ? '420px' : '300px',
+      flex: '1 1 auto',
+      width: '100%',
+      minHeight: '0',
       border: '1px solid rgba(140, 110, 80, 0.55)',
       borderTop: 'none',
       borderBottomLeftRadius: '6px',
@@ -431,8 +538,10 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
     img.src = url
     img.alt = pin.slug
     Object.assign(img.style, {
-      maxWidth: '320px',
-      maxHeight: '320px',
+      flex: '1 1 auto',
+      width: '100%',
+      minHeight: '0',
+      objectFit: 'contain',
       border: '1px solid rgba(140, 110, 80, 0.55)',
       borderTop: 'none',
       borderBottomLeftRadius: '6px',
@@ -456,10 +565,11 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
   a.rel = 'noopener noreferrer'
   a.textContent = pin.slug
   Object.assign(a.style, {
-    display: 'block',
+    display: 'flex',
+    alignItems: 'center',
+    flex: '1 1 auto',
+    minHeight: '0',
     padding: '12px 18px',
-    minWidth: '160px',
-    maxWidth: '320px',
     fontFamily: '"EB Garamond", Garamond, serif',
     fontSize: '18px',
     color: '#2E2A26',
@@ -478,6 +588,8 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
   const div = document.createElement('div')
   div.textContent = `${pin.slug} (${reason})`
   Object.assign(div.style, {
+    flex: '1 1 auto',
+    minHeight: '0',
     padding: '8px 12px',
     fontFamily: '"JetBrains Mono", monospace',
     fontSize: '12px',
@@ -489,4 +601,39 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
     borderBottomRightRadius: '4px',
   })
   return div
+}
+
+function renderResizeHandle(): HTMLElement {
+  const h = document.createElement('div')
+  h.className = 'dom-pin-resize'
+  Object.assign(h.style, {
+    position: 'absolute',
+    right: '0',
+    bottom: '0',
+    width: '14px',
+    height: '14px',
+    cursor: 'nwse-resize',
+    background:
+      'linear-gradient(135deg, transparent 0%, transparent 50%, rgba(140, 110, 80, 0.55) 50%, rgba(140, 110, 80, 0.55) 65%, transparent 65%, transparent 75%, rgba(140, 110, 80, 0.55) 75%, rgba(140, 110, 80, 0.55) 90%, transparent 90%)',
+    touchAction: 'none',
+    zIndex: '2',
+  })
+  return h
+}
+
+function resolveSize(pin: Pin): KindSize {
+  const base = DEFAULT_SIZE[pin.kind ?? 'other'] ?? DEFAULT_SIZE.other
+  const w = clampSize(pin.width ?? base.width)
+  const h = clampSize(pin.height ?? base.height)
+  return { width: w, height: h }
+}
+
+function clampSize(n: number): number {
+  if (!Number.isFinite(n)) return MIN_SIZE
+  return Math.min(MAX_SIZE, Math.max(MIN_SIZE, n))
+}
+
+function applySize(entry: DomPinEntry): void {
+  entry.el.style.width = `${entry.width}px`
+  entry.el.style.height = `${entry.height}px`
 }

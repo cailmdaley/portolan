@@ -188,6 +188,30 @@ describe('LayoutStore', () => {
     expect(kindFromPath('Makefile')).toBe('other');
   });
 
+  it('persists width/height and preserves them across position-only writes', () => {
+    const store = makeStore();
+    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, undefined, { width: 480, height: 360 });
+    const file = join(TEST_DIR, 'layouts', 'city-a.json');
+    let data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.pins[0]).toMatchObject({ width: 480, height: 360 });
+
+    store.setPin('city-a', 'fiber-1', { x: 5, z: 5 });
+    data = JSON.parse(readFileSync(file, 'utf-8'));
+    expect(data.pins[0]).toMatchObject({ x: 5, z: 5, width: 480, height: 360 });
+
+    // Reload from disk via a fresh store.
+    const fresh = makeStore();
+    expect(fresh.getPin('city-a', 'fiber-1')).toMatchObject({ width: 480, height: 360 });
+  });
+
+  it('rejects out-of-bounds and non-finite sizes', () => {
+    const store = makeStore();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { width: 10 })).toBeNull();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { height: 99999 })).toBeNull();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { width: NaN })).toBeNull();
+    expect(store.getPins('city-a')).toEqual([]);
+  });
+
   it('scanLayouts surfaces every layout file with its cityKey', () => {
     const store = makeStore();
     store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, { cityKey: 'local:/a' });

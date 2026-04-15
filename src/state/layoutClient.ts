@@ -21,6 +21,10 @@ export interface Pin extends PinPosition {
   kind?: PinKind
   /** Optional source handle. Absent = legacy fiber-slug pin. */
   source?: PinSource
+  /** Optional intrinsic CSS-pixel width/height for DOM pins; per-card size that
+   *  persists through the layout store. See [[file-view-as-floating-card]]. */
+  width?: number
+  height?: number
 }
 
 interface ListResponse {
@@ -47,7 +51,7 @@ export async function putPin(
   cityId: string,
   slug: string,
   pos: PinPosition,
-  extras?: { kind?: PinKind; source?: PinSource },
+  extras?: { kind?: PinKind; source?: PinSource; width?: number; height?: number },
 ): Promise<Pin> {
   const res = await fetch(`${API_BASE}/layouts/${enc(cityId)}/pins/${enc(slug)}`, {
     method: 'PUT',

@@ -40,6 +40,8 @@ const LIST_PATH_RE = /^\/layouts\/([^/]+)$/;
 interface PinPutBody extends PinPosition {
   kind?: PinKind;
   source?: PinSource;
+  width?: number;
+  height?: number;
 }
 
 interface FilePinBody extends PinPosition {
@@ -97,6 +99,8 @@ export class HttpApiLayouts {
         const extras: PinExtras = {};
         if (body.kind) extras.kind = body.kind;
         if (body.source) extras.source = body.source;
+        if (typeof body.width === 'number') extras.width = body.width;
+        if (typeof body.height === 'number') extras.height = body.height;
         const pin = this.layoutStore.setPin(
           cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId), extras,
         );
