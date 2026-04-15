@@ -115,7 +115,7 @@ const domPinLayer = new DomPinLayer({
     if (pin?.kind === 'fiber') {
       items.push({
         label: 'Open Fiber',
-        action: () => openCityWorkspace(city),
+        action: () => openCityWorkspace(city, slug),
       })
     }
     items.push(
@@ -166,6 +166,26 @@ const domPinLayer = new DomPinLayer({
     void putPin(city.id, slug, { x: live.x, z: live.z }, { width, height })
       .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] resize failed', err))
+  },
+  // Chrome-strip title resolver. For fiber pins, look up the fiber's
+  // frontmatter `name` so the chrome shows "Pin any file type on the map"
+  // instead of the raw slug "pin-any-file-type". Non-fiber pins keep the
+  // source-derived default (basename / hostname).
+  resolveTitle: async (pin) => {
+    if (pin.kind !== 'fiber') return null
+    const cityId = cityPanel.getCurrentCity()?.id ?? pinnedCityId
+    const url = cityId
+      ? `http://${window.location.hostname}:4004/fiber/${encodeURIComponent(pin.slug)}?cityId=${encodeURIComponent(cityId)}`
+      : `http://${window.location.hostname}:4004/fiber/${encodeURIComponent(pin.slug)}`
+    try {
+      const res = await fetch(url)
+      if (!res.ok) return null
+      const body = await res.json()
+      const name = body?.frontmatter?.name
+      return typeof name === 'string' && name.trim() ? name : null
+    } catch {
+      return null
+    }
   },
   // Lazy: vellum module is async-imported. Until it resolves, markdown pins
   // fall back to the link-card stub. See [[file-view-as-floating-card]].
@@ -419,13 +439,14 @@ function openFile(args: OpenFileArgs): void {
 // tapestry-dissolves. Single-instance: close the previous handle before opening
 // a new city.
 let activeWorkspaceHandle: { close(): void } | null = null
-function openCityWorkspace(city: City): void {
+function openCityWorkspace(city: City, initialSlug?: string): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     const handle = openVellumWorkspaceModal({
       cityId: city.id,
       originId: city.originId,
+      initialSlug,
     })
     activeWorkspaceHandle = handle
   })

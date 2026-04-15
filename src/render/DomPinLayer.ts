@@ -91,6 +91,10 @@ export interface DomPinLayerOptions {
   /** Persist a pin's new intrinsic CSS size after a resize-handle drag completes.
    *  See [[file-view-as-floating-card]]. */
   onPinResized?: (slug: string, width: number, height: number) => void
+  /** Resolve a pin's display title asynchronously. Used so fiber pins can show
+   *  their frontmatter `name` in the chrome strip instead of the raw slug.
+   *  Returns null to fall back to the sync `titleForPin` default. */
+  resolveTitle?: (pin: Pin) => Promise<string | null>
 }
 
 interface DomPinEntry {
@@ -115,6 +119,7 @@ export class DomPinLayer {
   private readonly screenToWorld?: (x: number, y: number) => { x: number; z: number }
   private readonly onPinMoved?: (slug: string, x: number, z: number) => void
   private readonly onPinResized?: (slug: string, width: number, height: number) => void
+  private readonly resolveTitle?: (pin: Pin) => Promise<string | null>
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -129,6 +134,7 @@ export class DomPinLayer {
     this.screenToWorld = opts.screenToWorld
     this.onPinMoved = opts.onPinMoved
     this.onPinResized = opts.onPinResized
+    this.resolveTitle = opts.resolveTitle
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -293,6 +299,14 @@ export class DomPinLayer {
     // swallows pointer events."
     const chrome = renderChrome(pin, titleForPin(pin))
     el.appendChild(chrome)
+    if (this.resolveTitle) {
+      void this.resolveTitle(pin).then((resolved) => {
+        if (!resolved) return
+        // Entry may have been removed by the time the promise resolves.
+        if (this.entries.get(pin.slug)?.el !== el) return
+        setChromeTitle(chrome, resolved, pin.slug)
+      }).catch(() => {})
+    }
 
     let vellumMount: VellumSurfaceMount | null = null
     let inner: HTMLElement
@@ -623,6 +637,13 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   })
   bar.appendChild(handle)
   return bar
+}
+
+function setChromeTitle(chrome: HTMLElement, displayTitle: string, slug: string): void {
+  const title = chrome.querySelector<HTMLElement>('.dom-pin-chrome-title')
+  if (!title) return
+  title.textContent = displayTitle
+  title.title = `${displayTitle} · ${slug}`
 }
 
 function sourceKey(pin: Pin): string {
