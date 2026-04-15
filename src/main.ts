@@ -230,6 +230,13 @@ const domPinLayer = new DomPinLayer({
       return null
     }
   },
+  // Map→HUD hover bridge: light up the matching `.hud-fiber-item` when the
+  // cursor enters a pin. DOM pins swallow pointer events above the canvas,
+  // so without this the HUD row never hears about the hover. See
+  // tapestry-dissolves: "map-hover-highlights-hud."
+  onHover: (slug) => {
+    cityPanel.setMapHoveredFiber(slug)
+  },
   // Lazy: vellum module is async-imported. Until it resolves, markdown pins
   // fall back to the link-card stub. See [[file-view-as-floating-card]].
   mountVellumSurface: (container, opts) => {

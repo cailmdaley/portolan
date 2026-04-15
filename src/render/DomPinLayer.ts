@@ -97,6 +97,11 @@ export interface DomPinLayerOptions {
    *  their frontmatter `name` in the chrome strip instead of the raw slug.
    *  Returns null to fall back to the sync `titleForPin` default. */
   resolveTitle?: (pin: Pin) => Promise<string | null>
+  /** Map→HUD hover bridge: fires when the cursor enters or leaves a pin element.
+   *  DOM pins sit above the canvas and swallow pointer events, so the canvas
+   *  hit-test in MapInteractionController never sees hovers over a pin. This
+   *  callback closes that loop so the HUD can light up the matching row. */
+  onHover?: (slug: string | null) => void
 }
 
 interface DomPinEntry {
@@ -121,6 +126,7 @@ export class DomPinLayer {
   private readonly onPinMoved?: (slug: string, x: number, z: number) => void
   private readonly onPinResized?: (slug: string, width: number, height: number) => void
   private readonly resolveTitle?: (pin: Pin) => Promise<string | null>
+  private readonly onHover?: (slug: string | null) => void
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -138,6 +144,7 @@ export class DomPinLayer {
     this.onPinMoved = opts.onPinMoved
     this.onPinResized = opts.onPinResized
     this.resolveTitle = opts.resolveTitle
+    this.onHover = opts.onHover
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -363,6 +370,19 @@ export class DomPinLayer {
     // before downstream drag/resize/chrome handlers consume the event.
     el.addEventListener('pointerdown', () => this.raise(entry), true)
     this.raise(entry)
+    // Map→HUD hover bridge. pointerenter fires once per pin when the pointer
+    // crosses into its bounds; DOM stacking means only the topmost pin gets
+    // the event even when cards overlap. Suppressed during drag/move flows
+    // for the same reason the HUD suppresses its highlight then.
+    if (this.onHover) {
+      el.addEventListener('pointerenter', () => {
+        if (document.body.classList.contains('pin-dragging')) return
+        this.onHover!(pin.slug)
+      })
+      el.addEventListener('pointerleave', () => {
+        this.onHover!(null)
+      })
+    }
     this.attachChromeDrag(chrome, entry)
     this.attachChromeScale(chrome, entry)
     if (this.onPrimaryOpen) {
