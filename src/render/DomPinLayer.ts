@@ -687,6 +687,7 @@ function renderVellumShell(): HTMLElement {
     flex: '1 1 auto',
     minHeight: '0',
     overflow: 'auto',
+    overscrollBehavior: 'contain',
     border: '1px solid rgba(140, 110, 80, 0.55)',
     borderTop: 'none',
     borderBottomLeftRadius: '6px',
