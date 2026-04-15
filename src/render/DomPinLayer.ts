@@ -682,6 +682,11 @@ function ensurePulseStyles(): void {
     .dom-pin-vellum-shell h6 > a[href^="#"] {
       display: none !important;
     }
+    /* FiberCard paints its own near-white background for vellum's reader
+       context, but inside a pin shell that clashes with the parchment chrome
+       and the warmer map tone. Let the shell's parchment show through so the
+       pin reads as one warm card, not a white rectangle bolted into leather. */
+    .dom-pin-vellum-shell .fiber-card { background: transparent; }
   `
   document.head.appendChild(style)
 }
