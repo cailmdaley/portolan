@@ -258,7 +258,7 @@ export class DomPinLayer {
     // this strip is the only reliable unpin affordance for iframe-backed pins
     // (PDF/HTML). See tapestry-dissolves: "right-click unpin from a PDF that
     // swallows pointer events."
-    const chrome = renderChrome(pin)
+    const chrome = renderChrome(pin, titleForPin(pin))
     el.appendChild(chrome)
 
     let vellumMount: VellumSurfaceMount | null = null
@@ -454,7 +454,30 @@ function renderVellumShell(): HTMLElement {
   return div
 }
 
-function renderChrome(pin: Pin): HTMLElement {
+/** Derive a human-readable chrome-strip title from a DOM pin's source.
+ *  Fiber pins never reach this layer; for file handles we show the basename,
+ *  for URLs the hostname, and for unresolved/empty sources the raw slug. */
+function titleForPin(pin: Pin): string {
+  const s = pin.source
+  if (!s) return pin.slug
+  if (s.path) {
+    const base = s.path.split('/').filter(Boolean).pop()
+    if (base) return base
+  }
+  if (s.url) {
+    try {
+      const u = new URL(s.url)
+      const path = u.pathname.replace(/\/$/, '')
+      const base = path ? path.split('/').filter(Boolean).pop() : ''
+      return base ? `${u.hostname} / ${base}` : u.hostname
+    } catch {
+      return s.url
+    }
+  }
+  return pin.slug
+}
+
+function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   const bar = document.createElement('div')
   bar.className = 'dom-pin-chrome'
   Object.assign(bar.style, {
@@ -474,7 +497,8 @@ function renderChrome(pin: Pin): HTMLElement {
   })
   const title = document.createElement('span')
   title.className = 'dom-pin-chrome-title'
-  title.textContent = pin.slug
+  title.textContent = displayTitle
+  title.title = `${displayTitle} · ${pin.slug}`
   Object.assign(title.style, {
     flex: '1',
     overflow: 'hidden',
