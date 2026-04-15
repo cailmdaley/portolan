@@ -10,7 +10,7 @@ export interface Fiber {
   priority: number;  // default 2
   createdAt: string; // ISO date from frontmatter
   body?: string;     // markdown body after frontmatter
-  outcome?: string;  // outcome from frontmatter (or legacy close-reason)
+  outcome?: string;  // outcome from frontmatter
   closedAt?: string; // ISO date from frontmatter
   tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
@@ -156,7 +156,7 @@ export function parseFiber(id: string, content: string): Fiber {
     priority: parseInt(getField('priority') || '2', 10),
     createdAt: getField('created-at') || getField('created') || '',
     closedAt: getField('closed-at') || getField('closed') || undefined,
-    outcome: getField('outcome') || getField('close-reason') || undefined,
+    outcome: getField('outcome') || undefined,
     body: body || undefined,
     tags: tags,
     dependsOn: dependsOn,

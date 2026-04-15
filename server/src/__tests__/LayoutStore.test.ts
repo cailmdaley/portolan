@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { kindFromPath, LayoutStore, slugForSource } from '../LayoutStore.js';
+import { kindFromPath, LayoutStore, slugForSource, type PinExtras, type PinMeta } from '../LayoutStore.js';
 
 const TEST_DIR = join(homedir(), '.portolan-layouts-test');
 
@@ -12,6 +12,9 @@ function makeStore(): LayoutStore {
   (store as unknown as { layoutsDir: string }).layoutsDir = join(TEST_DIR, 'layouts');
   return store;
 }
+
+const META: PinMeta = { cityKey: 'local:/test' };
+const FIBER: PinExtras = { kind: 'fiber' };
 
 describe('LayoutStore', () => {
   beforeEach(() => {
@@ -29,18 +32,18 @@ describe('LayoutStore', () => {
 
   it('persists a pin and reads it back', () => {
     const store = makeStore();
-    const pin = store.setPin('city-a', 'fiber-1', { x: 10, z: -5 });
-    expect(pin).toMatchObject({ slug: 'fiber-1', x: 10, z: -5 });
+    const pin = store.setPin('city-a', 'fiber-1', { x: 10, z: -5 }, META, FIBER);
+    expect(pin).toMatchObject({ slug: 'fiber-1', x: 10, z: -5, kind: 'fiber' });
 
     const fresh = makeStore();
     const pins = fresh.getPins('city-a');
     expect(pins).toHaveLength(1);
-    expect(pins[0]).toMatchObject({ slug: 'fiber-1', x: 10, z: -5 });
+    expect(pins[0]).toMatchObject({ slug: 'fiber-1', x: 10, z: -5, kind: 'fiber' });
   });
 
   it('updates position but preserves pinnedAt on repeat setPin', async () => {
     const store = makeStore();
-    const first = store.setPin('city-a', 'fiber-1', { x: 1, z: 2 })!;
+    const first = store.setPin('city-a', 'fiber-1', { x: 1, z: 2 }, META, FIBER)!;
     await new Promise((r) => setTimeout(r, 5));
     const second = store.setPin('city-a', 'fiber-1', { x: 3, z: 4 })!;
     expect(second.pinnedAt).toBe(first.pinnedAt);
@@ -50,7 +53,7 @@ describe('LayoutStore', () => {
 
   it('removes a pin and deletes the file when empty', () => {
     const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 });
+    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, META, FIBER);
     const layoutFile = join(TEST_DIR, 'layouts', 'city-a.json');
     expect(existsSync(layoutFile)).toBe(true);
 
@@ -61,22 +64,34 @@ describe('LayoutStore', () => {
 
   it('rejects non-finite coordinates', () => {
     const store = makeStore();
-    expect(store.setPin('city-a', 'fiber-1', { x: NaN, z: 0 })).toBeNull();
-    expect(store.setPin('city-a', 'fiber-1', { x: 0, z: Infinity })).toBeNull();
+    expect(store.setPin('city-a', 'fiber-1', { x: NaN, z: 0 }, META, FIBER)).toBeNull();
+    expect(store.setPin('city-a', 'fiber-1', { x: 0, z: Infinity }, META, FIBER)).toBeNull();
     expect(store.getPins('city-a')).toEqual([]);
   });
 
   it('rejects unsafe ids containing path traversal', () => {
     const store = makeStore();
-    expect(store.setPin('..', 'fiber-1', { x: 0, z: 0 })).toBeNull();
-    expect(store.setPin('city-a', '../evil', { x: 0, z: 0 })).toBeNull();
+    expect(store.setPin('..', 'fiber-1', { x: 0, z: 0 }, META, FIBER)).toBeNull();
+    expect(store.setPin('city-a', '../evil', { x: 0, z: 0 }, META, FIBER)).toBeNull();
     expect(store.getPin('..', 'fiber-1')).toBeNull();
+  });
+
+  it('refuses to write a pin without a cityKey', () => {
+    const store = makeStore();
+    expect(store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, undefined, FIBER)).toBeNull();
+    expect(store.getPins('city-a')).toEqual([]);
+  });
+
+  it('refuses to write a pin without a kind', () => {
+    const store = makeStore();
+    expect(store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, META)).toBeNull();
+    expect(store.getPins('city-a')).toEqual([]);
   });
 
   it('writes pins sorted by slug for stable diffs', () => {
     const store = makeStore();
-    store.setPin('city-a', 'z-last', { x: 0, z: 0 });
-    store.setPin('city-a', 'a-first', { x: 1, z: 1 });
+    store.setPin('city-a', 'z-last', { x: 0, z: 0 }, META, FIBER);
+    store.setPin('city-a', 'a-first', { x: 1, z: 1 }, META, FIBER);
     const file = join(TEST_DIR, 'layouts', 'city-a.json');
     const data = JSON.parse(readFileSync(file, 'utf-8'));
     expect(data.pins.map((p: { slug: string }) => p.slug)).toEqual(['a-first', 'z-last']);
@@ -84,40 +99,32 @@ describe('LayoutStore', () => {
 
   it('isolates pins per city', () => {
     const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 });
-    store.setPin('city-b', 'fiber-1', { x: 2, z: 2 });
+    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, META, FIBER);
+    store.setPin('city-b', 'fiber-1', { x: 2, z: 2 }, { cityKey: 'local:/b' }, FIBER);
     expect(store.getPin('city-a', 'fiber-1')?.x).toBe(1);
     expect(store.getPin('city-b', 'fiber-1')?.x).toBe(2);
   });
 
-  it('records cityKey when provided and preserves it across writes', () => {
+  it('records cityKey and preserves it across writes', () => {
     const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, { cityKey: 'local:/abs/path' });
+    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, { cityKey: 'local:/abs/path' }, FIBER);
     const file = join(TEST_DIR, 'layouts', 'city-a.json');
     let data = JSON.parse(readFileSync(file, 'utf-8'));
     expect(data.cityKey).toBe('local:/abs/path');
 
-    store.setPin('city-a', 'fiber-2', { x: 2, z: 2 });
+    store.setPin('city-a', 'fiber-2', { x: 2, z: 2 }, undefined, FIBER);
     data = JSON.parse(readFileSync(file, 'utf-8'));
     expect(data.cityKey).toBe('local:/abs/path');
     expect(data.pins).toHaveLength(2);
   });
 
-  it('omits cityKey when never provided', () => {
-    const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 });
-    const file = join(TEST_DIR, 'layouts', 'city-a.json');
-    const data = JSON.parse(readFileSync(file, 'utf-8'));
-    expect(data.cityKey).toBeUndefined();
-  });
-
   it('reloads cityKey from existing layout file', () => {
     const a = makeStore();
-    a.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, { cityKey: 'local:/orig/path' });
+    a.setPin('city-a', 'fiber-1', { x: 1, z: 1 }, { cityKey: 'local:/orig/path' }, FIBER);
 
     const b = makeStore();
     // Trigger load, then write a new pin without supplying meta — cityKey must persist.
-    b.setPin('city-a', 'fiber-2', { x: 2, z: 2 });
+    b.setPin('city-a', 'fiber-2', { x: 2, z: 2 }, undefined, FIBER);
     const file = join(TEST_DIR, 'layouts', 'city-a.json');
     const data = JSON.parse(readFileSync(file, 'utf-8'));
     expect(data.cityKey).toBe('local:/orig/path');
@@ -126,7 +133,7 @@ describe('LayoutStore', () => {
   it('persists pin kind and file-handle source through round-trip', () => {
     const a = makeStore();
     const source = { originId: 'local', path: '/abs/paper.pdf' };
-    a.setPin('city-a', 'file-deadbeef', { x: 0, z: 0 }, undefined, { kind: 'pdf', source });
+    a.setPin('city-a', 'file-deadbeef', { x: 0, z: 0 }, META, { kind: 'pdf', source });
 
     const b = makeStore();
     const pin = b.getPin('city-a', 'file-deadbeef')!;
@@ -137,7 +144,7 @@ describe('LayoutStore', () => {
   it('preserves prior kind/source when setPin omits extras', () => {
     const store = makeStore();
     const source = { originId: 'local', path: '/a.pdf' };
-    store.setPin('city-a', 'file-x', { x: 0, z: 0 }, undefined, { kind: 'pdf', source });
+    store.setPin('city-a', 'file-x', { x: 0, z: 0 }, META, { kind: 'pdf', source });
     // Reposition only — extras must persist.
     store.setPin('city-a', 'file-x', { x: 5, z: 5 });
     const pin = store.getPin('city-a', 'file-x')!;
@@ -148,21 +155,13 @@ describe('LayoutStore', () => {
 
   it('rejects invalid kind and ambiguous source', () => {
     const store = makeStore();
-    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { kind: 'bogus' as any })).toBeNull();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, META, { kind: 'bogus' as any })).toBeNull();
     // Source that mixes file handle and url is invalid.
-    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, {
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, META, {
+      kind: 'pdf',
       source: { originId: 'local', path: '/a', url: 'https://x' } as any,
     })).toBeNull();
     expect(store.getPins('city-a')).toEqual([]);
-  });
-
-  it('omits kind/source on disk when not set', () => {
-    const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 1, z: 1 });
-    const file = join(TEST_DIR, 'layouts', 'city-a.json');
-    const data = JSON.parse(readFileSync(file, 'utf-8'));
-    expect(data.pins[0].kind).toBeUndefined();
-    expect(data.pins[0].source).toBeUndefined();
   });
 
   it('slugForSource is stable, idempotent, and prefixed by handle kind', () => {
@@ -190,7 +189,7 @@ describe('LayoutStore', () => {
 
   it('persists width/height and preserves them across position-only writes', () => {
     const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, undefined, { width: 480, height: 360 });
+    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, META, { ...FIBER, width: 480, height: 360 });
     const file = join(TEST_DIR, 'layouts', 'city-a.json');
     let data = JSON.parse(readFileSync(file, 'utf-8'));
     expect(data.pins[0]).toMatchObject({ width: 480, height: 360 });
@@ -206,19 +205,19 @@ describe('LayoutStore', () => {
 
   it('rejects out-of-bounds and non-finite sizes', () => {
     const store = makeStore();
-    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { width: 10 })).toBeNull();
-    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { height: 99999 })).toBeNull();
-    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, undefined, { width: NaN })).toBeNull();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, META, { ...FIBER, width: 10 })).toBeNull();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, META, { ...FIBER, height: 99999 })).toBeNull();
+    expect(store.setPin('city-a', 's', { x: 0, z: 0 }, META, { ...FIBER, width: NaN })).toBeNull();
     expect(store.getPins('city-a')).toEqual([]);
   });
 
   it('scanLayouts surfaces every layout file with its cityKey', () => {
     const store = makeStore();
-    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, { cityKey: 'local:/a' });
-    store.setPin('city-b', 'fiber-1', { x: 0, z: 0 });
+    store.setPin('city-a', 'fiber-1', { x: 0, z: 0 }, { cityKey: 'local:/a' }, FIBER);
+    store.setPin('city-b', 'fiber-1', { x: 0, z: 0 }, { cityKey: 'local:/b' }, FIBER);
     const entries = store.scanLayouts().sort((p, q) => p.cityId.localeCompare(q.cityId));
     expect(entries).toHaveLength(2);
     expect(entries[0]).toMatchObject({ cityId: 'city-a', cityKey: 'local:/a' });
-    expect(entries[1]).toMatchObject({ cityId: 'city-b', cityKey: null });
+    expect(entries[1]).toMatchObject({ cityId: 'city-b', cityKey: 'local:/b' });
   });
 });

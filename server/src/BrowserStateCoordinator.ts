@@ -429,7 +429,7 @@ export class BrowserStateCoordinator {
         kind: fiber.kind || 'task',
         status: fiber.status || status,
         body: fiber.body || undefined,
-        outcome: fiber.outcome || fiber.close_reason || undefined,
+        outcome: fiber.outcome || undefined,
       }));
     } catch (error) {
       console.error(`Failed to get remote fibers from ${sshHost}:${cityPath}:`, error);

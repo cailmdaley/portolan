@@ -57,7 +57,7 @@ export class HttpApiTapestry {
     try {
       const allFibers = await this.getAllCityFibers(city.path, sshHost);
       const ruleFibers = allFibers.filter((fiber) =>
-        fiber.tags?.some((tag) => tag.startsWith('tapestry:') || tag.startsWith('rule:'))
+        fiber.tags?.some((tag) => tag.startsWith('tapestry:'))
       );
       const fiberIds = new Set(ruleFibers.map((fiber) => fiber.id));
 
@@ -178,7 +178,7 @@ export class HttpApiTapestry {
    * Reshapes the same fiber data /tapestry reads, but emits vellum's
    * GraphNode/GraphLink types (see lightcone/vellum/src/utils/content-types.ts).
    * Unlike /tapestry this returns *all* fibers, not only those tagged
-   * `tapestry:`/`rule:`, because vellum's graph view handles filtering itself.
+   * `tapestry:`, because vellum's graph view handles filtering itself.
    *
    * First-pass fields: id, slug, label, status, tags, kind, createdAt.
    * Links default to kind 'data-flow' (from dependsOn). ASTRA extras
@@ -365,7 +365,7 @@ export class HttpApiTapestry {
       priority: fiber.priority || 2,
       createdAt: fiber.created_at || '',
       closedAt: fiber.closed_at,
-      outcome: fiber.outcome || fiber.close_reason,
+      outcome: fiber.outcome,
       body: fiber.body,
       tags: fiber.tags?.flatMap((tag: string) =>
         tag.includes(',') ? tag.split(',').map((value: string) => value.trim()).filter(Boolean) : [tag]

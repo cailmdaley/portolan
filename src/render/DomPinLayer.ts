@@ -15,7 +15,9 @@
 import type { Camera } from './Camera'
 import type { Pin, PinKind } from '../state/layoutClient'
 
-const DOM_KINDS: ReadonlySet<PinKind> = new Set(['pdf', 'html', 'image', 'markdown', 'other'])
+const DOM_KINDS: ReadonlySet<PinKind> = new Set([
+  'fiber', 'pdf', 'html', 'image', 'markdown', 'other',
+])
 
 // Reference zoom (camera half-width in world units) at which a DOM pin renders
 // at its intrinsic CSS size — i.e. scale = 1. Picked near the middle of the
@@ -40,9 +42,8 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
 const MIN_SIZE = 120
 const MAX_SIZE = 1600
 
-/** True if a pin should render via the DOM layer rather than PinRenderer. */
+/** True if a pin should render via the DOM layer. All kinds route to DOM. */
 export function isDomPinKind(pin: Pin): boolean {
-  if (!pin.kind) return false
   return DOM_KINDS.has(pin.kind)
 }
 
@@ -60,6 +61,15 @@ export type MountVellumFileSurface = (
   opts: { path: string; originId?: string; cityId?: string },
 ) => VellumSurfaceMount
 
+/**
+ * Inline vellum mount for fiber-kind DOM pins. Renders vellum's FiberCard
+ * with fetched body; see `tapestry-dissolves` Next and [[file-view-as-floating-card]].
+ */
+export type MountVellumFiberSurface = (
+  container: HTMLElement,
+  opts: { slug: string; cityId?: string; originId?: string },
+) => VellumSurfaceMount
+
 export interface DomPinLayerOptions {
   camera: Camera
   /** Map a pin's `source` into a fetchable URL. Returns null when the source
@@ -68,8 +78,10 @@ export interface DomPinLayerOptions {
   resolveSource: (pin: Pin) => string | null
   /** Right-click on a DOM pin → host opens a context menu (unpin, …). */
   onContextMenu?: (slug: string, clientX: number, clientY: number) => void
-  /** Inline vellum mount for markdown (and future fiber) pins. */
+  /** Inline vellum mount for markdown file pins. */
   mountVellumSurface?: MountVellumFileSurface
+  /** Inline vellum mount for fiber pins (renders vellum's FiberCard). */
+  mountVellumFiberSurface?: MountVellumFiberSurface
   /** Default cityId threaded into vellum mounts when a pin lacks an originId hint. */
   cityIdFor?: () => string | undefined
   /** Convert screen pixels to world coords. Required for chrome-strip drag. */
@@ -98,6 +110,7 @@ export class DomPinLayer {
   private readonly resolveSource: (pin: Pin) => string | null
   private readonly onContextMenu?: (slug: string, clientX: number, clientY: number) => void
   private readonly mountVellumSurface?: MountVellumFileSurface
+  private readonly mountVellumFiberSurface?: MountVellumFiberSurface
   private readonly cityIdFor?: () => string | undefined
   private readonly screenToWorld?: (x: number, y: number) => { x: number; z: number }
   private readonly onPinMoved?: (slug: string, x: number, z: number) => void
@@ -111,6 +124,7 @@ export class DomPinLayer {
     this.resolveSource = opts.resolveSource
     this.onContextMenu = opts.onContextMenu
     this.mountVellumSurface = opts.mountVellumSurface
+    this.mountVellumFiberSurface = opts.mountVellumFiberSurface
     this.cityIdFor = opts.cityIdFor
     this.screenToWorld = opts.screenToWorld
     this.onPinMoved = opts.onPinMoved
@@ -279,7 +293,13 @@ export class DomPinLayer {
 
     let vellumMount: VellumSurfaceMount | null = null
     let inner: HTMLElement
-    if (pin.kind === 'markdown' && pin.source?.path && this.mountVellumSurface) {
+    if (pin.kind === 'fiber' && this.mountVellumFiberSurface) {
+      inner = renderVellumShell()
+      vellumMount = this.mountVellumFiberSurface(inner, {
+        slug: pin.slug,
+        cityId: this.cityIdFor?.(),
+      })
+    } else if (pin.kind === 'markdown' && pin.source?.path && this.mountVellumSurface) {
       inner = renderVellumShell()
       vellumMount = this.mountVellumSurface(inner, {
         path: pin.source.path,

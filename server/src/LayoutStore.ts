@@ -20,11 +20,7 @@ export interface PinPosition {
 
 /**
  * What kind of content the pin points at — drives renderer dispatch on the
- * frontend. Absent (`undefined`) means a legacy fiber-slug pin where the slug
- * itself identifies the fiber and no explicit source is recorded; this is the
- * pre-2026-04 default and is still the path drag-to-pin from the HUD takes.
- *
- * See [[pin-any-file-type]] and [[tapestry-dissolves]] Open Question 3.
+ * frontend. See [[pin-any-file-type]] and [[tapestry-dissolves]].
  */
 export type PinKind = 'fiber' | 'markdown' | 'pdf' | 'image' | 'html' | 'other';
 
@@ -47,13 +43,12 @@ export interface Pin extends PinPosition {
   /** Stable key. For fiber pins, the fiber slug. For file pins, derived from the source. */
   slug: string;
   pinnedAt: number;
-  /** Optional content kind. Absent = legacy fiber-slug pin. */
-  kind?: PinKind;
-  /** Optional source handle for non-fiber pins. Absent = the slug IS the fiber identifier. */
+  kind: PinKind;
+  /** Source handle for file/URL pins. Absent for fiber kind. */
   source?: PinSource;
-  /** Optional intrinsic width / height in CSS pixels (before camera-zoom scale).
-   *  Foundational for the floating-card primitive — see [[file-view-as-floating-card]].
-   *  Absent = renderer falls back to its kind-specific default. */
+  /** Intrinsic width / height in CSS pixels (before camera-zoom scale).
+   *  Renderer falls back to its kind-specific default when absent.
+   *  See [[file-view-as-floating-card]]. */
   width?: number;
   height?: number;
 }
@@ -73,18 +68,16 @@ interface LayoutFile {
   cityId: string;
   /**
    * Stable origin+path key the cityId was derived from
-   * (`${originId}:${absolutePath}`). Optional for backward compatibility with
-   * pre-2026-04 layout files. Recorded so a later GC pass can detect orphans
-   * (project moved → new cityId, old layout file unreachable) without re-deriving
-   * cityIds from CityManager state.
+   * (`${originId}:${absolutePath}`). Lets the diagnostic endpoint detect
+   * orphans without re-deriving cityIds from CityManager state.
    */
-  cityKey?: string;
+  cityKey: string;
   pins: Pin[];
 }
 
 export interface PinMeta {
   /** `${originId}:${absolutePath}` for the city this layout belongs to. */
-  cityKey?: string;
+  cityKey: string;
 }
 
 const SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9_\-/.]*$/;
@@ -120,7 +113,8 @@ export class LayoutStore {
         if (data.version === 1 && Array.isArray(data.pins)) {
           for (const pin of data.pins) {
             if (pin && typeof pin.slug === 'string') {
-              pins.set(pin.slug, normalizeStoredPin(pin));
+              const normalized = normalizeStoredPin(pin);
+              if (normalized) pins.set(pin.slug, normalized);
             }
           }
           if (typeof data.cityKey === 'string') this.cityKeys.set(cityId, data.cityKey);
@@ -154,10 +148,14 @@ export class LayoutStore {
     }
 
     const cityKey = this.cityKeys.get(cityId);
+    if (!cityKey) {
+      console.warn(`Refusing to save layout without cityKey for ${cityId}`);
+      return;
+    }
     const data: LayoutFile = {
       version: 1,
       cityId,
-      ...(cityKey ? { cityKey } : {}),
+      cityKey,
       pins: [...pins.values()].sort((a, b) => a.slug.localeCompare(b.slug)),
     };
 
@@ -193,6 +191,9 @@ export class LayoutStore {
     if (extras?.height !== undefined && !isSafeSize(extras.height)) return null;
     const pins = this.loadCity(cityId);
     const existing = pins.get(slug);
+    const nextKind = extras?.kind ?? existing?.kind;
+    if (!nextKind) return null;
+    const nextSource = cleanSource ?? existing?.source;
     const nextWidth = extras?.width ?? existing?.width;
     const nextHeight = extras?.height ?? existing?.height;
     const pin: Pin = {
@@ -200,25 +201,22 @@ export class LayoutStore {
       x: pos.x,
       z: pos.z,
       pinnedAt: existing?.pinnedAt ?? Date.now(),
-      // Extras update if provided, otherwise preserve what's already on disk.
-      ...((extras?.kind ?? existing?.kind) ? { kind: (extras?.kind ?? existing?.kind)! } : {}),
-      ...((cleanSource ?? existing?.source) ? { source: (cleanSource ?? existing?.source)! } : {}),
+      kind: nextKind,
+      ...(nextSource ? { source: nextSource } : {}),
       ...(nextWidth !== undefined ? { width: nextWidth } : {}),
       ...(nextHeight !== undefined ? { height: nextHeight } : {}),
     };
-    pins.set(slug, pin);
     if (meta?.cityKey) this.cityKeys.set(cityId, meta.cityKey);
+    if (!this.cityKeys.has(cityId)) return null;
+    pins.set(slug, pin);
     this.save(cityId);
     return pin;
   }
 
-  /**
-   * Diagnostic: list every layout file on disk with the cityKey it was last
-   * written under (or `null` if the file predates cityKey recording).
-   */
-  scanLayouts(): Array<{ cityId: string; cityKey: string | null; file: string }> {
+  /** Diagnostic: list every layout file on disk with its recorded cityKey. */
+  scanLayouts(): Array<{ cityId: string; cityKey: string; file: string }> {
     if (!existsSync(this.layoutsDir)) return [];
-    const entries: Array<{ cityId: string; cityKey: string | null; file: string }> = [];
+    const entries: Array<{ cityId: string; cityKey: string; file: string }> = [];
     let names: string[] = [];
     try { names = readdirSync(this.layoutsDir); } catch { return []; }
     for (const name of names) {
@@ -226,12 +224,12 @@ export class LayoutStore {
       const cityId = name.slice(0, -5);
       if (!isSafeId(cityId)) continue;
       const file = join(this.layoutsDir, name);
-      let cityKey: string | null = null;
       try {
         const data: LayoutFile = JSON.parse(readFileSync(file, 'utf-8'));
-        if (typeof data.cityKey === 'string') cityKey = data.cityKey;
-      } catch { /* malformed file: report it anyway */ }
-      entries.push({ cityId, cityKey, file });
+        if (typeof data.cityKey === 'string') {
+          entries.push({ cityId, cityKey: data.cityKey, file });
+        }
+      } catch { /* malformed: skip */ }
     }
     return entries;
   }
@@ -296,9 +294,9 @@ function sanitizeSource(src: PinSource): PinSource | null {
   return { url: src.url };
 }
 
-function normalizeStoredPin(raw: Pin): Pin {
-  const out: Pin = { slug: raw.slug, x: raw.x, z: raw.z, pinnedAt: raw.pinnedAt };
-  if (raw.kind && PIN_KINDS.includes(raw.kind)) out.kind = raw.kind;
+function normalizeStoredPin(raw: Pin): Pin | null {
+  if (!raw.kind || !PIN_KINDS.includes(raw.kind)) return null;
+  const out: Pin = { slug: raw.slug, x: raw.x, z: raw.z, pinnedAt: raw.pinnedAt, kind: raw.kind };
   if (raw.source) {
     const clean = sanitizeSource(raw.source);
     if (clean) out.source = clean;

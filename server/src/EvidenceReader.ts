@@ -184,12 +184,10 @@ export async function readEvidenceBatch(
 /**
  * Extract the spec name from a fiber's tapestry: tag.
  * e.g., "tapestry:cosebis_data_vector" → "cosebis_data_vector"
- * Also accepts legacy "rule:" prefix for backwards compatibility.
  */
 export function getSpecName(tags: string[]): string | undefined {
   for (const tag of tags) {
     if (tag.startsWith('tapestry:')) return tag.slice(9);
-    if (tag.startsWith('rule:')) return tag.slice(5);
   }
   return undefined;
 }

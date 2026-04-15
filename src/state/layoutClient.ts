@@ -6,10 +6,11 @@ export interface PinPosition {
   z: number
 }
 
-/** See [[pin-any-file-type]]. Absent on legacy fiber-slug pins. */
+/** Content classification — drives renderer dispatch in DomPinLayer. */
 export type PinKind = 'fiber' | 'markdown' | 'pdf' | 'image' | 'html' | 'other'
 
-/** File-handle source: project-relative path + originId, OR an absolute URL. */
+/** File-handle source: project-relative path + originId, OR an absolute URL.
+ *  Absent for fiber-kind pins: the slug IS the fiber identifier. */
 export type PinSource =
   | { originId: string; path: string; url?: undefined }
   | { url: string; originId?: undefined; path?: undefined }
@@ -17,12 +18,11 @@ export type PinSource =
 export interface Pin extends PinPosition {
   slug: string
   pinnedAt: number
-  /** Optional content classification (drives renderer dispatch). */
-  kind?: PinKind
-  /** Optional source handle. Absent = legacy fiber-slug pin. */
+  kind: PinKind
+  /** Source handle for file/URL pins. Absent for fiber kind. */
   source?: PinSource
-  /** Optional intrinsic CSS-pixel width/height for DOM pins; per-card size that
-   *  persists through the layout store. See [[file-view-as-floating-card]]. */
+  /** Intrinsic CSS-pixel size for the DOM card; persists through the layout
+   *  store. See [[file-view-as-floating-card]]. */
   width?: number
   height?: number
 }

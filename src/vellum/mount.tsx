@@ -350,6 +350,97 @@ export function mountVellumFiberCardPreview(
   }
 }
 
+export interface MountFiberSurfaceOptions {
+  slug: string
+  cityId?: string
+  originId?: string
+  width?: number
+  /** Optional seed node used for the first paint before the adapter fetch
+   *  resolves. Typically built from the HUD fiber list so the card shows a
+   *  title/status immediately instead of flashing empty. */
+  seedNode?: GraphNode | null
+  onNavigate?: (slug: string) => void
+}
+
+export interface VellumFiberSurfaceHandle {
+  update(opts: MountFiberSurfaceOptions): void
+  unmount(): void
+}
+
+/**
+ * Non-modal mount of vellum's FiberCard into an arbitrary container. Fetches
+ * the fiber's body via the PortolanAdapter and paints the full card
+ * (pretext lockup + prose lede + tags). Used by the floating-card primitive
+ * for fiber-kind pins — see [[file-view-as-floating-card]] and
+ * `tapestry-dissolves` Next: "Fiber pins as DOM cards too."
+ *
+ * Sibling of `mountVellumFiberCardPreview` (hover tooltip). Difference: this
+ * returns an update() that re-renders for a new slug on the same container.
+ */
+export function mountVellumFiberSurface(
+  container: HTMLElement,
+  opts: MountFiberSurfaceOptions,
+): VellumFiberSurfaceHandle {
+  const root = createRoot(container)
+  let unmounted = false
+  let currentSlug = opts.slug
+
+  const render = (next: MountFiberSurfaceOptions) => {
+    currentSlug = next.slug
+    const width = next.width ?? 320
+    const adapter = createPortolanAdapter({
+      cityId: next.cityId,
+      defaultOriginId: next.originId,
+    })
+    const paint = (node: GraphNode | null, content: FiberContent | null) => {
+      if (unmounted) return
+      if (!node) {
+        root.render(<StrictMode />)
+        return
+      }
+      root.render(
+        <StrictMode>
+          <AdapterProvider adapter={adapter}>
+            <FiberCard
+              node={node}
+              width={width}
+              content={content ?? undefined}
+              onNavigate={next.onNavigate}
+            />
+          </AdapterProvider>
+        </StrictMode>,
+      )
+    }
+    paint(next.seedNode ?? null, null)
+    if (adapter.getFiberContent) {
+      void adapter.getFiberContent(next.slug).then((content) => {
+        if (unmounted || currentSlug !== next.slug) return
+        const node =
+          next.seedNode ??
+          ({
+            id: next.slug,
+            slug: next.slug,
+            label: next.slug,
+            status: 'open',
+            kind: 'fiber',
+            tags: [],
+          } as GraphNode)
+        paint(node, content ?? null)
+      }).catch(() => {})
+    }
+  }
+
+  render(opts)
+
+  return {
+    update(next) { render(next) },
+    unmount() {
+      unmounted = true
+      root.unmount()
+    },
+  }
+}
+
 export function openVellumStaticFileModal(opts: OpenStaticFileModalOptions): VellumModalHandle {
   const container = document.createElement('div')
   document.body.appendChild(container)

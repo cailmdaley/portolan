@@ -11,14 +11,12 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
-import { PinRenderer } from './render/PinRenderer'
-import { DomPinLayer, isDomPinKind } from './render/DomPinLayer'
+import { DomPinLayer } from './render/DomPinLayer'
 
 // Hoisted: lazy import the vellum mount module so DomPinLayer (built below)
-// can close over it for inline markdown rendering.
+// can close over it for inline markdown + fiber rendering.
 const vellumMountPromise = import('./vellum/mount')
-import { PinHoverPreview } from './ui/PinHoverPreview'
-import { listPins, putPin, pinFile, deletePin, type Pin, type PinKind, type PinSource } from './state/layoutClient'
+import { listPins, putPin, pinFile, deletePin, type PinKind, type PinSource } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
 import { FileDropController } from './FileDropController'
 import { MapInteractionController } from './MapInteractionController'
@@ -92,25 +90,14 @@ const camera = new Camera(canvas, canvasOverlay)
 // Setup zone renderer
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
-// World-space pin renderer (map-pinned vellum cards, see fiber tapestry-dissolves).
-// Each pin renders as a parchment card surface; title is looked up from the HUD
-// fiber list so cards read as "the fiber I pinned" rather than a raw slug.
-const pinRenderer = new PinRenderer(scene, {
-  fiberInfoFor: (slug) => {
-    const fibers = cityPanel?.getFibers()
-    if (!fibers) return null
-    const hit =
-      fibers.open.find(f => f.id === slug) ?? fibers.closed.find(f => f.id === slug)
-    if (!hit) return null
-    return { title: hit.title, status: hit.status }
-  },
-})
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
-// DOM-overlay surface for non-fiber pins (PDFs, images, html, …). Routed by
-// `pin.kind` — PinRenderer keeps fiber-kind pins; everything else lives in
-// here. Reanchored each frame via `camera.worldToScreen`. See [[pin-any-file-type]].
+// DOM-overlay surface for all pin kinds — fiber, markdown, pdf, image, html,
+// other. Each pin is a real DOM node anchored to world space, reanchored per
+// frame via `camera.worldToScreen`. Fibers mount vellum's FiberCard; markdown
+// mounts vellum's FileViewerPage; the rest fall back to iframe/img/link.
+// See tapestry-dissolves and [[file-view-as-floating-card]].
 const domPinLayer = new DomPinLayer({
   camera,
   resolveSource: (pin) => {
@@ -123,13 +110,20 @@ const domPinLayer = new DomPinLayer({
   onContextMenu: (slug, clientX, clientY) => {
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return
-    contextMenu.show(clientX, clientY, [
+    const pin = domPinLayer.getPin(slug)
+    const items = []
+    if (pin?.kind === 'fiber') {
+      items.push({
+        label: 'Open Fiber',
+        action: () => openCityWorkspace(city),
+      })
+    }
+    items.push(
       {
         label: 'Move Pin',
         action: () => {
           // Move-on-next-canvas-click flow lives in MapInteractionController;
-          // the DOM-pin menu participates in it by setting the same shared slug.
-          // Cursor reverts on commit/escape via setMovingPinSlug.
+          // cursor reverts on commit/escape via setMovingPinSlug.
           movingPinSlug = slug
           document.body.style.cursor = 'crosshair'
         },
@@ -137,13 +131,14 @@ const domPinLayer = new DomPinLayer({
       {
         label: 'Unpin Card',
         action: () => {
-          removePin(slug)
+          domPinLayer.remove(slug)
           syncPinnedSlugs()
           void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
         },
         danger: true,
       },
-    ])
+    )
+    contextMenu.show(clientX, clientY, items)
   },
   cityIdFor: () => cityPanel.getCurrentCity()?.id ?? pinnedCityId ?? undefined,
   screenToWorld: (x, y) => camera.screenToWorld(x, y),
@@ -154,7 +149,7 @@ const domPinLayer = new DomPinLayer({
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return
     void putPin(city.id, slug, { x, z })
-      .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
+      .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] drag-move failed', err))
   },
   // Resize-handle drag: persist the new CSS-pixel intrinsic size via putPin,
@@ -169,7 +164,7 @@ const domPinLayer = new DomPinLayer({
     const live = domPinLayer.getPin(slug)
     if (!live) return
     void putPin(city.id, slug, { x: live.x, z: live.z }, { width, height })
-      .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
+      .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] resize failed', err))
   },
   // Lazy: vellum module is async-imported. Until it resolves, markdown pins
@@ -188,46 +183,28 @@ const domPinLayer = new DomPinLayer({
       },
     }
   },
-})
-
-// Repaint pin cards once EB Garamond has loaded. Initial paints happen before
-// the webfont resolves, so cards land in system serif with slightly different
-// word-wrap metrics than the HUD. See tapestry-dissolves.
-if (document.fonts && typeof document.fonts.ready?.then === 'function') {
-  void document.fonts.ready.then(() => pinRenderer.repaintAll())
-}
-
-// Extended-hover tooltip for pinned cards. Mounts vellum's FiberCard so the
-// hover preview shows the same primitive the reader uses. The GraphNode is
-// built from the city HUD's fiber list (portolan's Fiber shape) — enough for
-// the preview variant (title + outcome + highlight) without fetching mdast.
-// See tapestry-dissolves and map-pinned-card-is-canvas-texture-not-dom.
-const pinHoverPreview = new PinHoverPreview({
-  nodeFor: (slug) => {
-    const fibers = cityPanel?.getFibers()
-    if (!fibers) return null
-    const hit =
-      fibers.open.find(f => f.id === slug) ?? fibers.closed.find(f => f.id === slug)
-    if (!hit) return null
+  // Fiber pins mount vellum's FiberCard inline — the same primitive the reader
+  // uses, rendered in the pin's DOM surface. See tapestry-dissolves Next.
+  mountVellumFiberSurface: (container, opts) => {
+    let unmounted = false
+    let handle: { unmount(): void } | null = null
+    void vellumMountPromise.then(({ mountVellumFiberSurface }) => {
+      if (unmounted) return
+      handle = mountVellumFiberSurface(container, opts)
+    })
     return {
-      id: hit.id,
-      slug: hit.id,
-      label: hit.title,
-      status: hit.status,
-      kind: hit.kind,
-      tags: [],
-      verdict: hit.reason,
-      createdAt: hit.createdAt,
+      unmount() {
+        unmounted = true
+        handle?.unmount()
+      },
     }
   },
-  cityIdFor: () => pinnedCityId ?? undefined,
 })
 
 async function loadPinsForCity(cityId: string): Promise<void> {
   try {
     const pins = await listPins(cityId)
     if (pinnedCityId !== cityId) return // city changed mid-flight
-    pinRenderer.setPins(pins.filter(p => !isDomPinKind(p)))
     domPinLayer.setPins(pins)
     syncPinnedSlugs()
   } catch (err) {
@@ -256,7 +233,7 @@ async function translatePinsBy(cityId: string, dx: number, dz: number): Promise<
             height: pin.height,
           },
         )
-        upsertPin(moved)
+        domPinLayer.upsert(moved)
       } catch (err) {
         console.error('[pins] translate failed for', pin.slug, err)
       }
@@ -270,52 +247,23 @@ async function translatePinsBy(cityId: string, dx: number, dz: number): Promise<
 /** Push the current set of pinned slugs to the HUD so fiber items can badge
  *  themselves as already pinned on the map. Call after any pin mutation. */
 function syncPinnedSlugs(): void {
-  const slugs = new Set<string>(pinRenderer.getSlugs())
-  for (const slug of domPinLayer.getSlugs()) slugs.add(slug)
-  cityPanel.setPinnedSlugs(slugs)
-}
-
-/** Insert a pin into whichever layer owns its kind. */
-function upsertPin(pin: Pin): void {
-  if (isDomPinKind(pin)) {
-    pinRenderer.remove(pin.slug)
-    domPinLayer.upsert(pin)
-  } else {
-    domPinLayer.remove(pin.slug)
-    pinRenderer.upsert(pin)
-  }
-}
-
-/** Remove from whichever layer holds it. */
-function removePin(slug: string): void {
-  pinRenderer.remove(slug)
-  domPinLayer.remove(slug)
-}
-
-/** Pulse whichever layer currently owns the pin. No-op if unknown. */
-function pulsePin(slug: string): void {
-  if (domPinLayer.has(slug)) domPinLayer.pulse(slug)
-  else if (pinRenderer.has(slug)) pinRenderer.pulse(slug)
+  cityPanel.setPinnedSlugs(new Set(domPinLayer.getSlugs()))
 }
 
 /** Pan camera to a pin's anchor and pulse it. Used as "already pinned — here
  *  it is" feedback for the click-spawns-card gesture. */
 function panAndPulse(slug: string): void {
-  let anchor = pinRenderer.getAnchor(slug)
-  if (!anchor) {
-    const domPin = domPinLayer.getPin(slug)
-    if (domPin) anchor = { x: domPin.x, z: domPin.z }
-  }
-  if (anchor) camera.focusOn({ x: anchor.x, z: anchor.z })
-  pulsePin(slug)
+  const pin = domPinLayer.getPin(slug)
+  if (pin) camera.focusOn({ x: pin.x, z: pin.z })
+  domPinLayer.pulse(slug)
 }
 
 /** Compute a fan-out spawn position at a city. Fiber and file pins land at the
  *  city's hex; subsequent pins get a small ring offset so they don't stack
- *  exactly. Offsets are based on the current pin count in the city's layers. */
+ *  exactly. Offsets are based on the current pin count in the city's layer. */
 function spawnPositionForCity(city: City): { x: number; z: number } {
   const base = hexGrid.axialToCartesian(city.hex)
-  const count = pinRenderer.getSlugs().length + domPinLayer.getSlugs().length
+  const count = domPinLayer.getSlugs().length
   if (count === 0) return { x: base.x, z: base.z }
   const ring = Math.floor((count - 1) / 6) + 1
   const indexInRing = (count - 1) % 6
@@ -341,13 +289,13 @@ async function spawnOrPulseCardAtCity(
   try {
     if (fiberMatch) {
       const slug = fiberMatch[1]
-      if (pinRenderer.has(slug) || domPinLayer.has(slug)) {
+      if (domPinLayer.has(slug)) {
         panAndPulse(slug)
         return
       }
-      const pin = await putPin(city.id, slug, pos)
+      const pin = await putPin(city.id, slug, pos, { kind: 'fiber' })
       if (pinnedCityId === city.id) {
-        upsertPin(pin)
+        domPinLayer.upsert(pin)
         syncPinnedSlugs()
         window.setTimeout(() => panAndPulse(pin.slug), 0)
       }
@@ -358,9 +306,9 @@ async function spawnOrPulseCardAtCity(
     const pin = await pinFile(city.id, pos, source, kind)
     // pinFile is idempotent server-side — if the slug came back already
     // present, treat the spawn as a "find it" gesture.
-    const alreadyHere = pinRenderer.has(pin.slug) || domPinLayer.has(pin.slug)
+    const alreadyHere = domPinLayer.has(pin.slug)
     if (pinnedCityId === city.id) {
-      upsertPin(pin)
+      domPinLayer.upsert(pin)
       syncPinnedSlugs()
     }
     if (alreadyHere) {
@@ -434,9 +382,7 @@ function handleCityClick(city: City): void {
 
   if (pinnedCityId !== city.id) {
     pinnedCityId = city.id
-    pinRenderer.clear()
     domPinLayer.clear()
-    pinHoverPreview.hide()
     syncPinnedSlugs()
     void loadPinsForCity(city.id)
   }
@@ -530,11 +476,9 @@ cityPanel.setOnFocusWorker((sessionId) => {
 })
 
 // HUD→map hover bridge: hovering a pinned fiber in the HUD lifts its card on
-// the map. The canvas's own hover state clears whenever the cursor enters the
-// HUD (canvas mouseleave), so this doesn't fight the on-map hover system —
-// see tapestry-dissolves.
+// the map. See tapestry-dissolves.
 cityPanel.setOnPinnedFiberHover((slug) => {
-  pinRenderer.setHovered(slug)
+  domPinLayer.setHovered(slug)
 })
 
 cityPanel.setOnViewClaims((city) => {
@@ -592,15 +536,7 @@ let mapActions: FrontendMapActions | null = null
 let movingCityId: string | null = null
 
 const stateSync = new FrontendStateSync({
-  handlePanelMessage: (message) => {
-    const handled = cityPanel.handleMessage(message)
-    // When the fiber list lands, repaint any pin cards whose titles were
-    // placeholders (slug-only) at load time.
-    if (handled && (message as { type?: string })?.type === 'fibers') {
-      pinRenderer.refreshTitles()
-    }
-    return handled
-  },
+  handlePanelMessage: (message) => cityPanel.handleMessage(message),
   onSocketOpen: (socket) => {
     cityPanel.setWebSocket(socket)
   },
@@ -707,66 +643,13 @@ const mapInteractions = new MapInteractionController({
     void translatePinsBy(cityId, dx, dz)
   },
   findNearestCity: (hex) => findNearestCity(cities, hexGrid, hex),
-  findPinAtWorldPos: (x, z) => pinRenderer.pickAtWorld(x, z),
-  handlePinClick: (slug) => {
-    // Click-spawns-card makes the modal unreachable via click: a click on an
-    // existing pin just confirms "yes, that's the one" — pan to it and pulse.
-    // See tapestry-dissolves.
-    panAndPulse(slug)
-  },
-  onPinHoverChange: (slug) => {
-    pinRenderer.setHovered(slug)
-    cityPanel.setMapHoveredFiber(slug)
-    if (!slug) {
-      pinHoverPreview.setHover(null, null)
-      return
-    }
-    const worldPos = pinRenderer.getAnchor(slug)
-    if (!worldPos) return
-    const screen = camera.worldToScreen(worldPos.x, 0.05, worldPos.z)
-    pinHoverPreview.setHover(slug, screen)
-  },
-  onPinContextMenu: (slug, clientX, clientY) => {
-    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
-    if (!city) return
-    // The menu is the primary surface; the hover tooltip only clutters it.
-    pinHoverPreview.hide()
-    contextMenu.show(clientX, clientY, [
-      {
-        label: 'Open Fiber',
-        action: () => openFile({
-          path: `${city.path}/.felt/${slug}/${slug}.md`,
-          originId: city.originId,
-          cityId: city.id,
-        }),
-      },
-      {
-        label: 'Move Pin',
-        action: () => {
-          movingPinSlug = slug
-          document.body.style.cursor = 'crosshair'
-          pinRenderer.setHovered(null)
-        },
-      },
-      {
-        label: 'Unpin Card',
-        action: () => {
-          removePin(slug)
-          pinHoverPreview.hide()
-          syncPinnedSlugs()
-          void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
-        },
-        danger: true,
-      },
-    ])
-  },
   getMovingPinSlug: () => movingPinSlug,
   setMovingPinSlug: (slug) => { movingPinSlug = slug },
   movePin: (slug, x, z) => {
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return
     void putPin(city.id, slug, { x, z })
-      .then(pin => { if (pinnedCityId === city.id) upsertPin(pin) })
+      .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] move failed', err))
   },
 })
@@ -842,20 +725,11 @@ const appRuntime = new FrontendAppRuntime({
   },
   onFrame: () => {
     // Camera pan/zoom doesn't emit mousemove, so re-test hover from the
-    // last-known cursor position — otherwise zooming leaves the previous
-    // pin lifted under a cursor that's no longer over it.
+    // last-known cursor position — otherwise zooming leaves stale state.
     mapInteractions.recomputeHover()
-    // DOM-overlay pins (PDFs, images, …) re-project to screen pixels each
-    // frame so they track the camera through pan/zoom.
+    // DOM pins re-project to screen pixels each frame so they track the
+    // camera through pan/zoom.
     domPinLayer.reanchorAll()
-    // Keep the pin hover tooltip anchored to its card while the camera is
-    // panning or zooming.
-    const slug = pinHoverPreview.getVisibleSlug()
-    if (!slug) return
-    const worldPos = pinRenderer.getAnchor(slug)
-    if (!worldPos) return
-    const screen = camera.worldToScreen(worldPos.x, 0.05, worldPos.z)
-    pinHoverPreview.reanchor(screen)
   },
 })
 
@@ -892,7 +766,7 @@ const pinDragController = new PinDragController({
   onPinned: (pin) => {
     const currentCity = cityPanel.getCurrentCity()?.id ?? pinnedCityId
     if (currentCity === pinnedCityId) {
-      upsertPin(pin)
+      domPinLayer.upsert(pin)
       syncPinnedSlugs()
     }
   },
@@ -909,7 +783,7 @@ const fileDropController = new FileDropController({
   onPinned: (pin) => {
     const currentCity = cityPanel.getCurrentCity()?.id ?? pinnedCityId
     if (currentCity === pinnedCityId) {
-      upsertPin(pin)
+      domPinLayer.upsert(pin)
       syncPinnedSlugs()
     }
   },
@@ -938,7 +812,7 @@ pinWindow.__portolanPin = async (slug, x, z, cityId) => {
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   const pin = await putPin(targetCity, slug, { x, z })
   if (pinnedCityId === targetCity) {
-    upsertPin(pin)
+    domPinLayer.upsert(pin)
     syncPinnedSlugs()
   }
   console.log('[pins] placed', pin)
@@ -948,7 +822,7 @@ pinWindow.__portolanUnpin = async (slug, cityId) => {
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   await deletePin(targetCity, slug)
   if (pinnedCityId === targetCity) {
-    removePin(slug)
+    domPinLayer.remove(slug)
     syncPinnedSlugs()
   }
 }
@@ -960,7 +834,7 @@ pinWindow.__portolanPinFile = async (source, x, z, kind, cityId) => {
   if (!targetCity) { console.warn('[pins] no city selected'); return }
   const pin = await pinFile(targetCity, { x, z }, source, kind)
   if (pinnedCityId === targetCity) {
-    upsertPin(pin)
+    domPinLayer.upsert(pin)
     syncPinnedSlugs()
   }
   console.log('[pins] placed file pin', pin)

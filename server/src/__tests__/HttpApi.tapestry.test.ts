@@ -101,7 +101,7 @@ tags:
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 closed-at: 2026-01-02T00:00:00Z
-close-reason: Data loaded successfully
+outcome: Data loaded successfully
 ---
 
 This is the foundation data fiber body.`);
@@ -497,7 +497,7 @@ kind: claim
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 closed-at: 2026-01-15T12:00:00Z
-close-reason: Analysis complete
+outcome: Analysis complete
 ---`;
 
     const fiber = parseFiber('complete-abc123.md', content);

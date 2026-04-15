@@ -102,7 +102,7 @@ export class HttpApiLayouts {
         if (typeof body.width === 'number') extras.width = body.width;
         if (typeof body.height === 'number') extras.height = body.height;
         const pin = this.layoutStore.setPin(
-          cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId), extras,
+          cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId) ?? undefined, extras,
         );
         if (!pin) {
           this.sendJsonError(res, 400, 'Invalid cityId, slug, coordinates, or source');
@@ -145,7 +145,7 @@ export class HttpApiLayouts {
         return true;
       }
       const pin = this.layoutStore.setPin(
-        cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId),
+        cityId, slug, { x: body.x, z: body.z }, this.metaFor(cityId) ?? undefined,
         { kind, source: body.source },
       );
       if (!pin) {
@@ -159,32 +159,29 @@ export class HttpApiLayouts {
     return false;
   }
 
-  private metaFor(cityId: string): PinMeta {
-    const meta: PinMeta = {};
+  private metaFor(cityId: string): PinMeta | null {
     const cityKey = this.cityLookup?.getCityKey?.(cityId)
       ?? (() => {
         const city = this.cityLookup?.getCityById(cityId);
         return city ? `${city.originId}:${city.path}` : null;
       })();
-    if (cityKey) meta.cityKey = cityKey;
-    return meta;
+    return cityKey ? { cityKey } : null;
   }
 
   /**
    * Classify every layout file on disk against the live city set.
    *
    * Status:
-   *   - `live`    — cityId matches a known city, cityKey (if recorded) hashes to it
+   *   - `live`    — cityId matches a known city, cityKey hashes to it
    *   - `mismatch`— cityKey is recorded but does NOT hash to cityId (corrupted file)
-   *   - `orphan`  — cityKey is recorded and well-formed, but no current city has that id
-   *   - `unkeyed` — pre-2026-04 file with no cityKey; cannot diagnose without a write
+   *   - `orphan`  — cityKey is well-formed, but no current city has that id
    */
   private diagnose(): Array<{
     cityId: string;
-    cityKey: string | null;
+    cityKey: string;
     pinCount: number;
     file: string;
-    status: 'live' | 'mismatch' | 'orphan' | 'unkeyed';
+    status: 'live' | 'mismatch' | 'orphan';
     currentCityName?: string;
   }> {
     const cities = this.cityLookup?.getCities?.() ?? [];
@@ -192,10 +189,8 @@ export class HttpApiLayouts {
     return this.layoutStore.scanLayouts().map(({ cityId, cityKey, file }) => {
       const pinCount = this.layoutStore.getPins(cityId).length;
       const liveCity = cityById.get(cityId);
-      let status: 'live' | 'mismatch' | 'orphan' | 'unkeyed';
-      if (cityKey === null) {
-        status = liveCity ? 'live' : 'unkeyed';
-      } else if (stableCityId(cityKey) !== cityId) {
+      let status: 'live' | 'mismatch' | 'orphan';
+      if (stableCityId(cityKey) !== cityId) {
         status = 'mismatch';
       } else {
         status = liveCity ? 'live' : 'orphan';

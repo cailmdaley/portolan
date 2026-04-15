@@ -45,18 +45,18 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
   });
 
   it('PUT upserts a pin then GET returns it', async () => {
-    const put = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 4, z: -2 });
+    const put = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 4, z: -2, kind: 'fiber' });
     expect(put.status).toBe(200);
-    expect(put.data.pin).toMatchObject({ slug: 'fiber-1', x: 4, z: -2 });
+    expect(put.data.pin).toMatchObject({ slug: 'fiber-1', x: 4, z: -2, kind: 'fiber' });
 
     const list = await httpRequest(api, 'GET', '/layouts/city-a');
     expect(list.data.pins).toHaveLength(1);
-    expect(list.data.pins[0]).toMatchObject({ slug: 'fiber-1', x: 4, z: -2 });
+    expect(list.data.pins[0]).toMatchObject({ slug: 'fiber-1', x: 4, z: -2, kind: 'fiber' });
   });
 
   it('PUT accepts width/height and persists them', async () => {
     const put = await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', {
-      x: 4, z: -2, width: 520, height: 360,
+      x: 4, z: -2, kind: 'fiber', width: 520, height: 360,
     } as any);
     expect(put.status).toBe(200);
     expect(put.data.pin).toMatchObject({ width: 520, height: 360 });
@@ -67,7 +67,7 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
 
   it('PUT rejects out-of-bounds width/height with 400', async () => {
     const tooBig = await httpRequest(api, 'PUT', '/layouts/city-a/pins/s', {
-      x: 0, z: 0, width: 99999,
+      x: 0, z: 0, kind: 'fiber', width: 99999,
     } as any);
     expect(tooBig.status).toBe(400);
   });
@@ -78,21 +78,20 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
   });
 
   it('PUT records cityKey from cityLookup so orphan files trace back to a path', async () => {
-    await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 1, z: 1 });
+    await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 1, z: 1, kind: 'fiber' });
     const file = join(TEST_DIR, 'layouts', 'city-a.json');
     const data = JSON.parse(readFileSync(file, 'utf-8'));
     expect(data.cityKey).toBe('local:/tmp/test-portolan-city');
   });
 
-  it('PUT against unknown cityId still upserts but writes no cityKey', async () => {
-    await httpRequest(api, 'PUT', '/layouts/city-unknown/pins/fiber-1', { x: 1, z: 1 });
+  it('PUT against unknown cityId is rejected (no cityKey available)', async () => {
+    const res = await httpRequest(api, 'PUT', '/layouts/city-unknown/pins/fiber-1', { x: 1, z: 1, kind: 'fiber' });
+    expect(res.status).toBe(400);
     const file = join(TEST_DIR, 'layouts', 'city-unknown.json');
-    const data = JSON.parse(readFileSync(file, 'utf-8'));
-    expect(data.cityKey).toBeUndefined();
-    expect(data.pins).toHaveLength(1);
+    expect(existsSync(file)).toBe(false);
   });
 
-  it('GET /layouts/_diagnostics classifies live, orphan, mismatch, and unkeyed files', async () => {
+  it('GET /layouts/_diagnostics classifies live, orphan, and mismatch files', async () => {
     // Build a cityLookup whose live city has the realistic
     // cityId = stableCityId(`${originId}:${path}`) relationship.
     const { stableCityId } = await import('../CityManager.js');
@@ -121,10 +120,10 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
     });
 
     // Seed: a "live" pin, an "orphan" pin (cityKey points at unknown id),
-    // a "mismatch" file (cityKey doesn't hash to cityId), and an "unkeyed" file.
-    await httpRequest(api, 'PUT', `/layouts/${liveId}/pins/fiber-1`, { x: 1, z: 1 });
+    // and a "mismatch" file (cityKey doesn't hash to cityId).
+    await httpRequest(api, 'PUT', `/layouts/${liveId}/pins/fiber-1`, { x: 1, z: 1, kind: 'fiber' });
 
-    // Synthesize on-disk orphan / mismatch / unkeyed by writing files directly.
+    // Synthesize on-disk orphan / mismatch by writing files directly.
     const { writeFileSync, mkdirSync } = await import('fs');
     const layoutsDir = join(TEST_DIR, 'layouts');
     mkdirSync(layoutsDir, { recursive: true });
@@ -133,17 +132,12 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
     const orphanId = stableCityId(orphanKey);
     writeFileSync(join(layoutsDir, `${orphanId}.json`), JSON.stringify({
       version: 1, cityId: orphanId, cityKey: orphanKey,
-      pins: [{ slug: 'p', x: 0, z: 0, pinnedAt: 1 }],
+      pins: [{ slug: 'p', x: 0, z: 0, pinnedAt: 1, kind: 'fiber' }],
     }));
     // mismatch: cityKey doesn't hash to filename's cityId
     writeFileSync(join(layoutsDir, 'badhash000000000000000000000000.json'), JSON.stringify({
       version: 1, cityId: 'badhash000000000000000000000000', cityKey: 'local:/somewhere',
-      pins: [{ slug: 'p', x: 0, z: 0, pinnedAt: 1 }],
-    }));
-    // unkeyed: pre-2026-04 file with no cityKey, and no matching live city
-    writeFileSync(join(layoutsDir, 'unkeyed00000000000000000000000a.json'), JSON.stringify({
-      version: 1, cityId: 'unkeyed00000000000000000000000a',
-      pins: [{ slug: 'p', x: 0, z: 0, pinnedAt: 1 }],
+      pins: [{ slug: 'p', x: 0, z: 0, pinnedAt: 1, kind: 'fiber' }],
     }));
     // Bust the LayoutStore cache so on-disk reads pick up the seeded files.
     (api as any).layoutStore.cache.clear();
@@ -156,7 +150,7 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
     expect(byStatus.live?.cityId).toBe(liveId);
     expect(byStatus.orphan?.cityId).toBe(orphanId);
     expect(byStatus.mismatch?.cityId).toBe('badhash000000000000000000000000');
-    expect(byStatus.unkeyed?.cityId).toBe('unkeyed00000000000000000000000a');
+    expect(byStatus.unkeyed).toBeUndefined();
     expect(byStatus.live.pinCount).toBe(1);
   });
 
@@ -214,7 +208,7 @@ describe('HttpApi — /layouts/:cityId endpoints', () => {
   });
 
   it('DELETE removes the pin', async () => {
-    await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 0, z: 0 });
+    await httpRequest(api, 'PUT', '/layouts/city-a/pins/fiber-1', { x: 0, z: 0, kind: 'fiber' });
     const del = await httpRequest(api, 'DELETE', '/layouts/city-a/pins/fiber-1');
     expect(del.status).toBe(200);
     expect(del.data.removed).toBe(true);
