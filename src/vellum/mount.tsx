@@ -415,15 +415,22 @@ export function mountVellumFiberSurface(
     if (adapter.getFiberContent) {
       void adapter.getFiberContent(next.slug).then((content) => {
         if (unmounted || currentSlug !== next.slug) return
+        // Without a seedNode, derive the node from the fiber's frontmatter so
+        // tags, status, and outcome actually land in FiberCard. The prior
+        // fallback constructed an empty-looking node (status:'open', tags:[],
+        // label:slug) that dropped everything FiberCard needs to render.
+        const fm = content?.frontmatter ?? {}
         const node =
           next.seedNode ??
           ({
             id: next.slug,
             slug: next.slug,
-            label: next.slug,
-            status: 'open',
+            label: typeof fm.name === 'string' && fm.name.length > 0 ? fm.name : next.slug,
+            status: typeof fm.status === 'string' ? fm.status : 'open',
             kind: 'fiber',
-            tags: [],
+            tags: Array.isArray(fm.tags) ? fm.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
+            verdict: typeof fm.outcome === 'string' ? fm.outcome : undefined,
+            tempered: fm.tempered === true,
           } as GraphNode)
         paint(node, content ?? null)
       }).catch(() => {})

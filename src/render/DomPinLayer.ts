@@ -399,6 +399,16 @@ export class DomPinLayer {
     }
     this.attachChromeDrag(chrome, entry)
     this.attachChromeScale(chrome, entry)
+    // Body-region wheel scrolls the card natively (vellum-shell has overflow:
+    // auto; iframes scroll internally). Without this guard the same wheel
+    // event bubbles out of the pin and the camera zooms in parallel — the
+    // user gets a card scroll *and* a world zoom from one gesture. The chrome
+    // strip above has its own wheel handler (for resize) that stops
+    // propagation; here we do the same for the body. preventDefault is left
+    // alone so the browser still handles native scroll inside the shell.
+    inner.addEventListener('wheel', (event) => {
+      event.stopPropagation()
+    }, { passive: true })
     if (this.onPrimaryOpen) {
       // Double-click on chrome → host's "Open" action (fiber workspace, vellum
       // modal, external URL). Chrome-only so iframe/body scroll-regions never
