@@ -304,12 +304,39 @@ export class DomPinLayer {
     }
     applySize(entry)
     this.attachChromeDrag(chrome, entry)
+    this.attachChromeScale(chrome, entry)
     // Resize handle lives above the inner body so it stays above iframe event
     // scope. Dragging it updates width/height live and commits on release.
     const resizeHandle = renderResizeHandle()
     el.appendChild(resizeHandle)
     this.attachResize(resizeHandle, entry)
     return entry
+  }
+
+  /** Scroll-wheel over the chrome strip scales the card's intrinsic size. The
+   *  chrome is a DOM sibling of the canvas, so camera-wheel never fires here —
+   *  but we still stopPropagation/preventDefault so page-level scroll doesn't
+   *  kick in. Gentle exponential scale matches the camera zoom feel; commit is
+   *  debounced so a wheel gesture fires one persisted write on release, not one
+   *  per tick. See [[file-view-as-floating-card]]: zoom-over-header. */
+  private attachChromeScale(chrome: HTMLElement, entry: DomPinEntry): void {
+    if (!this.onPinResized) return
+    const STEP_IN = 1.05
+    const STEP_OUT = 1 / STEP_IN
+    let commitTimer: number | null = null
+    chrome.addEventListener('wheel', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const factor = event.deltaY > 0 ? STEP_OUT : STEP_IN
+      entry.width = clampSize(entry.width * factor)
+      entry.height = clampSize(entry.height * factor)
+      applySize(entry)
+      if (commitTimer !== null) window.clearTimeout(commitTimer)
+      commitTimer = window.setTimeout(() => {
+        commitTimer = null
+        this.onPinResized!(entry.slug, entry.width, entry.height)
+      }, 220)
+    }, { passive: false })
   }
 
   /** Wire a pointerdown on the chrome strip into a drag gesture that updates
