@@ -480,7 +480,12 @@ export class CityHUDHeader {
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         const workerId = button.dataset.workerId
-        const sourceType = button.dataset.sourceType === 'manual' ? 'manual' : 'voiceink'
+        const raw = button.dataset.sourceType
+        const sourceType: ServerMeetingRunState['sourceType'] = raw === 'manual'
+          ? 'manual'
+          : raw === 'parakeet'
+            ? 'parakeet'
+            : 'voiceink'
         if (!workerId || this.meetingActionInFlight) return
         void this.startMeeting(workerId, sourceType)
       })
@@ -681,6 +686,7 @@ export class CityHUDHeader {
   private renderMeetingStartButtons(disabledAttr: string): string {
     return this.cityWorkers
       .map(session => `
+        <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" data-source-type="parakeet" ${disabledAttr}>Parakeet → ${escapeHtml(session.name)}</button>
         <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" data-source-type="voiceink" ${disabledAttr}>VoiceInk → ${escapeHtml(session.name)}</button>
         <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" data-source-type="manual" ${disabledAttr}>Manual → ${escapeHtml(session.name)}</button>
       `)
@@ -688,7 +694,9 @@ export class CityHUDHeader {
   }
 
   private describeMeetingSourceType(sourceType: ServerMeetingRunState['sourceType']): string {
-    return sourceType === 'manual' ? 'manual ingress' : 'voiceink'
+    if (sourceType === 'manual') return 'manual ingress'
+    if (sourceType === 'parakeet') return 'parakeet (live mic)'
+    return 'voiceink'
   }
 
   private renderMeetingIngressHint(meeting: ServerMeetingRunState): string {
@@ -699,6 +707,13 @@ export class CityHUDHeader {
       return `
         <div class="hud-meeting-provenance-empty">
           Manual ingress is active. Send transcript chunks to <code>POST /meeting-bridge/chunk</code> or <code>POST /meeting-bridge/chunks</code>.
+        </div>
+      `
+    }
+    if (meeting.sourceType === 'parakeet') {
+      return `
+        <div class="hud-meeting-provenance-empty">
+          Parakeet live mic ingress is active. Streaming transcripts will arrive here as you speak.
         </div>
       `
     }
@@ -1153,7 +1168,11 @@ export class CityHUDHeader {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const sourceLabel = sourceType === 'manual' ? 'manual meeting ingress' : 'VoiceInk meeting bridge'
+      const sourceLabel = sourceType === 'manual'
+        ? 'manual meeting ingress'
+        : sourceType === 'parakeet'
+          ? 'parakeet live mic ingress'
+          : 'VoiceInk meeting bridge'
       window.alert(`Failed to start ${sourceLabel}: ${message}`)
     } finally {
       this.meetingActionInFlight = false

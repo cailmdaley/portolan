@@ -165,3 +165,4 @@ Core doc fibers. For more: `felt ls -s all pattern` or `felt ls -s all gotcha`.
 | DAG Export (/tapestry) | `absorb-claims-dashboard-into` |
 | Static Tapestry | `static-rhizome-dashboard-on` |
 | Extraction Pattern | `extraction-pattern` |
+| Voice Ingress (Parakeet) | `constitution-portolan-voice-ingress`; daemon at `server/voice-ingress/parakeet_daemon.py`, Node wrapper at `server/src/ParakeetTranscriptSource.ts` |

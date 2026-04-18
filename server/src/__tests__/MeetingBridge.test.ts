@@ -158,6 +158,82 @@ describe('MeetingBridge', () => {
     expect(transcript.text).toBe('');
   });
 
+  it('spawns the parakeet source when sourceType=parakeet and forwards options', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    let parakeetSource: FakeTranscriptSource | null = null;
+    const createVoiceInkSource = vi.fn(() => {
+      throw new Error('voiceink should not start for parakeet meetings');
+    });
+    const createParakeetSource = vi.fn((_options, callbacks) => {
+      parakeetSource = new FakeTranscriptSource(callbacks);
+      return parakeetSource;
+    });
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource,
+        createParakeetSource,
+      },
+    });
+
+    const parakeetOptions = { mode: 'mic' as const, model: 'mlx-community/parakeet-tdt-0.6b-v2' };
+    const run = bridge.start({
+      sourceType: 'parakeet',
+      parakeet: parakeetOptions,
+      target: {
+        sessionId: 'worker-parakeet',
+        tmuxSession: 'worker-parakeet',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    expect(run.sourceType).toBe('parakeet');
+    expect(createVoiceInkSource).not.toHaveBeenCalled();
+    expect(createParakeetSource).toHaveBeenCalledWith(parakeetOptions, expect.any(Object));
+    expect(parakeetSource?.started).toBe(true);
+
+    parakeetSource?.emit({
+      id: 'u1',
+      text: 'we should',
+      status: 'partial',
+    });
+    parakeetSource?.emit({
+      id: 'u1',
+      text: 'we should check the calibration',
+      status: 'partial',
+    });
+    parakeetSource?.emit({
+      id: 'u1',
+      text: 'we should check the calibration plot.',
+      status: 'complete',
+    });
+
+    const state = bridge.getState();
+    const recent = state.activeMeeting?.recentTranscriptChunks ?? [];
+    expect(recent).toHaveLength(1);
+    expect(recent[0]).toMatchObject({
+      chunkIndex: 1,
+      sourceChunkId: 'u1',
+      text: 'we should check the calibration plot.',
+    });
+    expect(recent[0].isPartial).toBeFalsy();
+    expect(recent[0].revisionIndex).toBe(3);
+
+    const transcriptLines = readFileSync(run.transcriptPath, 'utf-8').trim().split('\n');
+    expect(transcriptLines).toHaveLength(3);
+    const parsed = transcriptLines.map((line) => JSON.parse(line));
+    expect(parsed[0]).toMatchObject({ chunkIndex: 1, revisionIndex: 1, isPartial: true, isRevision: false });
+    expect(parsed[1]).toMatchObject({ chunkIndex: 1, revisionIndex: 2, isPartial: true, isRevision: true });
+    expect(parsed[2]).toMatchObject({ chunkIndex: 1, revisionIndex: 3, isPartial: false, isRevision: true });
+
+    bridge.stop();
+    expect(parakeetSource?.stopped).toBe(true);
+  });
+
   it('syncs the live meeting brief into astra.yaml before explicit promotion', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
@@ -191,10 +267,26 @@ describe('MeetingBridge', () => {
       kind: 'narrative',
       text: 'Calibration remains open until the DES comparison is checked.',
     });
+    bridge.ingestAssistantResponses({
+      sessionId: 'worker-live-astra',
+      tmuxSession: 'worker-live-astra',
+      originId: 'local',
+    }, {
+      sourceKey: 'live-astra-assistant-1',
+      timestamp: '2026-04-03T08:05:00Z',
+      text: 'The DES comparison fiber and latest calibration plot are the key evidence to resolve this.',
+    });
     bridge.ingestCandidateEvent({
       kind: 'note',
       title: 'DES comparison gates calibration',
       text: 'Do not collapse the calibration conclusion until the DES comparison is reviewed.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestCandidateEvent({
+      kind: 'question',
+      title: 'Does the DES comparison change calibration?',
+      text: 'Check whether the DES comparison materially changes the calibration conclusion.',
       transcriptChunkIndices: [1],
       operatorUpdateIndices: [1],
     });
@@ -204,6 +296,16 @@ describe('MeetingBridge', () => {
       text: 'Treat calibration as unresolved pending the DES comparison.',
       transcriptChunkIndices: [1],
       operatorUpdateIndices: [1],
+    });
+    bridge.ingestCandidateEvent({
+      kind: 'action-item',
+      title: 'Pull the latest calibration plot',
+      text: 'Open the latest calibration plot beside the DES comparison fiber before concluding.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestRetrievalRequest({
+      text: 'Pull the DES comparison fiber and the latest calibration plot into view.',
     });
     bridge.ingestRetrievedEvidence({
       type: 'fiber',
@@ -233,7 +335,15 @@ describe('MeetingBridge', () => {
       claim: 'DES comparison gates calibration',
       tags: ['meeting', 'meeting-live-note'],
     });
-    expect(liveAnalysis.decisions['meeting-decision-2']).toMatchObject({
+    expect(liveAnalysis.findings['meeting-live-question-2']).toMatchObject({
+      claim: 'Does the DES comparison change calibration?',
+      tags: ['meeting', 'meeting-live-question'],
+    });
+    expect(liveAnalysis.findings['meeting-live-action-item-4']).toMatchObject({
+      claim: 'Pull the latest calibration plot',
+      tags: ['meeting', 'meeting-live-action-item'],
+    });
+    expect(liveAnalysis.decisions['meeting-decision-3']).toMatchObject({
       label: 'Keep calibration tentative',
       rationale: 'Treat calibration as unresolved pending the DES comparison.',
       tags: ['meeting', 'meeting-decision'],
@@ -241,7 +351,11 @@ describe('MeetingBridge', () => {
     expect(liveAnalysis.inputs).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'meeting_live_document', source: run.liveDocumentPath }),
       expect.objectContaining({ id: 'meeting_transcript_log', source: run.transcriptPath }),
+      expect.objectContaining({ id: 'meeting_assistant_replies', source: run.assistantResponsesPath }),
+      expect.objectContaining({ id: 'meeting_retrieval_requests', source: run.retrievalRequestsPath }),
     ]));
+    expect(liveAnalysis.description).toContain(run.assistantResponsesPath);
+    expect(liveAnalysis.description).toContain(run.retrievalRequestsPath);
   });
 
   it('stops the active source and marks the run errored when the source fails', () => {
@@ -836,6 +950,15 @@ describe('MeetingBridge', () => {
 
     bridge.ingestChunk({ id: 'chunk-1', text: 'We still need the DES calibration comparison before settling this.' });
     bridge.ingestOperatorUpdate({ kind: 'narrative', text: 'Calibration remains open pending the DES comparison.' });
+    bridge.ingestAssistantResponses({
+      sessionId: 'worker-brief-promote',
+      tmuxSession: 'worker-brief-promote',
+      originId: 'local',
+    }, {
+      sourceKey: 'brief-promote-assistant-1',
+      timestamp: '2026-04-03T09:10:00Z',
+      text: 'The next useful step is to pull the calibration plot and compare it against DES weighting.',
+    });
     bridge.ingestCandidateEvent({
       kind: 'question',
       title: 'Does DES change calibration?',
@@ -855,6 +978,16 @@ describe('MeetingBridge', () => {
       title: 'Comparison run already scoped',
       text: 'The DES-weight comparison run is already scoped and only needs execution.',
       transcriptChunkIndices: [1],
+    });
+    bridge.ingestCandidateEvent({
+      kind: 'action-item',
+      title: 'Pull calibration plot into view',
+      text: 'Open the latest calibration plot during this meeting before making the call.',
+      transcriptChunkIndices: [1],
+      operatorUpdateIndices: [1],
+    });
+    bridge.ingestRetrievalRequest({
+      text: 'Pull the calibration plot and the DES-weighting fiber.',
     });
     bridge.ingestRetrievedEvidence({
       type: 'fiber',
@@ -925,6 +1058,14 @@ describe('MeetingBridge', () => {
       notes: 'The DES-weight comparison run is already scoped and only needs execution.',
       tags: ['meeting', 'accepted-note'],
     });
+    expect(briefAnalysis.findings['open-question-1']).toMatchObject({
+      claim: 'Does DES change calibration?',
+      tags: ['meeting', 'open-question'],
+    });
+    expect(briefAnalysis.findings['action-item-4']).toMatchObject({
+      claim: 'Pull calibration plot into view',
+      tags: ['meeting', 'action-item'],
+    });
     expect(briefAnalysis.decisions['meeting-decision-2']).toMatchObject({
       label: 'Hold calibration conclusion until DES comparison',
       rationale: 'Do not finalize the calibration conclusion before reviewing the DES comparison.',
@@ -934,7 +1075,11 @@ describe('MeetingBridge', () => {
     expect(briefAnalysis.inputs).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'meeting_transcript_log', source: run.transcriptPath }),
       expect.objectContaining({ id: 'meeting_operator_updates', source: run.updatesPath }),
+      expect.objectContaining({ id: 'meeting_assistant_replies', source: run.assistantResponsesPath }),
+      expect.objectContaining({ id: 'meeting_retrieval_requests', source: run.retrievalRequestsPath }),
     ]));
+    expect(briefAnalysis.description).toContain(run.assistantResponsesPath);
+    expect(briefAnalysis.description).toContain(run.retrievalRequestsPath);
 
     const liveDocument = readFileSync(run.liveDocumentPath, 'utf-8');
     expect(liveDocument).toContain('# Live meeting brief: Calibration remains open pending the DES comparison.');
@@ -942,6 +1087,8 @@ describe('MeetingBridge', () => {
     expect(liveDocument).toContain('## Open questions');
     expect(liveDocument).toContain('## Decisions');
     expect(liveDocument).toContain('## Evidence in view');
+    expect(liveDocument).toContain('## Retrieval queue');
+    expect(liveDocument).toContain('## Assistant replies');
     expect(liveDocument).toContain('(fiber: [use-des-weights](<.felt/use-des-weights/use-des-weights.md>))');
     expect(liveDocument).toContain(`- live ASTRA: [astra.yaml](<${join(cityPath, 'astra.yaml')}>)`);
     expect(liveDocument).toContain(`- brief promotions: [brief-promotions.jsonl](<${run.briefPromotionsPath}>)`);

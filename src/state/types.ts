@@ -204,7 +204,7 @@ export interface ServerMeetingRunState {
   }>
   meetingId: string
   status: 'running' | 'stopped' | 'error'
-  sourceType: 'voiceink' | 'manual'
+  sourceType: 'voiceink' | 'manual' | 'parakeet'
   startedAt: number
   stoppedAt?: number
   sessionId: string

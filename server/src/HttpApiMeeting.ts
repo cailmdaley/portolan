@@ -72,6 +72,7 @@ export class HttpApiMeeting {
         pollSeconds?: number;
         includeHistory?: boolean;
       };
+      parakeet?: MeetingBridgeStartOptions['parakeet'];
     }>(req, res);
     if (!data) return;
 
@@ -80,7 +81,12 @@ export class HttpApiMeeting {
       return;
     }
 
-    if (data.sourceType !== undefined && data.sourceType !== 'voiceink' && data.sourceType !== 'manual') {
+    if (
+      data.sourceType !== undefined
+      && data.sourceType !== 'voiceink'
+      && data.sourceType !== 'manual'
+      && data.sourceType !== 'parakeet'
+    ) {
       this.sendJsonError(res, 400, 'Invalid meeting sourceType');
       return;
     }
@@ -117,6 +123,7 @@ export class HttpApiMeeting {
         initialPrompt: data.initialPrompt,
         sourceType: data.sourceType,
         voiceInk: data.voiceInk,
+        parakeet: data.parakeet,
       });
       this.sendJsonSuccess(res, { success: true, meeting });
     } catch (error) {

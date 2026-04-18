@@ -68,6 +68,7 @@ describe('HttpApi — meeting bridge endpoints', () => {
       },
       initialPrompt: undefined,
       voiceInk: { pollSeconds: 2 },
+      parakeet: undefined,
     });
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', status: 'running' });
   });
@@ -106,8 +107,48 @@ describe('HttpApi — meeting bridge endpoints', () => {
       initialPrompt: 'Stay ready for HTTP transcript chunks.',
       sourceType: 'manual',
       voiceInk: undefined,
+      parakeet: undefined,
     });
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-manual', status: 'running', sourceType: 'manual' });
+  });
+
+  it('starts a parakeet meeting bridge with custom daemon options', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: null, lastMeeting: null })),
+      start: vi.fn(() => ({ meetingId: 'meeting-parakeet', status: 'running', sourceType: 'parakeet' })),
+      stop: vi.fn(),
+      ingestCandidateEvent: vi.fn(),
+      ingestRetrievalRequest: vi.fn(),
+    };
+
+    api.setSessionLookup({
+      findSession: (sessionId: string) => sessionId === localSession.id ? localSession : undefined,
+      getAllSessions: () => [localSession],
+    });
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/start', {
+      workerId: localSession.id,
+      sourceType: 'parakeet',
+      parakeet: { mode: 'mic', model: 'mlx-community/parakeet-tdt-0.6b-v2', chunkMs: 400 },
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.start).toHaveBeenCalledWith({
+      target: {
+        sessionId: localSession.id,
+        tmuxSession: localSession.tmuxSession,
+        originId: localSession.originId,
+        cwd: localSession.cwd,
+        sshHost: undefined,
+      },
+      initialPrompt: undefined,
+      sourceType: 'parakeet',
+      voiceInk: undefined,
+      parakeet: { mode: 'mic', model: 'mlx-community/parakeet-tdt-0.6b-v2', chunkMs: 400 },
+    });
+    expect(res.data.meeting.sourceType).toBe('parakeet');
   });
 
   it('rejects invalid meeting source types', async () => {

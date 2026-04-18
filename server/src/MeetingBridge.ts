@@ -11,6 +11,10 @@ import {
   type VoiceInkTranscriptSourceOptions,
   VoiceInkTranscriptSource,
 } from './VoiceInkTranscriptSource.js';
+import {
+  type ParakeetTranscriptSourceOptions,
+  ParakeetTranscriptSource,
+} from './ParakeetTranscriptSource.js';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 const execAsync = promisify(exec);
@@ -27,6 +31,7 @@ export interface MeetingBridgeStartOptions {
   initialPrompt?: string;
   sourceType?: MeetingRunState['sourceType'];
   voiceInk?: VoiceInkTranscriptSourceOptions;
+  parakeet?: ParakeetTranscriptSourceOptions;
 }
 
 export interface MeetingTranscriptEntry {
@@ -121,7 +126,7 @@ export interface MeetingLiveBrief {
 export interface MeetingRunState {
   meetingId: string;
   status: 'running' | 'stopped' | 'error';
-  sourceType: 'voiceink' | 'manual';
+  sourceType: 'voiceink' | 'manual' | 'parakeet';
   startedAt: number;
   stoppedAt?: number;
   sessionId: string;
@@ -196,6 +201,14 @@ export interface MeetingBridgeMessageSender {
 export interface MeetingTranscriptSourceFactory {
   createVoiceInkSource(
     options: VoiceInkTranscriptSourceOptions,
+    callbacks: {
+      onChunk: (chunk: unknown) => void;
+      onError: (error: Error) => void;
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+    },
+  ): TranscriptSource;
+  createParakeetSource(
+    options: ParakeetTranscriptSourceOptions,
     callbacks: {
       onChunk: (chunk: unknown) => void;
       onError: (error: Error) => void;
@@ -340,15 +353,17 @@ export class MeetingBridge {
   constructor(options: {
     baseDir?: string;
     messenger?: MeetingBridgeMessageSender;
-    sourceFactory?: MeetingTranscriptSourceFactory;
+    sourceFactory?: Partial<MeetingTranscriptSourceFactory>;
     fiberPromoter?: MeetingFiberPromoter;
     astraPromoter?: MeetingAstraPromoter;
   } = {}) {
     this.baseDir = options.baseDir ?? join(homedir(), '.portolan', 'meetings');
     this.latestStatePath = join(this.baseDir, 'latest-meeting.json');
     this.messenger = options.messenger ?? new TmuxSessionMessenger();
-    this.sourceFactory = options.sourceFactory ?? {
+    this.sourceFactory = {
       createVoiceInkSource: (voiceInkOptions, callbacks) => new VoiceInkTranscriptSource(voiceInkOptions, callbacks),
+      createParakeetSource: (parakeetOptions, callbacks) => new ParakeetTranscriptSource(parakeetOptions, callbacks),
+      ...options.sourceFactory,
     };
     this.fiberPromoter = options.fiberPromoter ?? new DefaultMeetingFiberPromoter();
     this.astraPromoter = options.astraPromoter ?? new DefaultMeetingAstraPromoter();
@@ -463,6 +478,19 @@ export class MeetingBridge {
 
       if (run.sourceType === 'voiceink') {
         const source = this.sourceFactory.createVoiceInkSource(options.voiceInk ?? {}, {
+          onChunk: (chunk) => this.handleChunk(options.target, run, chunk),
+          onError: (error) => this.handleError(run, error),
+          onExit: () => {
+            if (this.state.activeMeeting?.meetingId !== run.meetingId) return;
+            if (run.status === 'running') {
+              this.finishRun(run, 'stopped');
+            }
+          },
+        });
+        this.activeSource = source;
+        source.start();
+      } else if (run.sourceType === 'parakeet') {
+        const source = this.sourceFactory.createParakeetSource(options.parakeet ?? {}, {
           onChunk: (chunk) => this.handleChunk(options.target, run, chunk),
           onError: (error) => this.handleError(run, error),
           onExit: () => {
@@ -1617,6 +1645,25 @@ export class MeetingBridge {
       }
     }
 
+    if (run.recentRetrievalRequests.length > 0) {
+      lines.push('', '## Retrieval queue', '');
+      for (const request of run.recentRetrievalRequests
+        .slice()
+        .sort((left, right) => right.receivedAt - left.receivedAt)) {
+        lines.push(`- request ${request.requestIndex}: ${request.text}`);
+      }
+    }
+
+    if (run.recentAssistantResponses.length > 0) {
+      lines.push('', '## Assistant replies', '');
+      for (const response of run.recentAssistantResponses
+        .slice()
+        .sort((left, right) => right.receivedAt - left.receivedAt)) {
+        const timestampLabel = response.timestamp ? ` (${response.timestamp})` : '';
+        lines.push(`- reply ${response.responseIndex}${timestampLabel}: ${response.text}`);
+      }
+    }
+
     const recentItems = this.buildLiveDocumentRecentItems(run);
     if (recentItems.length > 0) {
       lines.push('', '## Recent thread', '');
@@ -1776,13 +1823,27 @@ export class MeetingBridge {
       );
     }
 
+    if (run.recentRetrievalRequests.length > 0) {
+      sections.push(
+        `Retrieval queue: ${run.recentRetrievalRequests.map((item) => item.text.trim()).join('; ')}.`,
+      );
+    }
+
+    if (run.recentAssistantResponses.length > 0) {
+      sections.push(
+        `Recent assistant replies: ${run.recentAssistantResponses.map((item) => item.text.trim()).join('; ')}.`,
+      );
+    }
+
     sections.push(
       `Promoted from Portolan meeting ${run.meetingId}.`,
       `Meeting brief fiber: ${fiberId}.`,
       `Meeting metadata: ${run.metadataPath}.`,
       `Transcript log: ${run.transcriptPath}.`,
       `Operator update log: ${run.updatesPath}.`,
+      `Assistant reply log: ${run.assistantResponsesPath}.`,
       `Candidate event log: ${run.candidateEventsPath}.`,
+      `Retrieval request log: ${run.retrievalRequestsPath}.`,
       `Retrieved evidence log: ${run.retrievalEvidencePath}.`,
     );
 
@@ -1821,12 +1882,26 @@ export class MeetingBridge {
       );
     }
 
+    if (run.recentRetrievalRequests.length > 0) {
+      sections.push(
+        `Retrieval queue: ${run.recentRetrievalRequests.map((item) => item.text.trim()).join('; ')}.`,
+      );
+    }
+
+    if (run.recentAssistantResponses.length > 0) {
+      sections.push(
+        `Recent assistant replies: ${run.recentAssistantResponses.map((item) => item.text.trim()).join('; ')}.`,
+      );
+    }
+
     sections.push(
       `Live document: ${run.liveDocumentPath}.`,
       `Meeting metadata: ${run.metadataPath}.`,
       `Transcript log: ${run.transcriptPath}.`,
       `Operator update log: ${run.updatesPath}.`,
+      `Assistant reply log: ${run.assistantResponsesPath}.`,
       `Candidate event log: ${run.candidateEventsPath}.`,
+      `Retrieval request log: ${run.retrievalRequestsPath}.`,
       `Retrieved evidence log: ${run.retrievalEvidencePath}.`,
     );
 
@@ -1882,6 +1957,40 @@ export class MeetingBridge {
       };
     });
 
+    run.liveBrief.openQuestions.forEach((item) => {
+      const findingId = `meeting-live-question-${item.eventIndex}`;
+      findings[findingId] = {
+        id: findingId,
+        claim: item.title?.trim() || item.text.trim(),
+        created_at: now,
+        tags: ['meeting', 'meeting-live-question'],
+        notes: item.text.trim(),
+        evidence: this.buildPromotedBriefFindingEvidence(
+          run,
+          findingId,
+          item.transcriptChunkIndices,
+          item.operatorUpdateIndices,
+        ),
+      };
+    });
+
+    run.liveBrief.actionItems.forEach((item) => {
+      const findingId = `meeting-live-action-item-${item.eventIndex}`;
+      findings[findingId] = {
+        id: findingId,
+        claim: item.title?.trim() || item.text.trim(),
+        created_at: now,
+        tags: ['meeting', 'meeting-live-action-item'],
+        notes: item.text.trim(),
+        evidence: this.buildPromotedBriefFindingEvidence(
+          run,
+          findingId,
+          item.transcriptChunkIndices,
+          item.operatorUpdateIndices,
+        ),
+      };
+    });
+
     return findings;
   }
 
@@ -1906,10 +2015,22 @@ export class MeetingBridge {
         source: run.updatesPath,
       },
       {
+        id: 'meeting_assistant_replies',
+        type: 'data',
+        description: 'Assistant replies surfaced back into the active Portolan meeting run.',
+        source: run.assistantResponsesPath,
+      },
+      {
         id: 'meeting_candidate_events',
         type: 'data',
         description: 'Accepted meeting-native candidate captures with transcript provenance.',
         source: run.candidateEventsPath,
+      },
+      {
+        id: 'meeting_retrieval_requests',
+        type: 'data',
+        description: 'Explicit retrieval requests made during the active Portolan meeting run.',
+        source: run.retrievalRequestsPath,
       },
       {
         id: 'meeting_retrieved_evidence',
@@ -1960,6 +2081,30 @@ export class MeetingBridge {
         label,
         item.text.trim(),
         ['meeting', 'accepted-note'],
+        item.transcriptChunkIndices,
+        item.operatorUpdateIndices,
+      );
+    });
+
+    run.liveBrief.openQuestions.forEach((item) => {
+      const label = item.title?.trim() || item.text.trim();
+      addFinding(
+        `open-question-${item.eventIndex}`,
+        label,
+        item.text.trim(),
+        ['meeting', 'open-question'],
+        item.transcriptChunkIndices,
+        item.operatorUpdateIndices,
+      );
+    });
+
+    run.liveBrief.actionItems.forEach((item) => {
+      const label = item.title?.trim() || item.text.trim();
+      addFinding(
+        `action-item-${item.eventIndex}`,
+        label,
+        item.text.trim(),
+        ['meeting', 'action-item'],
         item.transcriptChunkIndices,
         item.operatorUpdateIndices,
       );
@@ -2336,7 +2481,7 @@ function maybeMeetingStatus(value: unknown): MeetingRunState['status'] | null {
 }
 
 function maybeSourceType(value: unknown): MeetingRunState['sourceType'] | null {
-  return value === 'voiceink' || value === 'manual' ? value : null;
+  return value === 'voiceink' || value === 'manual' || value === 'parakeet' ? value : null;
 }
 
 function cloneMeetingRunState(run: MeetingRunState): MeetingRunState {
