@@ -13,6 +13,7 @@ export interface ParakeetTranscriptSourceOptions {
   silenceMs?: number;
   device?: string;
   utteranceIdPrefix?: string;
+  saveAudioPath?: string;
   extraArgs?: string[];
   env?: NodeJS.ProcessEnv;
 }
@@ -36,7 +37,7 @@ export class ParakeetTranscriptSource implements TranscriptSource {
 
     const pythonPath = this.options.pythonPath ?? defaultPythonPath();
     const daemonPath = this.options.daemonPath ?? defaultDaemonPath();
-    const args = [daemonPath, ...buildDaemonArgs(this.options)];
+    const args: string[] = [daemonPath, ...buildDaemonArgs(this.options)];
 
     const proc = spawn(pythonPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -117,7 +118,7 @@ function defaultDaemonPath(): string {
   return new URL('../voice-ingress/parakeet_daemon.py', import.meta.url).pathname;
 }
 
-function buildDaemonArgs(options: ParakeetTranscriptSourceOptions): string[] {
+export function buildDaemonArgs(options: ParakeetTranscriptSourceOptions): string[] {
   const args: string[] = [];
   const mode = options.mode ?? 'mic';
   if (mode === 'mic') {
@@ -139,6 +140,7 @@ function buildDaemonArgs(options: ParakeetTranscriptSourceOptions): string[] {
   if (options.partialIntervalMs !== undefined) args.push('--partial-interval-ms', String(options.partialIntervalMs));
   if (options.silenceMs !== undefined) args.push('--silence-ms', String(options.silenceMs));
   if (options.utteranceIdPrefix) args.push('--id-prefix', options.utteranceIdPrefix);
+  if (options.saveAudioPath) args.push('--save-audio', options.saveAudioPath);
   if (options.extraArgs) args.push(...options.extraArgs);
   return args;
 }

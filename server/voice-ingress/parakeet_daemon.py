@@ -28,6 +28,7 @@ import json
 import signal
 import sys
 import time
+import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
@@ -76,6 +77,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="audio sample rate in Hz (default: 16000)")
     parser.add_argument("--context-frames", type=int, default=256,
                         help="parakeet streaming context size (frames in/out)")
+    parser.add_argument("--save-audio", type=Path, default=None,
+                        help="(mic mode) archive captured PCM to this WAV path for post-hoc replay")
     return parser.parse_args(argv)
 
 
@@ -131,6 +134,26 @@ def _iter_audio_chunks(audio, chunk_samples: int) -> Iterator:
     total = audio.shape[0]
     for start in range(0, total, chunk_samples):
         yield audio[start:start + chunk_samples]
+
+
+def _open_wav_writer(path: Path, sample_rate: int) -> wave.Wave_write:
+    """Open a mono 16-bit PCM WAV writer. Parent dirs are created if missing."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = wave.open(str(path), "wb")
+    writer.setnchannels(1)
+    writer.setsampwidth(2)
+    writer.setframerate(sample_rate)
+    return writer
+
+
+def _write_wav_samples(writer: wave.Wave_write, samples) -> None:
+    """Append float32 samples in [-1, 1] to a 16-bit PCM WAV writer."""
+    import numpy as np  # type: ignore
+
+    arr = np.asarray(samples, dtype=np.float32)
+    clipped = np.clip(arr, -1.0, 1.0)
+    ints = (clipped * 32767.0).astype(np.int16)
+    writer.writeframes(ints.tobytes())
 
 
 def run_audio_mode(args: argparse.Namespace) -> None:
@@ -205,6 +228,10 @@ def run_mic_mode(args: argparse.Namespace) -> None:
     streaming_cm = make_streaming()
     streaming = streaming_cm.__enter__()
 
+    wav_writer: Optional[wave.Wave_write] = None
+    if args.save_audio is not None:
+        wav_writer = _open_wav_writer(args.save_audio, args.sample_rate)
+
     try:
         with sd.InputStream(
             samplerate=args.sample_rate,
@@ -216,6 +243,8 @@ def run_mic_mode(args: argparse.Namespace) -> None:
             while True:
                 buf, _ = stream.read(chunk_samples)
                 samples = buf[:, 0] if buf.ndim == 2 else buf
+                if wav_writer is not None:
+                    _write_wav_samples(wav_writer, samples)
                 rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
                 streaming.add_audio(mx.array(samples))
 
@@ -273,6 +302,11 @@ def run_mic_mode(args: argparse.Namespace) -> None:
             streaming_cm.__exit__(None, None, None)
         except Exception:  # pragma: no cover
             pass
+        if wav_writer is not None:
+            try:
+                wav_writer.close()
+            except Exception:  # pragma: no cover
+                pass
 
 
 def main(argv: Optional[list[str]] = None) -> int:

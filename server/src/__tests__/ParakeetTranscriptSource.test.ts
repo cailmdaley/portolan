@@ -4,7 +4,35 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 import { MeetingBridge } from '../MeetingBridge.js';
-import { ParakeetTranscriptSource } from '../ParakeetTranscriptSource.js';
+import { ParakeetTranscriptSource, buildDaemonArgs } from '../ParakeetTranscriptSource.js';
+
+describe('buildDaemonArgs', () => {
+  it('passes --save-audio when saveAudioPath is set', () => {
+    const args = buildDaemonArgs({ mode: 'mic', saveAudioPath: '/tmp/test.wav' });
+    expect(args).toContain('--save-audio');
+    const idx = args.indexOf('--save-audio');
+    expect(args[idx + 1]).toBe('/tmp/test.wav');
+  });
+
+  it('omits --save-audio when saveAudioPath is not set', () => {
+    const args = buildDaemonArgs({ mode: 'mic' });
+    expect(args).not.toContain('--save-audio');
+  });
+
+  it('emits --mic by default and threads --model / --silence-ms', () => {
+    const args = buildDaemonArgs({ model: 'mlx-community/parakeet-tdt-0.6b-v3', silenceMs: 2000 });
+    expect(args[0]).toBe('--mic');
+    expect(args).toContain('--model');
+    expect(args[args.indexOf('--model') + 1]).toBe('mlx-community/parakeet-tdt-0.6b-v3');
+    expect(args).toContain('--silence-ms');
+    expect(args[args.indexOf('--silence-ms') + 1]).toBe('2000');
+  });
+
+  it('rejects audio mode without audioPath and script mode without scriptPath', () => {
+    expect(() => buildDaemonArgs({ mode: 'audio' })).toThrow(/audio mode requires audioPath/);
+    expect(() => buildDaemonArgs({ mode: 'script' })).toThrow(/script mode requires scriptPath/);
+  });
+});
 
 const fixtureScriptPath = fileURLToPath(new URL('./fixtures/parakeet-script.jsonl', import.meta.url));
 const fixtureLongScriptPath = fileURLToPath(new URL('./fixtures/parakeet-script-long.jsonl', import.meta.url));

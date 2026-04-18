@@ -193,7 +193,12 @@ describe('MeetingBridge', () => {
 
     expect(run.sourceType).toBe('parakeet');
     expect(createVoiceInkSource).not.toHaveBeenCalled();
-    expect(createParakeetSource).toHaveBeenCalledWith(parakeetOptions, expect.any(Object));
+    // MeetingBridge threads through the original options and adds a default
+    // saveAudioPath for mic mode (archives PCM alongside transcript.jsonl).
+    expect(createParakeetSource).toHaveBeenCalledWith(
+      expect.objectContaining(parakeetOptions),
+      expect.any(Object),
+    );
     expect(parakeetSource?.started).toBe(true);
 
     parakeetSource?.emit({
@@ -232,6 +237,92 @@ describe('MeetingBridge', () => {
 
     bridge.stop();
     expect(parakeetSource?.stopped).toBe(true);
+  });
+
+  it('defaults parakeet mic mode to archive audio alongside the transcript', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const createParakeetSource = vi.fn((_options, callbacks) => new FakeTranscriptSource(callbacks));
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: { createParakeetSource },
+    });
+
+    const run = bridge.start({
+      sourceType: 'parakeet',
+      parakeet: { mode: 'mic' },
+      target: {
+        sessionId: 'worker-parakeet',
+        tmuxSession: 'worker-parakeet',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    expect(createParakeetSource).toHaveBeenCalledTimes(1);
+    const [forwardedOptions] = createParakeetSource.mock.calls[0];
+    const meetingDir = join(run.transcriptPath, '..');
+    expect(forwardedOptions.saveAudioPath).toBe(join(meetingDir, 'audio.wav'));
+
+    bridge.stop();
+  });
+
+  it('respects an explicit parakeet saveAudioPath (opt-out by setting null-like sentinel)', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const createParakeetSource = vi.fn((_options, callbacks) => new FakeTranscriptSource(callbacks));
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: { createParakeetSource },
+    });
+
+    bridge.start({
+      sourceType: 'parakeet',
+      parakeet: { mode: 'mic', saveAudioPath: '/tmp/elsewhere.wav' },
+      target: {
+        sessionId: 'worker-parakeet',
+        tmuxSession: 'worker-parakeet',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    const [forwardedOptions] = createParakeetSource.mock.calls[0];
+    expect(forwardedOptions.saveAudioPath).toBe('/tmp/elsewhere.wav');
+
+    bridge.stop();
+  });
+
+  it('does not archive audio for parakeet --audio or --script modes', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+    const createParakeetSource = vi.fn((_options, callbacks) => new FakeTranscriptSource(callbacks));
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: { createParakeetSource },
+    });
+
+    bridge.start({
+      sourceType: 'parakeet',
+      parakeet: { mode: 'script', scriptPath: '/tmp/x.jsonl' },
+      target: {
+        sessionId: 'worker-parakeet',
+        tmuxSession: 'worker-parakeet',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    const [forwardedOptions] = createParakeetSource.mock.calls[0];
+    expect(forwardedOptions.saveAudioPath).toBeUndefined();
+
+    bridge.stop();
   });
 
   it('syncs the live meeting brief into astra.yaml before explicit promotion', () => {

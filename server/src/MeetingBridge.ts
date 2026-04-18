@@ -490,7 +490,8 @@ export class MeetingBridge {
         this.activeSource = source;
         source.start();
       } else if (run.sourceType === 'parakeet') {
-        const source = this.sourceFactory.createParakeetSource(options.parakeet ?? {}, {
+        const parakeetOptions = this.withParakeetDefaults(options.parakeet ?? {}, meetingDir);
+        const source = this.sourceFactory.createParakeetSource(parakeetOptions, {
           onChunk: (chunk) => this.handleChunk(options.target, run, chunk),
           onError: (error) => this.handleError(run, error),
           onExit: () => {
@@ -1156,6 +1157,21 @@ export class MeetingBridge {
     for (const listener of this.stateListeners) {
       listener(state);
     }
+  }
+
+  private withParakeetDefaults(
+    options: ParakeetTranscriptSourceOptions,
+    meetingDir: string,
+  ): ParakeetTranscriptSourceOptions {
+    // Archive raw mic PCM alongside transcript.jsonl so the human handoff can
+    // replay the same meeting through different models (v2/v3) or tuning
+    // (silence-ms, partial-interval-ms) without re-recording. Mic mode only —
+    // --audio already has the source file, --script has no audio.
+    const mode = options.mode ?? 'mic';
+    if (mode === 'mic' && options.saveAudioPath === undefined) {
+      return { ...options, saveAudioPath: join(meetingDir, 'audio.wav') };
+    }
+    return options;
   }
 
   private resolveLiveDocumentPath(cityPath: string, meetingDir: string): string {

@@ -713,7 +713,7 @@ export class CityHUDHeader {
     if (meeting.sourceType === 'parakeet') {
       return `
         <div class="hud-meeting-provenance-empty">
-          Parakeet live mic ingress is active. Streaming transcripts will arrive here as you speak.
+          Parakeet live mic ingress is active. Streaming transcripts will arrive here as you speak; raw mic audio is archived to <code>audio.wav</code> alongside <code>transcript.jsonl</code> for post-hoc replay.
         </div>
       `
     }
