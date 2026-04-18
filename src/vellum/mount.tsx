@@ -27,6 +27,10 @@ import {
   type FiberContent,
   type GraphNode,
 } from 'vellum'
+// Mirrors vellum's FileViewerPage.SaveState (not re-exported from the package
+// index). Kept structural so a vellum bump that adds error subtypes stays
+// compatible without a type import.
+type SaveState = 'idle' | 'saving' | 'saved' | { error: string }
 import 'vellum/css'
 import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
 
@@ -231,6 +235,13 @@ export interface MountFileSurfaceOptions {
   cityId?: string
   editable?: boolean
   jumpToLine?: number
+  /** Host-owned save chrome: text pins lift vellum's dirty/save state into
+   *  their own card chrome strip (see constitution card-redesign, invariant 5).
+   *  Optional — any caller that still wants vellum's built-in toolbar can
+   *  omit these and `hideToolbar` falls back to the prior behaviour. */
+  onDirtyChange?: (dirty: boolean) => void
+  onSaveStateChange?: (state: SaveState) => void
+  onSaveReady?: (save: (() => Promise<void>) | null) => void
 }
 
 export interface VellumFileSurfaceHandle {
@@ -272,6 +283,9 @@ export function mountVellumFileSurface(
               cityId: next.cityId,
             })}
             hideToolbar
+            onDirtyChange={next.onDirtyChange}
+            onSaveStateChange={next.onSaveStateChange}
+            onSaveReady={next.onSaveReady}
           />
         </AdapterProvider>
       </StrictMode>,

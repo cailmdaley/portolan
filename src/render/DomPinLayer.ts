@@ -9,6 +9,13 @@
 // so empty space falls through to the map; each pin element opts back in to
 // `pointer-events: auto`. `PinRenderer` (three.js fiber cards) has been
 // retired — all kinds route here. See `tapestry-dissolves`, `card-modal-parity`.
+//
+// Zoom model (see `pin-text-stays-screen-size`, `card-redesign`): pins have an
+// intrinsic *world* size (persisted as `pin.width`/`height`, interpreted as
+// CSS px at `REFERENCE_ZOOM`). Each frame the card's CSS width/height is
+// projected to screen pixels as `worldSize × (REFERENCE_ZOOM / zoom)`; nothing
+// inside is transform-scaled. Text renders at its authored CSS size at every
+// zoom — readable whether the card is a postage stamp or fills the viewport.
 
 import type { Camera } from './Camera'
 import type { Pin, PinKind } from '../state/layoutClient'
@@ -50,6 +57,9 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
 const MIN_SIZE = 120
 const MAX_SIZE = 1600
 
+type Corner = 'nw' | 'ne' | 'sw' | 'se'
+const CORNERS: readonly Corner[] = ['nw', 'ne', 'sw', 'se']
+
 /** True if a pin should render via the DOM layer. All kinds route to DOM. */
 export function isDomPinKind(pin: Pin): boolean {
   return DOM_KINDS.has(pin.kind)
@@ -80,6 +90,17 @@ export type MountVellumFileSurface = (
     cityId?: string
     editable?: boolean
     jumpToLine?: number
+    /** Fires when the document's dirty bit flips. Text-pin chrome paints a
+     *  dirty dot based on this so the user sees a card has unsaved edits
+     *  without opening it. See constitution invariant 5. */
+    onDirtyChange?: (dirty: boolean) => void
+    /** Fires when save state transitions. Chrome shows a transient "Saving…"
+     *  → "Saved" status next to the Save button. */
+    onSaveStateChange?: (state: ChromeSaveState) => void
+    /** Handed a save trigger once the mount is ready; `null` on unmount or
+     *  when the file becomes non-editable. Text-pin chrome's Save button
+     *  wires its click handler to this. */
+    onSaveReady?: (save: (() => Promise<void>) | null) => void
   },
 ) => VellumSurfaceMount
 
@@ -136,9 +157,16 @@ interface DomPinEntry {
   pin: Pin
   el: HTMLDivElement
   inner: HTMLElement
+  chrome: HTMLElement
   vellumMount: VellumSurfaceMount | null
+  /** Intrinsic world size — persisted as `pin.width`/`height`. Interpreted as
+   *  CSS pixels at `REFERENCE_ZOOM`; the per-frame CSS size is this × the
+   *  current zoom ratio. See constitution invariant 1. */
   width: number
   height: number
+  /** Last CSS width passed to `vellumMount.resize()`. Used to gate reflow
+   *  calls so React doesn't re-render every frame during a pan. */
+  lastReflowWidth: number
 }
 
 export class DomPinLayer {
@@ -240,7 +268,6 @@ export class DomPinLayer {
         if (existing.width !== nextSize.width || existing.height !== nextSize.height) {
           existing.width = nextSize.width
           existing.height = nextSize.height
-          applySize(existing)
         }
         this.position(existing)
         return
@@ -298,13 +325,27 @@ export class DomPinLayer {
 
   private position(entry: DomPinEntry): void {
     const { x, y } = this.camera.worldToScreen(entry.pin.x, 0.05, entry.pin.z)
-    const zoom = this.camera.cameraDistance
-    const scale = REFERENCE_ZOOM / Math.max(zoom, 0.0001)
-    // CSS transform centers the pin on its anchor, then scales around that
-    // center so the DOM card grows/shrinks together with the canvas pins as
-    // the camera zooms.
-    entry.el.style.transform =
-      `translate(${x}px, ${y}px) translate(-50%, -50%) scale(${scale.toFixed(4)})`
+    // Zoom-scale decoupling: card CSS size = world size × (REFERENCE_ZOOM /
+    // zoom). No transform: scale — text and chrome render at authored CSS px
+    // at every zoom, so words stay pinned to the viewer's eye while the card
+    // itself grows/shrinks as the camera moves. See constitution invariant 1.
+    const ratio = this.zoomRatio()
+    const cssW = Math.max(8, entry.width * ratio)
+    const cssH = Math.max(8, entry.height * ratio)
+    entry.el.style.width = `${cssW}px`
+    entry.el.style.height = `${cssH}px`
+    entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
+    // Notify fiber mounts when the projected width crossed a meaningful
+    // threshold so FiberCard's pretext reflows with the card, without
+    // thrashing React every frame during a pan.
+    if (entry.vellumMount?.resize && Math.abs(cssW - entry.lastReflowWidth) >= 8) {
+      entry.lastReflowWidth = cssW
+      entry.vellumMount.resize(cssW)
+    }
+  }
+
+  private zoomRatio(): number {
+    return REFERENCE_ZOOM / Math.max(this.camera.cameraDistance, 0.0001)
   }
 
   private build(pin: Pin): DomPinEntry {
@@ -371,6 +412,14 @@ export class DomPinLayer {
         originId: pin.source.originId,
         cityId: this.cityIdFor?.(),
         editable: true,
+        // Lift save state from vellum's FileViewerPage into the pin's chrome
+        // strip — dirty dot, transient status text, Save button. The vellum
+        // page itself is mounted with `hideToolbar` so we don't stack two
+        // bars. See constitution invariant 5 and
+        // mountVellumFileSurface.hideToolbar in mount.tsx.
+        onDirtyChange: (d) => setChromeDirty(chrome, d),
+        onSaveStateChange: (s) => setChromeSaveState(chrome, s),
+        onSaveReady: (save) => setChromeSaveAction(chrome, save),
       })
     } else {
       inner = renderInner(pin, url)
@@ -398,11 +447,12 @@ export class DomPinLayer {
       pin,
       el,
       inner,
+      chrome,
       vellumMount,
       width: size.width,
       height: size.height,
+      lastReflowWidth: 0,
     }
-    applySize(entry)
     // Bring-to-front on any interaction — stacked pins (e.g. a large markdown
     // card over a fiber pin) need a way to surface. Capture phase so we raise
     // before downstream drag/resize/chrome handlers consume the event.
@@ -422,17 +472,13 @@ export class DomPinLayer {
       })
     }
     this.attachChromeDrag(chrome, entry)
-    this.attachChromeScale(chrome, entry)
-    // Body-region wheel scrolls the card natively (vellum-shell has overflow:
-    // auto; iframes scroll internally). Without this guard the same wheel
-    // event bubbles out of the pin and the camera zooms in parallel — the
-    // user gets a card scroll *and* a world zoom from one gesture. The chrome
-    // strip above has its own wheel handler (for resize) that stops
-    // propagation; here we do the same for the body. preventDefault is left
-    // alone so the browser still handles native scroll inside the shell.
-    inner.addEventListener('wheel', (event) => {
-      event.stopPropagation()
-    }, { passive: true })
+    // One wheel handler for the whole card. Plain wheel bubbles into the
+    // native overflow-scroll of whatever child owns it (vellum-shell,
+    // iframes); `stopPropagation` keeps the camera from zooming in parallel.
+    // Cmd/Ctrl + wheel resizes the card's intrinsic world size anywhere on
+    // the card — body included, not just the chrome strip. See constitution
+    // invariant 3 and `pin-resize-gesture-moves-target`.
+    this.attachWheelResize(el, entry)
     if (this.onPrimaryOpen) {
       // Double-click on chrome → host's "Open" action (fiber workspace, vellum
       // modal, external URL). Chrome-only so iframe/body scroll-regions never
@@ -444,37 +490,41 @@ export class DomPinLayer {
         this.onPrimaryOpen!(entry.slug)
       })
     }
-    // Resize handle lives above the inner body so it stays above iframe event
-    // scope. Dragging it updates width/height live and commits on release.
-    const resizeHandle = renderResizeHandle()
-    el.appendChild(resizeHandle)
-    this.attachResize(resizeHandle, entry)
+    // Four resize handles, one per corner — dragging any of them resizes the
+    // card while the opposite corner stays pinned in world space. Handles sit
+    // above iframe event scope so pdf/html pins still catch the gesture. See
+    // constitution invariant 4.
+    for (const corner of CORNERS) {
+      const handle = renderResizeHandle(corner)
+      el.appendChild(handle)
+      this.attachResize(handle, entry, corner)
+    }
     return entry
   }
 
-  /** Scroll-wheel over the chrome strip scales the card's intrinsic size. The
-   *  chrome is a DOM sibling of the canvas, so camera-wheel never fires here —
-   *  but we still stopPropagation/preventDefault so page-level scroll doesn't
-   *  kick in. Scale factor is proportional to `deltaY` so trackpad two-finger
-   *  scrolls feel continuous instead of each tick jumping a fixed 5% — mouse
-   *  wheels still get their discrete step because browsers synthesize one
-   *  sizable deltaY per notch. Commit is debounced so a gesture fires one
-   *  persisted write on release, not one per frame. See
-   *  [[file-view-as-floating-card]]: zoom-over-header. */
-  private attachChromeScale(chrome: HTMLElement, entry: DomPinEntry): void {
-    if (!this.onPinResized) return
-    // e^(deltaY * RATE) — ≈0.1% per deltaY pixel. A typical 100px trackpad
-    // flick ends near 90% size; a single mouse-wheel notch (deltaY ≈ 100) is
-    // the same ~10% step that the fixed-per-tick version delivered.
+  /** Wheel gesture on the card. Always stops propagation so the camera doesn't
+   *  zoom in parallel with whatever the user is doing to the card.
+   *
+   *  - Cmd/Ctrl + wheel: resize the card's intrinsic world size, anywhere on
+   *    the card (chrome, body, corners). Factor is proportional to `deltaY`
+   *    so trackpad gestures feel continuous and mouse-wheel notches land the
+   *    same ~10% step the previous chrome-only version did. Commit is
+   *    debounced so one gesture fires one persisted write. See
+   *    [[pin-resize-gesture-moves-target]] and constitution invariant 3.
+   *  - Plain wheel: forwarded to the browser so overflow containers inside
+   *    the card (vellum-shell, iframes) scroll natively. */
+  private attachWheelResize(el: HTMLElement, entry: DomPinEntry): void {
     const RATE = 0.001
     let commitTimer: number | null = null
-    chrome.addEventListener('wheel', (event) => {
-      event.preventDefault()
+    el.addEventListener('wheel', (event) => {
       event.stopPropagation()
+      if (!(event.ctrlKey || event.metaKey)) return
+      if (!this.onPinResized) return
+      event.preventDefault()
       const factor = Math.exp(-event.deltaY * RATE)
       entry.width = clampSize(entry.width * factor)
       entry.height = clampSize(entry.height * factor)
-      applySize(entry)
+      this.position(entry)
       if (commitTimer !== null) window.clearTimeout(commitTimer)
       commitTimer = window.setTimeout(() => {
         commitTimer = null
@@ -550,15 +600,27 @@ export class DomPinLayer {
     })
   }
 
-  /** Wire pointerdown on the bottom-right resize handle into a drag that scales
-   *  the card's intrinsic size. Screen-pixel deltas are divided by the current
-   *  camera-zoom scale so one screen pixel of drag equals one CSS pixel of
-   *  size change (otherwise resizing would feel faster/slower at different
-   *  zoom levels). Hold Shift (or resize images — which have an intrinsic
-   *  aspect) to preserve the card's starting aspect ratio. Commits via
-   *  `onPinResized`; skipped if the host didn't provide the callback. */
-  private attachResize(handle: HTMLElement, entry: DomPinEntry): void {
+  /** Pointerdown on a corner handle → drag to resize. The opposite corner
+   *  stays pinned in world space — dragging SE grows toward the SE while NW
+   *  stays put; dragging NW grows toward NW while SE stays put; etc. Because
+   *  the pin's anchor is the card's *center*, the anchor shifts by half the
+   *  size delta (signed by corner direction) each frame, and we commit the
+   *  new position on release.
+   *
+   *  Screen-pixel deltas are divided by the current zoom ratio so one screen
+   *  pixel of drag equals one *world* pixel of size change — the card feels
+   *  equally responsive at every zoom. Hold Shift (or resize images —
+   *  intrinsic aspect) to preserve the starting aspect ratio; the dominant-
+   *  axis delta drives the minor axis so the handle tracks the cursor.
+   *
+   *  See constitution invariant 4. Commits via `onPinResized` and
+   *  `onPinMoved`; skipped if the host didn't provide `onPinResized`. */
+  private attachResize(handle: HTMLElement, entry: DomPinEntry, corner: Corner): void {
     if (!this.onPinResized) return
+    // Sign of the width/height delta for this corner: +1 means "growing this
+    // side extends along +x / +y (cursor going SE)"; -1 means the opposite.
+    const sx = corner === 'ne' || corner === 'se' ? 1 : -1
+    const sy = corner === 'sw' || corner === 'se' ? 1 : -1
 
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
@@ -566,9 +628,10 @@ export class DomPinLayer {
       const startY = event.clientY
       const startW = entry.width
       const startH = entry.height
+      const startPinX = entry.pin.x
+      const startPinZ = entry.pin.z
       const aspect = startW / Math.max(startH, 1)
-      const zoom = this.camera.cameraDistance
-      const scale = REFERENCE_ZOOM / Math.max(zoom, 0.0001)
+      const ratio = this.zoomRatio()
       let active = false
 
       const onMove = (ev: PointerEvent) => {
@@ -578,16 +641,15 @@ export class DomPinLayer {
           if (Math.hypot(dxScreen, dyScreen) < 2) return
           active = true
           entry.el.classList.add('dom-pin--resizing')
-          document.body.style.cursor = 'nwse-resize'
+          document.body.style.cursor = cornerCursor(corner)
           // Reuse the same suppression flag as drag-to-pin / chrome-drag so
           // pin-hover and canvas interactions don't interfere mid-resize.
           document.body.classList.add('pin-dragging')
         }
-        let nextW = startW + dxScreen / scale
-        let nextH = startH + dyScreen / scale
-        // Shift locks aspect ratio; images lock by default so their intrinsic
-        // proportions don't distort on casual resize. The dominant-axis delta
-        // drives the minor axis so the handle still tracks the cursor roughly.
+        // Screen-pixel drag → world-pixel size delta. sx/sy map the cursor's
+        // motion into growth along the corner's direction.
+        let nextW = startW + (sx * dxScreen) / ratio
+        let nextH = startH + (sy * dyScreen) / ratio
         const lockAspect = ev.shiftKey || entry.pin.kind === 'image'
         if (lockAspect) {
           if (Math.abs(dxScreen) >= Math.abs(dyScreen)) {
@@ -596,9 +658,26 @@ export class DomPinLayer {
             nextW = nextH * aspect
           }
         }
-        entry.width = clampSize(nextW)
-        entry.height = clampSize(nextH)
-        applySize(entry)
+        nextW = clampSize(nextW)
+        nextH = clampSize(nextH)
+        // Opposite-corner-fixed anchor math. Pin anchor is the card center
+        // (via `translate(-50%, -50%)`), so keeping corner `-sx, -sy` fixed
+        // means shifting the center by (dW/2 along sx, dH/2 along sy) in
+        // world units. Using `sx * (ratio_unit_world)`: world coords are the
+        // same units as `entry.width` (world px at REFERENCE_ZOOM), so the
+        // center shift is simply half the world-size delta in that direction.
+        const dW = nextW - startW
+        const dH = nextH - startH
+        entry.width = nextW
+        entry.height = nextH
+        // The map's +x is screen-right and +z is screen-down (see Camera
+        // projection). So sx maps to world x and sy maps to world z.
+        entry.pin = {
+          ...entry.pin,
+          x: startPinX + (sx * dW) / 2,
+          z: startPinZ + (sy * dH) / 2,
+        }
+        this.position(entry)
       }
 
       const onUp = () => {
@@ -610,6 +689,9 @@ export class DomPinLayer {
         document.body.style.cursor = ''
         document.body.classList.remove('pin-dragging')
         this.onPinResized!(entry.slug, entry.width, entry.height)
+        if (this.onPinMoved && (entry.pin.x !== startPinX || entry.pin.z !== startPinZ)) {
+          this.onPinMoved(entry.slug, entry.pin.x, entry.pin.z)
+        }
       }
 
       window.addEventListener('pointermove', onMove, true)
@@ -620,6 +702,10 @@ export class DomPinLayer {
       event.stopPropagation()
     })
   }
+}
+
+function cornerCursor(corner: Corner): string {
+  return corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize'
 }
 
 let pulseStylesInjected = false
@@ -636,14 +722,31 @@ function ensurePulseStyles(): void {
     .dom-pin--pulsing {
       animation: dom-pin-pulse 600ms ease-out;
     }
-    /* Resize handle: faint dimple by default, prominent on card hover so it
-       never clutters a quiet map but is obvious the moment you reach for it. */
+    /* Resize handles: four corner dots. Invisible by default so a quiet map
+       stays quiet; on card hover they fade in as faint parchment marks,
+       becoming solid on handle-hover. Constitution's "quiet by default +
+       hover reveals affordances." 6px dot centered in an 18px hit area. */
     .dom-pin .dom-pin-resize {
-      opacity: 0.35;
+      opacity: 0;
       transition: opacity 120ms ease-out;
+    }
+    .dom-pin .dom-pin-resize::after {
+      content: '';
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(140, 110, 80, 0.7);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
     }
     .dom-pin:hover .dom-pin-resize,
     .dom-pin--hovered .dom-pin-resize,
+    .dom-pin--resizing .dom-pin-resize {
+      opacity: 0.7;
+    }
+    .dom-pin .dom-pin-resize:hover,
     .dom-pin--resizing .dom-pin-resize {
       opacity: 1;
     }
@@ -833,6 +936,60 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
   })
   applyChromeTitleCasing(title, displayTitle, pin.slug)
   bar.appendChild(title)
+  // Save state strip for text pins — dirty dot, transient save-status text,
+  // Save button. Hidden by default (empty content + `display: none` via the
+  // body-free class); text pins populate them via `setChromeDirty` /
+  // `setChromeSaveState` / `setChromeSaveAction` once vellum's callbacks fire.
+  // Fiber / pdf / image / URL pins never call those helpers so the elements
+  // stay collapsed. Order from left to right matches the constitution: dirty
+  // dot nearest the title, status text, Save button, ⋮ menu handle. See
+  // constitution invariant 5.
+  const dirty = document.createElement('span')
+  dirty.className = 'dom-pin-chrome-dirty'
+  dirty.setAttribute('aria-hidden', 'true')
+  dirty.textContent = '●'
+  Object.assign(dirty.style, {
+    display: 'none',
+    fontSize: '9px',
+    lineHeight: '1',
+    color: '#9A7B35',
+  })
+  bar.appendChild(dirty)
+  const saveStatus = document.createElement('span')
+  saveStatus.className = 'dom-pin-chrome-save-status'
+  saveStatus.setAttribute('aria-live', 'polite')
+  Object.assign(saveStatus.style, {
+    display: 'none',
+    fontSize: '11px',
+    color: '#7A7368',
+    fontStyle: 'italic',
+    whiteSpace: 'nowrap',
+  })
+  bar.appendChild(saveStatus)
+  const saveBtn = document.createElement('button')
+  saveBtn.type = 'button'
+  saveBtn.className = 'dom-pin-chrome-save'
+  saveBtn.textContent = 'Save'
+  saveBtn.title = 'Save'
+  saveBtn.tabIndex = -1
+  Object.assign(saveBtn.style, {
+    display: 'none',
+    appearance: 'none',
+    border: 'none',
+    background: 'transparent',
+    color: '#2E2A26',
+    fontFamily: '"EB Garamond", Garamond, serif',
+    fontSize: '11px',
+    letterSpacing: '0.03em',
+    cursor: 'pointer',
+    padding: '0 4px',
+    borderRadius: '3px',
+  })
+  // Chrome-drag wants to ignore clicks on the button; the drag handler already
+  // excludes the menu handle, and `stopPropagation` on pointerdown here keeps
+  // a double-click on the button from being mistaken for a chrome grab.
+  saveBtn.addEventListener('pointerdown', (e) => { e.stopPropagation() })
+  bar.appendChild(saveBtn)
   // External-open affordance for URL pins. Iframe-blocked sites (X-Frame-Options
   // / CSP) render as a blank body and there's no reliable way to detect the
   // block from a cross-origin parent, so the pin can look broken at a glance.
@@ -915,6 +1072,57 @@ function applyChromeTitleCasing(
   const isSlug = displayTitle === slug
   title.style.fontVariant = isSlug ? 'small-caps' : 'normal'
   title.style.letterSpacing = isSlug ? '0.03em' : '0'
+}
+
+function setChromeDirty(chrome: HTMLElement, dirty: boolean): void {
+  const el = chrome.querySelector<HTMLElement>('.dom-pin-chrome-dirty')
+  if (!el) return
+  el.style.display = dirty ? 'inline' : 'none'
+}
+
+/** SaveState mirrors vellum's FileViewerPage — `idle | saving | saved |
+ *  { error }`. Chrome paints a transient line of text that fades back to
+ *  empty when the state returns to idle. */
+export type ChromeSaveState = 'idle' | 'saving' | 'saved' | { error: string }
+
+function setChromeSaveState(chrome: HTMLElement, state: ChromeSaveState): void {
+  const el = chrome.querySelector<HTMLElement>('.dom-pin-chrome-save-status')
+  if (!el) return
+  if (state === 'idle') {
+    el.textContent = ''
+    el.style.display = 'none'
+    return
+  }
+  el.style.display = 'inline'
+  if (state === 'saving') el.textContent = 'Saving…'
+  else if (state === 'saved') el.textContent = 'Saved'
+  else el.textContent = `Error: ${state.error}`
+}
+
+/** Install (or clear) the Save button's click action. `null` hides the
+ *  button; anything else shows it and binds the handler. Only one handler at
+ *  a time — re-calling replaces the previous binding. */
+function setChromeSaveAction(
+  chrome: HTMLElement,
+  save: (() => Promise<void>) | null,
+): void {
+  const btn = chrome.querySelector<HTMLButtonElement>('.dom-pin-chrome-save')
+  if (!btn) return
+  // Replace the click handler each time by cloning — simpler than tracking a
+  // removable listener ref across the lifetime of a pin.
+  const clone = btn.cloneNode(true) as HTMLButtonElement
+  btn.replaceWith(clone)
+  if (!save) {
+    clone.style.display = 'none'
+    return
+  }
+  clone.style.display = 'inline-block'
+  clone.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    void save()
+  })
+  clone.addEventListener('pointerdown', (e) => { e.stopPropagation() })
 }
 
 function setChromeStatus(chrome: HTMLElement, status: FiberStatus): void {
@@ -1061,28 +1269,28 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
   return div
 }
 
-function renderResizeHandle(): HTMLElement {
+function renderResizeHandle(corner: Corner): HTMLElement {
   const h = document.createElement('div')
-  h.className = 'dom-pin-resize'
+  h.className = `dom-pin-resize dom-pin-resize--${corner}`
   h.title = 'Drag to resize · hold Shift to lock aspect ratio'
-  // Hit area is 24×24 so the corner is forgiving to grab; the visible dimple
-  // lives in the bottom-right ~16px of that via a background-size that keeps
-  // the diagonal stripes from stretching across the whole square. Prior
-  // 18×18 size was fiddly to catch on a first grab, especially near the
-  // chrome strip above.
-  Object.assign(h.style, {
+  // Hit area is 18×18 at each corner so all four are forgiving but don't
+  // crowd small cards. The visible affordance is a faint parchment dot,
+  // applied via CSS so the four-corner layout reads as quiet marks rather
+  // than heavy grips — constitution's "quiet by default." See the ruleset
+  // in `ensurePulseStyles`.
+  const style: Partial<CSSStyleDeclaration> = {
     position: 'absolute',
-    right: '0',
-    bottom: '0',
-    width: '24px',
-    height: '24px',
-    cursor: 'nwse-resize',
-    background:
-      'linear-gradient(135deg, transparent 0%, transparent 55%, rgba(140, 110, 80, 0.65) 55%, rgba(140, 110, 80, 0.65) 68%, transparent 68%, transparent 78%, rgba(140, 110, 80, 0.65) 78%, rgba(140, 110, 80, 0.65) 91%, transparent 91%) no-repeat right bottom',
-    backgroundSize: '16px 16px',
+    width: '18px',
+    height: '18px',
+    cursor: cornerCursor(corner),
     touchAction: 'none',
     zIndex: '2',
-  })
+  }
+  if (corner === 'nw' || corner === 'sw') style.left = '0'
+  else style.right = '0'
+  if (corner === 'nw' || corner === 'ne') style.top = '0'
+  else style.bottom = '0'
+  Object.assign(h.style, style)
   return h
 }
 
@@ -1098,12 +1306,3 @@ function clampSize(n: number): number {
   return Math.min(MAX_SIZE, Math.max(MIN_SIZE, n))
 }
 
-function applySize(entry: DomPinEntry): void {
-  entry.el.style.width = `${entry.width}px`
-  entry.el.style.height = `${entry.height}px`
-  // Reflow the inner vellum surface so FiberCard's pretext line wrapping tracks
-  // the new card width instead of stranding empty space to the right of the
-  // column. The vellum mount caches content so repeated width updates don't
-  // re-fetch the fiber body.
-  entry.vellumMount?.resize?.(entry.width)
-}
