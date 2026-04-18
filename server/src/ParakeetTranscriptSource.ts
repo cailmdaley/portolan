@@ -17,11 +17,14 @@ export interface ParakeetTranscriptSourceOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+const STOP_ESCALATION_MS = 2000;
+
 export class ParakeetTranscriptSource implements TranscriptSource {
   private process: ReturnType<typeof spawn> | null = null;
   private stdoutBuffer = '';
   private stderrBuffer = '';
   private stopped = false;
+  private killTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly options: ParakeetTranscriptSourceOptions,
@@ -60,6 +63,10 @@ export class ParakeetTranscriptSource implements TranscriptSource {
       this.flushStdoutLines(true);
       const stderr = this.stderrBuffer.trim();
       this.process = null;
+      if (this.killTimer) {
+        clearTimeout(this.killTimer);
+        this.killTimer = null;
+      }
       if (!this.stopped && code !== 0 && stderr) {
         this.callbacks.onError(new Error(`Parakeet daemon exited (${code}): ${stderr}`));
       }
@@ -69,9 +76,20 @@ export class ParakeetTranscriptSource implements TranscriptSource {
 
   stop(): void {
     this.stopped = true;
-    if (!this.process) return;
-    this.process.kill();
-    this.process = null;
+    const proc = this.process;
+    if (!proc) return;
+    proc.kill('SIGTERM');
+    // Daemon installs a SIGTERM handler that flushes the final emit, but if it
+    // hangs (e.g. stuck in an ML call) we escalate so the bridge isn't blocked.
+    this.killTimer = setTimeout(() => {
+      this.killTimer = null;
+      if (this.process === proc) {
+        proc.kill('SIGKILL');
+      }
+    }, STOP_ESCALATION_MS);
+    if (typeof this.killTimer.unref === 'function') {
+      this.killTimer.unref();
+    }
   }
 
   private flushStdoutLines(flushRemainder = false): void {

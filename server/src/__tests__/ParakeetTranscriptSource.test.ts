@@ -7,6 +7,7 @@ import { MeetingBridge } from '../MeetingBridge.js';
 import { ParakeetTranscriptSource } from '../ParakeetTranscriptSource.js';
 
 const fixtureScriptPath = fileURLToPath(new URL('./fixtures/parakeet-script.jsonl', import.meta.url));
+const fixtureLongScriptPath = fileURLToPath(new URL('./fixtures/parakeet-script-long.jsonl', import.meta.url));
 const pythonPath = process.env.PORTOLAN_PARAKEET_PYTHON ?? '/opt/homebrew/bin/python3.13';
 
 function pythonExists(path: string): boolean {
@@ -99,4 +100,31 @@ describeIfPython('ParakeetTranscriptSource (script-mode daemon)', () => {
       text: 'next utterance.',
     });
   }, 15_000);
+
+  it('exits cleanly when stopped mid-stream (SIGTERM handled)', async () => {
+    const chunks: Array<{ text: string; status: string }> = [];
+    const errors: Error[] = [];
+    const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        const source = new ParakeetTranscriptSource(
+          { mode: 'script', scriptPath: fixtureLongScriptPath, pythonPath },
+          {
+            onChunk: (chunk) => chunks.push(chunk as { text: string; status: string }),
+            onError: (error) => errors.push(error),
+            onExit: (code, signal) => resolve({ code, signal }),
+          },
+        );
+        source.start();
+        // Let the two quick emits flow, then stop before the 5s-delayed third.
+        setTimeout(() => source.stop(), 200);
+      },
+    );
+
+    const exit = await exitPromise;
+    expect(chunks.map((c) => c.text)).toEqual(['hello', 'hello there']);
+    expect(errors).toEqual([]);
+    // SIGTERM → KeyboardInterrupt → clean return. Python exits 0, no signal.
+    expect(exit.code).toBe(0);
+    expect(exit.signal).toBeNull();
+  }, 10_000);
 });

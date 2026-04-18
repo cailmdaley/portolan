@@ -25,11 +25,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
+
+
+def _install_sigterm_handler() -> None:
+    """Map SIGTERM to KeyboardInterrupt so finally blocks still run on `kill`."""
+
+    def _raise_keyboard_interrupt(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
 
 
 def emit(chunk: dict) -> None:
@@ -81,18 +91,22 @@ def run_script_mode(path: Path) -> None:
     Missing `timestamp_local` is filled with current time. Missing `status`
     defaults to 'partial'.
     """
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            delay_ms = float(entry.pop("delay_ms", 0))
-            if delay_ms > 0:
-                time.sleep(delay_ms / 1000.0)
-            entry.setdefault("status", "partial")
-            entry.setdefault("timestamp_local", now_local_iso())
-            emit(entry)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                delay_ms = float(entry.pop("delay_ms", 0))
+                if delay_ms > 0:
+                    time.sleep(delay_ms / 1000.0)
+                entry.setdefault("status", "partial")
+                entry.setdefault("timestamp_local", now_local_iso())
+                emit(entry)
+    except KeyboardInterrupt:
+        # SIGINT/SIGTERM during replay is a graceful stop — exit 0 without a traceback.
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -134,28 +148,33 @@ def run_audio_mode(args: argparse.Namespace) -> None:
     with model.transcribe_stream(
         context_size=(args.context_frames, args.context_frames)
     ) as streaming:
-        for chunk in _iter_audio_chunks(audio, chunk_samples):
-            streaming.add_audio(chunk)
-            text = streaming.result.text
-            now = time.monotonic()
-            if text != last_text and (now - last_emit_at) * 1000 >= args.partial_interval_ms:
-                emit({
-                    "id": utterance_id,
-                    "text": text,
-                    "status": "partial",
-                    "timestamp_local": now_local_iso(),
-                })
-                last_text = text
-                last_emit_at = now
+        try:
+            for chunk in _iter_audio_chunks(audio, chunk_samples):
+                streaming.add_audio(chunk)
+                text = streaming.result.text
+                now = time.monotonic()
+                if text != last_text and (now - last_emit_at) * 1000 >= args.partial_interval_ms:
+                    emit({
+                        "id": utterance_id,
+                        "text": text,
+                        "status": "partial",
+                        "timestamp_local": now_local_iso(),
+                    })
+                    last_text = text
+                    last_emit_at = now
+        except KeyboardInterrupt:
+            # SIGINT/SIGTERM mid-file — still emit what we have so far as settled.
+            pass
 
-        # finalize: emit one settled chunk for the whole utterance
+        # finalize: emit one settled chunk for whatever was transcribed
         final_text = streaming.result.text
-        emit({
-            "id": utterance_id,
-            "text": final_text,
-            "status": "complete",
-            "timestamp_local": now_local_iso(),
-        })
+        if final_text:
+            emit({
+                "id": utterance_id,
+                "text": final_text,
+                "status": "complete",
+                "timestamp_local": now_local_iso(),
+            })
 
 
 def run_mic_mode(args: argparse.Namespace) -> None:
@@ -258,6 +277,7 @@ def run_mic_mode(args: argparse.Namespace) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
+    _install_sigterm_handler()
     if args.script:
         run_script_mode(args.script)
     elif args.audio:
