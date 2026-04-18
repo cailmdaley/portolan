@@ -714,6 +714,16 @@ let origins: ServerOrigin[] = []
 let selectedHex: { q: number; r: number } | null = null
 let mapActions: FrontendMapActions | null = null
 
+// Register portolan state getters with the vellum mount layer so the
+// annotation-action handlers (send-to-worker, save-as-fiber) can resolve a
+// worker session and city path for any open file. See annotation-actions.
+void vellumMountPromise.then(({ setPortolanMountContext }) => {
+  setPortolanMountContext({
+    getSessions: () => sessions,
+    getCities: () => cities,
+  })
+})
+
 // Move mode: when set, next click will move this city to that hex
 let movingCityId: string | null = null
 

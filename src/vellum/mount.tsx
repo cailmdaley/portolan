@@ -22,11 +22,152 @@ import {
   FileViewerModal,
   FileViewerPage,
   WorkspaceMount,
+  type Annotation,
+  type AnnotationAction,
   type FiberContent,
   type GraphNode,
 } from 'vellum'
 import 'vellum/css'
 import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
+
+const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
+
+/**
+ * Minimal shape of portolan frontend state this file needs to route annotation
+ * actions. main.ts registers getters that read the module-scoped `sessions`
+ * and `cities` lists; the closures see the latest values after every WS
+ * state update.
+ *
+ * Kept intentionally narrow: only the fields the action handlers actually
+ * consume. Keeps the type surface decoupled from `src/state/types.ts` so
+ * this mount layer doesn't drag the whole state graph into vellum.
+ */
+export interface PortolanMountContext {
+  getSessions: () => Array<{ id: string; cityId: string | null; originId: string }>
+  getCities: () => Array<{ id: string; path: string; originId: string }>
+}
+
+let mountContext: PortolanMountContext | null = null
+
+/**
+ * Install the portolan state getters that the annotation-action handlers
+ * defined below need in order to pick a worker to send to, or resolve the
+ * city path for `felt add`. Call once after the frontend state sync is
+ * wired up. Null-safe: if no context is registered, actions degrade to
+ * create-new-worker for /send-annotations and omit `cityPath` for
+ * /file-as-fiber (the server then derives cityPath from filePath).
+ */
+export function setPortolanMountContext(ctx: PortolanMountContext | null): void {
+  mountContext = ctx
+}
+
+function pickWorkerId(cityId: string | undefined, originId: string): string | null {
+  if (!cityId || !mountContext) return null
+  const workers = mountContext.getSessions().filter(
+    (s) => s.cityId === cityId && s.originId === originId,
+  )
+  return workers[0]?.id ?? null
+}
+
+function resolveCityPath(cityId: string | undefined, originId: string): string | null {
+  if (!cityId || !mountContext) return null
+  const city = mountContext.getCities().find(
+    (c) => c.id === cityId && c.originId === originId,
+  )
+  return city?.path ?? null
+}
+
+async function sendAnnotationToWorker(
+  path: string,
+  originId: string,
+  cityId: string | undefined,
+  annotation: Annotation,
+): Promise<void> {
+  const workerId = pickWorkerId(cityId, originId)
+  const body: Record<string, unknown> = {
+    filePath: path,
+    originId,
+    annotations: [annotation],
+  }
+  if (workerId) body.workerId = workerId
+  else body.createNewWorker = true
+  const res = await fetch(`${API_BASE}/send-annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    console.error('[annotation-actions] send-to-worker failed', res.status, detail)
+  }
+}
+
+async function saveAnnotationAsFiber(
+  path: string,
+  originId: string,
+  cityId: string | undefined,
+  annotation: Annotation,
+): Promise<void> {
+  const filename = path.split('/').pop() ?? path
+  const title = `Note on ${filename}`
+  const lineRef = annotation.line
+    ? annotation.endLine && annotation.endLine !== annotation.line
+      ? ` (L${annotation.line}-${annotation.endLine})`
+      : ` (L${annotation.line})`
+    : ''
+  const quoted = annotation.originalText ?? annotation.selectedText ?? ''
+  const bodyLines = [`${path}${lineRef}`, '']
+  if (quoted) {
+    for (const line of quoted.split('\n')) bodyLines.push(`> ${line}`)
+    bodyLines.push('')
+  }
+  bodyLines.push(annotation.comment)
+  const cityPath = resolveCityPath(cityId, originId) ?? undefined
+  const res = await fetch(`${API_BASE}/file-as-fiber`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filePath: path,
+      originId,
+      cityPath,
+      title,
+      body: bodyLines.join('\n'),
+      kind: 'note',
+    }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    console.error('[annotation-actions] save-as-fiber failed', res.status, detail)
+  }
+}
+
+/**
+ * Build the two portolan annotation actions bound to a specific file mount.
+ * Each mount call (modal, surface, inline) captures its own `{path, originId,
+ * cityId}` so the handler knows where the annotation lives. The actions
+ * read `mountContext` lazily on invoke — not on build — so they always see
+ * the latest worker/city state.
+ */
+function portolanAnnotationActions(args: {
+  path: string
+  originId: string
+  cityId?: string
+}): AnnotationAction[] {
+  return [
+    {
+      id: 'send-to-worker',
+      label: 'Send',
+      title: 'Send to worker',
+      onInvoke: (ann) => sendAnnotationToWorker(args.path, args.originId, args.cityId, ann),
+    },
+    {
+      id: 'save-as-fiber',
+      label: 'Fiber',
+      title: 'Save as fiber',
+      onInvoke: (ann) => saveAnnotationAsFiber(args.path, args.originId, args.cityId, ann),
+    },
+  ]
+}
 
 export interface MountFileViewerOptions {
   container: HTMLElement
@@ -60,6 +201,11 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
             cacheBust={opts.cacheBust}
             editable={opts.editable}
             jumpToLine={opts.jumpToLine}
+            annotationActions={portolanAnnotationActions({
+              path: opts.path,
+              originId: opts.originId ?? 'local',
+              cityId: opts.cityId,
+            })}
           />
         </AdapterProvider>
       </StrictMode>,
@@ -120,6 +266,11 @@ export function mountVellumFileSurface(
             originId={next.originId}
             editable={next.editable}
             jumpToLine={next.jumpToLine}
+            annotationActions={portolanAnnotationActions({
+              path: next.path,
+              originId: next.originId ?? 'local',
+              cityId: next.cityId,
+            })}
           />
         </AdapterProvider>
       </StrictMode>,
@@ -178,6 +329,11 @@ export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHand
           cityId={opts.cityId}
           editable={opts.editable}
           jumpToLine={opts.jumpToLine}
+          annotationActions={portolanAnnotationActions({
+            path: opts.path,
+            originId: opts.originId ?? 'local',
+            cityId: opts.cityId,
+          })}
           onClose={close}
         />
       </AdapterProvider>
