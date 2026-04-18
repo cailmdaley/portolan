@@ -13,10 +13,9 @@ import { homedir } from 'os';
 import { basename, join } from 'path';
 import type { TmuxSessionTarget } from './TmuxSessionMessenger.js';
 import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
-import {
-  type TranscriptSource,
-  type ParakeetTranscriptSourceOptions,
-  ParakeetTranscriptSource,
+import type {
+  TranscriptSource,
+  ParakeetTranscriptSourceOptions,
 } from './ParakeetTranscriptSource.js';
 
 export interface MeetingBridgeTarget extends TmuxSessionTarget {
@@ -128,8 +127,19 @@ export class MeetingBridge {
     this.baseDir = options.baseDir ?? join(homedir(), '.portolan', 'meetings');
     this.latestStatePath = join(this.baseDir, 'latest-meeting.json');
     this.messenger = options.messenger ?? new TmuxSessionMessenger();
+    // The default createParakeetSource throws rather than spawning a real
+    // daemon. Production wires in the real factory at construction time
+    // (see server/src/index.ts). Tests that hit meeting start must inject a
+    // fake. This guardrail exists because leaked parakeet-mlx daemons have
+    // OOM'd the host twice: each loads ~2–3 GB, and a forgotten mock in even
+    // one test can spawn ~20 of them across a run.
     this.sourceFactory = {
-      createParakeetSource: (parakeetOptions, callbacks) => new ParakeetTranscriptSource(parakeetOptions, callbacks),
+      createParakeetSource: () => {
+        throw new Error(
+          'MeetingBridge.createParakeetSource not injected — refusing to spawn a real Parakeet daemon. '
+            + 'Production wires the factory in index.ts; tests must pass sourceFactory.createParakeetSource.',
+        );
+      },
       ...options.sourceFactory,
     };
     mkdirSync(this.baseDir, { recursive: true });

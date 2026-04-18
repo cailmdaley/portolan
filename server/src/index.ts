@@ -21,6 +21,7 @@ import { HttpApi } from './HttpApi.js';
 import { KittyIntegration } from './KittyIntegration.js';
 import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
 import { MeetingBridge } from './MeetingBridge.js';
+import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
 import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
@@ -46,7 +47,12 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
-const meetingBridge = new MeetingBridge();
+const meetingBridge = new MeetingBridge({
+  sourceFactory: {
+    createParakeetSource: (parakeetOptions, callbacks) =>
+      new ParakeetTranscriptSource(parakeetOptions, callbacks),
+  },
+});
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();

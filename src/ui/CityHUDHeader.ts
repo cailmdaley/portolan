@@ -345,7 +345,7 @@ export class CityHUDHeader {
             <span>${cityMeeting.promotedCandidateEventCount} promoted</span>
             <span>${cityMeeting.retrievalRequestCount} retrieval request${cityMeeting.retrievalRequestCount === 1 ? '' : 's'}</span>
             <span>${cityMeeting.retrievalEvidenceCount} evidence pull${cityMeeting.retrievalEvidenceCount === 1 ? '' : 's'}</span>
-            <span>${escapeHtml(this.describeMeetingSourceType(cityMeeting.sourceType))}</span>
+            <span>parakeet (live mic)</span>
           </div>
           ${this.renderMeetingBrief(cityMeeting)}
           ${this.renderMeetingIngressHint(cityMeeting)}
@@ -464,7 +464,7 @@ export class CityHUDHeader {
       lines.push(`
         <div class="hud-meeting-card">
           <div class="hud-meeting-meta">
-            <span>${meetingElsewhere ? 'another meeting is active elsewhere; starting here will replace it' : 'start a Parakeet live-mic bridge, a VoiceInk bridge, or a manual HTTP ingress run on a worker'}</span>
+            <span>${meetingElsewhere ? 'another meeting is active elsewhere; starting here will replace it' : 'start a Parakeet live-mic meeting on a worker'}</span>
           </div>
           <div class="hud-meeting-actions">
             ${this.renderMeetingStartButtons(buttonsDisabled)}
@@ -481,14 +481,8 @@ export class CityHUDHeader {
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         const workerId = button.dataset.workerId
-        const raw = button.dataset.sourceType
-        const sourceType: ServerMeetingRunState['sourceType'] = raw === 'manual'
-          ? 'manual'
-          : raw === 'parakeet'
-            ? 'parakeet'
-            : 'voiceink'
         if (!workerId || this.meetingActionInFlight) return
-        void this.startMeeting(workerId, sourceType)
+        void this.startMeeting(workerId)
       })
     }
 
@@ -687,40 +681,18 @@ export class CityHUDHeader {
   private renderMeetingStartButtons(disabledAttr: string): string {
     return this.cityWorkers
       .map(session => `
-        <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" data-source-type="parakeet" ${disabledAttr}>Parakeet → ${escapeHtml(session.name)}</button>
-        <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" data-source-type="voiceink" ${disabledAttr}>VoiceInk → ${escapeHtml(session.name)}</button>
-        <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" data-source-type="manual" ${disabledAttr}>Manual → ${escapeHtml(session.name)}</button>
+        <button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" ${disabledAttr}>Start meeting → ${escapeHtml(session.name)}</button>
       `)
       .join('')
-  }
-
-  private describeMeetingSourceType(sourceType: ServerMeetingRunState['sourceType']): string {
-    if (sourceType === 'manual') return 'manual ingress'
-    if (sourceType === 'parakeet') return 'parakeet (live mic)'
-    return 'voiceink'
   }
 
   private renderMeetingIngressHint(meeting: ServerMeetingRunState): string {
     if (meeting.status !== 'running') {
       return ''
     }
-    if (meeting.sourceType === 'manual') {
-      return `
-        <div class="hud-meeting-provenance-empty">
-          Manual ingress is active. Send transcript chunks to <code>POST /meeting-bridge/chunk</code> or <code>POST /meeting-bridge/chunks</code>.
-        </div>
-      `
-    }
-    if (meeting.sourceType === 'parakeet') {
-      return `
-        <div class="hud-meeting-provenance-empty">
-          Parakeet live mic ingress is active. Streaming transcripts will arrive here as you speak; raw mic audio is archived to <code>audio.wav</code> alongside <code>transcript.jsonl</code> for post-hoc replay.
-        </div>
-      `
-    }
     return `
       <div class="hud-meeting-provenance-empty">
-        VoiceInk ingress is active. Completed transcript rows will be bridged into this worker automatically.
+        Parakeet live mic ingress is active. Streaming transcripts will arrive here as you speak; raw mic audio is archived to <code>audio.wav</code> alongside <code>transcript.jsonl</code> for post-hoc replay.
       </div>
     `
   }
@@ -1152,7 +1124,7 @@ export class CityHUDHeader {
       && meeting.originId === currentCity.originId
   }
 
-  private async startMeeting(workerId: string, sourceType: ServerMeetingRunState['sourceType'] = 'voiceink'): Promise<void> {
+  private async startMeeting(workerId: string): Promise<void> {
     this.meetingActionInFlight = true
     this.renderMeeting()
     try {
@@ -1161,7 +1133,7 @@ export class CityHUDHeader {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ workerId, sourceType }),
+        body: JSON.stringify({ workerId }),
       })
 
       if (!response.ok) {
@@ -1169,12 +1141,7 @@ export class CityHUDHeader {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const sourceLabel = sourceType === 'manual'
-        ? 'manual meeting ingress'
-        : sourceType === 'parakeet'
-          ? 'parakeet live mic ingress'
-          : 'VoiceInk meeting bridge'
-      window.alert(`Failed to start ${sourceLabel}: ${message}`)
+      window.alert(`Failed to start meeting bridge: ${message}`)
     } finally {
       this.meetingActionInFlight = false
       this.renderMeeting()
