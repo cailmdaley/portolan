@@ -2558,8 +2558,7 @@
       }
 
       .hud-meeting-time,
-      .hud-meeting-meta,
-      .hud-meeting-empty {
+      .hud-meeting-meta {
         font-size: var(--hud-font-sm);
         color: var(--ink-faded);
       }
@@ -2581,117 +2580,6 @@
         line-height: 1.3;
       }
 
-      .hud-meeting-brief {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        padding: 6px 7px;
-        border: 1px solid rgba(120, 96, 64, 0.14);
-        border-radius: 5px;
-        background:
-          linear-gradient(180deg, rgba(255, 252, 246, 0.86), rgba(247, 241, 232, 0.78));
-      }
-
-      .hud-meeting-brief-section,
-      .hud-meeting-brief-narrative {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .hud-meeting-brief-item {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding-left: 8px;
-        border-left: 2px solid rgba(154, 123, 53, 0.28);
-      }
-
-      .hud-meeting-thread {
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-        padding: 6px 7px;
-        border: 1px solid rgba(120, 96, 64, 0.14);
-        border-radius: 5px;
-        background: rgba(255, 252, 246, 0.72);
-      }
-
-      .hud-meeting-thread-item {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding-left: 8px;
-        border-left: 2px solid rgba(120, 96, 64, 0.16);
-      }
-
-      .hud-meeting-thread-item.selectable {
-        cursor: pointer;
-        padding: 5px 6px 5px 8px;
-        margin-left: -6px;
-        border-radius: 5px;
-        transition: background 120ms, border-color 120ms, box-shadow 120ms;
-      }
-
-      .hud-meeting-thread-item.selectable:hover,
-      .hud-meeting-thread-item.selectable:focus {
-        outline: none;
-        background: rgba(90, 123, 123, 0.08);
-      }
-
-      .hud-meeting-thread-item.selected {
-        background: rgba(90, 123, 123, 0.12);
-        box-shadow: inset 0 0 0 1px rgba(90, 123, 123, 0.16);
-      }
-
-      .hud-meeting-thread-transcript {
-        border-left-color: rgba(90, 123, 123, 0.42);
-      }
-
-      .hud-meeting-thread-update {
-        border-left-color: rgba(138, 85, 72, 0.42);
-      }
-
-      .hud-meeting-thread-candidate {
-        border-left-color: rgba(154, 123, 53, 0.42);
-      }
-
-      .hud-meeting-thread-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 8px;
-        font-family: var(--font-mono);
-        font-size: var(--hud-font-xs);
-        color: var(--ink-faded);
-      }
-
-      .hud-meeting-thread-lane {
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--ink-light);
-      }
-
-      .hud-meeting-thread-select {
-        margin-left: auto;
-        color: var(--verdigris);
-      }
-
-      .hud-meeting-thread-text {
-        font-size: var(--hud-font-sm);
-        color: var(--ink-body);
-        line-height: 1.35;
-        white-space: pre-wrap;
-      }
-
-      .hud-meeting-update-preview {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        font-size: var(--hud-font-sm);
-        color: var(--ink-body);
-        line-height: 1.3;
-      }
-
       .hud-meeting-update-label {
         font-family: var(--font-main);
         font-size: var(--hud-font-xs);
@@ -2707,107 +2595,35 @@
         line-height: 1.3;
       }
 
-      .hud-meeting-update {
+      .hud-meeting-picker {
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        padding-top: 2px;
-        border-top: 1px solid rgba(120, 96, 64, 0.12);
-      }
-
-      .hud-meeting-candidate-controls {
-        display: flex;
-        justify-content: flex-start;
-      }
-
-      .hud-meeting-candidate-kind,
-      .hud-meeting-update-kind {
-        max-width: 100%;
-        border: 1px solid rgba(120, 96, 64, 0.24);
-        border-radius: 999px;
-        background: rgba(255, 252, 246, 0.92);
-        color: var(--ink-body);
-        font-family: var(--font-mono);
-        font-size: var(--hud-font-xs);
-        padding: 4px 10px;
-      }
-
-      .hud-meeting-candidate-title {
-        width: 100%;
-        border: 1px solid rgba(120, 96, 64, 0.24);
+        gap: 8px;
+        padding: 7px 8px;
+        border: 1px solid rgba(120, 96, 64, 0.2);
         border-radius: 6px;
-        background: rgba(255, 252, 246, 0.92);
-        color: var(--ink-body);
-        font-family: var(--font-main);
-        font-size: var(--hud-font-sm);
-        line-height: 1.35;
-        padding: 7px 9px;
-        box-sizing: border-box;
+        background: rgba(255, 252, 246, 0.82);
       }
 
-      .hud-meeting-provenance {
+      .hud-meeting-picker-group {
         display: flex;
         flex-direction: column;
         gap: 4px;
-        padding: 6px 7px;
-        border: 1px solid rgba(120, 96, 64, 0.14);
-        border-radius: 6px;
-        background: rgba(255, 252, 246, 0.72);
       }
 
-      .hud-meeting-provenance-row {
+      .hud-meeting-picker-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      .hud-meeting-picker-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-      }
-
-      .hud-meeting-provenance-selection,
-      .hud-meeting-provenance-empty {
         font-size: var(--hud-font-sm);
-        line-height: 1.3;
-      }
-
-      .hud-meeting-provenance-selection {
-        color: var(--ink-body);
-      }
-
-      .hud-meeting-provenance-empty {
         color: var(--ink-faded);
-      }
-
-      .hud-meeting-update-input {
-        width: 100%;
-        min-height: 64px;
-        resize: vertical;
-        border: 1px solid rgba(120, 96, 64, 0.24);
-        border-radius: 6px;
-        background: rgba(255, 252, 246, 0.92);
-        color: var(--ink-body);
-        font-family: var(--font-main);
-        font-size: var(--hud-font-sm);
-        line-height: 1.35;
-        padding: 8px 9px;
-        box-sizing: border-box;
-      }
-
-      .hud-meeting-update-input:focus {
-        outline: none;
-        border-color: rgba(74, 98, 88, 0.42);
-        box-shadow: 0 0 0 1px rgba(90, 123, 123, 0.18);
-      }
-
-      .hud-meeting-candidate-title:focus,
-      .hud-meeting-candidate-kind:focus,
-      .hud-meeting-update-kind:focus {
-        outline: none;
-        border-color: rgba(74, 98, 88, 0.42);
-        box-shadow: 0 0 0 1px rgba(90, 123, 123, 0.18);
-      }
-
-      .hud-meeting-update-actions {
-        display: flex;
-        justify-content: flex-end;
       }
 
       .hud-meeting-actions {
