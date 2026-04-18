@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { kindFromPath, LayoutStore, slugForSource, type PinExtras, type PinMeta } from '../LayoutStore.js';
@@ -183,8 +183,55 @@ describe('LayoutStore', () => {
     expect(kindFromPath('foo.png')).toBe('image');
     expect(kindFromPath('foo.svg')).toBe('image');
     expect(kindFromPath('foo.html')).toBe('html');
-    expect(kindFromPath('foo.md')).toBe('markdown');
+    // `text` is the superset for line-oriented files vellum hosts in
+    // CodeMirror — markdown, source, config. See [[card-modal-parity]].
+    expect(kindFromPath('foo.md')).toBe('text');
+    expect(kindFromPath('foo.markdown')).toBe('text');
+    expect(kindFromPath('foo.tex')).toBe('text');
+    expect(kindFromPath('foo.py')).toBe('text');
+    expect(kindFromPath('foo.ts')).toBe('text');
+    expect(kindFromPath('foo.tsx')).toBe('text');
+    expect(kindFromPath('foo.txt')).toBe('text');
+    expect(kindFromPath('foo.json')).toBe('text');
+    expect(kindFromPath('foo.yaml')).toBe('text');
+    expect(kindFromPath('foo.toml')).toBe('text');
+    expect(kindFromPath('foo.sh')).toBe('text');
+    expect(kindFromPath('foo.smk')).toBe('text');
+    // Unknown extensions stay `other` — the card shell falls back to the link
+    // stub rather than mounting CodeMirror over mystery bytes.
     expect(kindFromPath('Makefile')).toBe('other');
+    expect(kindFromPath('foo.bin')).toBe('other');
+    expect(kindFromPath('foo.dat')).toBe('other');
+  });
+
+  it('migrates legacy `markdown` kind to `text` on read', () => {
+    // Simulate a layout written before the rename: raw JSON with kind="markdown"
+    // on disk. Fresh store reads → kind should surface as "text".
+    const layoutsDir = join(TEST_DIR, 'layouts');
+    mkdirSync(layoutsDir, { recursive: true });
+    const legacy = {
+      version: 1,
+      cityId: 'city-a',
+      cityKey: 'local:/legacy',
+      pins: [
+        {
+          slug: 'file-legacy',
+          x: 1,
+          z: 2,
+          pinnedAt: 123,
+          kind: 'markdown',
+          source: { originId: 'local', path: '/abs/notes.md' },
+        },
+      ],
+    };
+    const legacyFile = join(layoutsDir, 'city-a.json');
+    writeFileSync(legacyFile, JSON.stringify(legacy, null, 2), 'utf-8');
+
+    const store = makeStore();
+    const pins = store.getPins('city-a');
+    expect(pins).toHaveLength(1);
+    expect(pins[0].kind).toBe('text');
+    expect(pins[0].source).toEqual({ originId: 'local', path: '/abs/notes.md' });
   });
 
   it('persists width/height and preserves them across position-only writes', () => {

@@ -1,20 +1,20 @@
 // DomPinLayer.ts — unified DOM overlay for every pinned card, fiber and file.
 //
 // Real DOM nodes anchored to world-space `{x, z}` and reprojected each frame
-// via `Camera.worldToScreen`. Fiber pins mount vellum's FiberCard; markdown
-// pins mount vellum's FileViewerPage; pdf/html render into an iframe; images
-// into an <img>; other kinds fall back to a link card.
+// via `Camera.worldToScreen`. Fiber pins mount vellum's FiberCard; text pins
+// mount vellum's FileViewerPage (same surface as the modal); pdf/html render
+// into an iframe; images into an <img>; other kinds fall back to a link card.
 //
 // Sits in a sibling overlay above the canvas. Wrapper is `pointer-events: none`
 // so empty space falls through to the map; each pin element opts back in to
 // `pointer-events: auto`. `PinRenderer` (three.js fiber cards) has been
-// retired — all kinds route here. See fiber `tapestry-dissolves`.
+// retired — all kinds route here. See `tapestry-dissolves`, `card-modal-parity`.
 
 import type { Camera } from './Camera'
 import type { Pin, PinKind } from '../state/layoutClient'
 
 const DOM_KINDS: ReadonlySet<PinKind> = new Set([
-  'fiber', 'pdf', 'html', 'image', 'markdown', 'other',
+  'fiber', 'pdf', 'html', 'image', 'text', 'other',
 ])
 
 export type FiberStatus = 'open' | 'active' | 'closed'
@@ -41,7 +41,7 @@ const REFERENCE_ZOOM = 8
 interface KindSize { width: number; height: number }
 const DEFAULT_SIZE: Record<PinKind, KindSize> = {
   fiber: { width: 320, height: 320 },
-  markdown: { width: 420, height: 420 },
+  text: { width: 420, height: 420 },
   pdf: { width: 320, height: 420 },
   html: { width: 420, height: 300 },
   image: { width: 320, height: 320 },
@@ -57,8 +57,11 @@ export function isDomPinKind(pin: Pin): boolean {
 
 /**
  * Mount a vellum file surface (FileViewerPage) into a host container. Optional
- * — when provided, markdown pins render their content inline via vellum
- * instead of falling back to the link-card stub. See [[file-view-as-floating-card]].
+ * — when provided, text pins render their content inline via vellum instead of
+ * falling back to the link-card stub. Same `editable`/`jumpToLine` surface the
+ * modal path uses, so the card is "the modal pinned to a map coordinate" —
+ * same edit, save, annotations, jump-to-line. See [[card-modal-parity]] and
+ * [[file-view-as-floating-card]].
  */
 export interface VellumSurfaceMount {
   unmount(): void
@@ -71,7 +74,13 @@ export interface VellumSurfaceMount {
 
 export type MountVellumFileSurface = (
   container: HTMLElement,
-  opts: { path: string; originId?: string; cityId?: string },
+  opts: {
+    path: string
+    originId?: string
+    cityId?: string
+    editable?: boolean
+    jumpToLine?: number
+  },
 ) => VellumSurfaceMount
 
 /**
@@ -351,12 +360,17 @@ export class DomPinLayer {
         // See fiber-pin-title-duplication.
         hideTitle: true,
       })
-    } else if (pin.kind === 'markdown' && pin.source?.path && this.mountVellumSurface) {
+    } else if (pin.kind === 'text' && pin.source?.path && this.mountVellumSurface) {
       inner = renderVellumShell()
+      // Card ↔ modal parity: the card mounts the same vellum FileViewerPage as
+      // the modal and must expose the same edit/save surface. `openFile()` in
+      // main.ts defaults modals to `editable: true`; mirror that here so cards
+      // aren't a read-only second-class citizen. See [[card-modal-parity]].
       vellumMount = this.mountVellumSurface(inner, {
         path: pin.source.path,
         originId: pin.source.originId,
         cityId: this.cityIdFor?.(),
+        editable: true,
       })
     } else {
       inner = renderInner(pin, url)
@@ -970,8 +984,9 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
     return img
   }
 
-  // markdown / other → simple link card. Markdown isn't rendered inline (yet);
-  // the user sees a labeled card and can click through to open it.
+  // text / other → simple link card. This path is the fallback: the text-kind
+  // primary path mounts vellum's FileViewerPage inline via `mountVellumSurface`
+  // (see build()); we only hit it when the host didn't wire the vellum mount.
   return renderLinkCard(pin, url)
 }
 

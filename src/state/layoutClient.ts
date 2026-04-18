@@ -6,8 +6,10 @@ export interface PinPosition {
   z: number
 }
 
-/** Content classification — drives renderer dispatch in DomPinLayer. */
-export type PinKind = 'fiber' | 'markdown' | 'pdf' | 'image' | 'html' | 'other'
+/** Content classification — drives renderer dispatch in DomPinLayer. `text` is
+ *  the superset for anything vellum hosts in CodeMirror (markdown, source,
+ *  config); see server/src/LayoutStore.ts kindFromPath. */
+export type PinKind = 'fiber' | 'text' | 'pdf' | 'image' | 'html' | 'other'
 
 /** File-handle source: project-relative path + originId, OR an absolute URL.
  *  Absent for fiber-kind pins: the slug IS the fiber identifier. */

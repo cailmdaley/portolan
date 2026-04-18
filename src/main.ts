@@ -100,10 +100,11 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
-// DOM-overlay surface for all pin kinds — fiber, markdown, pdf, image, html,
+// DOM-overlay surface for all pin kinds — fiber, text, pdf, image, html,
 // other. Each pin is a real DOM node anchored to world space, reanchored per
-// frame via `camera.worldToScreen`. Fibers mount vellum's FiberCard; markdown
-// mounts vellum's FileViewerPage; the rest fall back to iframe/img/link.
+// frame via `camera.worldToScreen`. Fibers mount vellum's FiberCard; text pins
+// mount vellum's FileViewerPage (the same surface the modal uses — see
+// [[card-modal-parity]]); the rest fall back to iframe/img/link.
 // See tapestry-dissolves and [[file-view-as-floating-card]].
 const domPinLayer = new DomPinLayer({
   camera,
@@ -244,8 +245,9 @@ const domPinLayer = new DomPinLayer({
   onHover: (slug) => {
     cityPanel.setMapHoveredFiber(slug)
   },
-  // Lazy: vellum module is async-imported. Until it resolves, markdown pins
-  // fall back to the link-card stub. See [[file-view-as-floating-card]].
+  // Lazy: vellum module is async-imported. Until it resolves, text pins fall
+  // back to the link-card stub. See [[card-modal-parity]] for the
+  // card ↔ modal parity contract.
   mountVellumSurface: (container, opts) => {
     let unmounted = false
     let handle: { unmount(): void } | null = null
@@ -411,7 +413,7 @@ function fanOutRadius(pin: { kind?: PinKind; width?: number }): number {
  *  to keep fan-out geometry independent of the render layer's internals. */
 const DEFAULT_PIN_WIDTH: Record<PinKind, number> = {
   fiber: 320,
-  markdown: 420,
+  text: 420,
   pdf: 320,
   html: 420,
   image: 320,
@@ -485,13 +487,28 @@ async function spawnOrPulseCardAtCity(
   }
 }
 
+// Kept in sync with server/src/LayoutStore.ts `kindFromPath`. Client-side copy
+// because drop/paste needs to infer the kind before the pin hits the server.
+// The server is authoritative on accepted kinds — this mirror just primes the
+// request. See [[card-modal-parity]].
 function inferPinKindFromPath(path: string): PinKind | undefined {
-  const lower = path.toLowerCase()
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
-  if (lower.endsWith('.pdf')) return 'pdf'
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html'
-  if (/\.(png|jpe?g|gif|webp|svg|bmp)$/.test(lower)) return 'image'
-  return undefined
+  const ext = path.toLowerCase().split('.').pop() ?? ''
+  switch (ext) {
+    case 'pdf': return 'pdf'
+    case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg': case 'webp': case 'avif': case 'bmp':
+      return 'image'
+    case 'html': case 'htm': return 'html'
+    case 'md': case 'markdown': case 'mdx':
+    case 'tex':
+    case 'py': case 'ts': case 'tsx': case 'js': case 'jsx': case 'mjs': case 'cjs':
+    case 'txt':
+    case 'json': case 'yaml': case 'yml': case 'toml':
+    case 'sh': case 'bash': case 'zsh':
+    case 'smk':
+    case 'css': case 'scss':
+      return 'text'
+    default: return undefined
+  }
 }
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)

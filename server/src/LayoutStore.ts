@@ -20,12 +20,14 @@ export interface PinPosition {
 
 /**
  * What kind of content the pin points at — drives renderer dispatch on the
- * frontend. See [[pin-any-file-type]] and [[tapestry-dissolves]].
+ * frontend. `text` is the superset for anything line-oriented that vellum
+ * renders via CodeMirror + annotations (markdown, source, config). See
+ * [[pin-any-file-type]], [[card-modal-parity]], [[tapestry-dissolves]].
  */
-export type PinKind = 'fiber' | 'markdown' | 'pdf' | 'image' | 'html' | 'other';
+export type PinKind = 'fiber' | 'text' | 'pdf' | 'image' | 'html' | 'other';
 
 export const PIN_KINDS: readonly PinKind[] = [
-  'fiber', 'markdown', 'pdf', 'image', 'html', 'other',
+  'fiber', 'text', 'pdf', 'image', 'html', 'other',
 ];
 
 /**
@@ -263,17 +265,31 @@ export function slugForSource(source: PinSource): string | null {
 
 /**
  * Infer a pin kind from a path's extension. Caller is free to override (a
- * `.md` file under `.felt/` is a fiber, not generic markdown — that detail
- * isn't reachable from the extension alone).
+ * `.md` file under `.felt/` is a fiber, not generic text — that detail isn't
+ * reachable from the extension alone).
+ *
+ * `text` = line-oriented buffer that vellum can host in CodeMirror + annotate
+ * by line range. The whitelist is intentionally conservative: unknown
+ * extensions stay `other` (link-card fallback) rather than being greedily
+ * routed through a text editor over mystery bytes. Membership grows by
+ * deliberate addition. See [[card-modal-parity]].
  */
 export function kindFromPath(path: string): PinKind {
   const ext = path.toLowerCase().split('.').pop() ?? '';
   switch (ext) {
-    case 'md': case 'markdown': return 'markdown';
     case 'pdf': return 'pdf';
     case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg': case 'webp': case 'avif':
       return 'image';
     case 'html': case 'htm': return 'html';
+    case 'md': case 'markdown': case 'mdx':
+    case 'tex':
+    case 'py': case 'ts': case 'tsx': case 'js': case 'jsx': case 'mjs': case 'cjs':
+    case 'txt':
+    case 'json': case 'yaml': case 'yml': case 'toml':
+    case 'sh': case 'bash': case 'zsh':
+    case 'smk':
+    case 'css': case 'scss':
+      return 'text';
     default: return 'other';
   }
 }
@@ -295,8 +311,12 @@ function sanitizeSource(src: PinSource): PinSource | null {
 }
 
 function normalizeStoredPin(raw: Pin): Pin | null {
-  if (!raw.kind || !PIN_KINDS.includes(raw.kind)) return null;
-  const out: Pin = { slug: raw.slug, x: raw.x, z: raw.z, pinnedAt: raw.pinnedAt, kind: raw.kind };
+  // Migrate legacy `markdown` kind → `text`. Existing layouts on disk were
+  // written before `text` subsumed the markdown-only case; reads rewrite in
+  // place so persisted pins survive the rename. See [[card-modal-parity]].
+  const kind = (raw.kind as string) === 'markdown' ? ('text' as PinKind) : raw.kind;
+  if (!kind || !PIN_KINDS.includes(kind)) return null;
+  const out: Pin = { slug: raw.slug, x: raw.x, z: raw.z, pinnedAt: raw.pinnedAt, kind };
   if (raw.source) {
     const clean = sanitizeSource(raw.source);
     if (clean) out.source = clean;
