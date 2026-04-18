@@ -46,7 +46,7 @@ Real audio (downloads ~600MB the first time):
 
 ```
 /opt/homebrew/bin/python3.13 server/voice-ingress/parakeet_daemon.py \
-  --audio path/to/clip.wav --model mlx-community/parakeet-tdt-0.6b-v2
+  --audio path/to/clip.wav --model mlx-community/parakeet-tdt-0.6b-v3
 ```
 
 Live mic (will prompt for microphone permission on first run):

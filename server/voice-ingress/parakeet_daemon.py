@@ -59,7 +59,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     mode.add_argument("--audio", type=Path, help="WAV/MP3 file to stream through parakeet-mlx")
     mode.add_argument("--script", type=Path, help="JSONL chunk script to replay (test fixture mode)")
 
-    parser.add_argument("--model", default="mlx-community/parakeet-tdt-0.6b-v2",
+    parser.add_argument("--model", default="mlx-community/parakeet-tdt-0.6b-v3",
                         help="HuggingFace model id for parakeet-mlx (mic/audio modes)")
     parser.add_argument("--chunk-ms", type=int, default=500,
                         help="audio chunk size in milliseconds")
