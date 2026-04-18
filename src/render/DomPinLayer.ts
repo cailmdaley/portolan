@@ -602,19 +602,24 @@ export class DomPinLayer {
 
   /** Pointerdown on an edge handle → drag to resize one dimension.
    *
-   *  Model the card as an axis-aligned bounding box in world coordinates
-   *  (`minX, maxX, minZ, maxZ`). Dragging an edge moves exactly one of
-   *  those four bounds; the other three stay. Re-derive `(center, size)`
-   *  from the new box. This is the simplest correct form — no ratio
-   *  arithmetic, no compound center-shift, and the cursor→world mapping
-   *  goes through `Camera.screenToWorld` (same path chrome-drag uses).
+   *  Cards use *two decoupled coordinate systems*: their world-space
+   *  position (`pin.x`, `pin.z`) lives in the three.js camera's
+   *  coordinates, but their size is stored in "card world units"
+   *  (`entry.width`, `entry.height`) which render as CSS pixels scaled
+   *  by `zoomRatio = REFERENCE_ZOOM / cameraDistance`. These scales
+   *  disagree by a factor of roughly `canvas.width / (16*aspect)`.
    *
-   *  See constitution invariant 4. Commits via `onPinResized` and
-   *  `onPinMoved`; skipped if the host didn't provide `onPinResized`. */
+   *  Resize therefore needs TWO conversions:
+   *  - Size delta: `dxScreen / zoomRatio` (card-size scale).
+   *  - Center shift: half the cursor's *camera-world* delta from
+   *    `Camera.screenToWorld` (same path chrome-drag uses).
+   *
+   *  The opposite edge stays pinned in screen space. See constitution
+   *  invariant 4. */
   private attachResize(handle: HTMLElement, entry: DomPinEntry, edge: Edge): void {
     if (!this.onPinResized || !this.screenToWorld) return
     const axis: 'x' | 'z' = edge === 'e' || edge === 'w' ? 'x' : 'z'
-    const upper = edge === 'e' || edge === 's' // this edge sets the max bound
+    const sign = edge === 'e' || edge === 's' ? 1 : -1
 
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
@@ -622,25 +627,16 @@ export class DomPinLayer {
       const startY = event.clientY
       const startW = entry.width
       const startH = entry.height
-      // Initial bounds of the card in world space.
-      const initialMinX = entry.pin.x - startW / 2
-      const initialMaxX = entry.pin.x + startW / 2
-      const initialMinZ = entry.pin.z - startH / 2
-      const initialMaxZ = entry.pin.z + startH / 2
-      // Cursor-to-edge offset captured at pointerdown so the edge sits under
-      // the cursor without snapping to it on the first move.
+      const startPinX = entry.pin.x
+      const startPinZ = entry.pin.z
       const startCursor = this.screenToWorld!(startX, startY)
-      const edgeAtStart = axis === 'x'
-        ? (upper ? initialMaxX : initialMinX)
-        : (upper ? initialMaxZ : initialMinZ)
-      const cursorToEdge = edgeAtStart - (axis === 'x' ? startCursor.x : startCursor.z)
       let active = false
 
       const onMove = (ev: PointerEvent) => {
+        const dxScreen = ev.clientX - startX
+        const dyScreen = ev.clientY - startY
         if (!active) {
-          const dx = ev.clientX - startX
-          const dy = ev.clientY - startY
-          if (Math.hypot(dx, dy) < 2) return
+          if (Math.hypot(dxScreen, dyScreen) < 2) return
           active = true
           entry.el.classList.add('dom-pin--resizing')
           document.body.style.cursor = edgeCursor(edge)
@@ -648,24 +644,34 @@ export class DomPinLayer {
           // pin-hover and canvas interactions don't interfere mid-resize.
           document.body.classList.add('pin-dragging')
         }
+        const dScreen = axis === 'x' ? dxScreen : dyScreen
+        const ratio = this.zoomRatio()
+        const startSize = axis === 'x' ? startW : startH
+        const nextSize = clampSize(startSize + (sign * dScreen) / ratio)
+        // Fraction of the intended size change that actually landed after
+        // clamping — so when we bump against MIN_SIZE / MAX_SIZE the center
+        // stops tracking instead of marching on.
+        const intended = (sign * dScreen) / ratio
+        const fraction = intended !== 0 ? (nextSize - startSize) / intended : 0
         const cursor = this.screenToWorld!(ev.clientX, ev.clientY)
-        const edgeTarget = (axis === 'x' ? cursor.x : cursor.z) + cursorToEdge
+        const dCursorWorld = axis === 'x'
+          ? cursor.x - startCursor.x
+          : cursor.z - startCursor.z
 
-        let minX = initialMinX, maxX = initialMaxX, minZ = initialMinZ, maxZ = initialMaxZ
         if (axis === 'x') {
-          if (upper) maxX = clampBound(edgeTarget, minX + MIN_SIZE, minX + MAX_SIZE)
-          else minX = clampBound(edgeTarget, maxX - MAX_SIZE, maxX - MIN_SIZE)
+          entry.width = nextSize
+          entry.pin = {
+            ...entry.pin,
+            x: startPinX + (dCursorWorld * fraction) / 2,
+            z: startPinZ,
+          }
         } else {
-          if (upper) maxZ = clampBound(edgeTarget, minZ + MIN_SIZE, minZ + MAX_SIZE)
-          else minZ = clampBound(edgeTarget, maxZ - MAX_SIZE, maxZ - MIN_SIZE)
-        }
-
-        entry.width = maxX - minX
-        entry.height = maxZ - minZ
-        entry.pin = {
-          ...entry.pin,
-          x: (minX + maxX) / 2,
-          z: (minZ + maxZ) / 2,
+          entry.height = nextSize
+          entry.pin = {
+            ...entry.pin,
+            x: startPinX,
+            z: startPinZ + (dCursorWorld * fraction) / 2,
+          }
         }
         this.position(entry)
       }
@@ -1326,8 +1332,4 @@ function clampSize(n: number): number {
   return Math.min(MAX_SIZE, Math.max(MIN_SIZE, n))
 }
 
-function clampBound(n: number, lo: number, hi: number): number {
-  if (!Number.isFinite(n)) return lo
-  return Math.min(hi, Math.max(lo, n))
-}
 
