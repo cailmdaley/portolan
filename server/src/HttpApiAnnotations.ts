@@ -1,11 +1,12 @@
-import { exec, execFile, execFileSync, execSync } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { IncomingMessage, ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
-import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
+import { shellEscape } from './ShellPathUtils.js';
+import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -46,6 +47,7 @@ export class HttpApiAnnotations {
   private sessionLookup: SessionLookup | null = null;
   private onCreateNewWorker: ((cityPath: string, originId: string) => Promise<string>) | null = null;
   private onFocusSession: ((sessionId: string) => void) | null = null;
+  private tmuxMessenger = new TmuxSessionMessenger();
 
   constructor(options: HttpApiAnnotationsOptions) {
     this.cityLookup = options.cityLookup;
@@ -251,21 +253,12 @@ export class HttpApiAnnotations {
       : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
-      if (!isRemote) {
-        const exactSessionTarget = exactTmuxTarget(tmuxSession);
-        execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
-        execSync(`tmux paste-buffer -t ${exactSessionTarget}`, { timeout: 5000 });
-      } else {
-        if (!sshHost) {
-          this.sendJsonError(res, 404, 'Origin not found');
-          return;
-        }
-
-        // Remote: use bare session name (no = prefix) for tmux 2.7 compatibility
-        const remoteTarget = shellEscape(tmuxSession);
-        execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: formattedMessage, timeout: 10000 });
-        execFileSync('ssh', [sshHost, `tmux paste-buffer -t ${remoteTarget}`], { timeout: 10000 });
+      if (isRemote && !sshHost) {
+        this.sendJsonError(res, 404, 'Origin not found');
+        return;
       }
+
+      this.tmuxMessenger.send({ tmuxSession, sshHost }, formattedMessage);
 
       if (workerId && this.onFocusSession) {
         this.onFocusSession(workerId);

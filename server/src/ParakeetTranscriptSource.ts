@@ -1,5 +1,15 @@
 import { spawn } from 'child_process';
-import type { TranscriptSource, TranscriptSourceCallbacks } from './VoiceInkTranscriptSource.js';
+
+export interface TranscriptSourceCallbacks {
+  onChunk: (chunk: unknown) => void;
+  onError: (error: Error) => void;
+  onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+}
+
+export interface TranscriptSource {
+  start(): void;
+  stop(): void;
+}
 
 export interface ParakeetTranscriptSourceOptions {
   pythonPath?: string;

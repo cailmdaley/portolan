@@ -13,6 +13,7 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 interface SearchResult {
+  type: 'file' | 'dir';
   path: string;
   fullPath: string;
   line?: number;
@@ -148,8 +149,11 @@ export class WorkspaceBrowser {
 
     for (const line of lines) {
       if (mode === 'filename') {
-        const relativePath = line.startsWith('./') ? line.slice(2) : line;
+        const isDir = line.endsWith('/');
+        const cleanedPath = isDir ? line.slice(0, -1) : line;
+        const relativePath = cleanedPath.startsWith('./') ? cleanedPath.slice(2) : cleanedPath;
         results.push({
+          type: isDir ? 'dir' : 'file',
           path: relativePath,
           fullPath: `${cityPath}/${relativePath}`,
         });
@@ -159,6 +163,7 @@ export class WorkspaceBrowser {
       const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/);
       if (match) {
         results.push({
+          type: 'file',
           path: match[1],
           fullPath: `${cityPath}/${match[1]}`,
           line: parseInt(match[2], 10),
@@ -185,6 +190,7 @@ export class WorkspaceBrowser {
       if (this.hasFd) {
         proc = spawn('fd', [
           '--type', 'f',
+          '--type', 'd',
           '--follow',
           '--full-path',
           '--hidden',
@@ -197,7 +203,7 @@ export class WorkspaceBrowser {
           query,
         ], { cwd: cityPath });
       } else {
-        const cmd = `find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o -type f -print 2>/dev/null | grep -i '${safeQuery}' | head -50`;
+        const cmd = `find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o \\( -type f -o -type d \\) -print 2>/dev/null | while IFS= read -r path; do if [ -d "$path" ]; then printf '%s/\\n' "$path"; else printf '%s\\n' "$path"; fi; done | grep -i '${safeQuery}' | head -50`;
         proc = spawn('sh', ['-c', cmd], { cwd: cityPath });
       }
     } else if (this.hasRg) {
@@ -262,7 +268,7 @@ export class WorkspaceBrowser {
 
     let remoteCmd: string;
     if (mode === 'filename') {
-      remoteCmd = `(fd --type f --follow --full-path --hidden --no-ignore --exclude .git --exclude .felt --exclude node_modules --exclude __pycache__ --color never ${escapedQuery} 2>/dev/null || find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o -type f -print 2>/dev/null | grep -i '${safeQuery}') | head -50`;
+      remoteCmd = `(fd --type f --type d --follow --full-path --hidden --no-ignore --exclude .git --exclude .felt --exclude node_modules --exclude __pycache__ --color never ${escapedQuery} 2>/dev/null || find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o \\( -type f -o -type d \\) -print 2>/dev/null | while IFS= read -r path; do if [ -d "$path" ]; then printf '%s/\\n' "$path"; else printf '%s\\n' "$path"; fi; done | grep -i '${safeQuery}') | head -50`;
     } else {
       remoteCmd = `(rg --line-number --no-heading --color never --max-count 1 --follow --no-ignore --glob '!.git' --glob '!node_modules' --glob '!__pycache__' ${escapedQuery} 2>/dev/null || grep -Rn --include='*' -I '${safeQuery}' . --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=__pycache__ 2>/dev/null) | head -50`;
     }
@@ -390,7 +396,7 @@ export class WorkspaceBrowser {
   private async listRemoteDirectory(sshHost: string, targetPath: string): Promise<DirectoryEntry[]> {
     const escapedPath = shellEscape(targetPath);
     const fdScript = `cd ${escapedPath} && ((fd --follow --max-depth 1 --type d --color never . | sed 's|^\\./||;s|$|/' && fd --follow --max-depth 1 --type f --type l --color never . | sed 's|^\\./||') 2>/dev/null || true)`;
-    const lsScript = `cd ${escapedPath} && ls -1AF 2>/dev/null`;
+    const lsScript = `cd ${escapedPath} && ls -1ALF 2>/dev/null`;
 
     const parseEntries = (stdout: string): DirectoryEntry[] => {
       const entriesByName = new Map<string, DirectoryEntry>();

@@ -271,6 +271,7 @@ export function mountVellumFileSurface(
               originId: next.originId ?? 'local',
               cityId: next.cityId,
             })}
+            hideToolbar
           />
         </AdapterProvider>
       </StrictMode>,

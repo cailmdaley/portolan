@@ -1,3 +1,4 @@
+export declare function stableCityId(key: string): string;
 import type { GitStatus } from './GitStatusManager.js';
 export interface City {
     id: string;
@@ -88,6 +89,13 @@ export declare class CityManager {
      */
     getCityById(cityId: string): City | null;
     /**
+     * Public: cityKey for a known cityId. Returns the same normalized
+     * `${originId}:${path}` string that hashes to the cityId. Used by
+     * LayoutStore via HttpApiLayouts to record the key on each pin write,
+     * so a later orphan-detection pass can verify cityId = stableCityId(cityKey).
+     */
+    getCityKey(cityId: string): string | null;
+    /**
      * Make city key from originId and path.
      * For remote origins with a known sshHost, normalizes the key so different
      * login nodes (e.g., login05, login07) share the same city.
@@ -146,7 +154,7 @@ export declare class CityManager {
      */
     private isValidCityPosition;
     /**
-     * Detect if a city has claims (workflow/config or results/claims directories)
+     * Detect if a city has claims (workflow/config or results/tapestry directories)
      * Only works for local cities.
      */
     detectClaims(city: City): boolean;

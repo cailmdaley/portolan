@@ -26,7 +26,7 @@
     "katex": "^0.16.27",
     "marked": "^17.0.1",
     "marked-katex-extension": "^5.1.6",
-    "pdfjs-dist": "^5.4.624",
+    "pdfjs-dist": "^5.6.205",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.172.0",

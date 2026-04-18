@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import type { City } from './CityManager.js';
 import { cliProvider, getProvider } from './cli-provider.js';
 import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
+import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 
 interface CityLookup {
   findCityByPath(path: string): City | undefined;
@@ -20,6 +21,7 @@ export class KittyHandoff {
   private getSocket: () => string;
   private getSshAuthSockEnv: () => string;
   private activateKitty: () => void;
+  private tmuxMessenger = new TmuxSessionMessenger();
 
   constructor(options: KittyHandoffOptions) {
     this.cityLookup = options.cityLookup;
@@ -114,18 +116,8 @@ export class KittyHandoff {
 
     const message = `This session was opened to work on this fiber:\n\n\`\`\`\n${fiberContent}\n\`\`\``;
 
-    const exactSessionTarget = exactTmuxTarget(tmuxSession);
-
     try {
-      if (sshHost) {
-        execSync(`ssh ${sshHost} "tmux load-buffer -"`, { input: message, timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux paste-buffer -t ${exactSessionTarget}"`, { timeout: 10000 });
-        execSync(`ssh ${sshHost} "tmux send-keys -t ${exactSessionTarget} Enter"`, { timeout: 10000 });
-      } else {
-        execSync('tmux load-buffer -', { input: message, timeout: 5000 });
-        execSync(`tmux paste-buffer -t ${exactSessionTarget}`, { timeout: 5000 });
-        execSync(`tmux send-keys -t ${exactSessionTarget} Enter`, { timeout: 5000 });
-      }
+      this.tmuxMessenger.send({ tmuxSession, sshHost }, message, { pressEnter: true });
       console.log(`[Handoff] Sent fiber context for ${fiberId}`);
     } catch (error) {
       console.error('[Handoff] Failed to send fiber context:', error);

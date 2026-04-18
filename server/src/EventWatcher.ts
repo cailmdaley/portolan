@@ -19,6 +19,8 @@ import {
   PortolanEvent,
 } from './EventWatcherSessionState.js';
 
+export type { ActivityEvent } from './EventWatcherSessionState.js';
+
 type StatusChangeCallback = (tmuxSession: string, status: 'idle' | 'working') => void;
 type ActivityCallback = (activity: ActivityEvent) => void;
 

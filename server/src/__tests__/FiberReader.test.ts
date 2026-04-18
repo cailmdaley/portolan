@@ -4,6 +4,13 @@ import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+/** Helper: create a directory-based fiber (slug/slug.md) */
+function writeFiber(feltDir: string, slug: string, content: string) {
+  const dir = join(feltDir, slug);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${slug}.md`), content);
+}
+
 describe('FiberReader', () => {
   let testDir: string;
 
@@ -36,38 +43,26 @@ describe('FiberReader', () => {
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      // Open fiber (status: open)
-      writeFileSync(
-        join(feltDir, 'fiber1.md'),
-        `---
+      writeFiber(feltDir, 'fiber1', `---
 status: open
 kind: task
 ---
 # Open fiber
-`
-      );
+`);
 
-      // Closed fiber
-      writeFileSync(
-        join(feltDir, 'fiber2.md'),
-        `---
+      writeFiber(feltDir, 'fiber2', `---
 status: closed
 kind: task
 ---
 # Closed fiber
-`
-      );
+`);
 
-      // Another open fiber (status: active)
-      writeFileSync(
-        join(feltDir, 'fiber3.md'),
-        `---
+      writeFiber(feltDir, 'fiber3', `---
 status: active
 kind: decision
 ---
 # Active fiber
-`
-      );
+`);
 
       const count = await countOpenFibers(testDir);
       expect(count).toBe(2); // fiber1 and fiber3
@@ -77,53 +72,45 @@ kind: decision
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'no-status.md'),
-        `---
+      writeFiber(feltDir, 'no-status', `---
 kind: task
 ---
 # No status field
-`
-      );
+`);
 
       const count = await countOpenFibers(testDir);
-      expect(count).toBe(1); // Counted as open (null !== 'closed')
+      expect(count).toBe(1);
     });
 
     it('should count fibers without frontmatter as open', async () => {
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'no-frontmatter.md'),
-        `# Just content, no frontmatter
-`
-      );
+      writeFiber(feltDir, 'no-frontmatter', `# Just content, no frontmatter
+`);
 
       const count = await countOpenFibers(testDir);
-      expect(count).toBe(1); // Counted as open
+      expect(count).toBe(1);
     });
 
-    it('should ignore non-.md files', async () => {
+    it('should ignore non-fiber directories and loose files', async () => {
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'fiber.md'),
-        `---
+      writeFiber(feltDir, 'real-fiber', `---
 status: open
 ---
-# MD file
-`
-      );
+# Real fiber
+`);
 
-      writeFileSync(
-        join(feltDir, 'README.txt'),
-        'Not a fiber'
-      );
+      // Loose file (not in a directory) — should be ignored
+      writeFileSync(join(feltDir, 'myst.yml'), 'version: 1');
+
+      // Directory without matching slug.md — should be ignored
+      mkdirSync(join(feltDir, 'empty-dir'));
 
       const count = await countOpenFibers(testDir);
-      expect(count).toBe(1); // Only .md file
+      expect(count).toBe(1);
     });
 
     it('should handle various status values', async () => {
@@ -133,19 +120,15 @@ status: open
       const statuses = ['open', 'active', 'pending', 'blocked', 'closed', 'done'];
 
       statuses.forEach((status, i) => {
-        writeFileSync(
-          join(feltDir, `fiber${i}.md`),
-          `---
+        writeFiber(feltDir, `fiber${i}`, `---
 status: ${status}
 ---
 # Fiber ${i}
-`
-        );
+`);
       });
 
       const count = await countOpenFibers(testDir);
       // Only 'closed' is not counted
-      // open, active, pending, blocked, done = 5 (all except 'closed')
       expect(count).toBe(5);
     });
 
@@ -153,68 +136,32 @@ status: ${status}
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      // Valid fiber
-      writeFileSync(
-        join(feltDir, 'valid.md'),
-        `---
+      writeFiber(feltDir, 'valid', `---
 status: open
 ---
 # Valid
-`
-      );
+`);
 
-      // Malformed YAML (but our simple parser might still work for status)
-      writeFileSync(
-        join(feltDir, 'malformed.md'),
-        `---
+      writeFiber(feltDir, 'malformed', `---
 status: open
 badly: [formatted: yaml
 ---
 # Malformed
-`
-      );
+`);
 
-      // Should not crash
       const count = await countOpenFibers(testDir);
-      expect(count).toBeGreaterThanOrEqual(1); // At least the valid one
-    });
-
-    it('should handle files that cannot be read', async () => {
-      const feltDir = join(testDir, '.felt');
-      mkdirSync(feltDir);
-
-      // Valid fiber
-      writeFileSync(
-        join(feltDir, 'valid.md'),
-        `---
-status: open
----
-# Valid
-`
-      );
-
-      // Create a file but make it unreadable (chmod 000)
-      // Note: This might not work on all systems due to permissions
-      const unreadable = join(feltDir, 'unreadable.md');
-      writeFileSync(unreadable, 'content');
-
-      // Should not crash, should skip unreadable file
-      const count = await countOpenFibers(testDir);
-      expect(count).toBeGreaterThanOrEqual(1); // At least the valid one
+      expect(count).toBeGreaterThanOrEqual(1);
     });
 
     it('should handle status with quotes', async () => {
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'quoted.md'),
-        `---
+      writeFiber(feltDir, 'quoted', `---
 status: "open"
 ---
 # Quoted status
-`
-      );
+`);
 
       const count = await countOpenFibers(testDir);
       expect(count).toBe(1);
@@ -224,31 +171,25 @@ status: "open"
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'quoted-closed.md'),
-        `---
+      writeFiber(feltDir, 'quoted-closed', `---
 status: "closed"
 ---
 # Quoted closed status
-`
-      );
+`);
 
       const count = await countOpenFibers(testDir);
-      expect(count).toBe(0); // Should be 0, not 1
+      expect(count).toBe(0);
     });
 
     it('should handle status with extra whitespace', async () => {
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'whitespace.md'),
-        `---
+      writeFiber(feltDir, 'whitespace', `---
 status:   open
 ---
 # Extra whitespace
-`
-      );
+`);
 
       const count = await countOpenFibers(testDir);
       expect(count).toBe(1);
@@ -258,9 +199,7 @@ status:   open
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
-      writeFileSync(
-        join(feltDir, 'multi.md'),
-        `---
+      writeFiber(feltDir, 'multi', `---
 status: open
 ---
 # Content
@@ -268,11 +207,10 @@ status: open
 ---
 Not frontmatter
 ---
-`
-      );
+`);
 
       const count = await countOpenFibers(testDir);
-      expect(count).toBe(1); // Should only parse first frontmatter block
+      expect(count).toBe(1);
     });
   });
 });

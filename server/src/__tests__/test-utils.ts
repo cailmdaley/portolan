@@ -94,8 +94,9 @@ export async function httpRequest(
 
 // ── Fiber file writer ────────────────────────────────────────────────
 
-/** Write a fiber markdown file into a .felt directory. */
-export function writeFiber(feltDir: string, id: string, content: string): void {
-  if (!existsSync(feltDir)) mkdirSync(feltDir, { recursive: true });
-  writeFileSync(join(feltDir, `${id}.md`), content, 'utf-8');
+/** Write a directory-based fiber (slug/slug.md) into a .felt directory. */
+export function writeFiber(feltDir: string, slug: string, content: string): void {
+  const dir = join(feltDir, slug);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${slug}.md`), content, 'utf-8');
 }

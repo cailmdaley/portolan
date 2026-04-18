@@ -138,7 +138,6 @@ export class HttpApi {
    */
   setSessionLookup(lookup: SessionLookup): void {
     this.annotationsApi.setSessionLookup(lookup);
-    this.hooksRuntimeApi.setSessionLookup(lookup);
     this.meetingApi.setSessionLookup(lookup);
   }
 
@@ -158,7 +157,6 @@ export class HttpApi {
 
   setMeetingBridge(bridge: MeetingBridge): void {
     this.meetingApi.setMeetingBridge(bridge);
-    this.hooksRuntimeApi.setMeetingBridge(bridge);
   }
 
   setOnCreateNewWorker(fn: (cityPath: string, originId: string) => Promise<string>): void {
@@ -308,51 +306,6 @@ export class HttpApi {
 
     if (req.method === 'POST' && url.pathname === '/meeting-bridge/stop') {
       this.meetingApi.handleStop(res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/chunk') {
-      await this.meetingApi.handleChunk(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/chunks') {
-      await this.meetingApi.handleChunks(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/update') {
-      await this.meetingApi.handleUpdate(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/candidate') {
-      await this.meetingApi.handleCandidate(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/candidate/promote') {
-      await this.meetingApi.handlePromoteCandidate(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/brief/promote') {
-      await this.meetingApi.handlePromoteBrief(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/retrieval') {
-      await this.meetingApi.handleRetrieval(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/meeting-bridge/retrieval/evidence') {
-      await this.meetingApi.handleRetrievedEvidence(req, res);
-      return true;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/hook/assistant-turn') {
-      await this.hooksRuntimeApi.handleHookAssistantTurn(req, res);
       return true;
     }
 
