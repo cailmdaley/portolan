@@ -57,8 +57,8 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
 const MIN_SIZE = 120
 const MAX_SIZE = 1600
 
-type Corner = 'nw' | 'ne' | 'sw' | 'se'
-const CORNERS: readonly Corner[] = ['nw', 'ne', 'sw', 'se']
+type Edge = 'n' | 'e' | 's' | 'w'
+const EDGES: readonly Edge[] = ['n', 'e', 's', 'w']
 
 /** True if a pin should render via the DOM layer. All kinds route to DOM. */
 export function isDomPinKind(pin: Pin): boolean {
@@ -490,14 +490,14 @@ export class DomPinLayer {
         this.onPrimaryOpen!(entry.slug)
       })
     }
-    // Four resize handles, one per corner — dragging any of them resizes the
-    // card while the opposite corner stays pinned in world space. Handles sit
-    // above iframe event scope so pdf/html pins still catch the gesture. See
-    // constitution invariant 4.
-    for (const corner of CORNERS) {
-      const handle = renderResizeHandle(corner)
+    // Four resize handles, one per edge — dragging any of them resizes one
+    // dimension while the opposite edge stays pinned in world space. Handles
+    // sit above iframe event scope so pdf/html pins still catch the gesture.
+    // See constitution invariant 4.
+    for (const edge of EDGES) {
+      const handle = renderResizeHandle(edge)
       el.appendChild(handle)
-      this.attachResize(handle, entry, corner)
+      this.attachResize(handle, entry, edge)
     }
     return entry
   }
@@ -521,7 +521,7 @@ export class DomPinLayer {
       if (!(event.ctrlKey || event.metaKey)) return
       if (!this.onPinResized) return
       event.preventDefault()
-      const factor = Math.exp(-event.deltaY * RATE)
+      const factor = Math.exp(event.deltaY * RATE)
       entry.width = clampSize(entry.width * factor)
       entry.height = clampSize(entry.height * factor)
       this.position(entry)
@@ -600,27 +600,26 @@ export class DomPinLayer {
     })
   }
 
-  /** Pointerdown on a corner handle → drag to resize. The opposite corner
-   *  stays pinned in world space — dragging SE grows toward the SE while NW
-   *  stays put; dragging NW grows toward NW while SE stays put; etc. Because
-   *  the pin's anchor is the card's *center*, the anchor shifts by half the
-   *  size delta (signed by corner direction) each frame, and we commit the
-   *  new position on release.
+  /** Pointerdown on an edge handle → drag to resize one dimension. The
+   *  opposite edge stays pinned in world space — dragging the east edge
+   *  grows the width toward the east while the west edge stays put, etc.
+   *  Because the pin's anchor is the card's *center*, the center shifts by
+   *  half the size delta along the edge's axis each frame, and we commit
+   *  the new position on release.
    *
-   *  Screen-pixel deltas are divided by the current zoom ratio so one screen
-   *  pixel of drag equals one *world* pixel of size change — the card feels
-   *  equally responsive at every zoom. Hold Shift (or resize images —
-   *  intrinsic aspect) to preserve the starting aspect ratio; the dominant-
-   *  axis delta drives the minor axis so the handle tracks the cursor.
+   *  Screen-pixel deltas are divided by the current zoom ratio so one
+   *  screen pixel of drag equals one *world* pixel of size change — the
+   *  card feels equally responsive at every zoom.
    *
    *  See constitution invariant 4. Commits via `onPinResized` and
    *  `onPinMoved`; skipped if the host didn't provide `onPinResized`. */
-  private attachResize(handle: HTMLElement, entry: DomPinEntry, corner: Corner): void {
+  private attachResize(handle: HTMLElement, entry: DomPinEntry, edge: Edge): void {
     if (!this.onPinResized) return
-    // Sign of the width/height delta for this corner: +1 means "growing this
-    // side extends along +x / +y (cursor going SE)"; -1 means the opposite.
-    const sx = corner === 'ne' || corner === 'se' ? 1 : -1
-    const sy = corner === 'sw' || corner === 'se' ? 1 : -1
+    // Axis the edge resizes along, and sign of growth when the cursor moves
+    // in the +screen direction on that axis. North/West grow against +screen
+    // (dragging up/left enlarges); South/East grow with +screen.
+    const axis: 'x' | 'z' = edge === 'e' || edge === 'w' ? 'x' : 'z'
+    const sign = edge === 'e' || edge === 's' ? 1 : -1
 
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
@@ -630,7 +629,6 @@ export class DomPinLayer {
       const startH = entry.height
       const startPinX = entry.pin.x
       const startPinZ = entry.pin.z
-      const aspect = startW / Math.max(startH, 1)
       const ratio = this.zoomRatio()
       let active = false
 
@@ -641,41 +639,32 @@ export class DomPinLayer {
           if (Math.hypot(dxScreen, dyScreen) < 2) return
           active = true
           entry.el.classList.add('dom-pin--resizing')
-          document.body.style.cursor = cornerCursor(corner)
+          document.body.style.cursor = edgeCursor(edge)
           // Reuse the same suppression flag as drag-to-pin / chrome-drag so
           // pin-hover and canvas interactions don't interfere mid-resize.
           document.body.classList.add('pin-dragging')
         }
-        // Screen-pixel drag → world-pixel size delta. sx/sy map the cursor's
-        // motion into growth along the corner's direction.
-        let nextW = startW + (sx * dxScreen) / ratio
-        let nextH = startH + (sy * dyScreen) / ratio
-        const lockAspect = ev.shiftKey || entry.pin.kind === 'image'
-        if (lockAspect) {
-          if (Math.abs(dxScreen) >= Math.abs(dyScreen)) {
-            nextH = nextW / aspect
-          } else {
-            nextW = nextH * aspect
+        // One-dimensional resize: only the edge's own axis changes. Opposite
+        // edge stays fixed in world space by shifting the pin center by
+        // half the size delta along the edge's growth direction.
+        const dScreen = axis === 'x' ? dxScreen : dyScreen
+        const delta = (sign * dScreen) / ratio
+        if (axis === 'x') {
+          const nextW = clampSize(startW + delta)
+          entry.width = nextW
+          entry.pin = {
+            ...entry.pin,
+            x: startPinX + (sign * (nextW - startW)) / 2,
+            z: startPinZ,
           }
-        }
-        nextW = clampSize(nextW)
-        nextH = clampSize(nextH)
-        // Opposite-corner-fixed anchor math. Pin anchor is the card center
-        // (via `translate(-50%, -50%)`), so keeping corner `-sx, -sy` fixed
-        // means shifting the center by (dW/2 along sx, dH/2 along sy) in
-        // world units. Using `sx * (ratio_unit_world)`: world coords are the
-        // same units as `entry.width` (world px at REFERENCE_ZOOM), so the
-        // center shift is simply half the world-size delta in that direction.
-        const dW = nextW - startW
-        const dH = nextH - startH
-        entry.width = nextW
-        entry.height = nextH
-        // The map's +x is screen-right and +z is screen-down (see Camera
-        // projection). So sx maps to world x and sy maps to world z.
-        entry.pin = {
-          ...entry.pin,
-          x: startPinX + (sx * dW) / 2,
-          z: startPinZ + (sy * dH) / 2,
+        } else {
+          const nextH = clampSize(startH + delta)
+          entry.height = nextH
+          entry.pin = {
+            ...entry.pin,
+            x: startPinX,
+            z: startPinZ + (sign * (nextH - startH)) / 2,
+          }
         }
         this.position(entry)
       }
@@ -704,8 +693,8 @@ export class DomPinLayer {
   }
 }
 
-function cornerCursor(corner: Corner): string {
-  return corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize'
+function edgeCursor(edge: Edge): string {
+  return edge === 'e' || edge === 'w' ? 'ew-resize' : 'ns-resize'
 }
 
 let pulseStylesInjected = false
@@ -722,32 +711,36 @@ function ensurePulseStyles(): void {
     .dom-pin--pulsing {
       animation: dom-pin-pulse 600ms ease-out;
     }
-    /* Resize handles: four corner dots. Invisible by default so a quiet map
-       stays quiet; on card hover they fade in as faint parchment marks,
-       becoming solid on handle-hover. Constitution's "quiet by default +
-       hover reveals affordances." 6px dot centered in an 18px hit area. */
-    .dom-pin .dom-pin-resize {
-      opacity: 0;
-      transition: opacity 120ms ease-out;
-    }
+    /* Resize handles: four edge hit strips. Invisible hit zone straddles
+       the card border so the cursor finds the handle both just inside and
+       just outside the edge. Visual affordance is a thin parchment line
+       that appears on hover along the edge being hovered. Constitution's
+       "quiet by default + hover reveals affordances." */
     .dom-pin .dom-pin-resize::after {
       content: '';
       position: absolute;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
       background: rgba(140, 110, 80, 0.7);
+      opacity: 0;
+      transition: opacity 120ms ease-out;
+    }
+    .dom-pin .dom-pin-resize--n::after,
+    .dom-pin .dom-pin-resize--s::after {
+      left: 0;
+      right: 0;
+      height: 2px;
       top: 50%;
+      transform: translateY(-50%);
+    }
+    .dom-pin .dom-pin-resize--e::after,
+    .dom-pin .dom-pin-resize--w::after {
+      top: 0;
+      bottom: 0;
+      width: 2px;
       left: 50%;
-      transform: translate(-50%, -50%);
+      transform: translateX(-50%);
     }
-    .dom-pin:hover .dom-pin-resize,
-    .dom-pin--hovered .dom-pin-resize,
-    .dom-pin--resizing .dom-pin-resize {
-      opacity: 0.7;
-    }
-    .dom-pin .dom-pin-resize:hover,
-    .dom-pin--resizing .dom-pin-resize {
+    .dom-pin .dom-pin-resize:hover::after,
+    .dom-pin--resizing .dom-pin-resize::after {
       opacity: 1;
     }
     /* Chrome strip hover: darken slightly so the grab surface advertises itself
@@ -1289,27 +1282,33 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
   return div
 }
 
-function renderResizeHandle(corner: Corner): HTMLElement {
+function renderResizeHandle(edge: Edge): HTMLElement {
   const h = document.createElement('div')
-  h.className = `dom-pin-resize dom-pin-resize--${corner}`
-  h.title = 'Drag to resize · hold Shift to lock aspect ratio'
-  // Hit area is 18×18 at each corner so all four are forgiving but don't
-  // crowd small cards. The visible affordance is a faint parchment dot,
-  // applied via CSS so the four-corner layout reads as quiet marks rather
-  // than heavy grips — constitution's "quiet by default." See the ruleset
-  // in `ensurePulseStyles`.
+  h.className = `dom-pin-resize dom-pin-resize--${edge}`
+  h.title = 'Drag to resize'
+  // Invisible hit strip along the edge, straddling the border so the cursor
+  // finds it both just outside and just inside the card. Visual affordance
+  // (a thin parchment line) is applied via CSS on hover — constitution's
+  // "quiet by default." See the ruleset in `ensurePulseStyles`.
   const style: Partial<CSSStyleDeclaration> = {
     position: 'absolute',
-    width: '18px',
-    height: '18px',
-    cursor: cornerCursor(corner),
+    cursor: edgeCursor(edge),
     touchAction: 'none',
     zIndex: '2',
   }
-  if (corner === 'nw' || corner === 'sw') style.left = '0'
-  else style.right = '0'
-  if (corner === 'nw' || corner === 'ne') style.top = '0'
-  else style.bottom = '0'
+  const THICKNESS = '10px'
+  const OFFSET = '-5px'
+  if (edge === 'n' || edge === 's') {
+    style.left = '0'
+    style.right = '0'
+    style.height = THICKNESS
+    style[edge === 'n' ? 'top' : 'bottom'] = OFFSET
+  } else {
+    style.top = '0'
+    style.bottom = '0'
+    style.width = THICKNESS
+    style[edge === 'w' ? 'left' : 'right'] = OFFSET
+  }
   Object.assign(h.style, style)
   return h
 }
