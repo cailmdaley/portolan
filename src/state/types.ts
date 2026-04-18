@@ -213,6 +213,8 @@ export interface ServerMeetingRunState {
   sshHost?: string
   cityPath: string
   transcriptPath: string
+  transcriptMarkdownPath: string
+  currentMeetingSymlinkPath?: string
   injectionsPath: string
   updatesPath: string
   assistantResponsesPath: string
