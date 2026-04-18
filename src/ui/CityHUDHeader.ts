@@ -464,7 +464,7 @@ export class CityHUDHeader {
       lines.push(`
         <div class="hud-meeting-card">
           <div class="hud-meeting-meta">
-            <span>${meetingElsewhere ? 'another meeting is active elsewhere; starting here will replace it' : 'start a VoiceInk bridge or open a manual HTTP ingress run on a worker'}</span>
+            <span>${meetingElsewhere ? 'another meeting is active elsewhere; starting here will replace it' : 'start a Parakeet live-mic bridge, a VoiceInk bridge, or a manual HTTP ingress run on a worker'}</span>
           </div>
           <div class="hud-meeting-actions">
             ${this.renderMeetingStartButtons(buttonsDisabled)}
