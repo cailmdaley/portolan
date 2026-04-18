@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Portolan — Research Tapestry</title>
+    <title>Tapestries</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg">
     <style>
       @font-face {
@@ -308,52 +308,55 @@
         width: 2px; background: var(--ui-gold); opacity: 0.6;
       }
 
-      /* Static file viewer modal */
-      .tapestry-file-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
-      .tapestry-file-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); }
-      .tapestry-file-content {
-        position: relative; width: 82vw; height: 88vh; min-width: 400px;
-        background: #EEE8DC; border: 1px solid var(--ui-border); border-radius: 6px;
-        display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      /* ── Collapsed sidebar ── */
+      .tapestry-sidebar.collapsed {
+        top: auto; width: auto; min-width: 0;
+        border-left: none; background: transparent;
+        box-shadow: none; overflow: visible;
       }
-      .tapestry-file-resize {
-        position: absolute; top: 0; bottom: 0; width: 12px; cursor: col-resize; z-index: 10;
-        display: flex; align-items: center; justify-content: center;
+      .tapestry-sidebar.collapsed .tapestry-fiber-list { flex: none; overflow: visible; }
+      .tapestry-sidebar.collapsed .tapestry-fiber-results,
+      .tapestry-sidebar.collapsed .tapestry-legend,
+      .tapestry-sidebar.collapsed .tapestry-sidebar-resize { display: none !important; }
+      .tapestry-sidebar.collapsed .tapestry-fiber-list .tapestry-search { border-bottom: none; }
+      .tapestry-sidebar.collapsed .tapestry-search { position: relative; }
+      .tapestry-sidebar.collapsed .tapestry-search input {
+        width: 180px; border-radius: 16px; padding: 0.45rem 0.8rem;
+        background: var(--ui-dark-elevated); box-shadow: 0 2px 8px rgba(0,0,0,0.15);
       }
-      .tapestry-file-resize-left { left: -6px; }
-      .tapestry-file-resize-right { right: -6px; }
-      .tapestry-file-resize::after {
-        content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
-        background: var(--ui-border); opacity: 0.5;
-        transition: opacity 150ms, width 150ms, background 150ms; pointer-events: none;
+      .tapestry-sidebar.collapsed .tapestry-search-results {
+        position: absolute; right: 0; bottom: 100%; width: 280px; max-height: 200px;
+        background: var(--ui-dark-elevated); border: 1px solid var(--ui-border);
+        border-radius: 4px; box-shadow: 0 -2px 8px rgba(0,0,0,0.15);
+        margin-bottom: 0.3rem; margin-top: 0; z-index: 20;
       }
-      .tapestry-file-resize:hover::after, .tapestry-file-resize:active::after {
-        width: 2px; background: var(--ui-gold); opacity: 0.6;
+
+      /* ── Mobile responsive ── */
+      @media (max-width: 768px) {
+        .tapestry-sidebar {
+          top: auto; left: 0; right: 0; width: 100% !important; min-width: 0;
+          max-height: 50vh; border-left: none; border-top: 1px solid var(--ui-border);
+          box-shadow: 0 -3px 12px rgba(0,0,0,0.18);
+        }
+        .tapestry-sidebar.collapsed { max-height: none; border-top: none; }
+        .tapestry-sidebar.collapsed .tapestry-search { padding: 0.5rem 0.8rem; }
+        .tapestry-sidebar.collapsed .tapestry-search input { width: 100%; border-radius: 8px; }
+        .tapestry-sidebar.collapsed .tapestry-search-results { width: 100%; left: 0; right: 0; }
+        .tapestry-sidebar.expanded {
+          inset: 0; top: 0; width: 100% !important; min-width: 0;
+          max-height: none; border-top: none;
+        }
+        .tapestry-detail-close {
+          font-size: 0 !important; padding: 0.3rem 0.6rem !important; min-width: 4rem;
+        }
+        .tapestry-detail-close::before {
+          content: '← Back'; font-size: 0.85rem;
+          font-family: var(--font-main); color: var(--ui-text-muted);
+        }
+        .tapestry-detail-close:hover::before { color: var(--ui-text); }
+        .tapestry-sidebar-resize { display: none !important; }
       }
-      .tapestry-file-header {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--ui-border);
-        font-family: var(--font-mono); font-size: 0.8rem; color: var(--ui-text-muted);
-      }
-      .tapestry-file-close { background: none; border: none; color: var(--ui-text-muted); font-size: 1.2rem; cursor: pointer; padding: 0 0.3rem; }
-      .tapestry-file-close:hover { color: var(--ui-text); }
-      .tapestry-file-body { flex: 1; overflow: auto; }
-      .tapestry-file-markdown { padding: 1.2rem 1.5rem; font-family: var(--font-main); font-size: 0.9rem; line-height: 1.6; color: var(--ui-text); }
-      .tapestry-file-markdown h1, .tapestry-file-markdown h2, .tapestry-file-markdown h3 { color: var(--ui-gold); margin-top: 1.5em; }
-      .tapestry-file-code { font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.5; }
-      .tapestry-file-code table { border-collapse: collapse; width: 100%; }
-      .tapestry-file-code .line-num { padding: 0 0.8rem 0 0.6rem; text-align: right; color: var(--ui-text-muted); opacity: 0.4; user-select: none; white-space: nowrap; vertical-align: top; }
-      .tapestry-file-code .line-content { padding: 0 0.6rem; white-space: pre-wrap; word-break: break-all; }
-      .tapestry-file-code .highlighted-line { background: rgba(90,123,123,0.15); }
-      .tapestry-file-code .highlighted-line .line-num { color: var(--ui-teal); opacity: 1; }
-      .tapestry-file-code .token.comment, .tapestry-file-code .token.prolog, .tapestry-file-code .token.doctype { color: var(--ink-faded); font-style: italic; }
-      .tapestry-file-code .token.keyword, .tapestry-file-code .token.selector, .tapestry-file-code .token.important { color: var(--verdigris); font-weight: 600; }
-      .tapestry-file-code .token.string, .tapestry-file-code .token.attr-value, .tapestry-file-code .token.regex { color: #4A6A35; }
-      .tapestry-file-code .token.function, .tapestry-file-code .token.class-name { color: var(--sepia-accent); }
-      .tapestry-file-code .token.number, .tapestry-file-code .token.boolean, .tapestry-file-code .token.constant { color: var(--rust); }
-      .tapestry-file-code .token.operator, .tapestry-file-code .token.punctuation { color: var(--ink-light); }
-      .tapestry-file-code .token.property, .tapestry-file-code .token.tag { color: #5A6B2A; }
-      .tapestry-file-code .token.builtin, .tapestry-file-code .token.symbol { color: var(--sepia-muted); }
+
       .tapestry-fiber-list { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
       .tapestry-fiber-list.hidden { display: none; }
       .tapestry-fiber-list .tapestry-search { border-top: none; border-bottom: 1px solid var(--ui-border); }
@@ -386,6 +389,27 @@
       }
       .legend-item { white-space: nowrap; }
       .legend-sep { color: var(--ui-border); }
+      .tapestry-delta-control {
+        position: absolute; bottom: 1rem; right: 1rem; z-index: 20;
+        display: flex; align-items: center; gap: 0.5rem;
+        padding: 0.35rem 0.8rem; border-radius: 4px;
+        background: rgba(237, 232, 224, 0.92); backdrop-filter: blur(4px);
+        border: 1px solid var(--ui-border);
+        font-family: var(--font-main); font-size: 0.72rem; color: var(--ui-text-muted);
+        pointer-events: auto;
+      }
+      .delta-label { white-space: nowrap; }
+      .delta-value { font-family: var(--font-mono); font-weight: 600; color: var(--ui-text); }
+      .delta-slider {
+        -webkit-appearance: none; appearance: none;
+        width: 100px; height: 3px;
+        background: var(--ui-border); border-radius: 2px; outline: none;
+      }
+      .delta-slider::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 10px; height: 10px; border-radius: 50%;
+        background: #9A7B35; cursor: pointer;
+      }
       .tapestry-detail-outcome { font-size: 0.82rem; color: var(--ui-text); margin-bottom: 0.6rem; padding-bottom: 0.6rem; border-bottom: 1px solid var(--ui-border); line-height: 1.45; }
       .tapestry-detail-outcome p { margin: 0.2rem 0; }
       .tapestry-detail-outcome p:first-of-type { display: inline; }
@@ -434,7 +458,7 @@
         font-size: 1.2rem; cursor: pointer; padding: 0.1rem 0.3rem; line-height: 1; flex-shrink: 0;
       }
       .tapestry-detail-close:hover { color: var(--ui-text); }
-      .tapestry-detail-content { flex: 1; overflow-y: auto; padding: 0.8rem; }
+      .tapestry-detail-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0.8rem; }
 
       /* Detail: graph */
       .tapestry-detail-graph {
@@ -506,8 +530,8 @@
       .tapestry-detail-body blockquote { border-left: 2px solid var(--ui-teal); padding-left: 0.7rem; margin: 0.4rem 0; color: var(--ui-text-muted); font-style: italic; }
       .tapestry-detail-body a, .tapestry-detail-body td a, .tapestry-detail-outcome a { color: var(--ui-teal) !important; text-decoration: underline dotted; }
       .tapestry-detail-body a:hover, .tapestry-detail-body td a:hover, .tapestry-detail-outcome a:hover { text-decoration: underline; }
-      .tapestry-detail-body table { width: 100%; border-collapse: collapse; margin: 0.4rem 0; font-size: 0.8rem; }
-      .tapestry-detail-body th, .tapestry-detail-body td { padding: 0.3rem 0.5rem; border: 1px solid var(--ui-border); text-align: left; }
+      .tapestry-detail-body table { width: 100%; border-collapse: collapse; margin: 0.4rem 0; font-size: 0.8rem; table-layout: fixed; }
+      .tapestry-detail-body th, .tapestry-detail-body td { padding: 0.3rem 0.5rem; border: 1px solid var(--ui-border); text-align: left; overflow-wrap: break-word; word-break: break-word; }
       .tapestry-detail-body th { background: var(--ui-dark-surface); font-weight: 600; }
 
       /* Detail: evidence (code block) */
@@ -516,6 +540,31 @@
       .tapestry-evidence .evidence-item { display: flex; justify-content: space-between; padding: 0.2rem 0; font-size: 0.78rem; }
       .tapestry-evidence .evidence-key { font-family: var(--font-mono); color: var(--ui-text-muted); }
       .tapestry-evidence .evidence-value { font-family: var(--font-mono); color: var(--ui-text); }
+
+      /* ── Decisions section ── */
+      .tapestry-decisions-section { margin-top: 0.6rem; }
+      .tapestry-decisions-section .tapestry-collapsible { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; padding: 0.3rem 0; font-size: 0.82rem; color: var(--ui-text-muted); user-select: none; }
+      .tapestry-decisions-section .section-label { font-weight: 600; letter-spacing: 0.02em; }
+      .tapestry-decisions-section .decision-summary { font-size: 0.75rem; opacity: 0.7; }
+      .tapestry-decisions-list.collapsed { display: none; }
+      .tapestry-decision-row { border-left: 2px solid var(--ui-dark-surface); margin: 0.3rem 0; padding-left: 0.6rem; }
+      .tapestry-decision-row[data-status="resolved"] { border-left-color: #5A7B7B; }
+      .tapestry-decision-row[data-status="suspicious"] { border-left-color: #B8860B; }
+      .tapestry-decision-row[data-status="open"] { border-left-color: #7A7368; }
+      .decision-row-header { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; padding: 0.25rem 0; font-size: 0.82rem; }
+      .decision-status-icon { font-size: 0.75rem; width: 1rem; text-align: center; flex-shrink: 0; }
+      .decision-status-resolved { color: #5A7B7B; }
+      .decision-status-suspicious { color: #B8860B; }
+      .decision-status-open { color: #7A7368; }
+      .decision-label { color: var(--ui-text); font-weight: 500; flex: 1; }
+      .decision-chevron { color: var(--ui-text-muted); font-size: 0.7rem; flex-shrink: 0; }
+      .decision-row-detail { padding: 0.3rem 0 0.5rem 1.4rem; font-size: 0.78rem; }
+      .decision-row-detail.collapsed { display: none; }
+      .decision-selected-option { color: var(--ui-text); font-weight: 500; margin-bottom: 0.2rem; }
+      .decision-verdict { color: var(--ui-text-muted); font-style: italic; margin-bottom: 0.3rem; line-height: 1.4; }
+      .decision-verdict p { margin: 0; }
+      .decision-evidence-links { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+      .decision-evidence-tag { font-size: 0.72rem; cursor: pointer; }
 
       /* ── Annotation panel (hidden in static mode) ── */
       .tapestry-annotation-panel { display: none; }

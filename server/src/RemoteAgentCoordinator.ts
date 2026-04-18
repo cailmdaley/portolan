@@ -25,7 +25,7 @@ interface RemoteAgentCoordinatorCallbacks {
   broadcastActivity(activity: ActivityEvent, originId: string): void;
   broadcastState(): void;
   rebuildCities(): void;
-  reconnectTunnel(sshHost: string): void;
+  reconnectTunnel(sshHost: string): void | Promise<void>;
 }
 
 export class RemoteAgentCoordinator {
@@ -141,7 +141,9 @@ export class RemoteAgentCoordinator {
       if (existing) {
         existing.cwd = agentSession.cwd;
         existing.status = status;
-        existing.lastActivity = Date.now();
+        if (status === 'working') {
+          existing.lastActivity = Date.now();
+        }
       } else {
         const session: Session = {
           id: `remote-${originId}-${agentSession.tmuxSession}`,
@@ -229,6 +231,9 @@ export class RemoteAgentCoordinator {
 
     const session = this.remoteSessions.get(originId)?.get(activity.tmuxSession);
     const now = Date.now();
+    if (session && activity.fullPath) {
+      this.recentFileTracker.recordTouch(session.id, activity.tool, activity.fullPath, activity.timestamp);
+    }
     if (session && session.status !== 'working') {
       session.status = 'working';
       session.lastActivity = now;
@@ -365,13 +370,25 @@ export class RemoteAgentCoordinator {
   }
 }
 
-export function reconnectTunnel(sshHost: string): void {
-  console.log(`Reconnecting SSH tunnel to ${sshHost}...`);
-  execFile('ssh', ['-fN', sshHost], (error) => {
-    if (error) {
-      console.error(`SSH tunnel reconnect to ${sshHost} failed:`, error.message);
-    } else {
-      console.log(`SSH tunnel to ${sshHost} re-established`);
-    }
+export function reconnectTunnel(sshHost: string): Promise<void> {
+  return new Promise((resolve) => {
+    console.log(`Reconnecting SSH tunnel to ${sshHost}...`);
+    // Kill stale ControlMaster first — without this, ssh -fN multiplexes
+    // through the dead master and the RemoteForward never re-establishes.
+    execFile('ssh', ['-O', 'exit', sshHost], (exitError) => {
+      if (exitError) {
+        console.log(`ControlMaster exit for ${sshHost}: ${exitError.message} (continuing)`);
+      }
+      setTimeout(() => {
+        execFile('ssh', ['-fN', sshHost], (error) => {
+          if (error) {
+            console.error(`SSH tunnel reconnect to ${sshHost} failed:`, error.message);
+          } else {
+            console.log(`SSH tunnel to ${sshHost} re-established`);
+          }
+          resolve();
+        });
+      }, 1000);
+    });
   });
 }

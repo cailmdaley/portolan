@@ -57,12 +57,9 @@ function cleanupRuntime(): void {
 }
 
 function bootstrap(): void {
-  // Extract city name from path: /tapestries/pure-eb/ -> "pure-eb"
-  const pathSegments = window.location.pathname.split('/').filter(Boolean)
-  // On GitHub Pages, first segment is repo name "tapestries", second is city.
-  const cityName = pathSegments.length >= 2 ? pathSegments[pathSegments.length - 1] : null
+  const tapestryName = new URLSearchParams(window.location.search).get('tapestry')
 
-  if (!cityName) {
+  if (!tapestryName) {
     showLanding()
     return
   }
@@ -70,9 +67,8 @@ function bootstrap(): void {
   const view = new TapestryView()
   runtime.view = view
 
-  // Data is at /tapestries/data/{city}/tapestry.json - use absolute path from base.
-  const basePath = pathSegments.slice(0, -1).join('/')
-  const dataUrl = `/${basePath}/data/${cityName}/tapestry.json`
+  const base = import.meta.env.BASE_URL // e.g. '/tapestries/' or '/'
+  const dataUrl = `${base}data/${tapestryName}/tapestry.json`
   const requestId = ++runtime.activeRequestId
   const controller = new AbortController()
 
@@ -87,8 +83,8 @@ function bootstrap(): void {
     .then((data: TapestryResponse) => {
       if (!isCurrentRequest(requestId)) return
 
-      const assetBase = `/${basePath}/data/${cityName}/tapestry`
-      view.showStatic(data, cityName, assetBase)
+      const assetBase = `${base}data/${tapestryName}/tapestry`
+      view.showStatic(data, tapestryName, assetBase)
       attachPopstateHandler(view)
     })
     .catch(err => {
@@ -98,7 +94,7 @@ function bootstrap(): void {
       console.error('Failed to load tapestry data:', err)
       view.showStatic(
         { nodes: [], links: [], downstream: {}, config: null },
-        cityName,
+        tapestryName,
       )
       const dag = document.querySelector('.tapestry-dag')
       if (dag) {
@@ -110,8 +106,8 @@ function bootstrap(): void {
           <div style="font-size: 1.2rem; margin-bottom: 0.5rem;">No tapestry data found</div>
           <div style="font-size: 0.8rem;">
             Run <code style="font-family: var(--font-mono); background: var(--ui-dark-surface);
-            padding: 0.15rem 0.4rem; border-radius: 2px;">npx tsx scripts/export-tapestry.ts ${cityName}</code>
-            then rebuild.
+            padding: 0.15rem 0.4rem; border-radius: 2px;">felt tapestry export</code>
+            from your project directory.
           </div>
         </div>`
       }
@@ -134,13 +130,35 @@ if (import.meta.hot) {
 
 function showLanding() {
   document.body.innerHTML = `
+    <style>
+      @font-face { font-family: 'EBGaramondInitialsF1'; src: url('./fonts/EBGaramond-InitialsF1.otf') format('opentype'); }
+      @font-face { font-family: 'EBGaramondInitialsF2'; src: url('./fonts/EBGaramond-InitialsF2.otf') format('opentype'); }
+      .landing-title {
+        font-size: 3.5rem; font-weight: 400; margin-bottom: 0.3rem;
+        color: var(--ui-text); display: flex; align-items: baseline;
+        font-variant: small-caps; letter-spacing: 0.05em;
+      }
+      .drop-cap {
+        font-family: 'EBGaramondInitialsF2', serif;
+        font-variant: normal;
+        font-size: 1.35em; position: relative; display: inline-block;
+        line-height: 1; transform: translateY(0.02em);
+        margin-right: 0.05em;
+      }
+      .drop-cap::before {
+        content: attr(data-letter);
+        font-family: 'EBGaramondInitialsF1', serif;
+        color: #8B3A3A; opacity: 0.5;
+        position: absolute; top: 0; left: 0;
+      }
+    </style>
     <div style="
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       min-height: 100vh; font-family: var(--font-main); color: var(--ui-text);
       background: var(--ui-dark); padding: 2rem;
     ">
-      <h1 style="font-size: 2rem; font-weight: 400; margin-bottom: 0.3rem; color: var(--ui-gold);">Portolan</h1>
-      <p style="font-size: 1rem; color: var(--ui-text-muted); margin-bottom: 2rem; font-style: italic;">Research Tapestries</p>
+      <h1 class="landing-title"><span class="drop-cap" data-letter="T">T</span>apestries</h1>
+      <p style="font-size: 1.3rem; color: var(--ui-text-muted); margin-bottom: 2rem; font-style: italic;">navigable maps of research in progress</p>
       <div id="tapestry-list" style="display: flex; flex-direction: column; gap: 0.8rem; min-width: 280px;">
         <p style="color: var(--ui-text-muted); font-style: italic; font-size: 0.9rem;">Loading...</p>
       </div>
@@ -148,7 +166,8 @@ function showLanding() {
   `
 
   // Discover tapestries by fetching the manifest
-  fetch('./data/manifest.json')
+  const base = import.meta.env.BASE_URL
+  fetch(`${base}data/manifest.json`)
     .then(r => r.ok ? r.json() : [])
     .catch(() => [])
     .then((tapestries: { name: string; nodeCount?: number; updated?: string }[]) => {
@@ -157,8 +176,10 @@ function showLanding() {
         list.innerHTML = '<p style="color: var(--ui-text-muted); font-style: italic;">No tapestries exported yet.</p>'
         return
       }
+      // Sort demo to the top
+      tapestries.sort((a, b) => a.name === 'demo' ? -1 : b.name === 'demo' ? 1 : a.name.localeCompare(b.name))
       list.innerHTML = tapestries.map(t => `
-        <a href="./${t.name}/" style="
+        <a href="?tapestry=${encodeURIComponent(t.name)}" style="
           display: block; padding: 1rem 1.4rem; background: var(--ui-dark-elevated);
           border: 1px solid var(--ui-border); border-radius: 4px;
           text-decoration: none; color: var(--ui-text); transition: border-color 200ms;

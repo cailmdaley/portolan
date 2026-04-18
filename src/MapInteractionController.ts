@@ -27,6 +27,20 @@ interface MapInteractionControllerOptions {
   killWorker: (sessionId: string) => void
   moveCity: (cityId: string, hex: HexCoord) => void
   findNearestCity: (hex: HexCoord) => City | null
+  /** Optional hit test for map-pinned vellum cards (tapestry-dissolves). */
+  findPinAtWorldPos?: (x: number, z: number) => string | null
+  /** Called when a pinned card is clicked. Return value unused. */
+  handlePinClick?: (slug: string) => void
+  /** Called on mouse move with the slug of the hovered pin, or null. */
+  onPinHoverChange?: (slug: string | null) => void
+  /** Right-click over a pinned card. Handler shows its own context menu. */
+  onPinContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  /** Current slug being relocated via "Move Pin", or null. */
+  getMovingPinSlug?: () => string | null
+  /** Toggle the move-pin state (null to cancel). */
+  setMovingPinSlug?: (slug: string | null) => void
+  /** Commit the move: reposition an existing pin to a new world point. */
+  movePin?: (slug: string, x: number, z: number) => void
 }
 
 export class MapInteractionController {
@@ -49,9 +63,18 @@ export class MapInteractionController {
   private readonly killWorker: (sessionId: string) => void
   private readonly moveCity: (cityId: string, hex: HexCoord) => void
   private readonly findNearestCity: (hex: HexCoord) => City | null
+  private readonly findPinAtWorldPos?: (x: number, z: number) => string | null
+  private readonly handlePinClick?: (slug: string) => void
+  private readonly onPinHoverChange?: (slug: string | null) => void
+  private readonly onPinContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  private readonly getMovingPinSlug?: () => string | null
+  private readonly setMovingPinSlug?: (slug: string | null) => void
+  private readonly movePin?: (slug: string, x: number, z: number) => void
+  private hoveredPinSlug: string | null = null
 
   private forceMouseX = 0
   private forceMouseY = 0
+  private hasForceCursor = false
   private forceTouchFired = false
   private workerCycleIndex = -1
   private cityCycleIndex = -1
@@ -76,6 +99,13 @@ export class MapInteractionController {
     this.killWorker = options.killWorker
     this.moveCity = options.moveCity
     this.findNearestCity = options.findNearestCity
+    this.findPinAtWorldPos = options.findPinAtWorldPos
+    this.handlePinClick = options.handlePinClick
+    this.onPinHoverChange = options.onPinHoverChange
+    this.onPinContextMenu = options.onPinContextMenu
+    this.getMovingPinSlug = options.getMovingPinSlug
+    this.setMovingPinSlug = options.setMovingPinSlug
+    this.movePin = options.movePin
 
     document.addEventListener('contextmenu', this.onDocumentContextMenu)
     document.addEventListener('click', this.onForceClickCapture, true)
@@ -139,6 +169,22 @@ export class MapInteractionController {
       return
     }
 
+    const movingPinSlug = this.getMovingPinSlug?.() ?? null
+    if (movingPinSlug && this.movePin) {
+      this.movePin(movingPinSlug, worldPos.x, worldPos.z)
+      this.setMovingPinSlug?.(null)
+      document.body.style.cursor = ''
+      return
+    }
+
+    // Pin card hit-test runs first: pinned vellum cards sit on top of the hex
+    // world and should "win" over the underlying city/worker for click.
+    const pinHit = this.findPinAtWorldPos?.(worldPos.x, worldPos.z)
+    if (pinHit && this.handlePinClick) {
+      this.handlePinClick(pinHit)
+      return
+    }
+
     const workerHit = this.zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
     if (workerHit) {
       const session = this.getSessions().find(s => s.id === workerHit.workerId)
@@ -173,6 +219,9 @@ export class MapInteractionController {
 
     const worldPos = this.camera.screenToWorld(e.clientX, e.clientY)
     const hex = this.hexGrid.cartesianToHex(worldPos.x, worldPos.z)
+    // Pin-hit short-circuit: a second click on the same card shouldn't fall
+    // through to promptNewWorker for an underlying city.
+    if (this.findPinAtWorldPos?.(worldPos.x, worldPos.z)) return
     const workerHit = this.zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
     if (workerHit) {
       this.focusKittyTab(workerHit.workerId)
@@ -203,13 +252,33 @@ export class MapInteractionController {
   private readonly onCanvasMouseMove = (e: MouseEvent): void => {
     this.forceMouseX = e.clientX
     this.forceMouseY = e.clientY
+    this.hasForceCursor = true
 
-    if (this.camera.dragging || this.getMovingCityId()) {
+    if (
+      this.camera.dragging ||
+      this.getMovingCityId() ||
+      this.getMovingPinSlug?.() ||
+      document.body.classList.contains('pin-dragging')
+    ) {
       this.zoneRenderer.clearWorkerFileHover()
+      if (this.hoveredPinSlug !== null) {
+        this.hoveredPinSlug = null
+        this.onPinHoverChange?.(null)
+      }
       return
     }
 
     const worldPos = this.camera.screenToWorld(e.clientX, e.clientY)
+    const pinSlug = this.findPinAtWorldPos?.(worldPos.x, worldPos.z) ?? null
+    if (pinSlug !== this.hoveredPinSlug) {
+      this.hoveredPinSlug = pinSlug
+      this.onPinHoverChange?.(pinSlug)
+    }
+    if (pinSlug) {
+      this.canvas.style.cursor = 'pointer'
+      this.zoneRenderer.clearWorkerFileHover()
+      return
+    }
     const workerHit = this.zoneRenderer.getWorkerAtWorldPos(worldPos.x, worldPos.z)
     if (workerHit) {
       this.canvas.style.cursor = 'grab'
@@ -236,8 +305,42 @@ export class MapInteractionController {
     this.canvas.style.cursor = ''
   }
 
+  /** Re-run the pin hover hit-test using the last-known cursor position.
+   *  Call from the render loop so that camera pan/zoom (which don't fire
+   *  mousemove) keep the hover state in sync — without this, zooming leaves
+   *  a lifted+scaled card under a cursor that's no longer over it, and the
+   *  tooltip stays open for a card the user has scrolled away from. */
+  recomputeHover(): void {
+    if (
+      this.camera.dragging ||
+      this.getMovingCityId() ||
+      this.getMovingPinSlug?.() ||
+      document.body.classList.contains('pin-dragging')
+    ) return
+    if (!this.findPinAtWorldPos) return
+    // Guard against the case where the cursor hasn't been over the canvas yet.
+    if (!this.hasForceCursor) return
+    const worldPos = this.camera.screenToWorld(this.forceMouseX, this.forceMouseY)
+    const pinSlug = this.findPinAtWorldPos(worldPos.x, worldPos.z) ?? null
+    if (pinSlug !== this.hoveredPinSlug) {
+      this.hoveredPinSlug = pinSlug
+      this.onPinHoverChange?.(pinSlug)
+      // Zoom/pan doesn't fire mousemove, so the 'pointer' cursor set while
+      // hovering a card can linger after the card slides out from under the
+      // cursor. Clear it here when we transition off a pin.
+      if (!pinSlug && this.canvas.style.cursor === 'pointer') {
+        this.canvas.style.cursor = ''
+      }
+    }
+  }
+
   private readonly onCanvasMouseLeave = (): void => {
     this.zoneRenderer.clearWorkerFileHover()
+    if (this.hoveredPinSlug !== null) {
+      this.hoveredPinSlug = null
+      this.onPinHoverChange?.(null)
+    }
+    this.hasForceCursor = false
     if (!this.getMovingCityId()) {
       this.canvas.style.cursor = ''
     }
@@ -277,6 +380,10 @@ export class MapInteractionController {
       this.setMovingCityId(null)
       document.body.style.cursor = ''
     }
+    if (this.getMovingPinSlug?.()) {
+      this.setMovingPinSlug?.(null)
+      document.body.style.cursor = ''
+    }
     this.zoneRenderer.clearWorkerFileHover(true)
   }
 
@@ -314,6 +421,13 @@ export class MapInteractionController {
     if (this.camera.dragging) return
 
     const worldPos = this.camera.screenToWorld(clientX, clientY)
+    // Pin context menu takes precedence over underlying city/worker — same as
+    // the click path, so right-click on a pinned card always targets the pin.
+    const pinHit = this.findPinAtWorldPos?.(worldPos.x, worldPos.z)
+    if (pinHit && this.onPinContextMenu) {
+      this.onPinContextMenu(pinHit, clientX, clientY)
+      return
+    }
     const hex = this.hexGrid.cartesianToHex(worldPos.x, worldPos.z)
     const cityHit = this.zoneRenderer.getCityAtWorldPos(worldPos.x, worldPos.z)
 

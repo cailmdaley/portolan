@@ -858,12 +858,10 @@ Downstream task.
       expect(res.data.links).toHaveLength(1);
       expect(res.data.links[0]).toEqual({ source: 'fiber-a', target: 'fiber-b' });
 
-      // Downstream: fiber-b and task-c both depend on fiber-a
+      // Downstream: only DAG nodes (fiber-b), not non-rule fibers (task-c)
       expect(res.data.downstream['fiber-a']).toBeDefined();
-      expect(res.data.downstream['fiber-a']).toHaveLength(2);
-      const downstreamIds = res.data.downstream['fiber-a'].map((d: any) => d.id);
-      expect(downstreamIds).toContain('fiber-b');
-      expect(downstreamIds).toContain('task-c');
+      expect(res.data.downstream['fiber-a']).toHaveLength(1);
+      expect(res.data.downstream['fiber-a'][0].id).toBe('fiber-b');
     });
 
     it('returns empty DAG when no tapestry: fibers exist', async () => {

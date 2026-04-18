@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
+import type { MeetingBridgeState } from './MeetingBridge.js';
 import { expandHome, shellEscape } from './ShellPathUtils.js';
 import type { Origin, OriginManager } from './OriginManager.js';
 import { reconcilePreviousLocalSessions } from './PreviousSessionReconciler.js';
@@ -23,6 +24,7 @@ export interface StateUpdate {
   sessions: Session[];
   origins?: Origin[];
   activities?: Record<string, ActivityEvent[]>;
+  meetingBridge?: MeetingBridgeState | null;
 }
 
 interface SessionLookup {
@@ -44,6 +46,7 @@ interface BrowserStateCoordinatorOptions {
   previousSessions: Map<string, Session>;
   recentFileTracker: RecentFileTracker;
   sessionLookup: SessionLookup;
+  getMeetingState?: () => MeetingBridgeState | null;
   localOriginId?: string;
 }
 
@@ -168,6 +171,7 @@ export class BrowserStateCoordinator {
       sessions: sessionsWithAbsoluteHex,
       origins: this.options.originManager.getOrigins(),
       activities,
+      meetingBridge: this.options.getMeetingState?.() ?? null,
     };
   }
 
@@ -425,7 +429,7 @@ export class BrowserStateCoordinator {
         kind: fiber.kind || 'task',
         status: fiber.status || status,
         body: fiber.body || undefined,
-        outcome: fiber.outcome || fiber.close_reason || undefined,
+        outcome: fiber.outcome || undefined,
       }));
     } catch (error) {
       console.error(`Failed to get remote fibers from ${sshHost}:${cityPath}:`, error);

@@ -59,6 +59,21 @@ export class OriginManager {
             }
             console.log(`Origin reconnected: ${originName}`);
         }
+        // Keep at most one live agent socket per remote origin.
+        // If a new agent connects while an old one is still around, prefer the new connection
+        // so stale agents cannot race and overwrite the same origin state.
+        for (const existingSocket of origin.agentSockets) {
+            if (existingSocket === ws)
+                continue;
+            this.socketToOrigin.delete(existingSocket);
+            try {
+                existingSocket.close();
+            }
+            catch {
+                // Ignore close errors from half-dead sockets.
+            }
+        }
+        origin.agentSockets.clear();
         // Track this WebSocket → origin mapping
         origin.agentSockets.add(ws);
         this.socketToOrigin.set(ws, originId);

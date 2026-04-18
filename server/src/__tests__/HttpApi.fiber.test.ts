@@ -1,0 +1,123 @@
+/**
+ * HttpApi /fiber/:slug endpoint tests.
+ *
+ * Exercises the vellum-shaped FiberContent endpoint: looks up a fiber by slug
+ * within a city, parses frontmatter, and returns an mdast body.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync, mkdirSync, rmSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+import { HttpApi } from '../HttpApi.js';
+import {
+  httpRequest,
+  makeCityLookup,
+  writeFiber,
+  stubOriginLookup,
+  stubPersistenceLookup,
+} from './test-utils.js';
+
+const TEST_DIR = join(homedir(), '.portolan-test-httpapi-fiber');
+
+describe('HttpApi — /fiber/:slug endpoint', () => {
+  const CITY_DIR = join(TEST_DIR, 'test-city');
+  const FELT_DIR = join(CITY_DIR, '.felt');
+  let api: HttpApi;
+
+  beforeEach(() => {
+    mkdirSync(FELT_DIR, { recursive: true });
+    api = new HttpApi(
+      makeCityLookup('test', CITY_DIR) as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 400 without cityId', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber/some-slug');
+    expect(res.status).toBe(400);
+    expect(res.data.error).toMatch(/cityId/i);
+  });
+
+  it('returns 404 for unknown city', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber/some-slug?cityId=nonexistent');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for missing fiber', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber/no-such-fiber?cityId=test');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns mdast + frontmatter + dependencies for a present fiber', async () => {
+    writeFiber(
+      FELT_DIR,
+      'hello-world',
+      `---
+title: Hello World
+status: active
+kind: decision
+tags:
+  - greeting
+  - demo
+depends-on:
+  - foundational-idea
+---
+
+This is the body. It references [[another-fiber|another]].
+`,
+    );
+
+    const res = await httpRequest(api, 'GET', '/fiber/hello-world?cityId=test');
+    expect(res.status).toBe(200);
+    expect(res.data.slug).toBe('hello-world');
+    expect(res.data.kind).toBe('decision');
+    expect(res.data.frontmatter.title).toBe('Hello World');
+    expect(res.data.frontmatter.tags).toEqual(['greeting', 'demo']);
+    expect(res.data.dependencies).toEqual(['foundational-idea']);
+    expect(res.data.mdast).toBeTruthy();
+    expect(res.data.mdast.type).toBe('root');
+
+    const serialized = JSON.stringify(res.data.mdast);
+    expect(serialized).toContain('another-fiber');
+    expect(serialized).toContain('another');
+  });
+
+  it('rejects path-traversing slugs', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber/..%2Fescape?cityId=test');
+    expect(res.status).toBe(404);
+  });
+
+  it('omits mdast when body is empty', async () => {
+    writeFiber(
+      FELT_DIR,
+      'empty-body',
+      `---
+title: Empty
+status: open
+kind: task
+---
+`,
+    );
+
+    const res = await httpRequest(api, 'GET', '/fiber/empty-body?cityId=test');
+    expect(res.status).toBe(200);
+    expect(res.data.mdast).toBeUndefined();
+    expect(res.data.frontmatter.title).toBe('Empty');
+  });
+
+  it('handles fibers with no frontmatter by treating whole file as body', async () => {
+    writeFiber(FELT_DIR, 'plain', 'just a paragraph of prose.\n');
+    const res = await httpRequest(api, 'GET', '/fiber/plain?cityId=test');
+    expect(res.status).toBe(200);
+    expect(res.data.frontmatter).toEqual({});
+    expect(res.data.mdast).toBeTruthy();
+  });
+});

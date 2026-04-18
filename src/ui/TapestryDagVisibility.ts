@@ -4,6 +4,7 @@ import type { EdgeDatum, SimNode, TapestryResponse } from './tapestry-types'
 
 interface TapestryDagVisibilityOptions {
   getData: () => TapestryResponse | null
+  getInitialRevealThreshold: () => number
   onSelectNode: (id: string) => void
   onClearSelection: () => void
   requestTransientFrame: (callback: FrameRequestCallback) => number
@@ -12,6 +13,7 @@ interface TapestryDagVisibilityOptions {
 
 export class TapestryDagVisibility {
   private getData: () => TapestryResponse | null
+  private getInitialRevealThreshold: () => number
   private onSelectNode: (id: string) => void
   private onClearSelection: () => void
   private requestTransientFrame: (callback: FrameRequestCallback) => number
@@ -22,6 +24,7 @@ export class TapestryDagVisibility {
 
   constructor(options: TapestryDagVisibilityOptions) {
     this.getData = options.getData
+    this.getInitialRevealThreshold = options.getInitialRevealThreshold
     this.onSelectNode = options.onSelectNode
     this.onClearSelection = options.onClearSelection
     this.requestTransientFrame = options.requestTransientFrame
@@ -118,6 +121,15 @@ export class TapestryDagVisibility {
   initializeSectionVisibility(): void {
     this.expandedNodes.clear()
     this.visibleNodes.clear()
+    const data = this.getData()
+    if (data) {
+      const threshold = this.getInitialRevealThreshold()
+      for (const node of data.nodes) {
+        if ((node.evidence?.mtime ?? Number.NEGATIVE_INFINITY) > threshold) {
+          this.expandedNodes.add(node.id)
+        }
+      }
+    }
     this.updateTierVisibility()
   }
 
@@ -153,11 +165,10 @@ export class TapestryDagVisibility {
     d3Selection.selectAll<SVGGElement, SimNode>('.tapestry-node').each(function (node) {
       const element = d3Selection.select(this)
       if (visible.has(node.data.id)) {
-        element.style('display', '').style('pointer-events', '').style('filter', '')
-        if (newlyVisible.has(node.data.id) && animate) {
-          element.style('opacity', '0')
-        }
-      } else if (!becomingFog.has(node.data.id)) {
+        element.style('display', '').style('opacity', '').style('pointer-events', '').style('filter', '')
+      } else if (animate && becomingFog.has(node.data.id)) {
+        // Will be animated by collapseNodesRadial
+      } else {
         element.style('display', '').style('opacity', '0.09').style('pointer-events', '').style('filter', 'url(#fog-blur)')
       }
     })
@@ -170,11 +181,11 @@ export class TapestryDagVisibility {
       const element = d3Selection.select(this)
       const sourceVisible = visible.has(edge.link.source.data.id)
       const targetVisible = visible.has(edge.link.target.data.id)
-      const sourceBecomingFog = becomingFog.has(edge.link.source.data.id)
-      const targetBecomingFog = becomingFog.has(edge.link.target.data.id)
       if (sourceVisible && targetVisible) {
         element.style('display', '').style('opacity', null)
-      } else if (!sourceBecomingFog && !targetBecomingFog) {
+      } else if (animate && (becomingFog.has(edge.link.source.data.id) || becomingFog.has(edge.link.target.data.id))) {
+        // Will be animated
+      } else {
         element.style('display', '').style('opacity', '0.04')
       }
     })

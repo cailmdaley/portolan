@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
+import { reconnectTunnel } from './RemoteAgentCoordinator.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -48,9 +49,13 @@ export class HttpApiActivation {
     const sshHost = this.getSshHost(city);
 
     try {
+      // Reset tunnel first — kills stale ControlMaster and re-establishes
+      // RemoteForward so the agent can reach localhost:4004.
+      await reconnectTunnel(sshHost);
+
       const { stdout: checkOutput } = await execFileAsync(
         'ssh',
-        ['-T', sshHost, 'tmux has-session -t portolan-agent 2>/dev/null && echo running || echo stopped'],
+        ['-T', sshHost, "tmux has-session -t '=portolan-agent' 2>/dev/null && echo running || echo stopped"],
         { timeout: 10000 }
       );
 
@@ -63,7 +68,7 @@ export class HttpApiActivation {
       console.log(`[Activate] Starting portolan-agent on ${sshHost}...`);
       await execFileAsync(
         'ssh',
-        ['-T', sshHost, `tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/bin/portolan-agent.js connect --ssh-host=${sshHost}\\""`],
+        ['-T', sshHost, `tmux new-session -d -s portolan-agent "bash -l -c \\"node ~/.local/bin/portolan-agent.js connect --ssh-host=${sshHost}\\""`],
         { timeout: 30000 }
       );
 

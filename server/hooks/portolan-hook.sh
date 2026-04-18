@@ -29,8 +29,72 @@ else
   timestamp=$(($(date +%s) * 1000))
 fi
 
-# Single jq call: parse input, map event type, build output JSON
-"$JQ" -c --arg ts "$timestamp" --arg tmux "$tmux_session" '
+# Read hook payload once so we can branch on the raw hook event.
+input=$(cat)
+[ -z "$input" ] && exit 0
+
+raw_hook_name=$(printf '%s' "$input" | "$JQ" -r '.hook_event_name // empty' 2>/dev/null || true)
+
+if [ "$raw_hook_name" = "PostToolUse" ]; then
+  forward_payload=$(printf '%s' "$input" | "$JQ" -c --arg tmux "$tmux_session" --arg origin "$(hostname)" '
+    select((.tool_name // "") | test("^(Read|Write|Edit)$")) |
+    . + { tmux_session: $tmux, origin_name: $origin }
+  ' 2>/dev/null || true)
+  if [ -n "$forward_payload" ]; then
+    curl -sS -m 2 -X POST http://localhost:4004/hook/file-touch \
+      -H 'Content-Type: application/json' \
+      -d "$forward_payload" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if [ "$raw_hook_name" = "Stop" ]; then
+  transcript_path=$(printf '%s' "$input" | "$JQ" -r '.transcript_path // empty' 2>/dev/null || true)
+  session_id=$(printf '%s' "$input" | "$JQ" -r '.session_id // empty' 2>/dev/null || true)
+  cwd=$(printf '%s' "$input" | "$JQ" -r '.cwd // empty' 2>/dev/null || true)
+  origin_name=$(hostname)
+
+  if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" ]; then
+    assistant_payload=$(tail -100 "$transcript_path" | "$JQ" -cs \
+      --arg session_id "$session_id" \
+      --arg cwd "$cwd" \
+      --arg tmux "$tmux_session" \
+      --arg origin "$origin_name" \
+      --arg transcript_path "$transcript_path" '
+      [
+        .[]
+        | select(.type == "assistant")
+        | . as $entry
+        | ($entry.message.content // [])
+        | to_entries[]
+        | select(.value.type == "text")
+        | select((.value.text // "") != "")
+        | {
+            sourceKey: "\(($entry.timestamp // "assistant"))#\(.key)",
+            timestamp: ($entry.timestamp // null),
+            text: .value.text
+          }
+      ] as $responses
+      | select(($responses | length) > 0)
+      | {
+          session_id: $session_id,
+          cwd: $cwd,
+          tmux_session: $tmux,
+          origin_name: $origin,
+          transcript_path: $transcript_path,
+          responses: $responses
+        }
+    ' 2>/dev/null || true)
+
+    if [ -n "$assistant_payload" ]; then
+      curl -sS -m 2 -X POST http://localhost:4004/hook/assistant-turn \
+        -H 'Content-Type: application/json' \
+        -d "$assistant_payload" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmux_session" '
   # Map hook event name to event type (PostToolUse excluded - unused by server)
   def map_event_type:
     if . == "PreToolUse" then "pre_tool_use"
@@ -68,6 +132,12 @@ fi
       end
     )
   end
-' >> "$EVENTS_FILE"
+')
+
+if [ -z "$payload" ]; then
+  exit 0
+fi
+
+printf '%s\n' "$payload" >> "$EVENTS_FILE"
 
 exit 0

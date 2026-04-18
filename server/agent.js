@@ -72,12 +72,13 @@ function debug(...args) {
 // ============================================================================
 
 /**
- * Check if a directory has claims (workflow/config or results/claims)
+ * Check if a directory has claims (workflow/config, results/tapestry, or .felt/)
  */
 function detectClaims(cwd) {
     const hasWorkflowConfig = existsSync(resolve(cwd, 'workflow/config'));
-    const hasResultsClaims = existsSync(resolve(cwd, 'results/claims'));
-    return hasWorkflowConfig || hasResultsClaims;
+    const hasResultsTapestry = existsSync(resolve(cwd, 'results/tapestry'));
+    const hasFelt = existsSync(resolve(cwd, '.felt'));
+    return hasWorkflowConfig || hasResultsTapestry || hasFelt;
 }
 
 /**

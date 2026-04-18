@@ -1,10 +1,15 @@
 import type { City } from '../state/types'
 import { artifactEntries, isPdfArtifact } from './tapestry-helpers'
-import { TapestryStaticFileModal } from './TapestryStaticFileModal'
 import type { TapestryResponse } from './tapestry-types'
+
+interface StaticFileModalHandle {
+  close(): void
+}
 
 const API_BASE = `http://${window.location.hostname}:4004`
 const PRELOAD_CACHE_LIMIT = 64
+const DAY_MS = 24 * 60 * 60 * 1000
+const DEFAULT_RECENT_EVIDENCE_DAYS = 7
 
 export class TapestryViewRuntime {
   private currentCity: City | null = null
@@ -16,8 +21,9 @@ export class TapestryViewRuntime {
   private preloadCache = new Map<string, HTMLImageElement>()
   private dataFetchAbortController: AbortController | null = null
   private dataRequestId = 0
-  private staticFileModal: TapestryStaticFileModal | null = null
+  private staticFileModal: StaticFileModalHandle | null = null
   private disposed = false
+  private revealDays: number | null = null
 
   getCurrentCity(): City | null {
     return this.currentCity
@@ -39,6 +45,35 @@ export class TapestryViewRuntime {
     return this.disposed
   }
 
+  getRevealDays(): number {
+    if (this.revealDays !== null) return this.revealDays
+
+    const url = new URL(window.location.href)
+    const since = url.searchParams.get('since')
+    if (since) {
+      const parsed = Date.parse(since)
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.round((Date.now() - parsed) / DAY_MS))
+      }
+    }
+
+    const days = url.searchParams.get('days')
+    if (days) {
+      const parsed = Number(days)
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed
+    }
+
+    return DEFAULT_RECENT_EVIDENCE_DAYS
+  }
+
+  setRevealDays(days: number): void {
+    this.revealDays = days
+  }
+
+  getInitialRevealThreshold(): number {
+    return Date.now() - this.getRevealDays() * DAY_MS
+  }
+
   getRuntimeStats(): {
     disposed: boolean
     staticMode: boolean
@@ -58,16 +93,15 @@ export class TapestryViewRuntime {
       preloadCacheSize: this.preloadCache.size,
       hasDataFetchRequest: this.dataFetchAbortController !== null,
       dataRequestId: this.dataRequestId,
-      hasStaticFileModal: this.staticFileModal?.isOpen() ?? false,
-      hasStaticFileModalKeyHandler: this.staticFileModal?.isOpen() ?? false,
+      hasStaticFileModal: this.staticFileModal !== null,
+      hasStaticFileModalKeyHandler: this.staticFileModal !== null,
     }
   }
 
-  async showCity(city: City): Promise<TapestryResponse> {
+  async showCity(city: City, preserveHash?: string): Promise<TapestryResponse> {
     this.disposed = false
     this.clearPreloadCache()
-    this.staticFileModal?.close()
-    this.staticFileModal = null
+    this.closeStaticFileModal()
 
     this.currentCity = city
     this.tapestryData = null
@@ -76,7 +110,7 @@ export class TapestryViewRuntime {
     this.staticAssetBase = ''
     this.staticDataBase = ''
 
-    const incomingHash = window.location.hash
+    const incomingHash = preserveHash || window.location.hash
     const url = new URL(window.location.href)
     url.searchParams.set('city', city.id)
     url.hash = incomingHash
@@ -119,13 +153,12 @@ export class TapestryViewRuntime {
     this.disposed = false
     this.clearDataRequest()
     this.clearPreloadCache()
-    this.staticFileModal?.close()
+    this.closeStaticFileModal()
 
     this.currentCity = null
     this.staticMode = true
     this.staticAssetBase = assetBase
-    this.staticDataBase = assetBase.replace(/\/[^/]+\/tapestry$/, '')
-    this.staticFileModal = new TapestryStaticFileModal(this.staticDataBase)
+    this.staticDataBase = assetBase.replace(/\/tapestry$/, '')
     this.tapestryData = data
     this.selectedNodeId = null
   }
@@ -133,7 +166,7 @@ export class TapestryViewRuntime {
   hide(): void {
     this.clearDataRequest()
     this.clearPreloadCache()
-    this.staticFileModal?.close()
+    this.closeStaticFileModal()
 
     const url = new URL(window.location.href)
     url.searchParams.delete('city')
@@ -216,7 +249,25 @@ export class TapestryViewRuntime {
   }
 
   openStaticFile(href: string, line?: number): void {
-    this.staticFileModal?.open(href, line)
+    if (!this.staticDataBase) return
+    // Close any prior modal; vellum's modal is single-instance per runtime.
+    this.closeStaticFileModal()
+    const staticDataBase = this.staticDataBase
+    // Dynamic import keeps the vellum/React bundle out of the eager static
+    // entry; it only loads when the user actually opens a file.
+    void import('../vellum/mount').then(({ openVellumStaticFileModal }) => {
+      if (this.disposed) return
+      this.staticFileModal = openVellumStaticFileModal({
+        path: href,
+        staticDataBase,
+        jumpToLine: line,
+      })
+    })
+  }
+
+  private closeStaticFileModal(): void {
+    this.staticFileModal?.close()
+    this.staticFileModal = null
   }
 
   private beginDataRequest(): { requestId: number; signal: AbortSignal } {

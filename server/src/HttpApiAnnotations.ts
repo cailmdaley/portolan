@@ -1,4 +1,4 @@
-import { exec, execFile, execFileSync, execSync } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { IncomingMessage, ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
@@ -6,6 +6,7 @@ import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
+import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -46,6 +47,7 @@ export class HttpApiAnnotations {
   private sessionLookup: SessionLookup | null = null;
   private onCreateNewWorker: ((cityPath: string, originId: string) => Promise<string>) | null = null;
   private onFocusSession: ((sessionId: string) => void) | null = null;
+  private tmuxMessenger = new TmuxSessionMessenger();
 
   constructor(options: HttpApiAnnotationsOptions) {
     this.cityLookup = options.cityLookup;
@@ -251,20 +253,12 @@ export class HttpApiAnnotations {
       : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
-      const escaped = shellEscape(tmuxSession);
-
-      if (!isRemote) {
-        execSync(`tmux load-buffer -`, { input: formattedMessage, timeout: 5000 });
-        execSync(`tmux paste-buffer -t ${escaped}`, { timeout: 5000 });
-      } else {
-        if (!sshHost) {
-          this.sendJsonError(res, 404, 'Origin not found');
-          return;
-        }
-
-        execFileSync('ssh', [sshHost, 'tmux load-buffer -'], { input: formattedMessage, timeout: 10000 });
-        execFileSync('ssh', [sshHost, `tmux paste-buffer -t ${escaped}`], { timeout: 10000 });
+      if (isRemote && !sshHost) {
+        this.sendJsonError(res, 404, 'Origin not found');
+        return;
       }
+
+      this.tmuxMessenger.send({ tmuxSession, sshHost }, formattedMessage);
 
       if (workerId && this.onFocusSession) {
         this.onFocusSession(workerId);
@@ -378,7 +372,14 @@ export class HttpApiAnnotations {
       lines.push('');
 
       annotations.forEach((ann, i) => {
-        if (ann.isImageAnnotation) {
+        if (ann.isSlideAnnotation && ann.slide !== undefined) {
+          const slideRef = ann.slideTitle
+            ? `Slide ${ann.slide + 1}: ${ann.slideTitle}`
+            : `Slide ${ann.slide + 1}`;
+          lines.push(`## ${i + 1}. ${slideRef}`);
+          lines.push(`> ${ann.comment}`);
+          lines.push('');
+        } else if (ann.isImageAnnotation) {
           const posRef = ann.x !== undefined && ann.y !== undefined
             ? ` at position (${ann.x.toFixed(0)}%, ${ann.y.toFixed(0)}%)`
             : '';

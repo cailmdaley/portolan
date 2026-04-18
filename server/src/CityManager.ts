@@ -15,8 +15,12 @@
  * - A display name
  */
 import { resolve, basename } from 'path';
-import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
+
+export function stableCityId(key: string): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 32);
+}
 import type { GitStatus } from './GitStatusManager.js';
 
 // ============================================================================
@@ -117,28 +121,35 @@ export class CityManager {
     const resolvedPath = resolve(path);
     const key = this.makeKey(originId, resolvedPath);
 
+    // Deterministic ID from key (ignores persisted random UUID)
+    const stableId = stableCityId(key);
+
     // If city already exists at this path, update it to be pinned
     const existing = this.citiesByKey.get(key);
     if (existing) {
       // Update to persisted values
-      existing.id = id;
+      existing.id = stableId;
       existing.position = position;
       existing.name = name;
-      this.pinnedCityIds.add(id);
+      this.pinnedCityIds.add(stableId);
       return existing;
     }
 
-    // Create new pinned city
+    // Create new pinned city — remote cities default hasClaims=true since the
+    // tapestry endpoint handles SSH discovery regardless, and any running agent
+    // will override with the actual value.  Without this, dormant remote cities
+    // never show the tapestry button because no agent session reports hasClaims.
     const city: City = {
-      id,
+      id: stableId,
       path: resolvedPath,
       name,
       position,
       originId,
+      hasClaims: originId !== 'local' ? true : undefined,
     };
 
     this.citiesByKey.set(key, city);
-    this.pinnedCityIds.add(id);
+    this.pinnedCityIds.add(stableId);
     return city;
   }
 
@@ -166,7 +177,7 @@ export class CityManager {
 
     // Create new pinned city
     const city: City = {
-      id: randomUUID(),
+      id: stableCityId(key),
       path: resolvedPath,
       name: name || basename(resolvedPath),
       position,
@@ -227,6 +238,18 @@ export class CityManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Public: cityKey for a known cityId. Returns the same normalized
+   * `${originId}:${path}` string that hashes to the cityId. Used by
+   * LayoutStore via HttpApiLayouts to record the key on each pin write,
+   * so a later orphan-detection pass can verify cityId = stableCityId(cityKey).
+   */
+  getCityKey(cityId: string): string | null {
+    const city = this.getCityById(cityId);
+    if (!city) return null;
+    return this.makeKey(city.originId, city.path);
   }
 
   /**
@@ -293,7 +316,7 @@ export class CityManager {
       } else {
         const originPos = this.getOriginPosition(session.originId);
         const city: City = {
-          id: randomUUID(),
+          id: stableCityId(key),
           path: resolve(session.cwd),
           name: basename(session.cwd),
           position: this.autoAssignPosition(originPos, session.originId),

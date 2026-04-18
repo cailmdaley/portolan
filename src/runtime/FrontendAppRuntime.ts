@@ -5,10 +5,8 @@ import type { ZoneRenderer } from '../render/ZoneRenderer'
 import type { FrontendStateSync } from './FrontendStateSync'
 import type { MapInteractionController } from '../MapInteractionController'
 import type { CityHUD } from '../ui/CityHUD'
-import type { FileViewerModal } from '../ui/FileViewerModal'
 import type { ContextMenu } from '../ui/ContextMenu'
 import type { NewWorkerDialog } from '../ui/NewWorkerDialog'
-import type { TapestryView } from '../ui/TapestryView'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { City, Session } from '../state/types'
 
@@ -21,16 +19,18 @@ interface FrontendAppRuntimeOptions {
   stateSync: FrontendStateSync
   mapInteractions: MapInteractionController
   cityPanel: CityHUD
-  fileViewerModal: FileViewerModal
   contextMenu: ContextMenu
   newWorkerDialog: NewWorkerDialog
-  tapestryView: TapestryView
   playgroundViewer: PlaygroundViewer
   clearArtifactMediaCaches: () => void
   getCities: () => City[]
   updateWorkerHud: () => void
   isWorkerHudVisible: () => boolean
   applyMockState: (cities: City[], sessions: Session[]) => void
+  /** Optional per-frame hook, called after scene render. Useful for DOM
+   *  overlays that need to track world-anchored points through camera changes
+   *  (e.g. pin hover tooltip re-anchoring during pan/zoom). */
+  onFrame?: () => void
 }
 
 export class FrontendAppRuntime {
@@ -76,10 +76,8 @@ export class FrontendAppRuntime {
     window.removeEventListener('resize', this.onResize)
 
     this.options.cityPanel.dispose()
-    this.options.fileViewerModal.dispose()
     this.options.contextMenu.dispose()
     this.options.newWorkerDialog.dispose()
-    this.options.tapestryView.dispose()
     this.options.playgroundViewer.dispose()
 
     this.options.camera.dispose()
@@ -125,6 +123,7 @@ export class FrontendAppRuntime {
     this.options.zoneRenderer.animate(this.options.camera.cameraDistance)
     this.options.renderer.render(this.options.scene, this.options.camera.camera)
     this.options.labelRenderer.render(this.options.scene, this.options.camera.camera)
+    this.options.onFrame?.()
   }
 
   private scheduleMockDataFallback(): void {

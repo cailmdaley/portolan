@@ -1,4 +1,4 @@
-// Shared annotation side panel used by TapestryView and FileViewerModal.
+// Annotation side panel used by TapestryView (DAG claims annotations).
 // Handles list rendering, inline edit, CRUD, clear all, global comment, and footer.
 
 import { escapeHtml, formatTimeAgo, showToast } from './utils'
@@ -16,7 +16,7 @@ export interface BaseAnnotation {
 }
 
 export interface AnnotationPanelOptions<T extends BaseAnnotation> {
-  /** CSS class prefix for the panel container (e.g., 'claims-annotation' or 'annotations'). */
+  /** CSS class prefix for the panel container. */
   cssPrefix: 'claims' | 'file-viewer'
 
   /** Text shown when there are no annotations. */
@@ -46,7 +46,7 @@ export interface AnnotationPanelOptions<T extends BaseAnnotation> {
   /** Placeholder text for the global comment textarea. */
   globalCommentPlaceholder?: string
 
-  /** Global comment label (FileViewerModal uses "Overall feedback:"). Omit for no label. */
+  /** Global comment label. Omit for no label. */
   globalCommentLabel?: string
 
   /** Hide the "Send N annotations to worker" footer button. */
@@ -130,6 +130,12 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     }
   }
 
+  /** Trigger inline edit on a specific annotation by ID. */
+  startEditById(id: string): void {
+    const ann = this.annotations.find(a => a.id === id)
+    if (ann) this.startEdit(ann)
+  }
+
   /** Whether there are annotations or a global comment. */
   hasContent(): boolean {
     return this.annotations.length > 0 || this.getGlobalComment().length > 0
@@ -195,8 +201,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     }
 
     // Global save button and enter-to-save are wired by consumers directly,
-    // since the save behavior is consumer-specific (e.g., TapestryView creates
-    // a new annotation via POST, FileViewerModal just tracks the text in state).
+    // since the save behavior is consumer-specific.
   }
 
   private collapseGlyph(collapsed: boolean): string {
@@ -321,7 +326,7 @@ export class AnnotationPanel<T extends BaseAnnotation> {
     cancelBtn.addEventListener('click', () => finishEdit(false))
     textarea.addEventListener('keydown', (e: KeyboardEvent) => {
       e.stopPropagation()
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         finishEdit(true)
       }

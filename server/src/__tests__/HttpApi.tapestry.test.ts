@@ -1,7 +1,7 @@
 /**
  * HttpApi tapestry endpoint tests
  *
- * Tests the /tapestry endpoint that returns the full DAG for TapestryView:
+ * Tests the /tapestry endpoint that returns the full DAG (consumed by the static export):
  * - Fibers with tapestry: tags, edges, evidence, staleness
  * - /tapestry-asset/* artifact serving
  */
@@ -101,7 +101,7 @@ tags:
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 closed-at: 2026-01-02T00:00:00Z
-close-reason: Data loaded successfully
+outcome: Data loaded successfully
 ---
 
 This is the foundation data fiber body.`);
@@ -341,7 +341,7 @@ created-at: 2026-01-02T00:00:00Z
 
   // ── Downstream concerns ──────────────────────────────────────
 
-  it('includes downstream non-rule fibers in response', async () => {
+  it('downstream only includes other DAG nodes, not non-rule fibers', async () => {
     writeFiber(FELT_DIR, 'rule-abc123', `---
 title: Rule fiber
 status: open
@@ -352,20 +352,22 @@ priority: 2
 created-at: 2026-01-01T00:00:00Z
 ---`);
 
-    writeFiber(FELT_DIR, 'task-def456', `---
-title: Investigate edge effects
+    writeFiber(FELT_DIR, 'rule-def456', `---
+title: Another rule
 status: open
-kind: task
+kind: claim
+tags:
+    - tapestry:my_other_claim
 depends-on:
     - rule-abc123
 priority: 2
 created-at: 2026-01-02T00:00:00Z
 ---`);
 
-    writeFiber(FELT_DIR, 'question-ghi789', `---
-title: Why is PTE low?
+    writeFiber(FELT_DIR, 'task-ghi789', `---
+title: Non-rule task
 status: open
-kind: question
+kind: task
 depends-on:
     - rule-abc123
 priority: 2
@@ -376,9 +378,8 @@ created-at: 2026-01-03T00:00:00Z
 
     expect(res.data.downstream).toBeDefined();
     const concerns = res.data.downstream['rule-abc123'];
-    expect(concerns).toHaveLength(2);
-    expect(concerns.map((c: any) => c.title)).toContain('Investigate edge effects');
-    expect(concerns.map((c: any) => c.title)).toContain('Why is PTE low?');
+    expect(concerns).toHaveLength(1);
+    expect(concerns[0].title).toBe('Another rule');
   });
 });
 
@@ -496,7 +497,7 @@ kind: claim
 priority: 2
 created-at: 2026-01-01T00:00:00Z
 closed-at: 2026-01-15T12:00:00Z
-close-reason: Analysis complete
+outcome: Analysis complete
 ---`;
 
     const fiber = parseFiber('complete-abc123.md', content);
@@ -633,8 +634,9 @@ describe('EvidenceReader', () => {
         ['f1', 'upstream'],
         ['f2', 'downstream'],
       ]);
+      const depsMap = new Map([['f2', ['f1']]]);
 
-      expect(computeStaleness('f2', ['f1'], evidenceMap as any, fiberSpecMap)).toBe('fresh');
+      expect(computeStaleness('f2', depsMap, evidenceMap as any, fiberSpecMap)).toBe('fresh');
     });
 
     it('returns stale when upstream is newer', () => {
@@ -646,8 +648,9 @@ describe('EvidenceReader', () => {
         ['f1', 'upstream'],
         ['f2', 'downstream'],
       ]);
+      const depsMap = new Map([['f2', ['f1']]]);
 
-      expect(computeStaleness('f2', ['f1'], evidenceMap as any, fiberSpecMap)).toBe('stale');
+      expect(computeStaleness('f2', depsMap, evidenceMap as any, fiberSpecMap)).toBe('stale');
     });
 
     it('returns no-evidence when fiber has no evidence', () => {
@@ -655,8 +658,9 @@ describe('EvidenceReader', () => {
         ['upstream', { specName: 'upstream', metrics: {}, artifacts: {}, mtime: 1000 }],
       ]);
       const fiberSpecMap = new Map([['f1', 'upstream']]);
+      const depsMap = new Map([['f2', ['f1']]]);
 
-      expect(computeStaleness('f2', ['f1'], evidenceMap as any, fiberSpecMap)).toBe('no-evidence');
+      expect(computeStaleness('f2', depsMap, evidenceMap as any, fiberSpecMap)).toBe('no-evidence');
     });
 
     it('returns fresh when no dependencies have evidence', () => {
@@ -667,8 +671,65 @@ describe('EvidenceReader', () => {
         ['f1', 'upstream'],
         ['f2', 'downstream'],
       ]);
+      const depsMap = new Map([['f2', ['f1']]]);
 
-      expect(computeStaleness('f2', ['f1'], evidenceMap as any, fiberSpecMap)).toBe('fresh');
+      expect(computeStaleness('f2', depsMap, evidenceMap as any, fiberSpecMap)).toBe('fresh');
+    });
+
+    it('stale through no-evidence grouping node', () => {
+      const evidenceMap = new Map([
+        ['source', { specName: 'source', metrics: {}, artifacts: {}, mtime: 20 }],
+        ['leaf', { specName: 'leaf', metrics: {}, artifacts: {}, mtime: 10 }],
+      ]);
+      const fiberSpecMap = new Map([
+        ['f1', 'source'],
+        ['f2', 'group'],
+        ['f3', 'leaf'],
+      ]);
+      const depsMap = new Map([
+        ['f2', ['f1']],
+        ['f3', ['f2']],
+      ]);
+
+      expect(computeStaleness('f3', depsMap, evidenceMap as any, fiberSpecMap)).toBe('stale');
+    });
+
+    it('fresh through no-evidence grouping node when upstream is older', () => {
+      const evidenceMap = new Map([
+        ['source', { specName: 'source', metrics: {}, artifacts: {}, mtime: 10 }],
+        ['leaf', { specName: 'leaf', metrics: {}, artifacts: {}, mtime: 20 }],
+      ]);
+      const fiberSpecMap = new Map([
+        ['f1', 'source'],
+        ['f2', 'group'],
+        ['f3', 'leaf'],
+      ]);
+      const depsMap = new Map([
+        ['f2', ['f1']],
+        ['f3', ['f2']],
+      ]);
+
+      expect(computeStaleness('f3', depsMap, evidenceMap as any, fiberSpecMap)).toBe('fresh');
+    });
+
+    it('stale through multiple no-evidence grouping nodes', () => {
+      const evidenceMap = new Map([
+        ['source', { specName: 'source', metrics: {}, artifacts: {}, mtime: 30 }],
+        ['leaf', { specName: 'leaf', metrics: {}, artifacts: {}, mtime: 10 }],
+      ]);
+      const fiberSpecMap = new Map([
+        ['f1', 'source'],
+        ['f2', 'groupA'],
+        ['f3', 'groupB'],
+        ['f4', 'leaf'],
+      ]);
+      const depsMap = new Map([
+        ['f2', ['f1']],
+        ['f3', ['f2']],
+        ['f4', ['f3']],
+      ]);
+
+      expect(computeStaleness('f4', depsMap, evidenceMap as any, fiberSpecMap)).toBe('stale');
     });
   });
 });

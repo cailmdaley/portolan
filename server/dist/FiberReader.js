@@ -3,7 +3,8 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 // ── Internal ───────────────────────────────────────────────────────
 /**
- * Read and parse all .md files in a city's .felt/ directory.
+ * Read and parse all directory-based fibers in a city's .felt/ directory.
+ * Each fiber is a directory containing `<slug>/<slug>.md`.
  * All public functions delegate to this, then filter/sort as needed.
  */
 async function readAllFibers(cityPath) {
@@ -12,17 +13,19 @@ async function readAllFibers(cityPath) {
         return [];
     }
     try {
-        const files = await readdir(feltPath);
-        const mdFiles = files.filter(f => f.endsWith('.md'));
+        const entries = await readdir(feltPath, { withFileTypes: true });
         const fibers = [];
-        for (const file of mdFiles) {
-            const filePath = join(feltPath, file);
+        for (const entry of entries) {
+            if (!entry.isDirectory())
+                continue;
+            const slug = entry.name;
+            const fiberPath = join(feltPath, slug, `${slug}.md`);
             try {
-                const content = await readFile(filePath, 'utf-8');
-                fibers.push(parseFiber(file, content));
+                const content = await readFile(fiberPath, 'utf-8');
+                fibers.push(parseFiber(slug, content));
             }
-            catch (err) {
-                console.warn(`Failed to read fiber file ${filePath}:`, err);
+            catch {
+                // Not every directory is a fiber (e.g., no matching .md)
             }
         }
         return fibers;
@@ -87,11 +90,10 @@ export async function getAllFibers(cityPath) {
 /**
  * Parse a fiber file into a Fiber object.
  *
- * @param filename The filename (e.g., "my-fiber-abc123.md")
+ * @param id The fiber ID (slug, e.g., "my-fiber")
  * @param content File content with YAML frontmatter
  */
-export function parseFiber(filename, content) {
-    const id = filename.replace(/\.md$/, '');
+export function parseFiber(id, content) {
     // Extract frontmatter
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     const frontmatter = fmMatch ? fmMatch[1] : '';
@@ -121,13 +123,13 @@ export function parseFiber(filename, content) {
     const dependsOn = getListField('depends-on');
     return {
         id,
-        title: getField('title') || id,
+        title: getField('name') || getField('title') || id,
         status: getField('status') || 'open',
         kind: getField('kind') || 'task',
         priority: parseInt(getField('priority') || '2', 10),
         createdAt: getField('created-at') || getField('created') || '',
         closedAt: getField('closed-at') || getField('closed') || undefined,
-        outcome: getField('outcome') || getField('close-reason') || undefined,
+        outcome: getField('outcome') || undefined,
         body: body || undefined,
         tags: tags,
         dependsOn: dependsOn,

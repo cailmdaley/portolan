@@ -32,6 +32,10 @@ Right: "This project is about separating truth from artifact. The pure E/B decom
 
 The first substitutes your visual imagination for Gemini's. The second gives Gemini the *meaning* and lets it find imagery you wouldn't have thought of.
 
+**Push toward abstraction.** The best sprites blur concept and architecture — letterforms becoming buildings, money becoming rivers, data becoming towers. If the first generation is too literal (just a realistic neighborhood), push Gemini toward the abstract: "what does this *feel* like as a city?" A city made of language itself is more interesting than a city where people speak French.
+
+**If including text in sprites:** Gemini will hallucinate fake words. Provide a curated list of real words it can use, and tell it that anything it's unsure of should be calligraphic flourish instead. Expect 1-2 iterations to get text right.
+
 ### Prompt Template
 
 ```
@@ -84,6 +88,9 @@ CLAUDE.md is a start, but go further: README, actual source, key documentation. 
 | portolan | This map app, meta/recursive | Cartographer's workshop drawing maps |
 | pure_eb | E/B mode separation, alchemical distillation | Filtering towers, dual streams, crystalline purity |
 | cmbx | CMB × Euclid cross-correlations, epochs in dialogue | Two districts (ancient/modern) bridged |
+| arxiv | Daily arXiv reading, cosmological discovery | Observatory mind-palace: telescopes, armillary sphere, scroll stacks |
+| french | French language class in France | Abstract: letterform buildings, cursive streets, accent-mark spires, real French words woven in |
+| finances | Couple's personal finance tracking in Paris | Counting house with teal money-rivers, coin-stack towers, open ledger books |
 
 ## Automation Recipe
 
@@ -127,6 +134,14 @@ agent-browser click @eSEND
 sleep 30   # Generation takes 15-40s
 ```
 
+**If `fill @eNN` fails with "matched 2 elements":** use JS to target the textbox directly:
+
+```bash
+agent-browser eval "const els = document.querySelectorAll('[role=\"textbox\"]'); els[els.length-1].focus(); document.execCommand('selectAll'); document.execCommand('delete'); document.execCommand('insertText', false, '<your prompt>')"
+```
+
+Then snapshot for the Send button ref and click it.
+
 ### 5. Extract the image URL
 
 ```bash
@@ -162,6 +177,10 @@ python3 -c "from PIL import Image; img=Image.open('/tmp/sprite-black.png').conve
 ```
 
 **If the edit fails** (background stays white — Gemini struggles with this on some compositions): reverse the approach. Regenerate the scene from scratch on black, describing the composition in detail. Then edit *that* to white. Black→white edits succeed more reliably than white→black.
+
+**Critical: Gemini often tries to change backgrounds programmatically** (writing Python to swap pixels) instead of using its image generation tool. When this happens, the result has obvious artifacts. Be explicit: "Use your IMAGE GENERATION tool (not code, not Python, not programmatic editing) to GENERATE a new image." This phrasing reliably triggers actual generation.
+
+**Bonus:** if the black-background version drifts slightly from the white and you prefer it, reverse the flow — use the black as the reference and ask Gemini to generate white from it. Either direction works for matting; you just need a matched pair.
 
 ### 8. Difference matting
 

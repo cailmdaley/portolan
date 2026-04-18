@@ -4,3 +4,5 @@ dist/
 *.log
 .osgrep
 nanobanana-output/
+.mystra/
+.mystra-cache/

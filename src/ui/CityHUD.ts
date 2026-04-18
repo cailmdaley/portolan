@@ -1,8 +1,9 @@
-import type { City, Session } from '../state/types'
+import type { City, ServerMeetingBridgeState, Session } from '../state/types'
 import { CityHUDContent } from './CityHUDContent'
 import { CityHUDFileTree } from './CityHUDFileTree'
 import { CityHUDHeader } from './CityHUDHeader'
 import type { NewWorkerDialog } from './NewWorkerDialog'
+import type { Fiber } from './hud-types'
 
 type HudTab = 'fibers' | 'files'
 
@@ -28,7 +29,9 @@ export class CityHUD {
   private onViewClaims: ((city: City) => void) | null = null
   private onViewPlaygrounds: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null = null
+  private onOpenDirectory: ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null = null
   private onFocusWorker: ((sessionId: string) => void) | null = null
+  private onPinnedFiberHover: ((slug: string | null) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
   constructor() {
@@ -41,6 +44,7 @@ export class CityHUD {
       list: this.filesList,
       onOpenFile: (fullPath) => this.openFile(fullPath),
     })
+    this.onOpenDirectory = (fullPath) => this.openDirectory(fullPath)
     this.header = new CityHUDHeader({
       headerWidget: this.headerWidget,
       getCurrentCity: () => this.currentCity,
@@ -48,7 +52,9 @@ export class CityHUD {
       getNewWorkerDialog: () => this.newWorkerDialog,
       getOnViewClaims: () => this.onViewClaims,
       getOnViewPlaygrounds: () => this.onViewPlaygrounds,
+      getOnOpenFile: () => this.onOpenFile,
       getOnFocusWorker: () => this.onFocusWorker,
+      getFibers: (): { open: Fiber[]; closed: Fiber[] } => this.content.getFibers(),
     })
     this.content = new CityHUDContent({
       sidebar: this.sidebar,
@@ -61,6 +67,8 @@ export class CityHUD {
       getCurrentTab: () => this.activeTab,
       getWebSocket: () => this.ws,
       getOnOpenFile: () => this.onOpenFile,
+      getOnOpenDirectory: () => this.onOpenDirectory,
+      getOnPinnedFiberHover: () => this.onPinnedFiberHover,
       renderEmptyFileSearchState: () => this.fileTree.renderEmptySearchState(),
     })
     this.setupEventHandlers()
@@ -84,6 +92,7 @@ export class CityHUD {
           <p class="hud-city-path"></p>
           <div class="hud-git-detail-content"></div>
           <div class="hud-header-workers"></div>
+          <div class="hud-header-meeting"></div>
         </div>
 
         <div class="hud-tabbar">
@@ -120,17 +129,15 @@ export class CityHUD {
       const path = e.composedPath()
       if (path.includes(this.container)) return
       const target = e.target as HTMLElement
-      const fileViewer = document.querySelector('.file-viewer-modal.visible')
-      if (fileViewer?.contains(target)) return
-      const fileViewerBackdrop = document.querySelector('.file-viewer-backdrop.visible')
-      if (fileViewerBackdrop?.contains(target)) return
+      const vellumModal = document.querySelector('.vellum-modal-scrim')
+      if (vellumModal?.contains(target)) return
       this.hide()
     }
 
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !this.container.classList.contains('visible')) return
-      const fileViewer = document.querySelector('.file-viewer-modal.visible')
-      if (fileViewer) return
+      const vellumModal = document.querySelector('.vellum-modal-scrim')
+      if (vellumModal) return
       if (this.content.hasSearchActivity()) {
         this.content.clearSearch()
         return
@@ -226,6 +233,32 @@ export class CityHUD {
     return this.container.classList.contains('visible')
   }
 
+  getCurrentCity(): City | null {
+    return this.currentCity
+  }
+
+  getFibers(): { open: Fiber[]; closed: Fiber[] } {
+    return this.content.getFibers()
+  }
+
+  setPinnedSlugs(slugs: Set<string>): void {
+    this.content.setPinnedSlugs(slugs)
+  }
+
+  /** Reflect map-pin hover back into the HUD: the matching `.hud-fiber-item`
+   *  gets a `.map-hovered` class so the user can see which HUD entry
+   *  corresponds to the lifted card on the map. Pair to
+   *  `setOnPinnedFiberHover`, which bridges the other direction. */
+  setMapHoveredFiber(slug: string | null): void {
+    const prev = this.sidebar.querySelectorAll<HTMLElement>('.hud-fiber-item.map-hovered')
+    prev.forEach((el) => el.classList.remove('map-hovered'))
+    if (!slug) return
+    const next = this.sidebar.querySelectorAll<HTMLElement>(
+      `.hud-fiber-item[data-fiber-id="${CSS.escape(slug)}"]`,
+    )
+    next.forEach((el) => el.classList.add('map-hovered'))
+  }
+
   getRuntimeStats(): {
     visible: boolean
     activeTab: 'fibers' | 'files'
@@ -268,8 +301,16 @@ export class CityHUD {
     this.onOpenFile = callback
   }
 
+  setOnOpenDirectory(callback: (fullPath: string, originId: string, cityPath: string, cityId: string) => void): void {
+    this.onOpenDirectory = callback
+  }
+
   setNewWorkerDialog(dialog: NewWorkerDialog): void {
     this.newWorkerDialog = dialog
+  }
+
+  setOnPinnedFiberHover(callback: (slug: string | null) => void): void {
+    this.onPinnedFiberHover = callback
   }
 
   setOnFocusWorker(callback: (sessionId: string) => void): void {
@@ -281,7 +322,12 @@ export class CityHUD {
     this.header.updateWorkers(sessions)
   }
 
+  updateMeetingState(meetingBridge: ServerMeetingBridgeState | null): void {
+    this.header.updateMeetingState(meetingBridge)
+  }
+
   handleMessage(message: unknown): boolean {
+    if (this.header.handleMessage(message)) return true
     if (this.content.handleMessage(message)) return true
     if (this.fileTree.handleMessage(message)) return true
     return false
@@ -290,6 +336,12 @@ export class CityHUD {
   private openFile(fullPath: string | undefined, line?: number): void {
     if (!fullPath || !this.currentCity || !this.onOpenFile) return
     this.onOpenFile(fullPath, this.currentCity.originId, this.currentCity.path, this.currentCity.id, line)
+  }
+
+  private openDirectory(fullPath: string | undefined): void {
+    if (!fullPath || !this.currentCity) return
+    this.switchTab('files')
+    this.fileTree.openDirectory(fullPath)
   }
 
   dispose(): void {

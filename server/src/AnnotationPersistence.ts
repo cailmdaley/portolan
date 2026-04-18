@@ -35,6 +35,11 @@ export interface Annotation {
   y?: number;              // percentage 0-100
   isImageAnnotation?: boolean;
 
+  // Slide annotation fields (for reveal.js / HTML presentations)
+  slide?: number;              // 0-indexed slide number
+  slideTitle?: string;         // heading text from the slide
+  isSlideAnnotation?: boolean;
+
   // Claims annotation fields (mutually exclusive with file anchoring)
   claimId?: string;        // claim identifier from dashboard
   claimTitle?: string;     // human-readable claim title

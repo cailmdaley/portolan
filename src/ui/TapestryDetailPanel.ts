@@ -2,7 +2,7 @@ import { renderArtifactGallery } from './ArtifactMedia'
 import { escapeHtml, formatFiberDate, renderMarkdown } from './utils'
 import type { City } from '../state/types'
 import type { TapestryNode, TapestryResponse } from './tapestry-types'
-import { shortName, stalenessColor, stalenessIcon, statusIcon } from './tapestry-helpers'
+import { shortName, stalenessColor, stalenessIcon, statusIcon, isSectionNode, decisionsForSection, decisionStatus, decisionStatusIcon, decisionVerdict } from './tapestry-helpers'
 
 const DETAIL_DEFAULT_WIDTH = 420
 const DETAIL_MIN_WIDTH = 280
@@ -95,6 +95,8 @@ export class TapestryDetailPanel {
       graphHtml = `<div class="tapestry-detail-graph">${rows.join('')}</div>`
     }
 
+    const decisionsHtml = isSectionNode(node) ? this.renderDecisions(node, tapestryData) : ''
+
     const bodyHtml = node.body
       ? `<div class="tapestry-detail-body editable-markdown" data-node-id="${escapeHtml(node.id)}"></div>`
       : ''
@@ -133,6 +135,7 @@ export class TapestryDetailPanel {
       </div>
       <div class="tapestry-detail-content">
         ${graphHtml}
+        ${decisionsHtml}
         ${outcomeHtml}
         ${artifactsHtml}
         ${bodyHtml}
@@ -286,6 +289,7 @@ export class TapestryDetailPanel {
     this.detailPanel.addEventListener('click', this.artifactClickHandler)
 
     this.bindDependencyLinks()
+    this.bindDecisionRows()
     this.bindContentLinks()
 
     const bodyEl = this.detailPanel.querySelector('.tapestry-detail-body')
@@ -356,6 +360,19 @@ export class TapestryDetailPanel {
     })
   }
 
+  private bindDecisionRows(): void {
+    this.detailPanel.querySelectorAll<HTMLElement>('.tapestry-decision-row').forEach((row) => {
+      const header = row.querySelector('.decision-row-header')
+      const detail = row.querySelector('.decision-row-detail')
+      const chevron = row.querySelector('.decision-chevron')
+      if (!header || !detail) return
+      header.addEventListener('click', () => {
+        const collapsed = detail.classList.toggle('collapsed')
+        if (chevron) chevron.textContent = collapsed ? '\u25B8' : '\u25BE'
+      })
+    })
+  }
+
   private bindContentLinks(): void {
     const contentEl = this.detailPanel.querySelector('.tapestry-detail-content')
     if (!contentEl) return
@@ -383,6 +400,58 @@ export class TapestryDetailPanel {
 
   private renderFiberTag(id: string, label: string): string {
     return `<span class="dep-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(label)}</span>`
+  }
+
+  private renderDecisions(node: TapestryNode, data: TapestryResponse): string {
+    const decisions = decisionsForSection(node, data)
+    if (decisions.length === 0) return ''
+
+    const resolved = decisions.filter((d) => decisionStatus(d, data.nodes) === 'resolved').length
+    const total = decisions.length
+
+    const rows = decisions.map((dec) => {
+      const status = decisionStatus(dec, data.nodes)
+      const icon = decisionStatusIcon(status)
+      const selectedOpt = dec.options.find((o) => o.id === dec.default)
+      const verdict = decisionVerdict(dec, data.nodes)
+      const evidenceLinks = dec.evidenceIds
+        .map((id) => {
+          const n = data.nodes.find((x) => x.id === id)
+          return n ? `<span class="dep-tag decision-evidence-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(shortName(n.title))}</span>` : ''
+        })
+        .filter(Boolean)
+        .join('')
+
+      const verdictHtml = verdict
+        ? `<div class="decision-verdict">${renderMarkdown(verdict.split('\n')[0])}</div>`
+        : ''
+
+      return `
+        <div class="tapestry-decision-row" data-decision-id="${escapeHtml(dec.id)}" data-status="${status}">
+          <div class="decision-row-header">
+            <span class="decision-status-icon decision-status-${status}">${icon}</span>
+            <span class="decision-label">${escapeHtml(dec.label)}</span>
+            <span class="decision-chevron">\u25B8</span>
+          </div>
+          <div class="decision-row-detail collapsed">
+            ${selectedOpt ? `<div class="decision-selected-option">${escapeHtml(selectedOpt.label)}</div>` : ''}
+            ${verdictHtml}
+            ${evidenceLinks ? `<div class="decision-evidence-links">${evidenceLinks}</div>` : ''}
+          </div>
+        </div>
+      `
+    }).join('')
+
+    return `
+      <div class="tapestry-decisions-section">
+        <div class="tapestry-collapsible" data-target="tapestry-decisions-list">
+          <span class="toggle-icon">\u25BE</span>
+          <span class="section-label">Decisions</span>
+          <span class="decision-summary">${resolved}/${total}</span>
+        </div>
+        <div class="tapestry-decisions-list">${rows}</div>
+      </div>
+    `
   }
 
   private renderEvidence(node: TapestryNode): string {

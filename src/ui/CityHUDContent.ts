@@ -23,6 +23,8 @@ interface CityHUDContentHost {
   getCurrentTab: () => HudTab
   getWebSocket: () => WebSocket | null
   getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
+  getOnOpenDirectory: () => ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null
+  getOnPinnedFiberHover: () => ((slug: string | null) => void) | null
   renderEmptyFileSearchState: () => void
 }
 
@@ -31,6 +33,7 @@ export class CityHUDContent {
   private fibersCallback: ((response: FibersResponse) => void) | null = null
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
+  private pinnedSlugs: Set<string> = new Set()
   private search: CityHUDSearch
 
   constructor(host: CityHUDContentHost) {
@@ -46,8 +49,10 @@ export class CityHUDContent {
       getCurrentTab: () => this.host.getCurrentTab(),
       getWebSocket: () => this.host.getWebSocket(),
       getFibers: () => ({ open: this.openFibers, closed: this.closedFibers }),
+      getPinnedSlugs: () => this.pinnedSlugs,
       onOpenFiber: (fiberId) => this.openFiber(fiberId),
       onOpenFile: (fullPath, line) => this.openFile(fullPath, line),
+      onOpenDirectory: (fullPath) => this.openDirectory(fullPath),
       renderEmptyFileSearchState: () => this.host.renderEmptyFileSearchState(),
     })
     this.setupDelegatedListeners()
@@ -79,6 +84,20 @@ export class CityHUDContent {
       openFibers: this.openFibers.length,
       closedFibers: this.closedFibers.length,
       ...this.search.getRuntimeStats(),
+    }
+  }
+
+  getFibers(): { open: Fiber[]; closed: Fiber[] } {
+    return {
+      open: this.openFibers,
+      closed: this.closedFibers,
+    }
+  }
+
+  setPinnedSlugs(slugs: Set<string>): void {
+    this.pinnedSlugs = slugs
+    if (this.openFibers.length || this.closedFibers.length) {
+      this.renderFibers(this.openFibers, this.closedFibers)
     }
   }
 
@@ -117,6 +136,31 @@ export class CityHUDContent {
   }
 
   private setupDelegatedListeners(): void {
+    // HUD→map pin hover bridge: when the cursor passes over a pinned fiber
+    // entry (either in the open fiber list or a search result), lift its
+    // corresponding card on the map. Closes the HUD↔map coherence loop that
+    // the `pinned` badge established visually — see tapestry-dissolves.
+    // mouseover/mouseout bubble, so a single listener on the sidebar covers
+    // both fiberList and searchResultsList.
+    let hoveredPinnedSlug: string | null = null
+    const setHoveredPinned = (slug: string | null): void => {
+      if (slug === hoveredPinnedSlug) return
+      hoveredPinnedSlug = slug
+      this.host.getOnPinnedFiberHover()?.(slug)
+    }
+    this.host.sidebar.addEventListener('mouseover', (event) => {
+      const item = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-item.pinned')
+      setHoveredPinned(item?.dataset.fiberId ?? null)
+    })
+    this.host.sidebar.addEventListener('mouseout', (event) => {
+      // If the relatedTarget (where the cursor moved to) is still inside a
+      // pinned item, mouseover will handle the transition. Only clear when
+      // leaving pinned items entirely.
+      const related = event.relatedTarget as HTMLElement | null
+      if (related?.closest?.('.hud-fiber-item.pinned')) return
+      setHoveredPinned(null)
+    })
+
     this.host.fiberList.addEventListener('click', (event) => {
       const handoff = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-handoff')
       if (handoff) {
@@ -155,8 +199,9 @@ export class CityHUDContent {
 
   private renderFiberItem(fiber: Fiber): string {
     const kind = fiber.kind || 'task'
+    const pinned = this.pinnedSlugs.has(fiber.id) ? ' pinned' : ''
     return `
-      <li class="hud-fiber-item ${kind}" data-fiber-id="${fiber.id}">
+      <li class="hud-fiber-item ${kind}${pinned}" data-fiber-id="${fiber.id}">
         <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
         <span class="hud-fiber-title">${escapeHtml(fiber.title)}</span>
         <span class="hud-fiber-kind">${kind}</span>
@@ -169,7 +214,7 @@ export class CityHUDContent {
     const currentCity = this.host.getCurrentCity()
     const onOpenFile = this.host.getOnOpenFile()
     if (!fiberId || !currentCity || !onOpenFile) return
-    onOpenFile(`${currentCity.path}/.felt/${fiberId}.md`, currentCity.originId, currentCity.path, currentCity.id)
+    onOpenFile(`${currentCity.path}/.felt/${fiberId}/${fiberId}.md`, currentCity.originId, currentCity.path, currentCity.id)
   }
 
   private openFile(fullPath: string | undefined, line?: number): void {
@@ -177,5 +222,12 @@ export class CityHUDContent {
     const onOpenFile = this.host.getOnOpenFile()
     if (!fullPath || !currentCity || !onOpenFile) return
     onOpenFile(fullPath, currentCity.originId, currentCity.path, currentCity.id, line)
+  }
+
+  private openDirectory(fullPath: string | undefined): void {
+    const currentCity = this.host.getCurrentCity()
+    const onOpenDirectory = this.host.getOnOpenDirectory()
+    if (!fullPath || !currentCity || !onOpenDirectory) return
+    onOpenDirectory(fullPath, currentCity.originId, currentCity.path, currentCity.id)
   }
 }

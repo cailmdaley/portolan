@@ -96,4 +96,40 @@ describe('HttpApi — /file-content endpoint', () => {
     expect(res.data.path).toBe(pngPath);
     expect(res.data.url).toBe(`data:image/png;base64,${pngBytes.toString('base64')}`);
   });
+
+  it('streams project files with content types inferred from extension', async () => {
+    const htmlPath = join(TEST_DIR, 'slides deck', 'index.html');
+    mkdirSync(join(TEST_DIR, 'slides deck'), { recursive: true });
+    writeFileSync(htmlPath, '<!doctype html><link rel="stylesheet" href="slides.css">');
+
+    const encodedPath = htmlPath.split('/').map(encodeURIComponent).join('/');
+    const res = await rawRequest(api, `/project-file/local${encodedPath}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(new TextDecoder().decode(res.body)).toContain('slides.css');
+  });
+
+  it('injects the HTML location bridge into project HTML files', async () => {
+    const htmlPath = join(TEST_DIR, 'deck.html');
+    writeFileSync(htmlPath, '<!doctype html><html><head><title>Deck</title></head><body>slides</body></html>');
+
+    const encodedPath = htmlPath.split('/').map(encodeURIComponent).join('/');
+    const res = await rawRequest(api, `/project-file/local${encodedPath}?_portolan_frame=test-frame`);
+    const body = new TextDecoder().decode(res.body);
+
+    expect(res.status).toBe(200);
+    expect(body).toContain('portolan-html-location');
+    expect(body).toContain("window.parent.postMessage");
+  });
+
+  it('returns 404 for missing project files', async () => {
+    const missingPath = join(TEST_DIR, 'missing', 'index.html');
+    const encodedPath = missingPath.split('/').map(encodeURIComponent).join('/');
+
+    const res = await rawRequest(api, `/project-file/local${encodedPath}`);
+
+    expect(res.status).toBe(404);
+    expect(new TextDecoder().decode(res.body)).toContain('File not found');
+  });
 });

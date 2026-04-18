@@ -16,7 +16,7 @@ import type { City } from './CityManager.js';
 import { cliProvider, getProvider } from './cli-provider.js';
 import { KittyHandoff } from './KittyHandoff.js';
 import { KittySessionController } from './KittySessionController.js';
-import { shellEscape } from './ShellPathUtils.js';
+import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 // ============================================================================
 // Types
@@ -114,6 +114,7 @@ export class KittyIntegration {
     const timestamp = Date.now().toString(36).slice(-4);
     const tmuxSession = customName ? customName : `${baseName}-${timestamp}`;
     const escapedSession = shellEscape(tmuxSession);
+    const exactSessionTarget = exactTmuxTarget(tmuxSession);
 
     // Build CLI command with optional flags
     const provider = cli ? getProvider(cli) : cliProvider;
@@ -128,7 +129,7 @@ export class KittyIntegration {
 
       // Open kitty tab that SSH's to remote and attaches to tmux
       const tabTitle = `${tmuxSession}@${originDisplayName || 'remote'}`;
-      const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${shellEscape(tabTitle)} ssh -tt ${sshHost} tmux attach -t ${escapedSession}`;
+      const kittyCmd = `kitty @ --to ${socket} launch --type=tab ${this.getSshAuthSockEnv()} --title=${shellEscape(tabTitle)} ssh -tt ${sshHost} tmux attach -t ${exactSessionTarget}`;
       console.log('[CreateWorker] Opening kitty tab with SSH:', kittyCmd);
       execSync(kittyCmd, { stdio: 'pipe' });
 
@@ -144,7 +145,7 @@ export class KittyIntegration {
       execSync(tmuxCmd, { stdio: 'pipe' });
 
       // Open kitty tab attached to the tmux session
-      const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${escapedSession}`;
+      const kittyCmd = `kitty @ --to ${socket} launch --type=tab --cwd=${escapedCwd} --title=${escapedSession} tmux attach -t ${exactSessionTarget}`;
       console.log('[CreateWorker] Opening kitty tab:', kittyCmd);
       execSync(kittyCmd, { stdio: 'pipe' });
 
@@ -182,10 +183,10 @@ export class KittyIntegration {
     // Check if custom-named tmux session already exists
     if (customName) {
       try {
-        const escapedSession = shellEscape(customName);
+        const exactSessionTarget = exactTmuxTarget(customName);
         const checkCmd = sshHost
-          ? `ssh -T ${sshHost} 'tmux has-session -t ${escapedSession} 2>/dev/null'`
-          : `tmux has-session -t ${escapedSession} 2>/dev/null`;
+          ? `ssh -T ${sshHost} 'tmux has-session -t ${exactSessionTarget} 2>/dev/null'`
+          : `tmux has-session -t ${exactSessionTarget} 2>/dev/null`;
         execSync(checkCmd, { stdio: 'pipe' });
         // If we get here, session exists
         console.log(`[NewWorker] Session "${customName}" already exists`);

@@ -11,16 +11,9 @@
     "export:tapestry": "tsx scripts/export-tapestry.ts"
   },
   "dependencies": {
-    "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.1",
-    "@codemirror/lang-css": "^6.3.1",
-    "@codemirror/lang-html": "^6.4.11",
-    "@codemirror/lang-javascript": "^6.2.4",
-    "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.5.0",
-    "@codemirror/lang-python": "^6.2.1",
     "@codemirror/language": "^6.12.1",
-    "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.11",
     "@replit/codemirror-vim": "^6.3.0",
@@ -33,8 +26,11 @@
     "katex": "^0.16.27",
     "marked": "^17.0.1",
     "marked-katex-extension": "^5.1.6",
-    "pdfjs-dist": "^5.4.624",
-    "three": "^0.172.0"
+    "pdfjs-dist": "^5.6.205",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.172.0",
+    "vellum": "file:../lightcone/vellum"
   },
   "devDependencies": {
     "@types/d3-drag": "^3.0.7",
@@ -42,8 +38,11 @@
     "@types/d3-force": "^3.0.10",
     "@types/d3-selection": "^3.0.11",
     "@types/d3-zoom": "^3.0.8",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
     "@types/sharp": "^0.31.1",
     "@types/three": "^0.172.0",
+    "@vitejs/plugin-react": "^4.7.0",
     "sharp": "^0.34.5",
     "typescript": "~5.9.3",
     "vite": "^7.2.4"

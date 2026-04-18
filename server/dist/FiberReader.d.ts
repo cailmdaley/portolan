@@ -35,8 +35,8 @@ export declare function getAllFibers(cityPath: string): Promise<Fiber[]>;
 /**
  * Parse a fiber file into a Fiber object.
  *
- * @param filename The filename (e.g., "my-fiber-abc123.md")
+ * @param id The fiber ID (slug, e.g., "my-fiber")
  * @param content File content with YAML frontmatter
  */
-export declare function parseFiber(filename: string, content: string): Fiber;
+export declare function parseFiber(id: string, content: string): Fiber;
 //# sourceMappingURL=FiberReader.d.ts.map

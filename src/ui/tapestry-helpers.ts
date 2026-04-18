@@ -1,5 +1,5 @@
 import { STALENESS_COLORS } from './utils'
-import type { TapestryNode, Staleness } from './tapestry-types'
+import type { TapestryNode, TapestryDecision, TapestryResponse, Staleness } from './tapestry-types'
 
 // ── Layout constants ────────────────────────────────────────────────
 
@@ -114,6 +114,69 @@ export function ellipsePoint(cx: number, cy: number, rx: number, ry: number, the
     x: cx + rx * Math.cos(theta),
     y: cy + ry * Math.sin(theta),
   }
+}
+
+// ── Decision helpers ────────────────────────────────────────────────
+
+export type DecisionStatus = 'resolved' | 'open' | 'suspicious'
+
+/** Find decisions relevant to a section node (tier:1) by checking if any
+ *  evidenceIds are in this section's subtree (the node itself + its downstream). */
+export function decisionsForSection(
+  node: TapestryNode,
+  data: TapestryResponse,
+): TapestryDecision[] {
+  if (!data.decisions?.length) return []
+  const subtreeIds = new Set<string>()
+  subtreeIds.add(node.id)
+  const downstream = data.downstream[node.id] || []
+  for (const d of downstream) subtreeIds.add(d.id)
+  // Also include nodes that depend on this section node
+  for (const n of data.nodes) {
+    if (n.dependsOn.includes(node.id)) subtreeIds.add(n.id)
+  }
+  return data.decisions.filter(
+    (dec) => dec.evidenceIds.some((eid) => subtreeIds.has(eid)),
+  )
+}
+
+/** Derive decision status from its evidence nodes. */
+export function decisionStatus(
+  decision: TapestryDecision,
+  nodes: TapestryNode[],
+): DecisionStatus {
+  if (decision.evidenceIds.length === 0) return 'open'
+  const evidenceNodes = decision.evidenceIds
+    .map((id) => nodes.find((n) => n.id === id))
+    .filter(Boolean) as TapestryNode[]
+  if (evidenceNodes.length === 0) return 'open'
+  const allClosed = evidenceNodes.every((n) => n.status === 'closed' && n.outcome)
+  if (allClosed) {
+    // Check if any outcome hints at uncertainty
+    const suspicious = evidenceNodes.some((n) =>
+      /\b(suspicious|uncertain|todo|open question|unresolved)\b/i.test(n.outcome || ''),
+    )
+    return suspicious ? 'suspicious' : 'resolved'
+  }
+  return 'open'
+}
+
+export function decisionStatusIcon(status: DecisionStatus): string {
+  if (status === 'resolved') return '\u2713'
+  if (status === 'suspicious') return '?'
+  return '\u25CB'
+}
+
+/** Get the primary verdict for a decision — the outcome of its first evidence node. */
+export function decisionVerdict(
+  decision: TapestryDecision,
+  nodes: TapestryNode[],
+): string | null {
+  for (const id of decision.evidenceIds) {
+    const node = nodes.find((n) => n.id === id)
+    if (node?.outcome) return node.outcome
+  }
+  return null
 }
 
 // ── Text helpers ────────────────────────────────────────────────────

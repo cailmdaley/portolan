@@ -86,6 +86,31 @@ export class CityHUDFileTree {
     this.render()
   }
 
+  openDirectory(path: string): void {
+    if (!this.currentCity) return
+
+    const root = this.currentCity.path.replace(/\/$/, '')
+    const target = path.replace(/\/$/, '')
+    if (!(target === root || target.startsWith(`${root}/`))) return
+
+    this.expandedDirs.add(root)
+    if (!this.directoryCache.has(root) && !this.loadingDirs.has(root)) {
+      this.requestDirectoryListing(root)
+    }
+
+    const segments = target.slice(root.length).replace(/^\/+/, '').split('/').filter(Boolean)
+    let currentPath = root
+    for (const segment of segments) {
+      currentPath = `${currentPath}/${segment}`
+      this.expandedDirs.add(currentPath)
+      if (!this.directoryCache.has(currentPath) && !this.loadingDirs.has(currentPath)) {
+        this.requestDirectoryListing(currentPath)
+      }
+    }
+
+    this.render()
+  }
+
   private handleListClick = (e: MouseEvent): void => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('.hud-tree-row')
     if (!row) return

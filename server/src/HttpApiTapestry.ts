@@ -6,7 +6,9 @@ import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
+import { markdownToMdast } from './MarkdownToMdast.js';
 import { shellEscape } from './ShellPathUtils.js';
+import { parse as parseYaml } from 'yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -55,7 +57,7 @@ export class HttpApiTapestry {
     try {
       const allFibers = await this.getAllCityFibers(city.path, sshHost);
       const ruleFibers = allFibers.filter((fiber) =>
-        fiber.tags?.some((tag) => tag.startsWith('tapestry:') || tag.startsWith('rule:'))
+        fiber.tags?.some((tag) => tag.startsWith('tapestry:'))
       );
       const fiberIds = new Set(ruleFibers.map((fiber) => fiber.id));
 
@@ -81,11 +83,16 @@ export class HttpApiTapestry {
         );
       }
 
+      const depsMap = new Map<string, string[]>();
+      for (const fiber of ruleFibers) {
+        depsMap.set(fiber.id, (fiber.dependsOn || []).filter((dep) => fiberIds.has(dep)));
+      }
+
       const nodes = ruleFibers.map((fiber) => {
         const specName = fiberSpecMap.get(fiber.id);
         const evidence = specName ? evidenceMap.get(specName) : null;
-        const deps = (fiber.dependsOn || []).filter((dependency) => fiberIds.has(dependency));
-        const staleness = computeStaleness(fiber.id, deps, evidenceMap, fiberSpecMap);
+        const deps = depsMap.get(fiber.id) || [];
+        const staleness = computeStaleness(fiber.id, depsMap, evidenceMap, fiberSpecMap);
 
         return {
           id: fiber.id,
@@ -119,7 +126,7 @@ export class HttpApiTapestry {
       }
 
       const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
-      for (const fiber of allFibers) {
+      for (const fiber of ruleFibers) {
         for (const dependency of fiber.dependsOn || []) {
           if (fiberIds.has(dependency)) {
             if (!downstreamMap[dependency]) {
@@ -149,16 +156,140 @@ export class HttpApiTapestry {
         dependsOn: fiber.dependsOn || [],
       }));
 
+      const decisions = await this.readASTRADecisions(city.path, nodes, sshHost);
+
       this.sendJsonSuccess(res, {
         nodes,
         links,
         downstream: downstreamMap,
         config,
         fibers,
+        decisions,
       });
     } catch (error: any) {
       console.error('Failed to build tapestry:', error);
       this.sendJsonError(res, 500, 'Failed to build tapestry: ' + error.message);
+    }
+  }
+
+  /**
+   * /astra/graph?cityId=X — vellum-shaped AstraGraph (nodes + links).
+   *
+   * Reshapes the same fiber data /tapestry reads, but emits vellum's
+   * GraphNode/GraphLink types (see lightcone/vellum/src/utils/content-types.ts).
+   * Unlike /tapestry this returns *all* fibers, not only those tagged
+   * `tapestry:`, because vellum's graph view handles filtering itself.
+   *
+   * First-pass fields: id, slug, label, status, tags, kind, createdAt.
+   * Links default to kind 'data-flow' (from dependsOn). ASTRA extras
+   * (decisions/findings/inputs/outputs, tempered, nested containment, wikilink
+   * cites) are intentionally stubbed — they grow in as mystra-on-fiber lands.
+   */
+  async handleAstraGraph(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const fiberIds = new Set(allFibers.map((fiber) => fiber.id));
+
+      const nodes = allFibers.map((fiber) => ({
+        id: fiber.id,
+        slug: fiber.id,
+        label: fiber.title,
+        status: fiber.status,
+        tags: fiber.tags ?? [],
+        kind: fiber.kind,
+        createdAt: fiber.createdAt || undefined,
+        tempered: false,
+        hasASTRA: false,
+        decisionCount: 0,
+        findingCount: 0,
+      }));
+
+      const links: Array<{ source: string; target: string; kind: 'data-flow' }> = [];
+      for (const fiber of allFibers) {
+        for (const dependency of fiber.dependsOn ?? []) {
+          if (fiberIds.has(dependency)) {
+            links.push({ source: dependency, target: fiber.id, kind: 'data-flow' });
+          }
+        }
+      }
+
+      const rootSlug = resolveRootSlug(cityId, fiberIds, allFibers);
+
+      this.sendJsonSuccess(res, { nodes, links, rootSlug });
+    } catch (error: any) {
+      console.error('Failed to build astra graph:', error);
+      this.sendJsonError(res, 500, 'Failed to build astra graph: ' + error.message);
+    }
+  }
+
+  /**
+   * /fiber/:slug?cityId=X — vellum-shaped FiberContent.
+   *
+   * Finds the fiber by id within the given city, parses frontmatter as YAML,
+   * and transforms the body to mdast via remark + a wikilink plugin (mirror of
+   * mystra's markdownToMystAST). Returns null (404) when the fiber is absent.
+   *
+   * Hybrid HTTP content channel per [[vellum-portolan-adapter-data-gap]]:
+   * content is served on demand; WS stays the liveness channel.
+   */
+  async handleFiberContent(url: URL, slug: string, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+    if (!slug) {
+      this.sendJsonError(res, 400, 'Missing fiber slug');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      const raw = await this.readFiberFile(city.path, slug, sshHost);
+      if (raw === null) {
+        this.sendJsonError(res, 404, `Fiber "${slug}" not found in city`);
+        return;
+      }
+
+      const { frontmatter, body } = splitFrontmatter(raw);
+      const mdast = body.trim() ? markdownToMdast(body) : undefined;
+      const dependsOn: string[] = Array.isArray(frontmatter['depends-on'])
+        ? frontmatter['depends-on']
+            .map((dep: any) => (typeof dep === 'string' ? dep : dep?.id))
+            .filter((dep: unknown): dep is string => typeof dep === 'string')
+        : [];
+
+      this.sendJsonSuccess(res, {
+        slug,
+        kind: typeof frontmatter['kind'] === 'string' ? frontmatter['kind'] : undefined,
+        mdast,
+        frontmatter,
+        dependencies: dependsOn,
+      });
+    } catch (error: any) {
+      console.error('Failed to render fiber content:', error);
+      this.sendJsonError(res, 500, 'Failed to render fiber content: ' + error.message);
     }
   }
 
@@ -185,6 +316,34 @@ export class HttpApiTapestry {
     await this.serveTapestryAsset(cityId, assetPath, res);
   }
 
+  private async readFiberFile(
+    cityPath: string,
+    slug: string,
+    sshHost?: string,
+  ): Promise<string | null> {
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
+      return null;
+    }
+    const relative = `.felt/${slug}/${slug.split('/').pop()}.md`;
+    if (!sshHost) {
+      try {
+        return await readFile(`${cityPath}/${relative}`, 'utf-8');
+      } catch {
+        return null;
+      }
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        'ssh',
+        [sshHost, `cat ${shellEscape(`${cityPath}/${relative}`)} 2>/dev/null`],
+        { maxBuffer: 5 * 1024 * 1024, timeout: 15000 },
+      );
+      return stdout || null;
+    } catch {
+      return null;
+    }
+  }
+
   private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
     if (!sshHost) {
       return getAllFibers(cityPath);
@@ -206,7 +365,7 @@ export class HttpApiTapestry {
       priority: fiber.priority || 2,
       createdAt: fiber.created_at || '',
       closedAt: fiber.closed_at,
-      outcome: fiber.outcome || fiber.close_reason,
+      outcome: fiber.outcome,
       body: fiber.body,
       tags: fiber.tags?.flatMap((tag: string) =>
         tag.includes(',') ? tag.split(',').map((value: string) => value.trim()).filter(Boolean) : [tag]
@@ -282,6 +441,109 @@ export class HttpApiTapestry {
     }
   }
 
+  private async readASTRADecisions(
+    cityPath: string,
+    nodes: Array<{ id: string; specName: string | null; tags: string[] }>,
+    sshHost?: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      let content = '';
+      const astraPath = `${cityPath}/astra.yaml`;
+      if (sshHost) {
+        const { stdout } = await execFileAsync(
+          'ssh',
+          [sshHost, `cat ${shellEscape(astraPath)} 2>/dev/null || echo ''`],
+          { maxBuffer: 1024 * 1024, timeout: 10000 },
+        );
+        content = stdout.trim();
+      } else {
+        try {
+          content = await readFile(astraPath, 'utf-8');
+        } catch {
+          return [];
+        }
+      }
+      if (!content) return [];
+
+      const { parse } = await import('yaml');
+      const data = parse(content);
+      if (!data?.decisions || typeof data.decisions !== 'object') return [];
+
+      // Build specName→nodeId and tag→nodeId maps for evidence wiring
+      const specToIds = new Map<string, string[]>();
+      const tagToIds = new Map<string, string[]>();
+      for (const node of nodes) {
+        if (node.specName) {
+          const ids = specToIds.get(node.specName) || [];
+          ids.push(node.id);
+          specToIds.set(node.specName, ids);
+        }
+        for (const tag of node.tags) {
+          const ids = tagToIds.get(tag) || [];
+          ids.push(node.id);
+          tagToIds.set(tag, ids);
+        }
+      }
+
+      const flattenDecisions = (
+        rawDecisions: Record<string, any>,
+        analysisId: string,
+      ): Array<Record<string, unknown>> => {
+        return Object.entries(rawDecisions)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([id, dec]) => {
+            const tapestryNodes: string[] = dec.tapestry_nodes || [];
+            let evidenceIds: string[] = [];
+            for (const specName of tapestryNodes) {
+              const matched = specToIds.get(specName) || [];
+              for (const nid of matched) {
+                if (!evidenceIds.includes(nid)) evidenceIds.push(nid);
+              }
+            }
+            if (evidenceIds.length === 0) {
+              for (const nid of tagToIds.get(`evidence:${id}`) || []) {
+                if (!evidenceIds.includes(nid)) evidenceIds.push(nid);
+              }
+            }
+            evidenceIds.sort();
+
+            const options = Object.entries(dec.options || {})
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([optId, opt]: [string, any]) => ({
+                id: optId,
+                label: opt.label || optId,
+                description: opt.description || '',
+                excluded: opt.excluded || false,
+                excludedReason: opt.excluded_reason || '',
+              }));
+
+            return {
+              id,
+              label: dec.label || id,
+              rationale: dec.rationale || '',
+              tags: dec.tags || [],
+              default: dec.default || '',
+              analysisId,
+              options,
+              evidenceIds,
+            };
+          });
+      };
+
+      const decisions = flattenDecisions(data.decisions, '');
+      if (data.analyses && typeof data.analyses === 'object') {
+        for (const [analysisId, analysis] of Object.entries(data.analyses as Record<string, any>).sort(([a], [b]) => a.localeCompare(b))) {
+          if (analysis.decisions && typeof analysis.decisions === 'object') {
+            decisions.push(...flattenDecisions(analysis.decisions, analysisId));
+          }
+        }
+      }
+      return decisions;
+    } catch {
+      return [];
+    }
+  }
+
   private async serveTapestryAsset(cityId: string, assetPath: string, res: ServerResponse): Promise<void> {
     if (assetPath.includes('..') || /[`$"\\]/.test(assetPath)) {
       res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
@@ -325,4 +587,41 @@ export class HttpApiTapestry {
       res.end('Failed to read asset');
     }
   }
+}
+
+/**
+ * Pick the fiber a vellum workspace should land on for a city. Convention
+ * from CLAUDE.md: each project has a root fiber at `.felt/{project}/{project}.md`
+ * — `readAllFibers` keys that by the directory name, so the id equals the
+ * cityId. Falls through to the nested path (for non-conforming projects) and
+ * then to any fiber. Returns null only when the city has no fibers at all.
+ */
+function resolveRootSlug(
+  cityId: string,
+  fiberIds: Set<string>,
+  allFibers: Fiber[],
+): string | null {
+  if (fiberIds.has(cityId)) return cityId;
+  const nested = `${cityId}/${cityId}`;
+  if (fiberIds.has(nested)) return nested;
+  return allFibers[0]?.id ?? null;
+}
+
+const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+
+function splitFrontmatter(raw: string): { frontmatter: Record<string, any>; body: string } {
+  const match = raw.match(FRONTMATTER_RE);
+  if (!match) {
+    return { frontmatter: {}, body: raw };
+  }
+  let frontmatter: Record<string, any> = {};
+  try {
+    const parsed = parseYaml(match[1]);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      frontmatter = parsed as Record<string, any>;
+    }
+  } catch {
+    frontmatter = {};
+  }
+  return { frontmatter, body: raw.slice(match[0].length) };
 }

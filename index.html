@@ -164,6 +164,45 @@
         line-height: 1.1;
       }
 
+      /* Drag-to-pin ghost — follows the cursor while a fiber is being
+         dragged from the HUD onto the map. pointer-events:none so
+         elementFromPoint resolves to the actual drop target underneath. */
+      .pin-drag-ghost {
+        position: fixed;
+        z-index: 10000;
+        pointer-events: none;
+        transform: translate(-50%, -100%);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px 4px 6px;
+        background: rgba(248, 240, 228, 0.95);
+        border: 1px solid rgba(140, 110, 80, 0.55);
+        border-radius: 12px;
+        box-shadow: 0 4px 10px rgba(30, 20, 10, 0.18);
+        font-family: 'EB Garamond', Garamond, serif;
+        font-size: 14px;
+        color: #2E2A26;
+        white-space: nowrap;
+        max-width: 320px;
+      }
+      .pin-drag-ghost .pin-drag-pin { font-size: 16px; }
+      .pin-drag-ghost .pin-drag-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      body.pin-dragging, body.pin-dragging * {
+        cursor: grabbing !important;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      /* Native external drop in progress (Finder file, browser tab/link). The
+         canvas accepts the drop; this gives a soft inset gold glow as a hint
+         that the map is the receiver. See FileDropController. */
+      body.pin-dropping #canvas {
+        box-shadow: inset 0 0 0 3px rgba(154, 123, 53, 0.55);
+      }
+
       .worker-label {
         font-family: 'EB Garamond', Garamond, serif;
         font-weight: 500;
@@ -202,7 +241,16 @@
         display: none !important;
       }
 
-      /* Worker file hover tooltip */
+      /* Pinned-card hover preview — mounts a vellum FiberCard. The wrapper is
+         a pure positioner: the card paints its own parchment surface via
+         vellum.css, so the wrapper only contributes drop-shadow + layering. */
+      .pin-hover-preview {
+        position: fixed;
+        z-index: 3000;
+        pointer-events: none;
+        filter: drop-shadow(0 8px 18px rgba(30, 20, 10, 0.25));
+      }
+
       .worker-file-tooltip {
         position: fixed;
         z-index: 3000;
@@ -2188,6 +2236,24 @@
       .hud-fiber-item.question .hud-fiber-kind { color: #7b5a8a; }
       .hud-fiber-item.doc .hud-fiber-kind { color: #5a6b8a; }
 
+      /* Fiber is already pinned on the map — subtle gold inset bar on the
+         left so the HUD stays quiet but you can see at a glance which fibers
+         already have a card placed. Matches the sepia-accent / city-hex palette. */
+      .hud-fiber-item.pinned {
+        box-shadow: inset 3px 0 0 var(--sepia-accent);
+      }
+      .hud-fiber-item.pinned .hud-fiber-title::after {
+        content: " ·";
+        color: var(--sepia-accent);
+      }
+
+      /* Mirror of on-map pin hover: when the pin card on the map is lifted,
+         its corresponding HUD entry gets the same faint gold wash so the two
+         surfaces feel stitched together. */
+      .hud-fiber-item.map-hovered {
+        background: rgba(154, 123, 53, 0.14);
+      }
+
       .hud-fiber-handoff {
         flex-shrink: 0;
         background: none;
@@ -2356,6 +2422,19 @@
         display: none;
       }
 
+      .hud-header-meeting {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid var(--parchment-edge);
+      }
+
+      .hud-header-meeting:empty {
+        display: none;
+      }
+
       .hud-header-workers-label {
         font-family: var(--font-main);
         font-size: var(--hud-font-sm);
@@ -2416,6 +2495,354 @@
         border-color: var(--ink-faded);
       }
 
+      .hud-meeting-header {
+        display: flex;
+        align-items: center;
+      }
+
+      .hud-meeting-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 9px;
+        border: 1px solid rgba(120, 96, 64, 0.18);
+        border-radius: 6px;
+        background: rgba(255, 252, 246, 0.55);
+      }
+
+      .hud-meeting-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .hud-meeting-status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 56px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-family: var(--font-mono);
+        font-size: var(--hud-font-xs);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        background: rgba(122, 115, 104, 0.16);
+        color: var(--ink-light);
+      }
+
+      .hud-meeting-status.running {
+        background: rgba(74, 98, 88, 0.16);
+        color: var(--verdigris);
+      }
+
+      .hud-meeting-status.stopped {
+        background: rgba(122, 115, 104, 0.16);
+        color: var(--ink-light);
+      }
+
+      .hud-meeting-status.error {
+        background: rgba(138, 85, 72, 0.16);
+        color: var(--rust);
+      }
+
+      .hud-meeting-worker {
+        min-width: 0;
+        font-family: var(--font-mono);
+        font-size: var(--hud-font-xs);
+        color: var(--ink-body);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .hud-meeting-time,
+      .hud-meeting-meta,
+      .hud-meeting-empty {
+        font-size: var(--hud-font-sm);
+        color: var(--ink-faded);
+      }
+
+      .hud-meeting-time {
+        margin-left: auto;
+        white-space: nowrap;
+      }
+
+      .hud-meeting-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 10px;
+      }
+
+      .hud-meeting-preview {
+        font-size: var(--hud-font-sm);
+        color: var(--ink-body);
+        line-height: 1.3;
+      }
+
+      .hud-meeting-brief {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 6px 7px;
+        border: 1px solid rgba(120, 96, 64, 0.14);
+        border-radius: 5px;
+        background:
+          linear-gradient(180deg, rgba(255, 252, 246, 0.86), rgba(247, 241, 232, 0.78));
+      }
+
+      .hud-meeting-brief-section,
+      .hud-meeting-brief-narrative {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .hud-meeting-brief-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding-left: 8px;
+        border-left: 2px solid rgba(154, 123, 53, 0.28);
+      }
+
+      .hud-meeting-thread {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 6px 7px;
+        border: 1px solid rgba(120, 96, 64, 0.14);
+        border-radius: 5px;
+        background: rgba(255, 252, 246, 0.72);
+      }
+
+      .hud-meeting-thread-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding-left: 8px;
+        border-left: 2px solid rgba(120, 96, 64, 0.16);
+      }
+
+      .hud-meeting-thread-item.selectable {
+        cursor: pointer;
+        padding: 5px 6px 5px 8px;
+        margin-left: -6px;
+        border-radius: 5px;
+        transition: background 120ms, border-color 120ms, box-shadow 120ms;
+      }
+
+      .hud-meeting-thread-item.selectable:hover,
+      .hud-meeting-thread-item.selectable:focus {
+        outline: none;
+        background: rgba(90, 123, 123, 0.08);
+      }
+
+      .hud-meeting-thread-item.selected {
+        background: rgba(90, 123, 123, 0.12);
+        box-shadow: inset 0 0 0 1px rgba(90, 123, 123, 0.16);
+      }
+
+      .hud-meeting-thread-transcript {
+        border-left-color: rgba(90, 123, 123, 0.42);
+      }
+
+      .hud-meeting-thread-update {
+        border-left-color: rgba(138, 85, 72, 0.42);
+      }
+
+      .hud-meeting-thread-candidate {
+        border-left-color: rgba(154, 123, 53, 0.42);
+      }
+
+      .hud-meeting-thread-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        font-family: var(--font-mono);
+        font-size: var(--hud-font-xs);
+        color: var(--ink-faded);
+      }
+
+      .hud-meeting-thread-lane {
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--ink-light);
+      }
+
+      .hud-meeting-thread-select {
+        margin-left: auto;
+        color: var(--verdigris);
+      }
+
+      .hud-meeting-thread-text {
+        font-size: var(--hud-font-sm);
+        color: var(--ink-body);
+        line-height: 1.35;
+        white-space: pre-wrap;
+      }
+
+      .hud-meeting-update-preview {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: var(--hud-font-sm);
+        color: var(--ink-body);
+        line-height: 1.3;
+      }
+
+      .hud-meeting-update-label {
+        font-family: var(--font-main);
+        font-size: var(--hud-font-xs);
+        font-variant: small-caps;
+        font-feature-settings: 'smcp' 1;
+        letter-spacing: 0.05em;
+        color: var(--ink-faded);
+      }
+
+      .hud-meeting-error {
+        font-size: var(--hud-font-sm);
+        color: var(--rust);
+        line-height: 1.3;
+      }
+
+      .hud-meeting-update {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding-top: 2px;
+        border-top: 1px solid rgba(120, 96, 64, 0.12);
+      }
+
+      .hud-meeting-candidate-controls {
+        display: flex;
+        justify-content: flex-start;
+      }
+
+      .hud-meeting-candidate-kind,
+      .hud-meeting-update-kind {
+        max-width: 100%;
+        border: 1px solid rgba(120, 96, 64, 0.24);
+        border-radius: 999px;
+        background: rgba(255, 252, 246, 0.92);
+        color: var(--ink-body);
+        font-family: var(--font-mono);
+        font-size: var(--hud-font-xs);
+        padding: 4px 10px;
+      }
+
+      .hud-meeting-candidate-title {
+        width: 100%;
+        border: 1px solid rgba(120, 96, 64, 0.24);
+        border-radius: 6px;
+        background: rgba(255, 252, 246, 0.92);
+        color: var(--ink-body);
+        font-family: var(--font-main);
+        font-size: var(--hud-font-sm);
+        line-height: 1.35;
+        padding: 7px 9px;
+        box-sizing: border-box;
+      }
+
+      .hud-meeting-provenance {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 7px;
+        border: 1px solid rgba(120, 96, 64, 0.14);
+        border-radius: 6px;
+        background: rgba(255, 252, 246, 0.72);
+      }
+
+      .hud-meeting-provenance-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .hud-meeting-provenance-selection,
+      .hud-meeting-provenance-empty {
+        font-size: var(--hud-font-sm);
+        line-height: 1.3;
+      }
+
+      .hud-meeting-provenance-selection {
+        color: var(--ink-body);
+      }
+
+      .hud-meeting-provenance-empty {
+        color: var(--ink-faded);
+      }
+
+      .hud-meeting-update-input {
+        width: 100%;
+        min-height: 64px;
+        resize: vertical;
+        border: 1px solid rgba(120, 96, 64, 0.24);
+        border-radius: 6px;
+        background: rgba(255, 252, 246, 0.92);
+        color: var(--ink-body);
+        font-family: var(--font-main);
+        font-size: var(--hud-font-sm);
+        line-height: 1.35;
+        padding: 8px 9px;
+        box-sizing: border-box;
+      }
+
+      .hud-meeting-update-input:focus {
+        outline: none;
+        border-color: rgba(74, 98, 88, 0.42);
+        box-shadow: 0 0 0 1px rgba(90, 123, 123, 0.18);
+      }
+
+      .hud-meeting-candidate-title:focus,
+      .hud-meeting-candidate-kind:focus,
+      .hud-meeting-update-kind:focus {
+        outline: none;
+        border-color: rgba(74, 98, 88, 0.42);
+        box-shadow: 0 0 0 1px rgba(90, 123, 123, 0.18);
+      }
+
+      .hud-meeting-update-actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      .hud-meeting-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .hud-meeting-links {
+        padding-top: 2px;
+        border-top: 1px solid rgba(120, 96, 64, 0.12);
+      }
+
+      .hud-meeting-btn {
+        background: transparent;
+        border: 1px solid rgba(120, 96, 64, 0.28);
+        border-radius: 999px;
+        color: var(--ink-body);
+        font-family: var(--font-mono);
+        font-size: var(--hud-font-xs);
+        padding: 3px 8px;
+        cursor: pointer;
+        transition: background 120ms, border-color 120ms, color 120ms;
+      }
+
+      .hud-meeting-btn:hover:not(:disabled) {
+        background: rgba(90, 123, 123, 0.1);
+        border-color: rgba(74, 98, 88, 0.36);
+      }
+
+      .hud-meeting-btn:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+
       @media (max-width: 720px) {
         #city-hud {
           --hud-sidebar-width: min(94vw, 360px);
@@ -2427,1080 +2854,6 @@
         }
       }
 
-      /* ═══════════════════════════════════════════════════════════
-         FILE VIEWER MODAL — Centered Code Display
-         ═══════════════════════════════════════════════════════════ */
-
-      .file-viewer-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.6);
-        z-index: 2000;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 200ms ease;
-      }
-
-      .file-viewer-backdrop.visible {
-        opacity: 1;
-        pointer-events: auto;
-      }
-
-      .file-viewer-modal {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%) scale(0.95);
-        width: 90vw;
-        max-width: 1400px;
-        min-width: 600px;
-        min-height: 500px;
-        max-height: 90vh;
-        background: var(--ui-dark);
-        border: 1px solid var(--ui-border);
-        border-radius: 8px;
-        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
-        z-index: 2001;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 200ms ease, transform 200ms ease;
-        resize: both;
-      }
-
-      .file-viewer-modal.visible {
-        opacity: 1;
-        pointer-events: auto;
-        transform: translate(-50%, -50%) scale(1);
-      }
-
-      .file-viewer-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.75rem 1rem;
-        border-bottom: 1px solid var(--ui-border);
-        background: var(--ui-dark-elevated);
-      }
-
-      .file-viewer-path {
-        font-family: var(--font-mono);
-        font-size: 0.8rem;
-        color: var(--ui-text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        flex: 1;
-      }
-
-      .file-viewer-actions {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-      }
-
-      .file-viewer-lang {
-        font-family: var(--font-mono);
-        font-size: 0.65rem;
-        padding: 0.2rem 0.5rem;
-        background: var(--ui-dark-surface);
-        border-radius: 3px;
-        color: var(--ui-text-muted);
-      }
-
-      .file-viewer-btn {
-        font-family: var(--font-main);
-        font-size: 0.85rem;
-        padding: 0.4rem 0.75rem;
-        border-radius: 3px;
-        cursor: pointer;
-        transition: all 150ms ease;
-        background: var(--parchment-light);
-        border: 1px solid var(--parchment-edge);
-        color: var(--ink-light);
-      }
-
-      .file-viewer-btn:hover {
-        color: var(--ink-body);
-        border-color: var(--sepia-muted);
-        background: var(--parchment-base);
-      }
-
-      /* File as Fiber — warm sepia/gold (manuscript marginalia feel) */
-      .file-viewer-btn.file-viewer-fiber {
-        background: linear-gradient(135deg,
-          rgba(138, 107, 42, 0.15) 0%,
-          rgba(160, 136, 88, 0.1) 100%
-        );
-        border-color: var(--sepia-muted);
-        color: var(--sepia-accent);
-        font-weight: 500;
-      }
-      .file-viewer-btn.file-viewer-fiber:hover {
-        background: linear-gradient(135deg,
-          rgba(138, 107, 42, 0.25) 0%,
-          rgba(160, 136, 88, 0.18) 100%
-        );
-        border-color: var(--sepia-accent);
-        color: #6B4D1A;
-      }
-
-      /* Send to Worker — verdigris (aged copper-green) */
-      .file-viewer-btn.file-viewer-send {
-        background: linear-gradient(135deg,
-          rgba(74, 98, 88, 0.18) 0%,
-          rgba(90, 123, 123, 0.12) 100%
-        );
-        border-color: var(--verdigris);
-        color: var(--verdigris);
-        font-weight: 500;
-      }
-      .file-viewer-btn.file-viewer-send:hover {
-        background: linear-gradient(135deg,
-          rgba(74, 98, 88, 0.28) 0%,
-          rgba(90, 123, 123, 0.2) 100%
-        );
-        border-color: #3A5248;
-        color: #3A5248;
-      }
-
-      /* Save button — muted olive green */
-      .file-viewer-btn.file-viewer-save {
-        background: linear-gradient(135deg,
-          rgba(90, 107, 80, 0.2) 0%,
-          rgba(107, 139, 107, 0.12) 100%
-        );
-        border-color: var(--ui-green);
-        color: var(--ui-green);
-        font-weight: 500;
-      }
-      .file-viewer-btn.file-viewer-save:hover {
-        background: linear-gradient(135deg,
-          rgba(90, 107, 80, 0.32) 0%,
-          rgba(107, 139, 107, 0.22) 100%
-        );
-        border-color: #4A5B40;
-        color: #4A5B40;
-      }
-
-      .file-viewer-close {
-        background: none;
-        border: none;
-        color: var(--ink-faded);
-        font-size: 1.2rem;
-        padding: 0.25rem 0.5rem;
-        cursor: pointer;
-        transition: color 150ms ease;
-      }
-
-      .file-viewer-close:hover {
-        color: var(--rust);
-      }
-
-      .file-viewer-content {
-        flex: 1;
-        overflow: auto;
-        padding: 0;
-        margin: 0;
-      }
-
-      .file-viewer-content pre {
-        margin: 0;
-        padding: 1rem;
-        font-family: var(--font-mono);
-        font-size: 0.85rem;
-        line-height: 1.5;
-        color: var(--ui-text);
-        background: transparent;
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-
-      .file-viewer-content pre code {
-        display: block;
-        counter-reset: line;
-      }
-
-      /* Line numbers via Prism line-numbers plugin */
-      .file-viewer-content .line-numbers .line-numbers-rows {
-        border-right: 1px solid var(--ui-border);
-        padding-right: 0.75rem;
-      }
-
-      .file-viewer-content::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-      }
-
-      .file-viewer-content::-webkit-scrollbar-track {
-        background: var(--ui-dark);
-      }
-
-      .file-viewer-content::-webkit-scrollbar-thumb {
-        background: var(--ui-border);
-        border-radius: 5px;
-      }
-
-      .file-viewer-content::-webkit-scrollbar-thumb:hover {
-        background: var(--ui-border-light);
-      }
-
-      /* Markdown rendered view */
-      .file-viewer-markdown {
-        padding: 1.5rem;
-        font-family: var(--font-main);
-        font-size: 0.95rem;
-        line-height: 1.6;
-        color: var(--ui-text);
-      }
-
-      .file-viewer-markdown h1,
-      .file-viewer-markdown h2,
-      .file-viewer-markdown h3 {
-        color: var(--ui-text);
-        margin-top: 1.5em;
-        margin-bottom: 0.5em;
-      }
-
-      .file-viewer-markdown h1 { font-size: 1.5rem; }
-      .file-viewer-markdown h2 { font-size: 1.25rem; }
-      .file-viewer-markdown h3 { font-size: 1.1rem; }
-
-      .file-viewer-markdown p {
-        margin: 0.75em 0;
-      }
-
-      .file-viewer-markdown code {
-        background: rgba(0, 0, 0, 0.06);
-        padding: 0.12em 0.3em;
-        border-radius: 2px;
-        font-family: var(--font-mono);
-        font-size: 0.88em;
-        color: var(--ink-body);
-      }
-      .file-viewer-markdown .config-resolved,
-      .file-viewer-markdown .md-inline-code[title] {
-        color: var(--ui-teal);
-      }
-      .file-viewer-markdown .config-resolved { font-weight: 500; }
-      .file-viewer-markdown .md-inline-code[title] { text-decoration: underline dotted; }
-
-      .file-viewer-markdown pre {
-        background: rgba(255, 255, 255, 0.4);
-        border: 1px solid var(--ui-border-light);
-        padding: 0.8rem 1rem;
-        border-radius: 3px;
-        overflow-x: auto;
-      }
-
-      .file-viewer-markdown pre code {
-        background: none;
-        padding: 0;
-        color: var(--ink-body);
-      }
-
-      /* Light-mode Prism overrides for rendered markdown */
-      .file-viewer-markdown pre[class*="language-"],
-      .file-viewer-markdown code[class*="language-"],
-      .tapestry-detail-body pre[class*="language-"],
-      .tapestry-detail-body code[class*="language-"] {
-        color: var(--ink-body);
-        background: none;
-        text-shadow: none;
-      }
-      .file-viewer-markdown .token.comment,
-      .file-viewer-markdown .token.prolog,
-      .tapestry-detail-body .token.comment,
-      .tapestry-detail-body .token.prolog { color: var(--ink-faded); font-style: italic; }
-      .file-viewer-markdown .token.keyword,
-      .file-viewer-markdown .token.tag,
-      .tapestry-detail-body .token.keyword,
-      .tapestry-detail-body .token.tag { color: var(--rust); }
-      .file-viewer-markdown .token.string,
-      .file-viewer-markdown .token.attr-value,
-      .tapestry-detail-body .token.string,
-      .tapestry-detail-body .token.attr-value { color: var(--verdigris); }
-      .file-viewer-markdown .token.function,
-      .tapestry-detail-body .token.function { color: var(--sepia-accent); }
-      .file-viewer-markdown .token.number,
-      .file-viewer-markdown .token.boolean,
-      .tapestry-detail-body .token.number,
-      .tapestry-detail-body .token.boolean { color: var(--rust); }
-      .file-viewer-markdown .token.operator,
-      .file-viewer-markdown .token.punctuation,
-      .tapestry-detail-body .token.operator,
-      .tapestry-detail-body .token.punctuation { color: var(--ink-light); }
-      .file-viewer-markdown .token.property,
-      .file-viewer-markdown .token.class-name,
-      .tapestry-detail-body .token.property,
-      .tapestry-detail-body .token.class-name { color: var(--sepia-muted); }
-
-      .file-viewer-markdown blockquote {
-        border-left: 3px solid var(--ui-gold-muted);
-        margin: 1em 0;
-        padding-left: 1em;
-        color: var(--ui-text-secondary);
-      }
-
-      .file-viewer-markdown ul,
-      .file-viewer-markdown ol {
-        margin: 0.5em 0;
-        padding-left: 1.5em;
-      }
-
-      .file-viewer-markdown a {
-        color: var(--ui-accent);
-      }
-
-      /* Tables */
-      .file-viewer-markdown table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 1em 0;
-        font-size: 0.9em;
-        background: rgba(255, 255, 255, 0.3);
-        border-radius: 4px;
-        overflow: hidden;
-      }
-
-      .file-viewer-markdown th,
-      .file-viewer-markdown td {
-        padding: 0.6em 0.8em;
-        text-align: left;
-        border-bottom: 1px solid var(--ui-border);
-      }
-
-      .file-viewer-markdown th {
-        background: rgba(0, 0, 0, 0.15);
-        font-weight: 600;
-        color: var(--ui-text);
-        font-variant: small-caps;
-        letter-spacing: 0.03em;
-      }
-
-      .file-viewer-markdown tr:last-child td {
-        border-bottom: none;
-      }
-
-      .file-viewer-markdown tr:hover td {
-        background: rgba(255, 255, 255, 0.2);
-      }
-
-      /* Horizontal rules */
-      .file-viewer-markdown hr {
-        border: none;
-        border-top: 1px solid var(--ui-border);
-        margin: 1.5em 0;
-      }
-
-      /* Images */
-      .file-viewer-markdown img {
-        max-width: 100%;
-        height: auto;
-        border-radius: 4px;
-        margin: 0.5em 0;
-      }
-
-      /* Task lists (checkboxes) */
-      .file-viewer-markdown input[type="checkbox"] {
-        margin-right: 0.4em;
-        accent-color: var(--ui-accent);
-      }
-
-      .file-viewer-markdown li {
-        margin: 0.25em 0;
-      }
-
-      /* Strong and emphasis */
-      .file-viewer-markdown strong {
-        font-weight: 600;
-        color: var(--ui-text);
-      }
-
-      .file-viewer-markdown em {
-        font-style: italic;
-      }
-
-      /* Definition lists (if used) */
-      .file-viewer-markdown dl {
-        margin: 1em 0;
-      }
-
-      .file-viewer-markdown dt {
-        font-weight: 600;
-        margin-top: 0.5em;
-      }
-
-      .file-viewer-markdown dd {
-        margin-left: 1.5em;
-        color: var(--ui-text-muted);
-      }
-
-      /* ── Fiber catalog card ──────────────────────────────── */
-
-      .fiber-card {
-        padding: 0.5rem 1.5rem 0;
-        margin: -1.5rem -1.5rem 0;
-      }
-
-      .fiber-card-title {
-        font-family: var(--font-main);
-        font-size: 1.15rem;
-        font-weight: 400;
-        line-height: 1.25;
-        color: var(--ink-dark);
-        margin: 0 0 0.15rem;
-      }
-
-      /* Single dense console line — everything flows inline */
-      .fiber-card-console {
-        font-family: var(--font-mono);
-        font-size: 0.68rem;
-        line-height: 1.5;
-        color: var(--ink-faded);
-        display: flex;
-        align-items: baseline;
-        flex-wrap: wrap;
-        gap: 0;
-      }
-
-      .fc-sep {
-        margin: 0 0.35em;
-        opacity: 0.3;
-      }
-
-      .fiber-card-status {
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-      }
-      .fiber-card-status.fiber-status-open { color: var(--verdigris); }
-      .fiber-card-status.fiber-status-active { color: var(--sepia-accent); }
-      .fiber-card-status.fiber-status-closed { color: var(--rust); }
-      .fiber-card-status.fiber-status-untracked { color: var(--ink-faded); }
-
-      .fiber-card-kind { color: var(--ink-light); }
-
-      .fiber-card-deps-label {
-        opacity: 0.6;
-        margin-right: 0.15em;
-      }
-      .fiber-card-dep {
-        color: var(--verdigris) !important;
-        text-decoration: none;
-        border-bottom: 1px dotted rgba(74, 98, 88, 0.35);
-      }
-      .fiber-card-dep:hover { border-bottom-style: solid; }
-      .fiber-card-deps-sep { margin: 0 0.05em; opacity: 0.4; }
-
-      .fiber-card-dates {
-        font-style: italic;
-        font-family: var(--font-main);
-        font-size: 0.72rem;
-      }
-      .fiber-card-date-sep { margin: 0 0.15em; opacity: 0.4; }
-
-      .fiber-card-tags { display: inline-flex; gap: 0.25rem; }
-      .fiber-card-tag { color: var(--sepia-accent); }
-      .fiber-card-tag::before { content: '#'; opacity: 0.5; }
-
-      /* Outcome */
-      .fiber-card-outcome {
-        margin: 0.3rem 0;
-        padding: 0.3rem 0.6rem;
-        border-left: 2px solid var(--rust);
-        background: rgba(138, 85, 72, 0.04);
-        border-radius: 0 2px 2px 0;
-      }
-      .fiber-card-outcome-label {
-        font-family: var(--font-main);
-        font-variant: small-caps;
-        font-size: 0.62rem;
-        letter-spacing: 0.08em;
-        color: var(--rust);
-        margin-bottom: 0.05rem;
-      }
-      .fiber-card-outcome-text {
-        font-family: var(--font-main);
-        font-size: 0.78rem;
-        line-height: 1.4;
-        color: var(--ui-text);
-      }
-      .fiber-card-outcome-text p { margin: 0.1em 0; }
-
-      /* § divider */
-      .fiber-card-rule {
-        border: none;
-        border-bottom: 1px solid var(--ui-border);
-        margin: 0.4rem -1.5rem 0;
-        position: relative;
-      }
-      .fiber-card-rule::after {
-        content: '§';
-        position: absolute;
-        left: 50%;
-        top: -0.55em;
-        transform: translateX(-50%);
-        background: var(--parchment-light);
-        padding: 0 0.5em;
-        font-family: var(--font-main);
-        font-size: 0.7rem;
-        color: var(--ink-faded);
-      }
-
-      /* Diff view for Edit activities */
-      .file-viewer-diff {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 0.85rem;
-        line-height: 1.5;
-        padding: 1rem;
-        overflow-x: auto;
-      }
-
-      /* Image preview */
-      .file-viewer-image {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1rem;
-        min-height: 200px;
-        position: relative;
-      }
-
-      .file-viewer-image img {
-        max-width: 100%;
-        max-height: 70vh;
-        object-fit: contain;
-        border-radius: 4px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      }
-
-      /* Image annotation markers */
-      .image-annotation-marker {
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
-      }
-      .image-annotation-marker:hover {
-        transform: translate(-50%, -50%) scale(1.2);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.4);
-      }
-
-      /* Image annotation input */
-      .image-annotation-input-wrapper {
-        background: var(--bg-elevated);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        min-width: 250px;
-      }
-      .image-annotation-input textarea {
-        width: 100%;
-        min-height: 60px;
-        padding: 8px;
-        border: 1px solid var(--border-light);
-        border-radius: 4px;
-        font-family: var(--font-main);
-        font-size: 14px;
-        resize: vertical;
-        background: var(--bg-card);
-        color: var(--text-primary);
-      }
-      .image-annotation-input textarea:focus {
-        outline: none;
-        border-color: var(--gold);
-      }
-
-      /* Annotation item highlight animation */
-      .annotation-item.highlight {
-        animation: highlight-pulse 1.5s ease;
-      }
-      @keyframes highlight-pulse {
-        0%, 100% { background: transparent; }
-        30% { background: rgba(154, 123, 53, 0.2); }
-      }
-
-      /* PDF preview */
-      .file-viewer-pdf {
-        display: flex;
-        align-items: stretch;
-        justify-content: center;
-        height: 70vh;
-        padding: 0;
-      }
-
-      .file-viewer-pdf iframe {
-        width: 100%;
-        height: 100%;
-        border: none;
-        border-radius: 4px;
-      }
-
-      /* File viewer mode line (vim status + cursor position) */
-      .file-viewer-modeline {
-        font-family: var(--font-mono);
-        font-size: 12px;
-        padding: 4px 12px;
-        background: var(--bg-card);
-        border-top: 1px solid var(--text-muted);
-        color: var(--text-secondary);
-        flex-shrink: 0;
-      }
-
-      .file-viewer-modeline:empty {
-        display: none;
-      }
-
-      /* Dirty indicator (unsaved changes) */
-      .file-viewer-path.dirty::after {
-        content: ' •';
-        color: var(--accent);
-      }
-
-      /* CodeMirror container fills content area */
-      .file-viewer-content .cm-editor {
-        height: 100%;
-      }
-
-      .file-viewer-content .cm-scroller {
-        overflow: auto;
-      }
-
-      /* File viewer content wrapper (editor + annotations panel) */
-      .file-viewer-content-wrapper {
-        flex: 1;
-        display: flex;
-        overflow: hidden;
-        min-height: 0;
-      }
-
-      .file-viewer-content {
-        flex: 1;
-        overflow: auto;
-        padding: 0;
-        margin: 0;
-        min-width: 0;
-      }
-
-      /* Annotations panel */
-      .file-viewer-annotations {
-        width: 280px;
-        flex-shrink: 0;
-        border-left: 1px solid var(--ui-border);
-        background: var(--bg-card);
-        display: flex;
-        flex-direction: column;
-        transition: width 200ms ease, opacity 200ms ease;
-      }
-
-      .file-viewer-annotations.collapsed {
-        width: 40px;
-        opacity: 0.7;
-      }
-
-      .file-viewer-annotations.collapsed .annotations-list {
-        display: none;
-      }
-
-      .file-viewer-annotations.collapsed .annotations-header span {
-        display: none;
-      }
-
-      .file-viewer-annotations.collapsed .annotations-header {
-        justify-content: center;
-        padding: 8px 4px;
-      }
-
-      .file-viewer-annotations.collapsed .annotations-header-actions {
-        flex-direction: column;
-      }
-
-      .file-viewer-annotations.collapsed .annotations-clear-all {
-        display: none;
-      }
-
-      .annotations-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 8px 12px;
-        border-bottom: 1px solid var(--ui-border);
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      .annotations-toggle {
-        background: none;
-        border: none;
-        color: var(--text-muted);
-        cursor: pointer;
-        padding: 2px 6px;
-        font-size: 10px;
-      }
-
-      .annotations-toggle:hover {
-        color: var(--text-primary);
-      }
-
-      .annotations-header-actions {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-
-      .annotations-clear-all {
-        background: none;
-        border: 1px solid var(--text-muted);
-        color: var(--text-muted);
-        cursor: pointer;
-        padding: 2px 8px;
-        font-size: 10px;
-        border-radius: 3px;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-      }
-
-      .annotations-clear-all:hover {
-        color: var(--text-primary);
-        border-color: var(--text-primary);
-      }
-
-      .annotations-list {
-        flex: 1;
-        overflow-y: auto;
-        padding: 8px;
-      }
-
-      .annotations-empty {
-        color: var(--text-muted);
-        font-size: 12px;
-        text-align: center;
-        padding: 24px 12px;
-        font-style: italic;
-      }
-
-      .annotation-item {
-        background: var(--bg-elevated);
-        border: 1px solid var(--ui-border);
-        border-radius: 6px;
-        padding: 10px;
-        margin-bottom: 8px;
-        font-size: 12px;
-      }
-
-      .annotation-item:hover {
-        border-color: var(--gold);
-      }
-
-      .annotation-text {
-        color: var(--text-muted);
-        font-family: var(--font-mono);
-        font-size: 11px;
-        margin-bottom: 6px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .annotation-line {
-        display: inline-block;
-        padding: 1px 4px;
-        background: var(--gold);
-        color: white;
-        font-size: 10px;
-        font-weight: 600;
-        border-radius: 3px;
-        margin-right: 4px;
-      }
-
-      .annotation-comment {
-        color: var(--text-primary);
-        line-height: 1.4;
-        margin-bottom: 6px;
-      }
-
-      .annotation-edit-input {
-        width: 100%;
-        min-height: 40px;
-        padding: 6px 8px;
-        font-family: var(--font-body);
-        font-size: 13px;
-        color: var(--text-primary);
-        background: var(--bg-elevated);
-        border: 1px solid var(--gold);
-        border-radius: 4px;
-        resize: vertical;
-        margin-bottom: 6px;
-      }
-
-      .annotation-edit-input:focus {
-        outline: none;
-        box-shadow: 0 0 0 2px rgba(154, 123, 53, 0.3);
-      }
-
-      .annotation-edit-actions {
-        display: flex;
-        gap: 6px;
-      }
-
-      .annotation-edit-save,
-      .annotation-edit-cancel {
-        padding: 4px 10px;
-        font-family: var(--font-body);
-        font-size: 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-
-      .annotation-edit-save {
-        background: var(--gold);
-        color: white;
-        border: none;
-      }
-
-      .annotation-edit-save:hover {
-        background: #8a6b25;
-      }
-
-      .annotation-edit-cancel {
-        background: transparent;
-        color: var(--text-muted);
-        border: 1px solid var(--text-muted);
-      }
-
-      .annotation-edit-cancel:hover {
-        color: var(--text-primary);
-        border-color: var(--text-primary);
-      }
-
-      .annotation-meta {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        color: var(--text-muted);
-        font-size: 10px;
-      }
-
-      .annotation-actions {
-        display: flex;
-        gap: 6px;
-      }
-
-      .annotation-actions button {
-        background: rgba(0, 0, 0, 0.15);
-        border: 1px solid transparent;
-        color: var(--text-muted);
-        cursor: pointer;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-        transition: all 150ms ease;
-      }
-
-      .annotation-actions button:hover {
-        background: rgba(0, 0, 0, 0.25);
-        color: var(--text-primary);
-      }
-
-      /* Send to worker — teal accent */
-      .annotation-send {
-        background: rgba(90, 140, 140, 0.15) !important;
-        border-color: rgba(90, 140, 140, 0.3) !important;
-        color: #8FC4C4 !important;
-      }
-      .annotation-send:hover {
-        background: rgba(90, 140, 140, 0.3) !important;
-        border-color: #8FC4C4 !important;
-        color: #A8D8D8 !important;
-      }
-
-      /* Edit — gold accent */
-      .annotation-edit {
-        background: rgba(201, 162, 39, 0.1) !important;
-        border-color: rgba(201, 162, 39, 0.25) !important;
-        color: var(--gold) !important;
-      }
-      .annotation-edit:hover {
-        background: rgba(201, 162, 39, 0.2) !important;
-        border-color: var(--gold) !important;
-        color: #E5C24D !important;
-      }
-
-      /* Delete — red accent */
-      .annotation-delete {
-        background: rgba(180, 80, 80, 0.1) !important;
-        border-color: rgba(180, 80, 80, 0.25) !important;
-        color: #C08080 !important;
-      }
-      .annotation-delete:hover {
-        background: rgba(180, 80, 80, 0.25) !important;
-        border-color: var(--ui-red) !important;
-        color: var(--ui-red) !important;
-      }
-
-      /* Global comment in annotations panel */
-      .annotations-global-comment {
-        padding: 12px;
-        border-top: 1px solid var(--ui-border);
-        background: var(--bg-card);
-      }
-
-      .annotations-global-comment label {
-        display: block;
-        font-size: 11px;
-        color: var(--text-muted);
-        margin-bottom: 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-
-      .global-comment-textarea {
-        width: 100%;
-        padding: 8px 10px;
-        border: 1px solid var(--ui-border);
-        border-radius: 6px;
-        background: var(--bg-elevated);
-        color: var(--text-primary);
-        font-size: 12px;
-        font-family: var(--font-body);
-        resize: vertical;
-        min-height: 60px;
-        box-sizing: border-box;
-      }
-
-      .global-comment-textarea:focus {
-        outline: none;
-        border-color: var(--gold);
-      }
-
-      .global-comment-textarea::placeholder {
-        color: var(--text-muted);
-      }
-
-      .file-viewer-annotations.collapsed .annotations-global-comment {
-        display: none;
-      }
-
-      /* Selection toolbar */
-      .selection-toolbar {
-        position: absolute;
-        z-index: 100;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        padding: 6px 8px;
-        background: var(--ui-dark);
-        border: 1px solid var(--ui-border);
-        border-radius: 8px;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-        animation: toolbar-in 150ms ease-out;
-      }
-
-      @keyframes toolbar-in {
-        from {
-          opacity: 0;
-          transform: translateY(8px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      .selection-toolbar-btn {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        background: none;
-        border: none;
-        color: var(--ui-text-muted);
-        cursor: pointer;
-        padding: 6px 10px;
-        border-radius: 4px;
-        font-size: 12px;
-        transition: all 150ms ease;
-      }
-
-      .selection-toolbar-btn:hover {
-        background: rgba(154, 123, 53, 0.15);
-        color: var(--gold);
-      }
-
-      .selection-toolbar-close {
-        padding: 4px 6px;
-      }
-
-      .selection-toolbar-close:hover {
-        color: var(--ui-red);
-      }
-
-      /* Annotation input in toolbar */
-      .annotation-input {
-        width: 280px;
-        padding: 8px;
-        background: var(--ui-dark-surface);
-        border: 1px solid var(--ui-border);
-        border-radius: 4px;
-        color: var(--ui-text);
-        font-family: var(--font-main);
-        font-size: 13px;
-        resize: none;
-      }
-
-      .annotation-input:focus {
-        outline: none;
-        border-color: var(--gold);
-      }
-
-      .annotation-input-actions {
-        display: flex;
-        gap: 6px;
-        margin-top: 6px;
-      }
-
-      .annotation-save-btn,
-      .annotation-cancel-btn {
-        font-family: var(--font-main);
-        padding: 6px 14px;
-        border-radius: 3px;
-        cursor: pointer;
-        font-size: 0.8rem;
-        transition: all 150ms ease;
-      }
-
-      .annotation-save-btn {
-        background: linear-gradient(135deg,
-          rgba(138, 107, 42, 0.2) 0%,
-          rgba(160, 136, 88, 0.12) 100%
-        );
-        border: 1px solid var(--sepia-muted);
-        color: var(--sepia-accent);
-        font-weight: 500;
-      }
-
-      .annotation-save-btn:hover {
-        background: linear-gradient(135deg,
-          rgba(138, 107, 42, 0.3) 0%,
-          rgba(160, 136, 88, 0.2) 100%
-        );
-        border-color: var(--sepia-accent);
-        color: #6B4D1A;
-      }
-
-      .annotation-cancel-btn {
-        background: var(--parchment-light);
-        color: var(--ink-light);
-        border: 1px solid var(--parchment-edge);
-      }
-
-      .annotation-cancel-btn:hover {
-        color: var(--ink-body);
-        border-color: var(--sepia-muted);
-      }
 
       /* Worker picker modal */
       .worker-picker-overlay {
@@ -4147,7 +3500,7 @@
       }
 
       /* ── Shared annotation panel (.ann-panel-*) ── */
-      /* Used by TapestryView (.tapestry-annotation-panel) and FileViewerModal (.file-viewer-annotations) */
+      /* Used by TapestryView (.tapestry-annotation-panel). */
 
       .ann-panel-header {
         display: flex;
@@ -4428,30 +3781,6 @@
         font-size: 0.72rem;
         color: var(--ui-gold);
         margin-bottom: 0.3rem;
-      }
-
-      /* File-viewer-specific overrides (light theme context) */
-      .file-viewer-annotations .ann-panel-header {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      .file-viewer-annotations .ann-panel-header h3 {
-        font-size: inherit;
-        font-weight: inherit;
-        color: inherit;
-      }
-      .file-viewer-annotations .ann-panel-item .annotation-line {
-        display: inline-block;
-        padding: 1px 4px;
-        background: var(--gold);
-        color: white;
-        font-size: 10px;
-        font-weight: 600;
-        border-radius: 3px;
-        margin-right: 4px;
       }
 
       /* View Claims button in CityPanel */
@@ -4889,148 +4218,59 @@
         opacity: 0.6;
       }
 
-      /* Static file viewer modal */
-      .tapestry-file-modal {
-        position: fixed;
-        inset: 0;
-        z-index: 9999;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+      /* ── Collapsed sidebar ── */
+
+      .tapestry-sidebar.collapsed {
+        top: auto;
+        width: auto;
+        min-width: 0;
+        border-left: none;
+        background: transparent;
+        box-shadow: none;
+        overflow: visible;
       }
-      .tapestry-file-backdrop {
-        position: absolute;
-        inset: 0;
-        background: rgba(0,0,0,0.6);
+
+      .tapestry-sidebar.collapsed .tapestry-fiber-list {
+        flex: none;
+        overflow: visible;
       }
-      .tapestry-file-content {
+
+      .tapestry-sidebar.collapsed .tapestry-fiber-results,
+      .tapestry-sidebar.collapsed .tapestry-legend,
+      .tapestry-sidebar.collapsed .tapestry-sidebar-resize {
+        display: none !important;
+      }
+
+      .tapestry-sidebar.collapsed .tapestry-fiber-list .tapestry-search {
+        border-bottom: none;
+      }
+
+      .tapestry-sidebar.collapsed .tapestry-search {
         position: relative;
-        width: 82vw;
-        height: 88vh;
-        min-width: 400px;
-        background: #EEE8DC;
+      }
+
+      .tapestry-sidebar.collapsed .tapestry-search input {
+        width: 180px;
+        border-radius: 16px;
+        padding: 0.45rem 0.8rem;
+        background: var(--ui-dark-elevated);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      }
+
+      .tapestry-sidebar.collapsed .tapestry-search-results {
+        position: absolute;
+        right: 0;
+        bottom: 100%;
+        width: 280px;
+        max-height: 200px;
+        background: var(--ui-dark-elevated);
         border: 1px solid var(--ui-border);
-        border-radius: 6px;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        border-radius: 4px;
+        box-shadow: 0 -2px 8px rgba(0,0,0,0.15);
+        margin-bottom: 0.3rem;
+        margin-top: 0;
+        z-index: 20;
       }
-      /* Horizontal resize handles */
-      .tapestry-file-resize {
-        position: absolute;
-        top: 0; bottom: 0;
-        width: 12px;
-        cursor: col-resize;
-        z-index: 10;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .tapestry-file-resize-left  { left: -6px; }
-      .tapestry-file-resize-right { right: -6px; }
-      .tapestry-file-resize::after {
-        content: '';
-        position: absolute;
-        top: 0; bottom: 0;
-        left: 50%;
-        width: 1px;
-        background: var(--ui-border);
-        opacity: 0.5;
-        transition: opacity 150ms, width 150ms, background 150ms;
-        pointer-events: none;
-      }
-      .tapestry-file-resize:hover::after,
-      .tapestry-file-resize:active::after {
-        width: 2px;
-        background: var(--ui-gold);
-        opacity: 0.6;
-      }
-      .tapestry-file-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0.5rem 0.8rem;
-        border-bottom: 1px solid var(--ui-border);
-        font-family: var(--font-mono);
-        font-size: 0.8rem;
-        color: var(--ui-text-muted);
-      }
-      .tapestry-file-close {
-        background: none;
-        border: none;
-        color: var(--ui-text-muted);
-        font-size: 1.2rem;
-        cursor: pointer;
-        padding: 0 0.3rem;
-      }
-      .tapestry-file-close:hover { color: var(--ui-text); }
-      .tapestry-file-body {
-        flex: 1;
-        overflow: auto;
-      }
-      .tapestry-file-markdown {
-        padding: 1.2rem 1.5rem;
-        font-family: var(--font-main);
-        font-size: 0.9rem;
-        line-height: 1.6;
-        color: var(--ui-text);
-      }
-      .tapestry-file-markdown h1, .tapestry-file-markdown h2, .tapestry-file-markdown h3 {
-        color: var(--ui-gold);
-        margin-top: 1.5em;
-      }
-      .tapestry-file-code {
-        font-family: var(--font-mono);
-        font-size: 0.78rem;
-        line-height: 1.5;
-      }
-      .tapestry-file-code table {
-        border-collapse: collapse;
-        width: 100%;
-      }
-      .tapestry-file-code .line-num {
-        padding: 0 0.8rem 0 0.6rem;
-        text-align: right;
-        color: var(--ui-text-muted);
-        opacity: 0.4;
-        user-select: none;
-        white-space: nowrap;
-        vertical-align: top;
-      }
-      .tapestry-file-code .line-content {
-        padding: 0 0.6rem;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-      .tapestry-file-code .highlighted-line {
-        background: rgba(90, 123, 123, 0.15);
-      }
-      .tapestry-file-code .highlighted-line .line-num {
-        color: var(--ui-teal);
-        opacity: 1;
-      }
-      /* Prism token overrides — light parchment background, dark ink palette */
-      .tapestry-file-code .token.comment,
-      .tapestry-file-code .token.prolog,
-      .tapestry-file-code .token.doctype { color: var(--ink-faded); font-style: italic; }
-      .tapestry-file-code .token.keyword,
-      .tapestry-file-code .token.selector,
-      .tapestry-file-code .token.important { color: var(--verdigris); font-weight: 600; }
-      .tapestry-file-code .token.string,
-      .tapestry-file-code .token.attr-value,
-      .tapestry-file-code .token.regex { color: #4A6A35; }
-      .tapestry-file-code .token.function,
-      .tapestry-file-code .token.class-name { color: var(--sepia-accent); }
-      .tapestry-file-code .token.number,
-      .tapestry-file-code .token.boolean,
-      .tapestry-file-code .token.constant { color: var(--rust); }
-      .tapestry-file-code .token.operator,
-      .tapestry-file-code .token.punctuation { color: var(--ink-light); }
-      .tapestry-file-code .token.property,
-      .tapestry-file-code .token.tag { color: #5A6B2A; }
-      .tapestry-file-code .token.builtin,
-      .tapestry-file-code .token.symbol { color: var(--sepia-muted); }
 
       .fiber-item .fiber-dot {
         flex-shrink: 0;
@@ -5474,7 +4714,6 @@
 
       /* KaTeX: scale down math to match body text */
       .tapestry-detail-body .katex { font-size: 0.92em; }
-      .file-viewer-markdown .katex { font-size: 0.95em; }
 
       /* Editable markdown: shared hint + transition styles */
       .editable-markdown {

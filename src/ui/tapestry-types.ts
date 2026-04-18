@@ -41,12 +41,32 @@ export interface TapestryFiber {
   dependsOn: string[]
 }
 
+export interface TapestryDecisionOption {
+  id: string
+  label: string
+  description: string
+  excluded: boolean
+  excludedReason: string
+}
+
+export interface TapestryDecision {
+  id: string
+  label: string
+  rationale: string
+  tags: string[]
+  default: string
+  analysisId: string
+  options: TapestryDecisionOption[]
+  evidenceIds: string[]
+}
+
 export interface TapestryResponse {
   nodes: TapestryNode[]
   links: TapestryLink[]
   downstream: Record<string, Array<{ id: string; title: string; status: string; kind: string }>>
   config: Record<string, string> | null
   fibers?: TapestryFiber[]
+  decisions?: TapestryDecision[]
 }
 
 /** D3 simulation node with position. */

@@ -1,12 +1,5 @@
 import { IncomingMessage, ServerResponse } from 'http';
-import { isAbsolute, normalize, resolve } from 'path';
 import type { RecentFileTracker } from './RecentFileTracker.js';
-import type { Session } from './SessionTracker.js';
-
-interface SessionLookup {
-  findSession(sessionId: string): Session | undefined;
-  getAllSessions(): Session[];
-}
 
 type RuntimeDiagnosticsProvider = () => unknown | Promise<unknown>;
 
@@ -20,19 +13,13 @@ export class HttpApiHooksRuntime {
   private parseJsonBody: HttpApiHooksRuntimeDeps['parseJsonBody'];
   private sendJsonError: HttpApiHooksRuntimeDeps['sendJsonError'];
   private sendJsonSuccess: HttpApiHooksRuntimeDeps['sendJsonSuccess'];
-  private sessionLookup: SessionLookup | null = null;
   private recentFileTracker: RecentFileTracker | null = null;
-  private hookSessionToWorkerSessionId: Map<string, string> = new Map();
   private runtimeDiagnosticsProvider: RuntimeDiagnosticsProvider | null = null;
 
   constructor(deps: HttpApiHooksRuntimeDeps) {
     this.parseJsonBody = deps.parseJsonBody;
     this.sendJsonError = deps.sendJsonError;
     this.sendJsonSuccess = deps.sendJsonSuccess;
-  }
-
-  setSessionLookup(lookup: SessionLookup): void {
-    this.sessionLookup = lookup;
   }
 
   setRecentFileTracker(tracker: RecentFileTracker): void {
@@ -61,70 +48,6 @@ export class HttpApiHooksRuntime {
     this.sendJsonSuccess(res, { sessionId, files });
   }
 
-  async handleHookFileTouch(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.recentFileTracker) {
-      this.sendJsonError(res, 500, 'Recent file tracker not configured');
-      return;
-    }
-    if (!this.sessionLookup) {
-      this.sendJsonError(res, 500, 'Session lookup not configured');
-      return;
-    }
-
-    const payload = await this.parseJsonBody<Record<string, unknown>>(req, res);
-    if (!payload) return;
-
-    const sessionIdRaw = typeof payload.session_id === 'string'
-      ? payload.session_id
-      : typeof payload.sessionId === 'string'
-        ? payload.sessionId
-        : '';
-    const toolNameRaw = typeof payload.tool_name === 'string'
-      ? payload.tool_name
-      : typeof payload.toolName === 'string'
-        ? payload.toolName
-        : '';
-
-    const toolInput = payload.tool_input && typeof payload.tool_input === 'object'
-      ? payload.tool_input as Record<string, unknown>
-      : payload.toolInput && typeof payload.toolInput === 'object'
-        ? payload.toolInput as Record<string, unknown>
-        : null;
-
-    const filePathRaw = toolInput && typeof toolInput.file_path === 'string'
-      ? toolInput.file_path
-      : toolInput && typeof toolInput.path === 'string'
-        ? toolInput.path
-        : '';
-    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-    const filePath = this.normalizeHookFilePath(filePathRaw, cwd);
-
-    if (!sessionIdRaw || !toolNameRaw || !filePath) {
-      this.sendJsonError(res, 400, 'Missing required fields: session_id, tool_name, tool_input.file_path');
-      return;
-    }
-
-    if (!['Read', 'Write', 'Edit'].includes(toolNameRaw)) {
-      this.sendJsonSuccess(res, { success: true, ignored: true, reason: 'tool-filter' });
-      return;
-    }
-
-    const resolvedSession = this.resolveWorkerSessionForHook(sessionIdRaw, cwd, filePath);
-    if (!resolvedSession) {
-      this.sendJsonSuccess(res, { success: true, stored: false, reason: 'session-not-found' });
-      return;
-    }
-
-    this.hookSessionToWorkerSessionId.set(sessionIdRaw, resolvedSession.id);
-    this.recentFileTracker.recordTouch(resolvedSession.id, toolNameRaw, filePath);
-    this.sendJsonSuccess(res, {
-      success: true,
-      stored: true,
-      workerSessionId: resolvedSession.id,
-      tmuxSession: resolvedSession.tmuxSession,
-    });
-  }
-
   async handleDebugRuntime(res: ServerResponse): Promise<void> {
     try {
       const runtimeDiagnostics = this.runtimeDiagnosticsProvider
@@ -148,84 +71,5 @@ export class HttpApiHooksRuntime {
       console.error('Failed to collect runtime diagnostics:', error);
       this.sendJsonError(res, 500, 'Failed to collect runtime diagnostics');
     }
-  }
-
-  private resolveWorkerSessionForHook(
-    hookSessionId: string,
-    cwd: string,
-    filePath: string
-  ): Session | null {
-    if (!this.sessionLookup) return null;
-
-    const mappedWorkerSessionId = this.hookSessionToWorkerSessionId.get(hookSessionId);
-    if (mappedWorkerSessionId) {
-      const mappedSession = this.sessionLookup.findSession(mappedWorkerSessionId);
-      if (mappedSession) return mappedSession;
-      this.hookSessionToWorkerSessionId.delete(hookSessionId);
-    }
-
-    const directByWorkerId = this.sessionLookup.findSession(hookSessionId);
-    if (directByWorkerId) return directByWorkerId;
-
-    const allSessions = this.sessionLookup.getAllSessions();
-    const directByTmux = allSessions.find((s) => s.tmuxSession === hookSessionId);
-    if (directByTmux) return directByTmux;
-
-    const cwdMatches = cwd
-      ? allSessions.filter((s) =>
-        this.pathContains(s.cwd, cwd) || this.pathContains(cwd, s.cwd)
-      )
-      : [];
-    if (cwdMatches.length === 1) return cwdMatches[0];
-
-    const fileMatches = filePath
-      ? allSessions.filter((s) => this.pathContains(s.cwd, filePath))
-      : [];
-    if (fileMatches.length === 1) return fileMatches[0];
-
-    const candidates = (cwdMatches.length > 1 ? cwdMatches : fileMatches.length > 1 ? fileMatches : [])
-      .slice()
-      .sort((a, b) => b.lastActivity - a.lastActivity);
-    if (candidates.length > 0) return candidates[0];
-
-    const working = allSessions
-      .filter((s) => s.status === 'working')
-      .sort((a, b) => b.lastActivity - a.lastActivity);
-    if (working.length === 1) return working[0];
-
-    return null;
-  }
-
-  private normalizePathForMatch(pathValue: string): string {
-    const trimmed = pathValue.trim();
-    if (!trimmed) return '';
-    const normalizedPath = normalize(trimmed);
-    if (normalizedPath === '/') return '/';
-    return normalizedPath.replace(/\/+$/, '');
-  }
-
-  private pathContains(basePath: string, targetPath: string): boolean {
-    const base = this.normalizePathForMatch(basePath);
-    const target = this.normalizePathForMatch(targetPath);
-    if (!base || !target) return false;
-    if (base === target) return true;
-    if (base === '/') return target.startsWith('/');
-    return target.startsWith(`${base}/`);
-  }
-
-  private normalizeHookFilePath(filePath: string, cwd: string): string {
-    const trimmedPath = filePath.trim();
-    if (!trimmedPath) return '';
-
-    if (isAbsolute(trimmedPath)) {
-      return normalize(trimmedPath);
-    }
-
-    const trimmedCwd = cwd.trim();
-    if (trimmedCwd && isAbsolute(trimmedCwd)) {
-      return normalize(resolve(trimmedCwd, trimmedPath));
-    }
-
-    return trimmedPath;
   }
 }

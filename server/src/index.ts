@@ -20,6 +20,7 @@ import { EventWatcher } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
 import { KittyIntegration } from './KittyIntegration.js';
 import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
+import { MeetingBridge } from './MeetingBridge.js';
 import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
@@ -45,6 +46,7 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
+const meetingBridge = new MeetingBridge();
 
 // Load persisted cities into CityManager
 const persistedCities = cityPersistence.load();
@@ -52,8 +54,15 @@ const persistedCities = cityPersistence.load();
 // Load persisted annotations
 annotationPersistence.load();
 for (const pc of persistedCities) {
-  // Set sshHost first so city keys are normalized correctly
   if (pc.sshHost && pc.originId !== 'local') {
+    // Normalize originId to use sshHost instead of raw hostname (e.g., "remote-c02" → "remote-candide").
+    // Different login nodes produce different hostnames; the SSH config name is the stable identifier.
+    const baseSshHost = pc.sshHost.replace(/-login\d+$/, '');
+    const normalizedOriginId = `remote-${baseSshHost}`;
+    if (pc.originId !== normalizedOriginId) {
+      cityPersistence.normalizeOriginId(pc.originId, normalizedOriginId, pc.sshHost);
+      pc.originId = normalizedOriginId;
+    }
     cityManager.setOriginSshHost(pc.originId, pc.sshHost);
   }
   cityManager.addPinnedCity(pc.id, pc.path, pc.name, pc.position, pc.originId);
@@ -77,6 +86,9 @@ const sessionLookup = {
   getAllSessions(): Session[] {
     return [...sessionTracker.getSessions(), ...remoteAgentCoordinator.getAllSessions()];
   },
+  findLocalByTmuxSession(tmuxSession: string): Session | undefined {
+    return sessionTracker.getSessions().find(s => s.tmuxSession === tmuxSession);
+  },
 };
 
 const cityLookup = {
@@ -85,8 +97,10 @@ const cityLookup = {
   },
   getSshHost(city: City): string | undefined {
     const origin = originManager.getOrigin(city.originId);
+    if (origin?.sshHost) return origin.sshHost;
     const persistedCity = cityPersistence.getCityById(city.id);
-    return origin?.sshHost || persistedCity?.sshHost || city.originId.replace('remote-', '');
+    if (persistedCity?.sshHost) return persistedCity.sshHost;
+    return cityPersistence.findSshHostForPath(city.path) || city.originId.replace('remote-', '');
   },
 };
 
@@ -134,8 +148,10 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       sessionCount: recentFileTracker.getSessionCount(),
       entryCount: recentFileTracker.getTotalEntryCount(),
     },
+    meetingBridge: meetingBridge.getState(),
   };
 });
+httpApi.setMeetingBridge(meetingBridge);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
 const browserStateCoordinator = new BrowserStateCoordinator({
@@ -147,7 +163,11 @@ const browserStateCoordinator = new BrowserStateCoordinator({
   previousSessions,
   recentFileTracker,
   sessionLookup,
+  getMeetingState: () => meetingBridge.getState(),
   localOriginId: LOCAL_ORIGIN_ID,
+});
+meetingBridge.onStateChange(() => {
+  void browserStateCoordinator.broadcastCurrentState();
 });
 const remoteAgentCoordinator = new RemoteAgentCoordinator(
   cityManager,
@@ -252,8 +272,10 @@ wss.on('connection', async (ws, req) => {
   const plannotatorPort = plannotatorPortParam ? parseInt(plannotatorPortParam, 10) : undefined;
 
   if (isAgent && originName) {
-    // Agent connection
-    const origin = originManager.registerAgent(originName, ws, sshHost, plannotatorPort);
+    // Agent connection — normalize origin name using sshHost when available
+    // so different login nodes (login07.leonardo.local) map to the same origin (cineca).
+    const effectiveOriginName = sshHost ? sshHost.replace(/-login\d+$/, '') : originName;
+    const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort);
     cityManager.setOriginPosition(origin.id, origin.position);
     // Track sshHost for city key normalization (so different login nodes share cities)
     if (sshHost) {
@@ -321,6 +343,24 @@ eventWatcher.setSessionTracker(sessionTracker);
 eventWatcher.onActivity((activity) => {
   console.log('[Activity]', activity.tmuxSession, activity.tool, activity.summary || '');
 
+  // Feed the local recent-files tracker. Remote activity is fed via
+  // RemoteAgentCoordinator; EventWatcher only observes local events.jsonl,
+  // so any activity here belongs to a local tmux session.
+  if (
+    activity.fullPath &&
+    (activity.tool === 'Read' || activity.tool === 'Write' || activity.tool === 'Edit')
+  ) {
+    const session = sessionLookup.findLocalByTmuxSession(activity.tmuxSession);
+    if (session) {
+      recentFileTracker.recordTouch(
+        session.id,
+        activity.tool,
+        activity.fullPath,
+        activity.timestamp,
+      );
+    }
+  }
+
   browserStateCoordinator.broadcastActivity(activity, LOCAL_ORIGIN_ID);
 });
 eventWatcher.start();
@@ -372,6 +412,7 @@ function shutdown() {
   sessionTracker.stop();
   gitStatusManager.stop();
   eventWatcher.stop();
+  meetingBridge.stop();
   wss.close();
   server.close(() => {
     process.exit(0);

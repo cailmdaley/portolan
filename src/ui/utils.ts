@@ -143,6 +143,16 @@ export function interpolateConfig(container: HTMLElement, config: Record<string,
 // Also accepts :L42 or :L42-55 (GitHub-style line range) — both colon-digit and colon-L-digit forms work.
 const INLINE_PATH_RE = /^(?:\.{0,2}\/)?[\w.\-/]+\/[\w.\-]+\.[a-zA-Z]{1,10}(?::L?\d+(?:-\d+)?)?$|^\.\/[\w.\-/]+\.[a-zA-Z]{1,10}(?::L?\d+(?:-\d+)?)?$/
 
+function parsePathReference(value: string): { path: string; line?: number } | null {
+  const text = value.trim()
+  const m = text.match(/^(.*?)(?::L?(\d+)(?:-\d+)?)?$/)
+  if (!m || !INLINE_PATH_RE.test(text)) return null
+  return {
+    path: m[1],
+    line: m[2] ? parseInt(m[2], 10) : undefined,
+  }
+}
+
 /**
  * Find inline <code> elements whose text looks like a file path and make them clickable.
  * `openFile(path, line)` is called with the resolved relative path and optional line number.
@@ -152,14 +162,32 @@ export function attachInlinePathListeners(
   openFile: (path: string, line?: number) => void,
 ): void {
   container.querySelectorAll<HTMLElement>('code.md-inline-code').forEach(code => {
-    const text = code.textContent?.trim() || ''
-    const m = text.match(/^(.*?)(?::L?(\d+)(?:-\d+)?)?$/)
-    if (!m || !INLINE_PATH_RE.test(text)) return
-    const path = m[1]
-    const line = m[2] ? parseInt(m[2], 10) : undefined
+    const parsed = parsePathReference(code.textContent || '')
+    if (!parsed) return
+    const { path, line } = parsed
     code.style.cursor = 'pointer'
     code.title = line ? `Open ${path} at line ${line}` : `Open ${path}`
     code.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      openFile(path, line)
+    })
+  })
+}
+
+export function attachMarkdownPathLinkListeners(
+  container: HTMLElement,
+  openFile: (path: string, line?: number) => void,
+): void {
+  container.querySelectorAll<HTMLAnchorElement>('a.md-link').forEach(link => {
+    const href = link.getAttribute('href') || ''
+    const parsed = parsePathReference(href)
+    if (!parsed) return
+    const { path, line } = parsed
+    link.target = ''
+    link.rel = ''
+    link.title = line ? `Open ${path} at line ${line}` : `Open ${path}`
+    link.addEventListener('click', (e) => {
       e.preventDefault()
       e.stopPropagation()
       openFile(path, line)
@@ -200,7 +228,7 @@ export function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString()
 }
 
-/** Staleness → color map, shared between TapestryView and FileViewerModal. */
+/** Staleness → color map used by TapestryView. */
 export const STALENESS_COLORS: Record<string, string> = {
   'fresh': '#5A7B7B',
   'stale': '#A87070',
