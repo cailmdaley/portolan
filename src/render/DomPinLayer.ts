@@ -54,11 +54,18 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
   image: { width: 320, height: 320 },
   other: { width: 260, height: 120 },
 }
-const MIN_SIZE = 120
+// Minimum is tiny — just a numerical floor so the box never collapses to
+// zero / negative. `position()` also clamps CSS size to ≥8px.
+const MIN_SIZE = 8
 const MAX_SIZE = 1600
 
-type Edge = 'n' | 'e' | 's' | 'w'
-const EDGES: readonly Edge[] = ['n', 'e', 's', 'w']
+type Handle = 'n' | 'e' | 's' | 'w' | 'ne' | 'se' | 'sw' | 'nw'
+const HANDLES: readonly Handle[] = ['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw']
+function handleSigns(h: Handle): { sx: 0 | 1 | -1; sz: 0 | 1 | -1 } {
+  const sx = h.includes('e') ? 1 : h.includes('w') ? -1 : 0
+  const sz = h.includes('s') ? 1 : h.includes('n') ? -1 : 0
+  return { sx, sz }
+}
 
 /** True if a pin should render via the DOM layer. All kinds route to DOM. */
 export function isDomPinKind(pin: Pin): boolean {
@@ -494,10 +501,10 @@ export class DomPinLayer {
     // dimension while the opposite edge stays pinned in world space. Handles
     // sit above iframe event scope so pdf/html pins still catch the gesture.
     // See constitution invariant 4.
-    for (const edge of EDGES) {
-      const handle = renderResizeHandle(edge)
+    for (const h of HANDLES) {
+      const handle = renderResizeHandle(h)
       el.appendChild(handle)
-      this.attachResize(handle, entry, edge)
+      this.attachResize(handle, entry, h)
     }
     return entry
   }
@@ -616,10 +623,9 @@ export class DomPinLayer {
    *
    *  The opposite edge stays pinned in screen space. See constitution
    *  invariant 4. */
-  private attachResize(handle: HTMLElement, entry: DomPinEntry, edge: Edge): void {
+  private attachResize(handle: HTMLElement, entry: DomPinEntry, kind: Handle): void {
     if (!this.onPinResized || !this.screenToWorld) return
-    const axis: 'x' | 'z' = edge === 'e' || edge === 'w' ? 'x' : 'z'
-    const sign = edge === 'e' || edge === 's' ? 1 : -1
+    const { sx, sz } = handleSigns(kind)
 
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
@@ -639,40 +645,38 @@ export class DomPinLayer {
           if (Math.hypot(dxScreen, dyScreen) < 2) return
           active = true
           entry.el.classList.add('dom-pin--resizing')
-          document.body.style.cursor = edgeCursor(edge)
+          document.body.style.cursor = handleCursor(kind)
           // Reuse the same suppression flag as drag-to-pin / chrome-drag so
           // pin-hover and canvas interactions don't interfere mid-resize.
           document.body.classList.add('pin-dragging')
         }
-        const dScreen = axis === 'x' ? dxScreen : dyScreen
         const ratio = this.zoomRatio()
-        const startSize = axis === 'x' ? startW : startH
-        const nextSize = clampSize(startSize + (sign * dScreen) / ratio)
-        // Fraction of the intended size change that actually landed after
-        // clamping — so when we bump against MIN_SIZE / MAX_SIZE the center
-        // stops tracking instead of marching on.
-        const intended = (sign * dScreen) / ratio
-        const fraction = intended !== 0 ? (nextSize - startSize) / intended : 0
         const cursor = this.screenToWorld!(ev.clientX, ev.clientY)
-        const dCursorWorld = axis === 'x'
-          ? cursor.x - startCursor.x
-          : cursor.z - startCursor.z
 
-        if (axis === 'x') {
-          entry.width = nextSize
-          entry.pin = {
-            ...entry.pin,
-            x: startPinX + (dCursorWorld * fraction) / 2,
-            z: startPinZ,
-          }
-        } else {
-          entry.height = nextSize
-          entry.pin = {
-            ...entry.pin,
-            x: startPinX,
-            z: startPinZ + (dCursorWorld * fraction) / 2,
-          }
+        // Size on each axis the handle affects; the other axis stays put.
+        // Fraction captures how much of the intended delta survived clamping,
+        // so hitting MIN/MAX freezes the center in lockstep with the edge.
+        let nextW = startW
+        let nextH = startH
+        let pinX = startPinX
+        let pinZ = startPinZ
+
+        if (sx !== 0) {
+          const intendedW = (sx * dxScreen) / ratio
+          nextW = clampSize(startW + intendedW)
+          const fracX = intendedW !== 0 ? (nextW - startW) / intendedW : 0
+          pinX = startPinX + ((cursor.x - startCursor.x) * fracX) / 2
         }
+        if (sz !== 0) {
+          const intendedH = (sz * dyScreen) / ratio
+          nextH = clampSize(startH + intendedH)
+          const fracZ = intendedH !== 0 ? (nextH - startH) / intendedH : 0
+          pinZ = startPinZ + ((cursor.z - startCursor.z) * fracZ) / 2
+        }
+
+        entry.width = nextW
+        entry.height = nextH
+        entry.pin = { ...entry.pin, x: pinX, z: pinZ }
         this.position(entry)
       }
 
@@ -700,8 +704,11 @@ export class DomPinLayer {
   }
 }
 
-function edgeCursor(edge: Edge): string {
-  return edge === 'e' || edge === 'w' ? 'ew-resize' : 'ns-resize'
+function handleCursor(h: Handle): string {
+  if (h === 'n' || h === 's') return 'ns-resize'
+  if (h === 'e' || h === 'w') return 'ew-resize'
+  if (h === 'ne' || h === 'sw') return 'nesw-resize'
+  return 'nwse-resize' // nw, se
 }
 
 let pulseStylesInjected = false
@@ -745,6 +752,18 @@ function ensurePulseStyles(): void {
       width: 2px;
       left: 50%;
       transform: translateX(-50%);
+    }
+    /* Corners: small parchment dot centered in the 14×14 hit zone. */
+    .dom-pin .dom-pin-resize--ne::after,
+    .dom-pin .dom-pin-resize--se::after,
+    .dom-pin .dom-pin-resize--sw::after,
+    .dom-pin .dom-pin-resize--nw::after {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
     }
     .dom-pin .dom-pin-resize:hover::after,
     .dom-pin--resizing .dom-pin-resize::after {
@@ -1289,32 +1308,45 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
   return div
 }
 
-function renderResizeHandle(edge: Edge): HTMLElement {
+function renderResizeHandle(kind: Handle): HTMLElement {
   const h = document.createElement('div')
-  h.className = `dom-pin-resize dom-pin-resize--${edge}`
+  h.className = `dom-pin-resize dom-pin-resize--${kind}`
   h.title = 'Drag to resize'
-  // Invisible hit strip along the edge, straddling the border so the cursor
-  // finds it both just outside and just inside the card. Visual affordance
-  // (a thin parchment line) is applied via CSS on hover — constitution's
-  // "quiet by default." See the ruleset in `ensurePulseStyles`.
+  // Edges: invisible hit strip straddling the border so the cursor finds
+  // it both just inside and just outside the card. Corners: 14×14 hit
+  // square at the corner, stacked above the edges via z-index so the
+  // diagonal cursor wins where they overlap. Visual affordance is a thin
+  // parchment line / dot shown on hover — "quiet by default."
   const style: Partial<CSSStyleDeclaration> = {
     position: 'absolute',
-    cursor: edgeCursor(edge),
+    cursor: handleCursor(kind),
     touchAction: 'none',
-    zIndex: '2',
   }
-  const THICKNESS = '10px'
-  const OFFSET = '-5px'
-  if (edge === 'n' || edge === 's') {
-    style.left = '0'
-    style.right = '0'
-    style.height = THICKNESS
-    style[edge === 'n' ? 'top' : 'bottom'] = OFFSET
+  const EDGE_THICK = '10px'
+  const EDGE_OFFSET = '-5px'
+  const CORNER_SIZE = '14px'
+  const CORNER_OFFSET = '-7px'
+  if (kind.length === 1) {
+    // Edge
+    style.zIndex = '2'
+    if (kind === 'n' || kind === 's') {
+      style.left = '0'
+      style.right = '0'
+      style.height = EDGE_THICK
+      style[kind === 'n' ? 'top' : 'bottom'] = EDGE_OFFSET
+    } else {
+      style.top = '0'
+      style.bottom = '0'
+      style.width = EDGE_THICK
+      style[kind === 'w' ? 'left' : 'right'] = EDGE_OFFSET
+    }
   } else {
-    style.top = '0'
-    style.bottom = '0'
-    style.width = THICKNESS
-    style[edge === 'w' ? 'left' : 'right'] = OFFSET
+    // Corner — sits above edges
+    style.zIndex = '3'
+    style.width = CORNER_SIZE
+    style.height = CORNER_SIZE
+    style[kind.includes('n') ? 'top' : 'bottom'] = CORNER_OFFSET
+    style[kind.includes('w') ? 'left' : 'right'] = CORNER_OFFSET
   }
   Object.assign(h.style, style)
   return h
