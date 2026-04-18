@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -34,7 +34,7 @@ describe('MeetingBridge', () => {
     vi.restoreAllMocks();
   });
 
-  it('boots a meeting run, persists transcript chunks, and injects wrapped messages', () => {
+  it('boots a meeting run, persists transcript chunks to transcript.md, and never injects chunks into the worker', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
     const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
     const messenger = { send: vi.fn() };
@@ -61,6 +61,7 @@ describe('MeetingBridge', () => {
     });
 
     expect(run.liveDocumentPath).toBe(join(cityPath, 'meeting-live-brief.md'));
+    expect(run.currentMeetingSymlinkPath).toBe(join(cityPath, '.portolan', 'current-meeting.md'));
     expect(source?.started).toBe(true);
     expect(messenger.send).toHaveBeenCalledTimes(1);
     expect(messenger.send).toHaveBeenCalledWith(
@@ -80,7 +81,7 @@ describe('MeetingBridge', () => {
 
     const state = bridge.getState();
     expect(state.activeMeeting?.chunkCount).toBe(1);
-    expect(state.activeMeeting?.injectedCount).toBe(2);
+    expect(state.activeMeeting?.injectedCount).toBe(1);
     expect(state.activeMeeting?.recentTranscriptChunks).toEqual([
       expect.objectContaining({
         chunkIndex: 1,
@@ -88,12 +89,9 @@ describe('MeetingBridge', () => {
         text: 'Could we pull up the calibration plot before deciding?',
       }),
     ]);
-    expect(messenger.send).toHaveBeenCalledTimes(2);
-    expect(messenger.send).toHaveBeenLastCalledWith(
-      expect.objectContaining({ tmuxSession: 'worker-1' }),
-      expect.stringContaining('Could we pull up the calibration plot before deciding?'),
-      { pressEnter: true },
-    );
+    // Transcript chunks must never be delivered via messenger.send — they
+    // would interrupt the worker's Claude Code turn boundaries.
+    expect(messenger.send).toHaveBeenCalledTimes(1);
 
     const transcriptLines = readFileSync(run.transcriptPath, 'utf-8').trim().split('\n');
     expect(transcriptLines).toHaveLength(1);
@@ -105,13 +103,14 @@ describe('MeetingBridge', () => {
     });
 
     const injectionLines = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n');
-    expect(injectionLines).toHaveLength(2);
+    expect(injectionLines).toHaveLength(1);
     expect(JSON.parse(injectionLines[0]).kind).toBe('bootstrap');
-    expect(JSON.parse(injectionLines[1])).toMatchObject({
-      kind: 'transcript-chunk',
-      chunkIndex: 1,
-      sourceChunkId: '17',
-    });
+
+    const transcriptMd = readFileSync(run.transcriptMarkdownPath, 'utf-8');
+    expect(transcriptMd).toContain('Could we pull up the calibration plot before deciding?');
+    expect(transcriptMd).not.toContain(' …');
+    // Symlink at <cwd>/.portolan/current-meeting.md resolves to transcript.md.
+    expect(readFileSync(join(cityPath, '.portolan', 'current-meeting.md'), 'utf-8')).toBe(transcriptMd);
 
     const liveDocument = readFileSync(run.liveDocumentPath, 'utf-8');
     expect(liveDocument).toContain(`# Live meeting brief: ${run.meetingId}`);
@@ -519,12 +518,9 @@ describe('MeetingBridge', () => {
     });
 
     expect(updated.chunkCount).toBe(1);
-    expect(updated.injectedCount).toBe(2);
-    expect(messenger.send).toHaveBeenLastCalledWith(
-      expect.objectContaining({ tmuxSession: 'worker-manual' }),
-      expect.stringContaining('source: manual'),
-      { pressEnter: true },
-    );
+    // Chunks update transcript.md only — no messenger.send beyond bootstrap.
+    expect(updated.injectedCount).toBe(1);
+    expect(messenger.send).toHaveBeenCalledTimes(1);
 
     const transcript = JSON.parse(readFileSync(run.transcriptPath, 'utf-8').trim());
     expect(transcript).toMatchObject({
@@ -593,14 +589,60 @@ describe('MeetingBridge', () => {
     expect(transcriptLines).toHaveLength(3);
     expect(transcriptLines.map((entry) => entry.chunkIndex)).toEqual([1, 1, 1]);
     expect(transcriptLines.map((entry) => entry.revisionIndex)).toEqual([1, 2, 3]);
+    expect(transcriptLines.map((entry) => entry.isPartial)).toEqual([true, true, false]);
 
     const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(injections).toHaveLength(4);
-    expect(injections[1]).toMatchObject({ chunkIndex: 1, revisionIndex: 1 });
-    expect(injections[2]).toMatchObject({ chunkIndex: 1, revisionIndex: 2 });
-    expect(injections[3]).toMatchObject({ chunkIndex: 1, revisionIndex: 3 });
-    expect(injections[2].message).toContain('chunk_event: revision');
-    expect(injections[2].message).toContain('tentative: true');
+    expect(injections).toHaveLength(1);
+    expect(injections[0].kind).toBe('bootstrap');
+
+    // transcript.md reflects the settled revision, no trailing "…" marker.
+    const transcriptMd = readFileSync(run.transcriptMarkdownPath, 'utf-8');
+    expect(transcriptMd).toContain('Scientist: Could we pull up the calibration plot');
+    expect(transcriptMd).not.toContain(' …');
+  });
+
+  it('marks unsettled partial chunks with a trailing ellipsis in transcript.md', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+    const messenger = { send: vi.fn() };
+
+    const bridge = new MeetingBridge({
+      baseDir,
+      messenger,
+      sourceFactory: {
+        createVoiceInkSource: vi.fn(() => {
+          throw new Error('voiceink should not start for manual meetings');
+        }),
+      },
+    });
+
+    const run = bridge.start({
+      sourceType: 'manual',
+      target: {
+        sessionId: 'worker-partial-md',
+        tmuxSession: 'worker-partial-md',
+        originId: 'local',
+        cwd: '/project/portolan',
+      },
+    });
+
+    bridge.ingestChunk({
+      id: 'live-1',
+      status: 'partial',
+      text: 'still working on this phrase',
+    });
+
+    const afterPartial = readFileSync(run.transcriptMarkdownPath, 'utf-8');
+    expect(afterPartial).toContain('still working on this phrase …');
+
+    bridge.ingestChunk({
+      id: 'live-1',
+      status: 'complete',
+      text: 'still working on this phrase for real',
+    });
+
+    const afterSettled = readFileSync(run.transcriptMarkdownPath, 'utf-8');
+    expect(afterSettled).toContain('still working on this phrase for real');
+    expect(afterSettled).not.toContain(' …');
   });
 
   it('persists operator updates and injects them into the active worker thread', () => {
@@ -767,7 +809,8 @@ describe('MeetingBridge', () => {
     });
 
     expect(updated.candidateEventCount).toBe(1);
-    expect(updated.injectedCount).toBe(3);
+    // Bootstrap + candidate-event; transcript chunks no longer inject.
+    expect(updated.injectedCount).toBe(2);
     expect(updated.lastCandidateEventPreview).toContain('Calibration comparison still open');
     expect(updated.recentCandidateEvents).toEqual([
       expect.objectContaining({
@@ -801,7 +844,9 @@ describe('MeetingBridge', () => {
     });
 
     const injections = readFileSync(run.injectionsPath, 'utf-8').trim().split('\n');
-    expect(JSON.parse(injections[2])).toMatchObject({
+    expect(injections).toHaveLength(2);
+    expect(JSON.parse(injections[0]).kind).toBe('bootstrap');
+    expect(JSON.parse(injections[1])).toMatchObject({
       kind: 'candidate-event',
       eventIndex: 1,
     });
@@ -1650,6 +1695,182 @@ describe('MeetingBridge', () => {
         expect.objectContaining({ requestIndex: 6 }),
         expect.objectContaining({ requestIndex: 7 }),
       ],
+    });
+  });
+
+  describe('delivery to the worker', () => {
+    it('never calls messenger.send for transcript chunks, even across a burst of revisions', () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+      const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+      const messenger = { send: vi.fn() };
+
+      const bridge = new MeetingBridge({
+        baseDir,
+        messenger,
+        sourceFactory: {
+          createVoiceInkSource: vi.fn(() => {
+            throw new Error('voiceink should not start for manual meetings');
+          }),
+        },
+      });
+
+      bridge.start({
+        sourceType: 'manual',
+        target: {
+          sessionId: 'worker-delivery',
+          tmuxSession: 'worker-delivery',
+          originId: 'local',
+          cwd: cityPath,
+        },
+      });
+
+      for (let index = 1; index <= 5; index += 1) {
+        bridge.ingestChunk({ id: `chunk-${index}`, status: 'partial', text: `chunk ${index} tentative` });
+        bridge.ingestChunk({ id: `chunk-${index}`, status: 'complete', text: `chunk ${index} settled` });
+      }
+
+      // Only the bootstrap message should have been sent to the worker.
+      expect(messenger.send).toHaveBeenCalledTimes(1);
+      expect(messenger.send).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('Portolan meeting assistant mode'),
+        expect.objectContaining({ pressEnter: true }),
+      );
+      for (const call of messenger.send.mock.calls) {
+        expect(call[1]).not.toContain('[Portolan Meeting Transcript Chunk]');
+      }
+    });
+
+    it('bootstrap prompt points at the cwd-local symlink, not the global meeting path', () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+      const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+      const messenger = { send: vi.fn() };
+
+      const bridge = new MeetingBridge({
+        baseDir,
+        messenger,
+        sourceFactory: {
+          createVoiceInkSource: vi.fn(() => {
+            throw new Error('voiceink should not start for manual meetings');
+          }),
+        },
+      });
+
+      bridge.start({
+        sourceType: 'manual',
+        target: {
+          sessionId: 'worker-bootstrap',
+          tmuxSession: 'worker-bootstrap',
+          originId: 'local',
+          cwd: cityPath,
+        },
+      });
+
+      expect(messenger.send).toHaveBeenCalledTimes(1);
+      const bootstrap = messenger.send.mock.calls[0][1];
+      expect(bootstrap).toContain('.portolan/current-meeting.md');
+      expect(bootstrap).toContain('Read the file on demand');
+    });
+
+    it('removes the <cwd>/.portolan/current-meeting.md symlink when the meeting stops', () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+      const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+      const messenger = { send: vi.fn() };
+
+      const bridge = new MeetingBridge({
+        baseDir,
+        messenger,
+        sourceFactory: {
+          createVoiceInkSource: vi.fn(() => {
+            throw new Error('voiceink should not start for manual meetings');
+          }),
+        },
+      });
+
+      bridge.start({
+        sourceType: 'manual',
+        target: {
+          sessionId: 'worker-teardown',
+          tmuxSession: 'worker-teardown',
+          originId: 'local',
+          cwd: cityPath,
+        },
+      });
+
+      const symlinkPath = join(cityPath, '.portolan', 'current-meeting.md');
+      expect(lstatSync(symlinkPath).isSymbolicLink()).toBe(true);
+
+      bridge.stop();
+
+      expect(existsSync(symlinkPath)).toBe(false);
+    });
+
+    it('updates the cwd-local symlink target as partial chunks settle', () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+      const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+      const messenger = { send: vi.fn() };
+
+      const bridge = new MeetingBridge({
+        baseDir,
+        messenger,
+        sourceFactory: {
+          createVoiceInkSource: vi.fn(() => {
+            throw new Error('voiceink should not start for manual meetings');
+          }),
+        },
+      });
+
+      const run = bridge.start({
+        sourceType: 'manual',
+        target: {
+          sessionId: 'worker-revision',
+          tmuxSession: 'worker-revision',
+          originId: 'local',
+          cwd: cityPath,
+        },
+      });
+
+      const symlinkPath = join(cityPath, '.portolan', 'current-meeting.md');
+      expect(readlinkSync(symlinkPath)).toBe(run.transcriptMarkdownPath);
+
+      bridge.ingestChunk({ id: 'c1', status: 'partial', text: 'we are still thinking' });
+      expect(readFileSync(symlinkPath, 'utf-8')).toContain('we are still thinking …');
+
+      bridge.ingestChunk({ id: 'c1', status: 'complete', text: 'we are still thinking about calibration' });
+      const settled = readFileSync(symlinkPath, 'utf-8');
+      expect(settled).toContain('we are still thinking about calibration');
+      expect(settled).not.toContain(' …');
+    });
+
+    it('skips the worker-cwd symlink when the city path is not a local directory', () => {
+      const baseDir = mkdtempSync(join(tmpdir(), 'meeting-bridge-'));
+      const messenger = { send: vi.fn() };
+
+      const bridge = new MeetingBridge({
+        baseDir,
+        messenger,
+        sourceFactory: {
+          createVoiceInkSource: vi.fn(() => {
+            throw new Error('voiceink should not start for manual meetings');
+          }),
+        },
+      });
+
+      const run = bridge.start({
+        sourceType: 'manual',
+        target: {
+          sessionId: 'worker-remote',
+          tmuxSession: 'worker-remote',
+          originId: 'local',
+          cwd: '/nonexistent/remote/project',
+        },
+      });
+
+      // No symlink was installed, and bootstrap falls back to the absolute path.
+      expect(run.currentMeetingSymlinkPath).toBeUndefined();
+      const bootstrap = messenger.send.mock.calls[0][1];
+      expect(bootstrap).toContain(run.transcriptMarkdownPath);
+      expect(bootstrap).not.toContain('.portolan/current-meeting.md');
     });
   });
 });

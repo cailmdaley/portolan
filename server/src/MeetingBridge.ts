@@ -1,4 +1,14 @@
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import {
+  appendFileSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
 import { exec, execFile } from 'child_process';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
@@ -135,6 +145,8 @@ export interface MeetingRunState {
   sshHost?: string;
   cityPath: string;
   transcriptPath: string;
+  transcriptMarkdownPath: string;
+  currentMeetingSymlinkPath?: string;
   injectionsPath: string;
   updatesPath: string;
   assistantResponsesPath: string;
@@ -343,6 +355,7 @@ export class MeetingBridge {
   private readonly astraPromoter: MeetingAstraPromoter;
   private readonly stateListeners = new Set<MeetingBridgeStateListener>();
   private readonly chunkSources = new Map<string, { chunkIndex: number; revisionIndex: number; text: string; status: string | null }>();
+  private readonly transcriptByIndex = new Map<number, { text: string; isPartial: boolean; speaker?: string }>();
   private readonly assistantResponseSources = new Set<string>();
   private activeSource: TranscriptSource | null = null;
   private state: MeetingBridgeState = {
@@ -388,6 +401,7 @@ export class MeetingBridge {
   start(options: MeetingBridgeStartOptions): MeetingRunState {
     this.stop();
     this.chunkSources.clear();
+    this.transcriptByIndex.clear();
     this.assistantResponseSources.clear();
 
     const startedAt = Date.now();
@@ -399,6 +413,7 @@ export class MeetingBridge {
     mkdirSync(meetingDir, { recursive: true });
 
     const transcriptPath = join(meetingDir, 'transcript.jsonl');
+    const transcriptMarkdownPath = join(meetingDir, 'transcript.md');
     const injectionsPath = join(meetingDir, 'injections.jsonl');
     const updatesPath = join(meetingDir, 'operator-updates.jsonl');
     const assistantResponsesPath = join(meetingDir, 'assistant-responses.jsonl');
@@ -423,6 +438,7 @@ export class MeetingBridge {
       sshHost: options.target.sshHost,
       cityPath: options.target.cwd,
       transcriptPath,
+      transcriptMarkdownPath,
       injectionsPath,
       updatesPath,
       assistantResponsesPath,
@@ -462,6 +478,8 @@ export class MeetingBridge {
 
     this.state.activeMeeting = run;
     this.state.lastMeeting = { ...run };
+    writeFileSync(transcriptMarkdownPath, '');
+    this.installCurrentMeetingSymlink(run);
     this.writeMetadata(run);
 
     try {
@@ -794,12 +812,12 @@ export class MeetingBridge {
     return cloneMeetingRunState(active);
   }
 
-  private handleChunk(target: MeetingBridgeTarget, run: MeetingRunState, rawChunk: unknown): void {
+  private handleChunk(_target: MeetingBridgeTarget, run: MeetingRunState, rawChunk: unknown): void {
     if (this.state.activeMeeting?.meetingId !== run.meetingId || run.status !== 'running') return;
 
     try {
       const chunk = this.normalizeChunk(rawChunk, run.chunkCount + 1);
-      const shouldInject = this.recordChunkSource(chunk);
+      this.recordChunkSource(chunk);
       run.chunkCount = Math.max(run.chunkCount, chunk.chunkIndex);
       run.lastChunkAt = Date.now();
       run.lastChunkPreview = chunk.text.slice(0, 160) || chunk.sourceChunkId || undefined;
@@ -833,19 +851,17 @@ export class MeetingBridge {
         text: chunk.text,
       });
 
-      if (chunk.text.trim().length > 0 && shouldInject) {
-        const message = this.buildTranscriptMessage(run, chunk);
-        this.messenger.send(target, message, { pressEnter: true });
-        run.injectedCount += 1;
-        appendJsonLine(run.injectionsPath, {
-          kind: 'transcript-chunk',
-          chunkIndex: chunk.chunkIndex,
-          revisionIndex: chunk.revisionIndex,
-          sourceChunkId: chunk.sourceChunkId,
-          sentAt: Date.now(),
-          message,
-        });
-      }
+      // Transcript chunks are delivered to the worker via file, not prompt.
+      // See constitution-portolan-voice-ingress §"Delivery to the worker":
+      // the bootstrap injection tells Claude to read transcript.md via the
+      // cwd-local symlink on demand; per-chunk messenger.send would thrash
+      // the agent's turn boundaries.
+      this.transcriptByIndex.set(chunk.chunkIndex, {
+        text: chunk.text,
+        isPartial: !!chunk.isPartial,
+        speaker: chunk.speaker ?? undefined,
+      });
+      this.writeTranscriptMarkdown(run);
 
       this.writeMetadata(run);
       this.emitStateChanged();
@@ -853,6 +869,59 @@ export class MeetingBridge {
       const err = error instanceof Error ? error : new Error(String(error));
       this.handleError(run, err);
     }
+  }
+
+  private writeTranscriptMarkdown(run: MeetingRunState): void {
+    const indices = [...this.transcriptByIndex.keys()].sort((a, b) => a - b);
+    const paragraphs: string[] = [];
+    for (const index of indices) {
+      const entry = this.transcriptByIndex.get(index);
+      if (!entry) continue;
+      const trimmed = entry.text.trim();
+      if (!trimmed) continue;
+      const speaker = entry.speaker?.trim();
+      const body = speaker ? `${speaker}: ${trimmed}` : trimmed;
+      paragraphs.push(entry.isPartial ? `${body} …` : body);
+    }
+    const body = paragraphs.length > 0 ? `${paragraphs.join('\n\n')}\n` : '';
+    writeFileSync(run.transcriptMarkdownPath, body);
+  }
+
+  private installCurrentMeetingSymlink(run: MeetingRunState): void {
+    if (run.originId !== 'local') return;
+    try {
+      if (!statSync(run.cityPath).isDirectory()) return;
+    } catch {
+      return;
+    }
+    const dotPortolanDir = join(run.cityPath, '.portolan');
+    const symlinkPath = join(dotPortolanDir, 'current-meeting.md');
+    try {
+      mkdirSync(dotPortolanDir, { recursive: true });
+      try {
+        lstatSync(symlinkPath);
+        unlinkSync(symlinkPath);
+      } catch {
+        // Nothing to clean up.
+      }
+      symlinkSync(run.transcriptMarkdownPath, symlinkPath);
+      run.currentMeetingSymlinkPath = symlinkPath;
+    } catch {
+      // Best effort; a missing/unwritable cwd must not break the meeting.
+    }
+  }
+
+  private teardownCurrentMeetingSymlink(run: MeetingRunState): void {
+    if (!run.currentMeetingSymlinkPath) return;
+    try {
+      const stats = lstatSync(run.currentMeetingSymlinkPath);
+      if (stats.isSymbolicLink()) {
+        unlinkSync(run.currentMeetingSymlinkPath);
+      }
+    } catch {
+      // Already gone.
+    }
+    run.currentMeetingSymlinkPath = undefined;
   }
 
   private handleOperatorUpdate(target: MeetingBridgeTarget, run: MeetingRunState, rawUpdate: unknown): void {
@@ -1145,7 +1214,9 @@ export class MeetingBridge {
     run.stoppedAt = Date.now();
     this.activeSource = null;
     this.chunkSources.clear();
+    this.transcriptByIndex.clear();
     this.assistantResponseSources.clear();
+    this.teardownCurrentMeetingSymlink(run);
     this.state.activeMeeting = null;
     this.state.lastMeeting = { ...run };
     this.writeMetadata(run);
@@ -1438,40 +1509,22 @@ export class MeetingBridge {
   }
 
   private buildBootstrapPrompt(run: MeetingRunState): string {
+    const transcriptRef = run.currentMeetingSymlinkPath
+      ? '.portolan/current-meeting.md (a symlink to the rolling transcript in ~/.portolan/meetings/...)'
+      : run.transcriptMarkdownPath;
     return [
       'Portolan meeting assistant mode is now active.',
       `Meeting ID: ${run.meetingId}`,
       `Project path: ${run.cityPath}`,
       `Transcript ingress: ${run.sourceType}`,
-      'I will send transcript chunks from local capture as they arrive.',
-      'Treat each chunk as tentative transcript evidence, not a settled conclusion.',
-      'Maintain a rolling account of candidate decisions, open questions, corrections, and retrieval opportunities.',
+      `Transcript file: ${transcriptRef}`,
+      'The live transcript accumulates in that file as I speak; partial hypotheses end with "…" and settle into plain text.',
+      'Read the file on demand when I reference the meeting ("what did we just say about X?", "pull the last minute"). Do not poll it continuously — the user drives when it is consulted.',
+      'Treat each passage as tentative transcript evidence, not a settled conclusion.',
+      'Maintain a rolling account of candidate decisions, open questions, corrections, and retrieval opportunities from what you read.',
       'Prefer retrieving existing local artifacts, fibers, plots, and evidence before proposing fresh computation.',
       'Do not silently harden speculation into accepted claims.',
     ].join('\n');
-  }
-
-  private buildTranscriptMessage(run: MeetingRunState, chunk: NormalizedTranscriptChunk): string {
-    const lines = [
-      '[Portolan Meeting Transcript Chunk]',
-      `meeting_id: ${run.meetingId}`,
-      `chunk_index: ${chunk.chunkIndex}`,
-      `revision_index: ${chunk.revisionIndex}`,
-      `source: ${run.sourceType}`,
-    ];
-
-    if (chunk.sourceChunkId) lines.push(`source_chunk_id: ${chunk.sourceChunkId}`);
-    if (chunk.timestampLocal) lines.push(`timestamp_local: ${chunk.timestampLocal}`);
-    if (chunk.durationSeconds !== null) lines.push(`duration_s: ${chunk.durationSeconds}`);
-    if (chunk.status) lines.push(`status: ${chunk.status}`);
-    if (chunk.speaker) lines.push(`speaker: ${chunk.speaker}`);
-    if (chunk.audioFileUrl) lines.push(`audio_file_url: ${chunk.audioFileUrl}`);
-    if (chunk.isRevision) lines.push('chunk_event: revision');
-    if (chunk.isPartial) lines.push('tentative: true');
-    lines.push('transcript:');
-    lines.push(chunk.text);
-    lines.push('[/Portolan Meeting Transcript Chunk]');
-    return lines.join('\n');
   }
 
   private recordChunkSource(chunk: NormalizedTranscriptChunk): boolean {
@@ -2369,6 +2422,8 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   const originId = maybeString(value.originId);
   const cityPath = maybeString(value.cityPath);
   const transcriptPath = maybeString(value.transcriptPath);
+  const transcriptMarkdownPath = maybeString(value.transcriptMarkdownPath);
+  const currentMeetingSymlinkPath = maybeString(value.currentMeetingSymlinkPath);
   const injectionsPath = maybeString(value.injectionsPath);
   const updatesPath = maybeString(value.updatesPath);
   const assistantResponsesPath = maybeString(value.assistantResponsesPath);
@@ -2433,6 +2488,8 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
     sshHost: maybeString(value.sshHost) ?? undefined,
     cityPath,
     transcriptPath,
+    transcriptMarkdownPath: transcriptMarkdownPath ?? join(dirname(metadataPath), 'transcript.md'),
+    currentMeetingSymlinkPath: currentMeetingSymlinkPath ?? undefined,
     injectionsPath,
     updatesPath: resolvedUpdatesPath,
     assistantResponsesPath: resolvedAssistantResponsesPath,
