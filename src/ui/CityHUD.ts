@@ -54,7 +54,6 @@ export class CityHUD {
       getOnViewPlaygrounds: () => this.onViewPlaygrounds,
       getOnOpenFile: () => this.onOpenFile,
       getOnFocusWorker: () => this.onFocusWorker,
-      getFibers: (): { open: Fiber[]; closed: Fiber[] } => this.content.getFibers(),
     })
     this.content = new CityHUDContent({
       sidebar: this.sidebar,
@@ -327,7 +326,6 @@ export class CityHUD {
   }
 
   handleMessage(message: unknown): boolean {
-    if (this.header.handleMessage(message)) return true
     if (this.content.handleMessage(message)) return true
     if (this.fileTree.handleMessage(message)) return true
     return false
