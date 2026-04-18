@@ -769,6 +769,21 @@ function ensurePulseStyles(): void {
     .dom-pin--resizing .dom-pin-resize::after {
       opacity: 1;
     }
+    /* Card is its own container so the body-hide rule below can query the
+       card's own width, independent of chrome's container queries. */
+    .dom-pin {
+      container-type: inline-size;
+    }
+    /* Below this width the body is useless — 1.5 words of text doesn't
+       inform anything. Collapse the card to just its chrome strip so it
+       reads as a title-only badge. Handles (edges + corners) stay so the
+       user can still resize it back up. */
+    @container (max-width: 140px) {
+      .dom-pin { height: auto !important; }
+      .dom-pin > *:not(.dom-pin-chrome):not(.dom-pin-resize) {
+        display: none !important;
+      }
+    }
     /* Chrome strip hover: darken slightly so the grab surface advertises itself
        when the cursor enters it. Transition short so it doesn't feel sluggish. */
     .dom-pin-chrome {
