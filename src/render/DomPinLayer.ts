@@ -754,9 +754,29 @@ function ensurePulseStyles(): void {
        when the cursor enters it. Transition short so it doesn't feel sluggish. */
     .dom-pin-chrome {
       transition: background-color 120ms ease-out;
+      container-type: inline-size;
     }
     .dom-pin-chrome:hover {
       background: rgba(184, 168, 150, 0.96) !important;
+    }
+    /* Chrome degradation: as the card narrows, non-essential chrome fades in
+       priority order so the filename survives as the last-to-go. Constitution
+       invariant 5: "Chrome holds the filename at all widths; other chrome
+       elements stay visible as long as they fit." Priority: Save button first,
+       then save-status text, then the dirty dot, then the ⋮ handle — filename
+       and status glyph are last. Thresholds picked to leave the title roughly
+       one filename-word wide at each cutoff; tune by eye on real cards. */
+    @container (max-width: 200px) {
+      .dom-pin-chrome-save { display: none !important; }
+    }
+    @container (max-width: 160px) {
+      .dom-pin-chrome-save-status { display: none !important; }
+    }
+    @container (max-width: 130px) {
+      .dom-pin-chrome-dirty { display: none !important; }
+    }
+    @container (max-width: 100px) {
+      .dom-pin-menu-handle { display: none !important; }
     }
     /* Menu handle (⋮): soft round background on hover/focus so it reads as a
        real button rather than inert text. */
