@@ -600,26 +600,21 @@ export class DomPinLayer {
     })
   }
 
-  /** Pointerdown on an edge handle → drag to resize one dimension. The
-   *  opposite edge stays pinned in world space — dragging the east edge
-   *  grows the width toward the east while the west edge stays put, etc.
-   *  Because the pin's anchor is the card's *center*, the center shifts by
-   *  half the size delta along the edge's axis each frame, and we commit
-   *  the new position on release.
+  /** Pointerdown on an edge handle → drag to resize one dimension.
    *
-   *  Screen-pixel deltas are divided by the current zoom ratio so one
-   *  screen pixel of drag equals one *world* pixel of size change — the
-   *  card feels equally responsive at every zoom.
+   *  Model the card as an axis-aligned bounding box in world coordinates
+   *  (`minX, maxX, minZ, maxZ`). Dragging an edge moves exactly one of
+   *  those four bounds; the other three stay. Re-derive `(center, size)`
+   *  from the new box. This is the simplest correct form — no ratio
+   *  arithmetic, no compound center-shift, and the cursor→world mapping
+   *  goes through `Camera.screenToWorld` (same path chrome-drag uses).
    *
    *  See constitution invariant 4. Commits via `onPinResized` and
    *  `onPinMoved`; skipped if the host didn't provide `onPinResized`. */
   private attachResize(handle: HTMLElement, entry: DomPinEntry, edge: Edge): void {
-    if (!this.onPinResized) return
-    // Axis the edge resizes along, and sign of growth when the cursor moves
-    // in the +screen direction on that axis. North/West grow against +screen
-    // (dragging up/left enlarges); South/East grow with +screen.
+    if (!this.onPinResized || !this.screenToWorld) return
     const axis: 'x' | 'z' = edge === 'e' || edge === 'w' ? 'x' : 'z'
-    const sign = edge === 'e' || edge === 's' ? 1 : -1
+    const upper = edge === 'e' || edge === 's' // this edge sets the max bound
 
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
@@ -627,16 +622,25 @@ export class DomPinLayer {
       const startY = event.clientY
       const startW = entry.width
       const startH = entry.height
-      const startPinX = entry.pin.x
-      const startPinZ = entry.pin.z
-      const ratio = this.zoomRatio()
+      // Initial bounds of the card in world space.
+      const initialMinX = entry.pin.x - startW / 2
+      const initialMaxX = entry.pin.x + startW / 2
+      const initialMinZ = entry.pin.z - startH / 2
+      const initialMaxZ = entry.pin.z + startH / 2
+      // Cursor-to-edge offset captured at pointerdown so the edge sits under
+      // the cursor without snapping to it on the first move.
+      const startCursor = this.screenToWorld!(startX, startY)
+      const edgeAtStart = axis === 'x'
+        ? (upper ? initialMaxX : initialMinX)
+        : (upper ? initialMaxZ : initialMinZ)
+      const cursorToEdge = edgeAtStart - (axis === 'x' ? startCursor.x : startCursor.z)
       let active = false
 
       const onMove = (ev: PointerEvent) => {
-        const dxScreen = ev.clientX - startX
-        const dyScreen = ev.clientY - startY
         if (!active) {
-          if (Math.hypot(dxScreen, dyScreen) < 2) return
+          const dx = ev.clientX - startX
+          const dy = ev.clientY - startY
+          if (Math.hypot(dx, dy) < 2) return
           active = true
           entry.el.classList.add('dom-pin--resizing')
           document.body.style.cursor = edgeCursor(edge)
@@ -644,27 +648,24 @@ export class DomPinLayer {
           // pin-hover and canvas interactions don't interfere mid-resize.
           document.body.classList.add('pin-dragging')
         }
-        // One-dimensional resize: only the edge's own axis changes. Opposite
-        // edge stays fixed in world space by shifting the pin center by
-        // half the size delta along the edge's growth direction.
-        const dScreen = axis === 'x' ? dxScreen : dyScreen
-        const delta = (sign * dScreen) / ratio
+        const cursor = this.screenToWorld!(ev.clientX, ev.clientY)
+        const edgeTarget = (axis === 'x' ? cursor.x : cursor.z) + cursorToEdge
+
+        let minX = initialMinX, maxX = initialMaxX, minZ = initialMinZ, maxZ = initialMaxZ
         if (axis === 'x') {
-          const nextW = clampSize(startW + delta)
-          entry.width = nextW
-          entry.pin = {
-            ...entry.pin,
-            x: startPinX + (sign * (nextW - startW)) / 2,
-            z: startPinZ,
-          }
+          if (upper) maxX = clampBound(edgeTarget, minX + MIN_SIZE, minX + MAX_SIZE)
+          else minX = clampBound(edgeTarget, maxX - MAX_SIZE, maxX - MIN_SIZE)
         } else {
-          const nextH = clampSize(startH + delta)
-          entry.height = nextH
-          entry.pin = {
-            ...entry.pin,
-            x: startPinX,
-            z: startPinZ + (sign * (nextH - startH)) / 2,
-          }
+          if (upper) maxZ = clampBound(edgeTarget, minZ + MIN_SIZE, minZ + MAX_SIZE)
+          else minZ = clampBound(edgeTarget, maxZ - MAX_SIZE, maxZ - MIN_SIZE)
+        }
+
+        entry.width = maxX - minX
+        entry.height = maxZ - minZ
+        entry.pin = {
+          ...entry.pin,
+          x: (minX + maxX) / 2,
+          z: (minZ + maxZ) / 2,
         }
         this.position(entry)
       }
@@ -678,7 +679,7 @@ export class DomPinLayer {
         document.body.style.cursor = ''
         document.body.classList.remove('pin-dragging')
         this.onPinResized!(entry.slug, entry.width, entry.height)
-        if (this.onPinMoved && (entry.pin.x !== startPinX || entry.pin.z !== startPinZ)) {
+        if (this.onPinMoved) {
           this.onPinMoved(entry.slug, entry.pin.x, entry.pin.z)
         }
       }
@@ -1323,5 +1324,10 @@ function resolveSize(pin: Pin): KindSize {
 function clampSize(n: number): number {
   if (!Number.isFinite(n)) return MIN_SIZE
   return Math.min(MAX_SIZE, Math.max(MIN_SIZE, n))
+}
+
+function clampBound(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo
+  return Math.min(hi, Math.max(lo, n))
 }
 
