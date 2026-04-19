@@ -19,6 +19,14 @@ export interface MountOptions {
   sessionId: string
   /** DOM node that wterm takes over. Expected to be empty. */
   container: HTMLElement
+  /** Optional hook called once we learn the tmux pane's actual column/row
+   *  count (from the first `terminal:scrollback` frame). The caller passes
+   *  the CSS width/height that would make wterm's autoResize pick exactly
+   *  cols × rows *right now*; the layer back-computes intrinsic from zoom so
+   *  the ask is zoom-invariant. Scrollback bytes laid out for the pane then
+   *  render without mid-word wrap. The layer decides whether to apply the
+   *  request — a user-resized pin keeps its size. */
+  setIntrinsicSize?: (cssWidth: number, cssHeight: number) => void
 }
 
 export interface MountHandle {
@@ -51,6 +59,11 @@ interface Subscription {
    *  right width. See [[wterm-col-width-mismatch]]. */
   pendingResize: { cols: number; rows: number } | null
   attached: boolean
+  /** Optional "please set pin size to N px × M px" hook, honoured once. Calling
+   *  twice in a session is harmless — the layer itself becomes a no-op after
+   *  the pin diverges from its default — but we skip the redundant trip. */
+  setIntrinsicSize: ((width: number, height: number) => void) | null
+  autoSized: boolean
 }
 
 interface TerminalAttachMessage {
@@ -126,13 +139,19 @@ export class TerminalPinManager {
       case 'terminal:scrollback': {
         // Resize wterm to the actual pane size *before* writing bytes so the
         // VT parser lays out Claude Code's columns at the right width. If the
-        // container is narrower than that, wterm's CSS horizontal overflow +
-        // `.has-scrollback { overflow-y: auto }` kick in and the user can
-        // scroll. If we skipped this, bytes laid out at 150 cols would wrap
-        // mid-word at wterm's default 80 — the "weird linebreaks" regression.
+        // container is narrower than that, wterm's autoResize will immediately
+        // shrink cols to fit — so we also ask the layer to grow the pin to
+        // pane-matching CSS dimensions (honoured only while the pin is still
+        // at its kind default — user resize wins). Without this, bytes laid
+        // out at 102 cols wrap mid-word at ~73 cols, the staircase regression.
         if (typed.cols && typed.rows) {
           if (sub.term.bridge) sub.term.resize(typed.cols, typed.rows)
           else sub.pendingResize = { cols: typed.cols, rows: typed.rows }
+          if (!sub.autoSized && sub.setIntrinsicSize) {
+            sub.autoSized = true
+            const { width, height } = pinSizeForPane(typed.cols, typed.rows)
+            sub.setIntrinsicSize(width, height)
+          }
         }
         const bytes = decodeBase64(typed.bytes)
         if (sub.term.bridge) sub.term.write(bytes)
@@ -189,6 +208,8 @@ export class TerminalPinManager {
       pendingBytes: [],
       pendingResize: null,
       attached: false,
+      setIntrinsicSize: opts.setIntrinsicSize ?? null,
+      autoSized: false,
     }
     this.subscriptions.set(opts.sessionId, sub)
 
@@ -277,4 +298,22 @@ function decodeBase64(b64: string): Uint8Array {
 function writeMutedLine(term: WTerm, text: string): void {
   const seq = `\r\n\x1b[2m${text}\x1b[0m\r\n`
   if (term.bridge) term.write(seq)
+}
+
+/** wterm renders at Menlo 14px (see `@wterm/dom/src/terminal.css`). A "W"
+ *  cell measures ~8.4px wide; rows are a fixed 17px (`--term-row-height`).
+ *  wterm wraps its grid in a 12px padding; the pin's chrome strip adds ~23px.
+ *  We add 2px for the shell's 1px border. These are the constants wterm's
+ *  autoResize uses under the hood, mirrored here so we can ask for a pin size
+ *  that makes autoResize pick exactly `cols × rows` without a second settle. */
+const WTERM_CELL_WIDTH = 8.4
+const WTERM_CELL_HEIGHT = 17
+const WTERM_PADDING = 12
+const PIN_CHROME_HEIGHT = 23
+const PIN_BORDER = 2
+
+export function pinSizeForPane(cols: number, rows: number): { width: number; height: number } {
+  const width = Math.ceil(cols * WTERM_CELL_WIDTH + WTERM_PADDING * 2 + PIN_BORDER)
+  const height = Math.ceil(rows * WTERM_CELL_HEIGHT + WTERM_PADDING * 2 + PIN_CHROME_HEIGHT + PIN_BORDER)
+  return { width, height }
 }

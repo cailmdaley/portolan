@@ -130,10 +130,22 @@ export type MountVellumFiberSurface = (
 ) => VellumSurfaceMount
 
 /** Mount a read-only terminal view into `container` for the given sessionId.
- *  Returns an unmount callback. See [[constitution-terminals-in-map]]. */
+ *  Returns an unmount callback. See [[constitution-terminals-in-map]].
+ *
+ *  `setIntrinsicSize` lets the mount request a pin-size bump once it learns
+ *  the tmux pane's real column/row count (the first `terminal:scrollback`
+ *  frame carries it). The arguments are *CSS* pixels at the current zoom —
+ *  the layer back-computes the intrinsic from `zoomRatio`, so the ask is
+ *  stable regardless of camera distance. The layer only honours the request
+ *  while the pin is still at its kind default — once the user resizes, their
+ *  choice wins. Without this, a narrower default pin displays scrollback laid
+ *  out for a wider pane as a staircase. See [[wterm-col-width-mismatch]]. */
 export type MountTerminalSurface = (
   container: HTMLElement,
-  opts: { sessionId: string },
+  opts: {
+    sessionId: string
+    setIntrinsicSize?: (cssWidth: number, cssHeight: number) => void
+  },
 ) => VellumSurfaceMount
 
 export interface DomPinLayerOptions {
@@ -395,7 +407,10 @@ export class DomPinLayer {
           entry.vellumMount = null
           entry.lastReflowWidth = 0
         } else {
-          entry.vellumMount = this.mountTerminalSurface(entry.inner, { sessionId: entry.pin.source.sessionId })
+          entry.vellumMount = this.mountTerminalSurface(entry.inner, {
+            sessionId: entry.pin.source.sessionId,
+            setIntrinsicSize: (w, h) => this.setIntrinsicSizeIfPristine(entry.slug, w, h),
+          })
         }
       }
     }
@@ -407,6 +422,28 @@ export class DomPinLayer {
       entry.lastReflowWidth = cssW
       entry.vellumMount.resize(cssW)
     }
+  }
+
+  /** Resize a pin so it renders at the given *CSS* width/height at the current
+   *  zoom — the intrinsic is back-computed by dividing out `zoomRatio`, so the
+   *  ask is stable whether the user is zoomed in or out. Honoured only while
+   *  the pin is still at its kind default; once the user drags a resize
+   *  handle, the pin diverges from the default and this method is a no-op.
+   *
+   *  Terminal mounts use this to fit exactly the tmux pane's cols×rows worth
+   *  of wterm grid on first scrollback, avoiding the mid-word staircase that
+   *  shows up when the CSS container is narrower than the layout the bytes
+   *  were produced for. See [[wterm-col-width-mismatch]]. */
+  private setIntrinsicSizeIfPristine(slug: string, cssWidth: number, cssHeight: number): void {
+    const entry = this.entries.get(slug)
+    if (!entry) return
+    const defaults = DEFAULT_SIZE[entry.pin.kind ?? 'other'] ?? DEFAULT_SIZE.other
+    if (entry.width !== defaults.width || entry.height !== defaults.height) return
+    const ratio = this.zoomRatio()
+    entry.width = clampSize(cssWidth / ratio)
+    entry.height = clampSize(cssHeight / ratio)
+    this.position(entry)
+    this.onPinResized?.(slug, entry.width, entry.height)
   }
 
   private zoomRatio(): number {
@@ -480,7 +517,10 @@ export class DomPinLayer {
       // `position()` on the first expansion past LABEL_THRESHOLD.
       inner = renderTerminalShell()
       if (!initialIsLabel) {
-        vellumMount = this.mountTerminalSurface(inner, { sessionId: pin.source.sessionId })
+        vellumMount = this.mountTerminalSurface(inner, {
+          sessionId: pin.source.sessionId,
+          setIntrinsicSize: (w, h) => this.setIntrinsicSizeIfPristine(pin.slug, w, h),
+        })
       }
     } else if (pin.kind === 'text' && pin.source?.path && this.mountVellumSurface) {
       inner = renderVellumShell()
