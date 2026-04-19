@@ -270,6 +270,13 @@ const domPinLayer = new DomPinLayer({
   // the canvas-pin status painter). Non-fiber pins return null and keep the
   // source-derived default title with no glyph.
   resolveFiberMeta: async (pin) => {
+    if (pin.kind === 'terminal' && pin.source?.sessionId) {
+      // Terminal pins: show the worker's friendly name in the chrome strip
+      // instead of the raw slug. See [[constitution-terminals-in-map]].
+      const session = sessions.find(s => s.id === pin.source!.sessionId)
+      if (session?.name) return { name: session.name }
+      return null
+    }
     if (pin.kind !== 'fiber') return null
     const cityId = cityPanel.getCurrentCity()?.id ?? pinnedCityId
     const url = cityId
