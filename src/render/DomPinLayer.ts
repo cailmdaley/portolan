@@ -58,6 +58,11 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
 // zero / negative. `position()` also clamps CSS size to ≥8px.
 const MIN_SIZE = 8
 const MAX_SIZE = 1600
+// At or below this rendered width (CSS px) the pin transitions from *card*
+// (chrome + body) to *label* (parchment tab, filename only). See crafting
+// session 2026-04-18 — the narrow-width pin is a different primitive, not a
+// collapsed card.
+const LABEL_THRESHOLD = 140
 
 type Handle = 'n' | 'e' | 's' | 'w' | 'ne' | 'se' | 'sw' | 'nw'
 const HANDLES: readonly Handle[] = ['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw']
@@ -340,7 +345,18 @@ export class DomPinLayer {
     const cssW = Math.max(8, entry.width * ratio)
     const cssH = Math.max(8, entry.height * ratio)
     entry.el.style.width = `${cssW}px`
-    entry.el.style.height = `${cssH}px`
+    // Below the label threshold the pin switches to a different primitive —
+    // a parchment label that IS just the filename, not a card with a hidden
+    // body. The outer element shrinks to chrome height so there's no
+    // hollow transparent box beneath the title.
+    const isLabel = cssW <= LABEL_THRESHOLD
+    if (isLabel) {
+      entry.el.style.height = 'auto'
+      entry.el.classList.add('dom-pin--label')
+    } else {
+      entry.el.style.height = `${cssH}px`
+      entry.el.classList.remove('dom-pin--label')
+    }
     entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
     // Notify fiber mounts when the projected width crossed a meaningful
     // threshold so FiberCard's pretext reflows with the card, without
@@ -769,20 +785,22 @@ function ensurePulseStyles(): void {
     .dom-pin--resizing .dom-pin-resize::after {
       opacity: 1;
     }
-    /* Card is its own container so the body-hide rule below can query the
-       card's own width, independent of chrome's container queries. */
-    .dom-pin {
-      container-type: inline-size;
+    /* Label mode — at narrow widths the pin becomes a different primitive:
+       a parchment tab with just the filename. The card frame (body,
+       shadow, seam) drops out; chrome rounds all four corners and stands
+       alone. JS sets .dom-pin--label in position() when CSS width
+       crosses LABEL_THRESHOLD. Handles (edges + corners) stay live so the
+       user can still grab and widen back into card territory. */
+    .dom-pin--label {
+      box-shadow: none;
     }
-    /* Below this width the body is useless — 1.5 words of text doesn't
-       inform anything. Collapse the card to just its chrome strip so it
-       reads as a title-only badge. Handles (edges + corners) stay so the
-       user can still resize it back up. */
-    @container (max-width: 140px) {
-      .dom-pin { height: auto !important; }
-      .dom-pin > *:not(.dom-pin-chrome):not(.dom-pin-resize) {
-        display: none !important;
-      }
+    .dom-pin--label > *:not(.dom-pin-chrome):not(.dom-pin-resize) {
+      display: none !important;
+    }
+    .dom-pin--label .dom-pin-chrome {
+      border-radius: 6px;
+      border: 1px solid rgba(140, 110, 80, 0.55);
+      box-shadow: 0 2px 8px rgba(46, 42, 38, 0.14);
     }
     /* Chrome strip hover: darken slightly so the grab surface advertises itself
        when the cursor enters it. Transition short so it doesn't feel sluggish. */
