@@ -25,6 +25,7 @@ import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
 import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
+import { TerminalStreamManager } from './TerminalStreamManager.js';
 
 // ============================================================================
 // Constants
@@ -159,6 +160,11 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
 });
 httpApi.setMeetingBridge(meetingBridge);
 const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
+// Pane byte streaming for in-map terminal cards. Local sessions only in
+// this iteration; remote support extends the same subscribe/fan-out
+// interface through the portolan-agent tailer. See
+// constitution-terminals-in-map.
+const terminalStreamManager = new TerminalStreamManager();
 const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
 const browserStateCoordinator = new BrowserStateCoordinator({
   cityManager,
@@ -237,6 +243,15 @@ sessionTracker.onSessionsChange((localSessions) => {
 // Message Router Setup
 // ============================================================================
 
+function resolveLocalTmuxSession(sessionId: string): string | null {
+  const session = sessionLookup.findSession(sessionId);
+  if (!session) return null;
+  // Local sessions only for this iteration. Remote origins will plumb
+  // through the agent in a successor constitution.
+  if (session.originId !== LOCAL_ORIGIN_ID) return null;
+  return session.tmuxSession;
+}
+
 const messageRouter = new MessageRouter({
   onFocus: (sessionId) => kitty.focusSession(sessionId),
   onGetFibers: browserStateCoordinator.handleGetFibers.bind(browserStateCoordinator),
@@ -249,6 +264,62 @@ const messageRouter = new MessageRouter({
   onSearchFiles: workspaceBrowser.handleSearchFiles.bind(workspaceBrowser),
   onMoveCity: browserStateCoordinator.handleMoveCity.bind(browserStateCoordinator),
   onListDirectory: workspaceBrowser.handleListDirectory.bind(workspaceBrowser),
+  onTerminalAttach: (ws, sessionId) => {
+    const tmuxSession = resolveLocalTmuxSession(sessionId);
+    if (!tmuxSession) {
+      ws.send(JSON.stringify({
+        type: 'terminal:error',
+        sessionId,
+        error: 'session-not-found',
+      }));
+      return;
+    }
+    // Scrollback first, then live bytes. Capture is best-effort — if the
+    // pane has already exited, just fall through to the live subscribe and
+    // let the exit event propagate.
+    terminalStreamManager.getScrollback(tmuxSession).then((bytes) => {
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({
+        type: 'terminal:scrollback',
+        sessionId,
+        bytes: bytes.toString('base64'),
+      }));
+    }).catch((err) => {
+      console.warn(`[terminal:attach] scrollback failed for ${tmuxSession}:`, err?.message ?? err);
+    });
+    terminalStreamManager.attach(tmuxSession, {
+      key: ws,
+      onBytes: (bytes) => {
+        if (ws.readyState !== ws.OPEN) return;
+        ws.send(JSON.stringify({
+          type: 'terminal:bytes',
+          sessionId,
+          bytes: bytes.toString('base64'),
+        }));
+      },
+      onExit: (reason) => {
+        if (ws.readyState !== ws.OPEN) return;
+        ws.send(JSON.stringify({
+          type: 'terminal:exit',
+          sessionId,
+          reason,
+        }));
+      },
+      onError: (err) => {
+        if (ws.readyState !== ws.OPEN) return;
+        ws.send(JSON.stringify({
+          type: 'terminal:error',
+          sessionId,
+          error: err,
+        }));
+      },
+    });
+  },
+  onTerminalDetach: (ws, sessionId) => {
+    const tmuxSession = resolveLocalTmuxSession(sessionId);
+    if (!tmuxSession) return;
+    terminalStreamManager.detach(tmuxSession, ws);
+  },
 });
 
 // ============================================================================
@@ -326,6 +397,10 @@ wss.on('connection', async (ws, req) => {
     ws.on('message', (data) => messageRouter.routeClientMessage(ws, data.toString()));
     ws.on('close', () => {
       browserStateCoordinator.detachClient(ws);
+      // Drop any live terminal subscriptions so disconnecting clients do
+      // not leak tmux control-mode processes. Manager refcounts per
+      // session, so this is a no-op when the ws had no attaches.
+      terminalStreamManager.detachAll(ws);
       console.log('Browser client disconnected');
     });
     ws.on('error', (error) => console.error('WebSocket error:', error));

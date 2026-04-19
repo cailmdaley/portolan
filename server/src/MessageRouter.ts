@@ -107,6 +107,23 @@ export interface ListDirectoryMessage {
   path: string;
 }
 
+/** Subscribe to a worker's live tmux pane output. Server responds with a
+ *  one-shot `terminal:scrollback` (current buffer) then a stream of
+ *  `terminal:bytes` chunks until the client sends `terminal:detach` or the
+ *  socket closes. See constitution-terminals-in-map. */
+export interface TerminalAttachMessage {
+  type: 'terminal:attach';
+  /** tmux session name — the `tmuxSession` field from a `Session`. This is
+   *  the multiplex key: two clients subscribing to the same session share
+   *  one tmux control-mode client. */
+  sessionId: string;
+}
+
+export interface TerminalDetachMessage {
+  type: 'terminal:detach';
+  sessionId: string;
+}
+
 export type ClientMessage =
   | FocusMessage
   | AgentSessionsUpdateMessage
@@ -119,7 +136,9 @@ export type ClientMessage =
   | KillWorkerMessage
   | SearchFilesMessage
   | MoveCityMessage
-  | ListDirectoryMessage;
+  | ListDirectoryMessage
+  | TerminalAttachMessage
+  | TerminalDetachMessage;
 
 // ============================================================================
 // Handler Interface
@@ -137,6 +156,8 @@ export interface MessageHandlers {
   onSearchFiles(ws: WebSocket, cityId: string, query: string, searchId: string, mode?: 'filename' | 'content'): void;
   onMoveCity(ws: WebSocket, cityId: string, newPosition: { q: number; r: number }): void;
   onListDirectory(ws: WebSocket, cityId: string, path: string): void;
+  onTerminalAttach(ws: WebSocket, sessionId: string): void;
+  onTerminalDetach(ws: WebSocket, sessionId: string): void;
 }
 
 // ============================================================================
@@ -201,6 +222,14 @@ export class MessageRouter {
 
         case 'listDirectory':
           this.handlers.onListDirectory(ws, message.cityId, message.path);
+          break;
+
+        case 'terminal:attach':
+          this.handlers.onTerminalAttach(ws, message.sessionId);
+          break;
+
+        case 'terminal:detach':
+          this.handlers.onTerminalDetach(ws, message.sessionId);
           break;
 
         default:
