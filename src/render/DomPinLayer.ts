@@ -194,6 +194,13 @@ interface DomPinEntry {
   /** Last CSS width passed to `vellumMount.resize()`. Used to gate reflow
    *  calls so React doesn't re-render every frame during a pan. */
   lastReflowWidth: number
+  /** Whether this entry is currently rendered in label mode (CSS width ≤
+   *  LABEL_THRESHOLD). Stored on the entry so `position()` can detect
+   *  transitions without re-reading a stale previous CSS value. Drives
+   *  lazy-attach for terminal pins — the wterm mount only exists while the
+   *  pin is above the threshold. See constitution "Lazy attach" scope
+   *  decision. */
+  isLabel: boolean
 }
 
 export class DomPinLayer {
@@ -374,6 +381,24 @@ export class DomPinLayer {
       entry.el.style.height = `${cssH}px`
       entry.el.classList.remove('dom-pin--label')
     }
+    // Terminal pins lazy-attach: the wterm mount (and its server-side
+    // `tmux -CC` refcount) exists only while the pin is above the label
+    // threshold. Collapsing into label mode tears it down; expanding past
+    // remounts a fresh wterm + replays scrollback. Fires only on the edge
+    // so per-frame reanchoring doesn't thrash the mount. See constitution
+    // "Lazy attach" scope decision.
+    if (isLabel !== entry.isLabel) {
+      entry.isLabel = isLabel
+      if (entry.pin.kind === 'terminal' && entry.pin.source?.sessionId && this.mountTerminalSurface) {
+        if (isLabel) {
+          entry.vellumMount?.unmount()
+          entry.vellumMount = null
+          entry.lastReflowWidth = 0
+        } else {
+          entry.vellumMount = this.mountTerminalSurface(entry.inner, { sessionId: entry.pin.source.sessionId })
+        }
+      }
+    }
     entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
     // Notify fiber mounts when the projected width crossed a meaningful
     // threshold so FiberCard's pretext reflows with the card, without
@@ -430,6 +455,12 @@ export class DomPinLayer {
 
     let vellumMount: VellumSurfaceMount | null = null
     let inner: HTMLElement
+    // Predict label mode at the current zoom so terminal pins don't waste a
+    // wterm instance + server attach on a pin that's going to be a label on
+    // its first frame. See constitution "Lazy attach" scope decision and
+    // `position()` for the transition logic.
+    const initialCssW = Math.max(8, size.width * this.zoomRatio())
+    const initialIsLabel = initialCssW <= LABEL_THRESHOLD
     if (pin.kind === 'fiber' && this.mountVellumFiberSurface) {
       inner = renderVellumShell()
       vellumMount = this.mountVellumFiberSurface(inner, {
@@ -444,9 +475,13 @@ export class DomPinLayer {
     } else if (pin.kind === 'terminal' && pin.source?.sessionId && this.mountTerminalSurface) {
       // Read-only wterm view of a live tmux pane. The card frame is reused
       // (chrome, resize handles, drag behaviors); the body is the terminal
-      // grid. See [[constitution-terminals-in-map]].
+      // grid. See [[constitution-terminals-in-map]]. When the pin starts in
+      // label mode, the shell is created empty and wterm mounts lazily in
+      // `position()` on the first expansion past LABEL_THRESHOLD.
       inner = renderTerminalShell()
-      vellumMount = this.mountTerminalSurface(inner, { sessionId: pin.source.sessionId })
+      if (!initialIsLabel) {
+        vellumMount = this.mountTerminalSurface(inner, { sessionId: pin.source.sessionId })
+      }
     } else if (pin.kind === 'text' && pin.source?.path && this.mountVellumSurface) {
       inner = renderVellumShell()
       // Card ↔ modal parity: the card mounts the same vellum FileViewerPage as
@@ -498,6 +533,7 @@ export class DomPinLayer {
       width: size.width,
       height: size.height,
       lastReflowWidth: 0,
+      isLabel: initialIsLabel,
     }
     // Bring-to-front on any interaction — stacked pins (e.g. a large markdown
     // card over a fiber pin) need a way to surface. Capture phase so we raise
