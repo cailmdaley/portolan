@@ -109,6 +109,25 @@ export class TerminalStreamManager {
     return this.captureScrollback(tmuxSession, this.scrollbackLines);
   }
 
+  /** Report the current tmux pane's column width + visible row count. Used
+   *  on attach so the browser can init wterm at the same size Claude Code
+   *  is actually rendering at, avoiding mid-word wrap artefacts in the
+   *  replayed scrollback. See [[wterm-col-width-mismatch]]. */
+  async getPaneSize(tmuxSession: string): Promise<{ cols: number; rows: number } | null> {
+    try {
+      const { stdout } = await execFileAsync(
+        'tmux',
+        ['display', '-p', '-t', `=${tmuxSession}:`, '#{pane_width} #{pane_height}'],
+        { encoding: 'utf-8' },
+      );
+      const [w, h] = stdout.trim().split(' ').map((n) => parseInt(n, 10));
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+      return { cols: w, rows: h };
+    } catch {
+      return null;
+    }
+  }
+
   /** Test / diagnostic: active sessions and subscriber counts. */
   stats(): Array<{ tmuxSession: string; subscribers: number }> {
     return [...this.sessions.entries()].map(([tmuxSession, entry]) => ({

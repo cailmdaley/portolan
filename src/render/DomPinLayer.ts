@@ -943,14 +943,21 @@ function renderVellumShell(): HTMLElement {
  *  palette was designed against a white-ish background (see
  *  constitution-terminals-in-map scope decisions: "Terminal background:
  *  white (#FAFAFA)"). Reuses the parchment border + shadow so the terminal
- *  still reads as a card on the map. */
+ *  still reads as a card on the map.
+ *
+ *  The shell itself must not clip — wterm adds `.has-scrollback` to its own
+ *  element when scrollback is present, which toggles `overflow-y: auto` on
+ *  the terminal root. A `overflow: hidden` here would suppress that scroll,
+ *  which was the regression user-reported on 2026-04-19. Let wterm own the
+ *  scroll region; the shell is just a frame. */
 function renderTerminalShell(): HTMLElement {
   const div = document.createElement('div')
   div.className = 'dom-pin-terminal-shell'
   Object.assign(div.style, {
     flex: '1 1 auto',
     minHeight: '0',
-    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
     border: '1px solid rgba(140, 110, 80, 0.55)',
     borderTop: 'none',
     borderBottomLeftRadius: '6px',

@@ -46,6 +46,10 @@ interface Subscription {
    *  once `init()` resolves. Without this, the initial scrollback payload gets
    *  dropped because `term.write()` is a no-op before the WASM bridge exists. */
   pendingBytes: Uint8Array[]
+  /** Pane size that arrived with the scrollback before wterm finished init.
+   *  Applied before `pendingBytes` replay so the VT parser lays out at the
+   *  right width. See [[wterm-col-width-mismatch]]. */
+  pendingResize: { cols: number; rows: number } | null
   attached: boolean
 }
 
@@ -61,6 +65,11 @@ interface TerminalScrollbackMessage {
   type: 'terminal:scrollback'
   sessionId: string
   bytes: string
+  /** Current tmux pane column width — sent so we can resize wterm to match
+   *  the rendering Claude Code actually produced, avoiding mid-word wrap.
+   *  See [[wterm-col-width-mismatch]]. */
+  cols?: number
+  rows?: number
 }
 interface TerminalBytesMessage {
   type: 'terminal:bytes'
@@ -114,14 +123,26 @@ export class TerminalPinManager {
     const sub = this.subscriptions.get(typed.sessionId)
     if (!sub || sub.disposed) return true
     switch (typed.type) {
-      case 'terminal:scrollback':
+      case 'terminal:scrollback': {
+        // Resize wterm to the actual pane size *before* writing bytes so the
+        // VT parser lays out Claude Code's columns at the right width. If the
+        // container is narrower than that, wterm's CSS horizontal overflow +
+        // `.has-scrollback { overflow-y: auto }` kick in and the user can
+        // scroll. If we skipped this, bytes laid out at 150 cols would wrap
+        // mid-word at wterm's default 80 — the "weird linebreaks" regression.
+        if (typed.cols && typed.rows) {
+          if (sub.term.bridge) sub.term.resize(typed.cols, typed.rows)
+          else sub.pendingResize = { cols: typed.cols, rows: typed.rows }
+        }
+        const bytes = decodeBase64(typed.bytes)
+        if (sub.term.bridge) sub.term.write(bytes)
+        else sub.pendingBytes.push(bytes)
+        break
+      }
       case 'terminal:bytes': {
         const bytes = decodeBase64(typed.bytes)
-        if (sub.term.bridge) {
-          sub.term.write(bytes)
-        } else {
-          sub.pendingBytes.push(bytes)
-        }
+        if (sub.term.bridge) sub.term.write(bytes)
+        else sub.pendingBytes.push(bytes)
         break
       }
       case 'terminal:exit':
@@ -166,6 +187,7 @@ export class TerminalPinManager {
       term,
       disposed: false,
       pendingBytes: [],
+      pendingResize: null,
       attached: false,
     }
     this.subscriptions.set(opts.sessionId, sub)
@@ -180,7 +202,12 @@ export class TerminalPinManager {
       if (onClickFocus) {
         term.element.removeEventListener('click', onClickFocus)
       }
-      // Replay any bytes that landed during WASM init.
+      // Apply the queued pane size first so the VT parser knows the column
+      // count *before* replaying scrollback. Then drain the byte queue.
+      if (sub.pendingResize) {
+        term.resize(sub.pendingResize.cols, sub.pendingResize.rows)
+        sub.pendingResize = null
+      }
       for (const chunk of sub.pendingBytes) term.write(chunk)
       sub.pendingBytes = []
     }).catch((err) => {
