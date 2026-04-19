@@ -12,6 +12,8 @@ import { HexGrid } from './render/HexGrid'
 import { ZoneRenderer } from './render/ZoneRenderer'
 import { Camera } from './render/Camera'
 import { DomPinLayer } from './render/DomPinLayer'
+import { TerminalPinManager } from './terminal/TerminalPinManager'
+import '@wterm/dom/css'
 
 // Hoisted: lazy import the vellum mount module so DomPinLayer (built below)
 // can close over it for inline markdown + fiber rendering.
@@ -100,6 +102,36 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 let pinnedCityId: string | null = null
 let movingPinSlug: string | null = null
 
+// Read-only terminal pins — ephemeral, client-only pins that render a live
+// wterm view of a worker's tmux pane. See [[constitution-terminals-in-map]]
+// and [[terminal-pin-topology]]. Keyed by cityId because pins are loaded per
+// city; when the user switches cities we rebuild the pin set and the
+// ephemeral pins for that city are merged alongside the persisted set.
+const ephemeralTerminalPins = new Map<string, Map<string, Pin>>()
+const terminalPinManager = new TerminalPinManager()
+
+function getEphemeralTerminalPins(cityId: string): Pin[] {
+  const bucket = ephemeralTerminalPins.get(cityId)
+  return bucket ? [...bucket.values()] : []
+}
+
+function setEphemeralTerminalPin(cityId: string, pin: Pin): void {
+  let bucket = ephemeralTerminalPins.get(cityId)
+  if (!bucket) {
+    bucket = new Map()
+    ephemeralTerminalPins.set(cityId, bucket)
+  }
+  bucket.set(pin.slug, pin)
+}
+
+function removeEphemeralTerminalPin(cityId: string, slug: string): boolean {
+  const bucket = ephemeralTerminalPins.get(cityId)
+  if (!bucket) return false
+  const existed = bucket.delete(slug)
+  if (bucket.size === 0) ephemeralTerminalPins.delete(cityId)
+  return existed
+}
+
 // DOM-overlay surface for all pin kinds — fiber, text, pdf, image, html,
 // other. Each pin is a real DOM node anchored to world space, reanchored per
 // frame via `camera.worldToScreen`. Fibers mount vellum's FiberCard; text pins
@@ -124,6 +156,11 @@ const domPinLayer = new DomPinLayer({
       items.push({
         label: 'Open Fiber',
         action: () => openCityWorkspace(city, slug),
+      })
+    } else if (pin?.kind === 'terminal' && pin.source?.sessionId) {
+      items.push({
+        label: 'Focus Worker',
+        action: () => mapActions?.focusKittyTab(pin.source!.sessionId!),
       })
     } else if (pin?.source?.path) {
       // Non-fiber file pin — open the file in vellum's full modal viewer.
@@ -157,6 +194,10 @@ const domPinLayer = new DomPinLayer({
         action: () => {
           domPinLayer.remove(slug)
           syncPinnedSlugs()
+          if (pin?.kind === 'terminal') {
+            removeEphemeralTerminalPin(city.id, slug)
+            return
+          }
           void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
         },
         danger: true,
@@ -192,6 +233,13 @@ const domPinLayer = new DomPinLayer({
   onPinMoved: (slug, x, z) => {
     const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
     if (!city) return
+    const live = domPinLayer.getPin(slug)
+    if (live?.kind === 'terminal') {
+      // Ephemeral pins persist client-side only; layer already updated its
+      // own copy during drag, so just mirror into the ephemeral store.
+      setEphemeralTerminalPin(city.id, { ...live, x, z })
+      return
+    }
     void putPin(city.id, slug, { x, z })
       .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] drag-move failed', err))
@@ -207,6 +255,10 @@ const domPinLayer = new DomPinLayer({
     // stale-coord round-trip if a resize follows a move before the PUT settles.
     const live = domPinLayer.getPin(slug)
     if (!live) return
+    if (live.kind === 'terminal') {
+      setEphemeralTerminalPin(city.id, { ...live, width, height })
+      return
+    }
     void putPin(city.id, slug, { x: live.x, z: live.z }, { width, height })
       .then(pin => { if (pinnedCityId === city.id) domPinLayer.upsert(pin) })
       .catch(err => console.error('[pins] resize failed', err))
@@ -262,6 +314,12 @@ const domPinLayer = new DomPinLayer({
       },
     }
   },
+  // Terminal pins mount wterm inline. TerminalPinManager owns the WebSocket
+  // routing + wterm lifecycle; the pin layer just hands over the container.
+  // See [[constitution-terminals-in-map]].
+  mountTerminalSurface: (container, opts) => {
+    return terminalPinManager.mount({ sessionId: opts.sessionId, container })
+  },
   // Fiber pins mount vellum's FiberCard inline — the same primitive the reader
   // uses, rendered in the pin's DOM surface. See tapestry-dissolves Next.
   mountVellumFiberSurface: (container, opts) => {
@@ -291,7 +349,11 @@ async function loadPinsForCity(cityId: string): Promise<void> {
     if (pinnedCityId !== cityId) return // city changed mid-flight
     const unstacked = await unstackColocatedPins(cityId, pins)
     if (pinnedCityId !== cityId) return
-    domPinLayer.setPins(unstacked)
+    // Ephemeral terminal pins are client-side only (not round-tripped through
+    // the layout store) so merge them after the persisted set arrives. See
+    // `ephemeralTerminalPins`.
+    const merged = [...unstacked, ...getEphemeralTerminalPins(cityId)]
+    domPinLayer.setPins(merged)
     syncPinnedSlugs()
   } catch (err) {
     console.error('[pins] load failed for', cityId, err)
@@ -418,6 +480,7 @@ const DEFAULT_PIN_WIDTH: Record<PinKind, number> = {
   html: 420,
   image: 320,
   other: 260,
+  terminal: 640,
 }
 
 /** Compute a fan-out spawn position at a city. Fiber and file pins land at the
@@ -518,6 +581,64 @@ zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
 
 zoneRenderer.setWorkerDblClickHandler((workerId, _tmuxSession) => {
   mapActions?.focusKittyTab(workerId)
+})
+
+// Right-click on a worker → offer "Pin terminal". See
+// [[constitution-terminals-in-map]] and [[terminal-pin-topology]]. The pin
+// is ephemeral (client-only) and placed at the worker's current world
+// position so it lands right next to the bird; user can drag from there.
+zoneRenderer.setWorkerContextMenuHandler((workerId, _tmuxSession, clientX, clientY) => {
+  const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+  if (!city) return
+  const session = sessions.find(s => s.id === workerId)
+  if (!session) return
+  const swarmPos = zoneRenderer.getSwarmWorldPosition(workerId)
+  const origin = camera.screenToWorld(clientX, clientY)
+  const slug = `terminal-${workerId}`
+  const alreadyPinned = domPinLayer.has(slug)
+  const items: Array<{ label: string; action: () => void; danger?: boolean }> = []
+  if (alreadyPinned) {
+    items.push({
+      label: 'Focus Terminal Pin',
+      action: () => {
+        const pin = domPinLayer.getPin(slug)
+        if (pin) camera.focusOn({ x: pin.x, z: pin.z })
+        domPinLayer.pulse(slug)
+      },
+    })
+    items.push({
+      label: 'Unpin Terminal',
+      action: () => {
+        domPinLayer.remove(slug)
+        removeEphemeralTerminalPin(city.id, slug)
+        syncPinnedSlugs()
+      },
+      danger: true,
+    })
+  } else {
+    items.push({
+      label: 'Pin Terminal',
+      action: () => {
+        const anchor = swarmPos ?? { x: origin.x, z: origin.z }
+        const pin: Pin = {
+          slug,
+          x: anchor.x,
+          z: anchor.z,
+          pinnedAt: Date.now(),
+          kind: 'terminal',
+          source: { sessionId: session.id },
+        }
+        setEphemeralTerminalPin(city.id, pin)
+        domPinLayer.upsert(pin)
+        syncPinnedSlugs()
+      },
+    })
+  }
+  items.push({
+    label: 'Focus Worker',
+    action: () => mapActions?.focusKittyTab(workerId),
+  })
+  contextMenu.show(clientX, clientY, items)
 })
 
 // Wire up worker label hover → file tooltip (same as bird hover but triggered from CSS2D label)
@@ -728,14 +849,38 @@ void vellumMountPromise.then(({ setPortolanMountContext }) => {
 let movingCityId: string | null = null
 
 const stateSync = new FrontendStateSync({
-  handlePanelMessage: (message) => cityPanel.handleMessage(message),
+  handlePanelMessage: (message) => {
+    // Terminal-pin messages are routed before the city panel so scrollback +
+    // live bytes flow into wterm without the HUD intercepting them.
+    if (terminalPinManager.handleMessage(message)) return true
+    return cityPanel.handleMessage(message)
+  },
   onSocketOpen: (socket) => {
     cityPanel.setWebSocket(socket)
+    terminalPinManager.setWebSocket(socket)
   },
   onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge, isInitialState, urlCityId }) => {
     cities = nextCities
     sessions = nextSessions
     origins = nextOrigins
+
+    // Shed ephemeral terminal pins whose backing session has disappeared.
+    // Constitution: "Dormant workers show no terminal." If the worker is gone
+    // from `sessions`, drop the pin client-side; DomPinLayer unmount + the
+    // TerminalPinManager's dispose path will detach from the server too.
+    const liveSessionIds = new Set(nextSessions.map(s => s.id))
+    for (const [cityId, bucket] of ephemeralTerminalPins) {
+      for (const [slug, pin] of bucket) {
+        const sessionId = pin.source?.sessionId
+        if (!sessionId || liveSessionIds.has(sessionId)) continue
+        bucket.delete(slug)
+        if (pinnedCityId === cityId) {
+          domPinLayer.remove(slug)
+          syncPinnedSlugs()
+        }
+      }
+      if (bucket.size === 0) ephemeralTerminalPins.delete(cityId)
+    }
 
     zoneRenderer.updateState(cities, sessions)
     for (const session of sessions) {

@@ -92,6 +92,14 @@ export class ZoneRenderer {
     this.labelInteractions.setWorkerDblClickHandler(onDblClick)
   }
 
+  /** Right-click on a worker label. Used by the host to open a context menu
+   *  (e.g. "Pin terminal" — see [[constitution-terminals-in-map]]). */
+  setWorkerContextMenuHandler(
+    onContextMenu: (workerId: string, tmuxSession: string, clientX: number, clientY: number) => void,
+  ): void {
+    this.labelInteractions.setWorkerContextMenuHandler(onContextMenu)
+  }
+
   /**
    * Set callbacks for worker label hover (triggers file tooltip from label, not just bird)
    */

@@ -21,7 +21,7 @@ import type { Camera } from './Camera'
 import type { Pin, PinKind } from '../state/layoutClient'
 
 const DOM_KINDS: ReadonlySet<PinKind> = new Set([
-  'fiber', 'pdf', 'html', 'image', 'text', 'other',
+  'fiber', 'pdf', 'html', 'image', 'text', 'other', 'terminal',
 ])
 
 export type FiberStatus = 'open' | 'active' | 'closed'
@@ -53,6 +53,10 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
   html: { width: 420, height: 300 },
   image: { width: 320, height: 320 },
   other: { width: 260, height: 120 },
+  // Terminal pins default to a size that shows ~80 cols × 20 rows at the
+  // wterm font metrics — wide enough to keep Claude Code's boxed messages
+  // from wrapping catastrophically at the `REFERENCE_ZOOM` baseline.
+  terminal: { width: 640, height: 320 },
 }
 // Minimum is tiny — just a numerical floor so the box never collapses to
 // zero / negative. `position()` also clamps CSS size to ≥8px.
@@ -125,6 +129,13 @@ export type MountVellumFiberSurface = (
   opts: { slug: string; cityId?: string; originId?: string; hideTitle?: boolean; width?: number },
 ) => VellumSurfaceMount
 
+/** Mount a read-only terminal view into `container` for the given sessionId.
+ *  Returns an unmount callback. See [[constitution-terminals-in-map]]. */
+export type MountTerminalSurface = (
+  container: HTMLElement,
+  opts: { sessionId: string },
+) => VellumSurfaceMount
+
 export interface DomPinLayerOptions {
   camera: Camera
   /** Map a pin's `source` into a fetchable URL. Returns null when the source
@@ -142,6 +153,10 @@ export interface DomPinLayerOptions {
   mountVellumSurface?: MountVellumFileSurface
   /** Inline vellum mount for fiber pins (renders vellum's FiberCard). */
   mountVellumFiberSurface?: MountVellumFiberSurface
+  /** Inline wterm mount for terminal pins. Optional — when absent, terminal
+   *  pins render as the link-card stub (same fallback as other unsupported
+   *  kinds). See [[constitution-terminals-in-map]]. */
+  mountTerminalSurface?: MountTerminalSurface
   /** Default cityId threaded into vellum mounts when a pin lacks an originId hint. */
   cityIdFor?: () => string | undefined
   /** Convert screen pixels to world coords. Required for chrome-strip drag. */
@@ -188,6 +203,7 @@ export class DomPinLayer {
   private readonly onPrimaryOpen?: (slug: string) => void
   private readonly mountVellumSurface?: MountVellumFileSurface
   private readonly mountVellumFiberSurface?: MountVellumFiberSurface
+  private readonly mountTerminalSurface?: MountTerminalSurface
   private readonly cityIdFor?: () => string | undefined
   private readonly screenToWorld?: (x: number, y: number) => { x: number; z: number }
   private readonly onPinMoved?: (slug: string, x: number, z: number) => void
@@ -206,6 +222,7 @@ export class DomPinLayer {
     this.onPrimaryOpen = opts.onPrimaryOpen
     this.mountVellumSurface = opts.mountVellumSurface
     this.mountVellumFiberSurface = opts.mountVellumFiberSurface
+    this.mountTerminalSurface = opts.mountTerminalSurface
     this.cityIdFor = opts.cityIdFor
     this.screenToWorld = opts.screenToWorld
     this.onPinMoved = opts.onPinMoved
@@ -424,6 +441,12 @@ export class DomPinLayer {
         // See fiber-pin-title-duplication.
         hideTitle: true,
       })
+    } else if (pin.kind === 'terminal' && pin.source?.sessionId && this.mountTerminalSurface) {
+      // Read-only wterm view of a live tmux pane. The card frame is reused
+      // (chrome, resize handles, drag behaviors); the body is the terminal
+      // grid. See [[constitution-terminals-in-map]].
+      inner = renderTerminalShell()
+      vellumMount = this.mountTerminalSurface(inner, { sessionId: pin.source.sessionId })
     } else if (pin.kind === 'text' && pin.source?.path && this.mountVellumSurface) {
       inner = renderVellumShell()
       // Card ↔ modal parity: the card mounts the same vellum FileViewerPage as
@@ -915,6 +938,29 @@ function renderVellumShell(): HTMLElement {
   return div
 }
 
+/** Host element for the wterm mount. Distinct from the vellum shell because
+ *  wterm expects to own the grid layout + its own scroll region, and its
+ *  palette was designed against a white-ish background (see
+ *  constitution-terminals-in-map scope decisions: "Terminal background:
+ *  white (#FAFAFA)"). Reuses the parchment border + shadow so the terminal
+ *  still reads as a card on the map. */
+function renderTerminalShell(): HTMLElement {
+  const div = document.createElement('div')
+  div.className = 'dom-pin-terminal-shell'
+  Object.assign(div.style, {
+    flex: '1 1 auto',
+    minHeight: '0',
+    overflow: 'hidden',
+    border: '1px solid rgba(140, 110, 80, 0.55)',
+    borderTop: 'none',
+    borderBottomLeftRadius: '6px',
+    borderBottomRightRadius: '6px',
+    background: '#FAFAFA',
+    boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
+  })
+  return div
+}
+
 /** Decode percent-encoded URL segments for display, but fall back to the raw
  *  string if decoding fails (malformed %-sequence). Keeps chrome titles human
  *  readable instead of showing e.g. `Cantino_planisphere_%281502%29.jpg`. */
@@ -942,6 +988,12 @@ function titleForPin(pin: Pin): string {
     } catch {
       return s.url
     }
+  }
+  if (s.sessionId) {
+    // Terminal pin — host updates the chrome title later with the worker name
+    // via `resolveFiberMeta`-style callback. Until then, show a compact
+    // placeholder instead of the opaque `terminal-<sha>` slug.
+    return `terminal · ${s.sessionId.slice(0, 8)}`
   }
   return pin.slug
 }
@@ -1211,6 +1263,7 @@ function sourceKey(pin: Pin): string {
   const s = pin.source
   if (!s) return ''
   if (s.url) return `url:${s.url}`
+  if (s.sessionId) return `session:${s.sessionId}`
   return `path:${s.originId}:${s.path}`
 }
 

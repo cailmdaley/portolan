@@ -8,14 +8,22 @@ export interface PinPosition {
 
 /** Content classification — drives renderer dispatch in DomPinLayer. `text` is
  *  the superset for anything vellum hosts in CodeMirror (markdown, source,
- *  config); see server/src/LayoutStore.ts kindFromPath. */
-export type PinKind = 'fiber' | 'text' | 'pdf' | 'image' | 'html' | 'other'
+ *  config); see server/src/LayoutStore.ts kindFromPath.
+ *
+ *  `terminal` is a client-only, ephemeral pin kind: a read-only wterm view of
+ *  a live tmux pane (see [[constitution-terminals-in-map]]). Terminal pins do
+ *  not round-trip through the layout store — they live in the client's
+ *  in-memory `ephemeralTerminalPins` map and disappear when the backing
+ *  session does. */
+export type PinKind = 'fiber' | 'text' | 'pdf' | 'image' | 'html' | 'other' | 'terminal'
 
-/** File-handle source: project-relative path + originId, OR an absolute URL.
- *  Absent for fiber-kind pins: the slug IS the fiber identifier. */
+/** File-handle source: project-relative path + originId, OR an absolute URL,
+ *  OR a live worker session id (terminal-kind pins only). Fiber pins omit
+ *  source entirely — the slug IS the fiber identifier. */
 export type PinSource =
-  | { originId: string; path: string; url?: undefined }
-  | { url: string; originId?: undefined; path?: undefined }
+  | { originId: string; path: string; url?: undefined; sessionId?: undefined }
+  | { url: string; originId?: undefined; path?: undefined; sessionId?: undefined }
+  | { sessionId: string; originId?: undefined; path?: undefined; url?: undefined }
 
 export interface Pin extends PinPosition {
   slug: string

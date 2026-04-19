@@ -27,6 +27,7 @@ export class ZoneRendererLabelInteractions {
   private onWorkerDblClick: ((workerId: string, tmuxSession: string) => void) | null = null
   private onWorkerLabelHover: ((workerId: string, tmuxSession: string, anchor: { x: number; y: number }) => void) | null = null
   private onWorkerLabelHoverEnd: (() => void) | null = null
+  private onWorkerContextMenu: ((workerId: string, tmuxSession: string, clientX: number, clientY: number) => void) | null = null
   private onCityLabelClick: ((cityId: string) => void) | null = null
   private screenToWorldConverter: ((x: number, y: number) => { x: number; z: number }) | null = null
   private labelDrag: LabelDragState | null = null
@@ -51,6 +52,12 @@ export class ZoneRendererLabelInteractions {
   ): void {
     this.onWorkerLabelHover = onHover
     this.onWorkerLabelHoverEnd = onHoverEnd
+  }
+
+  setWorkerContextMenuHandler(
+    onContextMenu: (workerId: string, tmuxSession: string, clientX: number, clientY: number) => void,
+  ): void {
+    this.onWorkerContextMenu = onContextMenu
   }
 
   setCityLabelClickHandler(onClick: (cityId: string) => void): void {
@@ -151,6 +158,12 @@ export class ZoneRendererLabelInteractions {
     labelEl.addEventListener('dblclick', (e) => {
       e.stopPropagation()
       this.onWorkerDblClick?.(workerId, tmuxSession)
+    })
+    labelEl.addEventListener('contextmenu', (e) => {
+      if (!this.onWorkerContextMenu) return
+      e.preventDefault()
+      e.stopPropagation()
+      this.onWorkerContextMenu(workerId, tmuxSession, e.clientX, e.clientY)
     })
     labelEl.addEventListener('mouseenter', () => {
       if (!this.onWorkerLabelHover) return
