@@ -96,7 +96,7 @@ export class HttpApiTapestry {
 
         return {
           id: fiber.id,
-          title: fiber.title,
+          name: fiber.name,
           kind: fiber.kind,
           status: fiber.status,
           body: fiber.body,
@@ -125,7 +125,7 @@ export class HttpApiTapestry {
         }
       }
 
-      const downstreamMap: Record<string, Array<{ id: string; title: string; status: string; kind: string }>> = {};
+      const downstreamMap: Record<string, Array<{ id: string; name: string; status: string; kind: string }>> = {};
       for (const fiber of ruleFibers) {
         for (const dependency of fiber.dependsOn || []) {
           if (fiberIds.has(dependency)) {
@@ -134,7 +134,7 @@ export class HttpApiTapestry {
             }
             downstreamMap[dependency].push({
               id: fiber.id,
-              title: fiber.title,
+              name: fiber.name,
               status: fiber.status,
               kind: fiber.kind,
             });
@@ -145,7 +145,7 @@ export class HttpApiTapestry {
       const config = await this.readCityConfig(city.path, sshHost);
       const fibers = allFibers.map((fiber) => ({
         id: fiber.id,
-        title: fiber.title,
+        name: fiber.name,
         status: fiber.status,
         kind: fiber.kind,
         tags: fiber.tags,
@@ -207,7 +207,7 @@ export class HttpApiTapestry {
       const nodes = allFibers.map((fiber) => ({
         id: fiber.id,
         slug: fiber.id,
-        label: fiber.title,
+        label: fiber.name,
         status: fiber.status,
         tags: fiber.tags ?? [],
         kind: fiber.kind,
@@ -324,24 +324,34 @@ export class HttpApiTapestry {
     if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
       return null;
     }
-    const relative = `.felt/${slug}/${slug.split('/').pop()}.md`;
-    if (!sshHost) {
+    // Two on-disk shapes, mirroring FiberReader.walkFibers:
+    //   - Directory-based: `.felt/<slug>/<leaf>.md` (leaf = last segment of slug)
+    //   - Entry-point root: bare `.felt/<slug>.md` with no containing dir (only
+    //     at the top level — the loom symlink consumes the outer directory)
+    // Try directory shape first, then fall through to bare root. Unknown
+    // slugs return null either way.
+    const leaf = slug.split('/').pop();
+    const candidates = [`.felt/${slug}/${leaf}.md`, `.felt/${slug}.md`];
+    const readLocal = async (rel: string): Promise<string | null> => {
+      try { return await readFile(`${cityPath}/${rel}`, 'utf-8'); }
+      catch { return null; }
+    };
+    const readRemote = async (rel: string): Promise<string | null> => {
       try {
-        return await readFile(`${cityPath}/${relative}`, 'utf-8');
-      } catch {
-        return null;
-      }
+        const { stdout } = await execFileAsync(
+          'ssh',
+          [sshHost!, `cat ${shellEscape(`${cityPath}/${rel}`)} 2>/dev/null`],
+          { maxBuffer: 5 * 1024 * 1024, timeout: 15000 },
+        );
+        return stdout || null;
+      } catch { return null; }
+    };
+    const read = sshHost ? readRemote : readLocal;
+    for (const rel of candidates) {
+      const raw = await read(rel);
+      if (raw !== null) return raw;
     }
-    try {
-      const { stdout } = await execFileAsync(
-        'ssh',
-        [sshHost, `cat ${shellEscape(`${cityPath}/${relative}`)} 2>/dev/null`],
-        { maxBuffer: 5 * 1024 * 1024, timeout: 15000 },
-      );
-      return stdout || null;
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
@@ -359,7 +369,7 @@ export class HttpApiTapestry {
     const raw = JSON.parse(stdout.trim() || '[]');
     return raw.map((fiber: any): Fiber => ({
       id: fiber.id,
-      title: fiber.title || fiber.id,
+      name: fiber.name || fiber.id,
       status: fiber.status || 'open',
       kind: fiber.kind || 'task',
       priority: fiber.priority || 2,
