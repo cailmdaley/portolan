@@ -916,11 +916,26 @@ const stateSync = new FrontendStateSync({
       }
     }
 
-    // `?city=X` wins over most-recent-activity heuristic. Without this, deep
-    // links opened the workspace but never ran handleCityClick — HUD stayed
-    // empty and pins never loaded until the user clicked the hex. See
+    // `?city=X` / `#city=X` wins over most-recent-activity heuristic. Without
+    // this, deep links opened the workspace but never ran handleCityClick —
+    // HUD stayed empty and pins never loaded until the user clicked the hex.
+    // X may be a city id (opaque hash) or a city name (what the user sees in
+    // URLs and the HUD); match by id first, then by name, and prefer names
+    // with active sessions when multiple cities share a name. See
     // hash-restore-does-not-select-city.
-    const urlCity = urlCityId ? cities.find(c => c.id === urlCityId) ?? null : null
+    const urlCity = urlCityId
+      ? (cities.find(c => c.id === urlCityId)
+         ?? (() => {
+              const byName = cities.filter(c => c.name === urlCityId)
+              if (byName.length === 0) return null
+              if (byName.length === 1) return byName[0]
+              const active = byName.find(c =>
+                sessions.some(s => s.cityId === c.id && s.lastActivity > 0),
+              )
+              return active ?? byName[0]
+            })()
+         ?? null)
+      : null
     const targetCity = urlCity || mostRecentCity || cities[0]
     console.log(
       '[InitialFocus]',

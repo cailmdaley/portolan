@@ -12,6 +12,21 @@ import { FrontendActivityStore, type FrontendActivityEvent } from './FrontendAct
 
 const API_BASE = `ws://${window.location.hostname}:4004`
 
+/**
+ * Read the target city from either a `?city=X` query param or a `#city=X`
+ * hash fragment (constitution documents both; `#city=X` is the canonical
+ * form — see `hash-restore-does-not-select-city`). The hash wins when
+ * both are present, since it's the form we link.
+ */
+function readUrlCityId(): string | null {
+  const hash = window.location.hash.replace(/^#/, '')
+  if (hash) {
+    const fromHash = new URLSearchParams(hash).get('city')
+    if (fromHash) return fromHash
+  }
+  return new URLSearchParams(window.location.search).get('city')
+}
+
 interface ServerState {
   cities: ServerCity[]
   sessions: ServerSession[]
@@ -248,7 +263,7 @@ export class FrontendStateSync {
       activityBySessionKey: this.activityStore.getActivities(),
       meetingBridge: this.meetingBridge,
       isInitialState,
-      urlCityId: isInitialState ? new URLSearchParams(window.location.search).get('city') : null,
+      urlCityId: isInitialState ? readUrlCityId() : null,
     })
   }
 
