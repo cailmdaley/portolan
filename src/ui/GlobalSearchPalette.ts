@@ -346,9 +346,13 @@ export class GlobalSearchPalette {
     bird.src = '/cursors/bird-small.png'
     bird.alt = ''
 
+    // Palette has ~340px of room for the label — show the full tmux
+    // session name, not the elided display form used on HUD chips. The
+    // chip ellision (`session.name`) exists only because the chip is
+    // width-constrained; the palette isn't.
     const label = document.createElement('span')
     label.className = 'gs-label'
-    label.textContent = session.name
+    label.textContent = fullName
 
     item.append(branch, bird, label)
     return item
