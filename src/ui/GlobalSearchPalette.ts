@@ -30,6 +30,7 @@ export class GlobalSearchPalette {
   private cities: City[] = []
   private sessions: Session[] = []
   private cityNameById = new Map<string, string>()
+  private ambiguousCityNames = new Set<string>()
   private visible = false
   private filteredResults: SearchResult[] = []
   private selectedIndex = 0
@@ -119,6 +120,15 @@ export class GlobalSearchPalette {
     if (this.visible) this.hide()
     this.cities = cities.slice().sort((a, b) => a.name.localeCompare(b.name))
     this.sessions = sessions.slice().sort((a, b) => a.name.localeCompare(b.name))
+    // Names shared by 2+ cities get an origin suffix on map labels
+    // (2d9c75d); mirror that in the palette so "City ai-futures" isn't
+    // rendered twice with identical names when a remote project shares a
+    // slug with a local one.
+    const nameCounts = new Map<string, number>()
+    for (const c of this.cities) nameCounts.set(c.name, (nameCounts.get(c.name) ?? 0) + 1)
+    this.ambiguousCityNames = new Set(
+      Array.from(nameCounts).filter(([, n]) => n > 1).map(([name]) => name),
+    )
     this.cityNameById = new Map(this.cities.map(city => [city.id, city.name]))
     this.visible = true
     this.selectedIndex = 0
@@ -311,7 +321,15 @@ export class GlobalSearchPalette {
     item.dataset.index = String(index)
     item.style.animationDelay = `${ordinal * 30}ms`
     item.setAttribute('role', 'option')
-    item.setAttribute('aria-label', `City ${city.name}`)
+
+    // When two cities share a name (local + remote), disambiguate by origin
+    // host — same pattern as the map label in 2d9c75d. Local is elided as
+    // the default. Without this, the palette shows "City ai-futures"
+    // twice identically and there's no way to tell which one you're
+    // selecting.
+    const ambiguous = this.ambiguousCityNames.has(city.name) && city.originId !== 'local'
+    const hostLabel = ambiguous ? city.originId.replace(/^remote-/, '') : ''
+    item.setAttribute('aria-label', ambiguous ? `City ${city.name} on ${hostLabel}` : `City ${city.name}`)
 
     const icon = document.createElement('span')
     icon.className = 'gs-icon gs-icon-city'
@@ -320,6 +338,12 @@ export class GlobalSearchPalette {
     const label = document.createElement('span')
     label.className = 'gs-label'
     label.textContent = city.name
+    if (ambiguous) {
+      const origin = document.createElement('span')
+      origin.className = 'gs-city-origin'
+      origin.textContent = hostLabel
+      label.appendChild(origin)
+    }
 
     item.append(icon, label)
     return item
@@ -545,6 +569,20 @@ export class GlobalSearchPalette {
         font-weight: 500;
         letter-spacing: 0.02em;
         color: var(--ink-dark, #2A2520);
+      }
+
+      /* Origin suffix for cities sharing a name with another project
+         (e.g. a local + remote ai-futures). Mirrors the map label
+         .city-label-origin in 2d9c75d so the palette and map read the
+         same way. */
+      .gs-city .gs-city-origin {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10.5px;
+        font-weight: 400;
+        letter-spacing: 0.04em;
+        color: var(--ink-faded, #7A7368);
+        margin-left: 8px;
+        vertical-align: baseline;
       }
 
       /* ── Worker row (tree branch) ── */
