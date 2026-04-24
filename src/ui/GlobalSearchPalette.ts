@@ -165,21 +165,28 @@ export class GlobalSearchPalette {
   private findBestMatch(query: string): number {
     if (!query) return 0
 
+    // Match against the full tmux session name — `session.name` is the
+    // elided display form (truncated at 10 chars + "…"), so a search for
+    // "vellum-dogfood" would miss a session named "ralph-vellum-dogfood"
+    // whose display is "ralph-vell…".
+    const matchName = (r: SearchResult): string =>
+      (r.type === 'worker' ? (r.session.tmuxSession || r.session.name) : '').toLowerCase()
+
     // Exact worker name match first
     const exactWorker = this.filteredResults.findIndex(r =>
-      r.type === 'worker' && r.session.name.toLowerCase() === query
+      r.type === 'worker' && matchName(r) === query
     )
     if (exactWorker >= 0) return exactWorker
 
     // Worker name starts with query
     const startsWorker = this.filteredResults.findIndex(r =>
-      r.type === 'worker' && r.session.name.toLowerCase().startsWith(query)
+      r.type === 'worker' && matchName(r).startsWith(query)
     )
     if (startsWorker >= 0) return startsWorker
 
     // Worker name contains query
     const containsWorker = this.filteredResults.findIndex(r =>
-      r.type === 'worker' && r.session.name.toLowerCase().includes(query)
+      r.type === 'worker' && matchName(r).includes(query)
     )
     if (containsWorker >= 0) return containsWorker
 
@@ -202,10 +209,12 @@ export class GlobalSearchPalette {
 
     // Workers matching query but whose city didn't match — pull in their city as context
     const matchedCityIds = new Set(groups.map(g => g.city.id))
+    // Match search against full tmuxSession name, not the truncated display form.
+    const sessionMatches = (s: Session): boolean => (s.tmuxSession || s.name).toLowerCase().includes(query)
     if (query) {
       const extraWorkers = this.sessions.filter(s =>
         !matchedCityIds.has(s.cityId || '') &&
-        (s.name.toLowerCase().includes(query) ||
+        (sessionMatches(s) ||
          (s.cityId && (this.cityNameById.get(s.cityId) || '').toLowerCase().includes(query)))
       )
       for (const session of extraWorkers) {
@@ -226,7 +235,7 @@ export class GlobalSearchPalette {
       for (const group of groups) {
         if (!matchedCityIds.has(group.city.id)) {
           group.workers = group.workers.filter(w =>
-            w.session.name.toLowerCase().includes(query) ||
+            sessionMatches(w.session) ||
             w.cityName.toLowerCase().includes(query)
           )
         }
@@ -236,7 +245,7 @@ export class GlobalSearchPalette {
     // Orphan workers (no city)
     const orphanWorkers = this.sessions
       .filter(s => !s.cityId)
-      .filter(s => !query || s.name.toLowerCase().includes(query))
+      .filter(s => !query || sessionMatches(s))
       .map(session => ({ session, cityName: '' }))
 
     // Flatten into results list for keyboard nav

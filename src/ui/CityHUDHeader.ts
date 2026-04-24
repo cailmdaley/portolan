@@ -204,11 +204,16 @@ export class CityHUDHeader {
     const parts: string[] = ['<span class="hud-header-workers-label">workers</span>']
 
     const chips = this.cityWorkers.map(session => {
+      // `session.name` is the truncated display form (SessionTracker caps it at
+      // 10 chars + "…" for chip-width reasons). Use `tmuxSession` — the full
+      // tmux session name — for title/aria so hover and screen readers get
+      // the real identifier, not the elided version.
+      const fullName = session.tmuxSession || session.name
       const statusClass = session.status === 'working' ? 'working' : 'idle'
       const label = session.status === 'working'
-        ? `Working worker ${session.name}`
-        : `Idle worker ${session.name}`
-      return `<span role="button" tabindex="0" class="hud-worker-chip ${statusClass}" data-session-id="${session.id}" title="${escapeHtml(session.name)}" aria-label="${escapeHtml(label)}">` +
+        ? `Working worker ${fullName}`
+        : `Idle worker ${fullName}`
+      return `<span role="button" tabindex="0" class="hud-worker-chip ${statusClass}" data-session-id="${session.id}" title="${escapeHtml(fullName)}" aria-label="${escapeHtml(label)}">` +
         `<span class="hud-worker-dot ${statusClass}" aria-hidden="true">●</span>${escapeHtml(session.name)}</span>`
     })
 

@@ -141,13 +141,15 @@ export class RecentWorkerBar {
     // <name> on <city>". Falls back to just the name when the session has no
     // associated city (edge case on freshly-discovered workers).
     const perchCityName = session.cityId ? this.cityNameById.get(session.cityId) : null
+    // Full tmux session name for a11y; `session.name` is the elided chip form.
+    const fullName = session.tmuxSession || session.name
     perch.setAttribute('role', 'button')
     perch.setAttribute('tabindex', '0')
     perch.setAttribute(
       'aria-label',
       perchCityName
-        ? `Recent worker ${session.name} on ${perchCityName}`
-        : `Recent worker ${session.name}`,
+        ? `Recent worker ${fullName} on ${perchCityName}`
+        : `Recent worker ${fullName}`,
     )
 
     // Opacity cascade: most recent = 0.7, oldest = 0.25
