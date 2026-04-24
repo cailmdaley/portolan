@@ -38,14 +38,19 @@ export class PlaygroundViewer {
   private createPanel(): HTMLElement {
     const panel = document.createElement('div')
     panel.className = 'playground-viewer'
+    // Hidden by default: opacity-0 alone leaves the header and close button
+    // visible in the a11y tree even when the panel is dismissed. `inert`
+    // removes it from keyboard/assistive-tech reach; show()/hide() flip it.
+    panel.setAttribute('aria-hidden', 'true')
+    panel.inert = true
     panel.innerHTML = `
       <div class="playground-viewer-header">
         <h2>Playgrounds</h2>
         <div class="playground-list"></div>
-        <button class="close-btn">&times;</button>
+        <button class="close-btn" aria-label="Close playgrounds">&times;</button>
       </div>
       <div class="loading-indicator">Loading playground...</div>
-      <iframe src="about:blank" frameborder="0"></iframe>
+      <iframe src="about:blank" frameborder="0" title="Playground"></iframe>
     `
     return panel
   }
@@ -107,6 +112,8 @@ export class PlaygroundViewer {
       document.addEventListener('keydown', this.escapeHandler)
     }
     this.panel.classList.add('visible')
+    this.panel.removeAttribute('aria-hidden')
+    this.panel.inert = false
 
     // Fetch list of playgrounds
     try {
@@ -183,6 +190,8 @@ export class PlaygroundViewer {
   hide(): void {
     this.cancelShowRequest()
     this.panel.classList.remove('visible')
+    this.panel.setAttribute('aria-hidden', 'true')
+    this.panel.inert = true
     this.iframe.onload = null
 
     // Detach escape listener
