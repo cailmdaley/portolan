@@ -78,6 +78,14 @@ export class CityHUD {
   private createContainer(): HTMLElement {
     const el = document.createElement('div')
     el.id = 'city-hud'
+    // Hidden from the a11y tree until show() flips it. CSS hides the sidebar
+    // via `transform: translateX(100%)`, which browsers don't treat as
+    // invisible for assistive tech — without aria-hidden + inert the
+    // agent-browser snapshot and screen readers see all HUD content at rest
+    // (stale city name, stale file tree, tabs) and keyboard focus can still
+    // land on them. Flipped back in show(); mirrors PlaygroundViewer.
+    el.setAttribute('aria-hidden', 'true')
+    el.inert = true
     el.innerHTML = `
       <div class="hud-sidebar">
         <div class="hud-header">
@@ -215,11 +223,15 @@ export class CityHUD {
     this.ignoreNextClick = true
     this.attachDocumentListeners()
     this.container.classList.add('visible')
+    this.container.setAttribute('aria-hidden', 'false')
+    this.container.inert = false
     this.content.requestFibers(city.id)
   }
 
   hide(): void {
     this.container.classList.remove('visible')
+    this.container.setAttribute('aria-hidden', 'true')
+    this.container.inert = true
     this.currentCity = null
     this.fileTree.setCurrentCity(null)
     this.detachDocumentListeners()
