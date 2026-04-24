@@ -266,10 +266,13 @@ export class GitStatusManager {
       status.unstaged.deleted +
       status.untracked;
 
-    // Parse last commit
+    // Parse last commit. `%ct` is UNIX seconds; the HUD renders via
+    // `Date.now() - lastCommitTime`, which is milliseconds — so convert here
+    // rather than teaching every consumer about the seconds-vs-ms split.
     if (logResult) {
       const [timestamp, message] = logResult.trim().split('|||');
-      status.lastCommitTime = parseInt(timestamp, 10) || null;
+      const secs = parseInt(timestamp, 10);
+      status.lastCommitTime = Number.isFinite(secs) && secs > 0 ? secs * 1000 : null;
       status.lastCommitMessage = message || null;
     }
 
