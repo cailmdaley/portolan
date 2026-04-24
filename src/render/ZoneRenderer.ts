@@ -44,6 +44,10 @@ export class ZoneRenderer {
   // Store current state for sprite reload re-renders
   private currentCities: Map<string, City> = new Map()
   private currentWorkersByCity: Map<string, Session[]> = new Map()
+  // Names shared by 2+ cities (e.g. `ai-futures` existing both locally and on
+  // a remote host). Updated on every updateState; consulted by renderCity so
+  // late sprite-load re-renders still carry the disambiguation suffix.
+  private ambiguousCityNames: Set<string> = new Set()
 
   // Animation optimization: cache last values to skip redundant work
   private lastCameraDistance: number = -1
@@ -75,7 +79,7 @@ export class ZoneRenderer {
       const city = this.currentCities.get(cityId)
       if (city) {
         const workers = this.currentWorkersByCity.get(cityId) || []
-        this.entities.renderCity(city, workers)
+        this.entities.renderCity(city, workers, this.ambiguousCityNames.has(city.name))
       }
     })
   }
@@ -199,13 +203,16 @@ export class ZoneRenderer {
   /**
    * Build a signature string for a city+workers state.
    * Used for diffing to avoid unnecessary re-renders.
+   * `nameIsAmbiguous` changes the rendered label (origin suffix) so the
+   * signature depends on it too; otherwise toggling a remote host in/out
+   * would leave stale labels.
    */
-  private buildCitySignature(city: City, workers: Session[]): string {
+  private buildCitySignature(city: City, workers: Session[], nameIsAmbiguous: boolean): string {
     const workerSigs = workers
       .map(w => `${w.id}:${w.status}:${w.name}`)
       .sort()
       .join(',')
-    return `${city.name}|${city.hex.q},${city.hex.r}|${city.fiberCount}|${workerSigs}`
+    return `${city.name}|${nameIsAmbiguous ? city.originId : ''}|${city.hex.q},${city.hex.r}|${city.fiberCount}|${workerSigs}`
   }
 
   updateState(cities: City[], sessions: Session[]): void {
@@ -246,18 +253,32 @@ export class ZoneRenderer {
       this.updateRhumbLines(cityPositions)
     }
 
+    // Detect name collisions so the label can disambiguate. Two cities with
+    // the same name (e.g. `ai-futures` present both locally and on a remote
+    // host) are otherwise indistinguishable on the map. Every colliding city
+    // gets its origin appended; non-colliding names render unchanged.
+    const nameCounts = new Map<string, number>()
+    for (const city of cities) {
+      nameCounts.set(city.name, (nameCounts.get(city.name) ?? 0) + 1)
+    }
+    const ambiguousNames = new Set(
+      Array.from(nameCounts).filter(([, n]) => n > 1).map(([name]) => name),
+    )
+    this.ambiguousCityNames = ambiguousNames
+
     // Render cities with their workers (only if changed)
     for (const city of cities) {
       const key = this.hexGrid.hexKey(city.hex)
       expectedKeys.add(key)
       const cityWorkers = workersByCity.get(city.id) || []
+      const nameIsAmbiguous = ambiguousNames.has(city.name)
 
       // Build signature and check if re-render needed
-      const signature = this.buildCitySignature(city, cityWorkers)
+      const signature = this.buildCitySignature(city, cityWorkers, nameIsAmbiguous)
       newSignatures.set(key, signature)
 
       if (this.lastCitySignatures.get(key) !== signature) {
-        this.entities.renderCity(city, cityWorkers)
+        this.entities.renderCity(city, cityWorkers, nameIsAmbiguous)
       }
     }
 

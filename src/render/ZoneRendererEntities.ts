@@ -141,7 +141,7 @@ export class ZoneRendererEntities {
     return { x: pos.x, z: pos.z }
   }
 
-  renderCity(city: City, workers: Session[] = []): void {
+  renderCity(city: City, workers: Session[] = [], nameIsAmbiguous = false): void {
     const key = this.hexGrid.hexKey(city.hex)
     this.removeHex(key)
 
@@ -159,6 +159,16 @@ export class ZoneRendererEntities {
     const labelDiv = document.createElement('div')
     labelDiv.className = 'city-label'
     labelDiv.textContent = city.name
+    // Disambiguate two cities sharing a name by appending their origin
+    // (e.g. a local `ai-futures` and a `remote-cineca/ai-futures` project).
+    // `local` is elided — it's the default and doesn't need a label.
+    if (nameIsAmbiguous && city.originId !== 'local') {
+      const hostLabel = city.originId.replace(/^remote-/, '')
+      const originSpan = document.createElement('span')
+      originSpan.className = 'city-label-origin'
+      originSpan.textContent = hostLabel
+      labelDiv.appendChild(originSpan)
+    }
     labelDiv.style.cursor = 'pointer'
     this.labelInteractions.bindCityLabel(labelDiv, city.id)
 

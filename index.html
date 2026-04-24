@@ -164,6 +164,20 @@
         line-height: 1.1;
       }
 
+      /* Origin suffix shown when two cities share a name (e.g. a local and
+         a remote ai-futures). Rendered as a quieter subscript so the city's
+         name stays the dominant read. */
+      .city-label-origin {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10px;
+        font-weight: 400;
+        font-feature-settings: normal;
+        letter-spacing: 0.04em;
+        color: var(--ink-faded, #7A7368);
+        margin-left: 6px;
+        vertical-align: baseline;
+      }
+
       /* Drag-to-pin ghost — follows the cursor while a fiber is being
          dragged from the HUD onto the map. pointer-events:none so
          elementFromPoint resolves to the actual drop target underneath. */
