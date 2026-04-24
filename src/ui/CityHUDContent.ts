@@ -346,8 +346,8 @@ export class CityHUDContent {
 
     const isExpanded = this.expanded.has(fiber.id) || (this.searchForceExpanded?.has(fiber.id) ?? false)
     const chevron = hasChildren
-      ? `<button class="hud-fiber-chevron${isExpanded ? '' : ' collapsed'}" data-fiber-id="${escapeHtml(fiber.id)}" title="${isExpanded ? 'Collapse' : 'Expand'}">▾</button>`
-      : `<span class="hud-fiber-chevron spacer"></span>`
+      ? `<button class="hud-fiber-chevron${isExpanded ? '' : ' collapsed'}" data-fiber-id="${escapeHtml(fiber.id)}" title="${isExpanded ? 'Collapse' : 'Expand'}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} ${escapeHtml(fiber.name)}" aria-expanded="${isExpanded}">▾</button>`
+      : `<span class="hud-fiber-chevron spacer" aria-hidden="true"></span>`
 
     const style = depth > 0 ? ` style="--fiber-depth: ${depth}"` : ''
 
@@ -358,13 +358,18 @@ export class CityHUDContent {
       ? ''
       : `<span class="hud-fiber-kind">${kind}</span>`
 
+    // A11y: default accessible name is the concatenated text of all children,
+    // which renders as "◐  Fiber name    ↗" with newlines and gutter
+    // whitespace. Name the row by the fiber, and hide decorative chrome from
+    // the a11y tree so screen readers announce just "Fiber name — <status>".
+    const ariaLabel = `${escapeHtml(fiber.name)} — ${fiber.status || 'open'}${kind === 'task' ? '' : ` (${kind})`}`
     return `
-      <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}"${style}>
+      <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}" aria-label="${ariaLabel}"${style}>
         ${chevron}
-        <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
+        <span class="hud-fiber-status" aria-hidden="true">${fiberStatusIcon(fiber.status)}</span>
         <span class="hud-fiber-title">${escapeHtml(fiber.name)}</span>
         ${kindBadge}
-        <button class="hud-fiber-handoff" data-fiber-id="${escapeHtml(fiber.id)}" title="Hand off to worker">↗</button>
+        <button class="hud-fiber-handoff" data-fiber-id="${escapeHtml(fiber.id)}" title="Hand off to worker" aria-label="Hand off ${escapeHtml(fiber.name)} to worker">↗</button>
       </li>
     `
   }

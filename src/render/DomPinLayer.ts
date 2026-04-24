@@ -476,6 +476,14 @@ export class DomPinLayer {
     const el = document.createElement('div')
     el.className = `dom-pin dom-pin--${pin.kind ?? 'other'}`
     el.dataset.slug = pin.slug
+    // A11y: name the pin by what it holds, not by the concatenated text
+    // content of its inner surfaces (which picks up "Save", line-number
+    // gutter digits, and the first bytes of code). `role="group"` prevents
+    // the a11y tree from flattening multi-child pins into a single clickable
+    // blob. `setLabelTabTitle()` refreshes both the lozenge and this label
+    // when async fiber metadata arrives.
+    el.setAttribute('role', 'group')
+    el.setAttribute('aria-label', `${pin.kind ?? 'pin'} pin: ${titleForPin(pin)}`)
     Object.assign(el.style, {
       position: 'absolute',
       top: '0',
@@ -504,7 +512,10 @@ export class DomPinLayer {
       void this.resolveFiberMeta(pin).then((meta) => {
         if (!meta) return
         if (this.entries.get(pin.slug)?.el !== el) return
-        if (meta.name) setLabelTabTitle(labelTab, meta.name, pin.slug)
+        if (meta.name) {
+          setLabelTabTitle(labelTab, meta.name, pin.slug)
+          el.setAttribute('aria-label', `${pin.kind ?? 'pin'} pin: ${meta.name}`)
+        }
       }).catch(() => {})
     }
 

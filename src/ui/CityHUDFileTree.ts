@@ -210,9 +210,17 @@ export class CityHUDFileTree {
     const error = this.directoryErrors.get(fullPath)
     const arrow = isDir ? (isExpanded ? '▼' : '▶') : '•'
 
+    // A11y: aria-label names the row by its entry ("docs (directory)") so the
+    // tree is navigable without the arrow glyph or padding leaking into the
+    // accessible name. aria-expanded mirrors the disclosure state.
+    const ariaLabel = isDir
+      ? `${escapeHtml(entry.name)} (${isExpanded ? 'expanded ' : ''}directory)`
+      : `${escapeHtml(entry.name)} (file)`
+    const expandedAttr = isDir ? ` aria-expanded="${isExpanded}"` : ''
+
     let html = `
-      <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px">
-        <span class="hud-tree-arrow">${arrow}</span>
+      <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px" aria-label="${ariaLabel}"${expandedAttr}>
+        <span class="hud-tree-arrow" aria-hidden="true">${arrow}</span>
         <span class="hud-tree-name">${escapeHtml(entry.name)}</span>
       </li>
     `
