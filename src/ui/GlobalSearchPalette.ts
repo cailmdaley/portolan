@@ -54,6 +54,9 @@ export class GlobalSearchPalette {
     this.palette = document.createElement('div')
     this.palette.className = 'gs-palette'
     this.palette.style.display = 'none'
+    this.palette.setAttribute('role', 'dialog')
+    this.palette.setAttribute('aria-label', 'Navigate to city or worker')
+    this.palette.setAttribute('aria-modal', 'true')
 
     const inputWrap = document.createElement('div')
     inputWrap.className = 'gs-input-wrap'
@@ -63,6 +66,10 @@ export class GlobalSearchPalette {
     this.input.type = 'text'
     this.input.placeholder = 'Navigate to\u2026'
     this.input.spellcheck = false
+    this.input.setAttribute('aria-label', 'Search cities and workers')
+    this.input.setAttribute('role', 'combobox')
+    this.input.setAttribute('aria-autocomplete', 'list')
+    this.input.setAttribute('aria-controls', 'gs-results')
 
     const hint = document.createElement('kbd')
     hint.className = 'gs-hint'
@@ -72,6 +79,9 @@ export class GlobalSearchPalette {
 
     this.results = document.createElement('div')
     this.results.className = 'gs-results'
+    this.results.id = 'gs-results'
+    this.results.setAttribute('role', 'listbox')
+    this.results.setAttribute('aria-label', 'Search results')
 
     this.palette.append(inputWrap, this.results)
     document.body.append(this.backdrop, this.palette)
@@ -300,6 +310,8 @@ export class GlobalSearchPalette {
     item.className = 'gs-item gs-city'
     item.dataset.index = String(index)
     item.style.animationDelay = `${ordinal * 30}ms`
+    item.setAttribute('role', 'option')
+    item.setAttribute('aria-label', `City ${city.name}`)
 
     const icon = document.createElement('span')
     icon.className = 'gs-icon gs-icon-city'
@@ -318,6 +330,13 @@ export class GlobalSearchPalette {
     item.className = 'gs-item gs-worker'
     item.dataset.index = String(index)
     item.style.animationDelay = `${ordinal * 30}ms`
+    // Full tmux session name on the a11y label, not the elided display form
+    // (`session.name` is truncated to 10 chars + "…"); screen readers and
+    // agent-browser snapshots need the real identity. Mirrors ce9910f's
+    // treatment of worker chips.
+    const fullName = session.tmuxSession || session.name
+    item.setAttribute('role', 'option')
+    item.setAttribute('aria-label', `Worker ${fullName}`)
 
     const branch = document.createElement('span')
     branch.className = `gs-branch ${isLast ? 'gs-branch-last' : ''}`
@@ -344,10 +363,18 @@ export class GlobalSearchPalette {
   private updateSelection(): void {
     const items = this.results.querySelectorAll<HTMLElement>('.gs-item')
     items.forEach((item) => {
-      item.classList.toggle('selected', Number(item.dataset.index) === this.selectedIndex)
+      const isSelected = Number(item.dataset.index) === this.selectedIndex
+      item.classList.toggle('selected', isSelected)
+      item.setAttribute('aria-selected', isSelected ? 'true' : 'false')
     })
     const selected = this.results.querySelector<HTMLElement>(`.gs-item[data-index="${this.selectedIndex}"]`)
     selected?.scrollIntoView({ block: 'nearest' })
+    if (selected?.id) {
+      this.input.setAttribute('aria-activedescendant', selected.id)
+    } else if (selected) {
+      selected.id = `gs-option-${this.selectedIndex}`
+      this.input.setAttribute('aria-activedescendant', selected.id)
+    }
   }
 
   private activateSelection(index: number): void {
