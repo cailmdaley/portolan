@@ -374,7 +374,13 @@ export class CityHUDHeader {
       .map(([origin, sessions]) => {
         const label = origin === 'local' ? 'local' : origin.replace(/^remote-/, 'remote • ')
         const chips = sessions
-          .map(session => `<button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" ${disabledAttr}>${escapeHtml(session.name)}</button>`)
+          .map(session => {
+            // `session.name` is the elided chip form; title + aria-label
+            // carry the full tmux session name so hover/screen-readers
+            // show the real worker identity. Mirrors ce9910f.
+            const fullName = session.tmuxSession || session.name
+            return `<button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" title="${escapeHtml(fullName)}" aria-label="Start meeting with worker ${escapeHtml(fullName)}" ${disabledAttr}>${escapeHtml(session.name)}</button>`
+          })
           .join('')
         return `
           <div class="hud-meeting-picker-group">
