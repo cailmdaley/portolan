@@ -26,7 +26,7 @@ export function showWorkerPicker(
     <div class="worker-picker">
       <div class="worker-picker-header">
         <span>Send ${annotationCount} annotation${annotationCount === 1 ? '' : 's'} to worker</span>
-        <button class="worker-picker-close">&times;</button>
+        <button class="worker-picker-close" aria-label="Close worker picker">&times;</button>
       </div>
       <div class="worker-picker-list">
         <button class="worker-picker-item worker-picker-new" data-action="new">

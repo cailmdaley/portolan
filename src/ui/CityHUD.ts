@@ -85,7 +85,7 @@ export class CityHUD {
             <h2 class="hud-city-name"></h2>
             <div class="hud-header-controls">
               <div class="hud-actions"></div>
-              <button class="hud-close" title="Close">&times;</button>
+              <button class="hud-close" title="Close" aria-label="Close city HUD">&times;</button>
             </div>
           </div>
           <p class="hud-city-path"></p>
@@ -111,7 +111,7 @@ export class CityHUD {
 
         <div class="hud-search-bar">
           <input type="text" class="hud-search-input" placeholder="Search files &amp; fibers…" />
-          <button class="hud-search-clear" style="display: none;">&times;</button>
+          <button class="hud-search-clear" style="display: none;" aria-label="Clear search">&times;</button>
         </div>
       </div>
     `
