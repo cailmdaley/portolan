@@ -351,12 +351,19 @@ export class CityHUDContent {
 
     const style = depth > 0 ? ` style="--fiber-depth: ${depth}"` : ''
 
+    // Kind badge only carries information when kind is *not* the default
+    // 'task' — rendering it on every row is noise. The .kind class on the
+    // <li> still drives kind-specific color tokens (spec/decision/question/doc).
+    const kindBadge = kind === 'task'
+      ? ''
+      : `<span class="hud-fiber-kind">${kind}</span>`
+
     return `
       <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}"${style}>
         ${chevron}
         <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
         <span class="hud-fiber-title">${escapeHtml(fiber.name)}</span>
-        <span class="hud-fiber-kind">${kind}</span>
+        ${kindBadge}
         <button class="hud-fiber-handoff" data-fiber-id="${escapeHtml(fiber.id)}" title="Hand off to worker">↗</button>
       </li>
     `
