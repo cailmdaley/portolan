@@ -36,7 +36,9 @@ export class FrontendMapActions {
   }
 
   promptAddCity(hex: HexCoord): void {
-    const path = window.prompt('Enter the full path for the new city:')
+    const path = window.prompt(
+      'Path for the new city.\nLocal: /abs/path\nRemote: host:/abs/path  (e.g. candide:/automnt/…)'
+    )
     if (!path) return
 
     if (!this.sendMessage({

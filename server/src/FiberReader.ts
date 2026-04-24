@@ -3,8 +3,10 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 
 export interface Fiber {
-  id: string;        // filename without .md extension
-  title: string;     // from frontmatter
+  id: string;        // slug path under .felt/ — bare for top-level (`foo`) or
+                     // slash-joined for nested (`foo/bar`). Matches what
+                     // `felt ls --json` emits for nested fibers.
+  name: string;      // frontmatter `name:` (ASTRA vocabulary)
   status: string;    // open, active, closed
   kind: string;      // task, decision, question, spec
   priority: number;  // default 2
@@ -14,6 +16,8 @@ export interface Fiber {
   closedAt?: string; // ISO date from frontmatter
   tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
+  parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
+  isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
 
 // ── Internal ───────────────────────────────────────────────────────
@@ -30,26 +34,78 @@ async function readAllFibers(cityPath: string): Promise<Fiber[]> {
     return [];
   }
 
+  const fibers: Fiber[] = [];
   try {
-    const entries = await readdir(feltPath, { withFileTypes: true });
-    const fibers: Fiber[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const slug = entry.name;
-      const fiberPath = join(feltPath, slug, `${slug}.md`);
-      try {
-        const content = await readFile(fiberPath, 'utf-8');
-        fibers.push(parseFiber(slug, content));
-      } catch {
-        // Not every directory is a fiber (e.g., no matching .md)
-      }
-    }
-
-    return fibers;
+    await walkFibers(feltPath, feltPath, [], fibers);
   } catch (err) {
     console.warn(`Failed to read .felt directory at ${feltPath}:`, err);
     return [];
+  }
+  return fibers;
+}
+
+/**
+ * Recursively walk `.felt/` collecting fibers. Recognizes two shapes:
+ *   - Entry-point (root) fiber: bare `.felt/<slug>.md` at the root. Appears
+ *     via the loom symlink — the outer `<project>/` directory gets consumed
+ *     by the symlink, leaving the container file bare at `.felt/` root.
+ *   - Directory-based fiber: `<dir>/<dir>.md`. A container fiber sits
+ *     alongside its child sub-directories (each of which is itself a fiber
+ *     by the same rule), forming a tree.
+ */
+async function walkFibers(
+  feltRoot: string,
+  currentDir: string,
+  pathSegments: string[],
+  out: Fiber[],
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(currentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const isFeltRoot = pathSegments.length === 0;
+
+  if (isFeltRoot) {
+    // Bare <slug>.md at .felt/ root → entry-point fiber. Top-level folder
+    // fibers are rendered as separate tree roots beneath it (not as
+    // children), so parentId stays null there.
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const slug = entry.name.slice(0, -3);
+      try {
+        const content = await readFile(join(currentDir, entry.name), 'utf-8');
+        const fiber = parseFiber(slug, content);
+        fiber.isRoot = true;
+        fiber.parentId = null;
+        out.push(fiber);
+      } catch {
+        // skip unreadable
+      }
+    }
+  } else {
+    const dirName = pathSegments[pathSegments.length - 1];
+    const match = entries.find(e => e.isFile() && e.name === `${dirName}.md`);
+    if (match) {
+      try {
+        const content = await readFile(join(currentDir, match.name), 'utf-8');
+        const id = pathSegments.join('/');
+        const fiber = parseFiber(id, content);
+        fiber.parentId = pathSegments.length > 1 ? pathSegments.slice(0, -1).join('/') : null;
+        fiber.isRoot = false;
+        out.push(fiber);
+      } catch {
+        // skip
+      }
+    }
+  }
+
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      await walkFibers(feltRoot, join(currentDir, entry.name), [...pathSegments, entry.name], out);
+    }
   }
 }
 
@@ -150,8 +206,8 @@ export function parseFiber(id: string, content: string): Fiber {
 
   return {
     id,
-    title: getField('name') || getField('title') || id,
-    status: getField('status') || 'open',
+    name: getField('name') || id,
+    status: getField('status') || '',
     kind: getField('kind') || 'task',
     priority: parseInt(getField('priority') || '2', 10),
     createdAt: getField('created-at') || getField('created') || '',

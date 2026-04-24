@@ -74,7 +74,7 @@ describe('HttpApi — /tapestry endpoint', () => {
 
   it('returns empty DAG when no fibers have tapestry: tags', async () => {
     writeFiber(FELT_DIR, 'plain-task-abc123', `---
-title: A plain task
+name: A plain task
 status: open
 kind: task
 priority: 2
@@ -93,7 +93,7 @@ Just a task, no rule tag.`);
 
   it('returns fibers with tapestry: tags as nodes', async () => {
     writeFiber(FELT_DIR, 'foundation-abc123', `---
-title: Foundation data
+name: Foundation data
 status: closed
 kind: foundation
 tags:
@@ -107,7 +107,7 @@ outcome: Data loaded successfully
 This is the foundation data fiber body.`);
 
     writeFiber(FELT_DIR, 'claim-def456', `---
-title: Cosebis data vector
+name: Cosebis data vector
 status: open
 kind: claim
 tags:
@@ -127,7 +127,7 @@ Testing the cosebis claim.`);
 
     const foundation = res.data.nodes.find((n: any) => n.id === 'foundation-abc123');
     expect(foundation).toBeDefined();
-    expect(foundation.title).toBe('Foundation data');
+    expect(foundation.name).toBe('Foundation data');
     expect(foundation.kind).toBe('foundation');
     expect(foundation.status).toBe('closed');
     expect(foundation.specName).toBe('foundation_data');
@@ -135,7 +135,7 @@ Testing the cosebis claim.`);
 
     const claim = res.data.nodes.find((n: any) => n.id === 'claim-def456');
     expect(claim).toBeDefined();
-    expect(claim.title).toBe('Cosebis data vector');
+    expect(claim.name).toBe('Cosebis data vector');
     expect(claim.dependsOn).toEqual(['foundation-abc123']);
     expect(claim.specName).toBe('cosebis_data_vector');
   });
@@ -144,7 +144,7 @@ Testing the cosebis claim.`);
 
   it('builds dependency links between rule fibers', async () => {
     writeFiber(FELT_DIR, 'f1-abc123', `---
-title: Foundation
+name: Foundation
 status: closed
 kind: foundation
 tags:
@@ -154,7 +154,7 @@ created-at: 2026-01-01T00:00:00Z
 ---`);
 
     writeFiber(FELT_DIR, 'c1-def456', `---
-title: Claim 1
+name: Claim 1
 status: open
 kind: claim
 tags:
@@ -176,7 +176,7 @@ created-at: 2026-01-02T00:00:00Z
 
   it('filters out depends-on references to non-rule fibers', async () => {
     writeFiber(FELT_DIR, 'non-rule-abc123', `---
-title: Non-rule fiber
+name: Non-rule fiber
 status: open
 kind: task
 priority: 2
@@ -184,7 +184,7 @@ created-at: 2026-01-01T00:00:00Z
 ---`);
 
     writeFiber(FELT_DIR, 'rule-fiber-def456', `---
-title: Rule fiber
+name: Rule fiber
 status: open
 kind: claim
 tags:
@@ -206,7 +206,7 @@ created-at: 2026-01-02T00:00:00Z
 
   it('includes evidence metrics and artifacts', async () => {
     writeFiber(FELT_DIR, 'claim-abc123', `---
-title: Test claim
+name: Test claim
 status: closed
 kind: claim
 tags:
@@ -234,7 +234,7 @@ created-at: 2026-01-01T00:00:00Z
 
   it('returns null evidence when no evidence.json exists', async () => {
     writeFiber(FELT_DIR, 'no-evidence-abc123', `---
-title: No evidence
+name: No evidence
 status: open
 kind: claim
 tags:
@@ -253,7 +253,7 @@ created-at: 2026-01-01T00:00:00Z
 
   it('marks fiber as fresh when evidence is newer than dependencies', async () => {
     writeFiber(FELT_DIR, 'upstream-abc123', `---
-title: Upstream
+name: Upstream
 status: closed
 kind: foundation
 tags:
@@ -263,7 +263,7 @@ created-at: 2026-01-01T00:00:00Z
 ---`);
 
     writeFiber(FELT_DIR, 'downstream-def456', `---
-title: Downstream
+name: Downstream
 status: open
 kind: claim
 tags:
@@ -297,7 +297,7 @@ created-at: 2026-01-02T00:00:00Z
 
   it('marks fiber as stale when dependency evidence is newer', async () => {
     writeFiber(FELT_DIR, 'upstream-abc123', `---
-title: Upstream
+name: Upstream
 status: closed
 kind: foundation
 tags:
@@ -307,7 +307,7 @@ created-at: 2026-01-01T00:00:00Z
 ---`);
 
     writeFiber(FELT_DIR, 'downstream-def456', `---
-title: Downstream
+name: Downstream
 status: open
 kind: claim
 tags:
@@ -343,7 +343,7 @@ created-at: 2026-01-02T00:00:00Z
 
   it('downstream only includes other DAG nodes, not non-rule fibers', async () => {
     writeFiber(FELT_DIR, 'rule-abc123', `---
-title: Rule fiber
+name: Rule fiber
 status: open
 kind: claim
 tags:
@@ -353,7 +353,7 @@ created-at: 2026-01-01T00:00:00Z
 ---`);
 
     writeFiber(FELT_DIR, 'rule-def456', `---
-title: Another rule
+name: Another rule
 status: open
 kind: claim
 tags:
@@ -365,7 +365,7 @@ created-at: 2026-01-02T00:00:00Z
 ---`);
 
     writeFiber(FELT_DIR, 'task-ghi789', `---
-title: Non-rule task
+name: Non-rule task
 status: open
 kind: task
 depends-on:
@@ -379,7 +379,7 @@ created-at: 2026-01-03T00:00:00Z
     expect(res.data.downstream).toBeDefined();
     const concerns = res.data.downstream['rule-abc123'];
     expect(concerns).toHaveLength(1);
-    expect(concerns[0].title).toBe('Another rule');
+    expect(concerns[0].name).toBe('Another rule');
   });
 });
 
@@ -440,7 +440,7 @@ describe('HttpApi — /tapestry-asset endpoint', () => {
 describe('FiberReader — parseFiber with tags and dependsOn', () => {
   it('parses tags from YAML list', () => {
     const content = `---
-title: Test fiber
+name: Test fiber
 status: open
 kind: claim
 tags:
@@ -459,7 +459,7 @@ Body text.`;
 
   it('parses depends-on from YAML list', () => {
     const content = `---
-title: Downstream fiber
+name: Downstream fiber
 status: open
 kind: claim
 depends-on:
@@ -476,7 +476,7 @@ created-at: 2026-01-01T00:00:00Z
 
   it('returns undefined for missing tags/dependsOn', () => {
     const content = `---
-title: Plain fiber
+name: Plain fiber
 status: open
 kind: task
 priority: 2
@@ -491,7 +491,7 @@ created-at: 2026-01-01T00:00:00Z
 
   it('parses created-at and closed-at correctly', () => {
     const content = `---
-title: Complete fiber
+name: Complete fiber
 status: closed
 kind: claim
 priority: 2
@@ -509,7 +509,7 @@ outcome: Analysis complete
 
   it('extracts body text after frontmatter', () => {
     const content = `---
-title: With body
+name: With body
 status: open
 kind: claim
 tags:

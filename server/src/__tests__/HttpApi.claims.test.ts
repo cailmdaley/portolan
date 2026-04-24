@@ -806,7 +806,7 @@ describe('HttpApi — claims annotations', () => {
     it('returns DAG with nodes, links, and downstream for tapestry: fibers', async () => {
       // Set up two tapestry: fibers with a dependency
       writeFiber(TAPESTRY_FELT_DIR, 'fiber-a', `---
-title: Fiber A
+name: Fiber A
 status: active
 kind: spec
 tags:
@@ -815,7 +815,7 @@ tags:
 Body of fiber A.
 `);
       writeFiber(TAPESTRY_FELT_DIR, 'fiber-b', `---
-title: Fiber B
+name: Fiber B
 status: open
 kind: spec
 tags:
@@ -827,7 +827,7 @@ Body of fiber B depends on A.
 `);
       // A non-rule fiber that depends on a rule fiber (downstream concern)
       writeFiber(TAPESTRY_FELT_DIR, 'task-c', `---
-title: Task C
+name: Task C
 status: open
 kind: task
 depends-on:
@@ -849,7 +849,7 @@ Downstream task.
 
       // Each node has expected fields
       const nodeA = res.data.nodes.find((n: any) => n.id === 'fiber-a');
-      expect(nodeA.title).toBe('Fiber A');
+      expect(nodeA.name).toBe('Fiber A');
       expect(nodeA.body).toContain('Body of fiber A');
       expect(nodeA.specName).toBe('fiber_a');
       expect(nodeA.staleness).toBeDefined();
@@ -869,7 +869,7 @@ Downstream task.
       const emptyFeltDir = join(emptyDir, '.felt');
       mkdirSync(emptyFeltDir, { recursive: true });
       writeFiber(emptyFeltDir, 'plain-task', `---
-title: Just a task
+name: Just a task
 status: open
 kind: task
 ---

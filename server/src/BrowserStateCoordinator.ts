@@ -1,9 +1,10 @@
 import { execFile } from 'child_process';
+import { isAbsolute } from 'path';
 import { promisify } from 'util';
 
 import { WebSocket } from 'ws';
 
-import { countOpenFibers, getOpenFibers, getRecentlyClosed } from './FiberReader.js';
+import { countOpenFibers, getAllFibers, parseFiber } from './FiberReader.js';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
 import type { MeetingBridgeState } from './MeetingBridge.js';
@@ -29,6 +30,19 @@ export interface StateUpdate {
 
 interface SessionLookup {
   getAllSessions(): Session[];
+}
+
+interface RemoteFiber {
+  id: string;
+  name: string;
+  kind: string;
+  status: string;
+  body?: string;
+  outcome?: string;
+  tags?: string[];
+  closedAt?: string;
+  parentId: string | null;
+  isRoot: boolean;
 }
 
 interface RemoteAgentStateSource {
@@ -264,34 +278,30 @@ export class BrowserStateCoordinator {
   async handleGetFibers(ws: WebSocket, cityId: string): Promise<void> {
     const city = this.options.cityManager.getCityById(cityId);
     if (!city) {
-      ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], recentlyClosed: [] }));
+      ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], closed: [] }));
       return;
     }
 
     try {
       if (city.originId === this.localOriginId) {
-        const [open, recentlyClosed] = await Promise.all([
-          getOpenFibers(city.path),
-          getRecentlyClosed(city.path, 5),
-        ]);
-        ws.send(JSON.stringify({ type: 'fibers', cityId, open, recentlyClosed }));
+        const all = await getAllFibers(city.path);
+        const open = all.filter((f) => f.status !== 'closed');
+        const closed = all.filter((f) => f.status === 'closed');
+        ws.send(JSON.stringify({ type: 'fibers', cityId, open, closed }));
         return;
       }
 
       const origin = this.options.originManager.getOrigin(city.originId);
       if (!origin?.sshHost) {
-        ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], recentlyClosed: [] }));
+        ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], closed: [] }));
         return;
       }
 
-      const [open, recentlyClosed] = await Promise.all([
-        this.getRemoteFibers(origin.sshHost, city.path, 'open'),
-        this.getRemoteFibers(origin.sshHost, city.path, 'closed'),
-      ]);
-      ws.send(JSON.stringify({ type: 'fibers', cityId, open, recentlyClosed }));
+      const { open, closed } = await this.getRemoteFibers(origin.sshHost, city.path);
+      ws.send(JSON.stringify({ type: 'fibers', cityId, open, closed }));
     } catch (error) {
       console.error('Failed to get fibers:', error);
-      ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], recentlyClosed: [] }));
+      ws.send(JSON.stringify({ type: 'fibers', cityId, open: [], closed: [] }));
     }
   }
 
@@ -302,10 +312,46 @@ export class BrowserStateCoordinator {
     name?: string,
   ): void {
     try {
-      const expandedPath = expandHome(path);
-      const city = this.options.cityManager.pinCity(expandedPath, position, this.localOriginId, name);
-      this.options.cityPersistence.pin(expandedPath, position, this.localOriginId, name || city.name);
-      console.log(`City pinned: ${city.name} at (${position.q}, ${position.r})`);
+      // scp-style `host:/abs/path` routes the pin to a connected remote origin.
+      // Absolute-only: a host prefix must be followed by `/` to avoid eating
+      // URL-ish inputs or Windows-ish `C:...` (unlikely on macOS, still cheap).
+      const remoteMatch = /^([a-zA-Z0-9_.-]+):(\/.+)$/.exec(path);
+      let originId = this.localOriginId;
+      let sshHost: string | undefined;
+      let rawPath = path;
+
+      if (remoteMatch) {
+        const hostToken = remoteMatch[1];
+        rawPath = remoteMatch[2];
+        const match = this.options.originManager.getOrigins().find(
+          (o) => o.type === 'remote' && (o.sshHost === hostToken || o.name === hostToken || o.id === `remote-${hostToken}`),
+        );
+        if (!match) {
+          ws.send(JSON.stringify({ type: 'error', message: `No connected origin matches '${hostToken}'. Known: ${this.options.originManager.getOrigins().filter(o => o.type === 'remote').map(o => o.sshHost || o.name).join(', ') || '(none)'}` }));
+          return;
+        }
+        originId = match.id;
+        sshHost = match.sshHost || hostToken;
+      }
+
+      const expandedPath = sshHost ? rawPath : expandHome(rawPath);
+
+      // Guard against typos that silently resolve against the server CWD.
+      // Without this, `(~/foo` becomes `<server-cwd>/(~/foo`, a nonexistent
+      // path with no fibers, no file tree, and no feedback that anything
+      // went wrong. Absolute-path input is the contract the pin dialog
+      // advertises ("Local: /abs/path"); enforce it.
+      if (!isAbsolute(expandedPath)) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: `Pin path must be absolute (got '${path}'). Expected '/abs/path' or '~/path' locally, or 'host:/abs/path' for a remote origin.`,
+        }));
+        return;
+      }
+
+      const city = this.options.cityManager.pinCity(expandedPath, position, originId, name);
+      this.options.cityPersistence.pin(expandedPath, position, originId, name || city.name, sshHost);
+      console.log(`City pinned: ${city.name} at (${position.q}, ${position.r})${sshHost ? ` on ${sshHost}` : ''}`);
       void this.broadcastCurrentState();
       ws.send(JSON.stringify({ type: 'cityPinned', city }));
     } catch (error) {
@@ -410,30 +456,114 @@ export class BrowserStateCoordinator {
   private async getRemoteFibers(
     sshHost: string,
     cityPath: string,
-    status: 'open' | 'closed',
-  ): Promise<Array<{ id: string; title: string; kind: string; status: string; body?: string; outcome?: string }>> {
+  ): Promise<{
+    open: Array<RemoteFiber>;
+    closed: Array<RemoteFiber>;
+  }> {
     const escapedPath = shellEscape(cityPath);
-    const statusFlag = status === 'open' ? '-s open' : '-s closed';
-    const recentFlag = status === 'closed' ? '--recent 5' : '';
+
+    // One SSH round-trip yields both the felt-indexed fibers and the raw
+    // root-fiber files. The roots are concatenated after a sentinel; we
+    // splice them in if `felt ls` missed them — current felt CLI sometimes
+    // doesn't index the bare `.felt/<slug>.md` entry-point on remote hosts
+    // (regression of gotcha-remote-felt-misses-root). Parsing roots locally
+    // with the same parseFiber the local FiberReader uses keeps semantics
+    // identical to a local city. Using `;` (not `&&`) inside the for-loop
+    // matters: bash can't parse `for ...; do && body` — see
+    // gotcha-ssh-shell-loop-amp-amp.
+    const ROOT_SENTINEL = '@@@PORTOLAN_ROOTS@@@';
+    const FILE_SENTINEL = '@@@PORTOLAN_FILE@@@';
+    const command =
+      `cd ${escapedPath} && ` +
+      `(felt ls -s all --json --body 2>/dev/null || echo '[]'); ` +
+      `echo; echo '${ROOT_SENTINEL}'; ` +
+      `for f in .felt/*.md; do ` +
+      `  [ -f "$f" ] || continue; ` +
+      `  echo "${FILE_SENTINEL}:$(basename "$f" .md)"; ` +
+      `  cat "$f"; ` +
+      `done`;
 
     try {
       const { stdout } = await execFileAsync(
         'ssh',
-        [sshHost, `cd ${escapedPath} && felt ls ${statusFlag} ${recentFlag} --json --body 2>/dev/null || echo '[]'`],
-        { timeout: 10000 },
+        [sshHost, command],
+        { timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
       );
-      const fibers = JSON.parse(stdout.trim() || '[]');
-      return fibers.map((fiber: any) => ({
-        id: fiber.id,
-        title: fiber.title,
-        kind: fiber.kind || 'task',
-        status: fiber.status || status,
-        body: fiber.body || undefined,
-        outcome: fiber.outcome || undefined,
-      }));
+
+      const splitIdx = stdout.indexOf(ROOT_SENTINEL);
+      const jsonPart = splitIdx >= 0 ? stdout.slice(0, splitIdx) : stdout;
+      const rootsPart = splitIdx >= 0 ? stdout.slice(splitIdx + ROOT_SENTINEL.length) : '';
+
+      const raw = JSON.parse(jsonPart.trim() || '[]');
+      const fibers: RemoteFiber[] = raw.map((fiber: any): RemoteFiber => mapRawFiber(fiber));
+
+      // Workaround for missing root fibers: parse any .felt/<slug>.md file
+      // not already represented in the felt-indexed set, mark isRoot=true.
+      const seen = new Set(fibers.map((f) => f.id));
+      for (const root of parseRootFibers(rootsPart, FILE_SENTINEL)) {
+        if (seen.has(root.id)) continue;
+        fibers.push(root);
+        seen.add(root.id);
+      }
+
+      const open = fibers.filter((f) => f.status !== 'closed');
+      const closed = fibers.filter((f) => f.status === 'closed');
+      return { open, closed };
     } catch (error) {
       console.error(`Failed to get remote fibers from ${sshHost}:${cityPath}:`, error);
-      return [];
+      return { open: [], closed: [] };
     }
   }
+}
+
+function mapRawFiber(fiber: any): RemoteFiber {
+  // `felt ls --json` emits slash-joined IDs for nested fibers and sets
+  // `entry_point: true` on the bare `.felt/<slug>.md` root fiber.
+  const id = fiber.id as string;
+  const lastSlash = id.lastIndexOf('/');
+  return {
+    id,
+    name: fiber.name || id,
+    kind: fiber.kind || 'task',
+    status: fiber.status || '',
+    body: fiber.body || undefined,
+    outcome: fiber.outcome || undefined,
+    tags: Array.isArray(fiber.tags)
+      ? fiber.tags.flatMap((tag: string) =>
+          tag.includes(',') ? tag.split(',').map((t: string) => t.trim()).filter(Boolean) : [tag],
+        )
+      : undefined,
+    closedAt: fiber.closed_at || undefined,
+    parentId: lastSlash >= 0 ? id.slice(0, lastSlash) : null,
+    isRoot: !!fiber.entry_point,
+  };
+}
+
+function parseRootFibers(rootsPart: string, fileSentinel: string): RemoteFiber[] {
+  const out: RemoteFiber[] = [];
+  // Each chunk: `${FILE_SENTINEL}:<slug>\n<file contents>`. Split keeps
+  // the leading empty string, which we skip.
+  const chunks = rootsPart.split(`${fileSentinel}:`);
+  for (let i = 1; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const newlineIdx = chunk.indexOf('\n');
+    if (newlineIdx < 0) continue;
+    const slug = chunk.slice(0, newlineIdx).trim();
+    const content = chunk.slice(newlineIdx + 1);
+    if (!slug) continue;
+    const parsed = parseFiber(slug, content);
+    out.push({
+      id: parsed.id,
+      name: parsed.name,
+      kind: parsed.kind,
+      status: parsed.status,
+      body: parsed.body,
+      outcome: parsed.outcome,
+      tags: parsed.tags,
+      closedAt: parsed.closedAt,
+      parentId: null,
+      isRoot: true,
+    });
+  }
+  return out;
 }

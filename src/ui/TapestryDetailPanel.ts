@@ -80,11 +80,11 @@ export class TapestryDetailPanel {
     const upstreamTags = node.dependsOn
       .map((dep) => {
         const depNode = tapestryData.nodes.find((entry) => entry.id === dep)
-        return this.renderFiberTag(dep, depNode ? shortName(depNode.title) : dep.slice(0, 12))
+        return this.renderFiberTag(dep, depNode ? shortName(depNode.name) : dep.slice(0, 12))
       })
       .join('')
     const downstreamTags = downstream
-      .map((entry) => `<span class="dep-tag downstream-tag" data-dep-id="${escapeHtml(entry.id)}">${statusIcon(entry.status)} ${escapeHtml(shortName(entry.title))}</span>`)
+      .map((entry) => `<span class="dep-tag downstream-tag" data-dep-id="${escapeHtml(entry.id)}">${statusIcon(entry.status)} ${escapeHtml(shortName(entry.name))}</span>`)
       .join('')
 
     let graphHtml = ''
@@ -121,7 +121,7 @@ export class TapestryDetailPanel {
       <div class="tapestry-detail-header">
         <div class="tapestry-detail-title">
           <span class="staleness-badge" style="color: ${nodeColor}">${stalenessIcon(node.staleness)}</span>
-          <span class="detail-name">${escapeHtml(node.title)}</span>
+          <span class="detail-name">${escapeHtml(node.name)}</span>
         </div>
         <button class="tapestry-detail-close">&times;</button>
       </div>
@@ -165,7 +165,7 @@ export class TapestryDetailPanel {
     const upstreamTags = fiber.dependsOn
       .map((dep) => {
         const depFiber = tapestryData.fibers?.find((entry) => entry.id === dep)
-        return this.renderFiberTag(dep, depFiber ? shortName(depFiber.title) : dep.slice(0, 12))
+        return this.renderFiberTag(dep, depFiber ? shortName(depFiber.name) : dep.slice(0, 12))
       })
       .join('')
     const graphHtml = upstreamTags
@@ -181,7 +181,7 @@ export class TapestryDetailPanel {
       <div class="tapestry-detail-header">
         <div class="tapestry-detail-title">
           <span class="staleness-badge">${statusIcon(fiber.status)}</span>
-          <span class="detail-name">${escapeHtml(fiber.title)}</span>
+          <span class="detail-name">${escapeHtml(fiber.name)}</span>
         </div>
         <button class="tapestry-detail-close">&times;</button>
       </div>
@@ -417,7 +417,7 @@ export class TapestryDetailPanel {
       const evidenceLinks = dec.evidenceIds
         .map((id) => {
           const n = data.nodes.find((x) => x.id === id)
-          return n ? `<span class="dep-tag decision-evidence-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(shortName(n.title))}</span>` : ''
+          return n ? `<span class="dep-tag decision-evidence-tag" data-dep-id="${escapeHtml(id)}">${escapeHtml(shortName(n.name))}</span>` : ''
         })
         .filter(Boolean)
         .join('')

@@ -7,7 +7,7 @@ interface FibersResponse {
   type: 'fibers'
   cityId: string
   open: Fiber[]
-  recentlyClosed: Fiber[]
+  closed: Fiber[]
 }
 
 type HudTab = 'fibers' | 'files'
@@ -35,6 +35,19 @@ export class CityHUDContent {
   private closedFibers: Fiber[] = []
   private pinnedSlugs: Set<string> = new Set()
   private search: CityHUDSearch
+  // Expanded container fiber IDs. Default is collapsed; user expands
+  // explicitly. State is per-session, not per-city — small cost, lets you
+  // navigate between cities without losing the tree shape you just opened.
+  private expanded: Set<string> = new Set()
+  // Active fiber-search query (lowercased substring). When set, the tree
+  // is pruned to matches + their ancestors, ancestors auto-expand, and
+  // matches get a tinted background. Cleared by clearing the search input.
+  private fiberSearchQuery = ''
+  // Per-render derived from fiberSearchQuery. searchMatchIds drives the
+  // `search-match` tint; searchForceExpanded keeps ancestors open during
+  // search without disturbing the user's manual expanded state.
+  private searchMatchIds: Set<string> | null = null
+  private searchForceExpanded: Set<string> | null = null
 
   constructor(host: CityHUDContentHost) {
     this.host = host
@@ -48,12 +61,10 @@ export class CityHUDContent {
       getCurrentCity: () => this.host.getCurrentCity(),
       getCurrentTab: () => this.host.getCurrentTab(),
       getWebSocket: () => this.host.getWebSocket(),
-      getFibers: () => ({ open: this.openFibers, closed: this.closedFibers }),
-      getPinnedSlugs: () => this.pinnedSlugs,
-      onOpenFiber: (fiberId) => this.openFiber(fiberId),
       onOpenFile: (fullPath, line) => this.openFile(fullPath, line),
       onOpenDirectory: (fullPath) => this.openDirectory(fullPath),
       renderEmptyFileSearchState: () => this.host.renderEmptyFileSearchState(),
+      onFiberSearchChange: (query) => this.setFiberSearchQuery(query),
     })
     this.setupDelegatedListeners()
   }
@@ -111,7 +122,7 @@ export class CityHUDContent {
     this.host.fiberList.innerHTML = '<li class="hud-fiber-empty hud-fiber-loading">Loading…</li>'
     this.fibersCallback = (response) => {
       if (response.cityId === this.host.getCurrentCity()?.id) {
-        this.renderFibers(response.open, response.recentlyClosed)
+        this.renderFibers(response.open, response.closed)
       }
     }
     ws.send(JSON.stringify({ type: 'getFibers', cityId }))
@@ -133,6 +144,14 @@ export class CityHUDContent {
 
   clearSearch(): void {
     this.search.clear()
+  }
+
+  private setFiberSearchQuery(query: string): void {
+    if (query === this.fiberSearchQuery) return
+    this.fiberSearchQuery = query
+    if (this.openFibers.length || this.closedFibers.length) {
+      this.renderFibers(this.openFibers, this.closedFibers)
+    }
   }
 
   private setupDelegatedListeners(): void {
@@ -162,7 +181,17 @@ export class CityHUDContent {
     })
 
     this.host.fiberList.addEventListener('click', (event) => {
-      const handoff = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-handoff')
+      const target = event.target as HTMLElement
+
+      const chevron = target.closest<HTMLElement>('.hud-fiber-chevron')
+      if (chevron) {
+        event.stopPropagation()
+        const fiberId = chevron.dataset.fiberId
+        if (fiberId) this.toggleCollapsed(fiberId)
+        return
+      }
+
+      const handoff = target.closest<HTMLElement>('.hud-fiber-handoff')
       if (handoff) {
         event.stopPropagation()
         const fiberId = handoff.dataset.fiberId
@@ -178,10 +207,19 @@ export class CityHUDContent {
         return
       }
 
-      const item = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-item')
+      const item = target.closest<HTMLElement>('.hud-fiber-item')
       if (!item) return
       this.openFiber(item.dataset.fiberId)
     })
+  }
+
+  private toggleCollapsed(fiberId: string): void {
+    if (this.expanded.has(fiberId)) {
+      this.expanded.delete(fiberId)
+    } else {
+      this.expanded.add(fiberId)
+    }
+    this.renderFibers(this.openFibers, this.closedFibers)
   }
 
   private renderFibers(open: Fiber[], closed: Fiber[]): void {
@@ -194,18 +232,132 @@ export class CityHUDContent {
       return
     }
 
-    this.host.fiberList.innerHTML = allFibers.map(fiber => this.renderFiberItem(fiber)).join('')
+    // Search prunes the tree to (matches ∪ ancestors). Ancestors come along
+    // as scaffolding — without them the matched leaves would lose their
+    // context. Matches get a tinted background; ancestors stay plain.
+    const matchIds = this.computeMatchIds(allFibers)
+    const visibleIds = matchIds ? this.expandWithAncestors(allFibers, matchIds) : null
+    const rendered = visibleIds ? allFibers.filter(f => visibleIds.has(f.id)) : allFibers
+    this.searchMatchIds = matchIds
+    // Force-expand every ancestor of a match so the matches are actually
+    // visible. User's manual expanded state is restored when search clears.
+    this.searchForceExpanded = visibleIds && matchIds
+      ? new Set(Array.from(visibleIds).filter(id => !matchIds.has(id)))
+      : null
+
+    if (rendered.length === 0) {
+      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty">No matches</li>'
+      return
+    }
+
+    // Root fiber (entry-point, bare `.felt/<slug>.md`) renders first as a
+    // distinct section. Everything else forms a tree keyed by parentId —
+    // top-level folder-fibers (parentId null) are tree roots beneath.
+    const rootFiber = rendered.find(f => f.isRoot)
+    const rest = rootFiber ? rendered.filter(f => f !== rootFiber) : rendered
+
+    // An orphan is a nested fiber whose parent isn't in the current list
+    // (typically because the parent is closed). Render those at top level
+    // — otherwise they'd vanish entirely.
+    const presentIds = new Set(rest.map(f => f.id))
+    const childrenByParent = new Map<string | null, Fiber[]>()
+    for (const fiber of rest) {
+      const rawParent = fiber.parentId ?? null
+      const parent = rawParent !== null && !presentIds.has(rawParent) ? null : rawParent
+      if (!childrenByParent.has(parent)) childrenByParent.set(parent, [])
+      childrenByParent.get(parent)!.push(fiber)
+    }
+
+    // Within each subtree level, sort by status priority then by name.
+    // active comes first (live work); closed sinks to the bottom (done, but
+    // still visible inside its parent so the tree stays meaningful).
+    for (const siblings of childrenByParent.values()) {
+      siblings.sort((a, b) => {
+        const rankDelta = statusRank(a.status) - statusRank(b.status)
+        if (rankDelta !== 0) return rankDelta
+        return a.name.localeCompare(b.name)
+      })
+    }
+
+    const html: string[] = []
+    if (rootFiber) {
+      html.push(this.renderFiberItem(rootFiber, 0, /*hasChildren*/ false, /*isRoot*/ true))
+    }
+    html.push(...this.renderFiberSubtree(null, childrenByParent, 0))
+    this.host.fiberList.innerHTML = html.join('')
   }
 
-  private renderFiberItem(fiber: Fiber): string {
+  private computeMatchIds(fibers: Fiber[]): Set<string> | null {
+    const q = this.fiberSearchQuery.toLowerCase()
+    if (!q) return null
+    const hit = (s: string | undefined) => s?.toLowerCase().includes(q) ?? false
+    const matches = new Set<string>()
+    for (const f of fibers) {
+      if (
+        hit(f.name) || hit(f.kind) || hit(f.id) ||
+        hit(f.body) || hit(f.outcome) || hit(f.reason) ||
+        (f.tags?.some(tag => hit(tag)) ?? false)
+      ) {
+        matches.add(f.id)
+      }
+    }
+    return matches
+  }
+
+  private expandWithAncestors(fibers: Fiber[], matchIds: Set<string>): Set<string> {
+    const byId = new Map(fibers.map(f => [f.id, f]))
+    const visible = new Set(matchIds)
+    for (const id of matchIds) {
+      let parentId = byId.get(id)?.parentId ?? null
+      while (parentId && !visible.has(parentId)) {
+        visible.add(parentId)
+        parentId = byId.get(parentId)?.parentId ?? null
+      }
+    }
+    return visible
+  }
+
+  private renderFiberSubtree(
+    parentId: string | null,
+    childrenByParent: Map<string | null, Fiber[]>,
+    depth: number,
+  ): string[] {
+    const children = childrenByParent.get(parentId) ?? []
+    const out: string[] = []
+    for (const fiber of children) {
+      const hasChildren = (childrenByParent.get(fiber.id)?.length ?? 0) > 0
+      out.push(this.renderFiberItem(fiber, depth, hasChildren, false))
+      const isExpanded = this.expanded.has(fiber.id) || (this.searchForceExpanded?.has(fiber.id) ?? false)
+      if (hasChildren && isExpanded) {
+        out.push(...this.renderFiberSubtree(fiber.id, childrenByParent, depth + 1))
+      }
+    }
+    return out
+  }
+
+  private renderFiberItem(fiber: Fiber, depth: number, hasChildren: boolean, isRoot: boolean): string {
     const kind = fiber.kind || 'task'
-    const pinned = this.pinnedSlugs.has(fiber.id) ? ' pinned' : ''
+    const classes = ['hud-fiber-item', kind]
+    classes.push(`status-${fiber.status || 'unset'}`)
+    if (this.pinnedSlugs.has(fiber.id)) classes.push('pinned')
+    if (isRoot) classes.push('root')
+    if (hasChildren) classes.push('has-children')
+    if (this.searchMatchIds?.has(fiber.id)) classes.push('search-match')
+
+    const isExpanded = this.expanded.has(fiber.id) || (this.searchForceExpanded?.has(fiber.id) ?? false)
+    const chevron = hasChildren
+      ? `<button class="hud-fiber-chevron${isExpanded ? '' : ' collapsed'}" data-fiber-id="${escapeHtml(fiber.id)}" title="${isExpanded ? 'Collapse' : 'Expand'}">▾</button>`
+      : `<span class="hud-fiber-chevron spacer"></span>`
+
+    const style = depth > 0 ? ` style="--fiber-depth: ${depth}"` : ''
+
     return `
-      <li class="hud-fiber-item ${kind}${pinned}" data-fiber-id="${fiber.id}">
+      <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}"${style}>
+        ${chevron}
         <span class="hud-fiber-status">${fiberStatusIcon(fiber.status)}</span>
-        <span class="hud-fiber-title">${escapeHtml(fiber.title)}</span>
+        <span class="hud-fiber-title">${escapeHtml(fiber.name)}</span>
         <span class="hud-fiber-kind">${kind}</span>
-        <button class="hud-fiber-handoff" data-fiber-id="${fiber.id}" title="Hand off to worker">↗</button>
+        <button class="hud-fiber-handoff" data-fiber-id="${escapeHtml(fiber.id)}" title="Hand off to worker">↗</button>
       </li>
     `
   }
@@ -214,7 +366,14 @@ export class CityHUDContent {
     const currentCity = this.host.getCurrentCity()
     const onOpenFile = this.host.getOnOpenFile()
     if (!fiberId || !currentCity || !onOpenFile) return
-    onOpenFile(`${currentCity.path}/.felt/${fiberId}/${fiberId}.md`, currentCity.originId, currentCity.path, currentCity.id)
+    // Nested fiber IDs are slash-joined (`foo/bar`); the file lives at
+    // `.felt/foo/bar/bar.md`. Root fibers (entry-point) are bare at the
+    // .felt/ root: `.felt/<slug>.md` — no enclosing directory.
+    const fiber = this.openFibers.find(f => f.id === fiberId) ?? this.closedFibers.find(f => f.id === fiberId)
+    const relPath = fiber?.isRoot
+      ? `.felt/${fiberId}.md`
+      : `.felt/${fiberId}/${fiberId.split('/').pop()}.md`
+    onOpenFile(`${currentCity.path}/${relPath}`, currentCity.originId, currentCity.path, currentCity.id)
   }
 
   private openFile(fullPath: string | undefined, line?: number): void {
@@ -229,5 +388,18 @@ export class CityHUDContent {
     const onOpenDirectory = this.host.getOnOpenDirectory()
     if (!fullPath || !currentCity || !onOpenDirectory) return
     onOpenDirectory(fullPath, currentCity.originId, currentCity.path, currentCity.id)
+  }
+}
+
+// Display order: active work first, then open, then statusless containers,
+// then closed (sunk to the bottom but still visible — the tree handles
+// access without needing a separate "recently closed" section).
+function statusRank(status: string): number {
+  switch (status) {
+    case 'active': return 0
+    case 'open': return 1
+    case '': return 2
+    case 'closed': return 3
+    default: return 4
   }
 }

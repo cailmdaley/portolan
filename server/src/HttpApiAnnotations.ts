@@ -195,6 +195,7 @@ export class HttpApiAnnotations {
       createNewWorker?: boolean;
       filePath: string;
       originId: string;
+      cityPath?: string;
       annotations: Annotation[];
       globalComment?: string;
       cityName?: string;
@@ -202,7 +203,7 @@ export class HttpApiAnnotations {
     }>(req, res);
     if (!data) return;
 
-    const { workerId, createNewWorker, filePath, originId, annotations, globalComment, cityName, isClaimsSend } = data;
+    const { workerId, createNewWorker, filePath, originId, cityPath: requestedCityPath, annotations, globalComment, cityName, isClaimsSend } = data;
 
     const hasContent = (annotations && annotations.length > 0) || (globalComment && globalComment.trim().length > 0);
     if (!hasContent) {
@@ -226,7 +227,7 @@ export class HttpApiAnnotations {
       }
 
       try {
-        const cityPath = filePath.substring(0, filePath.lastIndexOf('/'));
+        const cityPath = requestedCityPath || filePath.substring(0, filePath.lastIndexOf('/'));
         tmuxSession = await this.onCreateNewWorker(cityPath, originId);
         console.log(`[SendAnnotations] Created new worker: ${tmuxSession}`);
         await new Promise(resolve => setTimeout(resolve, 4000));
@@ -264,7 +265,25 @@ export class HttpApiAnnotations {
         this.onFocusSession(workerId);
       }
 
-      this.sendJsonSuccess(res, { success: true });
+      // Mark each annotation that has a persisted id as "sent" so the chrome
+      // can surface a Clear-sent action against only the dispatched ones.
+      // Best-effort: the tmux send already succeeded; failing to persist
+      // sentAt must not fail the HTTP response.
+      const sentAt = Date.now();
+      const updatedIds: string[] = [];
+      if (this.annotationPersistence && Array.isArray(annotations)) {
+        for (const ann of annotations) {
+          if (!ann || typeof ann.id !== 'string' || !ann.id) continue;
+          try {
+            const updated = this.annotationPersistence.update(ann.id, { sentAt });
+            if (updated) updatedIds.push(updated.id);
+          } catch (err: any) {
+            console.warn(`[SendAnnotations] failed to mark sentAt on ${ann.id}:`, err?.message || err);
+          }
+        }
+      }
+
+      this.sendJsonSuccess(res, { success: true, sentAt, updatedIds });
     } catch (error: any) {
       console.error('Failed to send annotations:', error.message);
       this.sendJsonError(res, 500, 'Failed to send annotations: ' + error.message);
@@ -294,7 +313,12 @@ export class HttpApiAnnotations {
 
     try {
       let fiberId: string;
-      const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(title)} -t ${shellEscape(kind)} -b ${shellEscape(body)}`;
+      const slug = title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60) || `note-${Date.now()}`;
+      const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(slug)} ${shellEscape(title)} -t ${shellEscape(kind)} -b ${shellEscape(body)}`;
 
       if (!isRemote) {
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });

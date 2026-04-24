@@ -2,6 +2,7 @@
 
 import { OrthographicCamera, Vector3, Raycaster, Plane, Vector2 } from 'three'
 import type { CartesianCoord } from '../state/types'
+import { trackWheelEvent } from './wheelGesture'
 
 // Safari-specific gesture event (pinch-to-zoom)
 interface GestureEvent extends Event {
@@ -13,6 +14,7 @@ export class Camera {
   camera: OrthographicCamera
   private canvas: HTMLCanvasElement
   private eventTarget: HTMLElement  // May be overlay for Safari compatibility
+  private revision = 0
 
   // Camera state - target point we're looking at
   private target = new Vector3(0, 0, 0)
@@ -110,19 +112,30 @@ export class Camera {
     }
     this.eventTarget.addEventListener('click', this.clickHandler)
 
-    // Scroll wheel for zoom
+    // Scroll wheel for zoom. Listens at the window level so a zoom gesture
+    // that originated on the map keeps zooming even when the cursor drifts
+    // over a pin mid-gesture. `trackWheelEvent` arbitrates between this
+    // handler and DomPinLayer's pin wheel handler — whichever side the
+    // gesture started on owns every wheel in the burst.
     this.wheelHandler = (e: WheelEvent) => {
-      // Don't capture wheel events over panels - let them scroll
       const target = e.target as HTMLElement
-      if (target.closest('#city-panel')) {
-        return // Let panel handle scroll
-      }
+      // Scrollable host surfaces need their own native wheel — otherwise the
+      // global camera handler preventDefaults the event and the map zooms
+      // instead. Any new full-viewport modal or HUD pane that overflows must
+      // be added here. See gotcha-modal-scroll-window-wheel.
+      if (target.closest(
+        '#city-panel, .hud-pane, .vellum-modal-scrim, .vellum-workspace-modal-container'
+      )) return
+      const onCard = !!target.closest('.dom-pin')
+      const owner = trackWheelEvent(onCard ? 'card' : 'canvas')
+      // Card owns this burst — the pin's own wheel handler will handle it.
+      if (owner === 'card') return
       e.preventDefault()
       e.stopPropagation()
       const delta = e.deltaY > 0 ? 1.02 : 0.98  // Gentle zoom
       this.zoomBy(delta)
     }
-    this.eventTarget.addEventListener('wheel', this.wheelHandler, { passive: false })
+    window.addEventListener('wheel', this.wheelHandler, { passive: false })
 
     // Safari pinch-to-zoom (gesture events)
     let lastScale = 1
@@ -198,7 +211,7 @@ export class Camera {
       this.eventTarget.removeEventListener('click', this.clickHandler)
     }
     if (this.wheelHandler) {
-      this.eventTarget.removeEventListener('wheel', this.wheelHandler)
+      window.removeEventListener('wheel', this.wheelHandler)
     }
     if (this.gestureStartHandler) {
       this.eventTarget.removeEventListener('gesturestart', this.gestureStartHandler)
@@ -297,6 +310,7 @@ export class Camera {
     this.camera.lookAt(this.target)
 
     this.camera.updateProjectionMatrix()
+    this.revision += 1
   }
 
   /**
@@ -360,5 +374,9 @@ export class Camera {
    */
   get cameraCenter(): { x: number; z: number } {
     return { x: this.target.x, z: this.target.z }
+  }
+
+  get cameraRevision(): number {
+    return this.revision
   }
 }

@@ -2,13 +2,17 @@
 
 export interface Fiber {
   id: string
-  title: string
+  name: string
   status: string
   kind: string
   priority: number
   createdAt: string
   body?: string
+  outcome?: string
   reason?: string
+  tags?: string[]
+  parentId?: string | null
+  isRoot?: boolean
 }
 
 export interface SearchResult {

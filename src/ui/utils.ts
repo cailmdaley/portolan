@@ -248,12 +248,14 @@ export function formatFiberDate(iso: string | null | undefined): string {
 
 /**
  * Map fiber status to a compact icon glyph.
- * active = half-filled, closed = filled, open/other = hollow.
+ * active = half-filled, open = hollow, closed = filled, statusless = diamond
+ * (structural container, not a task state).
  */
 export function fiberStatusIcon(status: string): string {
   if (status === 'active') return '◐'
   if (status === 'closed') return '●'
-  return '○'
+  if (status === 'open') return '○'
+  return '◇'
 }
 
 /**

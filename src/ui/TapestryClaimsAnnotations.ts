@@ -348,7 +348,7 @@ export class TapestryClaimsAnnotations {
         filePath: `${currentCity.path}/.felt/${node.id}.md`,
         originId: currentCity.originId,
         cityPath: currentCity.path,
-        title: `Feedback on ${node.title}`,
+        title: `Feedback on ${node.name}`,
         body: bodyLines.join('\n'),
         kind: 'task',
       }),

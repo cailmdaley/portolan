@@ -63,7 +63,7 @@ describe('HttpApi — /astra/graph endpoint', () => {
 
   it('emits every fiber as a vellum-shaped node', async () => {
     writeFiber(FELT_DIR, 'alpha-abc123', `---
-title: Alpha
+name: Alpha
 status: open
 kind: task
 priority: 2
@@ -93,7 +93,7 @@ Alpha body.`);
 
   it('includes fibers without tapestry/rule tags', async () => {
     writeFiber(FELT_DIR, 'plain-xyz', `---
-title: Plain
+name: Plain
 status: open
 kind: task
 priority: 2
@@ -108,7 +108,7 @@ created-at: 2026-01-01T00:00:00Z
 
   it('emits dependsOn edges with kind "data-flow"', async () => {
     writeFiber(FELT_DIR, 'base', `---
-title: Base
+name: Base
 status: closed
 kind: finding
 priority: 2
@@ -116,7 +116,7 @@ created-at: 2026-01-01T00:00:00Z
 ---
 `);
     writeFiber(FELT_DIR, 'built-on', `---
-title: Built on Base
+name: Built on Base
 status: open
 kind: task
 priority: 2
@@ -134,7 +134,7 @@ depends-on:
 
   it('resolves rootSlug to a fiber matching the cityId (loom root-fiber convention)', async () => {
     writeFiber(FELT_DIR, 'test', `---
-title: Root
+name: Root
 status: open
 kind: task
 priority: 2
@@ -142,7 +142,7 @@ created-at: 2026-01-01T00:00:00Z
 ---
 `);
     writeFiber(FELT_DIR, 'other', `---
-title: Other
+name: Other
 status: open
 kind: task
 priority: 2
@@ -156,7 +156,7 @@ created-at: 2026-01-02T00:00:00Z
 
   it('rootSlug falls back to the first fiber when no id matches the cityId', async () => {
     writeFiber(FELT_DIR, 'alpha', `---
-title: Alpha
+name: Alpha
 status: open
 kind: task
 priority: 2
@@ -175,7 +175,7 @@ created-at: 2026-01-01T00:00:00Z
 
   it('drops edges that point to fibers outside the city', async () => {
     writeFiber(FELT_DIR, 'orphan-dep', `---
-title: Orphan
+name: Orphan
 status: open
 kind: task
 priority: 2

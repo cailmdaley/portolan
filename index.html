@@ -2192,6 +2192,7 @@
         align-items: baseline;
         gap: 7px;
         padding: 5px 4px 5px 2px;
+        padding-left: calc(2px + var(--fiber-depth, 0) * 14px);
         cursor: pointer;
         border-radius: 3px;
         transition: background 120ms ease;
@@ -2236,6 +2237,17 @@
       .hud-fiber-item.question .hud-fiber-kind { color: #7b5a8a; }
       .hud-fiber-item.doc .hud-fiber-kind { color: #5a6b8a; }
 
+      /* Status-driven emphasis. Active = full ink; closed sinks but stays
+         legible (the tree stays meaningful even when work is done). */
+      .hud-fiber-item.status-closed { opacity: 0.55; }
+      .hud-fiber-item.status-closed .hud-fiber-title { text-decoration: line-through; text-decoration-color: var(--ink-faded); text-decoration-thickness: 1px; }
+      .hud-fiber-item.status-unset { opacity: 0.85; }
+
+      /* Search match: tree stays in place, matches highlighted with the
+         same gold wash as map-hovered. Ancestors of matches render plain so
+         you can see the path without losing focus on the actual hits. */
+      .hud-fiber-item.search-match { background: rgba(154, 123, 53, 0.18); }
+
       /* Fiber is already pinned on the map — subtle gold inset bar on the
          left so the HUD stays quiet but you can see at a glance which fibers
          already have a card placed. Matches the sepia-accent / city-hex palette. */
@@ -2272,6 +2284,45 @@
 
       .hud-fiber-handoff:hover {
         color: var(--sepia-accent);
+      }
+
+      /* Tree chevron: rotates when collapsed. Spacer variant preserves
+         column alignment for leaf fibers that have no children. */
+      .hud-fiber-chevron {
+        flex-shrink: 0;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--ink-body);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        transition: transform 120ms ease, color 120ms ease;
+      }
+      .hud-fiber-chevron.spacer {
+        cursor: default;
+      }
+      .hud-fiber-chevron.collapsed {
+        transform: rotate(-90deg);
+      }
+      .hud-fiber-chevron:hover {
+        color: var(--sepia-accent);
+      }
+
+      /* Root (entry-point) fiber: distinct treatment so it reads as the
+         project's "about" rather than another tree node. Sits at top of the
+         list, small divider below. */
+      .hud-fiber-item.root {
+        border-bottom: 1px solid var(--parchment-edge);
+        margin-bottom: 4px;
+        padding-bottom: 7px;
+      }
+      .hud-fiber-item.root .hud-fiber-title {
+        font-variant: small-caps;
+        letter-spacing: 0.04em;
+        color: var(--ink-primary);
       }
 
       .hud-fiber-empty,

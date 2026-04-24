@@ -287,7 +287,7 @@ export class TapestryDagGraph {
           const lead = leadParagraph(node.data.body)
           const outcome = node.data.outcome?.trim() ?? ''
           if (this.tooltip) {
-            let html = `<span class="tooltip-title">${escapeHtml(node.data.title)}</span>`
+            let html = `<span class="tooltip-title">${escapeHtml(node.data.name)}</span>`
             if (lead || outcome) html += '<hr class="tooltip-divider">'
             if (lead) html += `<span class="tooltip-lead">${escapeHtml(lead)}</span>`
             if (lead && outcome) html += '<hr class="tooltip-divider">'

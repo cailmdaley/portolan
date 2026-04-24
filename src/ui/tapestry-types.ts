@@ -4,7 +4,7 @@ import type { BaseAnnotation } from './AnnotationPanel'
 
 export interface TapestryNode {
   id: string
-  title: string
+  name: string
   kind: string
   status: string
   body: string
@@ -30,7 +30,7 @@ export interface TapestryLink {
 
 export interface TapestryFiber {
   id: string
-  title: string
+  name: string
   status: string
   kind: string
   tags?: string[]
@@ -63,7 +63,7 @@ export interface TapestryDecision {
 export interface TapestryResponse {
   nodes: TapestryNode[]
   links: TapestryLink[]
-  downstream: Record<string, Array<{ id: string; title: string; status: string; kind: string }>>
+  downstream: Record<string, Array<{ id: string; name: string; status: string; kind: string }>>
   config: Record<string, string> | null
   fibers?: TapestryFiber[]
   decisions?: TapestryDecision[]

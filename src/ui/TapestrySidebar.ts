@@ -66,7 +66,7 @@ export class TapestrySidebar {
     const query = this.searchInput.value.toLowerCase().trim()
     const filtered = query
       ? fibers.filter((fiber) => {
-          const text = [fiber.title, fiber.body, fiber.kind, fiber.id, fiber.outcome, ...(fiber.tags || [])]
+          const text = [fiber.name, fiber.body, fiber.kind, fiber.id, fiber.outcome, ...(fiber.tags || [])]
             .filter(Boolean)
             .join(' ')
             .toLowerCase()
@@ -136,7 +136,7 @@ export class TapestrySidebar {
 
     const matches: Array<{ node: TapestryNode; context: string }> = []
     data.nodes.forEach((node) => {
-      const searchText = [node.title, node.body, node.kind, node.id].filter(Boolean).join(' ').toLowerCase()
+      const searchText = [node.name, node.body, node.kind, node.id].filter(Boolean).join(' ').toLowerCase()
       if (!searchText.includes(query)) return
       const idx = searchText.indexOf(query)
       const start = Math.max(0, idx - SEARCH_SNIPPET_CONTEXT)
@@ -160,7 +160,7 @@ export class TapestrySidebar {
       div.className = 'search-result'
       div.innerHTML = `
         <span class="search-result-dot" style="background: ${color}"></span>
-        <span class="search-result-name">${escapeHtml(shortName(match.node.title))}</span>
+        <span class="search-result-name">${escapeHtml(shortName(match.node.name))}</span>
         <span class="search-result-match">${escapeHtml(match.context)}</span>
       `
       div.addEventListener('click', () => {
@@ -200,7 +200,7 @@ export class TapestrySidebar {
     const aStatus = statusOrder[a.status] ?? 2
     const bStatus = statusOrder[b.status] ?? 2
     if (aStatus !== bStatus) return aStatus - bStatus
-    return a.title.localeCompare(b.title)
+    return a.name.localeCompare(b.name)
   }
 
   private renderFiberItem(fiber: TapestryFiber, data: TapestryResponse): string {
@@ -216,7 +216,7 @@ export class TapestrySidebar {
     const ruleClass = ruleTag ? ' fiber-item-rule' : ''
     return `<div class="fiber-item${ruleClass}" data-fiber-id="${escapeHtml(fiber.id)}">
       <span class="fiber-dot" style="color: ${dotColor}">${dotIcon}</span>
-      <span class="fiber-title">${escapeHtml(shortName(fiber.title))}</span>
+      <span class="fiber-title">${escapeHtml(shortName(fiber.name))}</span>
       ${tagsHtml}${kindBadge}
     </div>`
   }

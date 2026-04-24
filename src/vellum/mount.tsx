@@ -14,7 +14,6 @@
  * inside the React root this file creates — see vellum-in-portolan.
  */
 
-import { StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   AdapterProvider,
@@ -23,16 +22,14 @@ import {
   FileViewerPage,
   WorkspaceMount,
   type Annotation,
-  type AnnotationAction,
+  type AnnotationBulkAction,
   type FiberContent,
   type GraphNode,
 } from 'vellum'
-// Mirrors vellum's FileViewerPage.SaveState (not re-exported from the package
-// index). Kept structural so a vellum bump that adds error subtypes stays
-// compatible without a type import.
-type SaveState = 'idle' | 'saving' | 'saved' | { error: string }
 import 'vellum/css'
 import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
+import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'
+import { showToast } from '../ui/utils'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
@@ -47,8 +44,14 @@ const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostn
  * this mount layer doesn't drag the whole state graph into vellum.
  */
 export interface PortolanMountContext {
-  getSessions: () => Array<{ id: string; cityId: string | null; originId: string }>
-  getCities: () => Array<{ id: string; path: string; originId: string }>
+  getSessions: () => Array<{
+    id: string
+    name: string
+    cityId: string | null
+    originId: string
+    status: 'idle' | 'working'
+  }>
+  getCities: () => Array<{ id: string; name?: string; path: string; originId: string }>
 }
 
 let mountContext: PortolanMountContext | null = null
@@ -65,36 +68,45 @@ export function setPortolanMountContext(ctx: PortolanMountContext | null): void 
   mountContext = ctx
 }
 
-function pickWorkerId(cityId: string | undefined, originId: string): string | null {
-  if (!cityId || !mountContext) return null
-  const workers = mountContext.getSessions().filter(
-    (s) => s.cityId === cityId && s.originId === originId,
-  )
-  return workers[0]?.id ?? null
+/**
+ * Every known worker, annotated with its city name so the picker can split
+ * current-project vs other workers and show city-context for the "other"
+ * bucket. A session without a resolved cityId (rare: brand-new tmux whose
+ * cwd hasn't matched a city yet) still shows up — just under "other" with
+ * no city label.
+ */
+function listAllWorkers(): WorkerOption[] {
+  if (!mountContext) return []
+  const cities = mountContext.getCities()
+  const cityById = new Map(cities.map((c) => [c.id, c]))
+  return mountContext.getSessions().map((s) => {
+    const city = s.cityId ? cityById.get(s.cityId) : undefined
+    const cityName = city ? (city.name ?? city.path.split('/').pop() ?? city.path) : null
+    return {
+      id: s.id,
+      name: s.name,
+      status: s.status,
+      originId: s.originId,
+      cityId: s.cityId,
+      cityName,
+    }
+  })
 }
 
-function resolveCityPath(cityId: string | undefined, originId: string): string | null {
+function resolveCity(
+  cityId: string | undefined,
+  originId: string,
+): { path: string; name: string } | null {
   if (!cityId || !mountContext) return null
   const city = mountContext.getCities().find(
     (c) => c.id === cityId && c.originId === originId,
   )
-  return city?.path ?? null
+  if (!city) return null
+  const name = city.name ?? city.path.split('/').pop() ?? city.path
+  return { path: city.path, name }
 }
 
-async function sendAnnotationToWorker(
-  path: string,
-  originId: string,
-  cityId: string | undefined,
-  annotation: Annotation,
-): Promise<void> {
-  const workerId = pickWorkerId(cityId, originId)
-  const body: Record<string, unknown> = {
-    filePath: path,
-    originId,
-    annotations: [annotation],
-  }
-  if (workerId) body.workerId = workerId
-  else body.createNewWorker = true
+async function postSendAnnotations(body: Record<string, unknown>): Promise<boolean> {
   const res = await fetch(`${API_BASE}/send-annotations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -103,30 +115,115 @@ async function sendAnnotationToWorker(
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     console.error('[annotation-actions] send-to-worker failed', res.status, detail)
+    showToast('Send failed', 'error')
+    return false
+  }
+  showToast('Sent to worker', 'success', 2000)
+  return true
+}
+
+async function sendAnnotationsToChoice(args: {
+  path: string
+  originId: string
+  cityId: string | undefined
+  annotations: Annotation[]
+  choice: WorkerPickerChoice
+  refreshAnnotations: () => void
+}): Promise<void> {
+  const body: Record<string, unknown> = {
+    filePath: args.path,
+    annotations: args.annotations,
+  }
+
+  if (args.choice.kind === 'existing') {
+    // Route by the target WORKER'S origin, not the file's. This is what
+    // lets "send" reach a worker in a different project — possibly on a
+    // different host. `cityPath` is ignored by the server for existing
+    // workers (it's only used to set cwd when creating a new worker), but
+    // include the worker's city for completeness/debuggability.
+    const worker = args.choice.worker
+    body.workerId = worker.id
+    body.originId = worker.originId
+    if (mountContext) {
+      const targetCity = mountContext
+        .getCities()
+        .find((c) => c.id === worker.cityId && c.originId === worker.originId)
+      if (targetCity) body.cityPath = targetCity.path
+    }
+  } else {
+    // New worker lives in the CURRENT project's city. Use the file's
+    // origin/city for that — opening a file in a project implies spawning
+    // a new worker for that same project, not wherever the picker was
+    // showing "other" workers from.
+    const city = resolveCity(args.cityId, args.originId)
+    body.originId = args.originId
+    body.createNewWorker = true
+    if (city?.path) body.cityPath = city.path
+  }
+
+  const ok = await postSendAnnotations(body)
+  // Server marked each annotation's sentAt on success. Pull the fresh state
+  // so the chrome can light up "Clear sent" against the dispatched subset.
+  if (ok) args.refreshAnnotations()
+}
+
+async function deleteAnnotationsById(
+  ids: string[],
+  refreshAnnotations: () => void,
+): Promise<void> {
+  if (ids.length === 0) return
+  const results = await Promise.allSettled(
+    ids.map((id) =>
+      fetch(`${API_BASE}/annotations/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        .then((res) => {
+          if (!res.ok) throw new Error(`DELETE /annotations/${id} → ${res.status}`)
+        }),
+    ),
+  )
+  const failed = results.filter((r) => r.status === 'rejected').length
+  refreshAnnotations()
+  if (failed > 0) {
+    showToast(`Cleared ${ids.length - failed}/${ids.length}; ${failed} failed`, 'error')
+  } else {
+    showToast(`Cleared ${ids.length} sent`, 'success', 2000)
   }
 }
 
-async function saveAnnotationAsFiber(
-  path: string,
-  originId: string,
-  cityId: string | undefined,
-  annotation: Annotation,
-): Promise<void> {
+async function saveAnnotationsAsFiber(args: {
+  path: string
+  originId: string
+  cityId: string | undefined
+  annotations: Annotation[]
+}): Promise<void> {
+  const { path, originId, cityId, annotations } = args
+  if (annotations.length === 0) return
   const filename = path.split('/').pop() ?? path
-  const title = `Note on ${filename}`
-  const lineRef = annotation.line
-    ? annotation.endLine && annotation.endLine !== annotation.line
-      ? ` (L${annotation.line}-${annotation.endLine})`
-      : ` (L${annotation.line})`
-    : ''
-  const quoted = annotation.originalText ?? annotation.selectedText ?? ''
-  const bodyLines = [`${path}${lineRef}`, '']
-  if (quoted) {
-    for (const line of quoted.split('\n')) bodyLines.push(`> ${line}`)
-    bodyLines.push('')
+  const title =
+    annotations.length === 1
+      ? `Note on ${filename}`
+      : `${annotations.length} notes on ${filename}`
+
+  const sections: string[] = [path, '']
+  for (let i = 0; i < annotations.length; i++) {
+    const ann = annotations[i]
+    const lineRef = ann.line
+      ? ann.endLine && ann.endLine !== ann.line
+        ? ` (L${ann.line}-${ann.endLine})`
+        : ` (L${ann.line})`
+      : ''
+    const header =
+      annotations.length === 1 ? `${path}${lineRef}` : `## ${i + 1}.${lineRef}`
+    if (annotations.length > 1) sections.push(header)
+    const quoted = ann.originalText ?? ann.selectedText ?? ''
+    if (quoted) {
+      for (const line of quoted.split('\n')) sections.push(`> ${line}`)
+      sections.push('')
+    }
+    sections.push(ann.comment)
+    sections.push('')
   }
-  bodyLines.push(annotation.comment)
-  const cityPath = resolveCityPath(cityId, originId) ?? undefined
+
+  const cityPath = resolveCity(cityId, originId)?.path
   const res = await fetch(`${API_BASE}/file-as-fiber`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -135,40 +232,86 @@ async function saveAnnotationAsFiber(
       originId,
       cityPath,
       title,
-      body: bodyLines.join('\n'),
+      body: sections.join('\n'),
       kind: 'note',
     }),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     console.error('[annotation-actions] save-as-fiber failed', res.status, detail)
+    showToast('Save as fiber failed', 'error')
+    return
   }
+  const result = await res.json().catch(() => ({} as { fiberId?: string }))
+  showToast(
+    result.fiberId ? `Filed as fiber: ${result.fiberId}` : 'Filed as fiber',
+    'success',
+    2500,
+  )
 }
 
 /**
- * Build the two portolan annotation actions bound to a specific file mount.
- * Each mount call (modal, surface, inline) captures its own `{path, originId,
- * cityId}` so the handler knows where the annotation lives. The actions
- * read `mountContext` lazily on invoke — not on build — so they always see
- * the latest worker/city state.
+ * Header-level bulk actions for a specific file mount: Send to worker (opens
+ * a picker of existing workers in the file's city + New worker) and Fiber
+ * (collapses all comments into one fiber body). The actions read the
+ * mountContext lazily so they always see the latest worker/city state.
  */
-function portolanAnnotationActions(args: {
+function portolanHeaderActions(args: {
   path: string
   originId: string
   cityId?: string
-}): AnnotationAction[] {
+}): AnnotationBulkAction[] {
   return [
     {
       id: 'send-to-worker',
       label: 'Send',
-      title: 'Send to worker',
-      onInvoke: (ann) => sendAnnotationToWorker(args.path, args.originId, args.cityId, ann),
+      title: 'Send comments to a worker',
+      onInvoke: (annotations, ctx) => {
+        const workers = listAllWorkers()
+        const city = resolveCity(args.cityId, args.originId)
+        openWorkerPicker({
+          anchor: ctx.anchor,
+          workers,
+          currentCityId: args.cityId ?? null,
+          currentProjectLabel: city?.name ?? 'project',
+          onPick: (choice) => {
+            void sendAnnotationsToChoice({
+              path: args.path,
+              originId: args.originId,
+              cityId: args.cityId,
+              annotations,
+              choice,
+              refreshAnnotations: ctx.refreshAnnotations,
+            })
+          },
+        })
+      },
+    },
+    {
+      // Clean up after a send. Only visible when at least one annotation
+      // carries sentAt; the count badge reflects just the sent subset; the
+      // action deletes that subset. Unsent annotations are left alone so
+      // in-progress notes aren't lost.
+      id: 'clear-sent',
+      label: 'Clear sent',
+      title: 'Delete annotations that have been sent to a worker',
+      applicableTo: (a) => typeof a.sentAt === 'number',
+      onInvoke: async (sent, ctx) => {
+        const ids = sent.map((a) => a.id).filter((id): id is string => !!id)
+        await deleteAnnotationsById(ids, ctx.refreshAnnotations)
+      },
     },
     {
       id: 'save-as-fiber',
       label: 'Fiber',
-      title: 'Save as fiber',
-      onInvoke: (ann) => saveAnnotationAsFiber(args.path, args.originId, args.cityId, ann),
+      title: 'Save all comments as one fiber',
+      onInvoke: (annotations) =>
+        saveAnnotationsAsFiber({
+          path: args.path,
+          originId: args.originId,
+          cityId: args.cityId,
+          annotations,
+        }),
     },
   ]
 }
@@ -197,22 +340,15 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
       defaultOriginId: opts.originId,
     })
     root.render(
-      <StrictMode>
-        <AdapterProvider adapter={adapter}>
-          <FileViewerPage
-            path={opts.path}
-            originId={opts.originId}
-            cacheBust={opts.cacheBust}
-            editable={opts.editable}
-            jumpToLine={opts.jumpToLine}
-            annotationActions={portolanAnnotationActions({
-              path: opts.path,
-              originId: opts.originId ?? 'local',
-              cityId: opts.cityId,
-            })}
-          />
-        </AdapterProvider>
-      </StrictMode>,
+      <AdapterProvider adapter={adapter}>
+        <FileViewerPage
+          path={opts.path}
+          originId={opts.originId}
+          cacheBust={opts.cacheBust}
+          editable={opts.editable}
+          jumpToLine={opts.jumpToLine}
+        />
+      </AdapterProvider>,
     )
   }
 
@@ -235,13 +371,6 @@ export interface MountFileSurfaceOptions {
   cityId?: string
   editable?: boolean
   jumpToLine?: number
-  /** Host-owned save chrome: text pins lift vellum's dirty/save state into
-   *  their own card chrome strip (see constitution card-redesign, invariant 5).
-   *  Optional — any caller that still wants vellum's built-in toolbar can
-   *  omit these and `hideToolbar` falls back to the prior behaviour. */
-  onDirtyChange?: (dirty: boolean) => void
-  onSaveStateChange?: (state: SaveState) => void
-  onSaveReady?: (save: (() => Promise<void>) | null) => void
 }
 
 export interface VellumFileSurfaceHandle {
@@ -270,25 +399,14 @@ export function mountVellumFileSurface(
       defaultOriginId: next.originId,
     })
     root.render(
-      <StrictMode>
-        <AdapterProvider adapter={adapter}>
-          <FileViewerPage
-            path={next.path}
-            originId={next.originId}
-            editable={next.editable}
-            jumpToLine={next.jumpToLine}
-            annotationActions={portolanAnnotationActions({
-              path: next.path,
-              originId: next.originId ?? 'local',
-              cityId: next.cityId,
-            })}
-            hideToolbar
-            onDirtyChange={next.onDirtyChange}
-            onSaveStateChange={next.onSaveStateChange}
-            onSaveReady={next.onSaveReady}
-          />
-        </AdapterProvider>
-      </StrictMode>,
+      <AdapterProvider adapter={adapter}>
+        <FileViewerPage
+          path={next.path}
+          originId={next.originId}
+          editable={next.editable}
+          jumpToLine={next.jumpToLine}
+        />
+      </AdapterProvider>,
     )
   }
 
@@ -336,23 +454,21 @@ export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHand
   }
 
   root.render(
-    <StrictMode>
-      <AdapterProvider adapter={adapter}>
-        <FileViewerModal
-          path={opts.path}
-          originId={opts.originId}
-          cityId={opts.cityId}
-          editable={opts.editable}
-          jumpToLine={opts.jumpToLine}
-          annotationActions={portolanAnnotationActions({
-            path: opts.path,
-            originId: opts.originId ?? 'local',
-            cityId: opts.cityId,
-          })}
-          onClose={close}
-        />
-      </AdapterProvider>
-    </StrictMode>,
+    <AdapterProvider adapter={adapter}>
+      <FileViewerModal
+        path={opts.path}
+        originId={opts.originId}
+        cityId={opts.cityId}
+        editable={opts.editable}
+        jumpToLine={opts.jumpToLine}
+        headerAnnotationActions={portolanHeaderActions({
+          path: opts.path,
+          originId: opts.originId ?? 'local',
+          cityId: opts.cityId,
+        })}
+        onClose={close}
+      />
+    </AdapterProvider>,
   )
 
   return { close }
@@ -399,22 +515,24 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   }
 
   const onKey = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      event.stopPropagation()
-      close()
-    }
+    if (event.key !== 'Escape') return
+    // Never swallow Escape while focus is inside a CodeMirror editor — vim
+    // needs it to exit insert mode, finish search, cancel completion, etc.
+    // Users close the modal via click-outside or the X button in that case.
+    const target = event.target
+    if (target instanceof Element && target.closest('.cm-editor')) return
+    event.preventDefault()
+    event.stopPropagation()
+    close()
   }
   document.addEventListener('keydown', onKey, true)
 
   const mountWith = (initialSlug: string) => {
     if (closed) return
     root.render(
-      <StrictMode>
-        <AdapterProvider adapter={adapter}>
-          <WorkspaceMount initialSlug={initialSlug} />
-        </AdapterProvider>
-      </StrictMode>,
+      <AdapterProvider adapter={adapter}>
+        <WorkspaceMount initialSlug={initialSlug} />
+      </AdapterProvider>,
     )
   }
 
@@ -458,12 +576,6 @@ export interface MountFiberSurfaceOptions {
    *  title/status immediately instead of flashing empty. */
   seedNode?: GraphNode | null
   onNavigate?: (slug: string) => void
-  /** When true, the FiberCard's title lockup line is suppressed. Used by
-   *  the portolan floating-card primitive, where the chrome strip above
-   *  the card already carries the fiber name + status glyph, so repeating
-   *  it inside the card body is pure duplication. See
-   *  fiber-pin-title-duplication. */
-  hideTitle?: boolean
 }
 
 export interface VellumFiberSurfaceHandle {
@@ -496,21 +608,18 @@ export function mountVellumFiberSurface(
     if (unmounted) return
     const width = currentOpts.width ?? 320
     if (!cachedNode) {
-      root.render(<StrictMode />)
+      root.render(<></>)
       return
     }
     root.render(
-      <StrictMode>
-        <AdapterProvider adapter={adapter}>
-          <FiberCard
-            node={cachedNode}
-            width={width}
-            content={cachedContent ?? undefined}
-            onNavigate={currentOpts.onNavigate}
-            hideTitle={currentOpts.hideTitle}
-          />
-        </AdapterProvider>
-      </StrictMode>,
+      <AdapterProvider adapter={adapter}>
+        <FiberCard
+          node={cachedNode}
+          width={width}
+          content={cachedContent ?? undefined}
+          onNavigate={currentOpts.onNavigate}
+        />
+      </AdapterProvider>,
     )
   }
 
@@ -558,7 +667,7 @@ export function mountVellumFiberSurface(
       fetchContent(next.slug)
       return
     }
-    // Width / hideTitle / onNavigate tweak only — re-render with cached content.
+    // Width / onNavigate tweak only — re-render with cached content.
     paint()
   }
 
@@ -587,16 +696,14 @@ export function openVellumStaticFileModal(opts: OpenStaticFileModalOptions): Vel
   }
 
   root.render(
-    <StrictMode>
-      <AdapterProvider adapter={adapter}>
-        <FileViewerModal
-          path={opts.path}
-          editable={false}
-          jumpToLine={opts.jumpToLine}
-          onClose={close}
-        />
-      </AdapterProvider>
-    </StrictMode>,
+    <AdapterProvider adapter={adapter}>
+      <FileViewerModal
+        path={opts.path}
+        editable={false}
+        jumpToLine={opts.jumpToLine}
+        onClose={close}
+      />
+    </AdapterProvider>,
   )
 
   return { close }

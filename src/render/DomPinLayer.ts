@@ -19,21 +19,16 @@
 
 import type { Camera } from './Camera'
 import type { Pin, PinKind } from '../state/layoutClient'
+import { trackWheelEvent } from './wheelGesture'
 
 const DOM_KINDS: ReadonlySet<PinKind> = new Set([
   'fiber', 'pdf', 'html', 'image', 'text', 'other', 'terminal',
 ])
 
+/** Retained only for `resolveFiberMeta`'s callback typing — the pin no longer
+ *  paints a status glyph of its own. Vellum's FiberCard pretext surfaces the
+ *  fiber's status inside the reader; the map itself stays quiet. */
 export type FiberStatus = 'open' | 'active' | 'closed'
-
-/** Status → glyph + color. Mirrors the felt CLI legend
- *  ("· untracked, ○ open, ◐ active, ● closed") and the palette canvas pins
- *  used before the DomPinLayer migration retired them. */
-const STATUS_GLYPHS: Record<FiberStatus, { glyph: string; color: string; label: string }> = {
-  open:   { glyph: '○', color: '#5A7B7B', label: 'open' },
-  active: { glyph: '◐', color: '#9A7B35', label: 'active' },
-  closed: { glyph: '●', color: '#2E2A26', label: 'closed' },
-}
 
 // Reference zoom (camera half-width in world units) at which a DOM pin renders
 // at its intrinsic CSS size — i.e. scale = 1. Picked near the middle of the
@@ -106,17 +101,6 @@ export type MountVellumFileSurface = (
     cityId?: string
     editable?: boolean
     jumpToLine?: number
-    /** Fires when the document's dirty bit flips. Text-pin chrome paints a
-     *  dirty dot based on this so the user sees a card has unsaved edits
-     *  without opening it. See constitution invariant 5. */
-    onDirtyChange?: (dirty: boolean) => void
-    /** Fires when save state transitions. Chrome shows a transient "Saving…"
-     *  → "Saved" status next to the Save button. */
-    onSaveStateChange?: (state: ChromeSaveState) => void
-    /** Handed a save trigger once the mount is ready; `null` on unmount or
-     *  when the file becomes non-editable. Text-pin chrome's Save button
-     *  wires its click handler to this. */
-    onSaveReady?: (save: (() => Promise<void>) | null) => void
   },
 ) => VellumSurfaceMount
 
@@ -126,7 +110,7 @@ export type MountVellumFileSurface = (
  */
 export type MountVellumFiberSurface = (
   container: HTMLElement,
-  opts: { slug: string; cityId?: string; originId?: string; hideTitle?: boolean; width?: number },
+  opts: { slug: string; cityId?: string; originId?: string; width?: number },
 ) => VellumSurfaceMount
 
 /** Mount a read-only terminal view into `container` for the given sessionId.
@@ -156,6 +140,9 @@ export interface DomPinLayerOptions {
   resolveSource: (pin: Pin) => string | null
   /** Right-click on a DOM pin → host opens a context menu (unpin, …). */
   onContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  /** Click on the chrome's × button → host unpins. Surfaces the primary destructive
+   *  action at the card's top-right so the user doesn't have to open the ⋮ menu. */
+  onClose?: (slug: string) => void
   /** Double-click on the chrome strip → host opens the pin's primary surface
    *  (fiber workspace, vellum file modal, external URL — whatever "Open" means
    *  for this kind). Discoverability shortcut so the Open action doesn't live
@@ -196,7 +183,10 @@ interface DomPinEntry {
   pin: Pin
   el: HTMLDivElement
   inner: HTMLElement
-  chrome: HTMLElement
+  /** Minimal label-tab element shown when the pin narrows past LABEL_THRESHOLD.
+   *  Hidden when the card is rendering its full reader surface. Carries just
+   *  the pin's title so a distant map still reads at a glance. */
+  labelTab: HTMLElement
   vellumMount: VellumSurfaceMount | null
   /** Intrinsic world size — persisted as `pin.width`/`height`. Interpreted as
    *  CSS pixels at `REFERENCE_ZOOM`; the per-frame CSS size is this × the
@@ -213,12 +203,17 @@ interface DomPinEntry {
    *  pin is above the threshold. See constitution "Lazy attach" scope
    *  decision. */
   isLabel: boolean
+  lastCssWidth: number
+  lastCssHeight: number
+  lastScreenX: number
+  lastScreenY: number
 }
 
 export class DomPinLayer {
   private readonly camera: Camera
   private readonly resolveSource: (pin: Pin) => string | null
   private readonly onContextMenu?: (slug: string, clientX: number, clientY: number) => void
+  private readonly onClose?: (slug: string) => void
   private readonly onPrimaryOpen?: (slug: string) => void
   private readonly mountVellumSurface?: MountVellumFileSurface
   private readonly mountVellumFiberSurface?: MountVellumFiberSurface
@@ -238,6 +233,7 @@ export class DomPinLayer {
     this.camera = opts.camera
     this.resolveSource = opts.resolveSource
     this.onContextMenu = opts.onContextMenu
+    this.onClose = opts.onClose
     this.onPrimaryOpen = opts.onPrimaryOpen
     this.mountVellumSurface = opts.mountVellumSurface
     this.mountVellumFiberSurface = opts.mountVellumFiberSurface
@@ -380,18 +376,25 @@ export class DomPinLayer {
     const ratio = this.zoomRatio()
     const cssW = Math.max(8, entry.width * ratio)
     const cssH = Math.max(8, entry.height * ratio)
-    entry.el.style.width = `${cssW}px`
+    if (cssW !== entry.lastCssWidth) {
+      entry.el.style.width = `${cssW}px`
+      entry.lastCssWidth = cssW
+    }
     // Below the label threshold the pin switches to a different primitive —
     // a parchment label that IS just the filename, not a card with a hidden
     // body. The outer element shrinks to chrome height so there's no
     // hollow transparent box beneath the title.
     const isLabel = cssW <= LABEL_THRESHOLD
     if (isLabel) {
-      entry.el.style.height = 'auto'
-      entry.el.classList.add('dom-pin--label')
+      if (!entry.isLabel || cssH !== entry.lastCssHeight) {
+        entry.el.style.height = 'auto'
+      }
+      if (!entry.isLabel) entry.el.classList.add('dom-pin--label')
     } else {
-      entry.el.style.height = `${cssH}px`
-      entry.el.classList.remove('dom-pin--label')
+      if (cssH !== entry.lastCssHeight || entry.isLabel) {
+        entry.el.style.height = `${cssH}px`
+      }
+      if (entry.isLabel) entry.el.classList.remove('dom-pin--label')
     }
     // Terminal pins lazy-attach: the wterm mount (and its server-side
     // `tmux -CC` refcount) exists only while the pin is above the label
@@ -400,6 +403,7 @@ export class DomPinLayer {
     // so per-frame reanchoring doesn't thrash the mount. See constitution
     // "Lazy attach" scope decision.
     if (isLabel !== entry.isLabel) {
+      const wasLabel = entry.isLabel
       entry.isLabel = isLabel
       if (entry.pin.kind === 'terminal' && entry.pin.source?.sessionId && this.mountTerminalSurface) {
         if (isLabel) {
@@ -412,9 +416,26 @@ export class DomPinLayer {
             setIntrinsicSize: (w, h) => this.setIntrinsicSizeIfPristine(entry.slug, w, h),
           })
         }
+      } else if (entry.pin.kind === 'fiber' && this.mountVellumFiberSurface) {
+        if (isLabel) {
+          entry.vellumMount?.unmount()
+          entry.vellumMount = null
+          entry.lastReflowWidth = 0
+        } else if (wasLabel) {
+          entry.vellumMount = this.mountVellumFiberSurface(entry.inner, {
+            slug: entry.slug,
+            cityId: this.cityIdFor?.(),
+            width: entry.width,
+          })
+        }
       }
     }
-    entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
+    entry.lastCssHeight = cssH
+    if (x !== entry.lastScreenX || y !== entry.lastScreenY) {
+      entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
+      entry.lastScreenX = x
+      entry.lastScreenY = y
+    }
     // Notify fiber mounts when the projected width crossed a meaningful
     // threshold so FiberCard's pretext reflows with the card, without
     // thrashing React every frame during a pan.
@@ -472,21 +493,18 @@ export class DomPinLayer {
     })
     const size = resolveSize(pin)
 
-    // Chrome strip — a pointer-event handle that stays *outside* the iframe's
-    // own event scope. Right-click or clicking the ⋮ opens the host context
-    // menu; dragging/scrolling the iframe below never reaches the wrapper, so
-    // this strip is the only reliable unpin affordance for iframe-backed pins
-    // (PDF/HTML). See tapestry-dissolves: "right-click unpin from a PDF that
-    // swallows pointer events."
-    const chrome = renderChrome(pin, titleForPin(pin))
-    el.appendChild(chrome)
+    // Label tab — a small parchment lozenge that becomes the whole visible pin
+    // at narrow widths (below LABEL_THRESHOLD). In full-reader mode it's
+    // hidden; in label mode the body/vellum/iframe is hidden and the tab is
+    // the single visible surface. Carries just the pin's title so a distant
+    // map still reads at a glance. See constitution invariant 5.
+    const labelTab = renderLabelTab(titleForPin(pin), pin.slug)
+    el.appendChild(labelTab)
     if (this.resolveFiberMeta) {
       void this.resolveFiberMeta(pin).then((meta) => {
         if (!meta) return
-        // Entry may have been removed by the time the promise resolves.
         if (this.entries.get(pin.slug)?.el !== el) return
-        if (meta.name) setChromeTitle(chrome, meta.name, pin)
-        if (meta.status) setChromeStatus(chrome, meta.status)
+        if (meta.name) setLabelTabTitle(labelTab, meta.name, pin.slug)
       }).catch(() => {})
     }
 
@@ -500,20 +518,18 @@ export class DomPinLayer {
     const initialIsLabel = initialCssW <= LABEL_THRESHOLD
     if (pin.kind === 'fiber' && this.mountVellumFiberSurface) {
       inner = renderVellumShell()
-      vellumMount = this.mountVellumFiberSurface(inner, {
-        slug: pin.slug,
-        cityId: this.cityIdFor?.(),
-        width: size.width,
-        // Chrome strip above the card already carries the fiber name +
-        // status glyph; suppress FiberCard's own title to avoid duplication.
-        // See fiber-pin-title-duplication.
-        hideTitle: true,
-      })
+      if (!initialIsLabel) {
+        vellumMount = this.mountVellumFiberSurface(inner, {
+          slug: pin.slug,
+          cityId: this.cityIdFor?.(),
+          width: size.width,
+        })
+      }
     } else if (pin.kind === 'terminal' && pin.source?.sessionId && this.mountTerminalSurface) {
       // Read-only wterm view of a live tmux pane. The card frame is reused
-      // (chrome, resize handles, drag behaviors); the body is the terminal
-      // grid. See [[constitution-terminals-in-map]]. When the pin starts in
-      // label mode, the shell is created empty and wterm mounts lazily in
+      // (resize handles, drag behaviors); the body is the terminal grid.
+      // See [[constitution-terminals-in-map]]. When the pin starts in label
+      // mode the shell is created empty and wterm mounts lazily in
       // `position()` on the first expansion past LABEL_THRESHOLD.
       inner = renderTerminalShell()
       if (!initialIsLabel) {
@@ -528,24 +544,26 @@ export class DomPinLayer {
       // the modal and must expose the same edit/save surface. `openFile()` in
       // main.ts defaults modals to `editable: true`; mirror that here so cards
       // aren't a read-only second-class citizen. See [[card-modal-parity]].
+      // Vellum's own toolbar renders inside the mount — dirty dot and save
+      // controls included. Portolan no longer paints chrome above the reader.
       vellumMount = this.mountVellumSurface(inner, {
         path: pin.source.path,
         originId: pin.source.originId,
         cityId: this.cityIdFor?.(),
         editable: true,
-        // Lift save state from vellum's FileViewerPage into the pin's chrome
-        // strip — dirty dot, transient status text, Save button. The vellum
-        // page itself is mounted with `hideToolbar` so we don't stack two
-        // bars. See constitution invariant 5 and
-        // mountVellumFileSurface.hideToolbar in mount.tsx.
-        onDirtyChange: (d) => setChromeDirty(chrome, d),
-        onSaveStateChange: (s) => setChromeSaveState(chrome, s),
-        onSaveReady: (save) => setChromeSaveAction(chrome, save),
       })
     } else {
       inner = renderInner(pin, url)
     }
     el.appendChild(inner)
+
+    // Map-level affordance cluster (× close, ⋮ menu, ↗ external for URL pins).
+    // Floats in the top-right of the frame, above vellum / iframe / image
+    // content. Quiet at rest, full opacity on pin hover. These are *map*
+    // operations, not reader ones — closing a pin and the map context menu
+    // have no business inside vellum's own chrome.
+    const affordances = renderAffordances(pin)
+    el.appendChild(affordances)
 
     if (this.onContextMenu) {
       const openMenu = (clientX: number, clientY: number) => {
@@ -556,11 +574,20 @@ export class DomPinLayer {
         event.stopPropagation()
         openMenu(event.clientX, event.clientY)
       })
-      const handle = chrome.querySelector<HTMLElement>('.dom-pin-menu-handle')
+      const handle = affordances.querySelector<HTMLElement>('.dom-pin-affordance-menu')
       handle?.addEventListener('click', (event) => {
         event.preventDefault()
         event.stopPropagation()
         openMenu(event.clientX, event.clientY)
+      })
+    }
+    if (this.onClose) {
+      const closeBtn = affordances.querySelector<HTMLElement>('.dom-pin-affordance-close')
+      closeBtn?.addEventListener('pointerdown', (event) => { event.stopPropagation() })
+      closeBtn?.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        this.onClose!(pin.slug)
       })
     }
     const entry: DomPinEntry = {
@@ -568,12 +595,16 @@ export class DomPinLayer {
       pin,
       el,
       inner,
-      chrome,
+      labelTab,
       vellumMount,
       width: size.width,
       height: size.height,
       lastReflowWidth: 0,
       isLabel: initialIsLabel,
+      lastCssWidth: 0,
+      lastCssHeight: 0,
+      lastScreenX: Number.NaN,
+      lastScreenY: Number.NaN,
     }
     // Bring-to-front on any interaction — stacked pins (e.g. a large markdown
     // card over a fiber pin) need a way to surface. Capture phase so we raise
@@ -593,20 +624,21 @@ export class DomPinLayer {
         this.onHover!(null)
       })
     }
-    this.attachChromeDrag(chrome, entry)
+    this.attachPinDrag(el, entry)
     // One wheel handler for the whole card. Plain wheel bubbles into the
     // native overflow-scroll of whatever child owns it (vellum-shell,
     // iframes); `stopPropagation` keeps the camera from zooming in parallel.
     // Cmd/Ctrl + wheel resizes the card's intrinsic world size anywhere on
-    // the card — body included, not just the chrome strip. See constitution
-    // invariant 3 and `pin-resize-gesture-moves-target`.
+    // the card. See constitution invariant 3 and
+    // `pin-resize-gesture-moves-target`.
     this.attachWheelResize(el, entry)
     if (this.onPrimaryOpen) {
-      // Double-click on chrome → host's "Open" action (fiber workspace, vellum
-      // modal, external URL). Chrome-only so iframe/body scroll-regions never
-      // eat the gesture, and so double-clicking text inside a fiber card
-      // doesn't accidentally open the workspace.
-      chrome.addEventListener('dblclick', (event) => {
+      // Double-click on the frame → host's "Open" action (fiber workspace,
+      // vellum modal, external URL). Gated by `isInteractiveTarget` so a
+      // double-click landing inside vellum's editor, a form field, or an
+      // anchor doesn't steal that gesture from the content.
+      el.addEventListener('dblclick', (event) => {
+        if (isInteractiveTarget(event.target)) return
         event.preventDefault()
         event.stopPropagation()
         this.onPrimaryOpen!(entry.slug)
@@ -624,21 +656,31 @@ export class DomPinLayer {
     return entry
   }
 
-  /** Wheel gesture on the card. Always stops propagation so the camera doesn't
-   *  zoom in parallel with whatever the user is doing to the card.
+  /** Wheel gesture on the card.
+   *
+   *  Gesture ownership is arbitrated via `trackWheelEvent` — if the burst
+   *  began on the canvas (map zoom), this handler no-ops and lets the event
+   *  bubble to `Camera`'s window listener, so a map zoom that drifts the
+   *  cursor over a pin keeps zooming instead of being hijacked. Only when
+   *  the gesture starts *on* a pin do we handle it here.
    *
    *  - Cmd/Ctrl + wheel: resize the card's intrinsic world size, anywhere on
-   *    the card (chrome, body, corners). Factor is proportional to `deltaY`
-   *    so trackpad gestures feel continuous and mouse-wheel notches land the
-   *    same ~10% step the previous chrome-only version did. Commit is
-   *    debounced so one gesture fires one persisted write. See
-   *    [[pin-resize-gesture-moves-target]] and constitution invariant 3.
+   *    the card. Factor is proportional to `deltaY` so trackpad gestures
+   *    feel continuous and mouse-wheel notches land the same ~10% step the
+   *    previous chrome-only version did. Commit is debounced so one gesture
+   *    fires one persisted write. See [[pin-resize-gesture-moves-target]]
+   *    and constitution invariant 3.
    *  - Plain wheel: forwarded to the browser so overflow containers inside
    *    the card (vellum-shell, iframes) scroll natively. */
   private attachWheelResize(el: HTMLElement, entry: DomPinEntry): void {
     const RATE = 0.001
     let commitTimer: number | null = null
     el.addEventListener('wheel', (event) => {
+      // Canvas owns an active zoom gesture — don't interfere. We deliberately
+      // *don't* stopPropagation in this branch so the event reaches the
+      // window-level camera handler.
+      if (trackWheelEvent('card') !== 'card') return
+      // This burst belongs to the card — keep the camera from also zooming.
       event.stopPropagation()
       if (!(event.ctrlKey || event.metaKey)) return
       if (!this.onPinResized) return
@@ -655,28 +697,35 @@ export class DomPinLayer {
     }, { passive: false })
   }
 
-  /** Wire a pointerdown on the chrome strip into a drag gesture that updates
-   *  the pin's world position live and persists on release. Skipped if the host
-   *  didn't provide `screenToWorld` / `onPinMoved`. Primary pointer only;
-   *  right-click and the menu-handle button are excluded so the context-menu
-   *  path still works. */
-  private attachChromeDrag(chrome: HTMLElement, entry: DomPinEntry): void {
+  /** Wire a pointerdown on the pin element into a drag gesture that updates
+   *  the pin's world position live and persists on release. Without a chrome
+   *  strip to grab, drag is gated on Cmd/Ctrl — the same modifier that wheel-
+   *  resize uses. Without the modifier, pointerdown inside the card falls
+   *  through to whatever it's on (text selection in vellum, editor focus,
+   *  link follow). The affordance cluster and resize handles are still
+   *  excluded even when Cmd is held, since they are portolan-owned controls
+   *  with their own gestures. Skipped if the host didn't provide
+   *  `screenToWorld` / `onPinMoved`. Primary pointer only. */
+  private attachPinDrag(el: HTMLElement, entry: DomPinEntry): void {
     if (!this.screenToWorld || !this.onPinMoved) return
 
     const DRAG_THRESHOLD_PX = 3
-    chrome.style.cursor = 'grab'
 
-    chrome.addEventListener('pointerdown', (event) => {
+    el.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
+      if (!(event.metaKey || event.ctrlKey)) return
       const target = event.target as Element | null
-      if (target?.closest('.dom-pin-menu-handle')) return
+      if (target?.closest('.dom-pin-affordances, .dom-pin-resize')) return
+
+      // Prevent the browser from also starting a text selection under the
+      // Cmd+drag gesture — without this, dragging a fiber card would smear
+      // a text highlight across vellum's prose during the move.
+      event.preventDefault()
 
       const startX = event.clientX
       const startY = event.clientY
-      // Capture the offset from cursor world to pin anchor at drag start so the
-      // card doesn't snap-recentre under the cursor. Without this, grabbing the
-      // chrome strip (top of card) re-anchors the card center to the cursor on
-      // the first move, jerking the card downward before it starts tracking.
+      // Capture the offset from cursor world to pin anchor at drag start so
+      // the card doesn't snap-recentre under the cursor on the first move.
       const startWorld = this.screenToWorld!(startX, startY)
       const offsetX = entry.pin.x - startWorld.x
       const offsetZ = entry.pin.z - startWorld.z
@@ -687,10 +736,9 @@ export class DomPinLayer {
           if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD_PX) return
           active = true
           entry.el.classList.add('dom-pin--dragging')
-          chrome.style.cursor = 'grabbing'
           document.body.style.cursor = 'grabbing'
           // Reuse the drag-to-pin suppression flag so MapInteractionController's
-          // canvas-hover early-returns apply to chrome-strip drags too.
+          // canvas-hover early-returns apply to pin drags too.
           document.body.classList.add('pin-dragging')
         }
         const world = this.screenToWorld!(ev.clientX, ev.clientY)
@@ -704,7 +752,6 @@ export class DomPinLayer {
         window.removeEventListener('pointercancel', onUp, true)
         if (!active) return
         entry.el.classList.remove('dom-pin--dragging')
-        chrome.style.cursor = 'grab'
         document.body.style.cursor = ''
         document.body.classList.remove('pin-dragging')
         // Commit final world position. Read from the last pointer event
@@ -717,8 +764,9 @@ export class DomPinLayer {
       window.addEventListener('pointerup', onUp, true)
       window.addEventListener('pointercancel', onUp, true)
 
-      event.preventDefault()
-      event.stopPropagation()
+      // Don't preventDefault here — text selection inside vellum or a native
+      // link click should still work. `isInteractiveTarget` has already
+      // filtered those cases out of drag consideration.
     })
   }
 
@@ -830,6 +878,18 @@ let pulseStylesInjected = false
 function ensurePulseStyles(): void {
   if (pulseStylesInjected) return
   pulseStylesInjected = true
+  // Cursor hint: when the user holds Cmd (or Ctrl on non-Mac), every pin
+  // flips its cursor to `move` so the drag modifier is discoverable. The
+  // modifier state is tracked via key events plus a `window.blur` / focus
+  // fallback so it can never stick when attention leaves the page (e.g.
+  // cmd-tab away mid-hold). CSS hook: `.dom-pin-cmd-held .dom-pin`.
+  const setCmdHeld = (held: boolean) => {
+    document.body.classList.toggle('dom-pin-cmd-held', held)
+  }
+  const onKey = (e: KeyboardEvent) => setCmdHeld(e.metaKey || e.ctrlKey)
+  window.addEventListener('keydown', onKey)
+  window.addEventListener('keyup', onKey)
+  window.addEventListener('blur', () => setCmdHeld(false))
   const style = document.createElement('style')
   style.textContent = `
     @keyframes dom-pin-pulse {
@@ -884,76 +944,44 @@ function ensurePulseStyles(): void {
     .dom-pin--resizing .dom-pin-resize::after {
       opacity: 1;
     }
-    /* Label mode — at narrow widths the pin becomes a different primitive:
-       a parchment tab with just the filename. The card frame (body,
-       shadow, seam) drops out; chrome rounds all four corners and stands
-       alone. JS sets .dom-pin--label in position() when CSS width
-       crosses LABEL_THRESHOLD. Handles (edges + corners) stay live so the
-       user can still grab and widen back into card territory. */
+    /* Label mode — at narrow widths the pin collapses to just its label tab:
+       a small parchment lozenge with the title. The inner reader body and
+       the affordance cluster disappear; the tab is the single visible
+       element. JS sets .dom-pin--label in position() when CSS width crosses
+       LABEL_THRESHOLD. Resize handles stay live so the user can still grab
+       and widen back into full-reader territory. */
     .dom-pin--label {
       box-shadow: none;
     }
-    .dom-pin--label > *:not(.dom-pin-chrome):not(.dom-pin-resize) {
+    .dom-pin--label > *:not(.dom-pin-label-tab):not(.dom-pin-resize) {
       display: none !important;
     }
-    .dom-pin--label .dom-pin-chrome {
-      border-radius: 6px;
-      border: 1px solid rgba(140, 110, 80, 0.55);
-      box-shadow: 0 2px 8px rgba(46, 42, 38, 0.14);
+    .dom-pin--label .dom-pin-label-tab {
+      display: block !important;
     }
-    /* Chrome strip hover: darken slightly so the grab surface advertises itself
-       when the cursor enters it. Transition short so it doesn't feel sluggish. */
-    .dom-pin-chrome {
-      transition: background-color 120ms ease-out;
-      container-type: inline-size;
-    }
-    .dom-pin-chrome:hover {
-      background: rgba(184, 168, 150, 0.96) !important;
-    }
-    /* Chrome degradation: as the card narrows, non-essential chrome fades in
-       priority order so the filename survives as the last-to-go. Constitution
-       invariant 5: "Chrome holds the filename at all widths; other chrome
-       elements stay visible as long as they fit." Priority: Save button first,
-       then save-status text, then the dirty dot, then the ⋮ handle — filename
-       and status glyph are last. Thresholds picked to leave the title roughly
-       one filename-word wide at each cutoff; tune by eye on real cards. */
-    @container (max-width: 200px) {
-      .dom-pin-chrome-save { display: none !important; }
-    }
-    @container (max-width: 160px) {
-      .dom-pin-chrome-save-status { display: none !important; }
-    }
-    @container (max-width: 130px) {
-      .dom-pin-chrome-dirty { display: none !important; }
-    }
-    @container (max-width: 100px) {
-      .dom-pin-menu-handle { display: none !important; }
-    }
-    /* Menu handle (⋮): soft round background on hover/focus so it reads as a
-       real button rather than inert text. */
-    .dom-pin-menu-handle {
-      border-radius: 4px;
-      transition: background-color 120ms ease-out;
-    }
-    .dom-pin-menu-handle:hover,
-    .dom-pin-menu-handle:focus-visible {
-      background: rgba(46, 42, 38, 0.12) !important;
-      outline: none;
-    }
-    /* External-open affordance on URL pins: faint until the chrome is hovered
-       so it doesn't clutter a quiet map, obvious the moment the user reaches
-       for it. Matches the resize-handle reveal pattern. */
-    .dom-pin-chrome-ext {
-      opacity: 0.55;
-      transition: opacity 120ms ease-out, background-color 120ms ease-out;
-    }
-    .dom-pin-chrome:hover .dom-pin-chrome-ext,
-    .dom-pin-chrome-ext:focus-visible {
+    /* Affordance cluster: map-level × / ⋮ / ↗ in the top-right of the frame.
+       Quiet at rest (opacity 0), revealed when the pin or its body is hovered
+       or any button inside focuses. The pin wrapper owns the reveal — hovering
+       any part of the card surfaces the affordances, not just the corner. */
+    .dom-pin:hover .dom-pin-affordances,
+    .dom-pin--hovered .dom-pin-affordances,
+    .dom-pin-affordances:focus-within {
       opacity: 1;
+    }
+    .dom-pin-affordance-menu:hover,
+    .dom-pin-affordance-menu:focus-visible,
+    .dom-pin-affordance-ext:hover,
+    .dom-pin-affordance-ext:focus-visible {
+      background: rgba(46, 42, 38, 0.12) !important;
       outline: none;
     }
-    .dom-pin-chrome-ext:hover {
-      background: rgba(46, 42, 38, 0.12) !important;
+    /* Close (×): destructive-action red on hover, matching the context menu's
+       Unpin styling so the user sees what the gesture does before committing. */
+    .dom-pin-affordance-close:hover,
+    .dom-pin-affordance-close:focus-visible {
+      background: rgba(160, 48, 48, 0.12) !important;
+      color: #A03030 !important;
+      outline: none;
     }
     /* Hover state from the HUD bridge (setHovered) adds the class; browser
        :hover handles the on-map case. Both raise the pin slightly and deepen
@@ -965,6 +993,16 @@ function ensurePulseStyles(): void {
     .dom-pin:hover,
     .dom-pin--hovered {
       filter: drop-shadow(0 6px 12px rgba(46, 42, 38, 0.28));
+    }
+    /* Cmd/Ctrl held anywhere on the page → every pin advertises "drag me"
+       via a grab cursor. Same modifier gates the drag gesture itself;
+       without the key, click/drag falls through to text selection and
+       other native content gestures. */
+    body.dom-pin-cmd-held .dom-pin {
+      cursor: grab;
+    }
+    .dom-pin--dragging {
+      cursor: grabbing !important;
     }
     /* Heading tame-down inside pin bodies: MyST renders h1 at ~2x body, which
        dominates a small card. Scale headings toward body size so the lede
@@ -1003,9 +1041,7 @@ function renderVellumShell(): HTMLElement {
     overflow: 'auto',
     overscrollBehavior: 'contain',
     border: '1px solid rgba(140, 110, 80, 0.55)',
-    borderTop: 'none',
-    borderBottomLeftRadius: '6px',
-    borderBottomRightRadius: '6px',
+    borderRadius: '6px',
     background: 'rgba(248, 240, 225, 0.97)',
     boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
     color: '#2E2A26',
@@ -1035,9 +1071,7 @@ function renderTerminalShell(): HTMLElement {
     display: 'flex',
     flexDirection: 'column',
     border: '1px solid rgba(140, 110, 80, 0.55)',
-    borderTop: 'none',
-    borderBottomLeftRadius: '6px',
-    borderBottomRightRadius: '6px',
+    borderRadius: '6px',
     background: '#FAFAFA',
     boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
   })
@@ -1081,131 +1115,99 @@ function titleForPin(pin: Pin): string {
   return pin.slug
 }
 
-/** Authoritative long-form identifier for the chrome title tooltip. Fiber pins
- *  anchor on the slug (a meaningful short name). File and URL pins anchor on
- *  the full path/URL — their slugs are sha16 hashes that carry no information
- *  for the user. Shown as `displayTitle · anchor` when they differ, or just
- *  the anchor when the chrome already shows it. */
-function chromeTooltip(pin: Pin, displayTitle: string): string {
-  const anchor = pin.source?.path
-    ? decodeSafely(pin.source.path)
-    : pin.source?.url
-      ? decodeSafely(pin.source.url)
-      : pin.slug
-  return displayTitle === anchor ? anchor : `${displayTitle} · ${anchor}`
-}
-
-function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
-  const bar = document.createElement('div')
-  bar.className = 'dom-pin-chrome'
-  bar.title = 'Drag to move · double-click to open · right-click for menu'
-  Object.assign(bar.style, {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    padding: '3px 6px 3px 8px',
+/** Label tab: the parchment lozenge shown when the pin narrows past
+ *  LABEL_THRESHOLD. In full-reader mode it's hidden by CSS; in label mode the
+ *  inner body and affordances are hidden and this becomes the single visible
+ *  element. Title-only — a distant map reads at a glance without trying to
+ *  cram a full reader into a 100px-wide card. */
+function renderLabelTab(displayTitle: string, slug: string): HTMLElement {
+  const tab = document.createElement('div')
+  tab.className = 'dom-pin-label-tab'
+  const isSlug = displayTitle === slug
+  Object.assign(tab.style, {
+    display: 'none', // shown only when `.dom-pin--label` is set on the wrapper
+    padding: '4px 10px',
     fontFamily: '"EB Garamond", Garamond, serif',
-    fontSize: '11px',
-    lineHeight: '1.1',
+    fontSize: '12px',
+    lineHeight: '1.2',
     color: '#2E2A26',
-    background: 'rgba(200, 184, 168, 0.92)',
-    borderTopLeftRadius: '6px',
-    borderTopRightRadius: '6px',
-    borderBottom: '1px solid rgba(140, 110, 80, 0.45)',
-    userSelect: 'none',
-  })
-  // Status glyph: empty until `resolveFiberMeta` paints one (fiber pins only).
-  // Width reserved so the title doesn't shift when the glyph appears. The slot
-  // is decorative — hide it from assistive tech so screen readers don't
-  // announce the placeholder dot on every non-fiber pin.
-  const status = document.createElement('span')
-  status.className = 'dom-pin-chrome-status'
-  status.setAttribute('aria-hidden', 'true')
-  Object.assign(status.style, {
-    display: 'inline-block',
-    width: '12px',
-    fontSize: '13px',
-    lineHeight: '1',
+    background: 'rgba(248, 240, 225, 0.97)',
+    border: '1px solid rgba(140, 110, 80, 0.55)',
+    borderRadius: '6px',
+    boxShadow: '0 2px 8px rgba(46, 42, 38, 0.14)',
     textAlign: 'center',
-    color: 'transparent',
-  })
-  status.textContent = '·'
-  bar.appendChild(status)
-  const title = document.createElement('span')
-  title.className = 'dom-pin-chrome-title'
-  title.textContent = displayTitle
-  title.title = chromeTooltip(pin, displayTitle)
-  Object.assign(title.style, {
-    flex: '1',
+    whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    userSelect: 'none',
+    fontVariant: isSlug ? 'small-caps' : 'normal',
+    letterSpacing: isSlug ? '0.03em' : '0',
   })
-  applyChromeTitleCasing(title, displayTitle, pin.slug)
-  bar.appendChild(title)
-  // Save state strip for text pins — dirty dot, transient save-status text,
-  // Save button. Hidden by default (empty content + `display: none` via the
-  // body-free class); text pins populate them via `setChromeDirty` /
-  // `setChromeSaveState` / `setChromeSaveAction` once vellum's callbacks fire.
-  // Fiber / pdf / image / URL pins never call those helpers so the elements
-  // stay collapsed. Order from left to right matches the constitution: dirty
-  // dot nearest the title, status text, Save button, ⋮ menu handle. See
-  // constitution invariant 5.
-  const dirty = document.createElement('span')
-  dirty.className = 'dom-pin-chrome-dirty'
-  dirty.setAttribute('aria-hidden', 'true')
-  dirty.textContent = '●'
-  Object.assign(dirty.style, {
-    display: 'none',
-    fontSize: '9px',
-    lineHeight: '1',
-    color: '#9A7B35',
+  tab.textContent = displayTitle
+  return tab
+}
+
+function setLabelTabTitle(tab: HTMLElement, displayTitle: string, slug: string): void {
+  tab.textContent = displayTitle
+  const isSlug = displayTitle === slug
+  tab.style.fontVariant = isSlug ? 'small-caps' : 'normal'
+  tab.style.letterSpacing = isSlug ? '0.03em' : '0'
+}
+
+/** Top-right affordance cluster for map-level operations: × close, ⋮ menu, ↗
+ *  external (URL pins only). Absolute-positioned over the top-right of the
+ *  frame, quiet at rest, revealed on pin hover. These are *map* gestures —
+ *  closing a pin and the map context menu — and have no business inside
+ *  vellum's own chrome. Buttons stop propagation so the frame-drag handler
+ *  doesn't treat a click on × as a grab. */
+function renderAffordances(pin: Pin): HTMLElement {
+  const cluster = document.createElement('div')
+  cluster.className = 'dom-pin-affordances'
+  Object.assign(cluster.style, {
+    position: 'absolute',
+    top: '4px',
+    right: '4px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '2px',
+    zIndex: '4',
+    pointerEvents: 'auto',
+    opacity: '0',
+    transition: 'opacity 120ms ease-out',
   })
-  bar.appendChild(dirty)
-  const saveStatus = document.createElement('span')
-  saveStatus.className = 'dom-pin-chrome-save-status'
-  saveStatus.setAttribute('aria-live', 'polite')
-  Object.assign(saveStatus.style, {
-    display: 'none',
-    fontSize: '11px',
-    color: '#7A7368',
-    fontStyle: 'italic',
-    whiteSpace: 'nowrap',
-  })
-  bar.appendChild(saveStatus)
-  const saveBtn = document.createElement('button')
-  saveBtn.type = 'button'
-  saveBtn.className = 'dom-pin-chrome-save'
-  saveBtn.textContent = 'Save'
-  saveBtn.title = 'Save'
-  saveBtn.tabIndex = -1
-  Object.assign(saveBtn.style, {
-    display: 'none',
-    appearance: 'none',
-    border: 'none',
-    background: 'transparent',
-    color: '#2E2A26',
-    fontFamily: '"EB Garamond", Garamond, serif',
-    fontSize: '11px',
-    letterSpacing: '0.03em',
-    cursor: 'pointer',
-    padding: '0 4px',
-    borderRadius: '3px',
-  })
-  // Chrome-drag wants to ignore clicks on the button; the drag handler already
-  // excludes the menu handle, and `stopPropagation` on pointerdown here keeps
-  // a double-click on the button from being mistaken for a chrome grab.
-  saveBtn.addEventListener('pointerdown', (e) => { e.stopPropagation() })
-  bar.appendChild(saveBtn)
-  // External-open affordance for URL pins. Iframe-blocked sites (X-Frame-Options
-  // / CSP) render as a blank body and there's no reliable way to detect the
-  // block from a cross-origin parent, so the pin can look broken at a glance.
-  // A persistent ↗ button next to the ⋮ handle gives users an always-visible
-  // escape hatch without waiting for dblclick-chrome or the right-click menu.
-  // See iframe-blocked-not-detectable.
+
+  const mkBtn = (
+    className: string,
+    glyph: string,
+    label: string,
+  ): HTMLButtonElement => {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = className
+    btn.textContent = glyph
+    btn.title = label
+    btn.setAttribute('aria-label', label)
+    btn.tabIndex = -1
+    Object.assign(btn.style, {
+      appearance: 'none',
+      border: 'none',
+      background: 'transparent',
+      color: '#2E2A26',
+      cursor: 'pointer',
+      fontFamily: '"EB Garamond", Garamond, serif',
+      fontSize: '15px',
+      lineHeight: '1',
+      padding: '2px 5px',
+      borderRadius: '4px',
+      transition: 'background-color 120ms ease-out, color 120ms ease-out',
+    })
+    btn.addEventListener('pointerdown', (e) => { e.stopPropagation() })
+    return btn
+  }
+
   if (pin.source?.url) {
     const ext = document.createElement('a')
-    ext.className = 'dom-pin-chrome-ext'
+    ext.className = 'dom-pin-affordance-ext'
     ext.href = pin.source.url
     ext.target = '_blank'
     ext.rel = 'noopener noreferrer'
@@ -1217,129 +1219,39 @@ function renderChrome(pin: Pin, displayTitle: string): HTMLElement {
       display: 'inline-flex',
       alignItems: 'center',
       justifyContent: 'center',
-      width: '18px',
-      height: '18px',
-      borderRadius: '4px',
       color: '#2E2A26',
-      fontSize: '13px',
+      fontFamily: '"EB Garamond", Garamond, serif',
+      fontSize: '15px',
       lineHeight: '1',
+      padding: '2px 5px',
       textDecoration: 'none',
-      cursor: 'pointer',
+      borderRadius: '4px',
+      transition: 'background-color 120ms ease-out',
     })
-    // Swallow pointerdown/click so the chrome-drag handler doesn't treat this
-    // as a grab; the anchor's default click still opens the URL.
     ext.addEventListener('pointerdown', (e) => { e.stopPropagation() })
     ext.addEventListener('click', (e) => { e.stopPropagation() })
-    bar.appendChild(ext)
+    cluster.appendChild(ext)
   }
-  const handle = document.createElement('button')
-  handle.type = 'button'
-  handle.className = 'dom-pin-menu-handle'
-  handle.textContent = '⋮'
-  handle.title = 'Pin menu'
-  handle.setAttribute('aria-label', 'Pin menu')
-  // Keep the button off the tab sequence — with many pins on the map, tabbing
-  // through every ⋮ button ahead of actual page controls is pure noise. The
-  // menu is still reachable via right-click or the button itself.
-  handle.tabIndex = -1
-  Object.assign(handle.style, {
-    appearance: 'none',
-    border: 'none',
-    background: 'transparent',
-    color: '#2E2A26',
-    cursor: 'pointer',
-    fontSize: '16px',
-    lineHeight: '1',
-    padding: '0 4px',
-  })
-  bar.appendChild(handle)
-  return bar
+
+  cluster.appendChild(mkBtn('dom-pin-affordance-menu', '⋮', 'Pin menu'))
+  cluster.appendChild(mkBtn('dom-pin-affordance-close', '×', 'Unpin'))
+
+  return cluster
 }
 
-function setChromeTitle(chrome: HTMLElement, displayTitle: string, pin: Pin): void {
-  const title = chrome.querySelector<HTMLElement>('.dom-pin-chrome-title')
-  if (!title) return
-  title.textContent = displayTitle
-  title.title = chromeTooltip(pin, displayTitle)
-  applyChromeTitleCasing(title, displayTitle, pin.slug)
-}
-
-/** Small-caps + letter-spacing is the portolan title treatment — it flatters
- *  lowercase slugs (`tapestry-dissolves` → `TAPESTRY-DISSOLVES`) but reads as
- *  shouty when applied to human-shaped titles: fiber frontmatter names
- *  ("Pin any file type"), file basenames (`CLAUDE.md`), and especially long
- *  URL paths (`1200px-Cantino_planisphere_(1502).jpg`). Apply the styling
- *  only when the chrome is still showing the bare slug; drop it the moment
- *  a humanised title takes over. */
-function applyChromeTitleCasing(
-  title: HTMLElement,
-  displayTitle: string,
-  slug: string,
-): void {
-  const isSlug = displayTitle === slug
-  title.style.fontVariant = isSlug ? 'small-caps' : 'normal'
-  title.style.letterSpacing = isSlug ? '0.03em' : '0'
-}
-
-function setChromeDirty(chrome: HTMLElement, dirty: boolean): void {
-  const el = chrome.querySelector<HTMLElement>('.dom-pin-chrome-dirty')
-  if (!el) return
-  el.style.display = dirty ? 'inline' : 'none'
-}
-
-/** SaveState mirrors vellum's FileViewerPage — `idle | saving | saved |
- *  { error }`. Chrome paints a transient line of text that fades back to
- *  empty when the state returns to idle. */
-export type ChromeSaveState = 'idle' | 'saving' | 'saved' | { error: string }
-
-function setChromeSaveState(chrome: HTMLElement, state: ChromeSaveState): void {
-  const el = chrome.querySelector<HTMLElement>('.dom-pin-chrome-save-status')
-  if (!el) return
-  if (state === 'idle') {
-    el.textContent = ''
-    el.style.display = 'none'
-    return
-  }
-  el.style.display = 'inline'
-  if (state === 'saving') el.textContent = 'Saving…'
-  else if (state === 'saved') el.textContent = 'Saved'
-  else el.textContent = `Error: ${state.error}`
-}
-
-/** Install (or clear) the Save button's click action. `null` hides the
- *  button; anything else shows it and binds the handler. Only one handler at
- *  a time — re-calling replaces the previous binding. */
-function setChromeSaveAction(
-  chrome: HTMLElement,
-  save: (() => Promise<void>) | null,
-): void {
-  const btn = chrome.querySelector<HTMLButtonElement>('.dom-pin-chrome-save')
-  if (!btn) return
-  // Replace the click handler each time by cloning — simpler than tracking a
-  // removable listener ref across the lifetime of a pin.
-  const clone = btn.cloneNode(true) as HTMLButtonElement
-  btn.replaceWith(clone)
-  if (!save) {
-    clone.style.display = 'none'
-    return
-  }
-  clone.style.display = 'inline-block'
-  clone.addEventListener('click', (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    void save()
-  })
-  clone.addEventListener('pointerdown', (e) => { e.stopPropagation() })
-}
-
-function setChromeStatus(chrome: HTMLElement, status: FiberStatus): void {
-  const el = chrome.querySelector<HTMLElement>('.dom-pin-chrome-status')
-  if (!el) return
-  const meta = STATUS_GLYPHS[status]
-  if (!meta) return
-  el.textContent = meta.glyph
-  el.style.color = meta.color
-  el.title = meta.label
+/** Targets that should not initiate a pin drag or primary-open gesture:
+ *  vellum's editor surfaces, form fields, buttons, anchors, the affordance
+ *  cluster, and the resize handles. Everything else is fair game for
+ *  grabbing the card. */
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  return Boolean(
+    target.closest(
+      'button, a, input, textarea, select, [contenteditable], [contenteditable="true"], ' +
+      '.cm-editor, .cm-content, .cm-scroller, ' +
+      '.dom-pin-affordances, .dom-pin-resize',
+    ),
+  )
 }
 
 function sourceKey(pin: Pin): string {
@@ -1363,9 +1275,7 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       width: '100%',
       minHeight: '0',
       border: '1px solid rgba(140, 110, 80, 0.55)',
-      borderTop: 'none',
-      borderBottomLeftRadius: '6px',
-      borderBottomRightRadius: '6px',
+      borderRadius: '6px',
       background: 'rgba(248, 240, 225, 0.97)',
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
@@ -1383,9 +1293,7 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       minHeight: '0',
       objectFit: 'contain',
       border: '1px solid rgba(140, 110, 80, 0.55)',
-      borderTop: 'none',
-      borderBottomLeftRadius: '6px',
-      borderBottomRightRadius: '6px',
+      borderRadius: '6px',
       background: 'rgba(248, 240, 225, 0.97)',
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
@@ -1411,9 +1319,18 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
   a.href = url
   a.target = '_blank'
   a.rel = 'noopener noreferrer'
-  // Chrome already shows the humanised source title; repeating it here wastes
-  // the body. Show an action affordance + the full URL/path in mono — visually
-  // distinct from chrome and carries information the user can't otherwise see.
+  // Without a chrome strip, the link card's body carries the title itself as
+  // a small Garamond header above the action line. Typographic, not tinted.
+  const title = document.createElement('div')
+  title.textContent = titleForPin(pin)
+  Object.assign(title.style, {
+    fontFamily: '"EB Garamond", Garamond, serif',
+    fontSize: '13px',
+    color: '#2E2A26',
+    marginBottom: '4px',
+    fontVariant: titleForPin(pin) === pin.slug ? 'small-caps' : 'normal',
+    letterSpacing: titleForPin(pin) === pin.slug ? '0.03em' : '0',
+  })
   const action = document.createElement('div')
   action.textContent = '↗ Open externally'
   Object.assign(action.style, {
@@ -1437,6 +1354,7 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
     overflowWrap: 'anywhere',
     lineHeight: '1.4',
   })
+  a.appendChild(title)
   a.appendChild(action)
   a.appendChild(full)
   Object.assign(a.style, {
@@ -1450,9 +1368,7 @@ function renderLinkCard(pin: Pin, url: string): HTMLElement {
     textDecoration: 'none',
     background: 'rgba(248, 240, 225, 0.97)',
     border: '1px solid rgba(140, 110, 80, 0.55)',
-    borderTop: 'none',
-    borderBottomLeftRadius: '6px',
-    borderBottomRightRadius: '6px',
+    borderRadius: '6px',
     boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
   })
   return a
@@ -1470,9 +1386,7 @@ function renderStub(pin: Pin, reason: string): HTMLElement {
     color: '#7A7368',
     background: 'rgba(248, 240, 225, 0.85)',
     border: '1px dashed rgba(140, 110, 80, 0.55)',
-    borderTop: 'none',
-    borderBottomLeftRadius: '4px',
-    borderBottomRightRadius: '4px',
+    borderRadius: '4px',
   })
   return div
 }
@@ -1532,5 +1446,3 @@ function clampSize(n: number): number {
   if (!Number.isFinite(n)) return MIN_SIZE
   return Math.min(MAX_SIZE, Math.max(MIN_SIZE, n))
 }
-
-

@@ -66,7 +66,7 @@ export function renderDagNodeVisuals(
         .attr('stroke-opacity', ringOpacity(ringIndex) * (isCore ? 0.85 : 1))
     }
 
-    const name = shortName(node.data.title)
+    const name = shortName(node.data.name)
     const words = name.split(' ')
     const maxTextWidth = rx * (isSection ? 2.0 : 1.7)
     const charWidth = 0.58
