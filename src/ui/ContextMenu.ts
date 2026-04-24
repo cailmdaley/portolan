@@ -20,6 +20,8 @@ export class ContextMenu {
   private createMenu(): HTMLElement {
     const menu = document.createElement('div')
     menu.className = 'context-menu'
+    menu.setAttribute('role', 'menu')
+    menu.tabIndex = -1
     menu.style.cssText = `
       position: fixed;
       display: none;
@@ -32,6 +34,7 @@ export class ContextMenu {
       padding: 4px 0;
       font-family: 'EB Garamond', Garamond, serif;
       font-size: 14px;
+      outline: none;
     `
     return menu
   }
@@ -43,6 +46,9 @@ export class ContextMenu {
     for (const item of items) {
       const menuItem = document.createElement('div')
       menuItem.className = 'context-menu-item'
+      menuItem.setAttribute('role', 'menuitem')
+      menuItem.tabIndex = item.disabled ? -1 : 0
+      if (item.disabled) menuItem.setAttribute('aria-disabled', 'true')
       menuItem.textContent = item.label
 
       const dangerColor = '#A03030'
@@ -55,17 +61,22 @@ export class ContextMenu {
         color: ${item.disabled ? 'var(--text-muted, #7A7368)' : normalColor};
         opacity: ${item.disabled ? '0.5' : '1'};
         transition: background 0.1s;
+        outline: none;
       `
 
       if (!item.disabled) {
-        menuItem.addEventListener('mouseenter', () => {
+        const setActive = (): void => {
           menuItem.style.background = hoverBg
           menuItem.style.color = 'white'
-        })
-        menuItem.addEventListener('mouseleave', () => {
+        }
+        const clearActive = (): void => {
           menuItem.style.background = ''
           menuItem.style.color = normalColor
-        })
+        }
+        menuItem.addEventListener('mouseenter', setActive)
+        menuItem.addEventListener('mouseleave', clearActive)
+        menuItem.addEventListener('focus', setActive)
+        menuItem.addEventListener('blur', clearActive)
         menuItem.addEventListener('click', (e) => {
           e.stopPropagation()
           this.hide()
@@ -93,7 +104,15 @@ export class ContextMenu {
     this.menu.style.left = `${posX}px`
     this.menu.style.top = `${posY}px`
 
-    // Add close handler (click outside to close, Escape to dismiss)
+    // Focus the first enabled item so keyboard navigation (arrow keys, Enter)
+    // works immediately after right-click without requiring a mouse move.
+    const enabledItems = Array.from(
+      this.menu.querySelectorAll<HTMLElement>('.context-menu-item[tabindex="0"]'),
+    )
+    enabledItems[0]?.focus()
+
+    // Add close handler (click outside to close, Escape to dismiss,
+    // arrow keys to navigate, Enter/Space to activate the focused item).
     this.removeCloseHandler()
     this.closeHandler = (e: MouseEvent) => {
       if (!this.menu.contains(e.target as Node)) {
@@ -101,7 +120,30 @@ export class ContextMenu {
       }
     }
     this.keyHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') this.hide()
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        this.hide()
+        return
+      }
+      if (enabledItems.length === 0) return
+      const active = document.activeElement as HTMLElement | null
+      const idx = active ? enabledItems.indexOf(active) : -1
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        enabledItems[(idx + 1 + enabledItems.length) % enabledItems.length].focus()
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        enabledItems[(idx - 1 + enabledItems.length) % enabledItems.length].focus()
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        enabledItems[0].focus()
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        enabledItems[enabledItems.length - 1].focus()
+      } else if ((e.key === 'Enter' || e.key === ' ') && idx >= 0) {
+        e.preventDefault()
+        enabledItems[idx].click()
+      }
     }
     document.addEventListener('click', this.closeHandler)
     document.addEventListener('keydown', this.keyHandler)

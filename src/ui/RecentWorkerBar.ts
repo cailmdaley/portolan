@@ -26,6 +26,8 @@ export class RecentWorkerBar {
 
     this.container = document.createElement('div')
     this.container.className = 'rwb-bar'
+    this.container.setAttribute('role', 'navigation')
+    this.container.setAttribute('aria-label', 'Recent workers')
 
     this.wire = document.createElement('div')
     this.wire.className = 'rwb-wire'
@@ -33,14 +35,24 @@ export class RecentWorkerBar {
     this.container.appendChild(this.wire)
     document.body.appendChild(this.container)
 
-    this.container.addEventListener('click', (event) => {
-      const perch = (event.target as HTMLElement).closest<HTMLElement>('.rwb-perch')
+    const activate = (target: EventTarget | null): void => {
+      const perch = (target as HTMLElement | null)?.closest<HTMLElement>('.rwb-perch')
       if (!perch) return
       const sessionId = perch.dataset.sessionId
       if (!sessionId) return
-      // Session is stored on the element
       const session = (perch as any).__session as Session | undefined
       if (session) this.onSelectWorker(session)
+    }
+
+    this.container.addEventListener('click', (event) => activate(event.target))
+
+    // Keyboard parity for role="button" perches: Enter and Space activate.
+    this.container.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      const perch = (event.target as HTMLElement | null)?.closest<HTMLElement>('.rwb-perch')
+      if (!perch) return
+      event.preventDefault()
+      activate(event.target)
     })
   }
 
@@ -124,6 +136,19 @@ export class RecentWorkerBar {
     perch.className = 'rwb-perch rwb-arriving'
     perch.dataset.sessionId = session.id
     ;(perch as any).__session = session
+
+    // Label the perch for screen readers and a11y-tree agents: "Recent worker
+    // <name> on <city>". Falls back to just the name when the session has no
+    // associated city (edge case on freshly-discovered workers).
+    const perchCityName = session.cityId ? this.cityNameById.get(session.cityId) : null
+    perch.setAttribute('role', 'button')
+    perch.setAttribute('tabindex', '0')
+    perch.setAttribute(
+      'aria-label',
+      perchCityName
+        ? `Recent worker ${session.name} on ${perchCityName}`
+        : `Recent worker ${session.name}`,
+    )
 
     // Opacity cascade: most recent = 0.7, oldest = 0.25
     const opacity = 0.25 + (((total - 1 - index) / Math.max(total - 1, 1)) * 0.45)

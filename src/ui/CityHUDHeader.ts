@@ -177,10 +177,10 @@ export class CityHUDHeader {
   private renderActions(city: City): void {
     const buttons: string[] = []
     if (city.hasClaims) {
-      buttons.push('<button class="hud-action-btn hud-action-claims" title="Claims">⚖</button>')
+      buttons.push('<button class="hud-action-btn hud-action-claims" title="Claims" aria-label="View claims">⚖</button>')
     }
     if (city.hasPlaygrounds) {
-      buttons.push('<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds">▶</button>')
+      buttons.push('<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds" aria-label="View playgrounds">▶</button>')
     }
 
     const row = this.headerWidget.querySelector('.hud-actions')!
@@ -205,18 +205,30 @@ export class CityHUDHeader {
 
     const chips = this.cityWorkers.map(session => {
       const statusClass = session.status === 'working' ? 'working' : 'idle'
-      return `<span class="hud-worker-chip ${statusClass}" data-session-id="${session.id}" title="${escapeHtml(session.name)}">` +
-        `<span class="hud-worker-dot ${statusClass}">●</span>${escapeHtml(session.name)}</span>`
+      const label = session.status === 'working'
+        ? `Working worker ${session.name}`
+        : `Idle worker ${session.name}`
+      return `<span role="button" tabindex="0" class="hud-worker-chip ${statusClass}" data-session-id="${session.id}" title="${escapeHtml(session.name)}" aria-label="${escapeHtml(label)}">` +
+        `<span class="hud-worker-dot ${statusClass}" aria-hidden="true">●</span>${escapeHtml(session.name)}</span>`
     })
 
-    chips.push('<button class="hud-worker-add" title="New Worker">+</button>')
+    chips.push('<button class="hud-worker-add" title="New Worker" aria-label="New worker">+</button>')
     container.innerHTML = parts.concat(chips).join('')
 
     for (const chip of container.querySelectorAll<HTMLElement>('.hud-worker-chip')) {
-      chip.addEventListener('click', (e) => {
-        e.stopPropagation()
+      const activate = (): void => {
         const sessionId = chip.dataset.sessionId
         if (sessionId) this.getOnFocusWorker()?.(sessionId)
+      }
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation()
+        activate()
+      })
+      chip.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        e.stopPropagation()
+        activate()
       })
     }
 
