@@ -490,6 +490,12 @@ export interface OpenWorkspaceModalOptions {
 export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): VellumModalHandle {
   const container = document.createElement('div')
   container.className = 'vellum-workspace-modal-container'
+  // Labelled as a dialog so the a11y tree gets a named handle for the
+  // whole modal; otherwise descendants' text concatenates into a
+  // giant unnamed generic. See vellum-dogfood/vellum-modal-generic-label.
+  container.setAttribute('role', 'dialog')
+  container.setAttribute('aria-modal', 'true')
+  container.setAttribute('aria-label', 'Vellum workspace')
   Object.assign(container.style, {
     position: 'fixed',
     inset: '0',
