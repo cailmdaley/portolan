@@ -478,11 +478,12 @@ export class DomPinLayer {
     el.dataset.slug = pin.slug
     // A11y: name the pin by what it holds, not by the concatenated text
     // content of its inner surfaces (which picks up "Save", line-number
-    // gutter digits, and the first bytes of code). `role="group"` prevents
-    // the a11y tree from flattening multi-child pins into a single clickable
-    // blob. `setLabelTabTitle()` refreshes both the lozenge and this label
-    // when async fiber metadata arrives.
-    el.setAttribute('role', 'group')
+    // gutter digits, and the first bytes of code). `role="region"` gives
+    // the snapshot tree a named landmark per pin instead of a nameless
+    // `generic` div swallowing up editor text. `setLabelTabTitle()`
+    // refreshes both the lozenge and this label when async fiber metadata
+    // arrives.
+    el.setAttribute('role', 'region')
     el.setAttribute('aria-label', `${pin.kind ?? 'pin'} pin: ${titleForPin(pin)}`)
     Object.assign(el.style, {
       position: 'absolute',
