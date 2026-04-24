@@ -27,6 +27,21 @@ function readUrlCityId(): string | null {
   return new URLSearchParams(window.location.search).get('city')
 }
 
+/**
+ * Read the target fiber slug from `#fiber=Y` / `?fiber=Y`. On initial load
+ * the frontend resolves this to a city (via explicit `#city=X` or a server
+ * /fiber-locate lookup) and opens the vellum workspace at that fiber.
+ * See vellum-dogfood/url-fragment-fiber-nav.
+ */
+function readUrlFiberSlug(): string | null {
+  const hash = window.location.hash.replace(/^#/, '')
+  if (hash) {
+    const fromHash = new URLSearchParams(hash).get('fiber')
+    if (fromHash) return fromHash
+  }
+  return new URLSearchParams(window.location.search).get('fiber')
+}
+
 interface ServerState {
   cities: ServerCity[]
   sessions: ServerSession[]
@@ -85,6 +100,7 @@ interface FrontendStateSnapshot {
   meetingBridge: ServerMeetingBridgeState | null
   isInitialState: boolean
   urlCityId: string | null
+  urlFiberSlug: string | null
 }
 
 interface FrontendActivityUpdate {
@@ -264,6 +280,7 @@ export class FrontendStateSync {
       meetingBridge: this.meetingBridge,
       isInitialState,
       urlCityId: isInitialState ? readUrlCityId() : null,
+      urlFiberSlug: isInitialState ? readUrlFiberSlug() : null,
     })
   }
 

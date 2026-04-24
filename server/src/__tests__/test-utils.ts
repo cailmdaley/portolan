@@ -35,13 +35,15 @@ export function makePersistence(testDir: string, testFile: string): AnnotationPe
 
 /** Create a city lookup stub that resolves a single city by id. */
 export function makeCityLookup(cityId: string, cityDir: string, name: string = 'TestCity') {
+  const city = {
+    id: cityId,
+    name,
+    path: cityDir,
+    originId: 'local',
+  };
   return {
-    getCityById: (id: string) => id === cityId ? {
-      id: cityId,
-      name,
-      path: cityDir,
-      originId: 'local',
-    } : null,
+    getCityById: (id: string) => (id === cityId ? city : null),
+    getCities: () => [city],
   };
 }
 

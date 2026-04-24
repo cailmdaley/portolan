@@ -132,6 +132,19 @@ function removeEphemeralTerminalPin(cityId: string, slug: string): boolean {
   return existed
 }
 
+// Shared unpin action — invoked by both the context menu's "Unpin Card" item
+// and the chrome's × close button. Terminal pins live in memory only
+// (ephemeral), so their teardown bypasses the server's pin store.
+function unpinSlug(cityId: string, slug: string, kind: PinKind | undefined): void {
+  domPinLayer.remove(slug)
+  syncPinnedSlugs()
+  if (kind === 'terminal') {
+    removeEphemeralTerminalPin(cityId, slug)
+    return
+  }
+  void deletePin(cityId, slug).catch(err => console.error('[pins] unpin failed', err))
+}
+
 // DOM-overlay surface for all pin kinds — fiber, text, pdf, image, html,
 // other. Each pin is a real DOM node anchored to world space, reanchored per
 // frame via `camera.worldToScreen`. Fibers mount vellum's FiberCard; text pins
@@ -191,19 +204,17 @@ const domPinLayer = new DomPinLayer({
       },
       {
         label: 'Unpin Card',
-        action: () => {
-          domPinLayer.remove(slug)
-          syncPinnedSlugs()
-          if (pin?.kind === 'terminal') {
-            removeEphemeralTerminalPin(city.id, slug)
-            return
-          }
-          void deletePin(city.id, slug).catch(err => console.error('[pins] unpin failed', err))
-        },
+        action: () => unpinSlug(city.id, slug, pin?.kind),
         danger: true,
       },
     )
     contextMenu.show(clientX, clientY, items)
+  },
+  onClose: (slug) => {
+    const city = cityPanel.getCurrentCity() ?? cities.find(c => c.id === pinnedCityId) ?? null
+    if (!city) return
+    const pin = domPinLayer.getPin(slug)
+    unpinSlug(city.id, slug, pin?.kind)
   },
   // Double-click on chrome → same "Open" action as the context menu offers, so
   // opening a pin isn't hidden behind right-click. Fiber → workspace; path →
@@ -728,6 +739,26 @@ function openFile(args: OpenFileArgs): void {
 // tapestry-dissolves. Single-instance: close the previous handle before opening
 // a new city.
 let activeWorkspaceHandle: { close(): void } | null = null
+/**
+ * Ask the server which local city owns a bare fiber slug, used by
+ * `#fiber=Y` URL fragments. Returns the matching City from the loaded
+ * `cities` array, or null if no local city has the slug. See
+ * vellum-dogfood/url-fragment-fiber-nav.
+ */
+async function resolveFiberCity(slug: string, cities: City[]): Promise<City | null> {
+  try {
+    const host = window.location.hostname
+    const res = await fetch(`http://${host}:4004/fiber-locate?slug=${encodeURIComponent(slug)}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    const cityId: string | undefined = data?.cityId
+    if (!cityId) return null
+    return cities.find(c => c.id === cityId) ?? null
+  } catch {
+    return null
+  }
+}
+
 function openCityWorkspace(city: City, initialSlug?: string): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
@@ -866,7 +897,7 @@ const stateSync = new FrontendStateSync({
     cityPanel.setWebSocket(socket)
     terminalPinManager.setWebSocket(socket)
   },
-  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge, isInitialState, urlCityId }) => {
+  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge, isInitialState, urlCityId, urlFiberSlug }) => {
     cities = nextCities
     sessions = nextSessions
     origins = nextOrigins
@@ -947,7 +978,28 @@ const stateSync = new FrontendStateSync({
     )
     handleCityClick(targetCity)
 
-    if (urlCity) {
+    if (urlFiberSlug) {
+      // `#fiber=Y` opens the vellum workspace at that fiber. When `#city=X`
+      // is present it scopes the lookup; otherwise we ask the server which
+      // local city owns the slug. Either way, fall back to opening the
+      // targetCity's workspace without the slug if resolution fails so the
+      // user still lands somewhere coherent. See
+      // vellum-dogfood/url-fragment-fiber-nav.
+      cityPanel.hide()
+      if (urlCity) {
+        openCityWorkspace(urlCity, urlFiberSlug)
+      } else {
+        void resolveFiberCity(urlFiberSlug, cities).then((hit) => {
+          if (hit) {
+            handleCityClick(hit)
+            openCityWorkspace(hit, urlFiberSlug)
+          } else {
+            console.warn('[InitialFocus] #fiber=', urlFiberSlug, 'not found in any local city')
+            openCityWorkspace(targetCity, urlFiberSlug)
+          }
+        })
+      }
+    } else if (urlCity) {
       cityPanel.hide()
       openCityWorkspace(urlCity)
     }
@@ -1064,6 +1116,8 @@ const onGlobalHotkeys = (event: KeyboardEvent): void => {
 
 window.addEventListener('keydown', onGlobalHotkeys)
 
+let lastCameraRevision = camera.cameraRevision
+
 const appRuntime = new FrontendAppRuntime({
   renderer,
   scene,
@@ -1086,6 +1140,8 @@ const appRuntime = new FrontendAppRuntime({
     zoneRenderer.updateState(cities, sessions)
   },
   onFrame: () => {
+    if (camera.cameraRevision === lastCameraRevision) return
+    lastCameraRevision = camera.cameraRevision
     // Camera pan/zoom doesn't emit mousemove, so re-test hover from the
     // last-known cursor position — otherwise zooming leaves stale state.
     mapInteractions.recomputeHover()

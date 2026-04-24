@@ -14,6 +14,8 @@ const execFileAsync = promisify(execFile);
 
 interface CityLookup {
   getCityById(cityId: string): City | null;
+  /** All known cities (used by /fiber-locate to scan for a slug). */
+  getCities(): City[];
 }
 
 interface HttpApiTapestryOptions {
@@ -291,6 +293,38 @@ export class HttpApiTapestry {
       console.error('Failed to render fiber content:', error);
       this.sendJsonError(res, 500, 'Failed to render fiber content: ' + error.message);
     }
+  }
+
+  /**
+   * /fiber-locate?slug=Y — resolve a bare fiber slug to the city that owns
+   * it. Scans local cities only (remote scans would fan out SSH calls).
+   * First hit wins; ambiguity is rare because slugs are unique per loom
+   * root. Returns 404 when no local city has a fiber at `.felt/<slug>` or
+   * `.felt/<slug>.md`.
+   *
+   * Used by the frontend to resolve `#fiber=Y` URL fragments on cold load.
+   * See vellum-dogfood/url-fragment-fiber-nav.
+   */
+  async handleFiberLocate(url: URL, res: ServerResponse): Promise<void> {
+    const slug = url.searchParams.get('slug');
+    if (!slug) {
+      this.sendJsonError(res, 400, 'Missing slug parameter');
+      return;
+    }
+    const localCities = this.cityLookup.getCities().filter((c) => c.originId === 'local');
+    for (const city of localCities) {
+      const raw = await this.readFiberFile(city.path, slug);
+      if (raw !== null) {
+        this.sendJsonSuccess(res, {
+          cityId: city.id,
+          cityName: city.name,
+          cityPath: city.path,
+          originId: city.originId,
+        });
+        return;
+      }
+    }
+    this.sendJsonError(res, 404, `Fiber "${slug}" not found in any local city`);
   }
 
   async handleTapestryAsset(url: URL, res: ServerResponse): Promise<void> {

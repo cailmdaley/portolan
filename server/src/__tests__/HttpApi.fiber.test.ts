@@ -61,7 +61,7 @@ describe('HttpApi — /fiber/:slug endpoint', () => {
       FELT_DIR,
       'hello-world',
       `---
-title: Hello World
+name: Hello World
 status: active
 kind: decision
 tags:
@@ -79,7 +79,7 @@ This is the body. It references [[another-fiber|another]].
     expect(res.status).toBe(200);
     expect(res.data.slug).toBe('hello-world');
     expect(res.data.kind).toBe('decision');
-    expect(res.data.frontmatter.title).toBe('Hello World');
+    expect(res.data.frontmatter.name).toBe('Hello World');
     expect(res.data.frontmatter.tags).toEqual(['greeting', 'demo']);
     expect(res.data.dependencies).toEqual(['foundational-idea']);
     expect(res.data.mdast).toBeTruthy();
@@ -100,7 +100,7 @@ This is the body. It references [[another-fiber|another]].
       FELT_DIR,
       'empty-body',
       `---
-title: Empty
+name: Empty
 status: open
 kind: task
 ---
@@ -110,7 +110,7 @@ kind: task
     const res = await httpRequest(api, 'GET', '/fiber/empty-body?cityId=test');
     expect(res.status).toBe(200);
     expect(res.data.mdast).toBeUndefined();
-    expect(res.data.frontmatter.title).toBe('Empty');
+    expect(res.data.frontmatter.name).toBe('Empty');
   });
 
   it('handles fibers with no frontmatter by treating whole file as body', async () => {
@@ -119,5 +119,47 @@ kind: task
     expect(res.status).toBe(200);
     expect(res.data.frontmatter).toEqual({});
     expect(res.data.mdast).toBeTruthy();
+  });
+});
+
+describe('HttpApi — /fiber-locate endpoint', () => {
+  const CITY_DIR = join(TEST_DIR, 'locate-city');
+  const FELT_DIR = join(CITY_DIR, '.felt');
+  let api: HttpApi;
+
+  beforeEach(() => {
+    mkdirSync(FELT_DIR, { recursive: true });
+    api = new HttpApi(
+      makeCityLookup('locate', CITY_DIR) as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 400 without slug', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber-locate');
+    expect(res.status).toBe(400);
+    expect(res.data.error).toMatch(/slug/i);
+  });
+
+  it('returns 404 when no city has the slug', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber-locate?slug=missing');
+    expect(res.status).toBe(404);
+  });
+
+  it('resolves a slug to the city that owns it (directory shape)', async () => {
+    writeFiber(FELT_DIR, 'my-finding', '---\nname: Found It\n---\nbody\n');
+    const res = await httpRequest(api, 'GET', '/fiber-locate?slug=my-finding');
+    expect(res.status).toBe(200);
+    expect(res.data.cityId).toBe('locate');
+    expect(res.data.cityName).toBe('TestCity');
+    expect(res.data.cityPath).toBe(CITY_DIR);
+    expect(res.data.originId).toBe('local');
   });
 });

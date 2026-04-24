@@ -32,6 +32,8 @@ import type { MeetingBridge } from './MeetingBridge.js';
 
 interface CityLookup {
   getCityById(cityId: string): City | null;
+  /** All known cities (used by /fiber-locate to scan for a slug). */
+  getCities(): City[];
 }
 
 interface OriginLookup {
@@ -192,6 +194,13 @@ export class HttpApi {
 
     if (url.pathname === '/astra/graph') {
       await this.tapestryApi.handleAstraGraph(url, res);
+      return true;
+    }
+
+    // Must precede `/fiber/` prefix match — the literal `/fiber-locate`
+    // path is unrelated to the fiber content endpoint.
+    if (url.pathname === '/fiber-locate' && req.method === 'GET') {
+      await this.tapestryApi.handleFiberLocate(url, res);
       return true;
     }
 
