@@ -216,6 +216,15 @@ export class CityHUD {
 
   show(city: City): void {
     if (document.querySelector('.tapestry-view.visible')) return
+    // A vellum modal already on top means a deeper overlay owns focus
+    // (e.g. `?vellumDebug=...` opens the file modal before InitialFocus
+    // resolves a target city, or a `#fiber=Y` deep link opened the
+    // workspace and then a separate handleCityClick re-fired). Forcing
+    // inert=false below would punch a hole in `lockModalBackground`'s
+    // sibling lock and leave the HUD interactable behind the modal,
+    // then snap back to inert=true on close (looking visible-but-broken).
+    // Bail; the modal will land the user where they need to be.
+    if (document.querySelector('.vellum-modal-scrim')) return
 
     this.currentCity = city
     this.headerWidget.querySelector('.hud-city-name')!.textContent = city.name
