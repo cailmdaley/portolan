@@ -994,8 +994,15 @@ const stateSync = new FrontendStateSync({
             handleCityClick(hit)
             openCityWorkspace(hit, urlFiberSlug)
           } else {
+            // Comment above said "fall back to the targetCity's workspace
+            // without the slug." The code passed the slug anyway, so vellum
+            // tried to load it and rendered its internal not-found message
+            // ("Fiber X not found. Is mystra running on port 3100?") on a
+            // city the user never asked for. Land on the targetCity's entry
+            // point instead — coherent fallback, and the warn carries the
+            // diagnostic for anyone watching console.
             console.warn('[InitialFocus] #fiber=', urlFiberSlug, 'not found in any local city')
-            openCityWorkspace(targetCity, urlFiberSlug)
+            openCityWorkspace(targetCity)
           }
         })
       }
