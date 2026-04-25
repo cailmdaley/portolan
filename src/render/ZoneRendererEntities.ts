@@ -182,6 +182,12 @@ export class ZoneRendererEntities {
         ? `${city.name} on ${city.originId.replace(/^remote-/, '')}`
         : city.name,
     )
+    // Match the worker-label pattern: cursor: pointer + role=button so the
+    // a11y tree reports a button (not a "group with cursor:pointer"), and the
+    // label can carry click semantics when keyboard users activate it.
+    // Workers are already buttons; cities being groups was inconsistent and
+    // hid them from screen readers' button navigation.
+    labelDiv.setAttribute('role', 'button')
     labelDiv.style.cursor = 'pointer'
     this.labelInteractions.bindCityLabel(labelDiv, city.id)
 
