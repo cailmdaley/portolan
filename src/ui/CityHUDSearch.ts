@@ -223,10 +223,19 @@ export class CityHUDSearch {
       const itemType = result.type === 'dir' ? 'dir' : 'file'
       const icon = result.type === 'dir' ? '▸' : '▹'
       const displayName = result.type === 'dir' ? `${fileName}/` : `${fileName}${lineInfo}`
+      // The trigger button carries the click + keyboard semantics. The row
+      // delegate at line 141 still uses `closest('.hud-search-item')` so the
+      // dataset on the <li> stays the source of truth; the button mirrors
+      // data-path/data-type/data-line for ergonomics.
+      const ariaLabel = result.type === 'dir'
+        ? `Open ${escapeHtml(fileName)} (directory)${lineInfo ? ` line ${result.line}` : ''}`
+        : `Open ${escapeHtml(fileName)} (file)${lineInfo ? ` line ${result.line}` : ''}`
       html += `
         <li class="hud-search-item hud-fiber-item ${itemType}" data-type="${itemType}" data-path="${escapeHtml(result.fullPath)}"${lineAttr}>
-          <span class="hud-search-icon">${icon}</span>
-          <span class="hud-fiber-title mono">${escapeHtml(displayName)}</span>
+          <button type="button" class="hud-search-trigger" data-type="${itemType}" data-path="${escapeHtml(result.fullPath)}"${lineAttr} aria-label="${ariaLabel}">
+            <span class="hud-search-icon" aria-hidden="true">${icon}</span>
+            <span class="hud-fiber-title mono">${escapeHtml(displayName)}</span>
+          </button>
         </li>`
     }
 

@@ -2492,6 +2492,42 @@
         color: var(--ink-faded);
       }
 
+      /* Search rows live as <li class="hud-search-item hud-fiber-item">
+         containing a <button class="hud-search-trigger"> that wraps the
+         icon and name. The trigger carries the click + keyboard semantics
+         so keyboard users can open files / directories from the search
+         palette. The button takes over the flex layout from the li, and
+         the row's :hover wash follows focus / pointer onto the trigger. */
+      .hud-search-item {
+        display: block;
+        padding: 0;
+      }
+      .hud-search-item:hover {
+        background: transparent;
+      }
+      .hud-search-trigger {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        width: 100%;
+        padding: 5px 4px 5px 2px;
+        border: none;
+        background: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: var(--hud-font-md);
+        color: inherit;
+        line-height: 1.4;
+        text-align: left;
+      }
+      .hud-search-trigger:hover {
+        background: rgba(154, 123, 53, 0.08);
+      }
+      .hud-search-trigger:focus-visible {
+        outline: 2px solid var(--sepia-accent);
+        outline-offset: 1px;
+      }
+
       .hud-fiber-title.mono {
         font-family: 'JetBrains Mono', monospace;
         font-size: var(--hud-font-sm);
