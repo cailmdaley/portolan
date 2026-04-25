@@ -210,18 +210,27 @@ export class CityHUDFileTree {
     const error = this.directoryErrors.get(fullPath)
     const arrow = isDir ? (isExpanded ? '▼' : '▶') : '•'
 
-    // A11y: aria-label names the row by its entry ("docs (directory)") so the
-    // tree is navigable without the arrow glyph or padding leaking into the
-    // accessible name. aria-expanded mirrors the disclosure state.
+    // A11y: aria-label names the trigger button by its entry ("docs
+    // (directory)") so the tree is navigable without the arrow glyph or
+    // padding leaking into the accessible name. aria-expanded on the trigger
+    // mirrors the disclosure state. The row itself is a presentational
+    // container; the inner <button> carries focus and the click semantics so
+    // keyboard users can expand directories and open files (Enter/Space).
     const ariaLabel = isDir
       ? `${escapeHtml(entry.name)} (${isExpanded ? 'expanded ' : ''}directory)`
       : `${escapeHtml(entry.name)} (file)`
     const expandedAttr = isDir ? ` aria-expanded="${isExpanded}"` : ''
+    const triggerAction = isDir
+      ? (isExpanded ? 'Collapse' : 'Expand')
+      : 'Open'
+    const triggerTitle = `${triggerAction} ${escapeHtml(entry.name)}`
 
     let html = `
-      <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px" aria-label="${ariaLabel}"${expandedAttr}>
-        <span class="hud-tree-arrow" aria-hidden="true">${arrow}</span>
-        <span class="hud-tree-name">${escapeHtml(entry.name)}</span>
+      <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px">
+        <button type="button" class="hud-tree-trigger" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" aria-label="${ariaLabel}" title="${triggerTitle}"${expandedAttr}>
+          <span class="hud-tree-arrow" aria-hidden="true">${arrow}</span>
+          <span class="hud-tree-name">${escapeHtml(entry.name)}</span>
+        </button>
       </li>
     `
 

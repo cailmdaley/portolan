@@ -2370,20 +2370,36 @@
       }
 
       .hud-tree-row {
+        /* The row's only style responsibility is the depth indent (set
+           inline as `padding-left: depth * 16 + 8px`). The trigger button
+           inside carries flex layout, hover, focus, click. */
+        list-style: none;
+      }
+
+      .hud-tree-trigger {
         display: flex;
         align-items: center;
         gap: 6px;
-        padding: 3px 6px 3px 8px;
+        padding: 3px 6px;
+        width: 100%;
+        border: none;
+        background: none;
         border-radius: 3px;
         cursor: pointer;
         font-family: 'JetBrains Mono', monospace;
         font-size: var(--hud-font-sm);
         color: var(--ink-body);
         line-height: 1.4;
+        text-align: left;
       }
 
-      .hud-tree-row:hover {
+      .hud-tree-trigger:hover {
         background: rgba(154, 123, 53, 0.08);
+      }
+
+      .hud-tree-trigger:focus-visible {
+        outline: 2px solid var(--sepia-accent);
+        outline-offset: 1px;
       }
 
       .hud-tree-arrow {
