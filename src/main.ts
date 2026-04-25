@@ -364,6 +364,31 @@ const domPinLayer = new DomPinLayer({
       },
     }
   },
+  // Wikilink-click inside a fiber pin → spawn or pulse a fiber pin for the
+  // target slug at the current city. Without this, FiberCard's `onNavigate`
+  // is undefined and the click is a no-op (the anchor's `/<slug>` href has
+  // nowhere to go inside a card on the map). See `[[card-redesign]]`.
+  onFiberNavigate: (slug) => {
+    const cleaned = slug.replace(/^\/+/, '')
+    if (!cleaned) return
+    const cityId = pinnedCityId ?? cityPanel.getCurrentCity()?.id
+    if (!cityId) return
+    const city = cities.find(c => c.id === cityId)
+    if (!city) return
+    if (domPinLayer.has(cleaned)) {
+      panAndPulse(cleaned)
+      return
+    }
+    const pos = spawnPositionForCity(city, { kind: 'fiber' })
+    void putPin(city.id, cleaned, pos, { kind: 'fiber' })
+      .then(pin => {
+        if (pinnedCityId !== city.id) return
+        domPinLayer.upsert(pin)
+        syncPinnedSlugs()
+        window.setTimeout(() => panAndPulse(pin.slug), 0)
+      })
+      .catch(err => console.error('[pins] wikilink-spawn failed', err))
+  },
 })
 
 async function loadPinsForCity(cityId: string): Promise<void> {

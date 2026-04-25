@@ -110,7 +110,16 @@ export type MountVellumFileSurface = (
  */
 export type MountVellumFiberSurface = (
   container: HTMLElement,
-  opts: { slug: string; cityId?: string; originId?: string; width?: number },
+  opts: {
+    slug: string
+    cityId?: string
+    originId?: string
+    width?: number
+    /** Wikilink-click handler. Forwarded into vellum's FiberCard `onNavigate`
+     *  so clicks on `/<slug>` anchors call back into the host instead of the
+     *  browser trying to navigate. */
+    onNavigate?: (slug: string) => void
+  },
 ) => VellumSurfaceMount
 
 /** Mount a read-only terminal view into `container` for the given sessionId.
@@ -176,6 +185,12 @@ export interface DomPinLayerOptions {
    *  hit-test in MapInteractionController never sees hovers over a pin. This
    *  callback closes that loop so the HUD can light up the matching row. */
   onHover?: (slug: string | null) => void
+  /** Wikilink click inside a fiber pin's body. Receives the target slug stripped
+   *  of its leading slash (e.g. clicking `[[swarm]]` calls with `"swarm"`).
+   *  Without a handler the click is a no-op — FiberCard's `onNavigate` only
+   *  preventDefaults when a callback is wired. The host typically spawns or
+   *  pulses a fiber pin for the slug at the current city. */
+  onFiberNavigate?: (slug: string) => void
 }
 
 interface DomPinEntry {
@@ -224,6 +239,7 @@ export class DomPinLayer {
   private readonly onPinResized?: (slug: string, width: number, height: number) => void
   private readonly resolveFiberMeta?: (pin: Pin) => Promise<{ name?: string | null; status?: FiberStatus | null } | null>
   private readonly onHover?: (slug: string | null) => void
+  private readonly onFiberNavigate?: (slug: string) => void
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
@@ -244,6 +260,7 @@ export class DomPinLayer {
     this.onPinResized = opts.onPinResized
     this.resolveFiberMeta = opts.resolveFiberMeta
     this.onHover = opts.onHover
+    this.onFiberNavigate = opts.onFiberNavigate
 
     this.container = document.createElement('div')
     this.container.className = 'dom-pin-layer'
@@ -426,6 +443,7 @@ export class DomPinLayer {
             slug: entry.slug,
             cityId: this.cityIdFor?.(),
             width: entry.width,
+            onNavigate: this.onFiberNavigate,
           })
         }
       }
@@ -535,6 +553,7 @@ export class DomPinLayer {
           slug: pin.slug,
           cityId: this.cityIdFor?.(),
           width: size.width,
+          onNavigate: this.onFiberNavigate,
         })
       }
     } else if (pin.kind === 'terminal' && pin.source?.sessionId && this.mountTerminalSurface) {
