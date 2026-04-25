@@ -787,6 +787,14 @@ function openFile(args: OpenFileArgs): void {
 // tapestry-dissolves. Single-instance: close the previous handle before opening
 // a new city.
 let activeWorkspaceHandle: { close(): void } | null = null
+// Bumped every openCityWorkspace call. The async vellumMountPromise.then()
+// callback only mounts if the token is still current — without this guard,
+// rapid synchronous calls (mashing `t`, repeated hashchange handlers, …)
+// queued multiple `.then()` microtasks that each constructed a fresh modal
+// container; only the latest got tracked in `activeWorkspaceHandle`, so the
+// rest leaked into the DOM. Reproduced with 5 synchronous `t` keydowns →
+// 5 `.vellum-workspace-modal-container` elements remained.
+let workspaceOpenToken = 0
 /**
  * Ask the server which local city owns a bare fiber slug, used by
  * `#fiber=Y` URL fragments. Returns the matching City from the loaded
@@ -810,7 +818,12 @@ async function resolveFiberCity(slug: string, cities: City[]): Promise<City | nu
 function openCityWorkspace(city: City, initialSlug?: string): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
+  const myToken = ++workspaceOpenToken
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
+    // A later openCityWorkspace call already took over — skip mounting so we
+    // don't leave an orphan modal container in the DOM next to the one the
+    // newer call will mount.
+    if (myToken !== workspaceOpenToken) return
     const handle = openVellumWorkspaceModal({
       cityId: city.id,
       originId: city.originId,
