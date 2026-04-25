@@ -30,8 +30,10 @@ describe('HttpApi — /astra/graph endpoint', () => {
 
   beforeEach(() => {
     mkdirSync(FELT_DIR, { recursive: true });
+    // City name matches cityId for the simple cases below; the
+    // separate hash-vs-slug regression test installs its own lookup.
     api = new HttpApi(
-      makeCityLookup('test', CITY_DIR) as any,
+      makeCityLookup('test', CITY_DIR, 'test') as any,
       stubOriginLookup as any,
       stubPersistenceLookup as any,
     );
@@ -166,6 +168,92 @@ created-at: 2026-01-01T00:00:00Z
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
     expect(res.data.rootSlug).toBe('alpha');
+  });
+
+  it('rootSlug prefers the root-tagged fiber over the first fiber', async () => {
+    writeFiber(FELT_DIR, 'aaa', `---
+name: AAA
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+    writeFiber(FELT_DIR, 'zzz', `---
+name: ZZZ
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-02T00:00:00Z
+tags:
+    - root
+---
+`);
+
+    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    expect(res.data.rootSlug).toBe('zzz');
+  });
+
+  it('rootSlug uses city.name (slug) — cityId is a hash, not a fiber id', async () => {
+    // Real-world cityId is a content hash like "14248cabc645e0f987bda6242e35a418"
+    // (see CityManager). The root-fiber convention nests by slug, not hash:
+    // a fiber id "pure_eb" exists in the pure_eb city, not "14248c…".
+    // resolveRootSlug must look up by city.name, not cityId.
+    rmSync(FELT_DIR, { recursive: true, force: true });
+    const slugDir = join(TEST_DIR, 'slug-city');
+    const slugFelt = join(slugDir, '.felt');
+    mkdirSync(slugFelt, { recursive: true });
+    writeFiber(slugFelt, 'pure_eb', `---
+name: pure_eb
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+    writeFiber(slugFelt, 'aaa', `---
+name: AAA
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-02T00:00:00Z
+---
+`);
+
+    const hashCityId = '14248cabc645e0f987bda6242e35a418';
+    const slugApi = new HttpApi(
+      makeCityLookup(hashCityId, slugDir, 'pure_eb') as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+
+    const res = await httpRequest(slugApi, 'GET', `/astra/graph?cityId=${hashCityId}`);
+    expect(res.data.rootSlug).toBe('pure_eb');
+  });
+
+  it('rootSlug falls back to nested slug/slug convention', async () => {
+    rmSync(FELT_DIR, { recursive: true, force: true });
+    const slugDir = join(TEST_DIR, 'nested-city');
+    const nestedFelt = join(slugDir, '.felt', 'portolan');
+    mkdirSync(nestedFelt, { recursive: true });
+    writeFiber(nestedFelt, 'portolan', `---
+name: Portolan
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+
+    const hashCityId = 'abcd1234';
+    const slugApi = new HttpApi(
+      makeCityLookup(hashCityId, slugDir, 'portolan') as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+
+    const res = await httpRequest(slugApi, 'GET', `/astra/graph?cityId=${hashCityId}`);
+    expect(res.data.rootSlug).toBe('portolan/portolan');
   });
 
   it('rootSlug is null when the city has no fibers', async () => {

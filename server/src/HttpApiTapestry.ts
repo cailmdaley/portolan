@@ -229,7 +229,7 @@ export class HttpApiTapestry {
         }
       }
 
-      const rootSlug = resolveRootSlug(cityId, fiberIds, allFibers);
+      const rootSlug = resolveRootSlug(city.name, fiberIds, allFibers);
 
       this.sendJsonSuccess(res, { nodes, links, rootSlug });
     } catch (error: any) {
@@ -641,13 +641,21 @@ export class HttpApiTapestry {
  * then to any fiber. Returns null only when the city has no fibers at all.
  */
 function resolveRootSlug(
-  cityId: string,
+  citySlug: string,
   fiberIds: Set<string>,
   allFibers: Fiber[],
 ): string | null {
-  if (fiberIds.has(cityId)) return cityId;
-  const nested = `${cityId}/${cityId}`;
+  // City slug is the project's basename (e.g. "pure_eb"), not the hashed cityId.
+  // Match the loom root-fiber convention: prefer a top-level fiber whose id
+  // equals the slug ("pure_eb"), then the nested form ("pure_eb/pure_eb"),
+  // then any fiber tagged `root`, then the first fiber as a last resort.
+  // Without using the slug, both checks always fail because cityId is a hash —
+  // see vellum-dogfood/vellum-modal-loads-wrong-root.
+  if (fiberIds.has(citySlug)) return citySlug;
+  const nested = `${citySlug}/${citySlug}`;
   if (fiberIds.has(nested)) return nested;
+  const tagged = allFibers.find((fiber) => fiber.tags?.includes('root'));
+  if (tagged) return tagged.id;
   return allFibers[0]?.id ?? null;
 }
 
