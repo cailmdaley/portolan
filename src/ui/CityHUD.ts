@@ -86,11 +86,16 @@ export class CityHUD {
     // land on them. Flipped back in show(); mirrors PlaygroundViewer.
     el.setAttribute('aria-hidden', 'true')
     el.inert = true
+    // The sidebar is a complementary panel scoped to the selected city —
+    // tabs (Fibers/Files), worker list, search. Naming it as a `complementary`
+    // landmark with the city's <h2> as its label gives screen-reader users a
+    // landmark to jump to ("City <name>") and ties the contained tablist /
+    // worker list back to the city it belongs to.
     el.innerHTML = `
-      <div class="hud-sidebar">
+      <div class="hud-sidebar" role="complementary" aria-labelledby="hud-city-name">
         <div class="hud-header">
           <div class="hud-header-row">
-            <h2 class="hud-city-name"></h2>
+            <h2 class="hud-city-name" id="hud-city-name"></h2>
             <div class="hud-header-controls">
               <div class="hud-actions"></div>
               <button class="hud-close" title="Close" aria-label="Close city HUD">&times;</button>
