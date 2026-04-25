@@ -283,8 +283,13 @@ const domPinLayer = new DomPinLayer({
   resolveFiberMeta: async (pin) => {
     if (pin.kind === 'terminal' && pin.source?.sessionId) {
       // Terminal pins: show the worker's friendly name in the chrome strip
-      // instead of the raw slug. See [[constitution-terminals-in-map]].
+      // instead of the raw slug. Prefer the full `tmuxSession` over the
+      // 10-char-truncated `name` so chrome strips, aria-labels, and the
+      // label-mode lozenge all read the worker's actual session, not
+      // `ralph-vell…`. Mirrors `worker map labels carry full tmuxSession`
+      // (a8cbf74). See [[constitution-terminals-in-map]].
       const session = sessions.find(s => s.id === pin.source!.sessionId)
+      if (session?.tmuxSession) return { name: session.tmuxSession }
       if (session?.name) return { name: session.name }
       return null
     }
