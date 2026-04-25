@@ -655,6 +655,18 @@ export class DomPinLayer {
     // card over a fiber pin) need a way to surface. Capture phase so we raise
     // before downstream drag/resize/chrome handlers consume the event.
     el.addEventListener('pointerdown', () => this.raise(entry), true)
+    // Hover-raise: clicking the body to surface a pin would also fire its
+    // primary-open action; pointerenter on the visible (uncovered) area
+    // promotes it without that side effect, exposing the affordance cluster
+    // (× close, ⋮ menu) for the pin underneath. DOM stacking means we only
+    // see the event when the pointer is over uncovered pixels, which is
+    // exactly when the user is targeting that pin. Suppressed during a
+    // drag, since the dragged pin is already raised and we don't want
+    // crossed pins to steal the front. See [[fiber-pins-overlap-at-same-coords]].
+    el.addEventListener('pointerenter', () => {
+      if (document.body.classList.contains('pin-dragging')) return
+      this.raise(entry)
+    })
     this.raise(entry)
     // Map→HUD hover bridge. pointerenter fires once per pin when the pointer
     // crosses into its bounds; DOM stacking means only the topmost pin gets
