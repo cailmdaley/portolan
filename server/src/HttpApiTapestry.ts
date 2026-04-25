@@ -385,6 +385,34 @@ export class HttpApiTapestry {
       const raw = await read(rel);
       if (raw !== null) return raw;
     }
+
+    // Bare-slug fallback (local only): persisted layouts and old URL fragments
+    // sometimes carry slugs from before a fiber was nested under a namespace
+    // (e.g. layout pin "meeting-to-astra-live-research" → real fiber
+    // "meetings/meeting-to-astra-live-research"). Scan all fibers and accept a
+    // unique leaf match. Ambiguous bare slugs stay 404 — caller can promote
+    // the layout to a fully qualified slug.
+    if (!sshHost && !slug.includes('/')) {
+      try {
+        const all = await getAllFibers(cityPath);
+        const matches = all.filter((fiber) => {
+          if (fiber.id === slug) return false; // already tried as literal
+          const idLeaf = fiber.id.split('/').pop();
+          return idLeaf === slug;
+        });
+        if (matches.length === 1) {
+          const resolvedId = matches[0].id;
+          const resolvedLeaf = resolvedId.split('/').pop();
+          for (const rel of [`.felt/${resolvedId}/${resolvedLeaf}.md`, `.felt/${resolvedId}.md`]) {
+            const raw = await readLocal(rel);
+            if (raw !== null) return raw;
+          }
+        }
+      } catch {
+        // getAllFibers failure shouldn't escalate — fall through to null.
+      }
+    }
+
     return null;
   }
 
