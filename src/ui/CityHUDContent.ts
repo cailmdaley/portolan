@@ -396,8 +396,14 @@ export class CityHUDContent {
     // delegated click still falls through to openFiber() when the title button
     // bubbles, so mouse users keep the full-row hit target.
     const ariaLabel = `${escapeHtml(fiber.name)} — ${fiber.status || 'open'}${kind === 'task' ? '' : ` (${kind})`}`
+    // Visual hierarchy lives in `--fiber-depth` (CSS padding); the a11y tree
+    // is flat without aria-level, so screen readers announce every row at
+    // level 1 even when it's nested four deep. aria-level is 1-indexed; the
+    // top-level rows are level 1 (depth 0). Set on the listitem so AT can
+    // restore the parent/child relationship that the flat <ul> erases.
+    const ariaLevel = depth + 1
     return `
-      <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}" aria-label="${ariaLabel}"${style}>
+      <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}" aria-label="${ariaLabel}" aria-level="${ariaLevel}"${style}>
         ${chevron}
         <span class="hud-fiber-status" aria-hidden="true">${fiberStatusIcon(fiber.status)}</span>
         <button type="button" class="hud-fiber-title" data-fiber-id="${escapeHtml(fiber.id)}" aria-label="Open ${escapeHtml(fiber.name)}">${escapeHtml(fiber.name)}</button>

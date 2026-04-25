@@ -225,8 +225,14 @@ export class CityHUDFileTree {
       : 'Open'
     const triggerTitle = `${triggerAction} ${escapeHtml(entry.name)}`
 
+    // Visual hierarchy lives in `padding-left`; the a11y tree is flat without
+    // aria-level, so screen readers announce every entry at level 1 even when
+    // it's three directories deep. aria-level is 1-indexed; top-level rows
+    // are level 1 (depth 0). Status rows (loading/error/empty) sit one level
+    // deeper than the parent directory they describe.
+    const ariaLevel = depth + 1
     let html = `
-      <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" style="padding-left: ${depth * 16 + 8}px">
+      <li class="hud-tree-row" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" aria-level="${ariaLevel}" style="padding-left: ${depth * 16 + 8}px">
         <button type="button" class="hud-tree-trigger" data-path="${escapeHtml(fullPath)}" data-type="${entry.type}" aria-label="${ariaLabel}" title="${triggerTitle}"${expandedAttr}>
           <span class="hud-tree-arrow" aria-hidden="true">${arrow}</span>
           <span class="hud-tree-name">${escapeHtml(entry.name)}</span>
@@ -238,22 +244,24 @@ export class CityHUDFileTree {
       return html
     }
 
+    const childAriaLevel = depth + 2
+
     if (isLoading) {
       return html + `
-        <li class="hud-tree-status" style="padding-left: ${(depth + 1) * 16 + 8}px">…</li>
+        <li class="hud-tree-status" aria-level="${childAriaLevel}" style="padding-left: ${(depth + 1) * 16 + 8}px">…</li>
       `
     }
 
     if (error) {
       return html + `
-        <li class="hud-tree-status error" style="padding-left: ${(depth + 1) * 16 + 8}px">couldn't read directory</li>
+        <li class="hud-tree-status error" aria-level="${childAriaLevel}" style="padding-left: ${(depth + 1) * 16 + 8}px">couldn't read directory</li>
       `
     }
 
     const children = this.directoryCache.get(fullPath) || []
     if (children.length === 0) {
       return html + `
-        <li class="hud-tree-status" style="padding-left: ${(depth + 1) * 16 + 8}px">empty</li>
+        <li class="hud-tree-status" aria-level="${childAriaLevel}" style="padding-left: ${(depth + 1) * 16 + 8}px">empty</li>
       `
     }
 
