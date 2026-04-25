@@ -18,7 +18,7 @@ const API_BASE = `ws://${window.location.hostname}:4004`
  * form — see `hash-restore-does-not-select-city`). The hash wins when
  * both are present, since it's the form we link.
  */
-function readUrlCityId(): string | null {
+export function readUrlCityId(): string | null {
   const hash = window.location.hash.replace(/^#/, '')
   if (hash) {
     const fromHash = new URLSearchParams(hash).get('city')
@@ -33,7 +33,7 @@ function readUrlCityId(): string | null {
  * /fiber-locate lookup) and opens the vellum workspace at that fiber.
  * See vellum-dogfood/url-fragment-fiber-nav.
  */
-function readUrlFiberSlug(): string | null {
+export function readUrlFiberSlug(): string | null {
   const hash = window.location.hash.replace(/^#/, '')
   if (hash) {
     const fromHash = new URLSearchParams(hash).get('fiber')

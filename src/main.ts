@@ -25,7 +25,7 @@ import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
 import { getActivitySessionKey } from './runtime/FrontendActivityStore'
-import { FrontendStateSync } from './runtime/FrontendStateSync'
+import { FrontendStateSync, readUrlCityId, readUrlFiberSlug } from './runtime/FrontendStateSync'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { CityHUD } from './ui/CityHUD'
 import { ContextMenu } from './ui/ContextMenu'
@@ -685,6 +685,24 @@ zoneRenderer.setScreenToWorldConverter((x, y) => camera.screenToWorld(x, y))
 // Setup city HUD (corner-anchored widgets, replaces CityPanel)
 const cityPanel = new CityHUD()
 
+// Resolve a URL city token (`#city=X` / `?city=X`) to a City. Tokens are
+// either opaque ids (from copy-link affordances) or human-readable names (what
+// the user types and what the HUD shows). Match by id first, then by name,
+// preferring a name with active sessions when two cities share it (the
+// local + remote case from `2d9c75d`). Returns null when nothing matches.
+// Used by InitialFocus (cold load) and the hashchange listener (mid-session
+// hash navigation). See `hash-restore-does-not-select-city`.
+function resolveCityFromUrlId(urlCityId: string): City | null {
+  const byId = cities.find(c => c.id === urlCityId)
+  if (byId) return byId
+  const byName = cities.filter(c => c.name === urlCityId)
+  if (byName.length === 0) return null
+  if (byName.length === 1) return byName[0]
+  return byName.find(c =>
+    sessions.some(s => s.cityId === c.id && s.lastActivity > 0),
+  ) ?? byName[0]
+}
+
 // Shared handler for city clicks (used by sprite click and label click)
 function handleCityClick(city: City): void {
   selectedHex = city.hex
@@ -954,19 +972,7 @@ const stateSync = new FrontendStateSync({
     // URLs and the HUD); match by id first, then by name, and prefer names
     // with active sessions when multiple cities share a name. See
     // hash-restore-does-not-select-city.
-    const urlCity = urlCityId
-      ? (cities.find(c => c.id === urlCityId)
-         ?? (() => {
-              const byName = cities.filter(c => c.name === urlCityId)
-              if (byName.length === 0) return null
-              if (byName.length === 1) return byName[0]
-              const active = byName.find(c =>
-                sessions.some(s => s.cityId === c.id && s.lastActivity > 0),
-              )
-              return active ?? byName[0]
-            })()
-         ?? null)
-      : null
+    const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
     const targetCity = urlCity || mostRecentCity || cities[0]
     console.log(
       '[InitialFocus]',
@@ -1019,6 +1025,39 @@ const stateSync = new FrontendStateSync({
     console.error('[Frontend] Server error:', message)
     alert(message)
   },
+})
+
+// Mid-session hash navigation — `#city=X` / `#fiber=Y` re-runs the deep-link
+// resolution. Without this, pasting a hash URL into the address bar or hitting
+// browser back/forward changed `location.hash` but left the HUD, camera, and
+// workspace pinned to whatever was previously selected; only a full reload
+// (different path or query) actually routed the URL. Same flow as InitialFocus:
+// pick the city, click it (HUD + camera focus), and if a fiber slug is present
+// open the vellum workspace at it. See `hash-restore-does-not-select-city`.
+window.addEventListener('hashchange', () => {
+  const urlCityId = readUrlCityId()
+  const urlFiberSlug = readUrlFiberSlug()
+  if (!urlCityId && !urlFiberSlug) return
+  const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
+  if (urlCity) handleCityClick(urlCity)
+  if (urlFiberSlug) {
+    cityPanel.hide()
+    if (urlCity) {
+      openCityWorkspace(urlCity, urlFiberSlug)
+    } else {
+      void resolveFiberCity(urlFiberSlug, cities).then((hit) => {
+        if (hit) {
+          handleCityClick(hit)
+          openCityWorkspace(hit, urlFiberSlug)
+        } else {
+          console.warn('[hashchange] #fiber=', urlFiberSlug, 'not found in any local city')
+        }
+      })
+    }
+  } else if (urlCity) {
+    cityPanel.hide()
+    openCityWorkspace(urlCity)
+  }
 })
 
 const mapInteractions = new MapInteractionController({
