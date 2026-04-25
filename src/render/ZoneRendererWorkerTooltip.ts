@@ -112,7 +112,11 @@ export class ZoneRendererWorkerTooltip {
 
     const headerEl = document.createElement('div')
     headerEl.className = 'worker-file-tooltip-header'
-    headerEl.textContent = session.name
+    // Show the full tmux session, not the 10-char-truncated `session.name`
+    // used on bird sprites — the tooltip has the room and the user is
+    // hovering specifically to identify the worker. Mirrors the worker map
+    // labels (a8cbf74) and terminal pin chrome (ac3325f).
+    headerEl.textContent = session.tmuxSession || session.name
     const loadingEl = document.createElement('div')
     loadingEl.className = 'worker-file-tooltip-empty'
     loadingEl.textContent = 'Loading recent files...'
@@ -157,7 +161,7 @@ export class ZoneRendererWorkerTooltip {
   ): void {
     const headerEl = document.createElement('div')
     headerEl.className = 'worker-file-tooltip-header'
-    headerEl.textContent = session.name
+    headerEl.textContent = session.tmuxSession || session.name
     this.tooltipEl.replaceChildren(headerEl)
 
     if (errorMessage) {
