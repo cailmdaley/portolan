@@ -258,8 +258,15 @@ export class CityHUDContent {
 
     // An orphan is a nested fiber whose parent isn't in the current list
     // (typically because the parent is closed). Render those at top level
-    // — otherwise they'd vanish entirely.
+    // — otherwise they'd vanish entirely. Include the root's id in
+    // `presentIds` so fibers nested under `.felt/<root>/<slug>/` (whose
+    // parentId is the root's id) are correctly recognized as root-children
+    // rather than treated as orphans and flattened to the top level. Without
+    // this, the loom shape `~/loom/.felt/<container>/<root>/<root>/<slug>`
+    // produced "singletons" — root-children appearing alongside top-level
+    // folder fibers, indistinguishable from real top-level entries.
     const presentIds = new Set(rest.map(f => f.id))
+    if (rootFiber) presentIds.add(rootFiber.id)
     const childrenByParent = new Map<string | null, Fiber[]>()
     for (const fiber of rest) {
       const rawParent = fiber.parentId ?? null
@@ -281,7 +288,17 @@ export class CityHUDContent {
 
     const html: string[] = []
     if (rootFiber) {
-      html.push(this.renderFiberItem(rootFiber, 0, /*hasChildren*/ false, /*isRoot*/ true))
+      const rootChildren = childrenByParent.get(rootFiber.id) ?? []
+      const rootHasChildren = rootChildren.length > 0
+      html.push(this.renderFiberItem(rootFiber, 0, rootHasChildren, /*isRoot*/ true))
+      // Root's own children (e.g. `.felt/<root>/<slug>/`) nest one level
+      // beneath it, with the same expand/collapse behaviour as any other
+      // container. They live conceptually inside the root, not alongside
+      // the top-level folder fibers.
+      const rootExpanded = this.expanded.has(rootFiber.id) || (this.searchForceExpanded?.has(rootFiber.id) ?? false)
+      if (rootHasChildren && rootExpanded) {
+        html.push(...this.renderFiberSubtree(rootFiber.id, childrenByParent, 1))
+      }
     }
     html.push(...this.renderFiberSubtree(null, childrenByParent, 0))
     this.host.fiberList.innerHTML = html.join('')
