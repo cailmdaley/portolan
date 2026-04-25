@@ -1,6 +1,6 @@
 export interface Fiber {
     id: string;
-    title: string;
+    name: string;
     status: string;
     kind: string;
     priority: number;
@@ -10,6 +10,8 @@ export interface Fiber {
     closedAt?: string;
     tags?: string[];
     dependsOn?: string[];
+    parentId?: string | null;
+    isRoot?: boolean;
 }
 /**
  * Counts open fibers for a city by reading its .felt/ directory.

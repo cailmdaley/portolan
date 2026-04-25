@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HttpApi } from '../HttpApi.js';
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import {
@@ -20,6 +20,20 @@ import {
   stubOriginLookup,
   stubPersistenceLookup,
 } from './test-utils.js';
+
+/**
+ * Write a nested fiber at <feltDir>/<id>/<basename(id)>.md. test-utils'
+ * `writeFiber` builds `slug.md` inside the leaf directory, which works for
+ * non-nested slugs ("foo" → foo/foo.md) but mis-builds when slug contains
+ * a slash ("a/b" → a/b/a/b.md, double-nested). The directory layout vellum
+ * and FiberReader expect is `a/b/b.md`.
+ */
+function writeNestedFiber(feltDir: string, id: string, content: string): void {
+  const dir = join(feltDir, id);
+  mkdirSync(dir, { recursive: true });
+  const basename = id.split('/').pop() ?? id;
+  writeFileSync(join(dir, `${basename}.md`), content, 'utf-8');
+}
 
 const TEST_DIR = join(homedir(), '.portolan-test-httpapi-astra-graph');
 
@@ -276,6 +290,64 @@ depends-on:
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
     expect(res.data.links).toEqual([]);
     expect(res.data.nodes).toHaveLength(1);
+  });
+
+  it('emits "contains" edges from the slug-shape parent for nested fibers', async () => {
+    // .felt/parent/parent.md (the container)
+    writeFiber(FELT_DIR, 'parent', `---
+name: Parent
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+    // .felt/parent/child/child.md (id "parent/child", lives under parent/)
+    writeNestedFiber(FELT_DIR, 'parent/child', `---
+name: Child
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-02T00:00:00Z
+---
+`);
+    // .felt/parent/child/grandchild/grandchild.md
+    writeNestedFiber(FELT_DIR, 'parent/child/grandchild', `---
+name: Grandchild
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-03T00:00:00Z
+---
+`);
+
+    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    expect(res.status).toBe(200);
+    const containsLinks = res.data.links.filter((l: any) => l.kind === 'contains');
+    expect(containsLinks).toEqual(
+      expect.arrayContaining([
+        { source: 'parent', target: 'parent/child', kind: 'contains' },
+        { source: 'parent/child', target: 'parent/child/grandchild', kind: 'contains' },
+      ]),
+    );
+    expect(containsLinks).toHaveLength(2);
+  });
+
+  it('omits "contains" edges when the parent slug has no fiber (no orphan-rooting)', async () => {
+    // Nested slug whose parent slug doesn't have its own fiber file.
+    // Without a real parent fiber, vellum's IndexView should still surface
+    // this as a top-level entry rather than dangle from a phantom parent.
+    writeNestedFiber(FELT_DIR, 'lonely-branch/leaf', `---
+name: Leaf
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+
+    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    expect(res.data.links.filter((l: any) => l.kind === 'contains')).toEqual([]);
   });
 });
 

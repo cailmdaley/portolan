@@ -246,14 +246,20 @@ const messageRouter = new MessageRouter({
         }
         // Scrollback first, then live bytes. Capture is best-effort — if the
         // pane has already exited, just fall through to the live subscribe and
-        // let the exit event propagate.
-        terminalStreamManager.getScrollback(tmuxSession).then((bytes) => {
+        // let the exit event propagate. We also include the pane's current
+        // col/row count so the client can init wterm at the right size — see
+        // [[wterm-col-width-mismatch]].
+        Promise.all([
+            terminalStreamManager.getScrollback(tmuxSession),
+            terminalStreamManager.getPaneSize(tmuxSession),
+        ]).then(([bytes, size]) => {
             if (ws.readyState !== ws.OPEN)
                 return;
             ws.send(JSON.stringify({
                 type: 'terminal:scrollback',
                 sessionId,
                 bytes: bytes.toString('base64'),
+                ...(size ? { cols: size.cols, rows: size.rows } : {}),
             }));
         }).catch((err) => {
             console.warn(`[terminal:attach] scrollback failed for ${tmuxSession}:`, err?.message ?? err);

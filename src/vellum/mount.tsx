@@ -503,16 +503,72 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   container.setAttribute('role', 'dialog')
   container.setAttribute('aria-modal', 'true')
   container.setAttribute('aria-label', 'Vellum workspace')
+  // tabindex="-1" so we can programmatically focus the container after
+  // mount: without focus inside the scrollable region, arrow-key
+  // scrolling is a no-op because the document body has no overflow to
+  // scroll. -1 keeps the container out of the tab cycle while still
+  // being a valid focus target for `.focus()`.
+  container.tabIndex = -1
   Object.assign(container.style, {
     position: 'fixed',
     inset: '0',
     zIndex: '1000',
     background: 'var(--porch-panel, #ede8e0)',
-    overflow: 'hidden',
+    // `overflow: auto` (not hidden) so the prose column can scroll on
+    // long fibers. The standalone vellum app relies on document scroll;
+    // here the modal is its own scroll container because <body> is
+    // locked behind the modal background. Vellum's fixed chrome
+    // (FloatingIsland, thumb-index, CanvasDivider) is `position: fixed`
+    // and stays anchored to the viewport while the prose scrolls under
+    // it. See vellum-dogfood/vellum-workspace-modal-no-scroll.
+    overflow: 'auto',
+    // Suppress the focus ring that would otherwise show on the whole
+    // viewport-sized container when we focus it for keyboard scroll.
+    outline: 'none',
   })
   document.body.appendChild(container)
-  const root = createRoot(container)
+
+  // React mounts into its own child div so we can keep portolan-owned
+  // chrome (the close button) as a sibling: createRoot() takes ownership
+  // of its container's children and would wipe any DOM we appended to
+  // `container` directly on every render.
+  const reactHost = document.createElement('div')
+  container.appendChild(reactHost)
+  const root = createRoot(reactHost)
   const unlockBackground = lockModalBackground(container)
+
+  // Visible escape hatch — Escape works, but a button is what every other
+  // user expects. Sits top-left as a fixed overlay (above vellum's
+  // FloatingIsland chrome on the right) so a long-scrolling fiber doesn't
+  // carry it off-screen. See vellum-dogfood/vellum-workspace-modal-no-close-button.
+  const closeBtn = document.createElement('button')
+  closeBtn.type = 'button'
+  closeBtn.className = 'vellum-workspace-modal-close'
+  closeBtn.setAttribute('aria-label', 'Close vellum workspace (Esc)')
+  closeBtn.title = 'Close (Esc)'
+  closeBtn.textContent = '×'
+  Object.assign(closeBtn.style, {
+    position: 'fixed',
+    top: '12px',
+    left: '12px',
+    zIndex: '1001',
+    width: '32px',
+    height: '32px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid var(--border, #d4ccbf)',
+    borderRadius: '4px',
+    background: 'var(--page-bg, #ede8e0)',
+    color: 'var(--text, #1f1a15)',
+    cursor: 'pointer',
+    fontSize: '20px',
+    lineHeight: '1',
+    fontFamily: 'inherit',
+    padding: '0',
+  })
+  closeBtn.addEventListener('click', () => close())
+  container.appendChild(closeBtn)
 
   const adapter = createPortolanAdapter({
     cityId: opts.cityId,
@@ -549,6 +605,15 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
         <WorkspaceMount initialSlug={initialSlug} eyebrow={opts.cityName} />
       </AdapterProvider>,
     )
+    // Move focus into the modal so arrow keys scroll the container
+    // immediately. Without this, the user has to click into the prose
+    // first; in particular trackpad/mouse-wheel works without focus but
+    // arrow-key scrolling does not (the body is inert behind the modal,
+    // so there's no fallback focus root the browser can scroll).
+    queueMicrotask(() => {
+      if (closed) return
+      container.focus({ preventScroll: true })
+    })
   }
 
   if (opts.initialSlug) {

@@ -220,11 +220,28 @@ export class HttpApiTapestry {
         findingCount: 0,
       }));
 
-      const links: Array<{ source: string; target: string; kind: 'data-flow' }> = [];
+      const links: Array<{ source: string; target: string; kind: 'data-flow' | 'contains' }> = [];
       for (const fiber of allFibers) {
         for (const dependency of fiber.dependsOn ?? []) {
           if (fiberIds.has(dependency)) {
             links.push({ source: dependency, target: fiber.id, kind: 'data-flow' });
+          }
+        }
+        // Directory containment, derived from the slug shape: a fiber at
+        // `parent/child` lives inside `parent/`, whose own fiber file is
+        // `parent/parent.md` (id `parent`). Emitting these as `contains`
+        // edges (source=parent, target=child) is what lets vellum's
+        // IndexView, FloatingIsland, and NarrativeView treat the fiber
+        // tree as a tree — without them, every nested fiber registers as
+        // a top-level root and IndexView reads as a flat 2700-line
+        // dump. Only emit when the parent fiber actually exists in the
+        // city, so a nested-without-parent slug still surfaces at the
+        // root rather than dangling.
+        const lastSlash = fiber.id.lastIndexOf('/');
+        if (lastSlash > 0) {
+          const parentId = fiber.id.slice(0, lastSlash);
+          if (fiberIds.has(parentId)) {
+            links.push({ source: parentId, target: fiber.id, kind: 'contains' });
           }
         }
       }
