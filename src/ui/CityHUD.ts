@@ -7,6 +7,28 @@ import type { Fiber } from './hud-types'
 
 type HudTab = 'fibers' | 'files'
 
+/**
+ * Find any open vellum modal (file viewer scrim, workspace modal, or any
+ * other `lockModalBackground`-using overlay). Returns the topmost matching
+ * element, or null if no modal is open.
+ *
+ * Used to gate CityHUD interactions: the HUD must not steal focus, run
+ * click-outside dismissal, or capture Escape while a deeper modal owns
+ * the foreground. The file viewer marks its scrim with
+ * `.vellum-modal-scrim`; the workspace modal uses
+ * `.vellum-workspace-modal-container`. Both also carry
+ * `role="dialog" aria-modal="true"`, but the search palette (which is
+ * intentionally allowed to layer over modals) does too — so we match the
+ * specific vellum classes and avoid a generic role/aria-modal sweep that
+ * would pull the palette in. New modals must add their container class
+ * here to participate in the same gating.
+ */
+function findOpenVellumModal(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '.vellum-modal-scrim, .vellum-workspace-modal-container',
+  )
+}
+
 export class CityHUD {
   private container: HTMLElement
   private sidebar: HTMLElement
@@ -141,14 +163,14 @@ export class CityHUD {
       const path = e.composedPath()
       if (path.includes(this.container)) return
       const target = e.target as HTMLElement
-      const vellumModal = document.querySelector('.vellum-modal-scrim')
+      const vellumModal = findOpenVellumModal()
       if (vellumModal?.contains(target)) return
       this.hide()
     }
 
     this.escapeHandler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !this.container.classList.contains('visible')) return
-      const vellumModal = document.querySelector('.vellum-modal-scrim')
+      const vellumModal = findOpenVellumModal()
       if (vellumModal) return
       if (this.content.hasSearchActivity()) {
         this.content.clearSearch()
@@ -224,7 +246,7 @@ export class CityHUD {
     // sibling lock and leave the HUD interactable behind the modal,
     // then snap back to inert=true on close (looking visible-but-broken).
     // Bail; the modal will land the user where they need to be.
-    if (document.querySelector('.vellum-modal-scrim')) return
+    if (findOpenVellumModal()) return
 
     this.currentCity = city
     this.headerWidget.querySelector('.hud-city-name')!.textContent = city.name
