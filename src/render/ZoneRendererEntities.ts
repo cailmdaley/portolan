@@ -215,6 +215,12 @@ export class ZoneRendererEntities {
       workerDiv.dataset.workerId = worker.id
       workerDiv.dataset.tmuxSession = worker.tmuxSession
       workerDiv.style.cursor = 'grab'
+      // Visible text uses the elided `worker.name` for chip width, but
+      // hover-title and a11y-label expose the full tmux session — same
+      // resolution as `ce9910f` for HUD chips / RecentWorkerBar / palette.
+      workerDiv.setAttribute('role', 'button')
+      workerDiv.setAttribute('aria-label', `Worker ${worker.tmuxSession}`)
+      workerDiv.title = worker.tmuxSession
       this.labelInteractions.bindWorkerLabel(workerDiv, worker.id, worker.tmuxSession)
 
       const workerLabelObj = new CSS2DObject(workerDiv)
@@ -267,6 +273,12 @@ export class ZoneRendererEntities {
     labelDiv.dataset.workerId = session.id
     labelDiv.dataset.tmuxSession = session.tmuxSession
     labelDiv.style.cursor = 'move'
+    // Orphan worker label — same elided/full split as the swarm-attached
+    // labels above. Visible text stays elided; title + aria carry the full
+    // tmux session name.
+    labelDiv.setAttribute('role', 'button')
+    labelDiv.setAttribute('aria-label', `Worker ${session.tmuxSession}`)
+    labelDiv.title = session.tmuxSession
     this.labelInteractions.bindWorkerLabel(labelDiv, session.id, session.tmuxSession)
 
     const labelObject = new CSS2DObject(labelDiv)
