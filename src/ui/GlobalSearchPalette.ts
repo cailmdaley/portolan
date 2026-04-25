@@ -312,7 +312,14 @@ export class GlobalSearchPalette {
 
     if (this.filteredResults.length === 0) {
       this.selectedIndex = 0
-      this.results.innerHTML = '<div class="gs-empty">No matches</div>'
+      // The container carries role="listbox" — a generic <div> child with no
+      // role is invisible to a11y inside a listbox (which expects options),
+      // so an empty-state message rendered as a bare div leaves screen
+      // readers and the agent-browser snapshot announcing the listbox as
+      // empty. Render the empty state as an aria-disabled option carrying
+      // the "No matches" text. Mirrors vellum's `vellum-search-no-results`
+      // fix (vellum 7a7d78b) and `hud-search-no-results` precedent.
+      this.results.innerHTML = '<div class="gs-empty" role="option" aria-disabled="true">No matches</div>'
       return
     }
 
