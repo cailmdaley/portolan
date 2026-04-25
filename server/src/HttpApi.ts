@@ -204,6 +204,11 @@ export class HttpApi {
       return true;
     }
 
+    if (url.pathname === '/api/search' && req.method === 'GET') {
+      await this.tapestryApi.handleSearch(url, res);
+      return true;
+    }
+
     if (url.pathname.startsWith('/fiber/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber/'.length));
       await this.tapestryApi.handleFiberContent(url, slug, res);

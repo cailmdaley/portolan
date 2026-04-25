@@ -8,8 +8,10 @@
  *     fiber-slug keying TODO on server side)
  *   - getFiberContent hits /fiber/:slug (remark + wikilink transform on demand)
  *   - getAstraGraph hits /astra/graph?cityId=X
- *   - searchFibers, getDeltaSince, getRawFiber return empty/null until the
- *     server grows matching endpoints.
+ *   - searchFibers wraps /api/search?cityId=…&q=… (server-side substring
+ *     match across name/slug/tags/outcome/body, scored)
+ *   - getDeltaSince, getRawFiber return empty/null until the server grows
+ *     matching endpoints.
  *
  * The adapter deliberately returns well-typed empty sentinels where portolan
  * can't yet serve something so vellum components don't need to distinguish
@@ -182,8 +184,14 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       return rows.map((r) => projectAnnotationRow(r, slug));
     },
 
-    async searchFibers(_query: string): Promise<SearchHit[]> {
-      return [];
+    async searchFibers(query: string): Promise<SearchHit[]> {
+      const q = query.trim();
+      if (!q || !opts.cityId) return [];
+      const url = `${API_BASE}/api/search?cityId=${encodeURIComponent(opts.cityId)}&q=${encodeURIComponent(q)}`;
+      const res = await fetch(url).catch(() => null);
+      if (!res || !res.ok) return [];
+      const data = await res.json();
+      return (data.hits ?? []) as SearchHit[];
     },
 
     async getDeltaSince(since: string): Promise<LogResponse> {

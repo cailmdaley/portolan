@@ -327,6 +327,107 @@ export class HttpApiTapestry {
     this.sendJsonError(res, 404, `Fiber "${slug}" not found in any local city`);
   }
 
+  /**
+   * /api/search?cityId=X&q=Y — vellum-shaped SearchHit[].
+   *
+   * Vellum's FloatingIsland renders a search input that calls
+   * adapter.searchFibers(q) → /api/search?q=… (see vellum/src/api.ts).
+   * Without this endpoint the side-strip search silently returns nothing,
+   * because adapter.searchFibers used to return an empty array.
+   *
+   * Scope: scoped to one city's .felt tree (the same slice vellum already
+   * navigates and the same one the side-strip's link list is showing).
+   * Cross-city search lives in portolan's GlobalSearchPalette.
+   *
+   * Score model — substring matches across four surfaces with descending
+   * weight so name/slug hits beat body hits on tie. q is lowercased and
+   * matched verbatim; this is the same naive contains-match the side-strip
+   * filter would do client-side, just done over content vellum's adapter
+   * never receives (body, outcome).
+   */
+  async handleSearch(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    const q = (url.searchParams.get('q') ?? '').trim();
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+    if (!q) {
+      this.sendJsonSuccess(res, { hits: [] });
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+    const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') ?? '20', 10) || 20));
+
+    try {
+      const fibers = await this.getAllCityFibers(city.path, sshHost);
+      const needle = q.toLowerCase();
+
+      const hits = fibers
+        .map((fiber) => {
+          const name = (fiber.name || fiber.id).toLowerCase();
+          const id = fiber.id.toLowerCase();
+          const outcome = (fiber.outcome ?? '').toLowerCase();
+          const body = (fiber.body ?? '').toLowerCase();
+          const tags = (fiber.tags ?? []).join(' ').toLowerCase();
+
+          // Highest-leverage surface first; weights chosen so a name hit
+          // always outranks a pure-body hit on the same fiber.
+          let score = 0;
+          if (name.includes(needle)) score += 100;
+          if (id.includes(needle)) score += 80;
+          if (tags.includes(needle)) score += 40;
+          if (outcome.includes(needle)) score += 20;
+          if (body.includes(needle)) score += 5;
+          // Whole-word slug match (e.g. q="vellum" hits id "vellum-dogfood")
+          // is already covered by id.includes; no extra branch needed.
+
+          return { fiber, score };
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map(({ fiber, score }) => {
+          // Snippet: first body line containing the needle, trimmed and
+          // ellipsised. Falls back to the body's lede for context-free hits
+          // (e.g. tag-only matches) so the dropdown row isn't blank.
+          let snippet: string | undefined;
+          if (fiber.body) {
+            const bodyLower = fiber.body.toLowerCase();
+            const idx = bodyLower.indexOf(needle);
+            if (idx >= 0) {
+              const start = Math.max(0, idx - 40);
+              const end = Math.min(fiber.body.length, idx + needle.length + 80);
+              snippet = (start > 0 ? '…' : '') + fiber.body.slice(start, end).replace(/\s+/g, ' ').trim() + (end < fiber.body.length ? '…' : '');
+            } else {
+              snippet = fiber.body.split('\n').find((line) => line.trim())?.slice(0, 120);
+            }
+          }
+          return {
+            id: fiber.id,
+            title: fiber.name || fiber.id,
+            status: fiber.status,
+            tags: fiber.tags ?? [],
+            snippet,
+            outcome: fiber.outcome,
+            score,
+          };
+        });
+
+      this.sendJsonSuccess(res, { hits });
+    } catch (error: any) {
+      console.error('Failed to search fibers:', error);
+      this.sendJsonError(res, 500, 'Failed to search fibers: ' + error.message);
+    }
+  }
+
   async handleTapestryAsset(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
     const rawPath = url.pathname.replace('/tapestry-asset/', '');
