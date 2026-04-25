@@ -2232,6 +2232,23 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        /* Title is a <button> in the fiber list so keyboard users can open
+           the fiber. Reset the native button chrome so it reads as inline
+           text inside the row. Search results reuse the class on a <span>
+           which inherits the same look. */
+        background: none;
+        border: none;
+        padding: 0;
+        margin: 0;
+        text-align: left;
+        cursor: pointer;
+        font-size: inherit;
+        line-height: inherit;
+      }
+      button.hud-fiber-title:focus-visible {
+        outline: 2px solid var(--sepia-accent);
+        outline-offset: 1px;
+        border-radius: 2px;
       }
 
       .hud-fiber-kind {

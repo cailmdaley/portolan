@@ -390,12 +390,17 @@ export class CityHUDContent {
     // which renders as "◐  Fiber name    ↗" with newlines and gutter
     // whitespace. Name the row by the fiber, and hide decorative chrome from
     // the a11y tree so screen readers announce just "Fiber name — <status>".
+    // The title itself is a <button> so keyboard users can open the fiber —
+    // chevron only toggles expand and handoff only sends to worker, so without
+    // a focusable title there was no Tab-reachable Open action. The row's
+    // delegated click still falls through to openFiber() when the title button
+    // bubbles, so mouse users keep the full-row hit target.
     const ariaLabel = `${escapeHtml(fiber.name)} — ${fiber.status || 'open'}${kind === 'task' ? '' : ` (${kind})`}`
     return `
       <li class="${classes.join(' ')}" data-fiber-id="${escapeHtml(fiber.id)}" aria-label="${ariaLabel}"${style}>
         ${chevron}
         <span class="hud-fiber-status" aria-hidden="true">${fiberStatusIcon(fiber.status)}</span>
-        <span class="hud-fiber-title">${escapeHtml(fiber.name)}</span>
+        <button type="button" class="hud-fiber-title" data-fiber-id="${escapeHtml(fiber.id)}" aria-label="Open ${escapeHtml(fiber.name)}">${escapeHtml(fiber.name)}</button>
         ${kindBadge}
         <button class="hud-fiber-handoff" data-fiber-id="${escapeHtml(fiber.id)}" title="Hand off to worker" aria-label="Hand off ${escapeHtml(fiber.name)} to worker">↗</button>
       </li>
