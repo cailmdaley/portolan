@@ -2531,6 +2531,27 @@
       .hud-fiber-title.mono {
         font-family: 'JetBrains Mono', monospace;
         font-size: var(--hud-font-sm);
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
+      /* Parent path hint beside the filename — disambiguates duplicate
+         filenames across the workspace. Muted, mono, right-aligned. Elides
+         from the *left* (direction: rtl + unicode-bidi keeps the text LTR)
+         so the leaf segment of the parent path — the most disambiguating
+         bit — stays readable. */
+      .hud-search-path {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: calc(var(--hud-font-sm) - 1px);
+        color: var(--ink-faded);
+        text-align: right;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        direction: rtl;
+        unicode-bidi: plaintext;
       }
 
       .hud-search-empty,
