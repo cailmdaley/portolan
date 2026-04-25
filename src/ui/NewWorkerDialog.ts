@@ -1,5 +1,7 @@
 // NewWorkerDialog.ts - In-game dialog for creating new workers
 
+import { lockModalBackground } from './modalBackgroundLock'
+
 export interface NewWorkerOptions {
   name: string
   chrome: boolean
@@ -16,6 +18,8 @@ export class NewWorkerDialog {
   private continueCheckbox: HTMLInputElement
   private resolvePromise: ((result: NewWorkerOptions | null) => void) | null = null
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+  // Restores prior inert/aria-hidden on body siblings when this dialog hides.
+  private unlockBackground: (() => void) | null = null
 
   constructor() {
     this.overlay = this.createOverlay()
@@ -39,6 +43,13 @@ export class NewWorkerDialog {
   private createOverlay(): HTMLElement {
     const overlay = document.createElement('div')
     overlay.className = 'new-worker-overlay'
+    // Modal a11y: name the dialog so screen readers announce "New Worker
+    // dialog" instead of an unnamed generic, and tag aria-modal so AT users
+    // know the rest of the page is unavailable. Background-inert is applied
+    // dynamically in show()/hide() — see lockModalBackground.
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+    overlay.setAttribute('aria-label', 'New Worker')
     overlay.style.cssText = `
       position: fixed;
       inset: 0;
@@ -306,6 +317,11 @@ export class NewWorkerDialog {
     // Show dialog
     this.overlay.style.display = 'flex'
 
+    // Lock background siblings — keeps the map, cards, HUD, and recent-worker
+    // bar out of the a11y tree while this modal is on top.
+    this.unlockBackground?.()
+    this.unlockBackground = lockModalBackground(this.overlay)
+
     // Attach escape handler
     if (this.escapeHandler) {
       document.addEventListener('keydown', this.escapeHandler)
@@ -339,6 +355,9 @@ export class NewWorkerDialog {
 
   private hide(): void {
     this.overlay.style.display = 'none'
+    // Restore prior inert/aria-hidden on background siblings.
+    this.unlockBackground?.()
+    this.unlockBackground = null
     // Detach escape handler
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)
