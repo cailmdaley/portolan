@@ -1068,6 +1068,12 @@ window.addEventListener('hashchange', () => {
   const urlCityId = readUrlCityId()
   const urlFiberSlug = readUrlFiberSlug()
   if (!urlCityId && !urlFiberSlug) return
+  // Bail before initial state arrives. Vite HMR (and some agent-browser
+  // navigations) fire hashchange before the WS delivers cities; resolving
+  // against an empty city list would warn-and-no-op for a hash that
+  // InitialFocus is about to handle correctly. Once cities load, normal
+  // hash navigation runs through this handler.
+  if (cities.length === 0) return
   const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
   if (urlCityId && !urlCity) {
     // Stale link or now-removed city: warn for symmetry with the #fiber=
