@@ -230,9 +230,18 @@ export class GlobalSearchPalette {
   private renderResults(): void {
     const query = this.input.value.trim().toLowerCase()
 
+    // City matches against name + origin label, so a remote city named
+    // "ai-futures on candide" filters when the user types "candide".
+    // Mirrors the disambiguated aria-label/visual-label rendering further
+    // down: the searchable text matches what the user sees.
+    const cityHaystack = (city: City): string => {
+      const origin = city.originId === 'local' ? '' : ` ${city.originId.replace(/^remote-/, '')}`
+      return (city.name + origin).toLowerCase()
+    }
+
     // Build tree: group workers under their city
     const groups: CityGroup[] = this.cities
-      .filter(city => !query || city.name.toLowerCase().includes(query))
+      .filter(city => !query || cityHaystack(city).includes(query))
       .map(city => ({
         city,
         workers: this.sessions
@@ -244,11 +253,19 @@ export class GlobalSearchPalette {
     const matchedCityIds = new Set(groups.map(g => g.city.id))
     // Match search against full tmuxSession name, not the truncated display form.
     const sessionMatches = (s: Session): boolean => (s.tmuxSession || s.name).toLowerCase().includes(query)
+    // City lookup by id matches the same haystack as the top-level filter so
+    // worker-side matches that pull their parent city in by name + origin
+    // stay consistent with the city-level filter above.
+    const cityById = new Map(this.cities.map(c => [c.id, c]))
+    const cityIdMatches = (cityId: string | null | undefined): boolean => {
+      if (!cityId) return false
+      const c = cityById.get(cityId)
+      return c ? cityHaystack(c).includes(query) : false
+    }
     if (query) {
       const extraWorkers = this.sessions.filter(s =>
         !matchedCityIds.has(s.cityId || '') &&
-        (sessionMatches(s) ||
-         (s.cityId && (this.cityNameById.get(s.cityId) || '').toLowerCase().includes(query)))
+        (sessionMatches(s) || cityIdMatches(s.cityId))
       )
       for (const session of extraWorkers) {
         const city = this.cities.find(c => c.id === session.cityId)
@@ -269,7 +286,7 @@ export class GlobalSearchPalette {
         if (!matchedCityIds.has(group.city.id)) {
           group.workers = group.workers.filter(w =>
             sessionMatches(w.session) ||
-            w.cityName.toLowerCase().includes(query)
+            cityHaystack(group.city).includes(query)
           )
         }
       }
