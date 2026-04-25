@@ -550,12 +550,17 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   if (opts.initialSlug) {
     mountWith(opts.initialSlug)
   } else {
-    // Ask the server which fiber is the city's root (handles projects whose
-    // root slug isn't `{cityId}/{cityId}`); fall back to the convention on
-    // network error. See fiber city-to-fiber-slug-mapping.
+    // Ask the server which fiber is the city's root, then mount on it.
+    // If the lookup fails (network error, no root resolved), mount with an
+    // empty slug so vellum lands on its IndexView — a coherent "look around"
+    // entry point. The previous fallback was `${cityId}/${cityId}` from when
+    // cityId was the slug name; now cityId is an opaque hash (per
+    // `/astra/graph rootSlug uses city.name`) so that fallback would form
+    // `<hash>/<hash>` and trigger vellum's "Fiber X not found. Is mystra
+    // running on port 3100?" error on a server that isn't even mystra.
     resolveCityRootSlug(opts.cityId)
-      .then((slug) => mountWith(slug ?? `${opts.cityId}/${opts.cityId}`))
-      .catch(() => mountWith(`${opts.cityId}/${opts.cityId}`))
+      .then((slug) => mountWith(slug ?? ''))
+      .catch(() => mountWith(''))
   }
 
   return { close }
