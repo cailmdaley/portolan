@@ -21,7 +21,7 @@ interface CityLookup {
   /** Optional: returns the normalized `${originId}:${path}` cityKey for a known cityId. */
   getCityKey?(cityId: string): string | null;
   /** Optional: lists every known city — used by the /layouts/_diagnostics endpoint. */
-  getCities?(): Array<{ id: string; path: string; originId: string }>;
+  getCities?(): Array<{ id: string; path: string; originId: string; name: string }>;
 }
 
 interface Options {
@@ -183,6 +183,7 @@ export class HttpApiLayouts {
     file: string;
     status: 'live' | 'mismatch' | 'orphan';
     currentCityName?: string;
+    currentCityPath?: string;
   }> {
     const cities = this.cityLookup?.getCities?.() ?? [];
     const cityById = new Map(cities.map(c => [c.id, c]));
@@ -201,7 +202,14 @@ export class HttpApiLayouts {
         pinCount,
         file,
         status,
-        ...(liveCity ? { currentCityName: liveCity.path } : {}),
+        // The field is `currentCityName`, but `City` carries both `name`
+        // (display) and `path` (absolute filesystem path). The diagnostic
+        // was reading `path`, so a /layouts/_diagnostics dump labelled the
+        // portolan city `/Users/cd280747/Documents/projects/portolan`
+        // instead of `portolan`. Use the display name and add the path as
+        // a separate field for operators who want to disambiguate two
+        // cities with the same name.
+        ...(liveCity ? { currentCityName: liveCity.name, currentCityPath: liveCity.path } : {}),
       };
     });
   }
