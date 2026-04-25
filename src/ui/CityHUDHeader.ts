@@ -373,13 +373,23 @@ export class CityHUDHeader {
     const body = groups
       .map(([origin, sessions]) => {
         const label = origin === 'local' ? 'local' : origin.replace(/^remote-/, 'remote • ')
+        // The group div carries the visual origin header but isn't exposed
+        // as a landmark, so screen readers flatten the picker into an
+        // undifferentiated sequence of chips. The aria-label needs to
+        // carry the origin itself — workers across projects can share
+        // names (two "claude" sessions on local + remote-candide are
+        // common), and without the origin the user can't tell which one
+        // they're picking. Local chips stay unadorned to match the
+        // map-label convention (local is the default; only remotes are
+        // annotated — 2d9c75d, edda2e2).
+        const ariaOrigin = origin === 'local' ? '' : ` on ${origin.replace(/^remote-/, '')}`
         const chips = sessions
           .map(session => {
             // `session.name` is the elided chip form; title + aria-label
             // carry the full tmux session name so hover/screen-readers
             // show the real worker identity. Mirrors ce9910f.
             const fullName = session.tmuxSession || session.name
-            return `<button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" title="${escapeHtml(fullName)}" aria-label="Start meeting with worker ${escapeHtml(fullName)}" ${disabledAttr}>${escapeHtml(session.name)}</button>`
+            return `<button class="hud-meeting-btn hud-meeting-start" data-worker-id="${session.id}" title="${escapeHtml(fullName)}" aria-label="Start meeting with worker ${escapeHtml(fullName)}${escapeHtml(ariaOrigin)}" ${disabledAttr}>${escapeHtml(session.name)}</button>`
           })
           .join('')
         return `
