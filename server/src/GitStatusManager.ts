@@ -218,8 +218,13 @@ export class GitStatusManager {
       // No upstream configured
     }
 
-    // Parse status --porcelain
-    const statusLines = statusResult.trim().split('\n').filter(Boolean);
+    // Parse status --porcelain. Don't trim: each line's first two chars are
+    // the status pair (XY), where the staged half is ' ' for unstaged-only
+    // changes. `.trim()` on the whole output strips the leading space of
+    // the first line, which shifts XY left by one and misreports the first
+    // ' M file' as a staged modification. Split on '\n', drop the trailing
+    // empty token from the final newline, and read columns at fixed offsets.
+    const statusLines = statusResult.split('\n').filter((line) => line.length > 0);
     for (const line of statusLines) {
       const staged = line[0];
       const unstaged = line[1];
