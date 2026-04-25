@@ -21,6 +21,12 @@ export class ContextMenu {
     const menu = document.createElement('div')
     menu.className = 'context-menu'
     menu.setAttribute('role', 'menu')
+    // Give the container a stable accessible name so screen readers and
+    // snapshot tools (agent-browser) announce it as "Context menu" with N
+    // items, rather than dropping the unnamed wrapper and promoting the
+    // menuitems to document-level orphans. This is the only context menu
+    // in the app; we don't need to vary the label per invocation source.
+    menu.setAttribute('aria-label', 'Context menu')
     menu.tabIndex = -1
     menu.style.cssText = `
       position: fixed;

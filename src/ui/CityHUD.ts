@@ -102,17 +102,17 @@ export class CityHUD {
           <div class="hud-header-meeting"></div>
         </div>
 
-        <div class="hud-tabbar">
-          <button class="hud-tab" data-tab="fibers">Fibers</button>
-          <button class="hud-tab active" data-tab="files">Files</button>
+        <div class="hud-tabbar" role="tablist" aria-label="City view">
+          <button class="hud-tab" data-tab="fibers" role="tab" id="hud-tab-fibers" aria-controls="hud-pane-fibers" aria-selected="false">Fibers</button>
+          <button class="hud-tab active" data-tab="files" role="tab" id="hud-tab-files" aria-controls="hud-pane-files" aria-selected="true">Files</button>
         </div>
 
         <div class="hud-content">
           <ul class="hud-search-results" style="display: none;"></ul>
-          <div class="hud-pane hud-pane-fibers">
+          <div class="hud-pane hud-pane-fibers" id="hud-pane-fibers" role="tabpanel" aria-labelledby="hud-tab-fibers" hidden>
             <ul class="hud-fiber-list"></ul>
           </div>
-          <div class="hud-pane hud-pane-files active">
+          <div class="hud-pane hud-pane-files active" id="hud-pane-files" role="tabpanel" aria-labelledby="hud-tab-files">
             <ul class="hud-file-tree"></ul>
           </div>
         </div>
@@ -191,12 +191,16 @@ export class CityHUD {
     this.activeTab = tab
 
     for (const btn of this.container.querySelectorAll<HTMLElement>('.hud-tab')) {
-      btn.classList.toggle('active', btn.dataset.tab === tab)
+      const isActive = btn.dataset.tab === tab
+      btn.classList.toggle('active', isActive)
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false')
     }
     for (const pane of this.container.querySelectorAll<HTMLElement>('.hud-pane')) {
       const isActive = pane.classList.contains(`hud-pane-${tab}`)
       pane.classList.toggle('active', isActive)
       pane.style.display = isActive ? '' : 'none'
+      if (isActive) pane.removeAttribute('hidden')
+      else pane.setAttribute('hidden', '')
     }
 
     this.content.handleTabChange(tab)
