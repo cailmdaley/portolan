@@ -146,11 +146,25 @@ export class FrontendStateSync {
     }
 
     this.ws.onmessage = (event) => {
+      // Split parse from handle so a downstream ReferenceError /
+      // TypeError (e.g. an HMR-stale CityHUD reaching for a removed
+      // module-private helper) doesn't masquerade as a JSON-parse
+      // failure. Both are still caught — losing one ws message is
+      // recoverable; tearing down the socket is not — but the labels
+      // distinguish the two and the underlying error is logged so
+      // future investigations don't chase phantom server payloads.
+      // See vellum-dogfood/findopenvellummodal-not-defined.
+      let message: unknown
       try {
-        const message = JSON.parse(event.data)
-        this.handleMessage(message)
+        message = JSON.parse(event.data)
       } catch (error) {
-        console.error('Failed to parse message:', error)
+        console.error('Failed to parse server message:', error, event.data)
+        return
+      }
+      try {
+        this.handleMessage(message as ServerMessage)
+      } catch (error) {
+        console.error('Failed to handle server message:', error, message)
       }
     }
 
