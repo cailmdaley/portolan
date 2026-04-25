@@ -172,13 +172,17 @@ function showLanding() {
     .catch(() => [])
     .then((tapestries: { name: string; nodeCount?: number; updated?: string }[]) => {
       const list = document.getElementById('tapestry-list')!
-      if (tapestries.length === 0) {
+      // Hide empty tapestries — a 0-node entry has no graph to render and
+      // currently appears as a bare name with no count, which reads as broken.
+      // Drop them at the manifest level rather than in the template.
+      const visible = tapestries.filter(t => (t.nodeCount ?? 0) > 0)
+      if (visible.length === 0) {
         list.innerHTML = '<p style="color: var(--ui-text-muted); font-style: italic;">No tapestries exported yet.</p>'
         return
       }
       // Sort demo to the top
-      tapestries.sort((a, b) => a.name === 'demo' ? -1 : b.name === 'demo' ? 1 : a.name.localeCompare(b.name))
-      list.innerHTML = tapestries.map(t => `
+      visible.sort((a, b) => a.name === 'demo' ? -1 : b.name === 'demo' ? 1 : a.name.localeCompare(b.name))
+      list.innerHTML = visible.map(t => `
         <a href="?tapestry=${encodeURIComponent(t.name)}" style="
           display: block; padding: 1rem 1.4rem; background: var(--ui-dark-elevated);
           border: 1px solid var(--ui-border); border-radius: 4px;
