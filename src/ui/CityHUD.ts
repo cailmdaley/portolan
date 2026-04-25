@@ -336,8 +336,17 @@ export class CityHUD {
   }
 
   setWebSocket(ws: WebSocket): void {
+    const isReconnect = this.ws !== null && this.ws !== ws
     this.ws = ws
     this.fileTree.setWebSocket(ws)
+    // On reconnect (new socket replaces a previous one), re-issue the
+    // in-flight fiber request if the HUD is open. Otherwise the response
+    // to the stale socket is dropped and the panel sits on "Loading…"
+    // forever — see `hud-fibers-stuck-on-cold-load`. Mirrors the re-attach
+    // pattern in TerminalPinManager.setWebSocket.
+    if (isReconnect && this.isVisible() && this.currentCity) {
+      this.content.requestFibers(this.currentCity.id)
+    }
   }
 
   setOnViewClaims(callback: (city: City) => void): void {
