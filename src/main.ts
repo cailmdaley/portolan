@@ -815,6 +815,11 @@ function openCityWorkspace(city: City, initialSlug?: string): void {
       cityId: city.id,
       originId: city.originId,
       initialSlug,
+      // Hand the city name through so vellum's IndexView can label its
+      // cartouche correctly. Without this, the eyebrow above "Index"
+      // collapses to nothing — honest, but less informative than naming
+      // the city we're reading. See vellum's CollectionContext.
+      cityName: city.name,
     })
     activeWorkspaceHandle = handle
   })

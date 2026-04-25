@@ -482,6 +482,10 @@ export interface OpenWorkspaceModalOptions {
   /** Initial fiber slug to land on. Typically `<cityId>/<cityId>` (the city's root fiber). */
   initialSlug?: string
   originId?: string
+  /** Display name shown above IndexView's "Index" cartouche. Typically the
+   *  city name (`portolan`, `LightconeResearch`); flows to vellum's
+   *  CollectionContext via WorkspaceMount.eyebrow. */
+  cityName?: string
 }
 
 /**
@@ -542,7 +546,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     if (closed) return
     root.render(
       <AdapterProvider adapter={adapter}>
-        <WorkspaceMount initialSlug={initialSlug} />
+        <WorkspaceMount initialSlug={initialSlug} eyebrow={opts.cityName} />
       </AdapterProvider>,
     )
   }
