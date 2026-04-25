@@ -31,16 +31,14 @@ export class RecentFileTracker {
     if (!normalizedPath) return;
 
     const entries = this.entriesBySessionId.get(workerSessionId) ?? [];
-    const previous = entries[0];
 
-    // Skip immediate duplicate touches to keep the trail meaningful.
-    if (
-      previous &&
-      previous.toolName === toolName &&
-      previous.fullPath === normalizedPath &&
-      Math.abs(previous.timestamp - timestamp) < 1500
-    ) {
-      return;
+    // Drop any prior entry for the same path — re-touching a file should
+    // refresh its position in the trail (most-recent-first), not append a
+    // duplicate. Read-then-Edit on the same path collapses to one entry,
+    // and the trail of `limit=4` distinct paths actually shows four files.
+    const existingIdx = entries.findIndex(e => e.fullPath === normalizedPath);
+    if (existingIdx !== -1) {
+      entries.splice(existingIdx, 1);
     }
 
     entries.unshift({
