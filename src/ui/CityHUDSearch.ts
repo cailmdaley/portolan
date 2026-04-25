@@ -165,6 +165,14 @@ export class CityHUDSearch {
         this.searchResults.push(result)
       }
     }
+    // The server sends exactly one searchResults message per search (filename
+    // and content modes both close once and emit a single payload). Receiving
+    // it means the search is done — clear any in-flight `<li
+    // class="hud-search-loading">` so renderSearchResults can transition to
+    // "No matches" when the result is empty. Without this, the loading-guard
+    // in renderSearchResults pinned the UI on "Searching…" forever for any
+    // query with zero matches.
+    this.host.searchResultsList.querySelector('.hud-search-loading')?.remove()
     this.renderSearchResults()
   }
 
