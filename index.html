@@ -1981,7 +1981,20 @@
       .hud-header {
         padding: 14px 16px 12px;
         border-bottom: 1px solid var(--parchment-edge);
-        flex-shrink: 0;
+        /* Header carries city name + path + git detail + workers + meeting,
+           which on an active git repo with several workers can balloon to
+           >400px. With `flex-shrink: 0` that crushes the fiber/file pane
+           below to ~80px — most of the tree gets clipped, and the chevron
+           buttons are rendered below the viewport (agent-browser clicks miss
+           them, sending the click to documentElement which dismisses the HUD
+           via clickOutsideHandler). Cap at half the sidebar and let the
+           header scroll internally; the always-visible city-name + path stay
+           pinned at the top of the scroll, and tabs + content always claim
+           the lower half. */
+        flex: 0 1 auto;
+        min-height: 0;
+        max-height: 50%;
+        overflow-y: auto;
       }
 
       .hud-header-controls {
