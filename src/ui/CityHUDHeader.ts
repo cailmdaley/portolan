@@ -176,8 +176,14 @@ export class CityHUDHeader {
 
   private renderActions(city: City): void {
     const buttons: string[] = []
+    // Pre-vellum this opened a separate Claims dashboard; in the current
+    // architecture it opens the city's vellum workspace — same surface as
+    // pressing `t`. Kept as a discoverable affordance for users who don't
+    // know the keybind. Glyph stays for visual continuity with prior
+    // muscle-memory; labels reflect what it actually does now. See the
+    // closed `view-claims-button-redundant` finding.
     if (city.hasClaims) {
-      buttons.push('<button class="hud-action-btn hud-action-claims" title="Claims" aria-label="View claims">⚖</button>')
+      buttons.push('<button class="hud-action-btn hud-action-claims" title="Open vellum (t)" aria-label="Open vellum workspace">⚖</button>')
     }
     if (city.hasPlaygrounds) {
       buttons.push('<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds" aria-label="View playgrounds">▶</button>')
