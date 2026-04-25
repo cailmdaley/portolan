@@ -359,8 +359,15 @@ export class GlobalSearchPalette {
     // agent-browser snapshots need the real identity. Mirrors ce9910f's
     // treatment of worker chips.
     const fullName = session.tmuxSession || session.name
+    // The visual tree-branch glyph groups workers under their city, but the
+    // a11y tree is a flat listbox of options — without the city in the
+    // label, screen-reader users hear "Worker claude" with no way to tell
+    // which project's `claude` they're selecting. Mirrors the recent-worker
+    // bar's "Recent worker X on Y" form.
+    const cityName = session.cityId ? this.cityNameById.get(session.cityId) : undefined
+    const a11yLabel = cityName ? `Worker ${fullName} on ${cityName}` : `Worker ${fullName}`
     item.setAttribute('role', 'option')
-    item.setAttribute('aria-label', `Worker ${fullName}`)
+    item.setAttribute('aria-label', a11yLabel)
 
     const branch = document.createElement('span')
     branch.className = `gs-branch ${isLast ? 'gs-branch-last' : ''}`
