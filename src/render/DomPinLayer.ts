@@ -243,6 +243,11 @@ export class DomPinLayer {
   private readonly container: HTMLDivElement
   private readonly entries = new Map<string, DomPinEntry>()
   private hoveredSlug: string | null = null
+  /** Pin slugs currently under a pointer (own-hover, not the HUD bridge). The
+   *  layer's container z-index escapes the HUD sidebar (z=900) and recent-worker
+   *  bar (z=50) while non-empty so a pin partly behind those panels still has
+   *  reachable affordances. See [[pin-affordances-occluded-by-hud]]. */
+  private readonly pointerOver = new Set<string>()
   private zCounter = 0
 
   constructor(opts: DomPinLayerOptions) {
@@ -280,6 +285,19 @@ export class DomPinLayer {
   private raise(entry: DomPinEntry): void {
     this.zCounter += 1
     entry.el.style.zIndex = String(this.zCounter)
+  }
+
+  /** Mark a pin as pointer-over (or not) and float the whole pin layer above
+   *  the HUD sidebar / recent-worker bar while any pin is under the cursor.
+   *  The layer is otherwise z=20 (above map, below the HUD chrome at z=900) so
+   *  pins read as map objects; promoting on hover keeps the chrome panels
+   *  authoritative most of the time but lets a pin partly tucked behind them
+   *  surface its ×/⋮ affordances when the user reaches for them.
+   *  See [[pin-affordances-occluded-by-hud]]. */
+  private setPointerOver(slug: string, over: boolean): void {
+    if (over) this.pointerOver.add(slug)
+    else this.pointerOver.delete(slug)
+    this.container.style.zIndex = this.pointerOver.size > 0 ? '950' : '20'
   }
 
   /** Brief visual pulse on an existing DOM pin — "yes, that's the one."
@@ -347,6 +365,9 @@ export class DomPinLayer {
     entry.el.remove()
     this.entries.delete(slug)
     if (this.hoveredSlug === slug) this.hoveredSlug = null
+    // A pin removed mid-hover (e.g. user clicks ×) never fires pointerleave.
+    // Drop it explicitly so the layer doesn't strand at z=950.
+    if (this.pointerOver.has(slug)) this.setPointerOver(slug, false)
   }
 
   clear(): void {
@@ -666,6 +687,15 @@ export class DomPinLayer {
     el.addEventListener('pointerenter', () => {
       if (document.body.classList.contains('pin-dragging')) return
       this.raise(entry)
+      this.setPointerOver(pin.slug, true)
+    })
+    // Pointerleave fires even mid-drag, which is fine — dropping the layer
+    // back to z=20 just lets HUD chrome reclaim its z order once the pin is
+    // no longer under the cursor. The pointerdown raise has already set the
+    // dragged pin's intra-layer z-index, so the dragged pin still sits on top
+    // of its siblings within the (lowered) layer.
+    el.addEventListener('pointerleave', () => {
+      this.setPointerOver(pin.slug, false)
     })
     this.raise(entry)
     // Map→HUD hover bridge. pointerenter fires once per pin when the pointer
