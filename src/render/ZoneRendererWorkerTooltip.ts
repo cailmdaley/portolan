@@ -19,6 +19,14 @@ export class ZoneRendererWorkerTooltip {
   constructor() {
     this.tooltipEl = document.createElement('div')
     this.tooltipEl.className = 'worker-file-tooltip'
+    // Hover-triggered popup that names the worker and lists its recent files.
+    // role=tooltip + aria-live=polite gives the popup an a11y identity so
+    // screen readers announce the contents (worker name → file list) when
+    // it appears, instead of treating it as an unlabeled generic div.
+    // Matches the wterm-pin / context-menu pattern of giving body-appended
+    // floating UI a stable accessible name.
+    this.tooltipEl.setAttribute('role', 'tooltip')
+    this.tooltipEl.setAttribute('aria-live', 'polite')
     this.tooltipEl.style.display = 'none'
     this.tooltipEl.addEventListener('mouseenter', this.onTooltipMouseEnter)
     this.tooltipEl.addEventListener('mouseleave', this.onTooltipMouseLeave)
