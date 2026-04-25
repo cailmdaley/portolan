@@ -1187,18 +1187,26 @@ const onGlobalHotkeys = (event: KeyboardEvent): void => {
   if (isEditableElement(document.activeElement)) return
   if (globalSearchPalette.isVisible()) return
 
-  const city = cityPanel.getCurrentCity()
+  // `n` requires a visible HUD: creating a new worker is HUD-scoped action and
+  // there's no obvious target city when nothing is on screen. `t`, by contrast,
+  // is "open the workspace for whatever city is in focus" — and after Escape
+  // from the workspace the HUD is hidden but `pinnedCityId` is still set, so
+  // the same key that just closed it should reopen it. Without the fallback,
+  // the user has to first re-summon the HUD (click hex, palette, …) just to
+  // hit `t` again. See vellum-dogfood/t-key-needs-hud.
+  const visibleCity = cityPanel.getCurrentCity()
+  const focusedCity = visibleCity ?? cities.find(c => c.id === pinnedCityId) ?? null
 
-  if (event.key === 'n' && city && cityPanel.isVisible()) {
+  if (event.key === 'n' && visibleCity && cityPanel.isVisible()) {
     event.preventDefault()
-    void mapActions?.promptNewWorker(city)
+    void mapActions?.promptNewWorker(visibleCity)
     return
   }
 
-  if (event.key === 't' && city && cityPanel.isVisible()) {
+  if (event.key === 't' && focusedCity) {
     event.preventDefault()
     cityPanel.hide()
-    openCityWorkspace(city)
+    openCityWorkspace(focusedCity)
   }
 }
 
