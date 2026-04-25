@@ -187,12 +187,24 @@ export class RecentWorkerBar {
 
     perch.append(bird, name, tooltip)
 
-    perch.addEventListener('mouseenter', () => {
-      this.loadRecentFiles(session, filesEl)
-    })
-    perch.addEventListener('mouseleave', () => {
+    // Mirror hover behaviour for keyboard focus: keyboard users tab to a perch
+    // and the tooltip otherwise stays opacity:0, hiding the recent files. The
+    // CSS uses :hover, :focus-within for visibility; this mirrors the loader
+    // side so files actually populate on focus too.
+    const showFiles = (): void => { this.loadRecentFiles(session, filesEl) }
+    const hideFiles = (): void => {
       this.hoverRequestId++
       filesEl.innerHTML = ''
+    }
+    perch.addEventListener('mouseenter', showFiles)
+    perch.addEventListener('mouseleave', hideFiles)
+    perch.addEventListener('focusin', showFiles)
+    perch.addEventListener('focusout', (e) => {
+      // Don't tear down when focus moves between children of the perch
+      // (perch → file item, file item → file item). Only on real exit.
+      const next = e.relatedTarget as Node | null
+      if (next && perch.contains(next)) return
+      hideFiles()
     })
 
     return perch
@@ -216,6 +228,11 @@ export class RecentWorkerBar {
         item.className = 'rwb-file-item'
         item.title = f.fullPath
         item.textContent = f.basename
+        // Visible text is the basename; the action is "open the file in vellum".
+        // Without an aria-label, screen readers announce "FrontendStateSync.ts,
+        // button" with no hint that activation opens the file. Match the HUD
+        // file tree label vocabulary.
+        item.setAttribute('aria-label', `Open ${f.basename}`)
         item.addEventListener('click', (e) => {
           e.preventDefault()
           e.stopPropagation()
@@ -301,8 +318,17 @@ export class RecentWorkerBar {
         animation: rwb-land 300ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
       }
 
-      .rwb-perch:hover {
+      .rwb-perch:hover,
+      .rwb-perch:focus-visible {
         opacity: 1 !important;
+      }
+
+      /* Quiet, antiquarian focus ring — keyboard-only via :focus-visible */
+      .rwb-perch:focus { outline: none; }
+      .rwb-perch:focus-visible {
+        outline: 1px dashed var(--ink-faded, #7A7068);
+        outline-offset: 4px;
+        border-radius: 2px;
       }
 
       .rwb-bird {
@@ -313,7 +339,8 @@ export class RecentWorkerBar {
         filter: sepia(1) saturate(2) hue-rotate(100deg) brightness(0.45);
       }
 
-      .rwb-perch:hover .rwb-bird {
+      .rwb-perch:hover .rwb-bird,
+      .rwb-perch:focus-within .rwb-bird {
         transform: rotate(0deg) scale(1.15) !important;
         filter: sepia(1) saturate(2) hue-rotate(100deg) brightness(0.35);
       }
@@ -329,7 +356,8 @@ export class RecentWorkerBar {
         transition: color 150ms ease;
       }
 
-      .rwb-perch:hover .rwb-name {
+      .rwb-perch:hover .rwb-name,
+      .rwb-perch:focus-within .rwb-name {
         color: var(--ink-dark, #2A2520);
       }
 
@@ -350,11 +378,9 @@ export class RecentWorkerBar {
         padding: 6px 0 4px;
       }
 
-      .rwb-perch:hover .rwb-tooltip {
+      .rwb-perch:hover .rwb-tooltip,
+      .rwb-perch:focus-within .rwb-tooltip {
         pointer-events: auto;
-      }
-
-      .rwb-perch:hover .rwb-tooltip {
         opacity: 1;
         transform: translateX(-50%) translateY(2px);
       }
