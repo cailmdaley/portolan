@@ -120,12 +120,17 @@ export class CityHUDContent {
   requestFibers(cityId: string): void {
     const ws = this.host.getWebSocket()
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty">No connection</li>'
+      // aria-label is required: chrome's a11y tree drops a bare `<li>` whose
+      // only child is text — `agent-browser snapshot` and screen readers see
+      // an empty list, so users have no signal that anything happened. Mirrors
+      // the GlobalSearchPalette empty-state fix in 15e3db7 and the HUD-search
+      // and vellum-search-no-results precedents.
+      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty" aria-label="No connection to portolan server">No connection</li>'
       return
     }
 
     this.lastRequestedCityId = cityId
-    this.host.fiberList.innerHTML = '<li class="hud-fiber-empty hud-fiber-loading">Loading…</li>'
+    this.host.fiberList.innerHTML = '<li class="hud-fiber-empty hud-fiber-loading" aria-label="Loading fibers">Loading…</li>'
     ws.send(JSON.stringify({ type: 'getFibers', cityId }))
   }
 
@@ -239,7 +244,7 @@ export class CityHUDContent {
 
     const allFibers = [...open, ...closed]
     if (allFibers.length === 0) {
-      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty">No fibers</li>'
+      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty" aria-label="No fibers in this city">No fibers</li>'
       return
     }
 
@@ -257,7 +262,7 @@ export class CityHUDContent {
       : null
 
     if (rendered.length === 0) {
-      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty">No matches</li>'
+      this.host.fiberList.innerHTML = '<li class="hud-fiber-empty" aria-label="No fiber matches">No matches</li>'
       return
     }
 

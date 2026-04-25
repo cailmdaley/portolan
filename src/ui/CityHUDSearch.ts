@@ -174,7 +174,7 @@ export class CityHUDSearch {
     this.host.fiberList.style.display = 'none'
     this.host.filesList.style.display = 'none'
     this.host.searchResultsList.style.display = 'block'
-    this.host.searchResultsList.innerHTML = '<li class="hud-search-loading">Searching…</li>'
+    this.host.searchResultsList.innerHTML = '<li class="hud-search-loading" aria-label="Searching">Searching…</li>'
 
     const currentCity = this.host.getCurrentCity()
     const ws = this.host.getWebSocket()
@@ -211,7 +211,10 @@ export class CityHUDSearch {
 
     if (files.length === 0) {
       if (this.host.searchResultsList.querySelector('.hud-search-loading')) return
-      this.host.searchResultsList.innerHTML = '<li class="hud-search-empty">No matches</li>'
+      // Empty `<li>` text is invisible to chrome's a11y tree — see the same
+      // fix on CityHUDContent and GlobalSearchPalette (15e3db7). The
+      // `aria-label` makes the empty-state announce as a listitem.
+      this.host.searchResultsList.innerHTML = '<li class="hud-search-empty" aria-label="No search matches">No matches</li>'
       return
     }
 
