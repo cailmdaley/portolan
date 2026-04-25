@@ -30,6 +30,7 @@ import 'vellum/css'
 import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
 import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'
 import { showToast } from '../ui/utils'
+import { lockModalBackground } from '../ui/modalBackgroundLock'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
@@ -432,47 +433,6 @@ export interface OpenFileModalOptions {
 
 export interface VellumModalHandle {
   close(): void
-}
-
-/**
- * Mark every body sibling of `modalContainer` as `inert` + `aria-hidden`,
- * so screen readers and keyboard focus can't reach the map, pinned cards,
- * or recent-worker bar while a full-viewport vellum modal is on top. The
- * global search palette is intentionally left interactive — it's the one
- * overlay we expect to layer over an open modal (Cmd-K-style navigation).
- *
- * Returns an unlock function that restores each sibling's prior `inert`
- * and `aria-hidden` state. Symmetric save/restore composes cleanly when
- * a file modal opens on top of a workspace modal: the workspace's prior
- * state was already non-inert, so closing the inner file modal restores
- * the workspace to interactive without disturbing whatever the workspace
- * itself put on the rest of the page.
- *
- * Without this, agent-browser snapshots (and screen readers) see every
- * city label, pinned-card region, and the "Recent workers" nav alongside
- * the modal — `aria-modal="true"` alone doesn't hide background siblings.
- */
-function lockModalBackground(modalContainer: HTMLElement): () => void {
-  const restorers: Array<() => void> = []
-  for (const child of Array.from(document.body.children)) {
-    if (child === modalContainer) continue
-    if (!(child instanceof HTMLElement)) continue
-    // GlobalSearchPalette layers on top of modals (Cmd-K-style nav).
-    if (child.classList.contains('gs-palette')) continue
-    if (child.classList.contains('gs-backdrop')) continue
-    const prevInert = child.inert
-    const prevAriaHidden = child.getAttribute('aria-hidden')
-    child.inert = true
-    child.setAttribute('aria-hidden', 'true')
-    restorers.push(() => {
-      child.inert = prevInert
-      if (prevAriaHidden === null) child.removeAttribute('aria-hidden')
-      else child.setAttribute('aria-hidden', prevAriaHidden)
-    })
-  }
-  return () => {
-    while (restorers.length > 0) restorers.pop()!()
-  }
 }
 
 /**

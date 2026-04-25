@@ -1,6 +1,7 @@
 // PlaygroundViewer.ts - Panel for viewing interactive playgrounds
 
 import type { City } from '../state/types'
+import { lockModalBackground } from './modalBackgroundLock'
 
 interface PlaygroundInfo {
   name: string
@@ -22,6 +23,9 @@ export class PlaygroundViewer {
 
   // Stored listener ref for HMR-safe cleanup
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+  // Restores prior inert/aria-hidden on body siblings when this modal hides.
+  // Set in show(), called and cleared in hide(). See modalBackgroundLock.
+  private unlockBackground: (() => void) | null = null
 
   constructor() {
     this.panel = this.createPanel()
@@ -114,6 +118,10 @@ export class PlaygroundViewer {
     this.panel.classList.add('visible')
     this.panel.removeAttribute('aria-hidden')
     this.panel.inert = false
+    // Inert background siblings (map, pinned cards, recent worker bar) so
+    // assistive tech doesn't see them through this 96vw × 96vh overlay.
+    this.unlockBackground?.()
+    this.unlockBackground = lockModalBackground(this.panel)
 
     // Fetch list of playgrounds
     try {
@@ -198,6 +206,10 @@ export class PlaygroundViewer {
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler)
     }
+
+    // Restore prior inert/aria-hidden on background siblings.
+    this.unlockBackground?.()
+    this.unlockBackground = null
 
     // Clear iframe after animation
     this.clearHideTimeout()
