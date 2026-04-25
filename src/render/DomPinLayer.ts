@@ -534,6 +534,20 @@ export class DomPinLayer {
         if (meta.name) {
           setLabelTabTitle(labelTab, meta.name, pin.slug)
           el.setAttribute('aria-label', `${pin.kind ?? 'pin'} pin: ${meta.name}`)
+          // Affordance buttons were labelled with `titleForPin(pin)` (the
+          // slug for fiber kind) at first paint. Now that the fiber's real
+          // name has resolved, swap the qualifier so screen-readers and the
+          // a11y snapshot read the same human title the region carries.
+          const menuBtn = el.querySelector<HTMLElement>('.dom-pin-affordance-menu')
+          const closeBtn = el.querySelector<HTMLElement>('.dom-pin-affordance-close')
+          if (menuBtn) {
+            menuBtn.setAttribute('aria-label', `Pin menu for ${meta.name}`)
+            menuBtn.title = `Pin menu for ${meta.name}`
+          }
+          if (closeBtn) {
+            closeBtn.setAttribute('aria-label', `Unpin ${meta.name}`)
+            closeBtn.title = `Unpin ${meta.name}`
+          }
         }
       }).catch(() => {})
     }
@@ -1273,8 +1287,14 @@ function renderAffordances(pin: Pin): HTMLElement {
     cluster.appendChild(ext)
   }
 
-  cluster.appendChild(mkBtn('dom-pin-affordance-menu', '⋮', 'Pin menu'))
-  cluster.appendChild(mkBtn('dom-pin-affordance-close', '×', 'Unpin'))
+  // Qualify the affordance buttons with the pin's title so a screen-reader
+  // (or agent-browser snapshot) sees N distinct "Pin menu for X" / "Unpin X"
+  // buttons rather than N copies of generic "Pin menu" / "Unpin". Mirrors
+  // the disambiguation pattern from worker-palette/recent-worker labels —
+  // see commit 1f69078 (qualify worker palette options with their city).
+  const pinTitle = titleForPin(pin)
+  cluster.appendChild(mkBtn('dom-pin-affordance-menu', '⋮', `Pin menu for ${pinTitle}`))
+  cluster.appendChild(mkBtn('dom-pin-affordance-close', '×', `Unpin ${pinTitle}`))
 
   return cluster
 }
