@@ -697,6 +697,22 @@ export class DomPinLayer {
     el.addEventListener('pointerleave', () => {
       this.setPointerOver(pin.slug, false)
     })
+    // Keyboard parity for hover-raise: tabbing into any focusable inside the
+    // pin (the affordance ×/⋮/↗ cluster, vellum links, the editor) raises
+    // this pin above its siblings. Without this, a Tab user could focus a
+    // button visually buried under another card; the focus ring would land
+    // somewhere they can't see. focusin bubbles, so one listener on the
+    // wrapper covers every descendant. See [[fiber-pins-overlap-at-same-coords]].
+    el.addEventListener('focusin', () => {
+      if (document.body.classList.contains('pin-dragging')) return
+      this.raise(entry)
+      this.setPointerOver(pin.slug, true)
+    })
+    el.addEventListener('focusout', (event) => {
+      const next = event.relatedTarget as Node | null
+      if (next && el.contains(next)) return
+      this.setPointerOver(pin.slug, false)
+    })
     this.raise(entry)
     // Map→HUD hover bridge. pointerenter fires once per pin when the pointer
     // crosses into its bounds; DOM stacking means only the topmost pin gets
