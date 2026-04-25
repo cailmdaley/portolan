@@ -123,7 +123,7 @@ export class CityHUD {
         </div>
 
         <div class="hud-search-bar">
-          <input type="text" class="hud-search-input" placeholder="Search files &amp; fibers…" />
+          <input type="text" class="hud-search-input" placeholder="Search files &amp; fibers…" aria-label="Search files and fibers in this city" role="searchbox" />
           <button class="hud-search-clear" style="display: none;" aria-label="Clear search">&times;</button>
         </div>
       </div>

@@ -30,9 +30,14 @@ interface CityHUDContentHost {
 
 export class CityHUDContent {
   private host: CityHUDContentHost
-  private fibersCallback: ((response: FibersResponse) => void) | null = null
   private openFibers: Fiber[] = []
   private closedFibers: Fiber[] = []
+  // The cityId most recently asked for via `requestFibers`. The response
+  // handler matches on this rather than on `host.getCurrentCity()` so the
+  // fibers still land in the DOM even when show() → openCityWorkspace
+  // clears currentCity before the response arrives (the cold-load
+  // `#city=X` path). See `hud-fiber-loading-stuck`.
+  private lastRequestedCityId: string | null = null
   private pinnedSlugs: Set<string> = new Set()
   private search: CityHUDSearch
   // Expanded container fiber IDs. Default is collapsed; user expands
@@ -70,9 +75,9 @@ export class CityHUDContent {
   }
 
   reset(): void {
-    this.fibersCallback = null
     this.openFibers = []
     this.closedFibers = []
+    this.lastRequestedCityId = null
     this.search.reset()
     this.host.fiberList.innerHTML = ''
   }
@@ -119,21 +124,27 @@ export class CityHUDContent {
       return
     }
 
+    this.lastRequestedCityId = cityId
     this.host.fiberList.innerHTML = '<li class="hud-fiber-empty hud-fiber-loading">Loading…</li>'
-    this.fibersCallback = (response) => {
-      if (response.cityId === this.host.getCurrentCity()?.id) {
-        this.renderFibers(response.open, response.closed)
-      }
-    }
     ws.send(JSON.stringify({ type: 'getFibers', cityId }))
   }
 
   handleMessage(message: unknown): boolean {
     const msg = message as { type?: string }
     if (msg.type === 'fibers') {
+      // Match on `lastRequestedCityId`, not `getCurrentCity()`. The cold-load
+      // `#city=X` path calls show(X) (which sets currentCity and fires
+      // requestFibers) and then immediately cityPanel.hide() (which clears
+      // currentCity) before handing off to openCityWorkspace. Gating on
+      // currentCity dropped the response on the floor in that window, leaving
+      // the HUD permanently "Loading…" even after the workspace was closed.
+      // The requested cityId is the right gate: we always want the response
+      // to our most recent request. Stale responses (user switched cities
+      // mid-flight) still get dropped because lastRequestedCityId advances.
       const response = message as FibersResponse
-      this.fibersCallback?.(response)
-      this.fibersCallback = null
+      if (response.cityId === this.lastRequestedCityId) {
+        this.renderFibers(response.open, response.closed)
+      }
       return true
     }
     if (msg.type === 'searchResults') {
