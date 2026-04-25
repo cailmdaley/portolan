@@ -157,7 +157,7 @@ function showLanding() {
       min-height: 100vh; font-family: var(--font-main); color: var(--ui-text);
       background: var(--ui-dark); padding: 2rem;
     ">
-      <h1 class="landing-title"><span class="drop-cap" data-letter="T">T</span>apestries</h1>
+      <h1 class="landing-title" aria-label="Tapestries"><span class="drop-cap" aria-hidden="true" data-letter="T">T</span>apestries</h1>
       <p style="font-size: 1.3rem; color: var(--ui-text-muted); margin-bottom: 2rem; font-style: italic;">navigable maps of research in progress</p>
       <div id="tapestry-list" style="display: flex; flex-direction: column; gap: 0.8rem; min-width: 280px;">
         <p style="color: var(--ui-text-muted); font-style: italic; font-size: 0.9rem;">Loading...</p>
