@@ -1093,11 +1093,19 @@ function renderVellumShell(): HTMLElement {
   const div = document.createElement('div')
   div.className = 'dom-pin-vellum-shell'
   // Pure visual frame: the outer pin wrapper already carries the
-  // `region: "<kind> pin: <title>"` aria-label. Without role="presentation"
-  // here the shell shows up as an unnamed `generic` whose accessibility
-  // name concatenates the wrapped textbox + buttons + line-number gutter
-  // ("/path/file.mdSave999123..." in agent-browser snapshots).
+  // `region: "<kind> pin: <title>"` aria-label.
+  //
+  // role="presentation" alone isn't enough: React installs an `onclick = noop`
+  // on every container it renders into (Mobile-Safari click-delegation
+  // workaround in trapClickOnNonInteractiveElement; React 18 trips this for
+  // the shell because it doesn't recognize __reactContainer$ as a root
+  // marker). That click handler causes Chrome to expose the shell as
+  // `generic [clickable]` and compute its accessible name from concatenated
+  // descendant text ("◐ Annotations — pinsdecisionsclaim overlaysAnnotations
+  // are the…"). A static aria-label short-circuits the text concat without
+  // hiding descendants (aria-hidden would cascade).
   div.setAttribute('role', 'presentation')
+  div.setAttribute('aria-label', 'Pin contents')
   Object.assign(div.style, {
     flex: '1 1 auto',
     minHeight: '0',
