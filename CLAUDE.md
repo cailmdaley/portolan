@@ -129,6 +129,7 @@ One-liners. Fiber has the full story. `felt ls -s all gotcha` for more.
 - **Force Touch is additive.** Suppress `click` with capture-phase flag. `main.ts:451-478`.
 - **Vite HMR stacks listeners.** Add doc-level listeners in show/hide, not constructors.
 - **Window wheel preventDefaults over everything.** New overlays must be added to Camera's exemption `closest()` list or the map zooms instead of the overlay scrolling. `gotcha-modal-scroll-window-wheel`
+- **Modal a11y needs background `inert`.** `aria-modal="true"` alone doesn't hide siblings — screen readers and the agent-browser snapshot still see the map, pinned cards, and recent-worker bar through any full-viewport modal. New modals must call `lockModalBackground()` from `src/ui/modalBackgroundLock.ts` on show and the returned unlock fn on hide.
 - **Fibers use `name`, never `title`.** Felt switched to ASTRA vocabulary; backward-compat shims are gone end-to-end. `fiber-rename-title-to-name`
 - **`felt add` requires `<slug> <name>`.** Two positional args, not one. `gotcha-file-as-fiber-slug`
 - **Body-appended popovers inside vellum modals need z-index > 9999.** `.vellum-modal-scrim` is 9999; put popovers at 10000+. `gotcha-picker-below-vellum-scrim`
