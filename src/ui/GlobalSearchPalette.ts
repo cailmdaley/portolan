@@ -1,4 +1,5 @@
 import type { City, Session } from '../state/types'
+import { lockModalBackground } from './modalBackgroundLock'
 
 type SearchResult =
   | { type: 'city'; city: City }
@@ -34,6 +35,10 @@ export class GlobalSearchPalette {
   private visible = false
   private filteredResults: SearchResult[] = []
   private selectedIndex = 0
+  // Set in show(), called and cleared in hide(). See modalBackgroundLock —
+  // the palette is role=dialog aria-modal=true, so background siblings (map,
+  // city HUD, pinned cards, recent-worker bar) must be inerted while it's open.
+  private unlockBackground: (() => void) | null = null
 
   private readonly onBackdropClick: (event: MouseEvent) => void
   private readonly onDocumentKeydown: (event: KeyboardEvent) => void
@@ -135,6 +140,12 @@ export class GlobalSearchPalette {
     this.input.value = ''
     this.backdrop.style.display = 'block'
     this.palette.style.display = 'flex'
+    // Inert background siblings before showing — gs-palette and gs-backdrop
+    // are skipped by lockModalBackground, so this also works correctly when
+    // the palette opens over another modal (Cmd-K-style nav over an open
+    // vellum reader, etc.).
+    this.unlockBackground?.()
+    this.unlockBackground = lockModalBackground(this.palette)
     this.attachListeners()
     this.renderResults()
     requestAnimationFrame(() => {
@@ -153,6 +164,8 @@ export class GlobalSearchPalette {
     this.input.value = ''
     this.results.innerHTML = ''
     this.filteredResults = []
+    this.unlockBackground?.()
+    this.unlockBackground = null
   }
 
   isVisible(): boolean {
