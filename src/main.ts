@@ -1069,6 +1069,12 @@ window.addEventListener('hashchange', () => {
   const urlFiberSlug = readUrlFiberSlug()
   if (!urlCityId && !urlFiberSlug) return
   const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
+  if (urlCityId && !urlCity) {
+    // Stale link or now-removed city: warn for symmetry with the #fiber=
+    // branch below so console traffic is even, and fall through to the
+    // urlFiberSlug branch which can still resolve city-by-fiber.
+    console.warn('[hashchange] #city=', urlCityId, 'not found in any local or remote city')
+  }
   if (urlCity) handleCityClick(urlCity)
   if (urlFiberSlug) {
     cityPanel.hide()
