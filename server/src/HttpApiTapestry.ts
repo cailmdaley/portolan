@@ -239,6 +239,41 @@ export class HttpApiTapestry {
   }
 
   /**
+   * /city-root-slug?cityId=X — just the rootSlug, without the rest of the graph.
+   *
+   * Vellum modal cold-open used to fetch /astra/graph twice on open: once in
+   * `openVellumWorkspaceModal` (just to read rootSlug) and again inside
+   * WorkspaceMount. This endpoint lets the modal land on the right fiber
+   * without paying for a 200KB+ graph payload before the WorkspaceMount fetch
+   * does it for real. See vellum-dogfood/vellum-modal-double-graph-fetch.
+   */
+  async handleCityRootSlug(url: URL, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const fiberIds = new Set(allFibers.map((fiber) => fiber.id));
+      const rootSlug = resolveRootSlug(city.name, fiberIds, allFibers);
+      this.sendJsonSuccess(res, { rootSlug });
+    } catch (error: any) {
+      console.error('Failed to resolve city root slug:', error);
+      this.sendJsonError(res, 500, 'Failed to resolve city root slug: ' + error.message);
+    }
+  }
+
+  /**
    * /fiber/:slug?cityId=X — vellum-shaped FiberContent.
    *
    * Finds the fiber by id within the given city, parses frontmatter as YAML,

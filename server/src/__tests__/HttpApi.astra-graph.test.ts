@@ -278,3 +278,87 @@ depends-on:
     expect(res.data.nodes).toHaveLength(1);
   });
 });
+
+describe('HttpApi — /city-root-slug endpoint', () => {
+  // Sibling of /astra/graph that returns just { rootSlug } so the vellum
+  // modal cold-open doesn't pay the cost of the full graph payload twice.
+  // See vellum-dogfood/vellum-modal-double-graph-fetch.
+  const CITY_DIR = join(TEST_DIR, 'test-city-root-slug');
+  const FELT_DIR = join(CITY_DIR, '.felt');
+  let api: HttpApi;
+
+  beforeEach(() => {
+    mkdirSync(FELT_DIR, { recursive: true });
+    api = new HttpApi(
+      makeCityLookup('test', CITY_DIR, 'test') as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 400 without cityId', async () => {
+    const res = await httpRequest(api, 'GET', '/city-root-slug');
+    expect(res.status).toBe(400);
+    expect(res.data.error).toMatch(/cityId/i);
+  });
+
+  it('returns 404 for unknown city', async () => {
+    const res = await httpRequest(api, 'GET', '/city-root-slug?cityId=nonexistent');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns the rootSlug only — no nodes/links payload', async () => {
+    writeFiber(FELT_DIR, 'test', `---
+name: Root
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+
+    const res = await httpRequest(api, 'GET', '/city-root-slug?cityId=test');
+    expect(res.status).toBe(200);
+    expect(res.data.rootSlug).toBe('test');
+    expect(res.data.nodes).toBeUndefined();
+    expect(res.data.links).toBeUndefined();
+  });
+
+  it('rootSlug is null when the city has no fibers', async () => {
+    const res = await httpRequest(api, 'GET', '/city-root-slug?cityId=test');
+    expect(res.status).toBe(200);
+    expect(res.data.rootSlug).toBeNull();
+  });
+
+  it('uses the same resolution rules as /astra/graph (slug, not hash cityId)', async () => {
+    rmSync(FELT_DIR, { recursive: true, force: true });
+    const slugDir = join(TEST_DIR, 'slug-city-root-slug');
+    const slugFelt = join(slugDir, '.felt');
+    mkdirSync(slugFelt, { recursive: true });
+    writeFiber(slugFelt, 'pure_eb', `---
+name: pure_eb
+status: open
+kind: task
+priority: 2
+created-at: 2026-01-01T00:00:00Z
+---
+`);
+
+    const hashCityId = '14248cabc645e0f987bda6242e35a418';
+    const slugApi = new HttpApi(
+      makeCityLookup(hashCityId, slugDir, 'pure_eb') as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+
+    const res = await httpRequest(slugApi, 'GET', `/city-root-slug?cityId=${hashCityId}`);
+    expect(res.status).toBe(200);
+    expect(res.data.rootSlug).toBe('pure_eb');
+  });
+});

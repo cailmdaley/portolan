@@ -567,8 +567,11 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
 }
 
 async function resolveCityRootSlug(cityId: string): Promise<string | null> {
+  // Use the dedicated /city-root-slug endpoint instead of /astra/graph: the
+  // modal only needs rootSlug here, and WorkspaceMount fetches the full graph
+  // again itself. See vellum-dogfood/vellum-modal-double-graph-fetch.
   const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
-  const res = await fetch(`http://${host}:4004/astra/graph?cityId=${encodeURIComponent(cityId)}`)
+  const res = await fetch(`http://${host}:4004/city-root-slug?cityId=${encodeURIComponent(cityId)}`)
   if (!res.ok) return null
   const data = await res.json()
   return typeof data.rootSlug === 'string' ? data.rootSlug : null

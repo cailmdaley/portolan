@@ -197,6 +197,11 @@ export class HttpApi {
       return true;
     }
 
+    if (url.pathname === '/city-root-slug') {
+      await this.tapestryApi.handleCityRootSlug(url, res);
+      return true;
+    }
+
     // Must precede `/fiber/` prefix match — the literal `/fiber-locate`
     // path is unrelated to the fiber content endpoint.
     if (url.pathname === '/fiber-locate' && req.method === 'GET') {
