@@ -162,13 +162,26 @@ export class ZoneRendererEntities {
     // Disambiguate two cities sharing a name by appending their origin
     // (e.g. a local `ai-futures` and a `remote-cineca/ai-futures` project).
     // `local` is elided — it's the default and doesn't need a label.
-    if (nameIsAmbiguous && city.originId !== 'local') {
+    const ambiguousRemote = nameIsAmbiguous && city.originId !== 'local'
+    if (ambiguousRemote) {
       const hostLabel = city.originId.replace(/^remote-/, '')
       const originSpan = document.createElement('span')
       originSpan.className = 'city-label-origin'
       originSpan.textContent = hostLabel
+      // a11y tree reads `textContent` of children when no aria-label is set on
+      // the parent. Without aria-hidden, the city + host concatenate without
+      // a separator and the snapshot/screen-reader hears "ai-futurescandide".
+      // The parent's aria-label below carries the clean form ("ai-futures on
+      // candide"); the visual gap from `margin-left` is what users see.
+      originSpan.setAttribute('aria-hidden', 'true')
       labelDiv.appendChild(originSpan)
     }
+    labelDiv.setAttribute(
+      'aria-label',
+      ambiguousRemote
+        ? `${city.name} on ${city.originId.replace(/^remote-/, '')}`
+        : city.name,
+    )
     labelDiv.style.cursor = 'pointer'
     this.labelInteractions.bindCityLabel(labelDiv, city.id)
 
