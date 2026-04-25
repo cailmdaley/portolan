@@ -165,6 +165,9 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       // file-viewer context vellum hands us the file path as `slug`; we forward
       // it as `path=` on the wire. `imageSrc`/`kind` are not portolan concepts
       // today but are preserved in the query string for forward compat.
+      // Fiber-narrative views call us with an empty slug — there's no file
+      // path to query, so short-circuit before the server logs a 400.
+      if (!slug) return [];
       const params = new URLSearchParams({ path: slug, originId: defaultOriginId });
       if (annOpts.kind) params.set('kind', annOpts.kind);
       if (annOpts.imageSrc) params.set('imageSrc', annOpts.imageSrc);
