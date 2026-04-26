@@ -578,6 +578,14 @@ export interface MountFileSurfaceOptions {
   cityId?: string
   editable?: boolean
   jumpToLine?: number
+  /**
+   * Suppress vellum's own file-mode toolbar. Used by astra cards: the
+   * inline ladder picker is the only ladder/source affordance the card
+   * carries, and the constitution scopes source mode to the workspace
+   * modal — vellum's toolbar would otherwise stack a second source
+   * toggle. See `vellum-reader/vellum-native-astra-renderer`.
+   */
+  hideToolbar?: boolean
 }
 
 export interface VellumFileSurfaceHandle {
@@ -612,6 +620,7 @@ export function mountVellumFileSurface(
           originId={next.originId}
           editable={next.editable}
           jumpToLine={next.jumpToLine}
+          hideToolbar={next.hideToolbar}
         />
       </AdapterProvider>,
     )

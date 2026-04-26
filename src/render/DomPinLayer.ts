@@ -53,6 +53,23 @@ const DEFAULT_SIZE: Record<PinKind, KindSize> = {
   // from wrapping catastrophically at the `REFERENCE_ZOOM` baseline.
   terminal: { width: 640, height: 320 },
 }
+
+/** Astra cards default to A4 portrait ratio (~1:1.414) so the sticky-note
+ *  reads as a paper rather than a square text dump. The surface area is
+ *  similar to the generic `text` default (360×500 ≈ 180k px² vs 420×420 ≈
+ *  176k px²) but the proportions match the body content vellum's
+ *  AstraPaperView paints — title masthead, summary, findings, decisions —
+ *  which scrolls vertically. See `vellum-reader/vellum-native-astra-renderer`
+ *  Cards section. */
+const ASTRA_DEFAULT_SIZE: KindSize = { width: 360, height: 500 }
+const ASTRA_PATH_RE = /(?:^|\/)astra\.ya?ml$/i
+
+function defaultSizeForPin(pin: Pin): KindSize {
+  if (pin.source?.path && ASTRA_PATH_RE.test(pin.source.path)) {
+    return ASTRA_DEFAULT_SIZE
+  }
+  return DEFAULT_SIZE[pin.kind ?? 'other'] ?? DEFAULT_SIZE.other
+}
 // Minimum is tiny — just a numerical floor so the box never collapses to
 // zero / negative. `position()` also clamps CSS size to ≥8px.
 const MIN_SIZE = 8
@@ -101,6 +118,12 @@ export type MountVellumFileSurface = (
     cityId?: string
     editable?: boolean
     jumpToLine?: number
+    /** Suppress vellum's own file-mode toolbar inside the pin. Used for
+     *  astra cards: the inline ladder picker is the only ladder/source
+     *  affordance cards carry — vellum's toolbar would otherwise stack a
+     *  second source toggle, and the constitution says cards don't carry
+     *  source mode at all. See `vellum-reader/vellum-native-astra-renderer`. */
+    hideToolbar?: boolean
   },
 ) => VellumSurfaceMount
 
@@ -497,7 +520,7 @@ export class DomPinLayer {
   private setIntrinsicSizeIfPristine(slug: string, cssWidth: number, cssHeight: number): void {
     const entry = this.entries.get(slug)
     if (!entry) return
-    const defaults = DEFAULT_SIZE[entry.pin.kind ?? 'other'] ?? DEFAULT_SIZE.other
+    const defaults = defaultSizeForPin(entry.pin)
     if (entry.width !== defaults.width || entry.height !== defaults.height) return
     const ratio = this.zoomRatio()
     entry.width = clampSize(cssWidth / ratio)
@@ -612,11 +635,21 @@ export class DomPinLayer {
       // aren't a read-only second-class citizen. See [[card-modal-parity]].
       // Vellum's own toolbar renders inside the mount — dirty dot and save
       // controls included. Portolan no longer paints chrome above the reader.
+      //
+      // Astra cards are an exception: the ladder picker IS the affordance
+      // (rendered inline as content inside AstraFilePanel), and the
+      // constitution says cards don't carry source mode — that toggle is
+      // modal-only. Hide vellum's toolbar so the card doesn't stack a
+      // second source toggle on top of the inline picker. See
+      // `vellum-reader/vellum-native-astra-renderer`.
+      const isAstraSource =
+        !!pin.source.path && /(?:^|\/)astra\.ya?ml$/i.test(pin.source.path)
       vellumMount = this.mountVellumSurface(inner, {
         path: pin.source.path,
         originId: pin.source.originId,
         cityId: this.cityIdFor?.(),
-        editable: true,
+        editable: !isAstraSource,
+        hideToolbar: isAstraSource,
       })
     } else {
       inner = renderInner(pin, url)
@@ -683,36 +716,14 @@ export class DomPinLayer {
     // operations, not reader ones — closing a pin and the map context menu
     // have no business inside vellum's own chrome. For iframe pins the
     // CSS rule below switches the cluster to always-visible.
-    const affordances = renderAffordances(pin, { astraToggle: isAstraPin })
+    //
+    // Astra-specific source toggle retired here: the inline ladder picker
+    // (rendered as content inside vellum's AstraFilePanel) is now the only
+    // ladder/source affordance on cards. Source mode is modal-only per
+    // `vellum-reader/vellum-native-astra-renderer`. The map chrome stays
+    // generic — drag strip + ⋮ + ×, matching every other pin kind.
+    const affordances = renderAffordances(pin)
     el.appendChild(affordances)
-
-    // Wire up the Paper/Source toggle (astra-paper-view URLs only).
-    // Locate the iframe inside the pin — it might be a direct child
-    // (when renderInner produced one) or nested inside a vellum mount
-    // (when the kind was 'text' / fiber-shape but the source resolves
-    // to astra). Mode flip swaps the iframe's src in place so the
-    // resize observers / IntersectionObserver references stay valid.
-    if (isAstraPin) {
-      const toggle = affordances.querySelector<HTMLButtonElement>('.dom-pin-affordance-mode')
-      const findAstraIframe = (): HTMLIFrameElement | null =>
-        el.querySelector<HTMLIFrameElement>('iframe[src*="astra-paper-view"]')
-      toggle?.addEventListener('click', (event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        const iframe = findAstraIframe()
-        if (!iframe) return
-        const current = iframe.dataset.pinIframeRole ?? 'paper'
-        const next = current === 'paper' ? 'source' : 'paper'
-        const base = iframe.src.split('?')[0]
-        const params = new URLSearchParams(iframe.src.split('?')[1] ?? '')
-        params.set('as', next)
-        iframe.src = `${base}?${params.toString()}`
-        iframe.dataset.pinIframeRole = next
-        toggle.dataset.pinIframeRole = next
-        toggle.textContent = next === 'paper' ? 'source' : 'paper'
-        toggle.title = next === 'paper' ? 'Show YAML source' : 'Show paper view'
-      })
-    }
 
     if (this.onContextMenu) {
       const openMenu = (clientX: number, clientY: number) => {
@@ -1401,7 +1412,7 @@ function setLabelTabTitle(tab: HTMLElement, displayTitle: string, slug: string):
  *  closing a pin and the map context menu — and have no business inside
  *  vellum's own chrome. Buttons stop propagation so the frame-drag handler
  *  doesn't treat a click on × as a grab. */
-function renderAffordances(pin: Pin, opts: { astraToggle?: boolean } = {}): HTMLElement {
+function renderAffordances(pin: Pin): HTMLElement {
   const cluster = document.createElement('div')
   cluster.className = 'dom-pin-affordances'
   Object.assign(cluster.style, {
@@ -1481,29 +1492,10 @@ function renderAffordances(pin: Pin, opts: { astraToggle?: boolean } = {}): HTML
   // see commit 1f69078 (qualify worker palette options with their city).
   const pinTitle = titleForPin(pin)
 
-  // Astra paper-view pins get a Paper/Source mode toggle so the user
-  // can flip between the lightcone-ui rendering and the raw YAML
-  // without leaving the card. The toggle is the only place to access
-  // the source — vellum's modal hosts the same flip via its own chrome.
-  // Default initial state is "paper"; the click handler in build()
-  // owns the flip.
-  if (opts.astraToggle) {
-    const toggle = mkBtn(
-      'dom-pin-affordance-mode',
-      'source',
-      'Show YAML source',
-    )
-    toggle.dataset.pinIframeRole = 'paper'
-    Object.assign(toggle.style, {
-      fontSize: '12px',
-      letterSpacing: '0.04em',
-      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
-      padding: '2px 7px',
-      background: 'rgba(248, 240, 225, 0.92)',
-      border: '1px solid rgba(140, 110, 80, 0.45)',
-    })
-    cluster.appendChild(toggle)
-  }
+  // Astra paper-view source toggle retired 2026-04-26 — the inline ladder
+  // picker rendered inside vellum's AstraFilePanel is now the canonical
+  // ladder/source affordance, and the constitution scopes source mode to
+  // the workspace modal only. See `vellum-reader/vellum-native-astra-renderer`.
 
   cluster.appendChild(mkBtn('dom-pin-affordance-menu', '⋮', `Pin menu for ${pinTitle}`))
   cluster.appendChild(mkBtn('dom-pin-affordance-close', '×', `Unpin ${pinTitle}`))
@@ -1552,7 +1544,6 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
     })
-    iframe.dataset.pinIframeRole = 'paper'
     return iframe
   }
 
@@ -1709,7 +1700,7 @@ function renderResizeHandle(kind: Handle): HTMLElement {
 }
 
 function resolveSize(pin: Pin): KindSize {
-  const base = DEFAULT_SIZE[pin.kind ?? 'other'] ?? DEFAULT_SIZE.other
+  const base = defaultSizeForPin(pin)
   const w = clampSize(pin.width ?? base.width)
   const h = clampSize(pin.height ?? base.height)
   return { width: w, height: h }
