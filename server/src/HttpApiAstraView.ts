@@ -31,15 +31,35 @@
  * — the existing remote streaming channel. The mirror is cached per
  * (originId, remotePath) and refreshed when astra.yaml's remote mtime
  * changes.
+ *
+ * Paper PDFs follow the same shape via `/papers/{originId}/{cacheKey}/paper.pdf`:
+ * for remote origins, `materializeRemotePaperIndex` mirrors the meta.json
+ * sidecars from `~/.cache/astra/papers` so the bundle's `papers` map
+ * reflects the remote's cache state, and the actual PDF bytes are
+ * SSH-cat'd on demand into a per-origin local mirror by
+ * `materializeRemotePaperPdf` when the user opens an evidence row.
  */
 import { execFile, spawn } from 'child_process';
 import { extname, dirname, basename, resolve, join } from 'path';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { promisify } from 'util';
 import type { ServerResponse } from 'http';
-import { buildBundle, resolvePaperCacheDir, type Bundle } from 'lightcone-ui-core';
+import {
+  buildBundle,
+  collectPaperMetadata,
+  resolvePaperCacheDir,
+  type Bundle,
+} from 'lightcone-ui-core';
 import { templatesDir, templatePath } from 'lightcone-ui-core/templates';
 import type { Origin } from './OriginManager.js';
 import { shellEscape } from './ShellPathUtils.js';
@@ -331,6 +351,203 @@ async function materializeRemoteSpec(
 }
 
 /**
+ * Per-origin local mirror of the remote ASTRA paper cache *index* — meta.json
+ * files only, no PDFs. Created so `collectPaperMetadata` can run against the
+ * remote's cache state without us forking its filesystem-touching internals.
+ *
+ * `collectPaperMetadata` requires both `meta.json` AND `paper.pdf` to exist
+ * before declaring `cached: true`, so after pulling the meta.jsons we drop
+ * empty placeholder `paper.pdf` files alongside them. Actual PDF bytes are
+ * fetched on demand by `streamRemotePaperPdf` when the user clicks an
+ * evidence row — the bulk of the cache stays remote, only metadata is
+ * mirrored here.
+ *
+ * Cache: per-origin, refreshed every time the bundle is built (meta.jsons
+ * are tiny and lightcone-ui's `astra papers fetch` may add new entries
+ * between bundle builds; staleness here would silently mis-render
+ * evidence rows as "not cached").
+ */
+const PAPER_MIRROR_BASE = join(MIRROR_BASE, 'papers');
+
+/** Per-origin local cache dir for paper.pdf bytes streamed on demand. */
+function paperPdfMirrorPath(originId: string, cacheKey: string): string {
+  return join(PAPER_MIRROR_BASE, originId, 'pdf', cacheKey, 'paper.pdf');
+}
+
+/** Per-origin local cache dir for the meta.json index (re-tarred each build). */
+function paperIndexMirrorDir(originId: string): string {
+  return join(PAPER_MIRROR_BASE, originId, 'index');
+}
+
+async function tarRemotePaperIndex(sshHost: string, localDir: string): Promise<void> {
+  if (existsSync(localDir)) rmSync(localDir, { recursive: true, force: true });
+  mkdirSync(localDir, { recursive: true });
+
+  // Resolve `~` on the remote (don't rely on local shell expansion).
+  // Skip *.pdf so we only ship meta.jsons (and any other small sidecars).
+  // Wrap in `if [ -d ... ]` so a remote with no cache dir yet returns 0 with
+  // empty stdout instead of "tar: no such file" → non-zero exit → 502.
+  const remoteCmd =
+    'CACHE="$HOME/.cache/astra/papers"; ' +
+    'if [ -d "$CACHE" ]; then ' +
+    '  tar cf - --exclude="*.pdf" -C "$CACHE" . ; ' +
+    'fi';
+
+  await new Promise<void>((resolveTar, reject) => {
+    const ssh = spawn('ssh', [sshHost, remoteCmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const untar = spawn('tar', ['xf', '-', '-C', localDir], {
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+    ssh.stdout!.pipe(untar.stdin!);
+
+    let sshStderr = '';
+    ssh.stderr!.on('data', (b) => {
+      sshStderr += b.toString();
+    });
+
+    let sshExit: number | null = null;
+    let untarExit: number | null = null;
+    const finish = () => {
+      if (sshExit === null || untarExit === null) return;
+      if (sshExit !== 0) {
+        reject(new Error(`ssh tar (paper index) exited ${sshExit}: ${sshStderr.trim()}`));
+        return;
+      }
+      // The remote may legitimately have no paper cache yet; in that case the
+      // remoteCmd emits an empty stream and untar reports "Unexpected EOF" /
+      // exit 2. Treat that as success — the empty mirror dir means
+      // "no remote-cached papers" rather than a hard failure.
+      if (untarExit !== 0 && readdirSync(localDir).length > 0) {
+        reject(new Error(`local untar (paper index) exited ${untarExit}`));
+        return;
+      }
+      resolveTar();
+    };
+    ssh.on('exit', (code) => {
+      sshExit = code ?? 1;
+      finish();
+    });
+    untar.on('exit', (code) => {
+      untarExit = code ?? 1;
+      finish();
+    });
+    ssh.on('error', (err) => reject(new Error(`ssh spawn (paper index): ${err.message}`)));
+    untar.on('error', (err) => reject(new Error(`untar spawn (paper index): ${err.message}`)));
+  });
+
+  // For each cache entry that has a meta.json, drop a zero-byte paper.pdf
+  // placeholder so collectPaperMetadata's existence check passes. The real
+  // bytes get streamed on demand via streamRemotePaperPdf.
+  for (const entry of readdirSync(localDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(localDir, entry.name);
+    if (existsSync(join(dir, 'meta.json')) && !existsSync(join(dir, 'paper.pdf'))) {
+      writeFileSync(join(dir, 'paper.pdf'), '');
+    }
+  }
+}
+
+/**
+ * Materialise the remote paper-cache index (meta.json files only, plus
+ * placeholder paper.pdf files) into a local mirror dir. Returns the path,
+ * which can be passed to `collectPaperMetadata` so the bundle's `papers`
+ * map reflects the remote's actual cache state.
+ *
+ * On SSH failure or an empty remote cache, returns the (possibly empty)
+ * mirror dir rather than throwing — a remote with no paper cache yet is a
+ * real, non-error state and the bundle should still build.
+ */
+async function materializeRemotePaperIndex(sshHost: string, originId: string): Promise<string> {
+  const dir = paperIndexMirrorDir(originId);
+  try {
+    await tarRemotePaperIndex(sshHost, dir);
+  } catch (err: any) {
+    console.error(
+      `[astra-bundle] remote paper-index materialise failed for ${originId}:`,
+      err?.message ?? err,
+    );
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+/**
+ * Fetch the remote `~/.cache/astra/papers/<cacheKey>/paper.pdf` bytes and
+ * cache locally. Returns the local file path, or null if the remote file
+ * doesn't exist.
+ *
+ * Paper PDFs are immutable per cacheKey (DOI-keyed, never republished
+ * under the same key), so the local cache is permanent — checked via
+ * `existsSync` before any SSH work. This is the primary design tradeoff:
+ * we burn local disk to avoid re-streaming a multi-MB PDF on every
+ * modal open.
+ */
+async function materializeRemotePaperPdf(
+  sshHost: string,
+  originId: string,
+  cacheKey: string,
+): Promise<string | null> {
+  const localPath = paperPdfMirrorPath(originId, cacheKey);
+  if (existsSync(localPath)) return localPath;
+
+  // SSH-cat the remote PDF into the local file. Streamed via spawn so a
+  // large PDF doesn't allocate a giant Node Buffer first. shellEscape on
+  // cacheKey is belt-and-suspenders — handlePaperPdf already validates it
+  // against `[A-Za-z0-9._-]+` before we get here.
+  mkdirSync(dirname(localPath), { recursive: true });
+  const remotePath = `$HOME/.cache/astra/papers/${cacheKey}/paper.pdf`;
+  const remoteCmd =
+    `if [ -f ${shellEscape(remotePath)} ]; then ` +
+    `cat ${shellEscape(remotePath)}; ` +
+    `else exit 7; ` +  // distinguishable exit code for "not on remote"
+    `fi`;
+
+  return new Promise<string | null>((resolveOut, reject) => {
+    const ssh = spawn('ssh', [sshHost, remoteCmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Stream stdout to disk; collect stderr for the error message.
+    const out = createWriteStream(localPath);
+    ssh.stdout!.pipe(out);
+
+    let sshStderr = '';
+    ssh.stderr!.on('data', (b) => {
+      sshStderr += b.toString();
+    });
+
+    let sshExit: number | null = null;
+    let outClosed = false;
+    const finish = () => {
+      if (sshExit === null || !outClosed) return;
+      if (sshExit === 7) {
+        // Remote doesn't have it. Drop the empty file we created.
+        try {
+          rmSync(localPath, { force: true });
+        } catch {}
+        resolveOut(null);
+        return;
+      }
+      if (sshExit !== 0) {
+        try {
+          rmSync(localPath, { force: true });
+        } catch {}
+        reject(new Error(`ssh cat (paper pdf) exited ${sshExit}: ${sshStderr.trim()}`));
+        return;
+      }
+      resolveOut(localPath);
+    };
+    ssh.on('exit', (code) => {
+      sshExit = code ?? 1;
+      finish();
+    });
+    out.on('close', () => {
+      outClosed = true;
+      finish();
+    });
+    ssh.on('error', (err) => reject(new Error(`ssh spawn (paper pdf): ${err.message}`)));
+    out.on('error', (err) => reject(new Error(`local write (paper pdf): ${err.message}`)));
+  });
+}
+
+/**
  * Result of resolving an astra path into a built, path-rewritten bundle.
  * Discriminated so the two endpoints (paper-view html, raw bundle JSON)
  * can branch on outcome and pick their own body shape — the html path
@@ -435,6 +652,37 @@ export class HttpApiAstraView {
         tag: 'build-failed',
         message: `buildBundle threw for ${filePath} (universe ${universe}): ${message}`,
       };
+    }
+
+    // Remote: re-resolve `bundle.papers` using a local mirror of the remote
+    // paper-cache index. Without this, `cached` reflects the *server's*
+    // paper cache only — so a paper sitting at `~/.cache/astra/papers/...`
+    // on the remote host but missing locally renders as "not in cache" and
+    // the modal's PDF pane stays disabled. With it, the bundle marks the
+    // paper cached and the URL we hand back (`/papers/{originId}/...`)
+    // routes through `streamRemotePaperPdf` on click.
+    //
+    // Strategy: prefer a `cached: true` from either side. When local says
+    // cached, keep local (the server already has the bytes — no SSH needed
+    // for the modal). When local says uncached but remote says cached,
+    // adopt the remote metadata (title/authors/version come from the
+    // remote meta.json that we just mirrored).
+    if (originId && originId !== 'local') {
+      const origin = this.originLookup.getOrigin(originId);
+      if (origin?.sshHost) {
+        const remoteIndex = await materializeRemotePaperIndex(origin.sshHost, originId);
+        const dois = Object.keys(bundle.papers);
+        if (dois.length > 0 && existsSync(remoteIndex)) {
+          const remotePapers = collectPaperMetadata(dois, remoteIndex);
+          for (const doi of dois) {
+            const local = bundle.papers[doi];
+            const remote = remotePapers[doi];
+            if (!local.cached && remote && remote.cached) {
+              bundle.papers[doi] = remote;
+            }
+          }
+        }
+      }
     }
 
     // Always rewrite using the *remote* root so /project-file URLs land
@@ -608,28 +856,53 @@ export class HttpApiAstraView {
   }
 
   /**
-   * Serve a cached paper PDF for the paper-viewer evidence modal. The
-   * lightcone-ui paper-viewer.js fetches `/papers/{cacheKey}/paper.pdf`
-   * (see paper-viewer.js → `loadPdf`); portolan mounts that URL space
-   * onto the local ASTRA paper cache (`resolvePaperCacheDir()` →
+   * Serve a cached paper PDF for the paper-viewer evidence modal.
+   *
+   * URL forms (origin-aware first, legacy second — both supported):
+   *   - `/papers/{originId}/{cacheKey}/paper.pdf`   (preferred)
+   *   - `/papers/{cacheKey}/paper.pdf`              (legacy → originId='local')
+   *
+   * For `originId === 'local'` (or the legacy form), reads from the
+   * server-local ASTRA paper cache (`resolvePaperCacheDir()` →
    * `~/.cache/astra/papers` by default, `ASTRA_PAPER_CACHE_DIR` override).
    *
-   * Only `paper.pdf` is allowed under each cacheKey, and the cacheKey
-   * must be a single path segment matching `[A-Za-z0-9._-]+` — DOIs with
-   * `/` are stored as `_`-substituted directory names, no nested paths.
-   * 404 (not 500) when the cache file is missing so paper-viewer's
-   * "Paper not in cache" branch fires cleanly.
+   * For a remote origin, SSH-fetches the PDF from the remote host's
+   * `~/.cache/astra/papers/{cacheKey}/paper.pdf` into a local mirror
+   * (`materializeRemotePaperPdf`) on first request, then serves from the
+   * mirror. PDFs are immutable per cacheKey (DOI-keyed) so the local
+   * mirror is permanent — second request hits the local file directly.
+   *
+   * cacheKey must be a single path segment matching `[A-Za-z0-9._-]+` —
+   * DOIs with `/` are stored as `_`-substituted directory names, no
+   * nested paths. 404 (not 500) when the cache file is missing so
+   * paper-viewer's "Paper not in cache" branch fires cleanly.
    */
   async handlePaperPdf(url: URL, res: ServerResponse): Promise<void> {
     const prefix = '/papers/';
     const rest = url.pathname.slice(prefix.length);
-    // Expect exactly `<cacheKey>/paper.pdf`.
-    const m = rest.match(/^([A-Za-z0-9._-]+)\/paper\.pdf$/);
-    if (!m) {
-      this.sendError(res, 404, 'Unknown paper cache path');
+
+    // Try origin-aware shape first: `<originId>/<cacheKey>/paper.pdf`.
+    // Then fall back to legacy: `<cacheKey>/paper.pdf` (originId='local').
+    let originId = 'local';
+    let cacheKey: string;
+    const originAware = rest.match(/^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/paper\.pdf$/);
+    if (originAware) {
+      originId = decodeURIComponent(originAware[1]);
+      cacheKey = decodeURIComponent(originAware[2]);
+    } else {
+      const legacy = rest.match(/^([A-Za-z0-9._-]+)\/paper\.pdf$/);
+      if (!legacy) {
+        this.sendError(res, 404, 'Unknown paper cache path');
+        return;
+      }
+      cacheKey = decodeURIComponent(legacy[1]);
+    }
+
+    if (originId && originId !== 'local') {
+      await this.servePaperPdfRemote(originId, cacheKey, res);
       return;
     }
-    const cacheKey = decodeURIComponent(m[1]);
+
     const cacheDir = resolvePaperCacheDir();
     const filePath = join(cacheDir, cacheKey, 'paper.pdf');
     // Defensive: re-resolve the join and confirm we stayed inside cacheDir.
@@ -655,6 +928,49 @@ export class HttpApiAstraView {
       res.end(data);
     } catch (err: any) {
       console.error('[paper-pdf] read failed:', err?.message ?? err);
+      this.sendError(res, 500, 'paper read failed');
+    }
+  }
+
+  /**
+   * Serve a remote-origin paper PDF: ensure the local mirror exists
+   * (SSH-cat from the remote host on first call) and stream it back.
+   * Pulled out of `handlePaperPdf` for readability — the local-cache
+   * path stays the dominant branch, this one carries the SSH side.
+   */
+  private async servePaperPdfRemote(
+    originId: string,
+    cacheKey: string,
+    res: ServerResponse,
+  ): Promise<void> {
+    const origin = this.originLookup.getOrigin(originId);
+    if (!origin?.sshHost) {
+      this.sendError(res, 404, `Remote origin ${originId} not connected`);
+      return;
+    }
+    let localPath: string | null;
+    try {
+      localPath = await materializeRemotePaperPdf(origin.sshHost, originId, cacheKey);
+    } catch (err: any) {
+      console.error('[paper-pdf] remote fetch failed:', err?.message ?? err);
+      this.sendError(res, 502, `Remote paper fetch failed: ${err?.message ?? err}`);
+      return;
+    }
+    if (!localPath) {
+      this.sendError(res, 404, 'Paper not in remote cache');
+      return;
+    }
+    try {
+      const data = readFileSync(localPath);
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Access-Control-Allow-Origin': '*',
+        'Content-Length': String(data.length),
+        'Cache-Control': 'public, max-age=86400, immutable',
+      });
+      res.end(data);
+    } catch (err: any) {
+      console.error('[paper-pdf] mirrored read failed:', err?.message ?? err);
       this.sendError(res, 500, 'paper read failed');
     }
   }

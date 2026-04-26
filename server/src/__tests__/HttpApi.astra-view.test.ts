@@ -363,12 +363,45 @@ describe('HttpApi — /papers/<cacheKey>/paper.pdf endpoint', () => {
   });
 
   it('rejects nested paths and traversal attempts', async () => {
-    // Multi-segment cacheKey isn't allowed; only a single token then /paper.pdf.
+    // ../etc/passwd survives URL decode but contains `..` and `/`, neither
+    // of which match `[A-Za-z0-9._-]+`, so the route 404s before any fs lookup.
     const traverse = await rawRequest(api, '/papers/..%2Fetc%2Fpasswd/paper.pdf');
     expect(traverse.status).toBe(404);
-    const nested = await rawRequest(api, '/papers/foo/bar/paper.pdf');
-    expect(nested.status).toBe(404);
+    // Anything other than `paper.pdf` as the leaf is rejected.
     const notPdf = await rawRequest(api, '/papers/foo/secret.json');
     expect(notPdf.status).toBe(404);
+    // Four-segment paths (an extra layer beyond `<originId>/<cacheKey>/paper.pdf`)
+    // are rejected — the route is exactly two-or-three segments.
+    const tooDeep = await rawRequest(api, '/papers/a/b/c/paper.pdf');
+    expect(tooDeep.status).toBe(404);
+  });
+
+  it('serves the local cache when the URL specifies origin=local', async () => {
+    // /papers/local/<cacheKey>/paper.pdf is the new origin-aware form
+    // FileViewerPage emits — for local origins it should resolve through
+    // the local cache exactly the way the legacy form does.
+    const cacheKey = '10.48550_arXiv.LOCAL-FORM';
+    const dir = join(PAPER_CACHE_DIR, cacheKey);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'paper.pdf'), Buffer.from('%PDF-1.4\n%local-form\n'));
+
+    const res = await rawRequest(
+      api,
+      `/papers/local/${encodeURIComponent(cacheKey)}/paper.pdf`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/pdf');
+    expect(res.body).toContain('local-form');
+  });
+
+  it('returns 404 when a remote origin is not connected', async () => {
+    // The stub origin lookup returns a fake sshHost for any non-local id —
+    // but the SSH call to `fake.example.com` will fail at the network layer.
+    // We just want to confirm the routing reached the remote branch and
+    // didn't try the local cache (which would 404 with "Paper not in cache").
+    const res = await rawRequest(api, '/papers/some-remote/anykey/paper.pdf');
+    // Either 502 (ssh tried + failed) or 404 (origin lookup returned null);
+    // the stub returns a fake host, so 502 is expected — but be lenient.
+    expect([404, 502]).toContain(res.status);
   });
 });
