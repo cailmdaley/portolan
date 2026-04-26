@@ -11,6 +11,8 @@
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkFrontmatter from 'remark-frontmatter';
+import { parse as parseYaml } from 'yaml';
 
 const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|([^\]]*?))?\]\]/g;
 
@@ -90,9 +92,37 @@ function splitTextNode(value: string): any[] {
   return nodes;
 }
 
+/**
+ * Pull a YAML frontmatter object out of the leading `---\n…\n---` block of a
+ * markdown source string. Returns `undefined` when the document has no
+ * frontmatter or when the block is malformed; callers treat both the same way
+ * (no fiber header rendered).
+ *
+ * Kept separate from `markdownToMdast` so callers that just need the
+ * frontmatter (e.g. for a client-side fiber-shape detection in a non-render
+ * context) don't pay for a full mdast parse.
+ */
+export function extractFrontmatter(content: string): Record<string, unknown> | undefined {
+  if (!content.startsWith('---')) return undefined;
+  // Allow `---\n` or `---\r\n` opener; require a closing `---` on its own line.
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return undefined;
+  const yamlText = match[1];
+  if (!yamlText.trim()) return undefined;
+  const parsed = parseYaml(yamlText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  return parsed as Record<string, unknown>;
+}
+
 export function markdownToMdast(content: string): unknown {
   const processor = unified()
     .use(remarkParse)
+    // YAML frontmatter support — without this, a leading `---\n…\n---` block
+    // is misparsed as a setext-heading underline plus a thematic break, and
+    // the keys leak into the rendered prose. With it, frontmatter ends up as
+    // a single `yaml` node at the top of mdast.children which PretextProse
+    // hides (same way mystra hides it server-side for fiber bodies).
+    .use(remarkFrontmatter, ['yaml'])
     .use(remarkGfm)
     .use(remarkStripMystTargets)
     .use(remarkWikiLinks);

@@ -103,6 +103,8 @@ curl -s localhost:4004/hook/file-touch -X POST -H 'Content-Type: application/jso
   -d '{"session_id":"test","tool_name":"Read","tool_input":{"file_path":"/tmp/test.ts"}}'
 curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
 curl 'http://localhost:4004/project-file/local/path/to/file.html'  # serve project file (also: /project-file/{originId}/path)
+curl 'http://localhost:4004/astra-paper-view/local/abs/path/to/astra.yaml'  # render astra.yaml as lightcone paper view (local only)
+curl 'http://localhost:4004/astra/asset/vellum.css'                         # paper-view CSS/JS sidecars (paper-viewer.js, vellum.css)
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
 
@@ -152,6 +154,9 @@ One-liners. Fiber has the full story. `felt ls -s all gotcha` for more.
 - **`reconnectTunnel` must kill ControlMaster first.** `ssh -fN` alone multiplexes through the stale master. `stale-controlmaster-breaks`
 - **Remote origin ID derived from sshHost, not hostname.** Raw hostname (e.g. `login07.leonardo.local`) doesn't match persisted `remote-cineca`. `remote-origin-id-mismatch`
 - **Dormant remote cities need `hasClaims` default.** No active session → agent never reports `hasClaims`. Pinned remote cities default `true`. `dormant-remote-cities-lack`
+- **Vellum HtmlReader iframes default to 150px.** Cross-origin can't auto-size, and vellum has no `--html` height CSS. `index.html` flex-chains the modal column under `:has(.vellum-file-reader--html)`. `vellum-html-iframe-default-150`
+- **Iframe pins need always-visible chrome AND a drag strip.** Cross-origin iframes inside `.dom-pin` eat right-click, hover, and pointerdown. Affordances pinned via `opacity:1 !important`; drag handled by a `data-pin-drag-handle="true"` strip at the top edge that bypasses the normal Cmd/Ctrl gate. `iframe-pin-needs-always-visible-chrome`
+- **`astra.yaml` opens as lightcone paper view, not raw YAML.** Server's `/astra-paper-view/{originId}{path}` runs `lightcone-ui-core/buildBundle` and serves the rendered HTML; the adapter classifies astra paths as `'html'` so vellum iframes them. Remote works via SSH-tar mirror cached by astra.yaml mtime. `vellum-reader/astra-yaml-paper-view`
 
 ## Deep Dives
 

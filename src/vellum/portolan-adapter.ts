@@ -45,13 +45,34 @@ function encodeSlug(slug: string): string {
   return slug.split('/').map(encodeURIComponent).join('%2F');
 }
 
+function isAstraPath(path: string): boolean {
+  return /(?:^|\/)astra\.ya?ml$/i.test(path) || /\.astra\.ya?ml$/i.test(path);
+}
+
 function classifyFile(path: string): FileContent['kind'] {
   const ext = (path.match(/\.[^.]+$/)?.[0] ?? '').toLowerCase();
   if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'].includes(ext)) return 'image';
   if (ext === '.pdf') return 'pdf';
   if (ext === '.html') return 'html';
   if (['.md', '.markdown'].includes(ext)) return 'markdown';
+  // astra.yaml is rendered as the lightcone-ui paper view in an iframe;
+  // classify as 'html' so vellum embeds the URL we hand back via getFile,
+  // which points at portolan's /astra-paper-view server endpoint instead
+  // of the raw YAML. See server/src/HttpApiAstraView.ts.
+  if (isAstraPath(path)) return 'html';
   return 'text';
+}
+
+function buildAstraViewUrl(path: string, originId: string, cacheBust?: boolean): string {
+  const origin = originId || 'local';
+  const absPath = path.startsWith('/') ? path : `/${path}`;
+  const encodedPath = absPath
+    .split('/')
+    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+    .join('/');
+  let url = `${API_BASE}/astra-paper-view/${encodeURIComponent(origin)}${encodedPath}`;
+  if (cacheBust) url += `?_t=${Date.now()}`;
+  return url;
 }
 
 function buildRawFileUrl(path: string, originId: string, cacheBust?: boolean): string {
@@ -115,14 +136,19 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       const originId = options.originId ?? defaultOriginId;
       const kind = classifyFile(path);
 
-      // Binary kinds: return url, no content body.
+      // Binary kinds: return url, no content body. astra.yaml rides the
+      // 'html' kind but routes through the dedicated paper-view endpoint
+      // rather than /project-file (which would stream raw YAML).
       if (kind === 'pdf' || kind === 'image' || kind === 'html') {
+        const url = isAstraPath(path)
+          ? buildAstraViewUrl(path, originId, options.cacheBust)
+          : buildRawFileUrl(path, originId, options.cacheBust);
         return {
           path,
           kind,
           language: '',
           content: '',
-          url: buildRawFileUrl(path, originId, options.cacheBust),
+          url,
         };
       }
 
@@ -138,6 +164,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         language: data.language ?? '',
         content: data.content ?? '',
         mdast: data.mdast,
+        frontmatter: data.frontmatter,
       };
     },
 
@@ -332,6 +359,19 @@ export function createPortolanStaticAdapter(opts: PortolanStaticAdapterOptions):
   const ro: ReadOnlyAdapter = {
     async getFile(path: string): Promise<FileContent | null> {
       const kind = classifyFile(path);
+
+      // astra.yaml is classified as 'html' so the live adapter can route
+      // it through portolan's /astra-paper-view server endpoint. The
+      // static deploy has no live server and `felt export --format
+      // tapestry` doesn't pre-bake paper-view HTML yet, so the flat-file
+      // URL would 404 silently and HtmlReader would iframe a tapestry
+      // 404 page. Bail early with `null` so the file viewer surfaces
+      // "Could not load …" cleanly. Tracked in
+      // [[vellum-reader/astra-paper-view-static-tapestry]] —
+      // when an export pipeline starts emitting `<flat>.html`,
+      // swap this for a flat-fetch.
+      if (isAstraPath(path)) return null;
+
       const url = flatFileUrl(opts.staticDataBase, path);
 
       if (kind === 'pdf' || kind === 'image' || kind === 'html') {

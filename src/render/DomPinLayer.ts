@@ -623,13 +623,96 @@ export class DomPinLayer {
     }
     el.appendChild(inner)
 
+    // Iframe-bearing pins: detect by source path / kind, not the rendered
+    // tag, because vellum's mount nests an iframe several DOM levels
+    // deep and persisted pins from before /astra-paper-view landed
+    // still carry kind="text" even though vellum will iframe them. The
+    // outer kind classifies the *pin slot*; the source path tells us
+    // what's actually about to mount inside.
+    const isAstraPin = !!pin.source?.path && /(?:^|\/)astra\.ya?ml$/i.test(pin.source.path)
+    const innerIsIframe = inner.tagName === 'IFRAME' || isAstraPin || pin.kind === 'html' || pin.kind === 'pdf'
+    if (innerIsIframe) el.dataset.pinIframe = 'true'
+
+    // Iframe pins need a portolan-DOM drag handle. Cross-origin iframes
+    // capture pointerdown so el's own listener never fires when the
+    // gesture starts inside the iframe — without this strip the user
+    // can't reposition the card. The strip sits at the top edge,
+    // above the iframe in z-order; pointerdown bubbles to el's drag
+    // handler. attachPinDrag checks the data-pin-drag-handle attr to
+    // skip the usual Cmd/Ctrl gating.
+    if (innerIsIframe) {
+      const dragStrip = document.createElement('div')
+      dragStrip.className = 'dom-pin-drag-strip'
+      dragStrip.dataset.pinDragHandle = 'true'
+      dragStrip.title = 'Drag to move'
+      Object.assign(dragStrip.style, {
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        right: '0',
+        height: '14px',
+        zIndex: '3',
+        cursor: 'grab',
+        background: 'linear-gradient(180deg, rgba(46, 42, 38, 0.18) 0%, rgba(46, 42, 38, 0.04) 100%)',
+        borderTopLeftRadius: '6px',
+        borderTopRightRadius: '6px',
+        pointerEvents: 'auto',
+      })
+      // Tiny grip glyph so it reads as a handle, not a stray bar.
+      const grip = document.createElement('span')
+      grip.textContent = '⋯'
+      Object.assign(grip.style, {
+        position: 'absolute',
+        left: '50%',
+        top: '50%',
+        transform: 'translate(-50%, -55%)',
+        color: 'rgba(46, 42, 38, 0.55)',
+        fontFamily: '"EB Garamond", Garamond, serif',
+        fontSize: '14px',
+        letterSpacing: '0.1em',
+        pointerEvents: 'none',
+        userSelect: 'none',
+      })
+      dragStrip.appendChild(grip)
+      el.appendChild(dragStrip)
+    }
+
     // Map-level affordance cluster (× close, ⋮ menu, ↗ external for URL pins).
     // Floats in the top-right of the frame, above vellum / iframe / image
     // content. Quiet at rest, full opacity on pin hover. These are *map*
     // operations, not reader ones — closing a pin and the map context menu
-    // have no business inside vellum's own chrome.
-    const affordances = renderAffordances(pin)
+    // have no business inside vellum's own chrome. For iframe pins the
+    // CSS rule below switches the cluster to always-visible.
+    const affordances = renderAffordances(pin, { astraToggle: isAstraPin })
     el.appendChild(affordances)
+
+    // Wire up the Paper/Source toggle (astra-paper-view URLs only).
+    // Locate the iframe inside the pin — it might be a direct child
+    // (when renderInner produced one) or nested inside a vellum mount
+    // (when the kind was 'text' / fiber-shape but the source resolves
+    // to astra). Mode flip swaps the iframe's src in place so the
+    // resize observers / IntersectionObserver references stay valid.
+    if (isAstraPin) {
+      const toggle = affordances.querySelector<HTMLButtonElement>('.dom-pin-affordance-mode')
+      const findAstraIframe = (): HTMLIFrameElement | null =>
+        el.querySelector<HTMLIFrameElement>('iframe[src*="astra-paper-view"]')
+      toggle?.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        const iframe = findAstraIframe()
+        if (!iframe) return
+        const current = iframe.dataset.pinIframeRole ?? 'paper'
+        const next = current === 'paper' ? 'source' : 'paper'
+        const base = iframe.src.split('?')[0]
+        const params = new URLSearchParams(iframe.src.split('?')[1] ?? '')
+        params.set('as', next)
+        iframe.src = `${base}?${params.toString()}`
+        iframe.dataset.pinIframeRole = next
+        toggle.dataset.pinIframeRole = next
+        toggle.textContent = next === 'paper' ? 'source' : 'paper'
+        toggle.title = next === 'paper' ? 'Show YAML source' : 'Show paper view'
+      })
+    }
 
     if (this.onContextMenu) {
       const openMenu = (clientX: number, clientY: number) => {
@@ -801,14 +884,21 @@ export class DomPinLayer {
   }
 
   /** Wire a pointerdown on the pin element into a drag gesture that updates
-   *  the pin's world position live and persists on release. Without a chrome
-   *  strip to grab, drag is gated on Cmd/Ctrl — the same modifier that wheel-
-   *  resize uses. Without the modifier, pointerdown inside the card falls
-   *  through to whatever it's on (text selection in vellum, editor focus,
-   *  link follow). The affordance cluster and resize handles are still
-   *  excluded even when Cmd is held, since they are portolan-owned controls
-   *  with their own gestures. Skipped if the host didn't provide
-   *  `screenToWorld` / `onPinMoved`. Primary pointer only. */
+   *  the pin's world position live and persists on release. Two modes:
+   *
+   *  - **Full-reader mode** (`!entry.isLabel`): drag is gated on Cmd/Ctrl —
+   *    the same modifier that wheel-resize uses. Without the modifier,
+   *    pointerdown inside the card falls through to whatever it's on (text
+   *    selection in vellum, editor focus, link follow).
+   *  - **Label mode** (`entry.isLabel`): the card has collapsed past
+   *    LABEL_THRESHOLD and the title tab is the only visible surface. There
+   *    is no prose to select, no editor to focus, no link to follow — so the
+   *    title tab itself becomes the drag handle, no modifier required.
+   *
+   *  The affordance cluster and resize handles are excluded in both modes,
+   *  since they are portolan-owned controls with their own gestures. Skipped
+   *  if the host didn't provide `screenToWorld` / `onPinMoved`. Primary
+   *  pointer only. */
   private attachPinDrag(el: HTMLElement, entry: DomPinEntry): void {
     if (!this.screenToWorld || !this.onPinMoved) return
 
@@ -816,8 +906,14 @@ export class DomPinLayer {
 
     el.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return
-      if (!(event.metaKey || event.ctrlKey)) return
       const target = event.target as Element | null
+      // A click that starts in the iframe-pin drag strip is an
+      // unambiguous move gesture — no Cmd/Ctrl required, no
+      // text-selection conflict to worry about. Otherwise fall back to
+      // the existing rule: label-mode pins drag bare, expanded pins
+      // need Cmd/Ctrl.
+      const onDragHandle = !!target?.closest('[data-pin-drag-handle="true"]')
+      if (!onDragHandle && !entry.isLabel && !(event.metaKey || event.ctrlKey)) return
       if (target?.closest('.dom-pin-affordances, .dom-pin-resize')) return
 
       // Prevent the browser from also starting a text selection under the
@@ -1055,12 +1151,17 @@ function ensurePulseStyles(): void {
        and widen back into full-reader territory. */
     .dom-pin--label {
       box-shadow: none;
+      /* Collapsed → the title tab is the only visible surface, so the whole
+         pin advertises "drag me" at rest. No Cmd/Ctrl gate in label mode
+         (see attachPinDrag) — there's no prose to accidentally select. */
+      cursor: grab;
     }
     .dom-pin--label > *:not(.dom-pin-label-tab):not(.dom-pin-resize) {
       display: none !important;
     }
     .dom-pin--label .dom-pin-label-tab {
       display: block !important;
+      cursor: inherit;
     }
     /* Affordance cluster: map-level × / ⋮ / ↗ in the top-right of the frame.
        Quiet at rest (opacity 0), revealed when the pin or its body is hovered
@@ -1070,6 +1171,26 @@ function ensurePulseStyles(): void {
     .dom-pin--hovered .dom-pin-affordances,
     .dom-pin-affordances:focus-within {
       opacity: 1;
+    }
+    /* Iframe-bearing pins (kind: html, pdf — paper view, slides, PDFs)
+       can't trigger the parent's hover reliably (cross-origin pointer
+       events stop at the iframe boundary), and right-click goes to the
+       browser's native menu instead of the pin layer's contextmenu
+       handler. Pin the affordance cluster on permanently so × and the
+       Paper/Source toggle stay reachable without depending on hover.
+       !important is needed because renderAffordances inlines
+       opacity:0 on the cluster element; class-rule specificity loses
+       to that.
+       See [[gotchas/iframe-pin-needs-always-visible-chrome]]. */
+    .dom-pin[data-pin-iframe="true"] .dom-pin-affordances {
+      opacity: 1 !important;
+    }
+    .dom-pin-drag-strip:hover {
+      background: linear-gradient(180deg, rgba(46, 42, 38, 0.32) 0%, rgba(46, 42, 38, 0.08) 100%) !important;
+    }
+    .dom-pin--dragging .dom-pin-drag-strip,
+    .dom-pin-drag-strip:active {
+      cursor: grabbing;
     }
     .dom-pin-affordance-menu:hover,
     .dom-pin-affordance-menu:focus-visible,
@@ -1280,7 +1401,7 @@ function setLabelTabTitle(tab: HTMLElement, displayTitle: string, slug: string):
  *  closing a pin and the map context menu — and have no business inside
  *  vellum's own chrome. Buttons stop propagation so the frame-drag handler
  *  doesn't treat a click on × as a grab. */
-function renderAffordances(pin: Pin): HTMLElement {
+function renderAffordances(pin: Pin, opts: { astraToggle?: boolean } = {}): HTMLElement {
   const cluster = document.createElement('div')
   cluster.className = 'dom-pin-affordances'
   Object.assign(cluster.style, {
@@ -1359,6 +1480,31 @@ function renderAffordances(pin: Pin): HTMLElement {
   // the disambiguation pattern from worker-palette/recent-worker labels —
   // see commit 1f69078 (qualify worker palette options with their city).
   const pinTitle = titleForPin(pin)
+
+  // Astra paper-view pins get a Paper/Source mode toggle so the user
+  // can flip between the lightcone-ui rendering and the raw YAML
+  // without leaving the card. The toggle is the only place to access
+  // the source — vellum's modal hosts the same flip via its own chrome.
+  // Default initial state is "paper"; the click handler in build()
+  // owns the flip.
+  if (opts.astraToggle) {
+    const toggle = mkBtn(
+      'dom-pin-affordance-mode',
+      'source',
+      'Show YAML source',
+    )
+    toggle.dataset.pinIframeRole = 'paper'
+    Object.assign(toggle.style, {
+      fontSize: '12px',
+      letterSpacing: '0.04em',
+      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+      padding: '2px 7px',
+      background: 'rgba(248, 240, 225, 0.92)',
+      border: '1px solid rgba(140, 110, 80, 0.45)',
+    })
+    cluster.appendChild(toggle)
+  }
+
   cluster.appendChild(mkBtn('dom-pin-affordance-menu', '⋮', `Pin menu for ${pinTitle}`))
   cluster.appendChild(mkBtn('dom-pin-affordance-close', '×', `Unpin ${pinTitle}`))
 
@@ -1406,6 +1552,7 @@ function renderInner(pin: Pin, url: string | null): HTMLElement {
       boxShadow: '0 4px 16px rgba(46, 42, 38, 0.18)',
       display: 'block',
     })
+    iframe.dataset.pinIframeRole = 'paper'
     return iframe
   }
 

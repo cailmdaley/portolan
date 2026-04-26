@@ -27,6 +27,37 @@ type JsonBodyParser = <T>(req: IncomingMessage, res: ServerResponse) => Promise<
 type JsonErrorSender = (res: ServerResponse, status: number, error: string) => void;
 type JsonSuccessSender = (res: ServerResponse, data: Record<string, unknown>) => void;
 
+/**
+ * Convert an absolute fiber file path to its canonical slug, or return the
+ * input unchanged when the path doesn't live under any `.felt/` directory.
+ *
+ * Recognized shapes mirror `FiberReader.walkFibers`:
+ *   - `.felt/<slug>.md`              → entry-point fiber, slug = `<slug>`
+ *   - `.felt/<dir>/<dir>.md`         → directory-rooted fiber, slug = `<dir>`
+ *   - `.felt/<dir>/<sub>.md`         → nested fiber, slug = `<dir>/<sub>`
+ *   - `.felt/<a>/<b>/<b>.md`         → directory-rooted nested, slug = `<a>/<b>`
+ *
+ * Used to normalize annotation keys so a fiber opened by file path shares
+ * the annotation pool with the same fiber opened by slug. Without this,
+ * annotations created on the fiber-as-file door are invisible to the
+ * fiber-as-slug door (and vice versa). See
+ * card-redesign/file-modal-absorbs-into-workspace and
+ * ai-futures/portolan/vellum-reader/markdown-and-fibers-share-canvas.
+ */
+function fiberPathToSlug(filePath: string): string {
+  if (typeof filePath !== 'string') return filePath as string;
+  const match = filePath.match(/(?:^|\/)\.felt\/(.+)\.md$/);
+  if (!match) return filePath;
+  const rel = match[1];
+  const parts = rel.split('/');
+  // Directory-rooted shape: `.felt/foo/foo.md` collapses to slug `foo`,
+  // `.felt/a/b/b.md` to `a/b`. Only when the leaf duplicates the parent.
+  if (parts.length >= 2 && parts[parts.length - 1] === parts[parts.length - 2]) {
+    parts.pop();
+  }
+  return parts.join('/');
+}
+
 interface HttpApiAnnotationsOptions {
   cityLookup: CityLookup;
   originLookup: OriginLookup;
@@ -47,6 +78,11 @@ export class HttpApiAnnotations {
   private sessionLookup: SessionLookup | null = null;
   private onCreateNewWorker: ((cityPath: string, originId: string) => Promise<string>) | null = null;
   private onFocusSession: ((sessionId: string) => void) | null = null;
+  /** Notifies the tapestry cache that a new fiber landed via /file-as-fiber.
+   *  Without this, the 30s TTL would hide the new fiber from /astra/graph
+   *  and search until expiry. Wired in HttpApi after both APIs are
+   *  constructed (tapestryApi can't be referenced from this constructor). */
+  private onFiberCreated: ((cityPath: string, sshHost?: string) => void) | null = null;
   private tmuxMessenger = new TmuxSessionMessenger();
 
   constructor(options: HttpApiAnnotationsOptions) {
@@ -74,6 +110,10 @@ export class HttpApiAnnotations {
     this.onFocusSession = fn;
   }
 
+  setOnFiberCreated(fn: (cityPath: string, sshHost?: string) => void): void {
+    this.onFiberCreated = fn;
+  }
+
   async handleRecentAnnotations(url: URL, res: ServerResponse): Promise<void> {
     if (!this.annotationPersistence) {
       this.sendJsonError(res, 500, 'Annotation persistence not initialized');
@@ -93,15 +133,20 @@ export class HttpApiAnnotations {
       return;
     }
 
-    const filePath = url.searchParams.get('path');
+    const rawFilePath = url.searchParams.get('path');
     const claimId = url.searchParams.get('claimId');
     const allClaims = url.searchParams.get('claims') === 'true';
     const originId = url.searchParams.get('originId') || 'local';
 
-    if (!filePath && !claimId && !allClaims) {
+    if (!rawFilePath && !claimId && !allClaims) {
       this.sendJsonError(res, 400, 'Missing path, claimId, or claims parameter');
       return;
     }
+
+    // Fiber files have two doors (open by slug, open by absolute path).
+    // Normalize to the canonical slug before querying so both doors see the
+    // same annotation pool. Non-fiber paths pass through unchanged.
+    const filePath = rawFilePath ? fiberPathToSlug(rawFilePath) : null;
 
     let annotations: Annotation[];
     if (allClaims) {
@@ -136,6 +181,14 @@ export class HttpApiAnnotations {
     } else if (!data.filePath || !data.comment) {
       this.sendJsonError(res, 400, 'Missing required fields');
       return;
+    }
+
+    // Slug↔path key normalization on create so a fiber file gets the same
+    // canonical key as the slug-side door. Persistence stores it under the
+    // slug; subsequent reads from either door find it. See fiberPathToSlug
+    // above and ai-futures/portolan/vellum-reader/markdown-and-fibers-share-canvas.
+    if (data.filePath) {
+      data.filePath = fiberPathToSlug(data.filePath);
     }
 
     try {
@@ -200,10 +253,16 @@ export class HttpApiAnnotations {
       globalComment?: string;
       cityName?: string;
       isClaimsSend?: boolean;
+      /** When set, the prompt header reads "Feedback on fiber: <slug>"
+       *  instead of using `filePath`. Portolan stores fiber annotations with
+       *  `filePath = slug` for persistence keying, so `filePath` alone is
+       *  ambiguous between a real on-disk path and a slug; this flag
+       *  disambiguates and lets the worker see a fiber-shaped identifier. */
+      fiberSlug?: string;
     }>(req, res);
     if (!data) return;
 
-    const { workerId, createNewWorker, filePath, originId, cityPath: requestedCityPath, annotations, globalComment, cityName, isClaimsSend } = data;
+    const { workerId, createNewWorker, filePath, originId, cityPath: requestedCityPath, annotations, globalComment, cityName, isClaimsSend, fiberSlug } = data;
 
     const hasContent = (annotations && annotations.length > 0) || (globalComment && globalComment.trim().length > 0);
     if (!hasContent) {
@@ -251,7 +310,9 @@ export class HttpApiAnnotations {
 
     const formattedMessage = isClaimsSend
       ? this.formatClaimsAnnotationsForClaude(cityName || 'unknown', annotations, globalComment)
-      : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
+      : fiberSlug
+        ? this.formatFiberAnnotationsForClaude(fiberSlug, annotations, globalComment)
+        : this.formatAnnotationsForClaude(filePath, annotations, globalComment);
 
     try {
       if (isRemote && !sshHost) {
@@ -298,10 +359,15 @@ export class HttpApiAnnotations {
       title: string;
       body: string;
       kind?: string;
+      /** When set, the new fiber is nested under `<parentSlug>/<childSlug>`
+       *  instead of created as a top-level fiber. Used by the fiber-mode
+       *  bulk action "Fiber" (save annotations as a child of the current
+       *  fiber) — the no-worker fallback for capturing thoughts in place. */
+      parentSlug?: string;
     }>(req, res);
     if (!data) return;
 
-    const { filePath, originId, title, body, kind = 'task' } = data;
+    const { filePath, originId, title, body, kind = 'task', parentSlug } = data;
 
     if (!filePath || !title || !body) {
       this.sendJsonError(res, 400, 'Missing required fields');
@@ -313,13 +379,18 @@ export class HttpApiAnnotations {
 
     try {
       let fiberId: string;
-      const slug = title
+      const childSlug = title
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '')
         .slice(0, 60) || `note-${Date.now()}`;
+      // Nest under parentSlug when set. felt's CLI treats slash-joined slugs
+      // as a directory tree (e.g. `parent/child` creates `.felt/parent/child/child.md`),
+      // matching FiberReader's directory-based shape.
+      const slug = parentSlug ? `${parentSlug}/${childSlug}` : childSlug;
       const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(slug)} ${shellEscape(title)} -t ${shellEscape(kind)} -b ${shellEscape(body)}`;
 
+      let invalidateSshHost: string | undefined;
       if (!isRemote) {
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
         fiberId = stdout.trim();
@@ -335,7 +406,14 @@ export class HttpApiAnnotations {
           { timeout: 30000, maxBuffer: 1024 * 1024 }
         );
         fiberId = stdout.trim();
+        invalidateSshHost = origin.sshHost;
       }
+
+      // Invalidate the tapestry's fiber-list cache so the next /astra/graph
+      // or search hit sees the freshly-created fiber instead of waiting out
+      // the 30s TTL. Best-effort — if the hook isn't wired we just live
+      // with the latency.
+      this.onFiberCreated?.(cityPath, invalidateSshHost);
 
       this.sendJsonSuccess(res, { success: true, fiberId });
     } catch (error: any) {
@@ -377,6 +455,22 @@ export class HttpApiAnnotations {
       console.error('Failed to promote to felt:', error.message);
       this.sendJsonError(res, 500, 'Failed to promote to felt: ' + error.message);
     }
+  }
+
+  /**
+   * Fiber-flavoured prompt header. Same body shape as
+   * `formatAnnotationsForClaude` (annotations rendered as quote blocks with
+   * line refs and selected-text context) but the header points at a fiber
+   * slug rather than a file path. The worker is told how to read the fiber
+   * (`felt show <slug>` from the project root) so it doesn't have to guess
+   * whether the slug is a file or a fiber name.
+   */
+  formatFiberAnnotationsForClaude(slug: string, annotations: Annotation[], globalComment?: string): string {
+    const file = this.formatAnnotationsForClaude(slug, annotations, globalComment);
+    // Replace the file-flavoured header with a fiber-flavoured one. Keeping
+    // `formatAnnotationsForClaude` as the body source means future tweaks to
+    // the per-annotation rendering only have to land in one place.
+    return file.replace(`# Feedback on ${slug}`, `# Feedback on fiber: \`${slug}\`\n\nRead it with \`felt show ${slug}\` from the project root.`);
   }
 
   formatAnnotationsForClaude(filePath: string, annotations: Annotation[], globalComment?: string): string {

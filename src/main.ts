@@ -158,6 +158,13 @@ const domPinLayer = new DomPinLayer({
     if (!src) return null
     if (src.url) return src.url
     if (!src.path || !src.originId) return null
+    // astra.yaml gets the lightcone paper-view route, not raw streaming.
+    // The adapter routes the same way for vellum-mounted pins; this is
+    // the parallel path for kind: 'html' / 'pdf' pins that go through
+    // renderInner directly. See [[vellum-reader/astra-yaml-paper-view]].
+    if (/(?:^|\/)astra\.ya?ml$/i.test(src.path)) {
+      return `http://${window.location.hostname}:4004/astra-paper-view/${encodeURIComponent(src.originId)}${src.path}`
+    }
     return `http://${window.location.hostname}:4004/project-file/${encodeURIComponent(src.originId)}${src.path}`
   },
   onContextMenu: (slug, clientX, clientY) => {
@@ -756,9 +763,11 @@ function handleCityClick(city: City): void {
   }
 }
 
-// Vellum is the file viewer. React modal mounted via openVellumFileModal.
-// See vellum-in-portolan: portolan's FileViewerModal has been retired from the
-// user-facing path; all file opens go through vellum + PortolanAdapter.
+// Vellum is the file viewer. Files open in the workspace modal in *file mode*
+// — FileViewerPage in the narrative slot, Workspace + Delta tabs disabled.
+// The standalone openVellumFileModal has been retired in favor of routing
+// every file through the same workspace shell that hosts fibers; see
+// card-redesign/file-modal-absorbs-into-workspace.
 // (Note: vellumMountPromise itself is hoisted above DomPinLayer construction
 // so the inline-vellum mount factory can close over it.)
 
@@ -771,14 +780,29 @@ interface OpenFileArgs {
 }
 
 function openFile(args: OpenFileArgs): void {
-  void vellumMountPromise.then(({ openVellumFileModal }) => {
-    openVellumFileModal({
-      path: args.path,
-      originId: args.originId,
+  // File mode is single-instance, same lifecycle as the fiber-side workspace.
+  // Reuse the workspace open-token so a rapid file-then-fiber sequence (or
+  // vice versa) keeps only the latest modal mounted.
+  activeWorkspaceHandle?.close()
+  activeWorkspaceHandle = null
+  const myToken = ++workspaceOpenToken
+  void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
+    if (myToken !== workspaceOpenToken) return
+    const handle = openVellumWorkspaceModal({
       cityId: args.cityId,
+      originId: args.originId,
+      initialFilePath: args.path,
+      // Read-mode default: markdown lands in the canvas (PretextProse —
+      // same renderer as fiber bodies); other text files render in
+      // CodeMirror read-only. Callers that want the source editor up
+      // front (e.g. worker prompts that pass jumpToLine for a code file)
+      // pass `editable: true` explicitly.
+      // See ai-futures/portolan/vellum-reader/markdown-and-fibers-share-canvas.
+      editable: args.editable ?? false,
       jumpToLine: args.jumpToLine,
-      editable: args.editable ?? true,
+      cityName: args.cityId ? cities.find(c => c.id === args.cityId)?.name : undefined,
     })
+    activeWorkspaceHandle = handle
   })
 }
 

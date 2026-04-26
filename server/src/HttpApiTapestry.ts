@@ -33,12 +33,39 @@ export class HttpApiTapestry {
   private readonly sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   private readonly sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
 
+  /**
+   * TTL cache for `getAllCityFibers` results. Workspace mounts hit /astra/graph
+   * and /city-root-slug back-to-back; without caching these each pay a fresh
+   * `felt ls --json` invocation over SSH, which on remote cities is the
+   * single biggest contributor to perceived workspace-open latency. 30s is
+   * short enough to feel live (a fiber created via /file-as-fiber appears
+   * within half a minute or whenever the cache is invalidated explicitly)
+   * and long enough to coalesce the typical workspace open into a single
+   * SSH call. Keyed by host + path + body-shape so the metadata path and
+   * the body-bearing path don't bleed into each other.
+   */
+  private fiberListCache = new Map<string, { fibers: Fiber[]; expiresAt: number }>();
+  private static readonly FIBER_LIST_TTL_MS = 30_000;
+
   constructor(options: HttpApiTapestryOptions) {
     this.cityLookup = options.cityLookup;
     this.fileContentApi = options.fileContentApi;
     this.getSshHost = options.getSshHost;
     this.sendJsonError = options.sendJsonError;
     this.sendJsonSuccess = options.sendJsonSuccess;
+  }
+
+  /**
+   * Drop cached fiber lists for a given city. Callers that mutate the fiber
+   * tree (e.g. /file-as-fiber creating a new fiber via `felt add`) should
+   * invalidate so the next read reflects the change rather than waiting out
+   * the TTL. Invalidates both metadata and body-bearing variants for the
+   * given host/path so a search-after-create sees the new fiber too.
+   */
+  invalidateFiberListCache(cityPath: string, sshHost?: string): void {
+    const host = sshHost ?? 'local';
+    this.fiberListCache.delete(`${host}::${cityPath}::meta`);
+    this.fiberListCache.delete(`${host}::${cityPath}::body`);
   }
 
   async handleTapestry(url: URL, res: ServerResponse): Promise<void> {
@@ -57,7 +84,8 @@ export class HttpApiTapestry {
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
     try {
-      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      // /tapestry serializes fiber bodies in its response (line ~104, ~154).
+      const allFibers = await this.getAllCityFibers(city.path, sshHost, { withBody: true });
       const ruleFibers = allFibers.filter((fiber) =>
         fiber.tags?.some((tag) => tag.startsWith('tapestry:'))
       );
@@ -419,7 +447,9 @@ export class HttpApiTapestry {
     const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') ?? '20', 10) || 20));
 
     try {
-      const fibers = await this.getAllCityFibers(city.path, sshHost);
+      // Search uses fiber body for snippet generation and body-includes scoring
+      // (line ~430, ~454-462), so we need the body-bearing variant.
+      const fibers = await this.getAllCityFibers(city.path, sshHost, { withBody: true });
       const needle = q.toLowerCase();
 
       const hits = fibers
@@ -569,36 +599,73 @@ export class HttpApiTapestry {
     return null;
   }
 
-  private async getAllCityFibers(cityPath: string, sshHost?: string): Promise<Fiber[]> {
-    if (!sshHost) {
-      return getAllFibers(cityPath);
+  /**
+   * List every fiber in a city. Two callers' shapes:
+   *   - `withBody: false` (default) — graph and root-slug callers just need
+   *     metadata. Skipping `--body` shrinks the SSH JSON payload (every
+   *     fiber's full markdown is otherwise serialized over the wire) and
+   *     lets felt skip body parsing on the remote side. Hot path for
+   *     workspace open.
+   *   - `withBody: true` — search and tapestry callers use the body for
+   *     snippet generation and inline rendering.
+   * Results are TTL-cached per (host, cityPath, withBody) so the
+   * back-to-back /astra/graph + /city-root-slug pattern at workspace open
+   * pays the SSH cost once.
+   */
+  private async getAllCityFibers(
+    cityPath: string,
+    sshHost?: string,
+    opts: { withBody?: boolean } = {},
+  ): Promise<Fiber[]> {
+    const withBody = opts.withBody ?? false;
+    const host = sshHost ?? 'local';
+    const cacheKey = `${host}::${cityPath}::${withBody ? 'body' : 'meta'}`;
+    const cached = this.fiberListCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.fibers;
     }
 
-    const command = `cd ${shellEscape(cityPath)} && felt ls -s all --json --body 2>/dev/null || echo '[]'`;
-    const { stdout } = await execFileAsync(
-      'ssh',
-      [sshHost, command],
-      { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
-    );
+    let fibers: Fiber[];
+    if (!sshHost) {
+      // Local FiberReader always parses the body — local FS reads are cheap
+      // enough that the metadata/body distinction doesn't pay off the
+      // complexity. Cache regardless so repeated handlers within one
+      // workspace open coalesce.
+      fibers = await getAllFibers(cityPath);
+    } else {
+      const bodyFlag = withBody ? ' --body' : '';
+      const command = `cd ${shellEscape(cityPath)} && felt ls -s all --json${bodyFlag} 2>/dev/null || echo '[]'`;
+      const { stdout } = await execFileAsync(
+        'ssh',
+        [sshHost, command],
+        { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }
+      );
 
-    const raw = JSON.parse(stdout.trim() || '[]');
-    return raw.map((fiber: any): Fiber => ({
-      id: fiber.id,
-      name: fiber.name || fiber.id,
-      status: fiber.status || 'open',
-      kind: fiber.kind || 'task',
-      priority: fiber.priority || 2,
-      createdAt: fiber.created_at || '',
-      closedAt: fiber.closed_at,
-      outcome: fiber.outcome,
-      body: fiber.body,
-      tags: fiber.tags?.flatMap((tag: string) =>
-        tag.includes(',') ? tag.split(',').map((value: string) => value.trim()).filter(Boolean) : [tag]
-      ),
-      dependsOn: fiber.depends_on?.map((dependency: any) =>
-        typeof dependency === 'string' ? dependency : dependency.id
-      ),
-    }));
+      const raw = JSON.parse(stdout.trim() || '[]');
+      fibers = raw.map((fiber: any): Fiber => ({
+        id: fiber.id,
+        name: fiber.name || fiber.id,
+        status: fiber.status || 'open',
+        kind: fiber.kind || 'task',
+        priority: fiber.priority || 2,
+        createdAt: fiber.created_at || '',
+        closedAt: fiber.closed_at,
+        outcome: fiber.outcome,
+        body: fiber.body,
+        tags: fiber.tags?.flatMap((tag: string) =>
+          tag.includes(',') ? tag.split(',').map((value: string) => value.trim()).filter(Boolean) : [tag]
+        ),
+        dependsOn: fiber.depends_on?.map((dependency: any) =>
+          typeof dependency === 'string' ? dependency : dependency.id
+        ),
+      }));
+    }
+
+    this.fiberListCache.set(cacheKey, {
+      fibers,
+      expiresAt: Date.now() + HttpApiTapestry.FIBER_LIST_TTL_MS,
+    });
+    return fibers;
   }
 
   private async readCityConfig(

@@ -6,7 +6,7 @@ import { extname } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Origin } from './OriginManager.js';
 import { shellEscape } from './ShellPathUtils.js';
-import { markdownToMdast } from './MarkdownToMdast.js';
+import { markdownToMdast, extractFrontmatter } from './MarkdownToMdast.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -215,11 +215,22 @@ export class HttpApiFileContent {
       // myst-to-react without pulling a remark stack into the browser bundle.
       // Quiet failures fall back to source view (vellum handles missing mdast).
       let mdast: unknown = undefined;
+      let frontmatter: Record<string, unknown> | undefined = undefined;
       if ((ext === 'md' || ext === 'markdown') && content.trim()) {
         try {
           mdast = markdownToMdast(content);
         } catch (parseErr: any) {
           console.warn('markdownToMdast failed for', filePath, parseErr?.message ?? parseErr);
+        }
+        // Frontmatter parsed separately and returned at the top level so the
+        // client can render a fiber-shaped header (FiberHeader) above the
+        // canvas without re-parsing yaml in the browser. Failures are quiet —
+        // a malformed yaml block surfaces as missing frontmatter, not a
+        // file-fetch error.
+        try {
+          frontmatter = extractFrontmatter(content);
+        } catch (fmErr: any) {
+          console.warn('extractFrontmatter failed for', filePath, fmErr?.message ?? fmErr);
         }
       }
 
@@ -227,7 +238,7 @@ export class HttpApiFileContent {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(JSON.stringify({ content, language, path: filePath, mdast }));
+      res.end(JSON.stringify({ content, language, path: filePath, mdast, frontmatter }));
     } catch (error: any) {
       console.error('Failed to fetch file content:', error.message);
       const statusCode = error.code === 'ENOENT' ? 404 : 500;

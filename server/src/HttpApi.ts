@@ -17,6 +17,7 @@ import type { Session } from './SessionTracker.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
 import { HttpApiActivation } from './HttpApiActivation.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
+import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
@@ -61,6 +62,7 @@ export class HttpApi {
   private originLookup: OriginLookup;
   private persistenceLookup: PersistenceLookup;
   private annotationsApi: HttpApiAnnotations;
+  private astraViewApi: HttpApiAstraView;
   private fileContentApi: HttpApiFileContent;
   private hooksRuntimeApi: HttpApiHooksRuntime;
   private meetingApi: HttpApiMeeting;
@@ -92,6 +94,7 @@ export class HttpApi {
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
+    this.astraViewApi = new HttpApiAstraView({ originLookup });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
@@ -117,6 +120,14 @@ export class HttpApi {
       getSshHost: (city) => this.getSshHost(city),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    // After both APIs exist, link them so a successful /file-as-fiber
+    // invalidates the tapestry's fiber-list cache. Without this, the 30s
+    // TTL would hide a freshly-created child fiber from /astra/graph and
+    // /api/search until expiry. Couldn't be wired in HttpApiAnnotations'
+    // construction above — tapestryApi didn't exist yet.
+    this.annotationsApi.setOnFiberCreated((cityPath, sshHost) => {
+      this.tapestryApi.invalidateFiberListCache(cityPath, sshHost);
     });
     this.layoutStore = new LayoutStore();
     this.layoutsApi = new HttpApiLayouts({
@@ -237,6 +248,21 @@ export class HttpApi {
 
     if (req.method === 'GET' && url.pathname.startsWith('/project-file/')) {
       await this.fileContentApi.handleProjectFile(url, res);
+      return true;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/astra-paper-view/')) {
+      await this.astraViewApi.handlePaperView(url, res);
+      return true;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/astra/asset/')) {
+      await this.astraViewApi.handleAsset(url, res);
+      return true;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/papers/')) {
+      await this.astraViewApi.handlePaperPdf(url, res);
       return true;
     }
 

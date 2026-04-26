@@ -1,14 +1,21 @@
 /**
  * Vellum mount seams for portolan.
  *
- * Two entry points:
+ * Entry points:
  *
  *   - mountVellumFileViewer(container, …) — raw page mount, used when the
  *     host already owns a container and wants FileViewerPage inside it
  *     (e.g. inline panels, debug surfaces).
- *   - openVellumFileModal({ path, … }) — full-viewport modal: creates a scrim
- *     container, mounts vellum's FileViewerModal inside, and returns a close
- *     handle. Replaces the hand-rolled overlay main.ts used to roll itself.
+ *   - mountVellumFileSurface(container, …) — DOM card mount used by
+ *     DomPinLayer to host vellum inside a portolan pin.
+ *   - mountVellumFiberSurface(container, …) — DOM card mount for fiber pins.
+ *   - openVellumWorkspaceModal({ … }) — full-viewport modal hosting either
+ *     a fiber (initialSlug) or a file (initialFilePath, with the workspace's
+ *     narrative slot routed to FileViewerPage). Files used to have their own
+ *     openVellumFileModal; that retired 2026-04-25 — see
+ *     card-redesign/file-modal-absorbs-into-workspace.
+ *   - openVellumStaticFileModal(…) — separate path used by the static
+ *     GitHub-Pages tapestry viewer; no city or workspace, just FileViewerModal.
  *
  * Everything outside this file stays vanilla TS/Three.js. React only lives
  * inside the React root this file creates — see vellum-in-portolan.
@@ -17,6 +24,7 @@
 import { createRoot, type Root } from 'react-dom/client'
 import {
   AdapterProvider,
+  AnnotationActionsProvider,
   FiberCard,
   FileViewerModal,
   FileViewerPage,
@@ -252,6 +260,128 @@ async function saveAnnotationsAsFiber(args: {
 }
 
 /**
+ * Fiber-bound counterpart to `sendAnnotationsToChoice`. Same picker flow and
+ * server route (/send-annotations); the server detects `fiberSlug` in the
+ * body and formats the worker prompt with a fiber-shaped header instead of
+ * a file path. Annotations are persisted with `filePath = slug` (portolan's
+ * adapter convention), so reusing the same endpoint and persistence keying
+ * is safe.
+ */
+async function sendFiberAnnotationsToChoice(args: {
+  slug: string
+  originId: string
+  cityId: string | undefined
+  annotations: Annotation[]
+  choice: WorkerPickerChoice
+  refreshAnnotations: () => void
+}): Promise<void> {
+  const body: Record<string, unknown> = {
+    // The annotation persistence key for fiber annotations IS the slug —
+    // portolan's adapter sets `filePath: input.filePath ?? input.slug` on
+    // create. Pass the slug as both filePath (for sentAt-marking lookups
+    // server-side) and fiberSlug (so the prompt header reads "fiber: <slug>"
+    // instead of treating the slug as a file path).
+    filePath: args.slug,
+    fiberSlug: args.slug,
+    annotations: args.annotations,
+  }
+
+  if (args.choice.kind === 'existing') {
+    const worker = args.choice.worker
+    body.workerId = worker.id
+    body.originId = worker.originId
+    if (mountContext) {
+      const targetCity = mountContext
+        .getCities()
+        .find((c) => c.id === worker.cityId && c.originId === worker.originId)
+      if (targetCity) body.cityPath = targetCity.path
+    }
+  } else {
+    // New worker lives in the CURRENT fiber's city. Without an explicit
+    // cityPath the server falls back to deriving cwd from filePath, which
+    // for a slug like `card-redesign/x` would be `card-redesign` — not a
+    // real directory. Pass the resolved city.path so the new worker spawns
+    // in the project root.
+    const city = resolveCity(args.cityId, args.originId)
+    body.originId = args.originId
+    body.createNewWorker = true
+    if (city?.path) body.cityPath = city.path
+  }
+
+  const ok = await postSendAnnotations(body)
+  if (ok) args.refreshAnnotations()
+}
+
+/**
+ * Save annotations as a *child* fiber under the current slug. The no-worker
+ * fallback for fiber-mode: capture the thought in place. The server's
+ * /file-as-fiber endpoint accepts `parentSlug` and nests the new fiber as
+ * `<parentSlug>/<derivedChildSlug>`.
+ */
+async function saveFiberAnnotationsAsChildFiber(args: {
+  parentSlug: string
+  originId: string
+  cityId: string | undefined
+  annotations: Annotation[]
+}): Promise<void> {
+  const { parentSlug, originId, cityId, annotations } = args
+  if (annotations.length === 0) return
+  const parentLeaf = parentSlug.split('/').pop() ?? parentSlug
+  const title =
+    annotations.length === 1
+      ? `Note on ${parentLeaf}`
+      : `${annotations.length} notes on ${parentLeaf}`
+
+  // Body: fiber identifier on top, then per-annotation quote + comment.
+  // Mirrors saveAnnotationsAsFiber's prose shape so a child note reads
+  // consistently with a top-level file-derived note.
+  const sections: string[] = [`See [[${parentSlug}]].`, '']
+  for (let i = 0; i < annotations.length; i++) {
+    const ann = annotations[i]
+    const header = annotations.length === 1 ? '' : `## ${i + 1}.`
+    if (header) sections.push(header)
+    const quoted = ann.originalText ?? ann.selectedText ?? ''
+    if (quoted) {
+      for (const line of quoted.split('\n')) sections.push(`> ${line}`)
+      sections.push('')
+    }
+    sections.push(ann.comment)
+    sections.push('')
+  }
+
+  const cityPath = resolveCity(cityId, originId)?.path
+  const res = await fetch(`${API_BASE}/file-as-fiber`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      // /file-as-fiber requires filePath in its current shape; use the
+      // parent slug as the placeholder identifier. cityPath is what
+      // actually drives the felt invocation, not filePath, so this is
+      // harmless. parentSlug is what makes the new fiber land as a child.
+      filePath: parentSlug,
+      originId,
+      cityPath,
+      title,
+      body: sections.join('\n'),
+      kind: 'note',
+      parentSlug,
+    }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    console.error('[annotation-actions] save-as-child-fiber failed', res.status, detail)
+    showToast('Save as fiber failed', 'error')
+    return
+  }
+  const result = await res.json().catch(() => ({} as { fiberId?: string }))
+  showToast(
+    result.fiberId ? `Filed as ${result.fiberId}` : 'Filed as child fiber',
+    'success',
+    2500,
+  )
+}
+
+/**
  * Header-level bulk actions for a specific file mount: Send to worker (opens
  * a picker of existing workers in the file's city + New worker) and Fiber
  * (collapses all comments into one fiber body). The actions read the
@@ -313,6 +443,82 @@ function portolanHeaderActions(args: {
           cityId: args.cityId,
           annotations,
         }),
+    },
+  ]
+}
+
+/**
+ * Fiber-bound bulk actions for the workspace's narrative view. Mirrors
+ * `portolanHeaderActions` (Send / Clear sent / Fiber) but binds to a fiber
+ * slug instead of a file path. The slug isn't known at registration time
+ * (the user navigates between fibers within one workspace mount); each
+ * action reads `ctx.currentSlug` at invoke time, threaded through by
+ * `NarrativeAnnotationActionsBar`.
+ *
+ * Send → resolves slug → fiber body file path on the server side, sends
+ *        the prompt with a fiber-shaped header.
+ * Clear sent → identical to the file path (annotation IDs are global).
+ * Fiber → saves the annotations as a *child* of the current fiber. This
+ *         is the no-worker fallback the user named explicitly: when you
+ *         want to record a comment but don't have a worker to send it to,
+ *         the comment lands as a child fiber under the current slug.
+ */
+function portolanFiberBulkActions(args: {
+  cityId?: string
+  originId: string
+}): AnnotationBulkAction[] {
+  return [
+    {
+      id: 'send-to-worker',
+      label: 'Send',
+      title: 'Send comments to a worker',
+      onInvoke: (annotations, ctx) => {
+        const slug = ctx.currentSlug
+        if (!slug) return
+        const workers = listAllWorkers()
+        const city = resolveCity(args.cityId, args.originId)
+        openWorkerPicker({
+          anchor: ctx.anchor,
+          workers,
+          currentCityId: args.cityId ?? null,
+          currentProjectLabel: city?.name ?? 'project',
+          onPick: (choice) => {
+            void sendFiberAnnotationsToChoice({
+              slug,
+              originId: args.originId,
+              cityId: args.cityId,
+              annotations,
+              choice,
+              refreshAnnotations: ctx.refreshAnnotations,
+            })
+          },
+        })
+      },
+    },
+    {
+      id: 'clear-sent',
+      label: 'Clear sent',
+      title: 'Delete annotations that have been sent to a worker',
+      applicableTo: (a) => typeof a.sentAt === 'number',
+      onInvoke: async (sent, ctx) => {
+        const ids = sent.map((a) => a.id).filter((id): id is string => !!id)
+        await deleteAnnotationsById(ids, ctx.refreshAnnotations)
+      },
+    },
+    {
+      id: 'save-as-child-fiber',
+      label: 'Fiber',
+      title: 'Save all comments as a child fiber under this one',
+      onInvoke: (annotations, ctx) => {
+        const slug = ctx.currentSlug
+        if (!slug) return
+        return saveFiberAnnotationsAsChildFiber({
+          parentSlug: slug,
+          originId: args.originId,
+          cityId: args.cityId,
+          annotations,
+        })
+      },
     },
   ]
 }
@@ -382,7 +588,7 @@ export interface VellumFileSurfaceHandle {
 
 /**
  * Non-modal mount of vellum's `FileViewerPage` into an arbitrary container.
- * Same fetch + render pipeline as `openVellumFileModal`, no scrim or chrome.
+ * Same fetch + render pipeline as the workspace's file mode, no scrim or chrome.
  *
  * Used by the floating-card primitive (see [[file-view-as-floating-card]]) and
  * any other host that wants vellum's file rendering inline. The container
@@ -423,76 +629,55 @@ export function mountVellumFileSurface(
   }
 }
 
-export interface OpenFileModalOptions {
-  path: string
-  originId?: string
-  cityId?: string
-  editable?: boolean
-  jumpToLine?: number
-}
-
 export interface VellumModalHandle {
   close(): void
 }
 
-/**
- * Full-viewport vellum file modal. Creates its own container, mounts
- * FileViewerModal with an AdapterProvider, and tears down on close.
- */
-export function openVellumFileModal(opts: OpenFileModalOptions): VellumModalHandle {
-  const container = document.createElement('div')
-  document.body.appendChild(container)
-  const root = createRoot(container)
-  const unlockBackground = lockModalBackground(container)
-
-  const adapter = createPortolanAdapter({
-    cityId: opts.cityId,
-    defaultOriginId: opts.originId,
-  })
-
-  const close = () => {
-    unlockBackground()
-    root.unmount()
-    container.remove()
-  }
-
-  root.render(
-    <AdapterProvider adapter={adapter}>
-      <FileViewerModal
-        path={opts.path}
-        originId={opts.originId}
-        cityId={opts.cityId}
-        editable={opts.editable}
-        jumpToLine={opts.jumpToLine}
-        headerAnnotationActions={portolanHeaderActions({
-          path: opts.path,
-          originId: opts.originId ?? 'local',
-          cityId: opts.cityId,
-        })}
-        onClose={close}
-      />
-    </AdapterProvider>,
-  )
-
-  return { close }
-}
+// openVellumFileModal retired 2026-04-25 — files now route through
+// openVellumWorkspaceModal({ initialFilePath, … }), which lands on
+// FileViewerPage in the workspace's narrative slot. See
+// card-redesign/file-modal-absorbs-into-workspace.
+//
+// FileViewerModal stays imported from vellum because openVellumStaticFileModal
+// (the GitHub-Pages tapestry viewer) still mounts it directly — that path has
+// no city or workspace, just a flat file viewer.
 
 export interface OpenWorkspaceModalOptions {
-  cityId: string
-  /** Initial fiber slug to land on. Typically `<cityId>/<cityId>` (the city's root fiber). */
+  /** City context for fiber operations (graph fetch, search, fiber content).
+   *  Required for fiber mode; optional in file mode (the adapter degrades:
+   *  no fiber graph, no search — but the file path stands on its own). */
+  cityId?: string
+  /** Initial fiber slug to land on. Typically `<cityId>/<cityId>` (the city's root fiber).
+   *  Mutually exclusive with `initialFilePath`. */
   initialSlug?: string
   originId?: string
   /** Display name shown above IndexView's "Index" cartouche. Typically the
    *  city name (`portolan`, `LightconeResearch`); flows to vellum's
    *  CollectionContext via WorkspaceMount.eyebrow. */
   cityName?: string
+  /** Open the workspace in *file mode* — FileViewerPage in the narrative slot,
+   *  Workspace + Delta tabs disabled. Mutually exclusive with `initialSlug`.
+   *  Replaces the standalone openVellumFileModal: see card-redesign/file-modal-absorbs-into-workspace. */
+  initialFilePath?: string
+  /** When true and `initialFilePath` is text/markdown, the file opens in the
+   *  editor with Save in the file-mode toolbar. Ignored unless `initialFilePath` is set. */
+  editable?: boolean
+  /** 1-indexed line to jump to when the file opens. Ignored unless `initialFilePath` is set. */
+  jumpToLine?: number
 }
 
 /**
  * Full-viewport vellum workspace modal for a portolan city. Mounts
- * vellum's WorkspaceMount (narrative / workspace / delta / map modes) against
+ * vellum's WorkspaceMount (narrative / workspace / delta modes) against
  * the PortolanAdapter for the given city. Replaces the native TapestryView
  * on `t` / deep-press; see tapestry-dissolves.
+ *
+ * Two opening modes:
+ *   - `initialSlug` (default): land on a fiber. The historical mode.
+ *   - `initialFilePath`: land in *file mode*. FiberPage routes the narrative
+ *     slot to FileViewerPage; Workspace + Delta tabs are disabled because
+ *     they're fiber-collection concepts. Replaces openVellumFileModal —
+ *     see card-redesign/file-modal-absorbs-into-workspace.
  */
 export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): VellumModalHandle {
   const container = document.createElement('div')
@@ -538,9 +723,14 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   const unlockBackground = lockModalBackground(container)
 
   // Visible escape hatch — Escape works, but a button is what every other
-  // user expects. Sits top-left as a fixed overlay (above vellum's
-  // FloatingIsland chrome on the right) so a long-scrolling fiber doesn't
-  // carry it off-screen. See vellum-dogfood/vellum-workspace-modal-no-close-button.
+  // user expects. Sits in the leftmost position of vellum's file-mode
+  // toolbar (or above the thumb-index header in narrative mode) so it
+  // shares the chrome's vertical rhythm with the file path / fiber title
+  // and the action group on the right. The toolbar's padding-left is
+  // bumped via a sibling stylesheet rule (index.html) so the path text
+  // flows past the button instead of underneath it. Quiet at rest —
+  // border only on hover/focus — so it reads as chrome, not a CTA.
+  // See vellum-dogfood/vellum-workspace-modal-no-close-button.
   const closeBtn = document.createElement('button')
   closeBtn.type = 'button'
   closeBtn.className = 'vellum-workspace-modal-close'
@@ -549,23 +739,43 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   closeBtn.textContent = '×'
   Object.assign(closeBtn.style, {
     position: 'fixed',
-    top: '12px',
-    left: '12px',
+    // Workspace modal's three top elements — close button (here), the
+    // file-mode toolbar's path text, and the thumb-index header — share
+    // a single horizontal centreline. The portolan-injected CSS in
+    // index.html pads the toolbar to padding 14px y (toolbar ≈ 53px
+    // tall) and tightens the thumb-index padding-top to 10px so its
+    // first row of mode tabs centres at the same y. Centre the 24px
+    // button on that band: top = (53 − 24)/2 ≈ 14. See
+    // vellum-reader/modal-chrome-alignment and
+    // vellum-reader/title-bar-thumb-index-alignment.
+    top: '14px',
+    left: '8px',
     zIndex: '1001',
-    width: '32px',
-    height: '32px',
+    width: '24px',
+    height: '24px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    border: '1px solid var(--border, #d4ccbf)',
+    border: '1px solid transparent',
     borderRadius: '4px',
-    background: 'var(--page-bg, #ede8e0)',
-    color: 'var(--text, #1f1a15)',
+    background: 'transparent',
+    color: 'var(--text-muted, #7A7368)',
     cursor: 'pointer',
-    fontSize: '20px',
+    fontSize: '17px',
     lineHeight: '1',
     fontFamily: 'inherit',
     padding: '0',
+    transition: 'background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out',
+  })
+  closeBtn.addEventListener('mouseenter', () => {
+    closeBtn.style.background = 'rgba(160, 48, 48, 0.10)'
+    closeBtn.style.borderColor = 'rgba(160, 48, 48, 0.32)'
+    closeBtn.style.color = '#A03030'
+  })
+  closeBtn.addEventListener('mouseleave', () => {
+    closeBtn.style.background = 'transparent'
+    closeBtn.style.borderColor = 'transparent'
+    closeBtn.style.color = 'var(--text-muted, #7A7368)'
   })
   closeBtn.addEventListener('click', () => close())
   container.appendChild(closeBtn)
@@ -598,13 +808,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   }
   document.addEventListener('keydown', onKey, true)
 
-  const mountWith = (initialSlug: string) => {
-    if (closed) return
-    root.render(
-      <AdapterProvider adapter={adapter}>
-        <WorkspaceMount initialSlug={initialSlug} eyebrow={opts.cityName} />
-      </AdapterProvider>,
-    )
+  const focusContainer = () => {
     // Move focus into the modal so arrow keys scroll the container
     // immediately. Without this, the user has to click into the prose
     // first; in particular trackpad/mouse-wheel works without focus but
@@ -616,7 +820,54 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     })
   }
 
-  if (opts.initialSlug) {
+  // Fiber-bound bulk actions for narrative view. The slug isn't pinned at
+  // registration time — vellum threads `currentSlug` through the bar's ctx
+  // so each invocation knows which fiber it's on. Computed once per modal
+  // mount (cityId/originId are stable) and provided via
+  // AnnotationActionsProvider for vellum's NarrativeAnnotationActionsBar.
+  const fiberBulkActions = portolanFiberBulkActions({
+    cityId: opts.cityId,
+    originId: opts.originId ?? 'local',
+  })
+
+  const mountWith = (initialSlug: string) => {
+    if (closed) return
+    root.render(
+      <AdapterProvider adapter={adapter}>
+        <AnnotationActionsProvider bulkActions={fiberBulkActions}>
+          <WorkspaceMount initialSlug={initialSlug} eyebrow={opts.cityName} />
+        </AnnotationActionsProvider>
+      </AdapterProvider>,
+    )
+    focusContainer()
+  }
+
+  const mountWithFile = (path: string) => {
+    if (closed) return
+    root.render(
+      <AdapterProvider adapter={adapter}>
+        <WorkspaceMount
+          initialFilePath={path}
+          originId={opts.originId}
+          editable={opts.editable}
+          jumpToLine={opts.jumpToLine}
+          eyebrow={opts.cityName}
+          headerAnnotationActions={portolanHeaderActions({
+            path,
+            originId: opts.originId ?? 'local',
+            cityId: opts.cityId,
+          })}
+        />
+      </AdapterProvider>,
+    )
+    focusContainer()
+  }
+
+  if (opts.initialFilePath) {
+    // File mode wins — same precedence as WorkspaceMount itself. Skips the
+    // city-root resolution because file mode doesn't depend on a slug.
+    mountWithFile(opts.initialFilePath)
+  } else if (opts.initialSlug) {
     mountWith(opts.initialSlug)
   } else {
     // Ask the server which fiber is the city's root, then mount on it.
@@ -635,7 +886,8 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   return { close }
 }
 
-async function resolveCityRootSlug(cityId: string): Promise<string | null> {
+async function resolveCityRootSlug(cityId: string | undefined): Promise<string | null> {
+  if (!cityId) return null
   // Use the dedicated /city-root-slug endpoint instead of /astra/graph: the
   // modal only needs rootSlug here, and WorkspaceMount fetches the full graph
   // again itself. See vellum-dogfood/vellum-modal-double-graph-fetch.
