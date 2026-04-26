@@ -5101,13 +5101,25 @@
          wider than vellum's prose column, so we widen the page when an
          html reader is mounted, and turn the modal column into a flex
          chain so heights propagate down to the iframe. See
-         vellum-reader/astra-yaml-paper-view. */
-      .vellum-workspace-modal-container:has(.vellum-file-reader--html) > div {
+         vellum-reader/astra-yaml-paper-view.
+
+         The same flex chain + column widening applies when the vellum-
+         native astra rungs (linear / personal) are mounted: the marker
+         is the wrapping `.astra-paper-view-host` (which contains the
+         iframe in paper-view rung and `<AstraPaperView>` in linear /
+         personal). Without the chain, vellum-page's lightcone-linear
+         max-width:720px clamps the host to a column too narrow to host
+         the 220px-wide annotation gutter — margin notes hang past the
+         host's overflow-x:hidden cut and disappear. See
+         vellum-reader/astra-margin-note-gutter-clip. */
+      .vellum-workspace-modal-container:has(.vellum-file-reader--html) > div,
+      .vellum-workspace-modal-container:has(.astra-paper-view-host) > div {
         height: 100%;
         display: flex;
         flex-direction: column;
       }
-      :root .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-page {
+      :root .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-page,
+      :root .vellum-workspace-modal-container:has(.astra-paper-view-host) .vellum-page {
         max-width: none;
         /* Reserve the canvas-width gutter on the right so the iframe
            shrinks when the user drags the thumb-index divider, instead
@@ -5127,12 +5139,15 @@
         display: flex;
         flex-direction: column;
       }
-      .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-file-mode {
+      .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-file-mode,
+      .vellum-workspace-modal-container:has(.astra-paper-view-host) .vellum-file-mode {
         flex: 1;
         min-height: 0;
       }
       .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-file-mode__body,
-      .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-file-viewer-page {
+      .vellum-workspace-modal-container:has(.vellum-file-reader--html) .vellum-file-viewer-page,
+      .vellum-workspace-modal-container:has(.astra-paper-view-host) .vellum-file-mode__body,
+      .vellum-workspace-modal-container:has(.astra-paper-view-host) .vellum-file-viewer-page {
         flex: 1;
         min-height: 0;
         display: flex;
@@ -5146,6 +5161,32 @@
         border: 0;
         display: block;
         background: var(--page-bg, #EDE8E0);
+      }
+      /* Reserve a real right gutter for annotation margin notes when the
+         vellum-native astra rungs (linear / personal) are mounted in
+         the modal. Notes hang at `left: calc(100% + 12px)` from
+         `.astra-paper-view-anchor` (sized like the article: 760px
+         linear, 920px personal); they're 220px wide. Without padding-
+         right here, the host's overflow-x:hidden clips the notes
+         against the column's right edge — the marquee gutter affordance
+         was invisible. The padding widens the clip box so notes that
+         hang past the centered article land within the host's padding-
+         box.
+
+         Scoped to hosts that contain `.astra-paper-view-anchor` (linear /
+         personal) so the paper-view rung's iframe still gets the full
+         host width — paper-view doesn't carry annotation margin notes
+         (the iframe is a separate origin; TextAnnotationLayer is gated
+         to the vellum-native rungs in FileViewerPage). Cards (sticky-
+         notes) sit outside the workspace modal so they're also untouched.
+         Gated to viewports > 960px so narrow viewports don't waste a
+         third of the column on a gutter that vellum already hides
+         (vellum.css `@media (max-width: 960px) .ann-margin-note { display: none; }`).
+         See vellum-reader/astra-margin-note-gutter-clip. */
+      @media (min-width: 961px) {
+        .vellum-workspace-modal-container .astra-paper-view-host:has(.astra-paper-view-anchor) {
+          padding-right: calc(var(--canvas-overlay-width, 220px) + 12px);
+        }
       }
     </style>
   </head>
