@@ -25,6 +25,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import {
   AdapterProvider,
   AnnotationActionsProvider,
+  DecisionFlipProvider,
   FiberCard,
   FileViewerModal,
   FileViewerPage,
@@ -613,15 +614,25 @@ export function mountVellumFileSurface(
       cityId: next.cityId,
       defaultOriginId: next.originId,
     })
+    // DecisionFlipProvider gives each card its own thought-experiment
+    // scope: clicking an alternative on an astra card flips that card's
+    // hypothetical universe without leaking into other cards or the
+    // workspace modal (the modal has its own provider via WorkspaceMount).
+    // Identical bundles open in two cards stay independent on purpose —
+    // flips are surface-local thought experiments, not bundle state.
+    // Non-astra files pay no cost: provider is a tiny in-memory Map and
+    // FileViewerPage's other branches don't read the context.
     root.render(
       <AdapterProvider adapter={adapter}>
-        <FileViewerPage
-          path={next.path}
-          originId={next.originId}
-          editable={next.editable}
-          jumpToLine={next.jumpToLine}
-          hideToolbar={next.hideToolbar}
-        />
+        <DecisionFlipProvider>
+          <FileViewerPage
+            path={next.path}
+            originId={next.originId}
+            editable={next.editable}
+            jumpToLine={next.jumpToLine}
+            hideToolbar={next.hideToolbar}
+          />
+        </DecisionFlipProvider>
       </AdapterProvider>,
     )
   }
