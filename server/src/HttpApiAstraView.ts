@@ -330,6 +330,30 @@ async function materializeRemoteSpec(
   return localRoot;
 }
 
+/**
+ * Result of resolving an astra path into a built, path-rewritten bundle.
+ * Discriminated so the two endpoints (paper-view html, raw bundle JSON)
+ * can branch on outcome and pick their own body shape — the html path
+ * still wants stub HTML on failure for the iframe to display, while the
+ * JSON path emits text/plain with the same status codes.
+ */
+type BundleBuildResult =
+  | { kind: 'ok'; bundle: Bundle; csvs: Record<string, string>; remoteRoot: string }
+  | { kind: 'error'; status: number; tag: string; message: string };
+
+/**
+ * Parse `/astra-{paper-view,bundle}/{originId}{absPath}` into pieces.
+ * Returns null if the path is malformed; the caller emits a 400.
+ */
+function parseAstraUrl(url: URL, prefix: string): { originId: string; filePath: string } | null {
+  const rest = url.pathname.slice(prefix.length);
+  const slashIdx = rest.indexOf('/');
+  if (slashIdx < 0) return null;
+  const originId = decodeURIComponent(rest.slice(0, slashIdx));
+  const filePath = decodeURIComponent(rest.slice(slashIdx));
+  return { originId, filePath };
+}
+
 export class HttpApiAstraView {
   private originLookup: OriginLookup;
 
@@ -338,37 +362,29 @@ export class HttpApiAstraView {
   }
 
   /**
-   * Serve the rendered paper view for an astra.yaml at the given path.
-   * URL shape: `/astra-paper-view/{originId}{absPath}[?universe=baseline][&as=paper|source]`.
-   * `as=source` returns a syntax-styled view of the raw YAML so the pin
-   * chrome can flip between the rich paper view and the underlying file
-   * without leaving the iframe.
+   * Shared core for both `/astra-paper-view` and `/astra-bundle`. Validates
+   * the path, resolves the project root (local or SSH-mirrored), runs
+   * `buildBundle`, and rewrites artifact paths to portolan `/project-file`
+   * URLs. Returns the rewritten bundle + csvs on success, or a structured
+   * error the caller can surface in its preferred body shape.
+   *
+   * The two endpoints share *exactly* this pipeline — diverging only in
+   * how they encode the result (paper-view.html template vs. JSON) and
+   * the error body (stub HTML vs. text/plain). Keeping the resolution
+   * here means the bundle a JSON consumer sees is the same one the
+   * iframe pdfjs / paper-viewer.js sees, modulo presentation.
    */
-  async handlePaperView(url: URL, res: ServerResponse): Promise<void> {
-    const prefix = '/astra-paper-view/';
-    const rest = url.pathname.slice(prefix.length);
-    const slashIdx = rest.indexOf('/');
-    if (slashIdx < 0) {
-      this.sendError(res, 400, 'Missing file path');
-      return;
-    }
-    const originId = decodeURIComponent(rest.slice(0, slashIdx));
-    const filePath = decodeURIComponent(rest.slice(slashIdx));
-    const universe = url.searchParams.get('universe') ?? 'baseline';
-    const mode = url.searchParams.get('as') ?? 'paper';
-
+  private async resolveAndBuildBundle(
+    originId: string,
+    filePath: string,
+    universe: string,
+    logTag: string,
+  ): Promise<BundleBuildResult> {
     if (!filePath.startsWith('/') || filePath.includes('..')) {
-      this.sendError(res, 400, 'Invalid path');
-      return;
+      return { kind: 'error', status: 400, tag: 'invalid-path', message: 'Invalid path' };
     }
     if (!isAstraPath(filePath)) {
-      this.sendError(res, 400, 'Not an astra.yaml path');
-      return;
-    }
-
-    if (mode === 'source') {
-      await this.handleSourceView(originId, filePath, res);
-      return;
+      return { kind: 'error', status: 400, tag: 'not-astra', message: 'Not an astra.yaml path' };
     }
 
     // Project root from the perspective of buildBundle (where it walks
@@ -383,26 +399,23 @@ export class HttpApiAstraView {
     if (originId && originId !== 'local') {
       const origin = this.originLookup.getOrigin(originId);
       if (!origin?.sshHost) {
-        this.sendError(res, 404, 'Remote origin not connected');
-        return;
+        return { kind: 'error', status: 404, tag: 'remote-disconnected', message: 'Remote origin not connected' };
       }
       try {
         buildRoot = await materializeRemoteSpec(origin.sshHost, originId, remoteRoot, filePath);
       } catch (err: any) {
         const message = err?.message ?? String(err);
-        console.error('[astra-paper-view] remote materialise failed:', message);
-        const body =
-          `<p>Failed to mirror the remote project tree from <code>${escapeHtml(origin.sshHost)}</code>:</p>` +
-          `<pre>${escapeHtml(message)}</pre>` +
-          `<p class="hint">Check that the host is reachable and that the path exists. Falls back to running <code>lc-ui</code> on the remote host directly.</p>`;
-        res.writeHead(502, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*' });
-        res.end(stubHtml('Astra paper view — remote mirror failed', body));
-        return;
+        console.error(`[${logTag}] remote materialise failed:`, message);
+        return {
+          kind: 'error',
+          status: 502,
+          tag: 'remote-materialise',
+          message: `Failed to mirror the remote project tree from ${origin.sshHost}: ${message}`,
+        };
       }
     } else {
       if (!existsSync(filePath)) {
-        this.sendError(res, 404, `astra.yaml not found at ${filePath}`);
-        return;
+        return { kind: 'error', status: 404, tag: 'not-found', message: `astra.yaml not found at ${filePath}` };
       }
       buildRoot = remoteRoot;
     }
@@ -415,20 +428,67 @@ export class HttpApiAstraView {
       csvs = built.csvs;
     } catch (err: any) {
       const message = err?.message ?? String(err);
-      console.error('[astra-paper-view] buildBundle failed:', message);
-      const body =
-        `<p><code>buildBundle</code> threw building the paper view for ` +
-        `<code>${escapeHtml(filePath)}</code> (universe <code>${escapeHtml(universe)}</code>):</p>` +
-        `<pre>${escapeHtml(message)}</pre>`;
-      res.writeHead(500, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*' });
-      res.end(stubHtml('Astra paper view — build failed', body));
-      return;
+      console.error(`[${logTag}] buildBundle failed:`, message);
+      return {
+        kind: 'error',
+        status: 500,
+        tag: 'build-failed',
+        message: `buildBundle threw for ${filePath} (universe ${universe}): ${message}`,
+      };
     }
 
     // Always rewrite using the *remote* root so /project-file URLs land
     // on the right host. For local origins remoteRoot === buildRoot so
     // this is a no-op rename.
     const rewritten = rewriteBundlePaths(bundle, csvs, originId || 'local', remoteRoot);
+    return { kind: 'ok', bundle: rewritten.bundle, csvs: rewritten.csvs, remoteRoot };
+  }
+
+  /**
+   * Serve the rendered paper view for an astra.yaml at the given path.
+   * URL shape: `/astra-paper-view/{originId}{absPath}[?universe=baseline][&as=paper|source]`.
+   * `as=source` returns a syntax-styled view of the raw YAML so the pin
+   * chrome can flip between the rich paper view and the underlying file
+   * without leaving the iframe.
+   */
+  async handlePaperView(url: URL, res: ServerResponse): Promise<void> {
+    const parsed = parseAstraUrl(url, '/astra-paper-view/');
+    if (!parsed) {
+      this.sendError(res, 400, 'Missing file path');
+      return;
+    }
+    const { originId, filePath } = parsed;
+    const universe = url.searchParams.get('universe') ?? 'baseline';
+    const mode = url.searchParams.get('as') ?? 'paper';
+
+    if (mode === 'source') {
+      await this.handleSourceView(originId, filePath, res);
+      return;
+    }
+
+    const built = await this.resolveAndBuildBundle(originId, filePath, universe, 'astra-paper-view');
+    if (built.kind === 'error') {
+      // Stub-html bodies for the iframe; the iframe loads our error page
+      // and the user sees a coherent "build failed" / "remote unreachable"
+      // panel instead of a network error toast.
+      if (built.status === 502) {
+        const body =
+          `<p>Failed to mirror the remote project tree:</p>` +
+          `<pre>${escapeHtml(built.message)}</pre>` +
+          `<p class="hint">Check that the host is reachable and that the path exists.</p>`;
+        res.writeHead(502, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*' });
+        res.end(stubHtml('Astra paper view — remote mirror failed', body));
+        return;
+      }
+      if (built.status === 500 && built.tag === 'build-failed') {
+        const body = `<pre>${escapeHtml(built.message)}</pre>`;
+        res.writeHead(500, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*' });
+        res.end(stubHtml('Astra paper view — build failed', body));
+        return;
+      }
+      this.sendError(res, built.status, built.message);
+      return;
+    }
 
     let template: string;
     try {
@@ -439,7 +499,7 @@ export class HttpApiAstraView {
       return;
     }
 
-    const html = renderPaperViewHtml(template, rewritten.bundle, rewritten.csvs);
+    const html = renderPaperViewHtml(template, built.bundle, built.csvs);
 
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
@@ -447,6 +507,49 @@ export class HttpApiAstraView {
       'Cache-Control': 'no-store',
     });
     res.end(html);
+  }
+
+  /**
+   * Serve the raw, path-rewritten Bundle as JSON. URL shape:
+   * `/astra-bundle/{originId}{absPath}[?universe=baseline]`.
+   *
+   * Same `buildBundle` pipeline as `handlePaperView`, same
+   * `/project-file/...` rewrites — the only difference is the response
+   * shape: `{ bundle, csvs }` JSON instead of paper-view.html.
+   *
+   * Vellum's native astra renderer (vellum-reader/vellum-native-astra-renderer
+   * constitution) consumes this so it can run its own React rendering
+   * over the same data lightcone-ui's iframe paper view does, with the
+   * iframe path as the canonical reference. Switching ladder rungs in
+   * the renderer is a presentation switch over a stable bundle, not a
+   * re-fetch — but the bundle itself comes from here.
+   */
+  async handleBundle(url: URL, res: ServerResponse): Promise<void> {
+    const parsed = parseAstraUrl(url, '/astra-bundle/');
+    if (!parsed) {
+      this.sendError(res, 400, 'Missing file path');
+      return;
+    }
+    const { originId, filePath } = parsed;
+    const universe = url.searchParams.get('universe') ?? 'baseline';
+
+    const built = await this.resolveAndBuildBundle(originId, filePath, universe, 'astra-bundle');
+    if (built.kind === 'error') {
+      this.sendError(res, built.status, built.message);
+      return;
+    }
+
+    const body = safeJson({ bundle: built.bundle, csvs: built.csvs });
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      // The bundle is a function of (astra.yaml mtime, project tree, universe).
+      // Vellum re-fetches on focus/cache-bust per the constitution; mtime
+      // reuse on the SSH mirror handles that for free. No-store keeps the
+      // browser from staling the response under the user.
+      'Cache-Control': 'no-store',
+    });
+    res.end(body);
   }
 
   /**

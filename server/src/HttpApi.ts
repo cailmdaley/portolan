@@ -256,6 +256,11 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'GET' && url.pathname.startsWith('/astra-bundle/')) {
+      await this.astraViewApi.handleBundle(url, res);
+      return true;
+    }
+
     if (req.method === 'GET' && url.pathname.startsWith('/astra/asset/')) {
       await this.astraViewApi.handleAsset(url, res);
       return true;

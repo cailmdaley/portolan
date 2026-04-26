@@ -75,6 +75,40 @@ function buildAstraViewUrl(path: string, originId: string, cacheBust?: boolean):
   return url;
 }
 
+/**
+ * Fetch the JSON bundle for an astra.yaml from portolan's `/astra-bundle`
+ * endpoint. Returns the rewritten Bundle (artifact paths point at
+ * `/project-file/...`) plus inlined CSV previews, or `null` if the server
+ * couldn't build it (404, 500, network error). Vellum-native astra
+ * renderers consume this so they can run their own React rendering over
+ * the same data the iframe paper view sees — see
+ * `vellum-reader/vellum-native-astra-renderer`.
+ *
+ * Typed loosely (`unknown` bundle/csvs) at this seam so the adapter file
+ * doesn't pull lightcone-ui-core's `Bundle` into portolan; consumers
+ * import that type directly and cast at the call site, just as the
+ * iframe path treats `window.__BUNDLE__` as opaque JSON.
+ */
+export async function fetchAstraBundle(
+  path: string,
+  originId: string = 'local',
+  options: { universe?: string; cacheBust?: boolean } = {},
+): Promise<{ bundle: unknown; csvs: Record<string, string> } | null> {
+  const absPath = path.startsWith('/') ? path : `/${path}`;
+  const encodedPath = absPath
+    .split('/')
+    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+    .join('/');
+  const params = new URLSearchParams();
+  if (options.universe) params.set('universe', options.universe);
+  if (options.cacheBust) params.set('_t', String(Date.now()));
+  const qs = params.toString();
+  const url = `${API_BASE}/astra-bundle/${encodeURIComponent(originId)}${encodedPath}${qs ? `?${qs}` : ''}`;
+  const res = await fetch(url).catch(() => null);
+  if (!res || !res.ok) return null;
+  return (await res.json()) as { bundle: unknown; csvs: Record<string, string> };
+}
+
 function buildRawFileUrl(path: string, originId: string, cacheBust?: boolean): string {
   // Use /project-file/{originId}{absPath}. It streams pdf/image/html with
   // the right Content-Type and injects a bridge script into html. The

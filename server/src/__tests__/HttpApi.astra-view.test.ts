@@ -197,6 +197,128 @@ describe('HttpApi — /astra-paper-view endpoint', () => {
   });
 });
 
+describe('HttpApi — /astra-bundle endpoint', () => {
+  let api: HttpApi;
+
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the JSON bundle for a local astra.yaml', async () => {
+    const astraPath = join(TEST_DIR, 'astra.yaml');
+    writeFileSync(
+      astraPath,
+      [
+        '$schema: https://astra-spec.org/v1/analysis.schema.json',
+        'version: "1.0"',
+        'name: Bundle Test Analysis',
+      ].join('\n'),
+    );
+    const encodedPath = astraPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const res = await rawRequest(api, `/astra-bundle/local${encodedPath}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const parsed = JSON.parse(res.body) as { bundle: unknown; csvs: unknown };
+    expect(parsed).toHaveProperty('bundle');
+    expect(parsed).toHaveProperty('csvs');
+    // The bundle's analysis name should round-trip through buildBundle.
+    expect(JSON.stringify(parsed.bundle)).toContain('Bundle Test Analysis');
+  });
+
+  it('returns 400 for non-astra paths', async () => {
+    const txtPath = join(TEST_DIR, 'notes.md');
+    writeFileSync(txtPath, '# Hi\n');
+    const encodedPath = txtPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const res = await rawRequest(api, `/astra-bundle/local${encodedPath}`);
+    expect(res.status).toBe(400);
+    expect(res.body.toLowerCase()).toContain('not an astra');
+  });
+
+  it('returns 404 for missing local astra.yaml', async () => {
+    const missing = join(TEST_DIR, 'nope', 'astra.yaml');
+    const encodedPath = missing
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+    const res = await rawRequest(api, `/astra-bundle/local${encodedPath}`);
+    expect(res.status).toBe(404);
+    expect(res.body.toLowerCase()).toContain('not found');
+  });
+
+  it('returns 502 for unreachable remote origin', async () => {
+    // Same fail mode as /astra-paper-view but with a text/plain body
+    // (JSON consumers don't want a stub-html error). The status code
+    // and the SSH-tar failure semantics are identical.
+    const remotePath = '/some/remote/lightcone-spec/astra.yaml';
+    const encodedPath = remotePath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+    const res = await rawRequest(api, `/astra-bundle/remote-fake${encodedPath}`);
+    expect(res.status).toBe(502);
+    expect(res.body.toLowerCase()).toContain('failed to mirror');
+  }, 30000);
+
+  it('rewrites bundle output paths to portolan project-file URLs', async () => {
+    // Author a project with one figure output so the bundle has a
+    // `resolved_path` slot that the rewrite pass should retarget at
+    // /project-file/local/<absRoot>/<relPath>.
+    const astraPath = join(TEST_DIR, 'astra.yaml');
+    const figRel = 'results/baseline/fig1.png';
+    writeFileSync(
+      astraPath,
+      [
+        '$schema: https://astra-spec.org/v1/analysis.schema.json',
+        'version: "1.0"',
+        'name: Path Rewrite Test',
+        'outputs:',
+        '  - id: fig1',
+        '    type: figure',
+        '    description: A figure',
+      ].join('\n'),
+    );
+    // Ensure the artifact exists so buildBundle resolves it.
+    mkdirSync(join(TEST_DIR, 'results', 'baseline'), { recursive: true });
+    writeFileSync(join(TEST_DIR, figRel), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const encodedPath = astraPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+    const res = await rawRequest(api, `/astra-bundle/local${encodedPath}`);
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body) as { bundle: { outputs: Record<string, { resolved_path: string | null }> } };
+    const fig = parsed.bundle.outputs.fig1;
+    expect(fig).toBeDefined();
+    if (fig?.resolved_path) {
+      // resolved_path should be a portolan /project-file URL, not a bare
+      // project-relative path.
+      expect(fig.resolved_path).toContain('/project-file/local');
+      expect(fig.resolved_path).toContain('fig1.png');
+    }
+  });
+});
+
 describe('HttpApi — /papers/<cacheKey>/paper.pdf endpoint', () => {
   const PAPER_CACHE_DIR = join(TEST_DIR, 'paper-cache');
   let api: HttpApi;

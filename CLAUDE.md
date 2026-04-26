@@ -104,6 +104,7 @@ curl -s localhost:4004/hook/file-touch -X POST -H 'Content-Type: application/jso
 curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
 curl 'http://localhost:4004/project-file/local/path/to/file.html'  # serve project file (also: /project-file/{originId}/path)
 curl 'http://localhost:4004/astra-paper-view/local/abs/path/to/astra.yaml'  # render astra.yaml as lightcone paper view (local only)
+curl 'http://localhost:4004/astra-bundle/local/abs/path/to/astra.yaml'      # JSON Bundle + csvs (vellum-native astra renderer feeds off this)
 curl 'http://localhost:4004/astra/asset/vellum.css'                         # paper-view CSS/JS sidecars (paper-viewer.js, vellum.css)
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
