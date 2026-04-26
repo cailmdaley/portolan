@@ -21,9 +21,11 @@
 import {
   asReadOnlyAdapter,
   type Adapter,
+  type AstraBundleResult,
   type CreateAnnotationInput,
   type FrontmatterPatch,
   type GetAnnotationsOptions,
+  type GetAstraBundleOptions,
   type GetFileOptions,
   type ReadOnlyAdapter,
   type ReadOnlyAdapterError,
@@ -38,6 +40,7 @@ import type {
   RawFiber,
   SearchHit,
 } from 'vellum';
+import type { Bundle } from 'lightcone-ui-core';
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`;
 
@@ -259,6 +262,34 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       return { since, count: 0, events: [] };
     },
 
+    async getAstraBundle(
+      path: string,
+      bundleOpts: GetAstraBundleOptions = {},
+    ): Promise<AstraBundleResult | null> {
+      const result = await fetchAstraBundle(path, bundleOpts.originId ?? defaultOriginId, {
+        universe: bundleOpts.universe,
+        cacheBust: bundleOpts.cacheBust,
+      });
+      // fetchAstraBundle types the bundle as `unknown` at the package
+      // boundary so this file doesn't drag lightcone-ui-core's types into
+      // the adapter's general API. Cast at this single call site —
+      // /astra-bundle's contract is the rewritten Bundle shape, server-side.
+      return result
+        ? { bundle: result.bundle as Bundle, csvs: result.csvs }
+        : null;
+    },
+
+    async getAstraSource(path: string, opts: GetFileOptions = {}): Promise<string | null> {
+      const originId = opts.originId ?? defaultOriginId;
+      const bust = opts.cacheBust ? `&_t=${Date.now()}` : '';
+      const res = await fetch(
+        `${API_BASE}/file-content?path=${encodeURIComponent(path)}&originId=${encodeURIComponent(originId)}${bust}`,
+      ).catch(() => null);
+      if (!res || !res.ok) return null;
+      const data = await res.json().catch(() => null);
+      return data && typeof data.content === 'string' ? data.content : null;
+    },
+
     async createAnnotation(input: CreateAnnotationInput): Promise<Annotation | null> {
       // Translate vellum's CreateAnnotationInput (slug-keyed, paragraphIndex) to
       // portolan's file-keyed schema. `slug` is the file path when called from
@@ -351,6 +382,8 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     getAnnotations,
     searchFibers,
     getDeltaSince,
+    getAstraBundle,
+    getAstraSource,
   } = full;
   return {
     getFile,
@@ -360,6 +393,8 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     getAnnotations,
     searchFibers,
     getDeltaSince,
+    getAstraBundle,
+    getAstraSource,
   };
 }
 
@@ -451,6 +486,22 @@ export function createPortolanStaticAdapter(opts: PortolanStaticAdapterOptions):
 
     async getDeltaSince(since: string): Promise<LogResponse> {
       return { since, count: 0, events: [] };
+    },
+
+    // Static deploy has no live `/astra-bundle` endpoint and no pre-baked
+    // bundle JSON yet — return null so the astra panel surfaces an
+    // unavailable message rather than throwing. Tracked in
+    // [[vellum-reader/astra-paper-view-static-tapestry]]; once the export
+    // pipeline emits flat-named bundle JSON, swap this for a flat-fetch
+    // analogous to flatFileUrl().
+    async getAstraBundle(): Promise<AstraBundleResult | null> {
+      return null;
+    },
+
+    // No raw-source endpoint on the static deploy. The source toggle
+    // hides itself when this method returns null at fetch time.
+    async getAstraSource(): Promise<string | null> {
+      return null;
     },
   };
 
