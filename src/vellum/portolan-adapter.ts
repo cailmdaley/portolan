@@ -96,7 +96,7 @@ export async function fetchAstraBundle(
   path: string,
   originId: string = 'local',
   options: { universe?: string; cacheBust?: boolean } = {},
-): Promise<{ bundle: unknown; csvs: Record<string, string> } | null> {
+): Promise<{ bundle: unknown; csvs: Record<string, string>; mtime?: string | null } | null> {
   const absPath = path.startsWith('/') ? path : `/${path}`;
   const encodedPath = absPath
     .split('/')
@@ -109,7 +109,35 @@ export async function fetchAstraBundle(
   const url = `${API_BASE}/astra-bundle/${encodeURIComponent(originId)}${encodedPath}${qs ? `?${qs}` : ''}`;
   const res = await fetch(url).catch(() => null);
   if (!res || !res.ok) return null;
-  return (await res.json()) as { bundle: unknown; csvs: Record<string, string> };
+  return (await res.json()) as {
+    bundle: unknown;
+    csvs: Record<string, string>;
+    mtime?: string | null;
+  };
+}
+
+/**
+ * Cheap mtime probe for an astra.yaml. Hits portolan's `/astra-mtime` route
+ * which short-circuits the buildBundle pipeline — local: a single fs.stat;
+ * remote: a single SSH stat. Returns null when the server can't stat the
+ * file (404, network error, remote disconnected). Used by vellum's
+ * focus-staleness check to decide whether the panel needs to re-fetch
+ * the bundle. See `vellum-reader/vellum-native-astra-renderer`.
+ */
+export async function fetchAstraMtime(
+  path: string,
+  originId: string = 'local',
+): Promise<string | null> {
+  const absPath = path.startsWith('/') ? path : `/${path}`;
+  const encodedPath = absPath
+    .split('/')
+    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+    .join('/');
+  const url = `${API_BASE}/astra-mtime/${encodeURIComponent(originId)}${encodedPath}`;
+  const res = await fetch(url).catch(() => null);
+  if (!res || !res.ok) return null;
+  const data = await res.json().catch(() => null);
+  return data && typeof data.mtime === 'string' ? data.mtime : null;
 }
 
 function buildRawFileUrl(path: string, originId: string, cacheBust?: boolean): string {
@@ -275,8 +303,15 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       // the adapter's general API. Cast at this single call site —
       // /astra-bundle's contract is the rewritten Bundle shape, server-side.
       return result
-        ? { bundle: result.bundle as Bundle, csvs: result.csvs }
+        ? { bundle: result.bundle as Bundle, csvs: result.csvs, mtime: result.mtime ?? null }
         : null;
+    },
+
+    async getAstraBundleMtime(
+      path: string,
+      bundleOpts: GetAstraBundleOptions = {},
+    ): Promise<string | null> {
+      return fetchAstraMtime(path, bundleOpts.originId ?? defaultOriginId);
     },
 
     /**
@@ -402,6 +437,7 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     searchFibers,
     getDeltaSince,
     getAstraBundle,
+    getAstraBundleMtime,
     getAstraSource,
   } = full;
   return {
@@ -413,6 +449,7 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     searchFibers,
     getDeltaSince,
     getAstraBundle,
+    getAstraBundleMtime,
     getAstraSource,
   };
 }

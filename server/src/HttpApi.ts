@@ -261,6 +261,11 @@ export class HttpApi {
       return true;
     }
 
+    if (req.method === 'GET' && url.pathname.startsWith('/astra-mtime/')) {
+      await this.astraViewApi.handleMtime(url, res);
+      return true;
+    }
+
     if (req.method === 'GET' && url.pathname.startsWith('/astra/asset/')) {
       await this.astraViewApi.handleAsset(url, res);
       return true;

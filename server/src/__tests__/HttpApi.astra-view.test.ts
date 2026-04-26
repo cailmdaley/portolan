@@ -317,6 +317,123 @@ describe('HttpApi — /astra-bundle endpoint', () => {
       expect(fig.resolved_path).toContain('fig1.png');
     }
   });
+
+  it('includes a string mtime token in the JSON response', async () => {
+    // The vellum-native astra renderer uses this token on window-focus to
+    // detect external edits. Format is opaque (local: mtimeMs decimal,
+    // remote: stat seconds); the contract is "compares equal iff the file
+    // hasn't changed". See `vellum-reader/vellum-native-astra-renderer`.
+    const astraPath = join(TEST_DIR, 'astra.yaml');
+    writeFileSync(
+      astraPath,
+      [
+        '$schema: https://astra-spec.org/v1/analysis.schema.json',
+        'version: "1.0"',
+        'name: Mtime Token Test',
+      ].join('\n'),
+    );
+    const encodedPath = astraPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const first = await rawRequest(api, `/astra-bundle/local${encodedPath}`);
+    expect(first.status).toBe(200);
+    const firstParsed = JSON.parse(first.body) as { mtime: string | null };
+    expect(typeof firstParsed.mtime).toBe('string');
+    expect(firstParsed.mtime).toBeTruthy();
+
+    // Touch the file (mtime moves forward by at least 1 ms); a second fetch
+    // should return a different token.
+    await new Promise((r) => setTimeout(r, 5));
+    writeFileSync(
+      astraPath,
+      [
+        '$schema: https://astra-spec.org/v1/analysis.schema.json',
+        'version: "1.0"',
+        'name: Mtime Token Test (touched)',
+      ].join('\n'),
+    );
+    const second = await rawRequest(api, `/astra-bundle/local${encodedPath}`);
+    expect(second.status).toBe(200);
+    const secondParsed = JSON.parse(second.body) as { mtime: string | null };
+    expect(secondParsed.mtime).not.toBe(firstParsed.mtime);
+  });
+});
+
+describe('HttpApi — /astra-mtime endpoint', () => {
+  let api: HttpApi;
+
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+    );
+  });
+
+  afterEach(() => {
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a string mtime for a local astra.yaml', async () => {
+    const astraPath = join(TEST_DIR, 'astra.yaml');
+    writeFileSync(astraPath, 'name: Mtime Endpoint Test\n');
+    const encodedPath = astraPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const res = await rawRequest(api, `/astra-mtime/local${encodedPath}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const parsed = JSON.parse(res.body) as { mtime: string };
+    expect(typeof parsed.mtime).toBe('string');
+    expect(parsed.mtime).toBeTruthy();
+  });
+
+  it('returns a different token after the file is touched', async () => {
+    const astraPath = join(TEST_DIR, 'astra.yaml');
+    writeFileSync(astraPath, 'name: Bump Test\n');
+    const encodedPath = astraPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const a = await rawRequest(api, `/astra-mtime/local${encodedPath}`);
+    expect(a.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 5));
+    writeFileSync(astraPath, 'name: Bump Test (touched)\n');
+    const b = await rawRequest(api, `/astra-mtime/local${encodedPath}`);
+    expect(b.status).toBe(200);
+    expect(JSON.parse(b.body).mtime).not.toBe(JSON.parse(a.body).mtime);
+  });
+
+  it('returns 404 for a missing local astra.yaml', async () => {
+    const missing = join(TEST_DIR, 'nope', 'astra.yaml');
+    const encodedPath = missing
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+    const res = await rawRequest(api, `/astra-mtime/local${encodedPath}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for a non-astra path', async () => {
+    const txtPath = join(TEST_DIR, 'notes.md');
+    writeFileSync(txtPath, '# hi\n');
+    const encodedPath = txtPath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const res = await rawRequest(api, `/astra-mtime/local${encodedPath}`);
+    expect(res.status).toBe(400);
+    expect(res.body.toLowerCase()).toContain('not an astra');
+  });
 });
 
 describe('HttpApi — /papers/<cacheKey>/paper.pdf endpoint', () => {

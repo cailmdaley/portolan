@@ -48,6 +48,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -261,6 +262,12 @@ function mirrorKey(originId: string, remoteRoot: string): string {
  * own delta because the rest of the project changes on the same beat
  * (universes, results) — re-tarring on astra.yaml mtime change is good
  * enough and a lot cheaper than a full diff.
+ *
+ * The same token is also surfaced to clients via `/astra-mtime/...` and
+ * the `mtime` field on `/astra-bundle/...` JSON, so the vellum-native
+ * astra renderer can detect external edits on window-focus and re-fetch
+ * — see `vellum-reader/vellum-native-astra-renderer` open question
+ * "Bundle staleness".
  */
 async function fetchRemoteAstraMtime(sshHost: string, astraPath: string): Promise<string> {
   // -c for GNU stat (Linux); -f on BSD. Try GNU first; the agents we
@@ -559,7 +566,42 @@ type BundleBuildResult =
   | { kind: 'error'; status: number; tag: string; message: string };
 
 /**
- * Parse `/astra-{paper-view,bundle}/{originId}{absPath}` into pieces.
+ * Cheap stat token for an astra.yaml — local or remote. Returned as an
+ * opaque string the client can equality-compare across requests for the
+ * same path; format differs between local (`mtimeMs` as decimal) and
+ * remote (`stat -c %Y` seconds), but consistency-per-path is all the
+ * staleness check needs. Returns null when the file is missing or the
+ * remote stat call fails — callers translate to 404.
+ *
+ * Used by both `handleBundle` (so the bundle response carries its own
+ * mtime, no second round-trip on first load) and `handleMtime` (a
+ * standalone endpoint for cheap focus-event polling that skips the
+ * buildBundle pipeline entirely).
+ */
+async function fetchAstraMtimeToken(
+  originId: string,
+  filePath: string,
+  origin: { sshHost?: string } | null | undefined,
+): Promise<string | null> {
+  if (originId && originId !== 'local') {
+    if (!origin?.sshHost) return null;
+    try {
+      const token = (await fetchRemoteAstraMtime(origin.sshHost, filePath)).trim();
+      return token.length > 0 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+  if (!existsSync(filePath)) return null;
+  try {
+    return String(statSync(filePath).mtimeMs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `/astra-{paper-view,bundle,mtime}/{originId}{absPath}` into pieces.
  * Returns null if the path is malformed; the caller emits a 400.
  */
 function parseAstraUrl(url: URL, prefix: string): { originId: string; filePath: string } | null {
@@ -787,7 +829,16 @@ export class HttpApiAstraView {
       return;
     }
 
-    const body = safeJson({ bundle: built.bundle, csvs: built.csvs });
+    // Stat the astra.yaml mtime alongside the build so the client gets a
+    // staleness token in the same response. For remote, this is an extra
+    // SSH stat — but that's the same call materializeRemoteSpec already
+    // ran during the build, and the cost is dwarfed by the buildBundle
+    // pipeline itself. Returning null is fine; the client just falls back
+    // to the iframe-style "always re-fetch on cacheBust" behaviour.
+    const origin = this.originLookup.getOrigin(originId);
+    const mtime = await fetchAstraMtimeToken(originId, filePath, origin);
+
+    const body = safeJson({ bundle: built.bundle, csvs: built.csvs, mtime });
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
@@ -798,6 +849,61 @@ export class HttpApiAstraView {
       'Cache-Control': 'no-store',
     });
     res.end(body);
+  }
+
+  /**
+   * Cheap mtime probe for an astra.yaml. URL shape:
+   * `/astra-mtime/{originId}{absPath}`.
+   *
+   * Returns `{ mtime: <token> }` where `<token>` is a string that compares
+   * equal iff astra.yaml hasn't changed on disk. Local: `statSync.mtimeMs`.
+   * Remote: SSH `stat -c %Y` (seconds). The format differs between
+   * local/remote, but a given path always uses the same scheme — equality
+   * comparison is meaningful.
+   *
+   * Used by the vellum-native astra renderer's focus-staleness check
+   * (`vellum-reader/vellum-native-astra-renderer` open question "Bundle
+   * staleness"). The renderer fetches the bundle once via `/astra-bundle`,
+   * stores the included `mtime`, and on window-focus polls this endpoint —
+   * skipping the buildBundle pipeline entirely. If the token differs, it
+   * bumps an internal cache-bust counter that re-fetches the bundle.
+   *
+   * 404 when the file is missing (or remote stat returns nothing).
+   */
+  async handleMtime(url: URL, res: ServerResponse): Promise<void> {
+    const parsed = parseAstraUrl(url, '/astra-mtime/');
+    if (!parsed) {
+      this.sendError(res, 400, 'Missing file path');
+      return;
+    }
+    const { originId, filePath } = parsed;
+    if (!filePath.startsWith('/') || filePath.includes('..')) {
+      this.sendError(res, 400, 'Invalid path');
+      return;
+    }
+    if (!isAstraPath(filePath)) {
+      this.sendError(res, 400, 'Not an astra.yaml path');
+      return;
+    }
+
+    const origin = this.originLookup.getOrigin(originId);
+    if (originId && originId !== 'local' && !origin?.sshHost) {
+      this.sendError(res, 404, 'Remote origin not connected');
+      return;
+    }
+
+    const mtime = await fetchAstraMtimeToken(originId, filePath, origin);
+    if (mtime == null) {
+      this.sendError(res, 404, `astra.yaml not found at ${filePath}`);
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store',
+    });
+    res.end(safeJson({ mtime }));
   }
 
   /**
