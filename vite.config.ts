@@ -20,7 +20,24 @@ export default defineConfig({
     // Serve .portolan directory for city sprites
     fs: {
       allow: ['.', '.portolan']
-    }
+    },
+    // Proxy server-side asset routes (project-file artifacts, paper PDFs,
+    // astra view templates, and friends) to the portolan backend on :4004.
+    // Without this proxy, relative URLs in a server-rewritten Bundle (e.g.
+    // figure thumbnails like `/project-file/...png`, the paper-modal PDF at
+    // `/papers/<cache_key>/paper.pdf`) hit Vite, get the SPA index.html, and
+    // either render as a broken image or — in the PdfReader's case — error
+    // with "Invalid PDF structure". The bundle's rewriter intentionally emits
+    // *relative* URLs so the same paths resolve in both the iframe paper-view
+    // (origin :4004) and the vellum-native render (origin :5173).
+    // See `vellum-reader/vellum-native-astra-renderer`.
+    proxy: {
+      '/project-file': 'http://localhost:4004',
+      '/papers': 'http://localhost:4004',
+      '/astra-paper-view': 'http://localhost:4004',
+      '/astra-bundle': 'http://localhost:4004',
+      '/astra/asset': 'http://localhost:4004',
+    },
   },
   // Make .portolan accessible as static files
   publicDir: 'public',

@@ -279,6 +279,25 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         : null;
     },
 
+    /**
+     * Resolve a server-relative asset path (`/project-file/...`,
+     * `/papers/<cache_key>/paper.pdf`) into a fully-qualified URL pointing
+     * at portolan's HTTP server (`API_BASE`, e.g. `http://localhost:4004`).
+     *
+     * The server-rewritten Bundle ships these as relative URLs intentionally
+     * — the iframe paper-view shares portolan's origin, so relative paths
+     * work there. The vellum-native render runs on the SPA origin (Vite dev
+     * at :5173 in development), so without this hook a relative
+     * `/project-file/...png` path would hit Vite, get the SPA index.html,
+     * and either render as a broken image or — in the PdfReader's case —
+     * error with "Invalid PDF structure". See
+     * `vellum-reader/vellum-native-astra-renderer`.
+     */
+    resolveAssetUrl(path: string): string {
+      if (!path.startsWith('/')) return path;
+      return `${API_BASE}${path}`;
+    },
+
     async getAstraSource(path: string, opts: GetFileOptions = {}): Promise<string | null> {
       const originId = opts.originId ?? defaultOriginId;
       const bust = opts.cacheBust ? `&_t=${Date.now()}` : '';
