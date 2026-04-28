@@ -26,6 +26,7 @@ import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinato
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
+import { Shuttle, defaultShuttleConfig } from './Shuttle.js';
 
 // ============================================================================
 // Constants
@@ -481,6 +482,31 @@ server.listen(PORT, () => {
   console.log(`WebSocket: ws://localhost:${PORT}`);
 });
 
+// ============================================================================
+// Shuttle — fiber-as-ticket dispatcher
+// ============================================================================
+//
+// Polls loom for constitution-tagged, non-draft, unblocked, status!=closed
+// fibers and dispatches a single-shot worker per eligible fiber. Per the
+// constitution-shuttle invariants, Shuttle never edits fibers — agents do.
+//
+// Default scope is loom-wide (no queuePrefixes) now that draft-tag opt-out
+// is in place. Override via SHUTTLE_QUEUE_PREFIXES env var (comma-separated).
+// Set SHUTTLE_DISABLED=1 to skip startup entirely.
+const shuttle = (process.env.SHUTTLE_DISABLED === '1' || process.env.VITEST)
+  ? null
+  : new Shuttle(defaultShuttleConfig({
+      queuePrefixes: process.env.SHUTTLE_QUEUE_PREFIXES
+        ? process.env.SHUTTLE_QUEUE_PREFIXES.split(',').map(s => s.trim()).filter(Boolean)
+        : undefined,
+    }));
+if (shuttle) {
+  shuttle.start();
+  console.log('[Shuttle] started — polling loom for eligible constitution fibers');
+} else {
+  console.log('[Shuttle] disabled via SHUTTLE_DISABLED=1');
+}
+
 let shuttingDown = false;
 
 function stopBackgroundTimers(): void {
@@ -500,6 +526,7 @@ function shutdown() {
   gitStatusManager.stop();
   eventWatcher.stop();
   meetingBridge.stop();
+  shuttle?.stop();
   wss.close();
   server.close(() => {
     process.exit(0);

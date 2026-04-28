@@ -46,30 +46,10 @@ const COLUMN_BLURBS: Record<ColumnKind, string> = {
   tempered: 'Recent — accepted by Cail.',
 }
 
-/**
- * All transitions a card has from its current column.
- * Order is which buttons to render first — usually "forward" first.
- *
- * inFlight → tempered is a direct path: lets the user accept work without
- * routing through awaiting-review. Useful for stale "committed but never
- * actually worked on" fibers and for trusted skip-review work.
- */
-const TRANSITIONS_FROM: Record<ColumnKind, ColumnKind[]> = {
-  drafts: ['inFlight'],
-  inFlight: ['awaitingReview', 'tempered', 'drafts'],
-  awaitingReview: ['tempered', 'inFlight'],
-  tempered: ['awaitingReview', 'inFlight'],
-}
-
-/** Short label for action buttons, in verb form. */
-function actionLabel(target: ColumnKind): string {
-  switch (target) {
-    case 'drafts': return 'Send to drafts'
-    case 'inFlight': return 'Promote'
-    case 'tempered': return 'Approve'
-    case 'awaitingReview': return 'Mark for review'
-  }
-}
+// (Action-button helpers removed — drag is the only transition surface for
+// now. The DnD drop handler reads `target` from the column the card lands
+// on, no per-card mapping needed. Re-introduce TRANSITIONS_FROM if a
+// keyboard / context-menu path returns later.)
 
 interface KanbanCard {
   id: string
@@ -337,22 +317,21 @@ export class KanbanModal {
       `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered`
 
     this.body.innerHTML = ''
-    // Two-row layout. Top row: the active workflow surface
-    //   (Drafts → In flight → Awaiting review).
-    // Bottom row: Tempered as a film-strip — the record, visually subordinate.
-    const main = document.createElement('div')
-    main.className = 'kbn-main'
-    main.append(
-      this.renderColumn('drafts', columns.drafts),
-      this.renderColumn('inFlight', columns.inFlight),
+    // Three columns wide. The third column is internally split top/bottom:
+    // Awaiting review (the human-action queue) on top, Tempered (the record)
+    // below — visually subordinate within the same column.
+    const third = document.createElement('div')
+    third.className = 'kbn-third'
+    third.append(
       this.renderColumn('awaitingReview', columns.awaitingReview),
+      this.renderColumn('tempered', columns.tempered, temperedTotal),
     )
 
-    const secondary = document.createElement('div')
-    secondary.className = 'kbn-secondary'
-    secondary.append(this.renderColumn('tempered', columns.tempered, temperedTotal))
-
-    this.body.append(main, secondary)
+    this.body.append(
+      this.renderColumn('drafts', columns.drafts),
+      this.renderColumn('inFlight', columns.inFlight),
+      third,
+    )
   }
 
   /**
@@ -371,6 +350,9 @@ export class KanbanModal {
 
     const head = document.createElement('div')
     head.className = 'kbn-col-head'
+    head.setAttribute('role', 'button')
+    head.setAttribute('tabindex', '0')
+    head.setAttribute('aria-label', `Zoom ${title} column`)
     const headTitle = document.createElement('h2')
     headTitle.className = 'kbn-col-title'
     headTitle.textContent = title
@@ -380,6 +362,15 @@ export class KanbanModal {
       ? `${cards.length}/${temperedTotal}`
       : String(cards.length)
     head.append(headTitle, headCount)
+
+    const toggleZoom = (): void => this.toggleColumnZoom(col)
+    head.addEventListener('click', toggleZoom)
+    head.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        toggleZoom()
+      }
+    })
 
     const blurbEl = document.createElement('div')
     blurbEl.className = 'kbn-col-blurb'
@@ -532,33 +523,6 @@ export class KanbanModal {
     meta.append(tagWrap, date)
     el.append(meta)
 
-    // Action buttons — one per available transition. Always visible so they
-    // appear in agent-browser snapshots without a hover state.
-    const actions = document.createElement('div')
-    actions.className = 'kbn-card-actions'
-    actions.setAttribute('role', 'group')
-    actions.setAttribute('aria-label', `Move actions for ${card.name}`)
-
-    for (const target of TRANSITIONS_FROM[kind]) {
-      const btn = document.createElement('button')
-      btn.type = 'button'
-      btn.className = `kbn-action kbn-action-${target}`
-      btn.dataset.target = target
-      btn.dataset.fiberId = card.id
-      const verb = actionLabel(target)
-      btn.textContent = verb
-      btn.setAttribute(
-        'aria-label',
-        `${verb} — move “${card.name}” to ${COLUMN_TITLES[target]}`,
-      )
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        void this.transition(card, target)
-      })
-      actions.append(btn)
-    }
-    el.append(actions)
-
     // Blocked indicator on in-flight cards with unsatisfied deps
     if (kind === 'inFlight' && !card.dependsOnSatisfied) {
       const block = document.createElement('div')
@@ -587,6 +551,22 @@ export class KanbanModal {
 
   /** Stash the latest response so drop handlers can resolve cards by id. */
   private lastResponse: KanbanResponse | null = null
+
+  /**
+   * Toggle full-body zoom on a single column. The modal body keeps the
+   * surrounding grid; CSS hides the non-zoomed columns and lets the zoomed
+   * one fill the row. A second click on the same header un-zooms.
+   */
+  private toggleColumnZoom(col: HTMLElement): void {
+    if (!this.body) return
+    const wasZoomed = col.classList.contains('kbn-col-zoomed')
+    // Clear any prior zoom (only one column at a time).
+    for (const c of this.body.querySelectorAll<HTMLElement>('.kbn-col-zoomed')) {
+      c.classList.remove('kbn-col-zoomed')
+    }
+    if (!wasZoomed) col.classList.add('kbn-col-zoomed')
+    this.body.classList.toggle('kbn-body-zoomed', !wasZoomed)
+  }
 
   private pillKind(card: KanbanCard): 'open' | 'active' | 'closed' | 'tempered' {
     if (card.tempered === true) return 'tempered'
@@ -696,47 +676,51 @@ export class KanbanModal {
       }
       .kbn-body {
         flex: 1;
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1.15fr;
         gap: 10px;
         padding: 12px;
         overflow: hidden;
         min-height: 0;
       }
-      /* Top row: the active workflow — drafts, in-flight, awaiting review. */
-      .kbn-main {
-        flex: 1;
-        display: grid;
-        grid-template-columns: 1fr 1fr 1.15fr;
+      /* Third column: awaiting review on top, tempered below. */
+      .kbn-third {
+        display: flex;
+        flex-direction: column;
         gap: 10px;
         min-height: 0;
       }
-      /* Bottom row: tempered as a record strip. Capped height; cards flow horizontally. */
-      .kbn-secondary {
-        flex-shrink: 0;
-        max-height: 180px;
-        display: flex;
-        min-height: 0;
-        opacity: 0.92;
-      }
-      .kbn-secondary .kbn-col {
+      /* Awaiting and Tempered split 50-50 inside the third column. */
+      .kbn-third .kbn-col {
         flex: 1;
         min-height: 0;
       }
-      .kbn-secondary .kbn-col-list {
-        flex-direction: row;
-        overflow-x: auto;
-        overflow-y: hidden;
-        gap: 8px;
+      .kbn-third .kbn-col-tempered {
+        opacity: 0.94;
       }
-      .kbn-secondary .kbn-card {
-        flex-shrink: 0;
-        width: 240px;
-        min-height: 0;
+
+      /* Zoom: clicking a column header expands it to fill the modal body. */
+      .kbn-body.kbn-body-zoomed .kbn-col:not(.kbn-col-zoomed),
+      .kbn-body.kbn-body-zoomed .kbn-third:not(:has(.kbn-col-zoomed)) {
+        display: none;
       }
-      .kbn-secondary .kbn-empty {
-        align-self: center;
-        margin: 0 auto;
+      .kbn-body.kbn-body-zoomed .kbn-third {
+        display: flex;
+      }
+      /* When zooming a member of the third column, hide the sibling. */
+      .kbn-body.kbn-body-zoomed .kbn-third > .kbn-col:not(.kbn-col-zoomed) {
+        display: none;
+      }
+      .kbn-body.kbn-body-zoomed .kbn-col-zoomed {
+        grid-column: 1 / -1;
+        flex: 1;
+        opacity: 1;
+      }
+      .kbn-col-head {
+        cursor: zoom-in;
+      }
+      .kbn-col-zoomed .kbn-col-head {
+        cursor: zoom-out;
       }
       .kbn-col {
         display: flex; flex-direction: column;

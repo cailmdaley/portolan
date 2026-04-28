@@ -88,7 +88,12 @@ export interface ShuttleConfig {
 export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): ShuttleConfig {
   return {
     feltHost: join(homedir(), 'loom'),
-    queuePrefixes: ['ai-futures/portolan/shuttle/tests'],
+    // No scoping by default — all constitution-tagged, non-draft, unblocked
+    // fibers loom-wide are eligible. The original v0 default scoped to the
+    // smoke-test ladder as a safety rail while many pre-Shuttle constitution
+    // fibers existed; that has been cleaned out, and the `draft` tag is now
+    // the per-fiber opt-out. To re-narrow the scope, pass `queuePrefixes`.
+    queuePrefixes: undefined,
     pollIntervalMs: 30_000,
     shuttleWorkerScript: BUNDLED_WORKER_SCRIPT,
     ...overrides,
