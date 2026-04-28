@@ -20,6 +20,7 @@ import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
+import { HttpApiKanban } from './HttpApiKanban.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiLayouts } from './HttpApiLayouts.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
@@ -65,6 +66,7 @@ export class HttpApi {
   private astraViewApi: HttpApiAstraView;
   private fileContentApi: HttpApiFileContent;
   private hooksRuntimeApi: HttpApiHooksRuntime;
+  private kanbanApi: HttpApiKanban;
   private meetingApi: HttpApiMeeting;
   private activationApi: HttpApiActivation;
   private playgroundApi: HttpApiPlayground;
@@ -95,6 +97,7 @@ export class HttpApi {
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
     this.astraViewApi = new HttpApiAstraView({ originLookup });
+    this.kanbanApi = new HttpApiKanban();
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
@@ -222,6 +225,11 @@ export class HttpApi {
 
     if (url.pathname === '/api/search' && req.method === 'GET') {
       await this.tapestryApi.handleSearch(url, res);
+      return true;
+    }
+
+    if (url.pathname === '/kanban' && req.method === 'GET') {
+      await this.kanbanApi.handleKanban(url, res);
       return true;
     }
 

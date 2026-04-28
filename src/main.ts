@@ -32,6 +32,8 @@ import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
+import { KanbanLaunchButton } from './ui/KanbanLaunchButton'
+import { KanbanModal } from './ui/KanbanModal'
 import { RecentWorkerBar } from './ui/RecentWorkerBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
@@ -935,6 +937,23 @@ const globalSearchPalette = new GlobalSearchPalette({
   },
 })
 
+// Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
+// Hotkey `k` opens it; the launch button at top-left mirrors the action and
+// surfaces an awaiting-review badge. Click-on-card opens the fiber's md in
+// vellum via the existing openFile() flow (originId 'local', no cityId —
+// the markdown lives under loom which isn't always tracked as a city).
+const kanbanModal = new KanbanModal({
+  onOpenFiber: (card) => {
+    kanbanModal.hide()
+    openFile({ path: card.path, originId: 'local' })
+  },
+})
+
+const kanbanLaunchButton = new KanbanLaunchButton({
+  onOpen: () => kanbanModal.show(),
+  isModalOpen: () => kanbanModal.isVisible(),
+})
+
 const recentWorkerBar = new RecentWorkerBar({
   onSelectWorker: (session) => {
     const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
@@ -1249,6 +1268,19 @@ const onGlobalHotkeys = (event: KeyboardEvent): void => {
     event.preventDefault()
     cityPanel.hide()
     openCityWorkspace(focusedCity)
+    return
+  }
+
+  // Kanban — global view of constitution-tagged fibers. Independent of any
+  // city/HUD focus; works at any time the global hotkey gate above passes.
+  if (event.key === 'k') {
+    event.preventDefault()
+    if (kanbanModal.isVisible()) {
+      kanbanModal.hide()
+      kanbanLaunchButton.refreshSoon()
+    } else {
+      kanbanModal.show()
+    }
   }
 }
 
