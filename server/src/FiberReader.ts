@@ -16,6 +16,7 @@ export interface Fiber {
   closedAt?: string; // ISO date from frontmatter
   tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
+  tempered?: boolean;   // human-acceptance signal — agent never sets this itself; Shuttle reads it as the dependency-satisfied edge
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -202,7 +203,14 @@ export function parseFiber(id: string, content: string): Fiber {
   // into individual tags. Handles "claim, tapestry:foo" → ["claim", "tapestry:foo"]
   const rawTags = getListField('tags');
   const tags = rawTags?.flatMap(t => t.includes(',') ? t.split(',').map(s => s.trim()).filter(Boolean) : [t]);
-  const dependsOn = getListField('depends-on');
+  const dependsOn = getListField('depends-on') ?? getListField('depends_on');
+
+  // tempered: human-acceptance signal. Parsed permissively — frontmatter
+  // convention is `tempered: true` but YAML truthiness is forgiving.
+  const temperedRaw = getField('tempered');
+  const tempered = temperedRaw === undefined
+    ? undefined
+    : /^(true|yes|1)$/i.test(temperedRaw);
 
   return {
     id,
@@ -216,5 +224,6 @@ export function parseFiber(id: string, content: string): Fiber {
     body: body || undefined,
     tags: tags,
     dependsOn: dependsOn,
+    tempered: tempered,
   };
 }
