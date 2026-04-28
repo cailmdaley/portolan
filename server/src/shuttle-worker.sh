@@ -111,16 +111,18 @@ PROMPT=$(cat "$PROMPT_FILE")
 # turn to terminate the bash and end the tmux session — Shuttle's next
 # poll then redispatches if the fiber is still active.
 #
-# `command claude` bypasses the user's zsh wrapper function which auto-injects
-# --thinking-display summarized and --system-prompt-file ~/.claude/WAKE.md
-# (the human-wakeup prompt). For a Shuttle worker neither is wanted: we want
-# a clean system prompt (just the fiber).
+# Use `claude` (not `command claude`) so the user's zsh wrapper function
+# applies — auto-injects --thinking-display summarized and
+# --system-prompt-file ~/.claude/WAKE.md. WAKE.md is the wakeup ritual
+# the user wants on every claude session, including autonomous workers;
+# the fiber-specific prompt rides on top via --append-system-prompt.
 #
-# History: an earlier iteration used --print for a clean natural-exit lifecycle,
-# but --print buffers all output until completion — pane appears empty for the
-# full duration of work. Visibility matters more; kill-PPID lifecycle is
-# tractable enough. See gotcha-shuttle-worker-empty-pane-with-print.
-command claude \
+# History: an earlier iteration used --print for a "natural exit"
+# lifecycle, but --print buffers all output until completion — pane
+# appears empty for the full duration of work. Visibility matters more;
+# the kill-PPID lifecycle (matching ralph) is tractable.
+# See gotcha-shuttle-worker-empty-pane-with-print.
+claude \
     --dangerously-skip-permissions \
     $EXTRA_FLAGS \
     --append-system-prompt "$(cat "$SYSPROMPT_FILE")" \
