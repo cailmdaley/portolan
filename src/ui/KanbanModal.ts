@@ -1,25 +1,64 @@
 /**
  * KanbanModal — global view of constitution-tagged fibers grouped by lifecycle.
  *
- * Three columns:
- *   - In flight        : status open/active (dispatchable; would be picked up by Shuttle)
- *   - Awaiting review  : closed && !tempered (agent paused, your move)
- *   - Tempered         : closed && tempered:true (recent N)
+ * Three columns (left to right): Awaiting review → In flight → Tempered.
+ *   - Awaiting review  : closed && !tempered. The "your move" queue.
+ *   - In flight        : status open/active (dispatchable; Shuttle picks them up).
+ *   - Tempered         : closed && tempered:true (recent N, de-emphasized).
  *
- * The middle column is the action queue. Most readings of this UI are looking
- * for "what does Cail need to temper?" — that column comes first visually and
- * gets a subtle highlight.
+ * Awaiting-review is leftmost and slightly emphasized — that's the human-action
+ * column. Tempered is narrower and more compact since it's "for the record."
  *
- * Read-only v0. Click a card → opens the fiber's md in vellum via the host
- * `onOpenFiber` callback. Tempering happens via CLI (felt edit / direct
- * frontmatter) for now.
+ * Interaction surfaces (the same transition is available two ways):
+ *   1. Drag a card to a column (HTML5 DnD; mouse-driven).
+ *   2. Click a transition button on the card (keyboard + a11y-tree-driven).
+ *      Each card carries explicit "Move to X" buttons for the columns it
+ *      isn't currently in. This is the primary path for agent-browser
+ *      snapshot tests: the buttons appear in the a11y tree with stable
+ *      aria-labels regardless of mouse hover state.
  *
- * Source: GET /kanban → KanbanResponse (server/src/HttpApiKanban.ts).
+ * Both surfaces POST to /kanban/transition with {fiberId, target}. The card
+ * is moved optimistically, then the kanban refetches to reconcile. Errors
+ * surface as a transient banner inside the modal and roll the optimistic
+ * change back.
+ *
+ * Click anywhere on the card body (not on action buttons or drag handles)
+ * → opens the fiber's md in vellum.
  *
  * Hotkey: `k` (registered in main.ts).
- * A button in the top bar (KanbanLaunchButton) also opens it.
  */
 import { lockModalBackground } from './modalBackgroundLock'
+
+/** Column identifier — also doubles as the API target. */
+type ColumnKind = 'awaitingReview' | 'inFlight' | 'tempered'
+
+const COLUMN_TITLES: Record<ColumnKind, string> = {
+  awaitingReview: 'Awaiting review',
+  inFlight: 'In flight',
+  tempered: 'Tempered',
+}
+
+const COLUMN_BLURBS: Record<ColumnKind, string> = {
+  awaitingReview: 'Your move — agent flipped the fiber to closed.',
+  inFlight: 'Status open or active. Constitution-tagged work, dispatchable.',
+  tempered: 'Recent — accepted by Cail.',
+}
+
+/** All transitions a card has from its current column. */
+const TRANSITIONS_FROM: Record<ColumnKind, ColumnKind[]> = {
+  awaitingReview: ['tempered', 'inFlight'],
+  inFlight: ['awaitingReview', 'tempered'],
+  tempered: ['awaitingReview', 'inFlight'],
+}
+
+/** Short label for action buttons, in verb form. */
+function actionLabel(target: ColumnKind): string {
+  switch (target) {
+    case 'tempered': return 'Approve'
+    case 'awaitingReview': return 'Mark for review'
+    case 'inFlight': return 'Re-open'
+  }
+}
 
 interface KanbanCard {
   id: string
@@ -62,9 +101,13 @@ export class KanbanModal {
   private scrim: HTMLDivElement | null = null
   private body: HTMLDivElement | null = null
   private statusEl: HTMLDivElement | null = null
+  private liveEl: HTMLDivElement | null = null
+  private bannerEl: HTMLDivElement | null = null
   private unlockBackground: (() => void) | null = null
   private visible = false
   private inflightFetchToken = 0
+  private dragSourceId: string | null = null
+  private bannerTimer: number | null = null
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
@@ -97,6 +140,13 @@ export class KanbanModal {
     this.container = null
     this.body = null
     this.statusEl = null
+    this.liveEl = null
+    this.bannerEl = null
+    this.dragSourceId = null
+    if (this.bannerTimer !== null) {
+      window.clearTimeout(this.bannerTimer)
+      this.bannerTimer = null
+    }
   }
 
   toggle(): void {
@@ -164,8 +214,73 @@ export class KanbanModal {
     this.body = document.createElement('div')
     this.body.className = 'kbn-body'
 
-    this.container.append(header, this.body)
+    // aria-live region for transition announcements ("Moved 'X' to Tempered.")
+    // — invisible but read by screen readers and observable in the a11y tree.
+    this.liveEl = document.createElement('div')
+    this.liveEl.className = 'kbn-live'
+    this.liveEl.setAttribute('role', 'status')
+    this.liveEl.setAttribute('aria-live', 'polite')
+
+    // Transient error/info banner for transitions that fail.
+    this.bannerEl = document.createElement('div')
+    this.bannerEl.className = 'kbn-banner'
+    this.bannerEl.setAttribute('role', 'alert')
+    this.bannerEl.style.display = 'none'
+
+    this.container.append(header, this.bannerEl, this.body, this.liveEl)
     document.body.append(this.scrim, this.container)
+  }
+
+  // ── Transitions ─────────────────────────────────────────────────────────────
+
+  /**
+   * POST a transition to /kanban/transition. Refetches the kanban on success;
+   * shows the banner on failure. Optimism is left to the caller (the click
+   * handler removes the card from the source DOM list before awaiting).
+   */
+  private async transition(card: KanbanCard, target: ColumnKind): Promise<void> {
+    const fromKind = columnOf(card)
+    if (fromKind === target) return
+
+    try {
+      const res = await fetch(`${this.apiBase}/kanban/transition`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, target }),
+      })
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Transition failed: ${res.status}`)
+      }
+      this.announce(`Moved “${card.name}” to ${COLUMN_TITLES[target]}.`)
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      this.showBanner(`Couldn't move “${card.name}” to ${COLUMN_TITLES[target]}: ${msg}`, 'error')
+      this.announce(`Move failed: ${msg}`)
+    }
+    // Always refetch — server is the source of truth.
+    await this.fetchAndRender()
+  }
+
+  private announce(msg: string): void {
+    if (!this.liveEl) return
+    // Clear → set forces re-announcement on identical text.
+    this.liveEl.textContent = ''
+    window.setTimeout(() => {
+      if (this.liveEl) this.liveEl.textContent = msg
+    }, 50)
+  }
+
+  private showBanner(text: string, kind: 'error' | 'info' = 'info'): void {
+    if (!this.bannerEl) return
+    this.bannerEl.textContent = text
+    this.bannerEl.style.display = ''
+    this.bannerEl.classList.toggle('kbn-banner-error', kind === 'error')
+    if (this.bannerTimer !== null) window.clearTimeout(this.bannerTimer)
+    this.bannerTimer = window.setTimeout(() => {
+      if (this.bannerEl) this.bannerEl.style.display = 'none'
+      this.bannerTimer = null
+    }, 5000)
   }
 
   private async fetchAndRender(): Promise<void> {
@@ -180,6 +295,7 @@ export class KanbanModal {
       }
       const data = (await res.json()) as KanbanResponse
       if (token !== this.inflightFetchToken) return
+      this.lastResponse = data
       this.render(data)
     } catch (err: unknown) {
       if (token !== this.inflightFetchToken) return
@@ -208,37 +324,76 @@ export class KanbanModal {
 
     this.body.innerHTML = ''
     this.body.append(
-      this.renderColumn('Awaiting review', 'awaiting', columns.awaitingReview, 'Your move — agent flipped the fiber to closed.'),
-      this.renderColumn('In flight', 'inflight', columns.inFlight, 'Status open or active. Constitution-tagged work, dispatchable by Shuttle.'),
-      this.renderColumn('Tempered', 'tempered', columns.tempered, `Recent ${columns.tempered.length} of ${temperedTotal} accepted by Cail.`),
+      this.renderColumn('awaitingReview', columns.awaitingReview),
+      this.renderColumn('inFlight', columns.inFlight),
+      this.renderColumn('tempered', columns.tempered, temperedTotal),
     )
   }
 
-  private renderColumn(title: string, kind: 'awaiting' | 'inflight' | 'tempered', cards: KanbanCard[], blurb: string): HTMLElement {
+  /**
+   * Render one column. Supports drag-and-drop as a drop target with visual
+   * feedback. The list element carries role="list" and each card carries
+   * role="listitem" so the a11y tree shows a structured "X cards in Y column"
+   * shape that agent-browser's snapshot can navigate cleanly.
+   */
+  private renderColumn(kind: ColumnKind, cards: KanbanCard[], temperedTotal?: number): HTMLElement {
+    const title = COLUMN_TITLES[kind]
     const col = document.createElement('section')
     col.className = `kbn-col kbn-col-${kind}`
+    col.setAttribute('role', 'region')
     col.setAttribute('aria-label', `${title} (${cards.length})`)
+    col.dataset.column = kind
 
     const head = document.createElement('div')
     head.className = 'kbn-col-head'
-    const headTitle = document.createElement('div')
+    const headTitle = document.createElement('h2')
     headTitle.className = 'kbn-col-title'
     headTitle.textContent = title
     const headCount = document.createElement('span')
     headCount.className = 'kbn-col-count'
-    headCount.textContent = String(cards.length)
+    headCount.textContent = kind === 'tempered' && temperedTotal !== undefined
+      ? `${cards.length}/${temperedTotal}`
+      : String(cards.length)
     head.append(headTitle, headCount)
 
     const blurbEl = document.createElement('div')
     blurbEl.className = 'kbn-col-blurb'
-    blurbEl.textContent = blurb
+    blurbEl.textContent = COLUMN_BLURBS[kind]
 
     const list = document.createElement('div')
     list.className = 'kbn-col-list'
+    list.setAttribute('role', 'list')
+
+    // Drop zone — accept drag events on the column body and the list.
+    const onDragOver = (e: DragEvent): void => {
+      if (!this.dragSourceId) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      col.classList.add('kbn-col-drop')
+    }
+    const onDragLeave = (e: DragEvent): void => {
+      // Only remove if we're really leaving the column (not just moving between children).
+      if (e.relatedTarget && col.contains(e.relatedTarget as Node)) return
+      col.classList.remove('kbn-col-drop')
+    }
+    const onDrop = (e: DragEvent): void => {
+      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
+      col.classList.remove('kbn-col-drop')
+      this.dragSourceId = null
+      if (!fiberId) return
+      e.preventDefault()
+      const card = findCardById(this.lastResponse, fiberId)
+      if (!card) return
+      void this.transition(card, kind)
+    }
+    col.addEventListener('dragover', onDragOver)
+    col.addEventListener('dragleave', onDragLeave)
+    col.addEventListener('drop', onDrop)
 
     if (cards.length === 0) {
       const empty = document.createElement('div')
       empty.className = 'kbn-empty'
+      empty.setAttribute('role', 'listitem')
       empty.textContent = '— nothing here —'
       list.append(empty)
     } else {
@@ -251,28 +406,69 @@ export class KanbanModal {
     return col
   }
 
-  private renderCard(card: KanbanCard, kind: 'awaiting' | 'inflight' | 'tempered'): HTMLElement {
-    const el = document.createElement('button')
-    el.type = 'button'
+  /**
+   * Render one card. Two interaction surfaces converge here:
+   *
+   *  - Drag (mouse): the outer .kbn-card is `draggable=true` and emits the
+   *    fiber id as `text/x-fiber-id`. Drop handlers live on the columns.
+   *
+   *  - Action buttons (keyboard / a11y tree): the footer carries explicit
+   *    `Move to <Column>` buttons for every column the card isn't currently
+   *    in. These are visible (not hover-only) and labeled with the card name
+   *    so screen readers and agent-browser snapshots can drive transitions
+   *    deterministically: `find role button --name "Approve 'Constitution: Shuttle'"`
+   *    is a stable handle.
+   *
+   * Click on the card body (not on a button or the drag handle) opens the
+   * fiber's md in vellum.
+   */
+  private renderCard(card: KanbanCard, kind: ColumnKind): HTMLElement {
+    const el = document.createElement('div')
     el.className = `kbn-card kbn-card-${kind}`
-    el.setAttribute('aria-label', `Open fiber ${card.name}`)
-    el.addEventListener('click', () => {
-      this.onOpenFiber(card)
+    el.setAttribute('role', 'listitem')
+    el.setAttribute('aria-label', `${card.name} — ${COLUMN_TITLES[kind]}`)
+    el.draggable = true
+    el.dataset.fiberId = card.id
+
+    el.addEventListener('dragstart', (e) => {
+      this.dragSourceId = card.id
+      el.classList.add('kbn-card-dragging')
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/x-fiber-id', card.id)
+        e.dataTransfer.setData('text/plain', card.name)
+      }
+    })
+    el.addEventListener('dragend', () => {
+      el.classList.remove('kbn-card-dragging')
+      this.dragSourceId = null
     })
 
-    // Header row: name + status pill
+    // Header row: name + status pill (+ drag-handle hint)
     const headerRow = document.createElement('div')
     headerRow.className = 'kbn-card-header'
 
-    const name = document.createElement('div')
+    const dragHandle = document.createElement('span')
+    dragHandle.className = 'kbn-card-handle'
+    dragHandle.setAttribute('aria-hidden', 'true')
+    dragHandle.title = 'Drag to move'
+    dragHandle.textContent = '⋮⋮'
+
+    const name = document.createElement('button')
+    name.type = 'button'
     name.className = 'kbn-card-name'
+    name.setAttribute('aria-label', `Open fiber ${card.name} in vellum`)
     name.textContent = card.name
+    name.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.onOpenFiber(card)
+    })
 
     const pill = document.createElement('span')
     pill.className = `kbn-pill kbn-pill-${this.pillKind(card)}`
     pill.textContent = this.pillLabel(card)
 
-    headerRow.append(name, pill)
+    headerRow.append(dragHandle, name, pill)
     el.append(headerRow)
 
     // Fiber id (small, breadcrumb-ish)
@@ -289,9 +485,9 @@ export class KanbanModal {
       el.append(outcome)
     }
 
-    // Footer: tags + date
-    const footer = document.createElement('div')
-    footer.className = 'kbn-card-footer'
+    // Tags + date row
+    const meta = document.createElement('div')
+    meta.className = 'kbn-card-meta'
 
     const tagWrap = document.createElement('div')
     tagWrap.className = 'kbn-card-tags'
@@ -308,19 +504,55 @@ export class KanbanModal {
     const stamp = card.closedAt || card.createdAt
     date.textContent = stamp ? formatRelative(stamp) : ''
 
-    footer.append(tagWrap, date)
-    el.append(footer)
+    meta.append(tagWrap, date)
+    el.append(meta)
+
+    // Action buttons — one per available transition. Always visible so they
+    // appear in agent-browser snapshots without a hover state.
+    const actions = document.createElement('div')
+    actions.className = 'kbn-card-actions'
+    actions.setAttribute('role', 'group')
+    actions.setAttribute('aria-label', `Move actions for ${card.name}`)
+
+    for (const target of TRANSITIONS_FROM[kind]) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = `kbn-action kbn-action-${target}`
+      btn.dataset.target = target
+      btn.dataset.fiberId = card.id
+      const verb = actionLabel(target)
+      btn.textContent = verb
+      btn.setAttribute(
+        'aria-label',
+        `${verb} — move “${card.name}” to ${COLUMN_TITLES[target]}`,
+      )
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        void this.transition(card, target)
+      })
+      actions.append(btn)
+    }
+    el.append(actions)
 
     // Blocked indicator on in-flight cards with unsatisfied deps
-    if (kind === 'inflight' && !card.dependsOnSatisfied) {
+    if (kind === 'inFlight' && !card.dependsOnSatisfied) {
       const block = document.createElement('div')
       block.className = 'kbn-card-blocked'
       block.textContent = `blocked on: ${(card.dependsOn ?? []).join(', ')}`
       el.append(block)
     }
 
+    // Click outside any button → open in vellum (delegated catch-all).
+    el.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) return
+      this.onOpenFiber(card)
+    })
+
     return el
   }
+
+  /** Stash the latest response so drop handlers can resolve cards by id. */
+  private lastResponse: KanbanResponse | null = null
 
   private pillKind(card: KanbanCard): 'open' | 'active' | 'closed' | 'tempered' {
     if (card.tempered === true) return 'tempered'
@@ -404,10 +636,35 @@ export class KanbanModal {
         color: #2E2A26;
         background: rgba(46, 42, 38, 0.08);
       }
+      /* aria-live region — invisible but observable in the a11y tree. */
+      .kbn-live {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+      .kbn-banner {
+        margin: 0 20px;
+        padding: 8px 12px;
+        background: rgba(154, 123, 53, 0.12);
+        border: 1px solid rgba(154, 123, 53, 0.4);
+        color: #6B5520;
+        font-size: 13px;
+        border-radius: 2px;
+        margin-top: 8px;
+      }
+      .kbn-banner-error {
+        background: rgba(178, 78, 60, 0.12);
+        border-color: rgba(178, 78, 60, 0.5);
+        color: #8B3A28;
+      }
       .kbn-body {
         flex: 1;
+        /* awaitingReview wider (your move surface), tempered narrower (record). */
         display: grid;
-        grid-template-columns: 1.2fr 1fr 1fr;
+        grid-template-columns: 1.3fr 1fr 0.85fr;
         gap: 12px;
         padding: 12px;
         overflow: hidden;
@@ -420,10 +677,20 @@ export class KanbanModal {
         border: 1px solid rgba(46, 42, 38, 0.10);
         border-radius: 3px;
         overflow: hidden;
+        transition: background 150ms ease, border-color 150ms ease;
       }
-      .kbn-col-awaiting {
+      .kbn-col-awaitingReview {
         border-color: rgba(154, 123, 53, 0.55);
         box-shadow: inset 0 0 0 1px rgba(154, 123, 53, 0.18);
+      }
+      .kbn-col-tempered {
+        background: #EFEBE3;
+      }
+      /* Active drop target while a drag is in progress. */
+      .kbn-col-drop {
+        background: rgba(154, 123, 53, 0.10);
+        border-color: rgba(154, 123, 53, 0.55);
+        box-shadow: inset 0 0 0 2px rgba(154, 123, 53, 0.45);
       }
       .kbn-col-head {
         display: flex; align-items: baseline; justify-content: space-between;
@@ -469,33 +736,72 @@ export class KanbanModal {
         border-radius: 3px;
         padding: 10px 12px;
         text-align: left;
-        cursor: pointer;
+        cursor: grab;
         font-family: inherit;
         color: inherit;
         display: flex; flex-direction: column;
         gap: 6px;
-        transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+        transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
       }
       .kbn-card:hover {
         background: #FFFCF6;
         border-color: rgba(46, 42, 38, 0.22);
         transform: translateY(-1px);
       }
-      .kbn-card:focus-visible {
-        outline: 1px dashed #7A7068;
-        outline-offset: 2px;
+      .kbn-card:active { cursor: grabbing; }
+      .kbn-card-dragging {
+        opacity: 0.45;
+        transform: scale(0.98);
+        cursor: grabbing;
       }
-      .kbn-card-awaiting {
+      .kbn-card-awaitingReview {
         border-color: rgba(154, 123, 53, 0.45);
       }
-      .kbn-card-header {
-        display: flex; align-items: flex-start; gap: 8px;
+      /* Tempered cards are smaller — they're for the record, not the focus. */
+      .kbn-card-tempered {
+        padding: 6px 10px;
+        gap: 4px;
+        background: #F7F3EA;
       }
+      .kbn-card-header {
+        display: flex; align-items: flex-start; gap: 6px;
+      }
+      .kbn-card-handle {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 11px;
+        color: #B8AC9E;
+        line-height: 1.3;
+        letter-spacing: -1px;
+        user-select: none;
+        cursor: grab;
+        flex-shrink: 0;
+        padding: 1px 0;
+      }
+      .kbn-card:active .kbn-card-handle { cursor: grabbing; }
       .kbn-card-name {
         flex: 1;
         font-size: 14.5px;
         font-weight: 600;
         line-height: 1.25;
+        background: transparent;
+        border: none;
+        padding: 0;
+        margin: 0;
+        text-align: left;
+        cursor: pointer;
+        color: inherit;
+        font-family: inherit;
+      }
+      .kbn-card-tempered .kbn-card-name {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .kbn-card-name:hover { text-decoration: underline; }
+      .kbn-card-name:focus { outline: none; }
+      .kbn-card-name:focus-visible {
+        outline: 1px dashed #7A7068;
+        outline-offset: 2px;
+        border-radius: 1px;
       }
       .kbn-pill {
         display: inline-block;
@@ -543,10 +849,66 @@ export class KanbanModal {
         -webkit-box-orient: vertical;
         overflow: hidden;
       }
-      .kbn-card-footer {
+      .kbn-card-tempered .kbn-card-outcome {
+        font-size: 11.5px;
+        -webkit-line-clamp: 2;
+        color: #6A645E;
+      }
+      .kbn-card-meta {
         display: flex; align-items: center; justify-content: space-between;
         gap: 8px;
         margin-top: 2px;
+      }
+      .kbn-card-actions {
+        display: flex; gap: 6px; flex-wrap: wrap;
+        padding-top: 6px;
+        margin-top: 2px;
+        border-top: 1px dashed rgba(46, 42, 38, 0.10);
+      }
+      .kbn-card-tempered .kbn-card-actions {
+        padding-top: 4px;
+        gap: 4px;
+      }
+      .kbn-action {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10.5px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        background: rgba(46, 42, 38, 0.04);
+        border: 1px solid rgba(46, 42, 38, 0.18);
+        color: #4A4540;
+        padding: 3px 8px;
+        border-radius: 2px;
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+      }
+      .kbn-action:hover {
+        background: rgba(46, 42, 38, 0.10);
+        color: #2E2A26;
+        border-color: rgba(46, 42, 38, 0.30);
+      }
+      .kbn-action:focus { outline: none; }
+      .kbn-action:focus-visible {
+        outline: 1px dashed #7A7068;
+        outline-offset: 1px;
+      }
+      .kbn-action-tempered {
+        background: rgba(90, 123, 123, 0.10);
+        color: #4A6868;
+        border-color: rgba(90, 123, 123, 0.40);
+      }
+      .kbn-action-tempered:hover {
+        background: rgba(90, 123, 123, 0.20);
+        color: #2E4848;
+      }
+      .kbn-action-awaitingReview {
+        background: rgba(154, 123, 53, 0.10);
+        color: #6B5520;
+        border-color: rgba(154, 123, 53, 0.45);
+      }
+      .kbn-action-awaitingReview:hover {
+        background: rgba(154, 123, 53, 0.20);
+        color: #4A3810;
       }
       .kbn-card-tags {
         display: flex; flex-wrap: wrap; gap: 4px;
@@ -591,6 +953,24 @@ export class KanbanModal {
     `
     document.head.append(style)
   }
+}
+
+// ── Pure helpers ─────────────────────────────────────────────────────────────
+
+/** Which column the card belongs to per the same rules the server uses. */
+function columnOf(card: KanbanCard): ColumnKind {
+  if (card.status !== 'closed') return 'inFlight'
+  if (card.tempered === true) return 'tempered'
+  return 'awaitingReview'
+}
+
+function findCardById(resp: KanbanResponse | null, id: string): KanbanCard | null {
+  if (!resp) return null
+  for (const col of [resp.columns.awaitingReview, resp.columns.inFlight, resp.columns.tempered]) {
+    const hit = col.find(c => c.id === id)
+    if (hit) return hit
+  }
+  return null
 }
 
 /**

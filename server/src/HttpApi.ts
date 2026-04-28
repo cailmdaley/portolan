@@ -233,6 +233,11 @@ export class HttpApi {
       return true;
     }
 
+    if (url.pathname === '/kanban/transition' && req.method === 'POST') {
+      await this.kanbanApi.handleTransition(req, res);
+      return true;
+    }
+
     if (url.pathname.startsWith('/fiber/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber/'.length));
       await this.tapestryApi.handleFiberContent(url, slug, res);
