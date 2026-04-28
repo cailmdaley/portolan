@@ -83,12 +83,19 @@ interface KanbanResponse {
 interface KanbanModalOptions {
   /** Called when the user activates a card — host opens the fiber's md in vellum. */
   onOpenFiber: (card: KanbanCard) => void
+  /**
+   * Called when the user clicks a card's running-worker indicator. The host
+   * resolves the tmux session name to a portolan session id and focuses that
+   * kitty tab. No-op when the running tmux session isn't tracked by portolan.
+   */
+  onOpenWorker?: (tmuxSessionName: string) => void
   /** Override fetch base. Defaults to `http://${hostname}:4004`. */
   apiBase?: string
 }
 
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
+  private readonly onOpenWorker?: (tmuxSessionName: string) => void
   private readonly apiBase: string
 
   private container: HTMLDivElement | null = null
@@ -105,6 +112,7 @@ export class KanbanModal {
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
+    this.onOpenWorker = options.onOpenWorker
     this.apiBase = options.apiBase ?? `http://${window.location.hostname}:4004`
     this.injectStyles()
   }
@@ -531,12 +539,20 @@ export class KanbanModal {
       el.append(block)
     }
 
-    // Running-worker indicator on active cards.
+    // Running-worker indicator on active cards. Clickable: focuses the
+    // worker's tmux session in kitty so the operator can watch it live.
     if (card.runningWorker) {
-      const w = document.createElement('div')
+      const tmuxName = card.runningWorker
+      const w = document.createElement('button')
+      w.type = 'button'
       w.className = 'kbn-card-worker'
-      w.setAttribute('aria-label', `Shuttle worker running: ${card.runningWorker}`)
-      w.textContent = `▸ ${card.runningWorker}`
+      w.setAttribute('aria-label', `Open worker terminal: ${tmuxName}`)
+      w.title = `Click to open ${tmuxName} in kitty`
+      w.textContent = `▸ ${tmuxName}`
+      w.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this.onOpenWorker?.(tmuxName)
+      })
       el.append(w)
     }
 
@@ -1026,6 +1042,22 @@ export class KanbanModal {
         border-radius: 2px;
         margin-top: 2px;
         animation: kbn-pulse 2s ease-in-out infinite;
+        /* Button reset */
+        border: 1px solid transparent;
+        text-align: left;
+        font-weight: inherit;
+        cursor: pointer;
+        width: 100%;
+        transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+      }
+      .kbn-card-worker:hover {
+        color: #2E4848;
+        border-color: rgba(90, 123, 123, 0.55);
+      }
+      .kbn-card-worker:focus { outline: none; }
+      .kbn-card-worker:focus-visible {
+        outline: 1px dashed #4A6868;
+        outline-offset: 2px;
       }
       @keyframes kbn-pulse {
         0%, 100% { background: rgba(90, 123, 123, 0.10); }

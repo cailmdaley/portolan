@@ -947,6 +947,24 @@ const kanbanModal = new KanbanModal({
     kanbanModal.hide()
     openFile({ path: card.path, originId: 'local' })
   },
+  // Click the running-worker indicator → focus the worker's tmux session in kitty.
+  // The kanban knows the tmux session name (e.g. shuttle-<fiber-id>); we look up
+  // portolan's session by tmuxSession, then focus by session id. If portolan isn't
+  // tracking the session yet (rare race during dispatch), fall back to nothing —
+  // we don't want to open an unrelated tab.
+  onOpenWorker: (tmuxSessionName) => {
+    const session = sessions.find(s => s.tmuxSession === tmuxSessionName)
+    if (!session) {
+      console.warn('[Kanban] no session tracked for tmux name:', tmuxSessionName)
+      return
+    }
+    kanbanModal.hide()
+    // Focus camera on the worker too so it lands in context.
+    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
+    if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
+    else if (session.hex) camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
+    mapActions?.focusKittyTab(session.id)
+  },
 })
 
 const kanbanLaunchButton = new KanbanLaunchButton({

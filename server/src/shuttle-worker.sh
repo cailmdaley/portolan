@@ -99,20 +99,28 @@ Otherwise (work remains):
 - File fibers (decisions, findings, gotchas) as crystallizations warrant.
 - Update `outcome:` with a one-paragraph rolling summary.
 - If this iteration's work fully satisfies the desired state, flip status to `closed` (handoff). Otherwise leave status `active`; Shuttle will redispatch on the next tick.
-- Exit naturally.
+- When you've completed your turn, run `kill $PPID` to terminate the worker tmux session. Shuttle will redispatch on its next poll if the fiber is still `active`.
 
-Do NOT `kill $PPID`. Shuttle owns iteration cadence; when claude exits, the tmux session ends, and Shuttle's next poll dispatches again if the fiber is still `active`. Status `closed` is the brake; `tempered: true` is human-only.
+Status `closed` is the brake — once you flip status to closed, Shuttle stops dispatching even though you killed the session. Status `active` + you killed yourself = Shuttle dispatches a fresh worker next tick. `tempered: true` is human-only; never self-temper.
 PROMPTEOF
 
 PROMPT=$(cat "$PROMPT_FILE")
 
-# --print: non-interactive single-shot. Claude reads the prompt from stdin,
-# runs the iteration to completion, and exits. Without --print, claude stays
-# in interactive mode after responding and the tmux session never terminates,
-# blocking Shuttle's eligibility-driven redispatch loop.
-# --verbose: keep the tmux pane informative (tool calls, progress).
-claude --print \
-    --verbose \
+# Run claude interactively (NOT --print) so tool calls and thinking blocks
+# stream into the tmux pane visibly. The agent runs `kill $PPID` at end of
+# turn to terminate the bash and end the tmux session — Shuttle's next
+# poll then redispatches if the fiber is still active.
+#
+# `command claude` bypasses the user's zsh wrapper function which auto-injects
+# --thinking-display summarized and --system-prompt-file ~/.claude/WAKE.md
+# (the human-wakeup prompt). For a Shuttle worker neither is wanted: we want
+# a clean system prompt (just the fiber).
+#
+# History: an earlier iteration used --print for a clean natural-exit lifecycle,
+# but --print buffers all output until completion — pane appears empty for the
+# full duration of work. Visibility matters more; kill-PPID lifecycle is
+# tractable enough. See gotcha-shuttle-worker-empty-pane-with-print.
+command claude \
     --dangerously-skip-permissions \
     $EXTRA_FLAGS \
     --append-system-prompt "$(cat "$SYSPROMPT_FILE")" \
