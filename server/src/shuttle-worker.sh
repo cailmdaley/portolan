@@ -106,7 +106,14 @@ PROMPTEOF
 
 PROMPT=$(cat "$PROMPT_FILE")
 
-claude --dangerously-skip-permissions \
+# --print: non-interactive single-shot. Claude reads the prompt from stdin,
+# runs the iteration to completion, and exits. Without --print, claude stays
+# in interactive mode after responding and the tmux session never terminates,
+# blocking Shuttle's eligibility-driven redispatch loop.
+# --verbose: keep the tmux pane informative (tool calls, progress).
+claude --print \
+    --verbose \
+    --dangerously-skip-permissions \
     $EXTRA_FLAGS \
     --append-system-prompt "$(cat "$SYSPROMPT_FILE")" \
     <<< "$PROMPT"
