@@ -75,21 +75,21 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
   it('returns empty columns when no .felt directory exists', async () => {
     rmSync(FELT_DIR, { recursive: true, force: true });
-    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.status).toBe(200);
-    expect(res.body.columns).toEqual({ inFlight: [], awaitingReview: [], tempered: [] });
-    expect(res.body.totals).toEqual({ inFlight: 0, awaitingReview: 0, tempered: 0 });
+    expect(res.body.columns).toEqual({ queued: [], active: [], awaitingReview: [], tempered: [] });
+    expect(res.body.totals).toEqual({ queued: 0, active: 0, awaitingReview: 0, tempered: 0 });
   });
 
   it('skips fibers that are not constitution-tagged', async () => {
     writeFib('regular-task', { name: 'Task', status: 'open', tags: ['task'], 'created-at': '2026-04-01' });
-    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-    expect(res.body.totals).toEqual({ inFlight: 0, awaitingReview: 0, tempered: 0 });
+    expect(res.body.totals).toEqual({ queued: 0, active: 0, awaitingReview: 0, tempered: 0 });
   });
 
-  it('groups constitution fibers into in-flight / awaiting-review / tempered', async () => {
+  it('groups constitution fibers into queued / active / awaiting-review / tempered', async () => {
     writeFib('open-one', {
       name: 'Open one',
       status: 'open',
@@ -118,31 +118,46 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       'closed-at': '2026-04-13',
     });
 
-    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.totals).toEqual({ inFlight: 2, awaitingReview: 1, tempered: 1 });
-    expect(res.body.columns.inFlight.map((c: any) => c.id).sort()).toEqual(['active-one', 'open-one']);
+    expect(res.body.totals).toEqual({ queued: 1, active: 1, awaitingReview: 1, tempered: 1 });
+    expect(res.body.columns.queued.map((c: any) => c.id)).toEqual(['open-one']);
+    expect(res.body.columns.active.map((c: any) => c.id)).toEqual(['active-one']);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);
     expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['tempered-one']);
   });
 
-  it('sorts in-flight by createdAt desc and awaiting-review by closedAt desc', async () => {
-    // Three in-flight, increasing creation order; should come back in reverse.
+  it('sorts queued by createdAt desc and awaiting-review by closedAt desc', async () => {
     writeFib('a', { name: 'A', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
     writeFib('b', { name: 'B', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
     writeFib('c', { name: 'C', status: 'open', tags: ['constitution'], 'created-at': '2026-04-03' });
-    // Three awaiting, increasing close order; reverse expected.
     writeFib('x', { name: 'X', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-04' });
     writeFib('y', { name: 'Y', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-05' });
     writeFib('z', { name: 'Z', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-06' });
 
-    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
 
-    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['c', 'b', 'a']);
+    expect(res.body.columns.queued.map((c: any) => c.id)).toEqual(['c', 'b', 'a']);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['z', 'y', 'x']);
+  });
+
+  it('promotes a status=open fiber to active when a Shuttle worker is running', async () => {
+    writeFib('busy', { name: 'Busy', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
+    writeFib('idle', { name: 'Idle', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
+
+    const api = new HttpApiKanban({
+      feltHost: TEST_DIR,
+      listSessions: () => ['shuttle-busy'],
+    });
+    const res = await callKanban(api);
+
+    expect(res.body.columns.active.map((c: any) => c.id)).toEqual(['busy']);
+    expect(res.body.columns.active[0].runningWorker).toBe('shuttle-busy');
+    expect(res.body.columns.queued.map((c: any) => c.id)).toEqual(['idle']);
+    expect(res.body.columns.queued[0].runningWorker).toBeUndefined();
   });
 
   it('marks dependsOnSatisfied=false when a depends_on target is not tempered', async () => {
@@ -164,7 +179,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const downstream = res.body.columns.inFlight.find((c: any) => c.id === 'downstream');
+    const downstream = res.body.columns.queued.find((c: any) => c.id === 'downstream');
     expect(downstream).toBeTruthy();
     expect(downstream.dependsOnSatisfied).toBe(false);
     expect(downstream.dependsOn).toEqual(['upstream']);
@@ -189,7 +204,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const downstream = res.body.columns.inFlight.find((c: any) => c.id === 'downstream');
+    const downstream = res.body.columns.queued.find((c: any) => c.id === 'downstream');
     expect(downstream.dependsOnSatisfied).toBe(true);
   });
 
@@ -203,7 +218,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const child = res.body.columns.inFlight.find((c: any) => c.id === 'parent/child');
+    const child = res.body.columns.queued.find((c: any) => c.id === 'parent/child');
     expect(child).toBeTruthy();
     expect(child.path).toBe(join(TEST_DIR, '.felt', 'parent', 'child', 'child.md'));
   });
@@ -267,6 +282,46 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(status()).toBe(200);
       expect(body().card.tempered).toBe(false);
       expect(body().card.status).toBe('closed');
+    });
+
+    it('moves a fiber to queued — status=open, tempered=false, no closed-at', async () => {
+      writeFib('back-to-queue', {
+        name: 'Back to queue',
+        status: 'closed',
+        tempered: 'true',
+        tags: ['constitution'],
+        'created-at': '2026-04-01',
+        'closed-at': '2026-04-15',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'back-to-queue', target: 'queued' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.status).toBe('open');
+      expect(body().card.tempered).toBe(false);
+
+      const after = readFileSync(join(FELT_DIR, 'back-to-queue', 'back-to-queue.md'), 'utf-8');
+      expect(after).toMatch(/^status: open$/m);
+      expect(after).not.toMatch(/^closed-at:/m);
+    });
+
+    it('moves a fiber to active — status=active, clears closed-at', async () => {
+      writeFib('start-now', {
+        name: 'Start now',
+        status: 'open',
+        tags: ['constitution'],
+        'created-at': '2026-04-01',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'start-now', target: 'active' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.status).toBe('active');
+
+      const after = readFileSync(join(FELT_DIR, 'start-now', 'start-now.md'), 'utf-8');
+      expect(after).toMatch(/^status: active$/m);
     });
 
     it('reopens a closed fiber to in flight, clearing closed-at', async () => {

@@ -24,6 +24,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { getAllFibers, type Fiber } from './FiberReader.js';
+import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
 
 export interface KanbanCard {
   id: string;
@@ -39,18 +40,30 @@ export interface KanbanCard {
   dependsOn?: string[];
   /** True if every dependsOn fiber resolves to tempered:true. */
   dependsOnSatisfied: boolean;
+  /**
+   * tmux session name of a running Shuttle worker for this fiber, when one
+   * is detected at request time. Drives the queued vs active split: a card
+   * with a runningWorker is shown in the Active column regardless of status,
+   * a card without one and `status==open` is Queued.
+   */
+  runningWorker?: string;
 }
 
 export interface KanbanColumns {
-  inFlight: KanbanCard[];
+  /** Constitution-tagged, status=open, no Shuttle worker dispatched. */
+  queued: KanbanCard[];
+  /** Constitution-tagged, status=active OR a Shuttle worker is running. */
+  active: KanbanCard[];
+  /** Constitution-tagged, status=closed && !tempered (the human-tempering queue). */
   awaitingReview: KanbanCard[];
+  /** Constitution-tagged, status=closed && tempered:true (recent N). */
   tempered: KanbanCard[];
 }
 
 export interface KanbanResponse {
   feltHost: string;
   columns: KanbanColumns;
-  totals: { inFlight: number; awaitingReview: number; tempered: number };
+  totals: { queued: number; active: number; awaitingReview: number; tempered: number };
   /** Total tempered count *before* slicing — UI shows recent N but we surface the full count. */
   temperedTotal: number;
   generatedAt: number;
@@ -63,9 +76,23 @@ interface HttpApiKanbanOptions {
   temperedLimit?: number;
   /** Override clock for transitions (testing). */
   now?: () => Date;
+  /**
+   * Test seam: list of currently-running shuttle session names
+   * (`shuttle-<fiber-id>`). Defaults to a real `tmux ls` probe via
+   * Shuttle.listShuttleSessions. Empty list = no workers known to be running.
+   */
+  listSessions?: () => string[];
 }
 
-export type KanbanTarget = 'inFlight' | 'awaitingReview' | 'tempered';
+/**
+ * Where a transition can land a card.
+ *
+ * Note: `inFlight` is accepted as a synonym for `queued` — the "queued vs
+ * active" split is purely a kanban-display concern, the underlying frontmatter
+ * mutation is the same (status=active, tempered=false, clear closed-at). v0
+ * clients that posted `target: "inFlight"` continue to work.
+ */
+export type KanbanTarget = 'queued' | 'active' | 'awaitingReview' | 'tempered' | 'inFlight';
 
 /** What POST /kanban/transition expects in the body. */
 export interface KanbanTransitionRequest {
@@ -77,11 +104,13 @@ export class HttpApiKanban {
   private readonly feltHost: string;
   private readonly temperedLimit: number;
   private readonly now: () => Date;
+  private readonly listSessions: () => string[];
 
   constructor(opts: HttpApiKanbanOptions = {}) {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.now = opts.now ?? (() => new Date());
+    this.listSessions = opts.listSessions ?? listShuttleSessions;
   }
 
   /** GET /kanban → KanbanResponse. */
@@ -96,14 +125,20 @@ export class HttpApiKanban {
       const byId = new Map(all.map(f => [f.id, f]));
       const constitutional = all.filter(f => f.tags?.includes('constitution'));
 
-      const inFlight: KanbanCard[] = [];
+      // Probe live shuttle workers — drives the queued/active split.
+      const liveSessions = new Set(this.listSessions());
+
+      const queued: KanbanCard[] = [];
+      const active: KanbanCard[] = [];
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
 
       for (const f of constitutional) {
-        const card = this.toCard(f, byId);
+        const card = this.toCard(f, byId, liveSessions);
         if (f.status !== 'closed') {
-          inFlight.push(card);
+          // active iff: status=active OR a shuttle worker is running for this fiber.
+          if (f.status === 'active' || card.runningWorker) active.push(card);
+          else queued.push(card);
         } else if (f.tempered === true) {
           tempered.push(card);
         } else {
@@ -112,7 +147,8 @@ export class HttpApiKanban {
       }
 
       // Sort
-      inFlight.sort(byCreatedAtDesc);
+      queued.sort(byCreatedAtDesc);
+      active.sort(byCreatedAtDesc);
       awaitingReview.sort(byClosedAtDesc);
       tempered.sort(byClosedAtDesc);
 
@@ -122,12 +158,14 @@ export class HttpApiKanban {
       this.json(res, 200, {
         feltHost: this.feltHost,
         columns: {
-          inFlight,
+          queued,
+          active,
           awaitingReview,
           tempered: temperedSliced,
         },
         totals: {
-          inFlight: inFlight.length,
+          queued: queued.length,
+          active: active.length,
           awaitingReview: awaitingReview.length,
           tempered: temperedSliced.length,
         },
@@ -175,7 +213,8 @@ export class HttpApiKanban {
       this.json(res, 400, { error: 'fiberId and target are required' });
       return;
     }
-    if (body.target !== 'inFlight' && body.target !== 'awaitingReview' && body.target !== 'tempered') {
+    const validTargets: KanbanTarget[] = ['queued', 'active', 'inFlight', 'awaitingReview', 'tempered'];
+    if (!validTargets.includes(body.target)) {
       this.json(res, 400, { error: `unknown target: ${body.target}` });
       return;
     }
@@ -231,7 +270,7 @@ export class HttpApiKanban {
 
   // ---------------------------------------------------------------------------
 
-  private toCard(f: Fiber, byId: Map<string, Fiber>): KanbanCard {
+  private toCard(f: Fiber, byId: Map<string, Fiber>, liveSessions: Set<string> = new Set()): KanbanCard {
     const dependsOn = f.dependsOn ?? [];
     const dependsOnSatisfied =
       dependsOn.length === 0 ||
@@ -250,6 +289,9 @@ export class HttpApiKanban {
       ? join(this.feltHost, '.felt', `${basename}.md`)
       : join(this.feltHost, '.felt', f.id, `${basename}.md`);
 
+    const expectedSession = shuttleSessionName(f.id);
+    const runningWorker = liveSessions.has(expectedSession) ? expectedSession : undefined;
+
     return {
       id: f.id,
       name: f.name,
@@ -262,14 +304,15 @@ export class HttpApiKanban {
       tempered: f.tempered,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       dependsOnSatisfied,
+      runningWorker,
     };
   }
 
   private emptyResponse(): KanbanResponse {
     return {
       feltHost: this.feltHost,
-      columns: { inFlight: [], awaitingReview: [], tempered: [] },
-      totals: { inFlight: 0, awaitingReview: 0, tempered: 0 },
+      columns: { queued: [], active: [], awaitingReview: [], tempered: [] },
+      totals: { queued: 0, active: 0, awaitingReview: 0, tempered: 0 },
       temperedTotal: 0,
       generatedAt: Date.now(),
     };
@@ -338,10 +381,21 @@ export function applyTargetToFrontmatter(
   const fmLines = fmBlock.split(/\r?\n/);
 
   // Compute desired values per target.
+  //   queued    → status=open, tempered=false, clear closed-at (back into the dispatch queue, not yet running)
+  //   active    → status=active, tempered=false, clear closed-at (mark "currently being worked on")
+  //   inFlight  → alias for `active` (legacy v0 clients)
+  //   awaitingReview → status=closed, tempered=false (agent-paused handoff)
+  //   tempered  → status=closed, tempered=true (human-accepted)
   let status: string;
   let tempered: boolean;
   let closedAtAction: 'set-if-missing' | 'clear';
   switch (target) {
+    case 'queued':
+      status = 'open';
+      tempered = false;
+      closedAtAction = 'clear';
+      break;
+    case 'active':
     case 'inFlight':
       status = 'active';
       tempered = false;

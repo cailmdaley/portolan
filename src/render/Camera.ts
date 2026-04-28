@@ -124,7 +124,7 @@ export class Camera {
       // instead. Any new full-viewport modal or HUD pane that overflows must
       // be added here. See gotcha-modal-scroll-window-wheel.
       if (target.closest(
-        '#city-panel, .hud-pane, .vellum-modal-scrim, .vellum-workspace-modal-container'
+        '#city-panel, .hud-pane, .vellum-modal-scrim, .vellum-workspace-modal-container, .kbn-modal, .kbn-scrim'
       )) return
       const onCard = !!target.closest('.dom-pin')
       const owner = trackWheelEvent(onCard ? 'card' : 'canvas')

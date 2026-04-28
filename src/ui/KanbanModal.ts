@@ -30,33 +30,40 @@
 import { lockModalBackground } from './modalBackgroundLock'
 
 /** Column identifier — also doubles as the API target. */
-type ColumnKind = 'awaitingReview' | 'inFlight' | 'tempered'
+type ColumnKind = 'queued' | 'active' | 'awaitingReview' | 'tempered'
 
 const COLUMN_TITLES: Record<ColumnKind, string> = {
+  queued: 'Queued',
+  active: 'Active',
   awaitingReview: 'Awaiting review',
-  inFlight: 'In flight',
   tempered: 'Tempered',
 }
 
 const COLUMN_BLURBS: Record<ColumnKind, string> = {
+  queued: 'Constitution-tagged, status open. Waiting for Shuttle to pick up.',
+  active: 'Worker running, or status flipped to active. Currently being worked on.',
   awaitingReview: 'Your move — agent flipped the fiber to closed.',
-  inFlight: 'Status open or active. Constitution-tagged work, dispatchable.',
   tempered: 'Recent — accepted by Cail.',
 }
 
-/** All transitions a card has from its current column. */
+/**
+ * All transitions a card has from its current column.
+ * Order is which buttons to render first — usually "forward" first.
+ */
 const TRANSITIONS_FROM: Record<ColumnKind, ColumnKind[]> = {
-  awaitingReview: ['tempered', 'inFlight'],
-  inFlight: ['awaitingReview', 'tempered'],
-  tempered: ['awaitingReview', 'inFlight'],
+  queued: ['active', 'awaitingReview'],
+  active: ['awaitingReview', 'queued'],
+  awaitingReview: ['tempered', 'queued'],
+  tempered: ['awaitingReview', 'queued'],
 }
 
 /** Short label for action buttons, in verb form. */
 function actionLabel(target: ColumnKind): string {
   switch (target) {
+    case 'queued': return 'Re-queue'
+    case 'active': return 'Start'
     case 'tempered': return 'Approve'
     case 'awaitingReview': return 'Mark for review'
-    case 'inFlight': return 'Re-open'
   }
 }
 
@@ -72,16 +79,19 @@ interface KanbanCard {
   tempered?: boolean
   dependsOn?: string[]
   dependsOnSatisfied: boolean
+  /** When set, a Shuttle worker is currently running for this fiber. */
+  runningWorker?: string
 }
 
 interface KanbanResponse {
   feltHost: string
   columns: {
-    inFlight: KanbanCard[]
+    queued: KanbanCard[]
+    active: KanbanCard[]
     awaitingReview: KanbanCard[]
     tempered: KanbanCard[]
   }
-  totals: { inFlight: number; awaitingReview: number; tempered: number }
+  totals: { queued: number; active: number; awaitingReview: number; tempered: number }
   temperedTotal: number
   generatedAt: number
 }
@@ -319,13 +329,15 @@ export class KanbanModal {
 
     const { columns, totals, temperedTotal } = data
     this.statusEl.textContent =
-      `${totals.inFlight} in flight · ${totals.awaitingReview} awaiting review · ` +
-      `${totals.tempered}/${temperedTotal} tempered`
+      `${totals.queued} queued · ${totals.active} active · ` +
+      `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered`
 
     this.body.innerHTML = ''
+    // Workflow order, left to right: queue → work → review → archive.
     this.body.append(
+      this.renderColumn('queued', columns.queued),
+      this.renderColumn('active', columns.active),
       this.renderColumn('awaitingReview', columns.awaitingReview),
-      this.renderColumn('inFlight', columns.inFlight),
       this.renderColumn('tempered', columns.tempered, temperedTotal),
     )
   }
@@ -534,12 +546,21 @@ export class KanbanModal {
     }
     el.append(actions)
 
-    // Blocked indicator on in-flight cards with unsatisfied deps
-    if (kind === 'inFlight' && !card.dependsOnSatisfied) {
+    // Blocked indicator on queued cards with unsatisfied deps
+    if (kind === 'queued' && !card.dependsOnSatisfied) {
       const block = document.createElement('div')
       block.className = 'kbn-card-blocked'
       block.textContent = `blocked on: ${(card.dependsOn ?? []).join(', ')}`
       el.append(block)
+    }
+
+    // Running-worker indicator on active cards.
+    if (card.runningWorker) {
+      const w = document.createElement('div')
+      w.className = 'kbn-card-worker'
+      w.setAttribute('aria-label', `Shuttle worker running: ${card.runningWorker}`)
+      w.textContent = `▸ ${card.runningWorker}`
+      el.append(w)
     }
 
     // Click outside any button → open in vellum (delegated catch-all).
@@ -662,10 +683,10 @@ export class KanbanModal {
       }
       .kbn-body {
         flex: 1;
-        /* awaitingReview wider (your move surface), tempered narrower (record). */
+        /* queued, active narrower; awaitingReview a touch wider (your move); tempered narrowest. */
         display: grid;
-        grid-template-columns: 1.3fr 1fr 0.85fr;
-        gap: 12px;
+        grid-template-columns: 1fr 1fr 1.2fr 0.8fr;
+        gap: 10px;
         padding: 12px;
         overflow: hidden;
         min-height: 0;
@@ -683,6 +704,11 @@ export class KanbanModal {
         border-color: rgba(154, 123, 53, 0.55);
         box-shadow: inset 0 0 0 1px rgba(154, 123, 53, 0.18);
       }
+      .kbn-col-active {
+        border-color: rgba(90, 123, 123, 0.50);
+        box-shadow: inset 0 0 0 1px rgba(90, 123, 123, 0.16);
+      }
+      .kbn-col-active .kbn-col-title { color: #4A6868; }
       .kbn-col-tempered {
         background: #EFEBE3;
       }
@@ -910,6 +936,14 @@ export class KanbanModal {
         background: rgba(154, 123, 53, 0.20);
         color: #4A3810;
       }
+      .kbn-action-active {
+        background: rgba(90, 123, 123, 0.08);
+        color: #4A6868;
+        border-color: rgba(90, 123, 123, 0.35);
+      }
+      .kbn-action-active:hover {
+        background: rgba(90, 123, 123, 0.18);
+      }
       .kbn-card-tags {
         display: flex; flex-wrap: wrap; gap: 4px;
       }
@@ -936,6 +970,20 @@ export class KanbanModal {
         border-radius: 2px;
         margin-top: 2px;
       }
+      .kbn-card-worker {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10.5px;
+        color: #4A6868;
+        background: rgba(90, 123, 123, 0.10);
+        padding: 4px 6px;
+        border-radius: 2px;
+        margin-top: 2px;
+        animation: kbn-pulse 2s ease-in-out infinite;
+      }
+      @keyframes kbn-pulse {
+        0%, 100% { background: rgba(90, 123, 123, 0.10); }
+        50% { background: rgba(90, 123, 123, 0.22); }
+      }
       .kbn-error {
         margin: 24px;
         padding: 16px;
@@ -959,14 +1007,16 @@ export class KanbanModal {
 
 /** Which column the card belongs to per the same rules the server uses. */
 function columnOf(card: KanbanCard): ColumnKind {
-  if (card.status !== 'closed') return 'inFlight'
-  if (card.tempered === true) return 'tempered'
-  return 'awaitingReview'
+  if (card.status === 'closed') {
+    return card.tempered === true ? 'tempered' : 'awaitingReview'
+  }
+  if (card.status === 'active' || card.runningWorker) return 'active'
+  return 'queued'
 }
 
 function findCardById(resp: KanbanResponse | null, id: string): KanbanCard | null {
   if (!resp) return null
-  for (const col of [resp.columns.awaitingReview, resp.columns.inFlight, resp.columns.tempered]) {
+  for (const col of [resp.columns.queued, resp.columns.active, resp.columns.awaitingReview, resp.columns.tempered]) {
     const hit = col.find(c => c.id === id)
     if (hit) return hit
   }
