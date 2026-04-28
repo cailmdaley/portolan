@@ -60,6 +60,33 @@ describe('computeEligibility', () => {
     expect(r2.blocked).toEqual([]);
   });
 
+  it('Stage 2 DAG: closed-but-not-tempered does NOT satisfy dependents', () => {
+    // Path B edge case. `status: closed` is overloaded — it can mean
+    // "agent paused awaiting review" (`!tempered`) or "human accepted"
+    // (`tempered: true`). Only the latter should unblock dependents.
+    const first = fiber({ id: 'first', tags: ['constitution'], status: 'closed' });
+    const second = fiber({
+      id: 'second',
+      tags: ['constitution'],
+      status: 'active',
+      dependsOn: ['first'],
+    });
+
+    // 1. first closed but NOT tempered → second remains blocked.
+    const r1 = computeEligibility([first, second]);
+    expect(r1.eligible).toEqual([]);
+    expect(r1.blocked.map(b => b.fiber.id).sort()).toEqual(['first', 'second']);
+    expect(r1.blocked.find(b => b.fiber.id === 'second')?.reason).toContain('first');
+
+    // 2. first closed AND tempered → second becomes eligible. first
+    //    itself stays blocked (status: closed) — the eligibility predicate
+    //    only emits 'closed' once; tempering doesn't re-open it.
+    first.tempered = true;
+    const r2 = computeEligibility([first, second]);
+    expect(r2.eligible.map(f => f.id)).toEqual(['second']);
+    expect(r2.blocked.map(b => b.fiber.id)).toEqual(['first']);
+  });
+
   it('treats missing depends-on target as unsatisfied', () => {
     const fibers: Fiber[] = [
       fiber({
@@ -165,7 +192,7 @@ created-at: 2026-04-28T00:00:00Z
     expect(snap.eligible[0].state).toBe('running');
   });
 
-  it('does not respawn on the next tick when the worker is still live', async () => {
+  it('does not respawn while the worker is still live (listSessions seam)', async () => {
     writeFiber(
       feltDir,
       'tests/haiku',
@@ -179,27 +206,120 @@ created-at: 2026-04-28T00:00:00Z
 `,
     );
     const spawned: string[] = [];
+    const liveSet = new Set<string>();
     const shuttle = new Shuttle({
       ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
       spawnShuttleWorker: (id) => {
         spawned.push(id);
-        return shuttleSessionName(id);
+        const session = shuttleSessionName(id);
+        liveSet.add(session);
+        return session;
       },
+      listSessions: () => Array.from(liveSet),
     });
+
     await shuttle.tick();
-    // Second tick should reuse, not respawn — but `listShuttleSessions`
-    // reads real tmux which won't have our synthetic session. The Shuttle's
-    // dispatched-map check itself catches this when sessionLive is true:
-    // for the test harness we simulate liveness by treating spawn as
-    // creating a tracked session and the second tick's tmux probe will
-    // return [] in test, which means it WILL respawn — which is the
-    // correct continuation-retry behaviour for a single-shot worker that
-    // has already exited.
-    //
-    // We assert the documented invariant: at minimum, spawn is at most
-    // once per tick.
+    expect(spawned).toEqual(['tests/haiku']);
+
+    // Second tick while the session is still in liveSet — must NOT respawn.
     await shuttle.tick();
-    expect(spawned.length).toBeGreaterThanOrEqual(1);
-    expect(spawned.length).toBeLessThanOrEqual(2);
+    expect(spawned).toEqual(['tests/haiku']);
+  });
+
+  it('Stage 3 kill-and-recover: redispatches when the tmux session disappears', async () => {
+    writeFiber(
+      feltDir,
+      'tests/haiku',
+      `---
+name: Haiku
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    const liveSet = new Set<string>();
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        const session = shuttleSessionName(id);
+        liveSet.add(session);
+        return session;
+      },
+      listSessions: () => Array.from(liveSet),
+    });
+
+    // Tick 1: dispatch.
+    const snap1 = await shuttle.tick();
+    expect(spawned).toEqual(['tests/haiku']);
+    expect(snap1.eligible[0]?.state).toBe('running');
+
+    // Simulate kill-mid-iteration: drop the session from the live set.
+    liveSet.delete(shuttleSessionName('tests/haiku'));
+
+    // Tick 2: Shuttle observes the dead session and redispatches because
+    // the fiber is still eligible (status active, no closing handoff).
+    const snap2 = await shuttle.tick();
+    expect(spawned).toEqual(['tests/haiku', 'tests/haiku']);
+    expect(snap2.eligible[0]?.state).toBe('running');
+    // The new session should be live again (spawn re-added it).
+    expect(liveSet.has(shuttleSessionName('tests/haiku'))).toBe(true);
+  });
+
+  it('does not redispatch after the agent flips status to closed (Path B handoff)', async () => {
+    // Stage 1 protocol: agent flips active → closed. Eligibility predicate
+    // drops it. Loop pauses. Even if a previous worker session is gone,
+    // there should be no redispatch.
+    writeFiber(
+      feltDir,
+      'tests/haiku',
+      `---
+name: Haiku
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    const liveSet = new Set<string>();
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        const session = shuttleSessionName(id);
+        liveSet.add(session);
+        return session;
+      },
+      listSessions: () => Array.from(liveSet),
+    });
+
+    await shuttle.tick();
+    expect(spawned).toEqual(['tests/haiku']);
+
+    // Agent finishes, flips to closed, exits.
+    writeFiber(
+      feltDir,
+      'tests/haiku',
+      `---
+name: Haiku
+status: closed
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    liveSet.delete(shuttleSessionName('tests/haiku'));
+
+    // No redispatch — eligibility predicate drops it on status: closed.
+    const snap = await shuttle.tick();
+    expect(spawned).toEqual(['tests/haiku']);
+    expect(snap.eligible).toEqual([]);
+    expect(snap.blocked.map(b => b.fiberId)).toEqual(['tests/haiku']);
   });
 });

@@ -76,6 +76,13 @@ export interface ShuttleConfig {
    * `shuttleWorkerScript`.
    */
   spawnShuttleWorker?: (fiberId: string) => string;
+  /**
+   * Test seam — replaces `listShuttleSessions()`. Returns the set of
+   * tmux session names that should be considered "live". When
+   * undefined, queries real tmux. Pair with `spawnShuttleWorker` to
+   * unit-test kill-and-recover semantics deterministically.
+   */
+  listSessions?: () => string[];
 }
 
 export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): ShuttleConfig {
@@ -196,8 +203,8 @@ export function shuttleSessionName(fiberId: string): string {
 // ============================================================================
 
 export class Shuttle {
-  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes'>>
-    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes'>;
+  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions'>>
+    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions'>;
   private dispatched = new Map<string, DispatchEntry>();
   private timer: NodeJS.Timeout | null = null;
   private lastSnapshot: ShuttleSnapshot | null = null;
@@ -218,7 +225,9 @@ export class Shuttle {
     const fibers = await getAllFibers(this.config.feltHost);
     const { eligible, blocked } = computeEligibility(fibers, this.config.queuePrefixes);
 
-    const liveSessions = new Set(listShuttleSessions());
+    const liveSessions = new Set(
+      this.config.listSessions ? this.config.listSessions() : listShuttleSessions(),
+    );
     const eligibleIds = new Set(eligible.map(f => f.id));
 
     // Reconcile in-memory state with reality.
