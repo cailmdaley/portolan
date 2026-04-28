@@ -86,18 +86,22 @@ Survey:
 - Check current evidence (git log, the fiber body, sibling state.md if any).
 - Decide whether the desired state is already satisfied.
 
-If already satisfied:
-- Update `outcome:` to reflect "I believe this is complete; awaiting review" if it doesn't already.
+**Done-handoff via status flip.** When you believe the desired state is satisfied, your handoff to the human is to flip the fiber's status from `active` to `closed` and write a final outcome (last sentence: "I believe this is complete; awaiting review"). That immediately drops the fiber from Shuttle's eligibility set — the loop pauses with no further dispatch. The human inspects, then either sets `tempered: true` (acceptance, off the kanban) or flips back to `active` to course-correct. Never self-temper.
+
+If desired state is already satisfied (status is already `closed`, or you arrive and find it should be):
+- Confirm `outcome:` reflects the awaiting-review state.
+- If status is still `active`, flip it to `closed` with `felt edit <fiber-id> -s closed -o "..."`.
 - Exit. Do nothing else. Do not rewrite work that's already done.
 
-Otherwise:
+Otherwise (work remains):
 - Do substantive work toward the desired state — make the highest-value move available in this iteration.
 - Commit changes with a clear message.
 - File fibers (decisions, findings, gotchas) as crystallizations warrant.
 - Update `outcome:` with a one-paragraph rolling summary.
+- If this iteration's work fully satisfies the desired state, flip status to `closed` (handoff). Otherwise leave status `active`; Shuttle will redispatch on the next tick.
 - Exit naturally.
 
-Do NOT `kill $PPID`. Shuttle owns iteration cadence; when claude exits, the tmux session ends, and Shuttle's next poll dispatches again if work remains. Never self-temper (`tempered: true` is the human's signal of acceptance).
+Do NOT `kill $PPID`. Shuttle owns iteration cadence; when claude exits, the tmux session ends, and Shuttle's next poll dispatches again if the fiber is still `active`. Status `closed` is the brake; `tempered: true` is human-only.
 PROMPTEOF
 
 PROMPT=$(cat "$PROMPT_FILE")
