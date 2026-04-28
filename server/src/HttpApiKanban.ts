@@ -50,10 +50,10 @@ export interface KanbanCard {
 }
 
 export interface KanbanColumns {
-  /** Constitution-tagged, status=open, no Shuttle worker dispatched. */
-  queued: KanbanCard[];
-  /** Constitution-tagged, status=active OR a Shuttle worker is running. */
-  active: KanbanCard[];
+  /** Constitution-tagged AND draft-tagged. Brainstorming, hidden from Shuttle. */
+  drafts: KanbanCard[];
+  /** Constitution-tagged, NOT draft, status != closed. Queue + active are one bucket. */
+  inFlight: KanbanCard[];
   /** Constitution-tagged, status=closed && !tempered (the human-tempering queue). */
   awaitingReview: KanbanCard[];
   /** Constitution-tagged, status=closed && tempered:true (recent N). */
@@ -63,7 +63,7 @@ export interface KanbanColumns {
 export interface KanbanResponse {
   feltHost: string;
   columns: KanbanColumns;
-  totals: { queued: number; active: number; awaitingReview: number; tempered: number };
+  totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number };
   /** Total tempered count *before* slicing — UI shows recent N but we surface the full count. */
   temperedTotal: number;
   generatedAt: number;
@@ -87,12 +87,22 @@ interface HttpApiKanbanOptions {
 /**
  * Where a transition can land a card.
  *
- * Note: `inFlight` is accepted as a synonym for `queued` — the "queued vs
- * active" split is purely a kanban-display concern, the underlying frontmatter
- * mutation is the same (status=active, tempered=false, clear closed-at). v0
- * clients that posted `target: "inFlight"` continue to work.
+ *   drafts          → adds the `draft` tag, parks in drafts column
+ *   inFlight        → removes `draft` tag, status=active, clears closed-at
+ *   awaitingReview  → status=closed, tempered=false (agent-paused handoff)
+ *   tempered        → status=closed, tempered=true (human-accepted)
+ *
+ * Legacy aliases kept for v0/v1 clients: `queued`/`active` both fold into
+ * `inFlight` (the queued vs active split was decoration, not workflow).
  */
-export type KanbanTarget = 'queued' | 'active' | 'awaitingReview' | 'tempered' | 'inFlight';
+export type KanbanTarget =
+  | 'drafts'
+  | 'inFlight'
+  | 'awaitingReview'
+  | 'tempered'
+  // Legacy aliases (queued/active mapped to inFlight)
+  | 'queued'
+  | 'active';
 
 /** What POST /kanban/transition expects in the body. */
 export interface KanbanTransitionRequest {
@@ -125,20 +135,21 @@ export class HttpApiKanban {
       const byId = new Map(all.map(f => [f.id, f]));
       const constitutional = all.filter(f => f.tags?.includes('constitution'));
 
-      // Probe live shuttle workers — drives the queued/active split.
+      // Probe live shuttle workers — drives the running-worker indicator on
+      // in-flight cards, and bumps them to the top of the column.
       const liveSessions = new Set(this.listSessions());
 
-      const queued: KanbanCard[] = [];
-      const active: KanbanCard[] = [];
+      const drafts: KanbanCard[] = [];
+      const inFlight: KanbanCard[] = [];
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
 
       for (const f of constitutional) {
         const card = this.toCard(f, byId, liveSessions);
+        const isDraft = f.tags?.includes('draft') ?? false;
         if (f.status !== 'closed') {
-          // active iff: status=active OR a shuttle worker is running for this fiber.
-          if (f.status === 'active' || card.runningWorker) active.push(card);
-          else queued.push(card);
+          if (isDraft) drafts.push(card);
+          else inFlight.push(card);
         } else if (f.tempered === true) {
           tempered.push(card);
         } else {
@@ -146,9 +157,18 @@ export class HttpApiKanban {
         }
       }
 
-      // Sort
-      queued.sort(byCreatedAtDesc);
-      active.sort(byCreatedAtDesc);
+      // Sort:
+      //   drafts          : most-recently-created first (these are works-in-progress)
+      //   inFlight        : running workers / status:active first, then by createdAt desc
+      //   awaitingReview  : most-recently-closed first
+      //   tempered        : most-recently-closed first
+      drafts.sort(byCreatedAtDesc);
+      inFlight.sort((a, b) => {
+        const aActive = a.runningWorker || a.status === 'active' ? 0 : 1;
+        const bActive = b.runningWorker || b.status === 'active' ? 0 : 1;
+        if (aActive !== bActive) return aActive - bActive;
+        return byCreatedAtDesc(a, b);
+      });
       awaitingReview.sort(byClosedAtDesc);
       tempered.sort(byClosedAtDesc);
 
@@ -158,14 +178,14 @@ export class HttpApiKanban {
       this.json(res, 200, {
         feltHost: this.feltHost,
         columns: {
-          queued,
-          active,
+          drafts,
+          inFlight,
           awaitingReview,
           tempered: temperedSliced,
         },
         totals: {
-          queued: queued.length,
-          active: active.length,
+          drafts: drafts.length,
+          inFlight: inFlight.length,
           awaitingReview: awaitingReview.length,
           tempered: temperedSliced.length,
         },
@@ -213,7 +233,7 @@ export class HttpApiKanban {
       this.json(res, 400, { error: 'fiberId and target are required' });
       return;
     }
-    const validTargets: KanbanTarget[] = ['queued', 'active', 'inFlight', 'awaitingReview', 'tempered'];
+    const validTargets: KanbanTarget[] = ['drafts', 'inFlight', 'queued', 'active', 'awaitingReview', 'tempered'];
     if (!validTargets.includes(body.target)) {
       this.json(res, 400, { error: `unknown target: ${body.target}` });
       return;
@@ -311,8 +331,8 @@ export class HttpApiKanban {
   private emptyResponse(): KanbanResponse {
     return {
       feltHost: this.feltHost,
-      columns: { queued: [], active: [], awaitingReview: [], tempered: [] },
-      totals: { queued: 0, active: 0, awaitingReview: 0, tempered: 0 },
+      columns: { drafts: [], inFlight: [], awaitingReview: [], tempered: [] },
+      totals: { drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 },
       temperedTotal: 0,
       generatedAt: Date.now(),
     };
@@ -381,25 +401,33 @@ export function applyTargetToFrontmatter(
   const fmLines = fmBlock.split(/\r?\n/);
 
   // Compute desired values per target.
-  //   queued    → status=open, tempered=false, clear closed-at (back into the dispatch queue, not yet running)
-  //   active    → status=active, tempered=false, clear closed-at (mark "currently being worked on")
-  //   inFlight  → alias for `active` (legacy v0 clients)
-  //   awaitingReview → status=closed, tempered=false (agent-paused handoff)
-  //   tempered  → status=closed, tempered=true (human-accepted)
-  let status: string;
+  //   drafts          → keep status (or default active), add 'draft' tag, tempered=false, clear closed-at
+  //   inFlight        → status=active, remove 'draft' tag, tempered=false, clear closed-at
+  //   queued/active   → legacy aliases for inFlight (queued vs active was decoration)
+  //   awaitingReview  → status=closed, tempered=false (agent-paused handoff)
+  //   tempered        → status=closed, tempered=true (human-accepted)
+  let status: string | null;  // null = leave untouched
   let tempered: boolean;
   let closedAtAction: 'set-if-missing' | 'clear';
+  let tagsToAdd: string[] = [];
+  let tagsToRemove: string[] = [];
   switch (target) {
-    case 'queued':
-      status = 'open';
+    case 'drafts':
+      // Don't force a status when filing as draft — preserve whatever shape
+      // the fiber already has (often `open` from felt add). The draft tag is
+      // what matters for kanban classification.
+      status = null;
       tempered = false;
       closedAtAction = 'clear';
+      tagsToAdd = ['draft'];
       break;
-    case 'active':
     case 'inFlight':
+    case 'queued':
+    case 'active':
       status = 'active';
       tempered = false;
       closedAtAction = 'clear';
+      tagsToRemove = ['draft'];
       break;
     case 'awaitingReview':
       status = 'closed';
@@ -436,7 +464,7 @@ export function applyTargetToFrontmatter(
     }
   };
 
-  setOrInsertScalar('status', status);
+  if (status !== null) setOrInsertScalar('status', status);
   setOrInsertScalar('tempered', tempered ? 'true' : 'false');
 
   if (closedAtAction === 'clear') {
@@ -451,8 +479,87 @@ export function applyTargetToFrontmatter(
     }
   }
 
+  // Tag mutations come last so the surrounding scalar edits don't disturb the
+  // tags block's line indices.
+  mutateTagsInPlace(fmLines, { add: tagsToAdd, remove: tagsToRemove });
+
   const newFm = fmLines.join('\n');
   return `---\n${newFm}\n---\n${after}`;
+}
+
+/**
+ * In-place mutation of the `tags:` block within a frontmatter line array.
+ *
+ * Recognized shapes:
+ *   tags:
+ *     - foo
+ *     - bar
+ *
+ *   tags: [foo, bar]
+ *
+ * Both are normalized to the indented-list form on write. If `tags:` doesn't
+ * exist, a fresh block is appended at the end of the frontmatter.
+ *
+ * Safe for round-trips: if no add/remove changes membership, the existing
+ * lines are left untouched (no reformatting drift).
+ */
+export function mutateTagsInPlace(
+  fmLines: string[],
+  opts: { add?: string[]; remove?: string[] },
+): void {
+  const add = opts.add ?? [];
+  const remove = opts.remove ?? [];
+  if (add.length === 0 && remove.length === 0) return;
+
+  // Locate the existing tags block.
+  let blockStart = -1;
+  let blockEnd = -1;
+  let existing: string[] = [];
+
+  for (let i = 0; i < fmLines.length; i++) {
+    // Block-list form: `tags:` on its own line, then indented `- item` lines.
+    if (/^tags:\s*$/.test(fmLines[i])) {
+      blockStart = i;
+      let j = i + 1;
+      while (j < fmLines.length && /^[ \t]+- /.test(fmLines[j])) {
+        const m = fmLines[j].match(/^[ \t]+- (.+)$/);
+        if (m) existing.push(m[1].trim().replace(/^["']|["']$/g, '').trim());
+        j++;
+      }
+      blockEnd = j;
+      break;
+    }
+    // Inline form: `tags: [a, b]`
+    const inline = fmLines[i].match(/^tags:\s*\[(.*)\]\s*$/);
+    if (inline) {
+      blockStart = i;
+      blockEnd = i + 1;
+      existing = inline[1]
+        .split(',')
+        .map(s => s.trim().replace(/^["']|["']$/g, '').trim())
+        .filter(Boolean);
+      break;
+    }
+  }
+
+  // Compute new tag set, preserving relative order of existing tags.
+  const removeSet = new Set(remove);
+  const out: string[] = existing.filter(t => !removeSet.has(t));
+  for (const t of add) if (!out.includes(t)) out.push(t);
+
+  // No-op if membership didn't change.
+  if (
+    blockStart !== -1 &&
+    out.length === existing.length &&
+    out.every((t, i) => t === existing[i])
+  ) return;
+
+  const newBlock = ['tags:', ...out.map(t => `  - ${t}`)];
+  if (blockStart === -1) {
+    fmLines.push(...newBlock);
+  } else {
+    fmLines.splice(blockStart, blockEnd - blockStart, ...newBlock);
+  }
 }
 
 function escapeRegex(s: string): string {

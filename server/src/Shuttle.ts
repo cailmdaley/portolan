@@ -155,6 +155,14 @@ export function computeEligibility(
   for (const f of fibers) {
     if (!f.tags?.includes('constitution')) continue;
     if (!inScope(f.id)) continue;
+    // `draft` is a kanban-side opt-out: a fiber tagged constitution+draft is
+    // committed-to-eventually but not yet ready to dispatch (the user is still
+    // refining it). Treat as blocked so the dispatcher doesn't pick it up.
+    // See ai-futures/portolan/shuttle/constitution-shuttle.
+    if (f.tags?.includes('draft')) {
+      blocked.push({ fiber: f, reason: 'tag: draft' });
+      continue;
+    }
     if (f.status === 'closed') {
       blocked.push({ fiber: f, reason: 'status: closed' });
       continue;

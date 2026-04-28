@@ -40,6 +40,20 @@ describe('computeEligibility', () => {
     expect(blocked.map(b => b.fiber.id)).toEqual(['b']);
   });
 
+  it('excludes draft-tagged fibers (kanban-side opt-out)', () => {
+    // The `draft` tag is the kanban-side "not yet ready to dispatch" signal,
+    // separate from the commitment switch (`constitution` tag). A fiber
+    // tagged [constitution, draft] is committed-to-eventually but parked.
+    const fibers: Fiber[] = [
+      fiber({ id: 'ready', tags: ['constitution'] }),
+      fiber({ id: 'parked', tags: ['constitution', 'draft'] }),
+    ];
+    const { eligible, blocked } = computeEligibility(fibers);
+    expect(eligible.map(f => f.id)).toEqual(['ready']);
+    expect(blocked.map(b => b.fiber.id)).toEqual(['parked']);
+    expect(blocked[0].reason).toContain('draft');
+  });
+
   it('blocks on unsatisfied depends_on', () => {
     const fibers: Fiber[] = [
       fiber({ id: 'dep', tags: ['constitution'], status: 'active' }),

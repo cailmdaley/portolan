@@ -15,7 +15,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
-import { HttpApiKanban, applyTargetToFrontmatter } from '../HttpApiKanban.js';
+import { HttpApiKanban, applyTargetToFrontmatter, mutateTagsInPlace } from '../HttpApiKanban.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-kanban');
 const FELT_DIR = join(TEST_DIR, '.felt');
@@ -78,18 +78,24 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.status).toBe(200);
-    expect(res.body.columns).toEqual({ queued: [], active: [], awaitingReview: [], tempered: [] });
-    expect(res.body.totals).toEqual({ queued: 0, active: 0, awaitingReview: 0, tempered: 0 });
+    expect(res.body.columns).toEqual({ drafts: [], inFlight: [], awaitingReview: [], tempered: [] });
+    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 });
   });
 
   it('skips fibers that are not constitution-tagged', async () => {
     writeFib('regular-task', { name: 'Task', status: 'open', tags: ['task'], 'created-at': '2026-04-01' });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-    expect(res.body.totals).toEqual({ queued: 0, active: 0, awaitingReview: 0, tempered: 0 });
+    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 });
   });
 
-  it('groups constitution fibers into queued / active / awaiting-review / tempered', async () => {
+  it('groups constitution fibers into drafts / in-flight / awaiting-review / tempered', async () => {
+    writeFib('draft-one', {
+      name: 'Draft',
+      status: 'open',
+      tags: ['constitution', 'draft'],
+      'created-at': '2026-04-09',
+    });
     writeFib('open-one', {
       name: 'Open one',
       status: 'open',
@@ -122,29 +128,46 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.totals).toEqual({ queued: 1, active: 1, awaitingReview: 1, tempered: 1 });
-    expect(res.body.columns.queued.map((c: any) => c.id)).toEqual(['open-one']);
-    expect(res.body.columns.active.map((c: any) => c.id)).toEqual(['active-one']);
+    expect(res.body.totals).toEqual({ drafts: 1, inFlight: 2, awaitingReview: 1, tempered: 1 });
+    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['draft-one']);
+    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['active-one', 'open-one']);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);
     expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['tempered-one']);
   });
 
-  it('sorts queued by createdAt desc and awaiting-review by closedAt desc', async () => {
-    writeFib('a', { name: 'A', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
-    writeFib('b', { name: 'B', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
-    writeFib('c', { name: 'C', status: 'open', tags: ['constitution'], 'created-at': '2026-04-03' });
-    writeFib('x', { name: 'X', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-04' });
-    writeFib('y', { name: 'Y', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-05' });
-    writeFib('z', { name: 'Z', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-06' });
-
+  it('keeps a draft-tagged closed fiber in awaiting/tempered, not drafts', async () => {
+    // The draft tag matters only when the fiber is in-flight; closed fibers
+    // route by status+tempered regardless of the draft tag.
+    writeFib('closed-draft', {
+      name: 'Closed draft',
+      status: 'closed',
+      tags: ['constitution', 'draft'],
+      'created-at': '2026-04-01',
+      'closed-at': '2026-04-02',
+    });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-
-    expect(res.body.columns.queued.map((c: any) => c.id)).toEqual(['c', 'b', 'a']);
-    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['z', 'y', 'x']);
+    expect(res.body.columns.drafts).toHaveLength(0);
+    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['closed-draft']);
   });
 
-  it('promotes a status=open fiber to active when a Shuttle worker is running', async () => {
+  it('sorts in-flight by running-worker-first, then createdAt desc', async () => {
+    writeFib('a', { name: 'A', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
+    writeFib('b', { name: 'B', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
+    writeFib('busy', { name: 'Busy', status: 'open', tags: ['constitution'], 'created-at': '2026-04-03' });
+    writeFib('x', { name: 'X', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-04' });
+    writeFib('y', { name: 'Y', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-05' });
+
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => ['shuttle-a'] });
+    const res = await callKanban(api);
+
+    // 'a' has a running worker → active-first, then 'busy' (newer) and 'b' (older) by createdAt desc.
+    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['a', 'busy', 'b']);
+    expect(res.body.columns.inFlight[0].runningWorker).toBe('shuttle-a');
+    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['y', 'x']);
+  });
+
+  it('marks in-flight cards with a running Shuttle worker', async () => {
     writeFib('busy', { name: 'Busy', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
     writeFib('idle', { name: 'Idle', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
 
@@ -154,10 +177,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
     const res = await callKanban(api);
 
-    expect(res.body.columns.active.map((c: any) => c.id)).toEqual(['busy']);
-    expect(res.body.columns.active[0].runningWorker).toBe('shuttle-busy');
-    expect(res.body.columns.queued.map((c: any) => c.id)).toEqual(['idle']);
-    expect(res.body.columns.queued[0].runningWorker).toBeUndefined();
+    const cards = res.body.columns.inFlight;
+    expect(cards.map((c: any) => c.id)).toEqual(['busy', 'idle']); // running first
+    expect(cards.find((c: any) => c.id === 'busy').runningWorker).toBe('shuttle-busy');
+    expect(cards.find((c: any) => c.id === 'idle').runningWorker).toBeUndefined();
   });
 
   it('marks dependsOnSatisfied=false when a depends_on target is not tempered', async () => {
@@ -179,7 +202,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const downstream = res.body.columns.queued.find((c: any) => c.id === 'downstream');
+    const downstream = res.body.columns.inFlight.find((c: any) => c.id === 'downstream');
     expect(downstream).toBeTruthy();
     expect(downstream.dependsOnSatisfied).toBe(false);
     expect(downstream.dependsOn).toEqual(['upstream']);
@@ -204,7 +227,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const downstream = res.body.columns.queued.find((c: any) => c.id === 'downstream');
+    const downstream = res.body.columns.inFlight.find((c: any) => c.id === 'downstream');
     expect(downstream.dependsOnSatisfied).toBe(true);
   });
 
@@ -218,7 +241,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const child = res.body.columns.queued.find((c: any) => c.id === 'parent/child');
+    const child = res.body.columns.inFlight.find((c: any) => c.id === 'parent/child');
     expect(child).toBeTruthy();
     expect(child.path).toBe(join(TEST_DIR, '.felt', 'parent', 'child', 'child.md'));
   });
@@ -284,9 +307,9 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(body().card.status).toBe('closed');
     });
 
-    it('moves a fiber to queued — status=open, tempered=false, no closed-at', async () => {
-      writeFib('back-to-queue', {
-        name: 'Back to queue',
+    it('legacy `queued` target is treated as inFlight (no draft, status=active)', async () => {
+      writeFib('legacy-queued', {
+        name: 'Legacy queued',
         status: 'closed',
         tempered: 'true',
         tags: ['constitution'],
@@ -295,33 +318,48 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const api = new HttpApiKanban({ feltHost: TEST_DIR });
       const { res, status, body } = capRes();
-      await api.handleTransition(jsonReq({ fiberId: 'back-to-queue', target: 'queued' }), res);
+      await api.handleTransition(jsonReq({ fiberId: 'legacy-queued', target: 'queued' }), res);
 
       expect(status()).toBe(200);
-      expect(body().card.status).toBe('open');
+      expect(body().card.status).toBe('active');
       expect(body().card.tempered).toBe(false);
-
-      const after = readFileSync(join(FELT_DIR, 'back-to-queue', 'back-to-queue.md'), 'utf-8');
-      expect(after).toMatch(/^status: open$/m);
-      expect(after).not.toMatch(/^closed-at:/m);
     });
 
-    it('moves a fiber to active — status=active, clears closed-at', async () => {
-      writeFib('start-now', {
-        name: 'Start now',
+    it('moves a fiber to drafts — adds the draft tag, clears closed-at', async () => {
+      writeFib('idea', {
+        name: 'Idea',
         status: 'open',
         tags: ['constitution'],
         'created-at': '2026-04-01',
       });
       const api = new HttpApiKanban({ feltHost: TEST_DIR });
       const { res, status, body } = capRes();
-      await api.handleTransition(jsonReq({ fiberId: 'start-now', target: 'active' }), res);
+      await api.handleTransition(jsonReq({ fiberId: 'idea', target: 'drafts' }), res);
 
       expect(status()).toBe(200);
-      expect(body().card.status).toBe('active');
+      expect(body().card.tags).toContain('draft');
+      expect(body().card.tags).toContain('constitution');
 
-      const after = readFileSync(join(FELT_DIR, 'start-now', 'start-now.md'), 'utf-8');
-      expect(after).toMatch(/^status: active$/m);
+      const after = readFileSync(join(FELT_DIR, 'idea', 'idea.md'), 'utf-8');
+      expect(after).toMatch(/- draft$/m);
+      expect(after).toMatch(/- constitution$/m);
+    });
+
+    it('moves a draft to inFlight — removes the draft tag, status=active', async () => {
+      writeFib('promoted', {
+        name: 'Promoted',
+        status: 'open',
+        tags: ['constitution', 'draft'],
+        'created-at': '2026-04-01',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'promoted', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.tags).not.toContain('draft');
+      expect(body().card.tags).toContain('constitution');
+      expect(body().card.status).toBe('active');
     });
 
     it('reopens a closed fiber to in flight, clearing closed-at', async () => {
@@ -462,6 +500,67 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     it('throws when no frontmatter exists', () => {
       expect(() => applyTargetToFrontmatter('# just a body', 'tempered', NOW))
         .toThrow(/frontmatter/);
+    });
+
+    it('adds a tag and preserves the existing tags block formatting', () => {
+      const original = [
+        '---',
+        'name: Foo',
+        'status: open',
+        'tags:',
+        '  - constitution',
+        '  - alpha',
+        '---',
+        'body',
+      ].join('\n');
+
+      const after = applyTargetToFrontmatter(original, 'drafts', NOW);
+      expect(after).toMatch(/^tags:\n  - constitution\n  - alpha\n  - draft$/m);
+      // status untouched, tempered:false explicit
+      expect(after).toMatch(/^status: open$/m);
+      expect(after).toMatch(/^tempered: false$/m);
+    });
+
+    it('removes a tag idempotently when not present', () => {
+      const original = [
+        '---',
+        'name: Foo',
+        'status: open',
+        'tags:',
+        '  - constitution',
+        '---',
+        'body',
+      ].join('\n');
+
+      const after = applyTargetToFrontmatter(original, 'inFlight', NOW);
+      // Should not duplicate existing tags or fail on missing draft.
+      const tagMatches = after.match(/^  - constitution$/gm) ?? [];
+      expect(tagMatches.length).toBe(1);
+      expect(after).not.toMatch(/^  - draft$/m);
+    });
+
+    it('round-trips drafts → inFlight → drafts cleanly on tag membership', () => {
+      const start = [
+        '---',
+        'name: Foo',
+        'status: open',
+        'tags:',
+        '  - constitution',
+        '---',
+        'body',
+      ].join('\n');
+
+      const a = applyTargetToFrontmatter(start, 'drafts', NOW);
+      const b = applyTargetToFrontmatter(a, 'inFlight', NOW);
+      const c = applyTargetToFrontmatter(b, 'drafts', NOW);
+
+      // All three states should have constitution; only a and c should have draft.
+      expect(a.match(/^  - draft$/m)).not.toBeNull();
+      expect(b.match(/^  - draft$/m)).toBeNull();
+      expect(c.match(/^  - draft$/m)).not.toBeNull();
+      expect(a.match(/^  - constitution$/m)).not.toBeNull();
+      expect(b.match(/^  - constitution$/m)).not.toBeNull();
+      expect(c.match(/^  - constitution$/m)).not.toBeNull();
     });
 
     it('does not match status: substrings inside the body', () => {
