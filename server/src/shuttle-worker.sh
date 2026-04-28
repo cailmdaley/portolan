@@ -66,62 +66,27 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "Shuttle worker — $FIBER_ID — $(date '+%H:%M:%S')"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-FIBER_CONTENT=$(cd "$FELT_DIR" && $FELT show "$FIBER_ID")
-
 SYSPROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/shuttle-sys.XXXXXX")
 cat > "$SYSPROMPT_FILE" << SYSEOF
 Shuttle dispatch. Fiber ID: $FIBER_ID
-
-$FIBER_CONTENT
 SYSEOF
 
 PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/shuttle-prompt.XXXXXX")
 cat > "$PROMPT_FILE" << 'PROMPTEOF'
-You are a Shuttle-dispatched worker on this fiber. This is a SINGLE-SHOT iteration — you do not loop, Shuttle does (poll-driven redispatch on the next tick if the fiber is still eligible).
+You are a Shuttle-dispatched worker on this fiber.
 
-Activate the felt skill (/felt) before anything else.
+Activate the /shuttle and /felt skills before anything else, then follow them.
 
-Survey:
-- Read the fiber's Desired State, Scope, Quality Bar.
-- Check current evidence (git log, the fiber body, sibling state.md if any).
-- Decide whether the desired state is already satisfied.
+The fiber ID is in the system prompt above; read the constitution fresh via `felt show <fiber-id>`. The work may take one session or many. End this session with `kill $PPID` when context fills, when you've reached a clean break, or when the constitution is realized.
 
-**Done-handoff via status flip.** When you believe the desired state is satisfied, your handoff to the human is to flip the fiber's status from `active` to `closed` and write a final outcome (last sentence: "I believe this is complete; awaiting review"). That immediately drops the fiber from Shuttle's eligibility set — the loop pauses with no further dispatch. The human inspects, then either sets `tempered: true` (acceptance, off the kanban) or flips back to `active` to course-correct. Never self-temper.
-
-If desired state is already satisfied (status is already `closed`, or you arrive and find it should be):
-- Confirm `outcome:` reflects the awaiting-review state.
-- If status is still `active`, flip it to `closed` with `felt edit <fiber-id> -s closed -o "..."`.
-- Exit. Do nothing else. Do not rewrite work that's already done.
-
-Otherwise (work remains):
-- Do substantive work toward the desired state — make the highest-value move available in this iteration.
-- Commit changes with a clear message.
-- File fibers (decisions, findings, gotchas) as crystallizations warrant.
-- Update `outcome:` with a one-paragraph rolling summary.
-- If this iteration's work fully satisfies the desired state, flip status to `closed` (handoff). Otherwise leave status `active`; Shuttle will redispatch on the next tick.
-- When you've completed your turn, run `kill $PPID` to terminate the worker tmux session. Shuttle will redispatch on its next poll if the fiber is still `active`.
-
-Status `closed` is the brake — once you flip status to closed, Shuttle stops dispatching even though you killed the session. Status `active` + you killed yourself = Shuttle dispatches a fresh worker next tick. `tempered: true` is human-only; never self-temper.
+Update the constitution's `outcome:` and sibling `state.md`; file crystallizations as sub-fibers; commit. Status `closed` signals the constitution is realized; `tempered: true` is human-only.
 PROMPTEOF
 
 PROMPT=$(cat "$PROMPT_FILE")
 
-# Run claude interactively (NOT --print) so tool calls and thinking blocks
-# stream into the tmux pane visibly. The agent runs `kill $PPID` at end of
-# turn to terminate the bash and end the tmux session — Shuttle's next
-# poll then redispatches if the fiber is still active.
-#
-# Use `claude` (not `command claude`) so the user's zsh wrapper function
-# applies — auto-injects --thinking-display summarized and
-# --system-prompt-file ~/.claude/WAKE.md. WAKE.md is the wakeup ritual
-# the user wants on every claude session, including autonomous workers;
-# the fiber-specific prompt rides on top via --append-system-prompt.
-#
-# History: an earlier iteration used --print for a "natural exit"
-# lifecycle, but --print buffers all output until completion — pane
-# appears empty for the full duration of work. Visibility matters more;
-# the kill-PPID lifecycle (matching ralph) is tractable.
-# See gotcha-shuttle-worker-empty-pane-with-print.
+# Interactive claude — output streams into the tmux pane. Agent runs
+# `kill $PPID` at end of turn to end the session; Shuttle redispatches
+# on next poll if the fiber is still active.
 claude \
     --dangerously-skip-permissions \
     $EXTRA_FLAGS \
