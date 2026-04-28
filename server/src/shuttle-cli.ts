@@ -9,7 +9,7 @@
  *   npx tsx src/shuttle-cli.ts --interval 10000  # 10s poll interval
  *   npx tsx src/shuttle-cli.ts --dry-run         # log dispatch decisions, do NOT spawn
  *
- * Watch live:    `tmux ls | grep ^ralph-`
+ * Watch live:    `tmux ls | grep ^shuttle-`
  * Inspect work:  `git -C ~/loom log --oneline -- .felt/<queue>/`
  *
  * This is the v0 entrypoint. When portolan grows a kanban view, this
@@ -18,7 +18,7 @@
 
 import { homedir } from 'os';
 import { join } from 'path';
-import { Shuttle, defaultShuttleConfig, ralphSessionName, type ShuttleSnapshot } from './Shuttle.js';
+import { Shuttle, defaultShuttleConfig, shuttleSessionName, type ShuttleSnapshot } from './Shuttle.js';
 
 interface CliArgs {
   feltHost: string;
@@ -106,9 +106,9 @@ async function main() {
   });
 
   if (args.dryRun) {
-    cfg.spawnRalph = (id) => {
-      console.log(`  [dry-run] would spawn ralph for ${id}`);
-      return ralphSessionName(id);
+    cfg.spawnShuttleWorker = (id) => {
+      console.log(`  [dry-run] would spawn shuttle worker for ${id}`);
+      return shuttleSessionName(id);
     };
   }
 

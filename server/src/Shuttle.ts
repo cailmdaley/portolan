@@ -4,16 +4,17 @@
  * Watches a configurable queue root under loom's `.felt/` for
  * `constitution`-tagged fibers whose dependencies are tempered, then
  * dispatches one detached worker per eligible fiber via the bundled
- * ralph launcher.
+ * `shuttle-worker.sh` script.
  *
  * Architecture (see [[ai-futures/portolan/shuttle/constitution-shuttle]]):
  *   - Orchestrator reads, agent writes. Shuttle never edits fibers.
  *   - Constitution tag is the commitment switch.
  *   - `depends_on` is the blocker edge.
- *   - Runner is the bundled ralph launcher (`~/.claude/skills/felt/scripts/ralph`).
- *   - Symphony's continuation-retry IS the ralph loop — the launcher's
- *     own iteration loop handles re-dispatch on clean exit; we just
- *     spawn it and let it run.
+ *   - **Shuttle owns its dispatch path; ralph stays untouched.**
+ *     Shuttle's worker is single-shot: render the fiber as the system
+ *     prompt, run claude once, exit. No inner respawn loop. Symphony's
+ *     continuation-retry (§7.3) lives here in `tick()` — if the fiber
+ *     is still eligible on the next poll, we redispatch.
  *   - In-memory dispatch state. Restart recovery comes from re-reading
  *     the fiber tree and probing tmux.
  *
@@ -28,12 +29,22 @@ import { execSync, spawnSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import type { Fiber } from './FiberReader.js';
 import { getAllFibers } from './FiberReader.js';
 
 // ============================================================================
 // Configuration
 // ============================================================================
+
+/**
+ * Path to the bundled shuttle-worker script. Resolved relative to this
+ * module so it travels with the codebase regardless of where Shuttle
+ * is invoked from.
+ */
+const BUNDLED_WORKER_SCRIPT = fileURLToPath(
+  new URL('./shuttle-worker.sh', import.meta.url),
+);
 
 export interface ShuttleConfig {
   /** Path to a felt host directory (the parent of `.felt/`). */
@@ -49,19 +60,22 @@ export interface ShuttleConfig {
   queuePrefixes?: string[];
   /** Poll interval in ms. */
   pollIntervalMs?: number;
-  /** Path to the ralph launcher script. */
-  ralphScript?: string;
+  /**
+   * Path to the shuttle-worker script. Defaults to the bundled
+   * `shuttle-worker.sh` next to this module.
+   */
+  shuttleWorkerScript?: string;
   /**
    * Hook for emitting runtime snapshots to UI / logs. Called after each
    * reconcile pass. Optional; defaults to console.log of a summary line.
    */
   onSnapshot?: (snap: ShuttleSnapshot) => void;
   /**
-   * Test seam — replaces the actual launcher invocation. Returns a
+   * Test seam — replaces the actual worker invocation. Returns a
    * synthetic tmux session name. When undefined, calls the real
-   * `ralphScript`.
+   * `shuttleWorkerScript`.
    */
-  spawnRalph?: (fiberId: string) => string;
+  spawnShuttleWorker?: (fiberId: string) => string;
 }
 
 export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): ShuttleConfig {
@@ -69,7 +83,7 @@ export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): Sh
     feltHost: join(homedir(), 'loom'),
     queuePrefixes: ['ai-futures/portolan/shuttle/tests'],
     pollIntervalMs: 30_000,
-    ralphScript: join(homedir(), '.claude', 'skills', 'felt', 'scripts', 'ralph'),
+    shuttleWorkerScript: BUNDLED_WORKER_SCRIPT,
     ...overrides,
   };
 }
@@ -99,7 +113,7 @@ export interface ShuttleSnapshot {
   pollAt: number;
   eligible: DispatchEntry[];
   blocked: Array<{ fiberId: string; reason: string }>;
-  /** tmux sessions matching `ralph-*` that we don't have in state (orphans). */
+  /** tmux sessions matching `shuttle-*` that we don't have in state (orphans). */
   orphans: string[];
 }
 
@@ -160,21 +174,21 @@ export function computeEligibility(
 // Tmux probing
 // ============================================================================
 
-/** Returns the set of tmux session names matching `ralph-*`. */
-export function listRalphSessions(): string[] {
+/** Returns the set of tmux session names matching `shuttle-*`. */
+export function listShuttleSessions(): string[] {
   try {
     const out = execSync('tmux ls -F "#{session_name}" 2>/dev/null', {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return out.split('\n').filter(s => s.startsWith('ralph-'));
+    return out.split('\n').filter(s => s.startsWith('shuttle-'));
   } catch {
     return [];
   }
 }
 
-export function ralphSessionName(fiberId: string): string {
-  return `ralph-${fiberId}`;
+export function shuttleSessionName(fiberId: string): string {
+  return `shuttle-${fiberId}`;
 }
 
 // ============================================================================
@@ -182,8 +196,8 @@ export function ralphSessionName(fiberId: string): string {
 // ============================================================================
 
 export class Shuttle {
-  private config: Required<Omit<ShuttleConfig, 'spawnRalph' | 'onSnapshot' | 'queuePrefixes'>>
-    & Pick<ShuttleConfig, 'spawnRalph' | 'onSnapshot' | 'queuePrefixes'>;
+  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes'>>
+    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes'>;
   private dispatched = new Map<string, DispatchEntry>();
   private timer: NodeJS.Timeout | null = null;
   private lastSnapshot: ShuttleSnapshot | null = null;
@@ -191,9 +205,9 @@ export class Shuttle {
   constructor(config: ShuttleConfig) {
     const cfg = { ...defaultShuttleConfig(), ...config };
     if (!cfg.feltHost) throw new Error('Shuttle: feltHost is required');
-    if (cfg.ralphScript && !cfg.spawnRalph && !existsSync(cfg.ralphScript)) {
+    if (cfg.shuttleWorkerScript && !cfg.spawnShuttleWorker && !existsSync(cfg.shuttleWorkerScript)) {
       console.warn(
-        `[Shuttle] ralph launcher not found at ${cfg.ralphScript}; dispatch will fail until a spawnRalph hook is wired.`,
+        `[Shuttle] worker script not found at ${cfg.shuttleWorkerScript}; dispatch will fail until a spawnShuttleWorker hook is wired.`,
       );
     }
     this.config = cfg as typeof this.config;
@@ -204,20 +218,21 @@ export class Shuttle {
     const fibers = await getAllFibers(this.config.feltHost);
     const { eligible, blocked } = computeEligibility(fibers, this.config.queuePrefixes);
 
-    const ralphSessions = new Set(listRalphSessions());
+    const liveSessions = new Set(listShuttleSessions());
     const eligibleIds = new Set(eligible.map(f => f.id));
 
     // Reconcile in-memory state with reality.
     for (const [id, entry] of this.dispatched) {
-      if (entry.tmuxSession && !ralphSessions.has(entry.tmuxSession)) {
-        // Worker exited (cleanly or otherwise). Remove from state — if the
-        // fiber is still eligible, we'll redispatch on the next tick. If it
+      if (entry.tmuxSession && !liveSessions.has(entry.tmuxSession)) {
+        // Worker exited (cleanly or otherwise). Mark gone — if the fiber
+        // is still eligible, we'll redispatch on the next tick. If it
         // closed itself, it won't reappear.
         entry.state = 'gone';
       }
       if (!eligibleIds.has(id)) {
-        // No longer eligible: forget the entry. The launcher loop already
-        // exits on status flip, so the tmux session will close itself.
+        // No longer eligible: forget the entry. The worker is single-shot,
+        // so the tmux session has either ended naturally or will be
+        // observed as a gone-state on the next poll.
         this.dispatched.delete(id);
       }
     }
@@ -225,19 +240,19 @@ export class Shuttle {
     // Dispatch eligible fibers we don't already have a live worker for.
     const entries: DispatchEntry[] = [];
     for (const f of eligible) {
-      const expectedSession = ralphSessionName(f.id);
+      const expectedSession = shuttleSessionName(f.id);
       const existing = this.dispatched.get(f.id);
-      const sessionLive = existing?.tmuxSession && ralphSessions.has(existing.tmuxSession);
+      const sessionLive = existing?.tmuxSession && liveSessions.has(existing.tmuxSession);
 
       if (sessionLive) {
         entries.push(existing!);
         continue;
       }
 
-      // Adopt an external ralph session if it already matches by name —
+      // Adopt an external shuttle session if it already matches by name —
       // covers the case where the user (or a previous Shuttle process)
       // launched the same fiber manually.
-      if (ralphSessions.has(expectedSession)) {
+      if (liveSessions.has(expectedSession)) {
         const adopted: DispatchEntry = {
           fiberId: f.id,
           tmuxSession: expectedSession,
@@ -250,7 +265,9 @@ export class Shuttle {
         continue;
       }
 
-      // Spawn.
+      // Spawn — single-shot. Worker exits when claude exits; we'll
+      // observe the session as gone on a future tick and (if still
+      // eligible) redispatch.
       try {
         const session = this.spawn(f.id);
         const entry: DispatchEntry = {
@@ -272,13 +289,13 @@ export class Shuttle {
       }
     }
 
-    // Orphans: ralph-* sessions not tracked by us.
+    // Orphans: shuttle-* sessions not tracked by us.
     const trackedSessions = new Set(
       Array.from(this.dispatched.values())
         .map(e => e.tmuxSession)
         .filter((s): s is string => !!s),
     );
-    const orphans = Array.from(ralphSessions).filter(s => !trackedSessions.has(s));
+    const orphans = Array.from(liveSessions).filter(s => !trackedSessions.has(s));
 
     const snap: ShuttleSnapshot = {
       pollAt: Date.now(),
@@ -323,14 +340,14 @@ export class Shuttle {
   // --------------------------------------------------------------------------
 
   private spawn(fiberId: string): string {
-    if (this.config.spawnRalph) {
-      return this.config.spawnRalph(fiberId);
+    if (this.config.spawnShuttleWorker) {
+      return this.config.spawnShuttleWorker(fiberId);
     }
-    const script = this.config.ralphScript;
+    const script = this.config.shuttleWorkerScript;
     if (!script || !existsSync(script)) {
-      throw new Error(`ralph launcher not available at ${script}`);
+      throw new Error(`shuttle-worker not available at ${script}`);
     }
-    // The launcher uses pwd as workdir for the agent. Use the felt host
+    // The worker uses pwd as workdir for the agent. Use the felt host
     // so the agent lands in loom by default.
     const result = spawnSync(script, [fiberId], {
       cwd: this.config.feltHost,
@@ -339,10 +356,10 @@ export class Shuttle {
     });
     if (result.status !== 0) {
       throw new Error(
-        `ralph launcher failed (status ${result.status}): ${result.stderr || result.stdout}`,
+        `shuttle-worker failed (status ${result.status}): ${result.stderr || result.stdout}`,
       );
     }
-    return ralphSessionName(fiberId);
+    return shuttleSessionName(fiberId);
   }
 }
 

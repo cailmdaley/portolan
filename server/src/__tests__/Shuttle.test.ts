@@ -6,7 +6,7 @@ import {
   computeEligibility,
   Shuttle,
   defaultShuttleConfig,
-  ralphSessionName,
+  shuttleSessionName,
 } from '../Shuttle.js';
 import type { Fiber } from '../FiberReader.js';
 import { getAllFibers } from '../FiberReader.js';
@@ -154,9 +154,9 @@ created-at: 2026-04-28T00:00:00Z
     const spawned: string[] = [];
     const shuttle = new Shuttle({
       ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
-      spawnRalph: (id) => {
+      spawnShuttleWorker: (id) => {
         spawned.push(id);
-        return ralphSessionName(id);
+        return shuttleSessionName(id);
       },
     });
     const snap = await shuttle.tick();
@@ -181,21 +181,20 @@ created-at: 2026-04-28T00:00:00Z
     const spawned: string[] = [];
     const shuttle = new Shuttle({
       ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
-      spawnRalph: (id) => {
+      spawnShuttleWorker: (id) => {
         spawned.push(id);
-        return ralphSessionName(id);
+        return shuttleSessionName(id);
       },
     });
     await shuttle.tick();
-    // Second tick should reuse, not respawn — but `listRalphSessions` reads
-    // real tmux which won't have our synthetic session. The Shuttle's
+    // Second tick should reuse, not respawn — but `listShuttleSessions`
+    // reads real tmux which won't have our synthetic session. The Shuttle's
     // dispatched-map check itself catches this when sessionLive is true:
     // for the test harness we simulate liveness by treating spawn as
     // creating a tracked session and the second tick's tmux probe will
-    // return [] in test, which means it WILL respawn unless we also
-    // simulate session listing. So this test's contract is: under real
-    // tmux liveness the second tick is a no-op; under no liveness signal
-    // it redispatches (which is the correct ralph-style behavior).
+    // return [] in test, which means it WILL respawn — which is the
+    // correct continuation-retry behaviour for a single-shot worker that
+    // has already exited.
     //
     // We assert the documented invariant: at minimum, spawn is at most
     // once per tick.
