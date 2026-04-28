@@ -49,10 +49,14 @@ const COLUMN_BLURBS: Record<ColumnKind, string> = {
 /**
  * All transitions a card has from its current column.
  * Order is which buttons to render first — usually "forward" first.
+ *
+ * inFlight → tempered is a direct path: lets the user accept work without
+ * routing through awaiting-review. Useful for stale "committed but never
+ * actually worked on" fibers and for trusted skip-review work.
  */
 const TRANSITIONS_FROM: Record<ColumnKind, ColumnKind[]> = {
   drafts: ['inFlight'],
-  inFlight: ['awaitingReview', 'drafts'],
+  inFlight: ['awaitingReview', 'tempered', 'drafts'],
   awaitingReview: ['tempered', 'inFlight'],
   tempered: ['awaitingReview', 'inFlight'],
 }
@@ -333,13 +337,22 @@ export class KanbanModal {
       `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered`
 
     this.body.innerHTML = ''
-    // Workflow order, left to right: idea → committed work → review → archive.
-    this.body.append(
+    // Two-row layout. Top row: the active workflow surface
+    //   (Drafts → In flight → Awaiting review).
+    // Bottom row: Tempered as a film-strip — the record, visually subordinate.
+    const main = document.createElement('div')
+    main.className = 'kbn-main'
+    main.append(
       this.renderColumn('drafts', columns.drafts),
       this.renderColumn('inFlight', columns.inFlight),
       this.renderColumn('awaitingReview', columns.awaitingReview),
-      this.renderColumn('tempered', columns.tempered, temperedTotal),
     )
+
+    const secondary = document.createElement('div')
+    secondary.className = 'kbn-secondary'
+    secondary.append(this.renderColumn('tempered', columns.tempered, temperedTotal))
+
+    this.body.append(main, secondary)
   }
 
   /**
@@ -683,13 +696,47 @@ export class KanbanModal {
       }
       .kbn-body {
         flex: 1;
-        /* drafts (quiet), in-flight, awaiting (your-move, slightly wider), tempered (record). */
-        display: grid;
-        grid-template-columns: 1fr 1fr 1.15fr 0.8fr;
+        display: flex;
+        flex-direction: column;
         gap: 10px;
         padding: 12px;
         overflow: hidden;
         min-height: 0;
+      }
+      /* Top row: the active workflow — drafts, in-flight, awaiting review. */
+      .kbn-main {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1.15fr;
+        gap: 10px;
+        min-height: 0;
+      }
+      /* Bottom row: tempered as a record strip. Capped height; cards flow horizontally. */
+      .kbn-secondary {
+        flex-shrink: 0;
+        max-height: 180px;
+        display: flex;
+        min-height: 0;
+        opacity: 0.92;
+      }
+      .kbn-secondary .kbn-col {
+        flex: 1;
+        min-height: 0;
+      }
+      .kbn-secondary .kbn-col-list {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 8px;
+      }
+      .kbn-secondary .kbn-card {
+        flex-shrink: 0;
+        width: 240px;
+        min-height: 0;
+      }
+      .kbn-secondary .kbn-empty {
+        align-self: center;
+        margin: 0 auto;
       }
       .kbn-col {
         display: flex; flex-direction: column;
