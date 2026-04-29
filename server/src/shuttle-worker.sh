@@ -37,7 +37,13 @@ fi
 
 # Refuse to dispatch closed fibers — Shuttle's eligibility predicate
 # already enforces this, but defence-in-depth is cheap.
-if (cd "$FELT_DIR" && $FELT show "$FIBER_ID" 2>/dev/null | grep -qiE 'status:.*closed'); then
+#
+# Anchor to the literal `Status:` header line in `felt show` output.
+# A loose `status:.*closed` match false-positives on prose in `outcome:`
+# that mentions a prior status transition (e.g. "flipped status from
+# `closed` → `active`"), since `felt show` wraps the outcome onto one
+# logical line.
+if (cd "$FELT_DIR" && $FELT show "$FIBER_ID" 2>/dev/null | grep -qE '^Status:[[:space:]]+closed[[:space:]]*$'); then
     echo "Fiber $FIBER_ID is closed; refusing to dispatch."
     exit 1
 fi
