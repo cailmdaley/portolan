@@ -85,7 +85,7 @@ Activate the /shuttle and /felt skills before anything else, then follow them.
 
 The fiber ID is in the system prompt above; read the constitution fresh via `felt show <fiber-id>`. The work may take one session or many. End this session with `kill $PPID` when context fills, when you've reached a clean break, or when the constitution is realized.
 
-Update the constitution's `outcome:` and sibling `state.md`; file crystallizations as sub-fibers; commit. Status `closed` signals the constitution is realized; `tempered: true` is human-only.
+Update the constitution's `outcome:` to reflect where the work now stands, and append an editorial event with `felt history append <fiber-id> --summary "…"` as the handoff for the next worker; file crystallizations as sub-fibers; commit. Status `closed` signals the constitution is realized; `tempered: true` is human-only.
 PROMPTEOF
 
 PROMPT=$(cat "$PROMPT_FILE")
