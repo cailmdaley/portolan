@@ -6,3 +6,11 @@ dist/
 nanobanana-output/
 .mystra/
 .mystra-cache/
+
+# Local scratch — screenshots, dogfood iter dirs, HARs, ad-hoc captures.
+# These accumulate during exploratory runs and shouldn't enter history.
+.tmp/
+
+# Vitest reuses this between runs to skip-cache passing tests; bumps on
+# every invocation, never useful in git.
+node_modules/.vite/
