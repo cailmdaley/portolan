@@ -35,6 +35,7 @@ import type {
   AstraGraph,
   FiberContent,
   FileContent,
+  HistoryEvent,
   LogResponse,
   RawFiber,
   SearchHit,
@@ -289,6 +290,17 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       return { since, count: 0, events: [] };
     },
 
+    async getFiberHistory(slug: string): Promise<HistoryEvent[]> {
+      // Portolan's `felt history` editorial events live under
+      // `<.felt>/.history/<slug>.jsonl` in each project; the server
+      // doesn't yet expose them via HTTP. Vellum's HistoryCard renders
+      // empty when this returns [], so the masthead chrome is unaffected
+      // until we wire the endpoint. See portolan/backend for the per-
+      // project history pipeline.
+      void slug;
+      return [];
+    },
+
     async getAstraBundle(
       path: string,
       bundleOpts: GetAstraBundleOptions = {},
@@ -435,6 +447,7 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     getAnnotations,
     searchFibers,
     getDeltaSince,
+    getFiberHistory,
     getAstraBundle,
     getAstraBundleMtime,
     getAstraSource,
@@ -447,6 +460,7 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     getAnnotations,
     searchFibers,
     getDeltaSince,
+    getFiberHistory,
     getAstraBundle,
     getAstraBundleMtime,
     getAstraSource,
