@@ -25,6 +25,7 @@
  * inside the React root this file creates — see vellum-in-portolan.
  */
 
+import { useEffect, useRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   AdapterProvider,
@@ -33,18 +34,95 @@ import {
   FiberCard,
   FileViewerPage,
   WorkspaceMount,
+  useMode,
+  useNavigate,
   type Annotation,
   type AnnotationBulkAction,
   type FiberContent,
   type GraphNode,
 } from 'vellum'
 import 'vellum/css'
+import { KanbanModal } from '../ui/KanbanModal'
 import { createPortolanAdapter } from './portolan-adapter'
 import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'
 import { showToast } from '../ui/utils'
 import { lockModalBackground } from '../ui/modalBackgroundLock'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
+
+/**
+ * KanbanHost — React shell that mounts the vanilla-JS `KanbanModal` in
+ * embedded mode inside vellum's workspace slot.
+ *
+ * Lives inside vellum's MemoryRouter + ModeProvider, so card clicks navigate
+ * the host vellum (rather than opening another vellum modal) and flip the
+ * active mode back to narrative — the kanban is the action queue, the prose
+ * is where you actually read what the agent did.
+ *
+ * Mounted lazily by FiberPage: only when the user is on the Workspace tab.
+ * Tab-away unmounts; re-entry remounts and refetches. The KanbanModal
+ * instance is owned per-mount; a fresh instance per visit means there's no
+ * stale state to drain when the user changes scope mid-session.
+ *
+ * cityId === undefined → global scope (the aggregation across all known
+ * origins, deduped by realpath; constitution §"Reads come from per-origin
+ * fiber-tree snapshots").
+ */
+function KanbanHost({
+  cityId,
+  cityName,
+}: {
+  cityId?: string
+  cityName?: string
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const navigate = useNavigate()
+  const { setMode } = useMode()
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const kanban = new KanbanModal({
+      onOpenFiber: (card) => {
+        // Vellum's narrative-mode renderer keys off the URL slug. Card.id
+        // is the fiber slug ("portolan/vellum-reader/constitution-vellum-kanban"
+        // etc.), so a direct navigate + setMode lands the user on the prose.
+        // Mirrors FloatingIsland's search-result handler: setMode then
+        // navigate so the post-paint URL settles on the new fiber inside
+        // narrative mode.
+        setMode('narrative')
+        navigate(`/${card.id}`)
+      },
+      // onOpenWorker is intentionally unwired in embedded mode — the worker
+      // focus path needs portolan map state (camera, zoneRenderer, mapActions)
+      // that lives in main.ts, not in the vellum tree. Stage 6 will surface
+      // it via a host-callback prop or a global event; until then the running-
+      // worker indicator on cards is informational, not interactive, in
+      // embedded mode.
+    })
+    const cityScope =
+      cityId !== undefined
+        ? { cityId, cityName: cityName ?? cityId }
+        : null
+    kanban.mountEmbedded(host, { cityScope })
+    return () => {
+      kanban.unmountEmbedded()
+    }
+  }, [cityId, cityName, navigate, setMode])
+
+  // Position fixed so the host covers the modal viewport regardless of
+  // vellum-page's natural-flow height. z-index: 100 sits below
+  // FloatingIsland (500) and the modal close button (1001) so vellum's
+  // chrome stays usable on top of the kanban grid. The embedded KanbanModal
+  // inside fills `position: absolute; inset: 0` against this host.
+  return (
+    <div
+      ref={hostRef}
+      className="kanban-host"
+      style={{ position: 'fixed', inset: 0, zIndex: 100 }}
+    />
+  )
+}
 
 /**
  * Minimal shape of portolan frontend state this file needs to route annotation
@@ -683,6 +761,12 @@ export interface OpenWorkspaceModalOptions {
   editable?: boolean
   /** 1-indexed line to jump to when the file opens. Ignored unless `initialFilePath` is set. */
   jumpToLine?: number
+  /** Tab to land on at first paint. `'narrative'` (default) opens on the prose;
+   *  `'kanban'` deep-links to the (slot-overridden) Workspace tab so the user
+   *  sees the kanban grid immediately — used by the global launch button and
+   *  the city HUD's kanban affordance once Stage 6 retargets them.
+   *  `'delta'` for completeness. Ignored in file mode (locked to narrative). */
+  initialMode?: 'narrative' | 'kanban' | 'delta'
 }
 
 /**
@@ -849,12 +933,43 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     originId: opts.originId ?? 'local',
   })
 
+  // Vellum's 'workspace' tab is the slot vellum-kanban embeds into. The
+  // public-facing initialMode says 'kanban' (honest naming for portolan
+  // users); translate to vellum's internal mode id here. 'delta' and
+  // 'narrative' pass through unchanged.
+  const initialVellumMode =
+    opts.initialMode === 'kanban'
+      ? ('workspace' as const)
+      : opts.initialMode === 'delta'
+      ? ('delta' as const)
+      : ('narrative' as const)
+
+  // The kanban slot is constructed once per modal open and threaded through
+  // every fiber-mode render so the user can flip to the Kanban tab at any
+  // time. cityId === undefined → global aggregation. The slot is React: a
+  // host div that mounts an embedded KanbanModal on first render and
+  // unmounts on tab change. See `vellum-reader/constitution-vellum-kanban`
+  // §"Stage 5".
+  const kanbanSlot = (
+    <KanbanHost
+      cityId={opts.cityId}
+      cityName={opts.cityName}
+    />
+  )
+
   const mountWith = (initialSlug: string) => {
     if (closed) return
     root.render(
       <AdapterProvider adapter={adapter}>
         <AnnotationActionsProvider bulkActions={fiberBulkActions}>
-          <WorkspaceMount initialSlug={initialSlug} eyebrow={opts.cityName} />
+          <WorkspaceMount
+            initialSlug={initialSlug}
+            eyebrow={opts.cityName}
+            initialMode={initialVellumMode}
+            workspaceSlot={kanbanSlot}
+            workspaceLabel="Kanban"
+            workspaceLetter="K"
+          />
         </AnnotationActionsProvider>
       </AdapterProvider>,
     )
