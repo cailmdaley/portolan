@@ -55,6 +55,13 @@ interface KanbanCard {
   id: string
   name: string
   path: string
+  /**
+   * Origin that contributed this fiber — `local` for filesystem-walk sources,
+   * `remote-<hostname>` for fibers sourced from an agent's fiber-tree
+   * snapshot. Drives the "waiting on `<hostname>`" stale badge and the
+   * drag-disable when the originating agent is disconnected (Stage 3b).
+   */
+  originId: string
   status: string
   outcome?: string
   tags?: string[]
@@ -67,6 +74,23 @@ interface KanbanCard {
   runningWorker?: string
 }
 
+/**
+ * Per-origin freshness signal returned in `/kanban` responses. Stage 3b
+ * surfaces this on the cards: stale-origin cards show a "waiting on
+ * `<hostname>`" badge and refuse drag, since the remote agent is
+ * disconnected and any mutation would have nowhere to land.
+ *
+ * Local origin is always 'fresh'. Remote origins are 'fresh' while the
+ * agent is connected and 'stale' from disconnect through reconnect.
+ */
+interface KanbanOriginStaleness {
+  status: 'fresh' | 'stale'
+  /** Hostname for human-readable badging (e.g. "waiting on cineca"). */
+  hostname?: string
+  /** ISO timestamp; only set when status === 'stale'. */
+  staleSince?: string
+}
+
 interface KanbanResponse {
   feltHost: string
   columns: {
@@ -77,6 +101,13 @@ interface KanbanResponse {
   }
   totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number }
   temperedTotal: number
+  /**
+   * Per-origin freshness, keyed by `originId`. Always includes `local` and
+   * an entry for every remote origin with a snapshot in the store. The
+   * frontend reads this to render the "waiting on `<hostname>`" stale
+   * badge and to disable drag for stale-origin cards.
+   */
+  staleness: Record<string, KanbanOriginStaleness>
   generatedAt: number
 }
 
@@ -477,7 +508,7 @@ export class KanbanModal {
   private render(data: KanbanResponse): void {
     if (!this.body || !this.statusEl) return
 
-    const { columns, totals, temperedTotal } = data
+    const { columns, totals, temperedTotal, staleness } = data
     this.statusEl.textContent =
       `${totals.drafts} drafts · ${totals.inFlight} in flight · ` +
       `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered`
@@ -489,13 +520,13 @@ export class KanbanModal {
     const third = document.createElement('div')
     third.className = 'kbn-third'
     third.append(
-      this.renderColumn('awaitingReview', columns.awaitingReview),
-      this.renderColumn('tempered', columns.tempered, temperedTotal),
+      this.renderColumn('awaitingReview', columns.awaitingReview, staleness),
+      this.renderColumn('tempered', columns.tempered, staleness, temperedTotal),
     )
 
     this.body.append(
-      this.renderColumn('drafts', columns.drafts),
-      this.renderColumn('inFlight', columns.inFlight),
+      this.renderColumn('drafts', columns.drafts, staleness),
+      this.renderColumn('inFlight', columns.inFlight, staleness),
       third,
     )
   }
@@ -505,8 +536,16 @@ export class KanbanModal {
    * feedback. The list element carries role="list" and each card carries
    * role="listitem" so the a11y tree shows a structured "X cards in Y column"
    * shape that agent-browser's snapshot can navigate cleanly.
+   *
+   * `staleness` is threaded through from the response so each card can look
+   * up its origin's freshness for the Stage 3b drag-disable + waiting badge.
    */
-  private renderColumn(kind: ColumnKind, cards: KanbanCard[], temperedTotal?: number): HTMLElement {
+  private renderColumn(
+    kind: ColumnKind,
+    cards: KanbanCard[],
+    staleness: Record<string, KanbanOriginStaleness>,
+    temperedTotal?: number,
+  ): HTMLElement {
     const title = COLUMN_TITLES[kind]
     const col = document.createElement('section')
     col.className = `kbn-col kbn-col-${kind}`
@@ -580,7 +619,7 @@ export class KanbanModal {
       list.append(empty)
     } else {
       for (const card of cards) {
-        list.append(this.renderCard(card, kind))
+        list.append(this.renderCard(card, kind, staleness[card.originId]))
       }
     }
 
@@ -603,28 +642,45 @@ export class KanbanModal {
    *
    * Click on the card body (not on a button or the drag handle) opens the
    * fiber's md in vellum.
+   *
+   * `originStaleness` is the entry from the response's `staleness` map for
+   * this card's origin. When undefined or status==='fresh', the card behaves
+   * normally. When status==='stale', we show a "waiting on `<hostname>`"
+   * badge, dim the card, and disable drag — the originating agent is
+   * disconnected and any mutation would have nowhere to land.
    */
-  private renderCard(card: KanbanCard, kind: ColumnKind): HTMLElement {
+  private renderCard(
+    card: KanbanCard,
+    kind: ColumnKind,
+    originStaleness?: KanbanOriginStaleness,
+  ): HTMLElement {
+    const isStale = originStaleness?.status === 'stale'
+
     const el = document.createElement('div')
-    el.className = `kbn-card kbn-card-${kind}`
+    el.className = `kbn-card kbn-card-${kind}${isStale ? ' kbn-card--stale' : ''}`
     el.setAttribute('role', 'listitem')
-    el.setAttribute('aria-label', `${card.name} — ${COLUMN_TITLES[kind]}`)
-    el.draggable = true
+    const ariaSuffix = isStale
+      ? ` — waiting on ${originStaleness.hostname ?? card.originId}, drag disabled`
+      : ''
+    el.setAttribute('aria-label', `${card.name} — ${COLUMN_TITLES[kind]}${ariaSuffix}`)
+    el.draggable = !isStale
     el.dataset.fiberId = card.id
 
-    el.addEventListener('dragstart', (e) => {
-      this.dragSourceId = card.id
-      el.classList.add('kbn-card-dragging')
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = 'move'
-        e.dataTransfer.setData('text/x-fiber-id', card.id)
-        e.dataTransfer.setData('text/plain', card.name)
-      }
-    })
-    el.addEventListener('dragend', () => {
-      el.classList.remove('kbn-card-dragging')
-      this.dragSourceId = null
-    })
+    if (!isStale) {
+      el.addEventListener('dragstart', (e) => {
+        this.dragSourceId = card.id
+        el.classList.add('kbn-card-dragging')
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/x-fiber-id', card.id)
+          e.dataTransfer.setData('text/plain', card.name)
+        }
+      })
+      el.addEventListener('dragend', () => {
+        el.classList.remove('kbn-card-dragging')
+        this.dragSourceId = null
+      })
+    }
 
     // Header row: name + status pill (+ drag-handle hint)
     const headerRow = document.createElement('div')
@@ -633,7 +689,7 @@ export class KanbanModal {
     const dragHandle = document.createElement('span')
     dragHandle.className = 'kbn-card-handle'
     dragHandle.setAttribute('aria-hidden', 'true')
-    dragHandle.title = 'Drag to move'
+    dragHandle.title = isStale ? 'Drag disabled — origin offline' : 'Drag to move'
     dragHandle.textContent = '⋮⋮'
 
     const name = document.createElement('button')
@@ -712,6 +768,23 @@ export class KanbanModal {
         this.onOpenWorker?.(tmuxName)
       })
       el.append(w)
+    }
+
+    // Stale-origin badge: the originating agent is disconnected. The card
+    // still reads (snapshot is preserved), but mutation has nowhere to land
+    // until reconnect, so drag is disabled (above) and we show a clear
+    // signal here. Hostname falls back to the bare originId if the server
+    // didn't supply one.
+    if (isStale) {
+      const hostname = originStaleness.hostname ?? card.originId
+      const waiting = document.createElement('div')
+      waiting.className = 'kbn-card-waiting'
+      waiting.setAttribute('role', 'status')
+      waiting.title = originStaleness.staleSince
+        ? `Disconnected since ${originStaleness.staleSince}`
+        : 'Origin agent disconnected'
+      waiting.textContent = `⌛ waiting on ${hostname}`
+      el.append(waiting)
     }
 
     // Click outside any button → open in vellum (delegated catch-all).
@@ -1273,6 +1346,45 @@ export class KanbanModal {
       @keyframes kbn-pulse {
         0%, 100% { background: rgba(90, 123, 123, 0.10); }
         50% { background: rgba(90, 123, 123, 0.22); }
+      }
+      /* Stale-origin card: the originating agent is disconnected. The
+         snapshot is preserved (last-known-good) so the card still reads
+         and clicks through to vellum, but drag is disabled because
+         mutation has nowhere to land until reconnect. Visual signal
+         is a desaturated dim plus a not-allowed cursor on the drag
+         handle. */
+      .kbn-card--stale {
+        opacity: 0.62;
+        background: #F4F0E8;
+        border-style: dashed;
+        cursor: default;
+      }
+      .kbn-card--stale:hover {
+        background: #F4F0E8;
+        border-color: rgba(46, 42, 38, 0.18);
+        transform: none;
+      }
+      .kbn-card--stale:active { cursor: default; }
+      .kbn-card--stale .kbn-card-handle {
+        cursor: not-allowed;
+        color: #C8BFB3;
+      }
+      .kbn-card--stale .kbn-card-name { color: #6A645E; }
+      /* The waiting badge sits in the same band as kbn-card-blocked /
+         kbn-card-worker — runtime-state info that depends on connection,
+         not on fiber content. Cool grey-blue distinguishes "stale" from
+         the warm gold of "blocked on dep" and the teal of "worker
+         running." */
+      .kbn-card-waiting {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10.5px;
+        color: #5A6A78;
+        background: rgba(90, 110, 130, 0.10);
+        border: 1px dashed rgba(90, 110, 130, 0.35);
+        padding: 4px 6px;
+        border-radius: 2px;
+        margin-top: 2px;
+        letter-spacing: 0.02em;
       }
       .kbn-error {
         margin: 24px;
