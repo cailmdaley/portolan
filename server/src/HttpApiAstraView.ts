@@ -57,11 +57,47 @@ import { promisify } from 'util';
 import type { ServerResponse } from 'http';
 import {
   buildBundle,
-  collectPaperMetadata,
   resolvePaperCacheDir,
   type Bundle,
 } from 'lightcone-ui-core';
 import { templatesDir, templatePath } from 'lightcone-ui-core/templates';
+
+/**
+ * Lazy resolver for `collectPaperMetadata`.
+ *
+ * lightcone-ui-core is upstream and ahead-of-portolan during the
+ * `cail/lightcone-ui-react-port` rewrite; that branch has dropped
+ * `papers.ts` entirely. Statically importing the name made portolan's
+ * server fail at module load (SyntaxError: …does not provide an export
+ * named 'collectPaperMetadata') and broke every endpoint, including
+ * /kanban — even though only the remote-paper-cache enrichment path
+ * depends on the symbol.
+ *
+ * Resolve at runtime via dynamic import + presence check so the rest
+ * of the server stays up across either lightcone-ui branch. When the
+ * symbol is absent, remote paper-cache enrichment skips gracefully:
+ * remote PDFs still resolve through `streamRemotePaperPdf`, they
+ * simply don't pre-mark as cached in the bundle.
+ *
+ * Memoizes the lookup once per process so we don't re-import on every
+ * astra-bundle build.
+ */
+type CollectPaperMetadataFn = (dois: string[], indexPath: string) => Bundle['papers'];
+let collectPaperMetadataMemo: CollectPaperMetadataFn | null | undefined;
+async function loadCollectPaperMetadata(): Promise<CollectPaperMetadataFn | null> {
+  if (collectPaperMetadataMemo !== undefined) return collectPaperMetadataMemo;
+  try {
+    const mod = await import('lightcone-ui-core') as { collectPaperMetadata?: unknown };
+    collectPaperMetadataMemo =
+      typeof mod.collectPaperMetadata === 'function'
+        ? (mod.collectPaperMetadata as CollectPaperMetadataFn)
+        : null;
+  } catch (err) {
+    console.warn('[AstraView] dynamic import of lightcone-ui-core failed; remote paper enrichment disabled:', err);
+    collectPaperMetadataMemo = null;
+  }
+  return collectPaperMetadataMemo;
+}
 import type { Origin } from './OriginManager.js';
 import { shellEscape } from './ShellPathUtils.js';
 
@@ -715,12 +751,18 @@ export class HttpApiAstraView {
         const remoteIndex = await materializeRemotePaperIndex(origin.sshHost, originId);
         const dois = Object.keys(bundle.papers);
         if (dois.length > 0 && existsSync(remoteIndex)) {
-          const remotePapers = collectPaperMetadata(dois, remoteIndex);
-          for (const doi of dois) {
-            const local = bundle.papers[doi];
-            const remote = remotePapers[doi];
-            if (!local.cached && remote && remote.cached) {
-              bundle.papers[doi] = remote;
+          // Fetch through the lazy resolver — when lightcone-ui-core is on
+          // the react-port branch (no papers.ts), this returns null and we
+          // skip remote enrichment instead of crashing the server.
+          const collect = await loadCollectPaperMetadata();
+          if (collect) {
+            const remotePapers = collect(dois, remoteIndex);
+            for (const doi of dois) {
+              const local = bundle.papers[doi];
+              const remote = remotePapers[doi];
+              if (!local.cached && remote && remote.cached) {
+                bundle.papers[doi] = remote;
+              }
             }
           }
         }
@@ -1100,7 +1142,12 @@ export class HttpApiAstraView {
     }
     const ext = extname(file).toLowerCase();
     const mime = ASSET_MIME[ext] ?? 'application/octet-stream';
-    const filePath = templatePath(file as 'paper-viewer.js' | 'vellum.css');
+    // Bypass templatePath()'s narrow `TemplateFile` union — its allowlist
+    // varies by lightcone-ui branch (core-public-api ships paper-viewer.js
+    // as a template; react-port doesn't), and portolan's ALLOWED_ASSETS
+    // gate above plus the existsSync below already enforce safety. Joining
+    // through templatesDir() keeps us decoupled from upstream type drift.
+    const filePath = join(templatesDir(), file);
     if (!existsSync(filePath)) {
       this.sendError(res, 404, `asset ${basename(file)} not found in templates`);
       return;
