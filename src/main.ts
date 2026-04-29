@@ -993,6 +993,17 @@ cityPanel.setOnViewPlaygrounds((city) => {
   playgroundViewer.show(city)
 })
 
+// Stage 1 of vellum-kanban constitution: opening the per-city kanban from
+// the HUD. Shows the standalone KanbanModal pre-scoped via `?cityId=`
+// (server enforces local-origin only — remote-origin scoping unlocks in
+// Stage 3). Stage 5 will retarget this to open vellum-on-this-city with
+// the Kanban tab active; same intent, different surface. See
+// ai-futures/portolan/vellum-reader/constitution-vellum-kanban.
+cityPanel.setOnViewKanban((city) => {
+  cityPanel.hide()
+  kanbanModal.showForCity(city)
+})
+
 // State
 let cities: City[] = []
 let sessions: Session[] = []

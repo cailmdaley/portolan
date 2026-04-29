@@ -229,12 +229,16 @@ export class HttpApi {
     }
 
     if (url.pathname === '/kanban' && req.method === 'GET') {
-      await this.kanbanApi.handleKanban(url, res);
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true; // error response already sent
+      await kanbanApi.handleKanban(url, res);
       return true;
     }
 
     if (url.pathname === '/kanban/transition' && req.method === 'POST') {
-      await this.kanbanApi.handleTransition(req, res);
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true; // error response already sent
+      await kanbanApi.handleTransition(req, res);
       return true;
     }
 
@@ -378,6 +382,41 @@ export class HttpApi {
     }
 
     return false;
+  }
+
+  /**
+   * Resolve which HttpApiKanban instance handles a /kanban[/transition] request
+   * based on optional `?cityId=` scoping. Returns null after writing a 4xx
+   * response if the scope can't be honored.
+   *
+   *   - No `cityId` query param → loom-wide default (the shared instance).
+   *   - `cityId` resolves to a local-origin city → per-request HttpApiKanban
+   *     scoped to that city's path. New instance per request is fine; the
+   *     class is stateless beyond construction options and reads on demand.
+   *   - `cityId` resolves to a remote-origin city → 400. Stage 1 of the
+   *     vellum-kanban constitution is local-origin only; remote-origin
+   *     scoping unlocks once the agent fiber-tree push protocol lands
+   *     (Stage 3). See ai-futures/portolan/vellum-reader/constitution-vellum-kanban.
+   *   - Unknown `cityId` → 400.
+   */
+  private resolveKanbanApi(url: URL, res: ServerResponse): HttpApiKanban | null {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) return this.kanbanApi;
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 400, `unknown cityId: ${cityId}`);
+      return null;
+    }
+    if (city.originId !== 'local') {
+      this.sendJsonError(
+        res,
+        400,
+        `cityId=${cityId} resolves to remote origin '${city.originId}'; ` +
+          `remote-origin kanban scoping ships in Stage 3 of the vellum-kanban constitution`,
+      );
+      return null;
+    }
+    return new HttpApiKanban({ feltHost: city.path });
   }
 
   /**

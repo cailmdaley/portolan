@@ -50,6 +50,7 @@ export class CityHUD {
 
   private onViewClaims: ((city: City) => void) | null = null
   private onViewPlaygrounds: ((city: City) => void) | null = null
+  private onViewKanban: ((city: City) => void) | null = null
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null = null
   private onOpenDirectory: ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null = null
   private onFocusWorker: ((sessionId: string) => void) | null = null
@@ -74,6 +75,7 @@ export class CityHUD {
       getNewWorkerDialog: () => this.newWorkerDialog,
       getOnViewClaims: () => this.onViewClaims,
       getOnViewPlaygrounds: () => this.onViewPlaygrounds,
+      getOnViewKanban: () => this.onViewKanban,
       getOnOpenFile: () => this.onOpenFile,
       getOnFocusWorker: () => this.onFocusWorker,
     })
@@ -355,6 +357,10 @@ export class CityHUD {
 
   setOnViewPlaygrounds(callback: (city: City) => void): void {
     this.onViewPlaygrounds = callback
+  }
+
+  setOnViewKanban(callback: (city: City) => void): void {
+    this.onViewKanban = callback
   }
 
   setOnOpenFile(callback: (fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void): void {

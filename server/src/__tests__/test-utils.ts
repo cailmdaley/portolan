@@ -47,6 +47,27 @@ export function makeCityLookup(cityId: string, cityDir: string, name: string = '
   };
 }
 
+/**
+ * Multi-city lookup stub. Each entry can override originId (defaults to
+ * 'local'); useful for kanban-scope tests that exercise local vs remote
+ * routing without spinning up a real CityManager.
+ */
+export function makeMultiCityLookup(
+  entries: Array<{ id: string; path: string; name?: string; originId?: string }>,
+) {
+  const cities = entries.map((e) => ({
+    id: e.id,
+    name: e.name ?? e.id,
+    path: e.path,
+    originId: e.originId ?? 'local',
+  }));
+  const byId = new Map(cities.map((c) => [c.id, c]));
+  return {
+    getCityById: (id: string) => byId.get(id) ?? null,
+    getCities: () => cities,
+  };
+}
+
 // ── HTTP request helper ──────────────────────────────────────────────
 
 /** Fire an HTTP request against an HttpApi instance and return parsed response. */

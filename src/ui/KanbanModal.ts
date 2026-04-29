@@ -93,6 +93,17 @@ interface KanbanModalOptions {
   apiBase?: string
 }
 
+/**
+ * When set, scope the kanban to a single city via `?cityId=` query param.
+ * Default null = loom-wide (the original v0 behaviour). Stage 1 of the
+ * vellum-kanban constitution: local-origin cities only; remote-origin
+ * city scoping unlocks in Stage 3.
+ */
+interface KanbanCityScope {
+  cityId: string
+  cityName: string
+}
+
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
@@ -102,6 +113,7 @@ export class KanbanModal {
   private scrim: HTMLDivElement | null = null
   private body: HTMLDivElement | null = null
   private statusEl: HTMLDivElement | null = null
+  private subtitleEl: HTMLDivElement | null = null
   private liveEl: HTMLDivElement | null = null
   private bannerEl: HTMLDivElement | null = null
   private unlockBackground: (() => void) | null = null
@@ -109,6 +121,8 @@ export class KanbanModal {
   private inflightFetchToken = 0
   private dragSourceId: string | null = null
   private bannerTimer: number | null = null
+  /** Null = loom-wide (default). Set by showForCity, cleared by hide(). */
+  private cityScope: KanbanCityScope | null = null
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
@@ -122,12 +136,34 @@ export class KanbanModal {
   }
 
   show(): void {
-    if (this.visible) return
+    if (this.visible) {
+      // Already open: refresh the scope-dependent chrome and refetch in case
+      // the caller swapped scope without going through hide() first.
+      this.updateScopeChrome()
+      void this.fetchAndRender()
+      return
+    }
     this.visible = true
     this.mount()
     this.unlockBackground = lockModalBackground(this.container!)
     this.fetchAndRender()
     document.addEventListener('keydown', this.onKeydown, true)
+  }
+
+  /**
+   * Open the kanban scoped to a single city. Sets cityScope and shows; if
+   * already open, updates the scope chrome and refetches in place.
+   *
+   * Stage 1 of the vellum-kanban constitution: the server enforces
+   * local-origin only and returns 400 for remote cityIds. The frontend
+   * doesn't pre-filter (calling this with a remote city surfaces the
+   * server's 400 in the error banner — the right place to land that
+   * affordance until Stage 3 unlocks remote).
+   */
+  showForCity(city: { id: string; name?: string; path: string }): void {
+    const cityName = city.name ?? city.path.split('/').pop() ?? city.path
+    this.cityScope = { cityId: city.id, cityName }
+    this.show()
   }
 
   hide(): void {
@@ -142,9 +178,13 @@ export class KanbanModal {
     this.container = null
     this.body = null
     this.statusEl = null
+    this.subtitleEl = null
     this.liveEl = null
     this.bannerEl = null
     this.dragSourceId = null
+    // Reset scope on hide so the next .show() (e.g. via hotkey k) lands
+    // loom-wide; a follow-on showForCity() re-sets scope before mount.
+    this.cityScope = null
     if (this.bannerTimer !== null) {
       window.clearTimeout(this.bannerTimer)
       this.bannerTimer = null
@@ -192,13 +232,13 @@ export class KanbanModal {
     const title = document.createElement('div')
     title.className = 'kbn-title'
     title.textContent = 'Kanban'
-    const subtitle = document.createElement('div')
-    subtitle.className = 'kbn-subtitle'
-    subtitle.textContent = 'constitution-tagged fibers'
+    this.subtitleEl = document.createElement('div')
+    this.subtitleEl.className = 'kbn-subtitle'
+    this.subtitleEl.textContent = this.subtitleText()
 
     const titleWrap = document.createElement('div')
     titleWrap.className = 'kbn-title-wrap'
-    titleWrap.append(title, subtitle)
+    titleWrap.append(title, this.subtitleEl)
 
     this.statusEl = document.createElement('div')
     this.statusEl.className = 'kbn-status'
@@ -245,7 +285,7 @@ export class KanbanModal {
     if (fromKind === target) return
 
     try {
-      const res = await fetch(`${this.apiBase}/kanban/transition`, {
+      const res = await fetch(this.transitionUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fiberId: card.id, target }),
@@ -289,7 +329,7 @@ export class KanbanModal {
     const token = ++this.inflightFetchToken
     if (this.statusEl) this.statusEl.textContent = 'Loading…'
     try {
-      const res = await fetch(`${this.apiBase}/kanban`)
+      const res = await fetch(this.kanbanUrl())
       if (token !== this.inflightFetchToken) return
       if (!res.ok) {
         this.renderError(`Server returned ${res.status}`)
@@ -567,6 +607,33 @@ export class KanbanModal {
 
   /** Stash the latest response so drop handlers can resolve cards by id. */
   private lastResponse: KanbanResponse | null = null
+
+  // ── URL + chrome helpers (city-scope aware) ────────────────────────────────
+
+  /** GET endpoint for the kanban list, with `?cityId=` when scoped. */
+  private kanbanUrl(): string {
+    const base = `${this.apiBase}/kanban`
+    if (!this.cityScope) return base
+    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
+  }
+
+  /** POST endpoint for transitions, with `?cityId=` when scoped. */
+  private transitionUrl(): string {
+    const base = `${this.apiBase}/kanban/transition`
+    if (!this.cityScope) return base
+    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
+  }
+
+  /** Subtitle copy: scope-aware so the user can read what they're looking at. */
+  private subtitleText(): string {
+    if (!this.cityScope) return 'constitution-tagged fibers'
+    return `constitution-tagged fibers · ${this.cityScope.cityName}`
+  }
+
+  /** Update DOM that depends on `cityScope` after a scope swap. */
+  private updateScopeChrome(): void {
+    if (this.subtitleEl) this.subtitleEl.textContent = this.subtitleText()
+  }
 
   /**
    * Toggle full-body zoom on a single column. The modal body keeps the

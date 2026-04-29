@@ -12,6 +12,7 @@ interface CityHUDHeaderOptions {
   getNewWorkerDialog: () => NewWorkerDialog | null
   getOnViewClaims: () => ((city: City) => void) | null
   getOnViewPlaygrounds: () => ((city: City) => void) | null
+  getOnViewKanban: () => ((city: City) => void) | null
   getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   getOnFocusWorker: () => ((sessionId: string) => void) | null
 }
@@ -23,6 +24,7 @@ export class CityHUDHeader {
   private getNewWorkerDialog: () => NewWorkerDialog | null
   private getOnViewClaims: () => ((city: City) => void) | null
   private getOnViewPlaygrounds: () => ((city: City) => void) | null
+  private getOnViewKanban: () => ((city: City) => void) | null
   private getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   private getOnFocusWorker: () => ((sessionId: string) => void) | null
   private allSessions: Session[] = []
@@ -38,6 +40,7 @@ export class CityHUDHeader {
     this.getNewWorkerDialog = options.getNewWorkerDialog
     this.getOnViewClaims = options.getOnViewClaims
     this.getOnViewPlaygrounds = options.getOnViewPlaygrounds
+    this.getOnViewKanban = options.getOnViewKanban
     this.getOnOpenFile = options.getOnOpenFile
     this.getOnFocusWorker = options.getOnFocusWorker
   }
@@ -185,6 +188,19 @@ export class CityHUDHeader {
     if (city.hasClaims) {
       buttons.push('<button class="hud-action-btn hud-action-claims" title="Open vellum (t)" aria-label="Open vellum workspace">⚖</button>')
     }
+    // Kanban scoped to this city. Stage 1 of vellum-kanban: this opens the
+    // standalone KanbanModal pre-scoped via `?cityId=`. When Stage 5 lands,
+    // this affordance becomes "open vellum-on-this-city with Kanban tab
+    // active" — same intent, different surface. Local-origin only for now;
+    // remote cities would surface the server's 400 in the modal banner. We
+    // skip the button entirely for remote cities so the affordance only
+    // appears where it works (Stage 3 will reintroduce it for remotes).
+    if (city.originId === 'local') {
+      const cityLabel = escapeHtml(city.name)
+      buttons.push(
+        `<button class="hud-action-btn hud-action-kanban" title="Open kanban for this city" aria-label="Open kanban scoped to ${cityLabel}">⊞</button>`,
+      )
+    }
     if (city.hasPlaygrounds) {
       buttons.push('<button class="hud-action-btn hud-action-playgrounds" title="Playgrounds" aria-label="View playgrounds">▶</button>')
     }
@@ -196,6 +212,12 @@ export class CityHUDHeader {
       e.stopPropagation()
       const currentCity = this.getCurrentCity()
       if (currentCity) this.getOnViewClaims()?.(currentCity)
+    })
+
+    row.querySelector('.hud-action-kanban')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const currentCity = this.getCurrentCity()
+      if (currentCity) this.getOnViewKanban()?.(currentCity)
     })
 
     row.querySelector('.hud-action-playgrounds')?.addEventListener('click', (e) => {
