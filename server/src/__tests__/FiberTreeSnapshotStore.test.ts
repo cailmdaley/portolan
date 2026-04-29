@@ -201,4 +201,79 @@ describe('FiberTreeSnapshotStore', () => {
       expect(all.map(s => s.originId).sort()).toEqual(['remote-candide', 'remote-cineca']);
     });
   });
+
+  describe('getStaleOriginsForFiber (Stage 7)', () => {
+    it('returns [] when no snapshots exist', () => {
+      const store = new FiberTreeSnapshotStore();
+      expect(store.getStaleOriginsForFiber('cmbx')).toEqual([]);
+    });
+
+    it('returns [] for fresh-only snapshots', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      expect(store.getStaleOriginsForFiber('cmbx')).toEqual([]);
+    });
+
+    it('returns the originId when a stale snapshot owns the fiber', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'pure_eb/pure_eb.md', content: baseFm() },
+      ]);
+      store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
+      expect(store.getStaleOriginsForFiber('cmbx')).toEqual(['remote-cineca']);
+      expect(store.getStaleOriginsForFiber('pure_eb')).toEqual(['remote-cineca']);
+    });
+
+    it('returns [] for fibers not in any stale snapshot', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
+      expect(store.getStaleOriginsForFiber('unrelated')).toEqual([]);
+    });
+
+    it('lists every stale origin that owns the fiber', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
+      store.markStale('remote-candide', '2026-04-29T00:00:00Z');
+      expect(store.getStaleOriginsForFiber('cmbx').sort()).toEqual([
+        'remote-candide',
+        'remote-cineca',
+      ]);
+    });
+
+    it('a snapshot that flips back to fresh stops gating dispatch', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
+      expect(store.getStaleOriginsForFiber('cmbx')).toEqual(['remote-cineca']);
+      store.markFresh('remote-cineca');
+      expect(store.getStaleOriginsForFiber('cmbx')).toEqual([]);
+    });
+
+    it('mixed fresh + stale: only stale origin appears in the result', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
+        { path: 'cmbx/cmbx.md', content: baseFm() },
+      ]);
+      store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
+      // candide stays fresh
+      expect(store.getStaleOriginsForFiber('cmbx')).toEqual(['remote-cineca']);
+    });
+  });
 });

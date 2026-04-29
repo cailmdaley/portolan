@@ -103,6 +103,20 @@ export interface ShuttleConfig {
    * unit-test kill-and-recover semantics deterministically.
    */
   listSessions?: () => string[];
+  /**
+   * Stage 7 — per-fiber freshness gate. When supplied, called for each
+   * eligible fiber before dispatch. Returns the originIds of any
+   * currently-stale remote snapshots that own this fiber. Non-empty
+   * means "don't dispatch this tick" — the fiber moves to `blocked`
+   * with a "origin stale: …" reason, and Shuttle re-checks on the next
+   * poll; when the agent reconnects (snapshot flips back to fresh) the
+   * fiber becomes dispatchable again automatically.
+   *
+   * When undefined (the test default), no freshness check runs and all
+   * eligible fibers are dispatched. Wired in production to
+   * `FiberTreeSnapshotStore.getStaleOriginsForFiber`.
+   */
+  staleOriginsForFiber?: (fiberId: string) => string[];
 }
 
 export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): ShuttleConfig {
@@ -236,8 +250,8 @@ export function shuttleSessionName(fiberId: string): string {
 // ============================================================================
 
 export class Shuttle {
-  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts'>>
-    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts'>;
+  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts' | 'staleOriginsForFiber'>>
+    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts' | 'staleOriginsForFiber'>;
   private dispatched = new Map<string, DispatchEntry>();
   private timer: NodeJS.Timeout | null = null;
   private lastSnapshot: ShuttleSnapshot | null = null;
@@ -263,7 +277,22 @@ export class Shuttle {
     const merged = await this.collectFibers();
     const fibers = merged.map(({ fiber }) => fiber);
     const hostByFiberId = new Map(merged.map(({ fiber, host }) => [fiber.id, host]));
-    const { eligible, blocked } = computeEligibility(fibers, this.config.queuePrefixes);
+    const { eligible: rawEligible, blocked } = computeEligibility(fibers, this.config.queuePrefixes);
+
+    // Stage 7 — partition eligible fibers by remote-origin freshness.
+    // A fiber whose canonical writer (a remote agent) is currently
+    // stale moves to blocked rather than being dispatched; the next
+    // tick re-checks and resumes once the agent reconnects.
+    const eligible: Fiber[] = [];
+    const staleOrigins = this.config.staleOriginsForFiber;
+    for (const f of rawEligible) {
+      const stale = staleOrigins ? staleOrigins(f.id) : [];
+      if (stale.length > 0) {
+        blocked.push({ fiber: f, reason: `origin stale: ${stale.join(', ')}` });
+        continue;
+      }
+      eligible.push(f);
+    }
 
     const liveSessions = new Set(
       this.config.listSessions ? this.config.listSessions() : listShuttleSessions(),

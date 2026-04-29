@@ -283,6 +283,116 @@ created-at: 2026-04-28T00:00:00Z
     expect(liveSet.has(shuttleSessionName('tests/haiku'))).toBe(true);
   });
 
+  it('Stage 7: stale-origin gate suspends dispatch and resumes on reconnect', async () => {
+    // A constitution fiber visible locally (e.g. via a loom symlink to a
+    // network mount) whose canonical writer is a remote portolan-agent.
+    // While the agent is connected, the snapshot store is fresh and the
+    // freshness gate returns []; Shuttle dispatches normally. When the
+    // agent disconnects (FiberTreeSnapshotStore.markStale), the gate
+    // returns the stale originId; Shuttle moves the fiber to `blocked`
+    // with reason "origin stale: …" and refuses to spawn until the
+    // agent reconnects (gate returns [] again).
+    writeFiber(
+      feltDir,
+      'tests/cmbx',
+      `---
+name: Cmbx
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    let staleOrigins: string[] = [];
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        return shuttleSessionName(id);
+      },
+      // Closure over a mutable list so the test can flip stale ↔ fresh
+      // between ticks without rebuilding the Shuttle instance.
+      staleOriginsForFiber: () => [...staleOrigins],
+    });
+
+    // Tick 1: origin stale → blocked, NOT dispatched.
+    staleOrigins = ['remote-cineca'];
+    const snap1 = await shuttle.tick();
+    expect(spawned).toEqual([]);
+    expect(snap1.eligible).toEqual([]);
+    const blockedEntry = snap1.blocked.find(b => b.fiberId === 'tests/cmbx');
+    expect(blockedEntry?.reason).toContain('origin stale');
+    expect(blockedEntry?.reason).toContain('remote-cineca');
+
+    // Tick 2: agent reconnects, gate returns [] → fiber dispatches.
+    staleOrigins = [];
+    const snap2 = await shuttle.tick();
+    expect(spawned).toEqual(['tests/cmbx']);
+    expect(snap2.eligible.map(e => e.fiberId)).toEqual(['tests/cmbx']);
+    expect(snap2.blocked.find(b => b.fiberId === 'tests/cmbx')).toBeUndefined();
+  });
+
+  it('Stage 7: gate listing multiple stale origins surfaces all in reason', async () => {
+    writeFiber(
+      feltDir,
+      'tests/cmbx',
+      `---
+name: Cmbx
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        return shuttleSessionName(id);
+      },
+      staleOriginsForFiber: () => ['remote-cineca', 'remote-candide'],
+    });
+
+    const snap = await shuttle.tick();
+    expect(spawned).toEqual([]);
+    const reason = snap.blocked.find(b => b.fiberId === 'tests/cmbx')?.reason ?? '';
+    expect(reason).toContain('remote-cineca');
+    expect(reason).toContain('remote-candide');
+  });
+
+  it('Stage 7: gate is opt-in — dispatch unaffected when the hook is absent', async () => {
+    // Confirms backward-compatibility: existing callers that don't wire
+    // staleOriginsForFiber dispatch as before.
+    writeFiber(
+      feltDir,
+      'tests/cmbx',
+      `---
+name: Cmbx
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        return shuttleSessionName(id);
+      },
+      // staleOriginsForFiber omitted
+    });
+
+    await shuttle.tick();
+    expect(spawned).toEqual(['tests/cmbx']);
+  });
+
   it('does not redispatch after the agent flips status to closed (Path B handoff)', async () => {
     // Stage 1 protocol: agent flips active → closed. Eligibility predicate
     // drops it. Loop pauses. Even if a previous worker session is gone,

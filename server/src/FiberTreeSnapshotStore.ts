@@ -170,6 +170,32 @@ export class FiberTreeSnapshotStore {
   getAllSnapshots(): FiberTreeSnapshot[] {
     return [...this.snapshots.values()];
   }
+
+  /**
+   * Stage 7 — return the originIds of currently-stale snapshots that
+   * contain `fiberId`. Empty when no stale origin owns the fiber.
+   *
+   * Shuttle's dispatcher consults this to suspend dispatch into fibers
+   * whose canonical writer (a remote agent) has gone silent. The check
+   * is conservative: if *any* stale snapshot lists the fiber, dispatch
+   * is suspended — the agent might be racing with a worker on the same
+   * file, and we'd rather pause than risk a write conflict. When the
+   * agent reconnects, snapshots flip back to fresh (via `applyDelta` or
+   * `markFresh`) and dispatch resumes on the next tick.
+   *
+   * Local-only fibers (never appearing in any remote snapshot) always
+   * return []. Fibers visible in BOTH a fresh and a stale snapshot still
+   * trip the gate — being authoritatively-edited-elsewhere matters more
+   * than a parallel fresh source.
+   */
+  getStaleOriginsForFiber(fiberId: string): string[] {
+    const stale: string[] = [];
+    for (const snap of this.snapshots.values()) {
+      if (snap.status !== 'stale') continue;
+      if (snap.byId.has(fiberId)) stale.push(snap.originId);
+    }
+    return stale;
+  }
 }
 
 // ============================================================================

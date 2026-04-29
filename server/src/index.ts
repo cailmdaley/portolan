@@ -583,12 +583,20 @@ function pinnedLocalFeltHosts(): string[] {
 const shuttleHosts = pinnedLocalFeltHosts();
 const shuttle = (process.env.SHUTTLE_DISABLED === '1' || process.env.VITEST)
   ? null
-  : new Shuttle(defaultShuttleConfig({
-      feltHosts: shuttleHosts.length > 0 ? shuttleHosts : undefined,
-      queuePrefixes: process.env.SHUTTLE_QUEUE_PREFIXES
-        ? process.env.SHUTTLE_QUEUE_PREFIXES.split(',').map(s => s.trim()).filter(Boolean)
-        : undefined,
-    }));
+  : new Shuttle({
+      ...defaultShuttleConfig({
+        feltHosts: shuttleHosts.length > 0 ? shuttleHosts : undefined,
+        queuePrefixes: process.env.SHUTTLE_QUEUE_PREFIXES
+          ? process.env.SHUTTLE_QUEUE_PREFIXES.split(',').map(s => s.trim()).filter(Boolean)
+          : undefined,
+      }),
+      // Stage 7 — suspend dispatch into fibers whose remote-origin
+      // writer (a portolan-agent) is currently disconnected. The check
+      // is a method call into the same FiberTreeSnapshotStore that
+      // backs the kanban's remote-origin reads, so dispatch suspension
+      // and the kanban's "waiting on <hostname>" badge stay aligned.
+      staleOriginsForFiber: (id) => fiberTreeSnapshotStore.getStaleOriginsForFiber(id),
+    });
 if (shuttle) {
   shuttle.start();
   const scope = shuttleHosts.length > 0
