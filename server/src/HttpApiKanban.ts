@@ -68,12 +68,39 @@ export interface KanbanColumns {
   tempered: KanbanCard[];
 }
 
+/**
+ * Per-origin freshness signal — drives the "waiting on <hostname>" badge
+ * on remote cards and Shuttle dispatch suspension. Stage 3a populates the
+ * map server-side; Stage 3b will consume it in the kanban frontend.
+ *
+ * Local origin is always 'fresh' (the local filesystem is the live source).
+ * Remote origins are 'fresh' while their portolan-agent is connected and
+ * pushing; flip to 'stale' on agent disconnect with `staleSince` set to
+ * the disconnection timestamp.
+ */
+export interface KanbanOriginStaleness {
+  status: 'fresh' | 'stale';
+  /** Hostname for human-readable badging (e.g. "waiting on cineca"). */
+  hostname?: string;
+  /** ISO timestamp; only set when status='stale'. */
+  staleSince?: string;
+}
+
 export interface KanbanResponse {
   feltHost: string;
   columns: KanbanColumns;
   totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number };
   /** Total tempered count *before* slicing — UI shows recent N but we surface the full count. */
   temperedTotal: number;
+  /**
+   * Per-origin freshness, keyed by `originId`. Always includes `local`
+   * (always fresh) plus an entry for every remote origin that has a
+   * snapshot in the store, regardless of whether it currently
+   * contributes any cards in the response. The frontend uses this to
+   * render the "waiting on <hostname>" badge per card and (Stage 3b)
+   * to disable drag targets for stale-origin cards.
+   */
+  staleness: Record<string, KanbanOriginStaleness>;
   generatedAt: number;
 }
 
@@ -334,6 +361,7 @@ export class HttpApiKanban {
           tempered: temperedSliced.length,
         },
         temperedTotal,
+        staleness: this.buildStaleness(),
         generatedAt: Date.now(),
       } satisfies KanbanResponse);
     } catch (err: unknown) {
@@ -504,8 +532,36 @@ export class HttpApiKanban {
       columns: { drafts: [], inFlight: [], awaitingReview: [], tempered: [] },
       totals: { drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 },
       temperedTotal: 0,
+      staleness: this.buildStaleness(),
       generatedAt: Date.now(),
     };
+  }
+
+  /**
+   * Build the per-origin freshness map from the snapshot provider.
+   * Local is always present and always 'fresh'. Each remote origin with
+   * a snapshot contributes an entry — fresh while the agent is connected
+   * (status='fresh' set by upsertFullDump / applyDelta) and stale after
+   * disconnect (status='stale', staleSince set by markStale, snapshot
+   * preserved as last-known-good).
+   *
+   * Stage 3b's frontend reads this to render "waiting on <hostname>"
+   * badges and disable drag for stale-origin cards.
+   */
+  private buildStaleness(): Record<string, KanbanOriginStaleness> {
+    const out: Record<string, KanbanOriginStaleness> = {
+      local: { status: 'fresh' },
+    };
+    if (!this.remoteSnapshotsProvider) return out;
+    for (const snap of this.remoteSnapshotsProvider()) {
+      const hostname = snap.originId.replace(/^remote-/, '');
+      out[snap.originId] = {
+        status: snap.status,
+        hostname,
+        staleSince: snap.staleSince,
+      };
+    }
+    return out;
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {

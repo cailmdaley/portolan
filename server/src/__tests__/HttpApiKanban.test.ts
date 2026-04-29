@@ -702,6 +702,39 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       await expect(api.applyTransition('cmbx', 'awaitingReview')).rejects.toThrow(/Stage 4/);
     });
 
+    it('response.staleness reports per-origin status with hostname', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
+      ]);
+      store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
+        { path: 'pure_eb/pure_eb.md', content: fiberContent('pure_eb') },
+      ]);
+      // Mark candide stale to verify the staleSince flows through.
+      store.markStale('remote-candide', '2026-04-29T00:00:00Z');
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        listSessions: () => [],
+      });
+      const res = await callKanban(api);
+      expect(res.body.staleness).toEqual({
+        local: { status: 'fresh' },
+        'remote-cineca': { status: 'fresh', hostname: 'cineca' },
+        'remote-candide': {
+          status: 'stale',
+          hostname: 'candide',
+          staleSince: '2026-04-29T00:00:00Z',
+        },
+      });
+    });
+
+    it('staleness includes local even when no remote snapshots', async () => {
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+      const res = await callKanban(api);
+      expect(res.body.staleness).toEqual({ local: { status: 'fresh' } });
+    });
+
     it('non-constitution remote fibers are excluded', async () => {
       const store = new FiberTreeSnapshotStore();
       // Strip the constitution tag from the content.
