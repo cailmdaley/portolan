@@ -45,6 +45,14 @@ interface OriginLookup {
 interface PersistenceLookup {
   getCityById(cityId: string): { sshHost?: string } | null;
   findSshHostForPath(path: string): string | undefined;
+  /**
+   * Pinned cities, used by the global kanban view to aggregate constitution
+   * fibers across every project the user has put on the map — not just the
+   * loom monorepo. CityPersistence already exposes this; the interface
+   * surfaces it here so the kanban resolver can read pins without
+   * reaching past the lookup.
+   */
+  getCities(): Array<{ id: string; path: string; originId: string }>;
 }
 
 interface SessionLookup {
@@ -389,7 +397,14 @@ export class HttpApi {
    * based on optional `?cityId=` scoping. Returns null after writing a 4xx
    * response if the scope can't be honored.
    *
-   *   - No `cityId` query param → loom-wide default (the shared instance).
+   *   - No `cityId` query param → *global view*, aggregating over every
+   *     pinned local-origin city from `~/.portolan/cities.json`. Constructed
+   *     fresh per request so newly-pinned cities show up immediately;
+   *     `HttpApiKanban` dedupes by realpath, so a fiber that appears in both
+   *     loom and a project city (because the project's `.felt/` is symlinked
+   *     into loom) renders once. Falls back to the legacy loom-only shared
+   *     instance if no cities are pinned (covers first-run before any pins
+   *     and tests).
    *   - `cityId` resolves to a local-origin city → per-request HttpApiKanban
    *     scoped to that city's path. New instance per request is fine; the
    *     class is stateless beyond construction options and reads on demand.
@@ -401,7 +416,14 @@ export class HttpApi {
    */
   private resolveKanbanApi(url: URL, res: ServerResponse): HttpApiKanban | null {
     const cityId = url.searchParams.get('cityId');
-    if (!cityId) return this.kanbanApi;
+    if (!cityId) {
+      const localPins = this.persistenceLookup
+        .getCities()
+        .filter(c => c.originId === 'local')
+        .map(c => c.path);
+      if (localPins.length === 0) return this.kanbanApi;
+      return new HttpApiKanban({ feltHosts: localPins });
+    }
     const city = this.cityLookup.getCityById(cityId);
     if (!city) {
       this.sendJsonError(res, 400, `unknown cityId: ${cityId}`);

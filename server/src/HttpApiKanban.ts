@@ -20,7 +20,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { URL } from 'url';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { getAllFibers, type Fiber } from './FiberReader.js';
@@ -72,6 +72,24 @@ export interface KanbanResponse {
 interface HttpApiKanbanOptions {
   /** Felt host (parent of `.felt/`). Defaults to ~/loom. */
   feltHost?: string;
+  /**
+   * Optional multi-host aggregation. When provided non-empty, the kanban
+   * collects constitution fibers from each host (calling `getAllFibers`
+   * per host), and dedupes by `realpath` of each fiber's md file —
+   * ensuring that fibers shared across cities (e.g. a project whose
+   * `.felt/` is symlinked into loom's monorepo) appear once. First-seen
+   * wins, in host iteration order.
+   *
+   * The kanban's *global* default uses this to span every pinned local
+   * city — fibers that don't live under loom (e.g. a wedding project on
+   * iCloud with its own private `.felt/`) become first-class. The
+   * `?cityId=`-scoped path leaves this undefined and uses `feltHost`
+   * (Stage 1 behavior, single-host).
+   *
+   * `applyTransition` searches across the same host list to locate the
+   * fiber's file before writing.
+   */
+  feltHosts?: string[];
   /** Max tempered cards to return. Defaults to 30. */
   temperedLimit?: number;
   /** Override clock for transitions (testing). */
@@ -112,28 +130,87 @@ export interface KanbanTransitionRequest {
 
 export class HttpApiKanban {
   private readonly feltHost: string;
+  private readonly feltHosts: string[] | undefined;
   private readonly temperedLimit: number;
   private readonly now: () => Date;
   private readonly listSessions: () => string[];
 
   constructor(opts: HttpApiKanbanOptions = {}) {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
+    this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
   }
 
+  /** Hosts to walk for /kanban reads + /kanban/transition writes. */
+  private resolveHosts(): string[] {
+    return this.feltHosts ?? [this.feltHost];
+  }
+
+  /** Path to the fiber's md inside a given felt host. */
+  private fiberPath(host: string, f: Fiber): string {
+    const segments = f.id.split('/');
+    const basename = segments[segments.length - 1];
+    return f.isRoot
+      ? join(host, '.felt', `${basename}.md`)
+      : join(host, '.felt', f.id, `${basename}.md`);
+  }
+
+  /**
+   * Walk every configured host and return constitution-tag-filtering's input:
+   * a flat list of `{fiber, host}` pairs deduped by `realpath` of the fiber's
+   * md file. First host that surfaces a given file wins; the `host` field
+   * threads through `toCard` so the per-card `path` always resolves against
+   * the host that actually contributed it (not, e.g., a different host that
+   * happens to share the fiber's id).
+   *
+   * `byId` (used for dependsOn satisfaction) is built off the same merged
+   * set, so cross-host dependency references resolve correctly when the
+   * dependee is reachable through *any* configured host.
+   */
+  private async collectFibers(): Promise<{
+    merged: Array<{ fiber: Fiber; host: string }>;
+    byId: Map<string, Fiber>;
+  }> {
+    const seen = new Map<string, { fiber: Fiber; host: string }>();
+    for (const host of this.resolveHosts()) {
+      if (!existsSync(join(host, '.felt'))) continue;
+      let fibers: Fiber[];
+      try {
+        fibers = await getAllFibers(host);
+      } catch (err) {
+        console.error(`[Kanban] getAllFibers failed for host ${host}:`, err);
+        continue;
+      }
+      for (const f of fibers) {
+        const path = this.fiberPath(host, f);
+        let canonical: string;
+        try {
+          canonical = realpathSync(path);
+        } catch {
+          continue; // fiber file moved out from under us; skip rather than crash
+        }
+        if (!seen.has(canonical)) seen.set(canonical, { fiber: f, host });
+      }
+    }
+    const merged = [...seen.values()];
+    const byId = new Map(merged.map(({ fiber }) => [fiber.id, fiber]));
+    return { merged, byId };
+  }
+
   /** GET /kanban → KanbanResponse. */
   async handleKanban(_url: URL, res: ServerResponse): Promise<void> {
     try {
-      if (!existsSync(join(this.feltHost, '.felt'))) {
+      const { merged, byId } = await this.collectFibers();
+      if (merged.length === 0) {
         this.json(res, 200, this.emptyResponse());
         return;
       }
 
-      const all = await getAllFibers(this.feltHost);
-      const byId = new Map(all.map(f => [f.id, f]));
-      const constitutional = all.filter(f => f.tags?.includes('constitution'));
+      const constitutional = merged.filter(({ fiber }) =>
+        fiber.tags?.includes('constitution'),
+      );
 
       // Probe live shuttle workers — drives the running-worker indicator on
       // in-flight cards, and bumps them to the top of the column.
@@ -144,8 +221,8 @@ export class HttpApiKanban {
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
 
-      for (const f of constitutional) {
-        const card = this.toCard(f, byId, liveSessions);
+      for (const { fiber: f, host } of constitutional) {
+        const card = this.toCard(f, host, byId, liveSessions);
         const isDraft = f.tags?.includes('draft') ?? false;
         if (f.status !== 'closed') {
           if (isDraft) drafts.push(card);
@@ -253,23 +330,33 @@ export class HttpApiKanban {
    * Resolve a fiber by id, mutate its frontmatter on disk, and return the
    * refreshed card. Throws if the fiber is missing or not constitution-tagged
    * (the kanban refuses to mutate fibers it wouldn't display, as a guardrail).
+   *
+   * Multi-host correctness: must use the same realpath dedupe as
+   * `collectFibers`. Fiber ids can collide across hosts — e.g.
+   * `vellum-reader/map` exists *both* in lightcone-myst-coherence's
+   * `.felt/` (the version the kanban displays) *and* under
+   * `loom/.felt/ai-futures/portolan/vellum-reader/map/` (an unrelated
+   * stale closed fiber, surfaced as `vellum-reader/map` to the
+   * portolan-as-city view via that city's `.felt/` symlink).
+   *
+   * Iterating `resolveHosts()` in order and matching first-by-id picks the
+   * portolan-side stale fiber and writes the `draft` tag there — silently
+   * mutating a different file than the one the kanban rendered. The read
+   * side already deduplicates by `realpathSync(fiberPath(host, f))`, so we
+   * route the transition through the same merged set: the host that
+   * contributed this fiber's *displayed* card is the host we write to.
    */
   async applyTransition(fiberId: string, target: KanbanTarget): Promise<KanbanCard> {
-    const all = await getAllFibers(this.feltHost);
-    const fiber = all.find(f => f.id === fiberId);
-    if (!fiber) throw new Error(`fiber not found: ${fiberId}`);
+    const { merged } = await this.collectFibers();
+    const entry = merged.find(({ fiber }) => fiber.id === fiberId);
+    if (!entry) throw new Error(`fiber not found: ${fiberId}`);
+    const { fiber, host } = entry;
     if (!fiber.tags?.includes('constitution')) {
       throw new Error(
         `kanban only mutates constitution-tagged fibers; ${fiberId} is tagged ${(fiber.tags ?? []).join(', ') || '(none)'}`,
       );
     }
-
-    const segments = fiberId.split('/');
-    const basename = segments[segments.length - 1];
-    const path = fiber.isRoot
-      ? join(this.feltHost, '.felt', `${basename}.md`)
-      : join(this.feltHost, '.felt', fiberId, `${basename}.md`);
-
+    const path = this.fiberPath(host, fiber);
     if (!existsSync(path)) {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
@@ -280,34 +367,33 @@ export class HttpApiKanban {
       writeFileSync(path, updated, 'utf-8');
     }
 
-    // Re-read to confirm and produce the canonical card.
-    const after = await getAllFibers(this.feltHost);
+    // Re-read this host so the returned card reflects the new state.
+    const after = await getAllFibers(host);
     const refreshedById = new Map(after.map(f => [f.id, f]));
     const refreshed = refreshedById.get(fiberId);
     if (!refreshed) throw new Error(`fiber disappeared after write: ${fiberId}`);
-    return this.toCard(refreshed, refreshedById);
+    return this.toCard(refreshed, host, refreshedById);
   }
 
   // ---------------------------------------------------------------------------
 
-  private toCard(f: Fiber, byId: Map<string, Fiber>, liveSessions: Set<string> = new Set()): KanbanCard {
+  private toCard(
+    f: Fiber,
+    host: string,
+    byId: Map<string, Fiber>,
+    liveSessions: Set<string> = new Set(),
+  ): KanbanCard {
     const dependsOn = f.dependsOn ?? [];
     const dependsOnSatisfied =
       dependsOn.length === 0 ||
       dependsOn.every(d => byId.get(d)?.tempered === true);
 
-    // Path on disk: the fiber id is a slash-joined slug under <feltHost>/.felt/.
-    // Per FiberReader, a directory-based fiber lives at <id>/<basename>.md;
-    // a top-level entry-point fiber lives bare at <id>.md. We don't have the
-    // shape on the parsed Fiber, so fall back to the directory shape (the
-    // common case for nested fibers) and let the frontend handle either by
-    // probing if needed. For top-level (`isRoot:true`) fibers we emit the
-    // bare `.md` path.
-    const segments = f.id.split('/');
-    const basename = segments[segments.length - 1];
-    const path = f.isRoot
-      ? join(this.feltHost, '.felt', `${basename}.md`)
-      : join(this.feltHost, '.felt', f.id, `${basename}.md`);
+    // The fiber's md file lives under the *contributing* host: a fiber that
+    // appeared via loom carries a loom path; a fiber that lives in a
+    // standalone-city `.felt/` (no loom symlink) carries that city's path.
+    // Pre-multi-host code computed this off `this.feltHost` and silently
+    // returned a wrong path for the latter case.
+    const path = this.fiberPath(host, f);
 
     const expectedSession = shuttleSessionName(f.id);
     const runningWorker = liveSessions.has(expectedSession) ? expectedSession : undefined;
