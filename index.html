@@ -5083,6 +5083,23 @@
       .vellum-workspace-modal-container .thumb-index {
         padding-top: 10px;
       }
+      /* Vellum's lightcone-linear theme suppresses the thumb-index for clean
+         prose reading (vellum.css `:root[data-theme="lightcone-linear"]
+         .thumb-index { display: none }`). Inside portolan's embed the
+         thumb-index is the only way to flip between Narrative / Kanban /
+         Delta — without it the user can enter Kanban (via launch button or
+         hotkey k) with no path back to the prose. Re-enable visibility for
+         the embedded modal regardless of theme; the user's theme preference
+         still drives margin chrome and prose width on Narrative, just not
+         the mode-switching tabs. See ai-futures/portolan/vellum-reader/
+         constitution-vellum-kanban §"Hotkey k semantics". */
+      :root[data-theme="lightcone-linear"] .vellum-workspace-modal-container .thumb-index {
+        /* `!important` matches vellum.css's theme rule, which uses
+           `display: none !important` to win over scoped CSS. The override
+           is intentional: in the embed, the user's theme preference
+           shouldn't gate access to the mode tabs. */
+        display: block !important;
+      }
       /* Active state for the close button (overrides the inline mouseenter
          styles when held down). Also lightens the affordance for keyboard
          focus so tab-navigators see it. */

@@ -40,6 +40,7 @@ import {
   type AnnotationBulkAction,
   type FiberContent,
   type GraphNode,
+  type WorkspaceMountApi,
 } from 'vellum'
 import 'vellum/css'
 import { KanbanModal } from '../ui/KanbanModal'
@@ -71,9 +72,14 @@ const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostn
 function KanbanHost({
   cityId,
   cityName,
+  onOpenWorker,
 }: {
   cityId?: string
   cityName?: string
+  /** Click-handler for a card's running-worker indicator. Threaded down from
+   *  `openVellumWorkspaceModal({ onOpenWorker })` — main.ts owns the camera
+   *  + kitty-focus state, so this side just forwards the tmux session name. */
+  onOpenWorker?: (tmuxSessionName: string) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
@@ -93,12 +99,11 @@ function KanbanHost({
         setMode('narrative')
         navigate(`/${card.id}`)
       },
-      // onOpenWorker is intentionally unwired in embedded mode — the worker
-      // focus path needs portolan map state (camera, zoneRenderer, mapActions)
-      // that lives in main.ts, not in the vellum tree. Stage 6 will surface
-      // it via a host-callback prop or a global event; until then the running-
-      // worker indicator on cards is informational, not interactive, in
-      // embedded mode.
+      // Forward worker-focus to the host (main.ts) — the camera, zoneRenderer
+      // and kitty integration live outside the vellum tree, so the host
+      // owns the actual focus implementation. Wired through Stage 6's
+      // openVellumWorkspaceModal({onOpenWorker}) plumbing.
+      onOpenWorker,
     })
     const cityScope =
       cityId !== undefined
@@ -108,7 +113,7 @@ function KanbanHost({
     return () => {
       kanban.unmountEmbedded()
     }
-  }, [cityId, cityName, navigate, setMode])
+  }, [cityId, cityName, navigate, setMode, onOpenWorker])
 
   // Position fixed so the host covers the modal viewport regardless of
   // vellum-page's natural-flow height. z-index: 100 sits below
@@ -730,8 +735,22 @@ export function mountVellumFileSurface(
   }
 }
 
+/**
+ * Public mode names used by portolan callers. Translates to vellum's internal
+ * `Mode` ('workspace' instead of 'kanban') at the boundary in
+ * `openVellumWorkspaceModal`.
+ */
+export type VellumModalMode = 'narrative' | 'kanban' | 'delta'
+
 export interface VellumModalHandle {
   close(): void
+  /** Flip to a different tab without re-opening the modal. Used by the global
+   *  `k` hotkey to land an open vellum on Kanban in place. No-op until the
+   *  React tree has mounted (a brief race on first render); callers can rely
+   *  on the next call settling once mount completes. */
+  setMode(mode: VellumModalMode): void
+  /** Read the current mode. Returns `'narrative'` until first mount. */
+  getMode(): VellumModalMode
 }
 
 // openVellumFileModal retired 2026-04-25 — files now route through
@@ -766,7 +785,13 @@ export interface OpenWorkspaceModalOptions {
    *  sees the kanban grid immediately — used by the global launch button and
    *  the city HUD's kanban affordance once Stage 6 retargets them.
    *  `'delta'` for completeness. Ignored in file mode (locked to narrative). */
-  initialMode?: 'narrative' | 'kanban' | 'delta'
+  initialMode?: VellumModalMode
+  /** Click-handler for a card's running-worker indicator inside the embedded
+   *  kanban. The host (main.ts) owns the map camera, zone renderer and kitty
+   *  focus — the kanban just forwards the tmux session name when the user
+   *  clicks the indicator. Optional; if omitted the indicator is informational
+   *  only. */
+  onOpenWorker?: (tmuxSessionName: string) => void
 }
 
 /**
@@ -937,12 +962,20 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   // public-facing initialMode says 'kanban' (honest naming for portolan
   // users); translate to vellum's internal mode id here. 'delta' and
   // 'narrative' pass through unchanged.
-  const initialVellumMode =
-    opts.initialMode === 'kanban'
-      ? ('workspace' as const)
-      : opts.initialMode === 'delta'
-      ? ('delta' as const)
-      : ('narrative' as const)
+  const internalFromPublic = (m: VellumModalMode) =>
+    m === 'kanban' ? ('workspace' as const) : (m as 'narrative' | 'delta')
+  const publicFromInternal = (m: 'narrative' | 'workspace' | 'delta'): VellumModalMode =>
+    m === 'workspace' ? 'kanban' : m
+  const initialVellumMode = internalFromPublic(opts.initialMode ?? 'narrative')
+
+  // Bridge captured from <WorkspaceMount apiRef={…}/> on first React commit.
+  // Stays null while file mode is mounted (no apiRef passed there, since
+  // Workspace + Delta are disabled). setMode/getMode degrade gracefully when
+  // null so the global `k` hotkey doesn't blow up between mounts.
+  let api: WorkspaceMountApi | null = null
+  const captureApi = (next: WorkspaceMountApi | null) => {
+    api = next
+  }
 
   // The kanban slot is constructed once per modal open and threaded through
   // every fiber-mode render so the user can flip to the Kanban tab at any
@@ -954,6 +987,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     <KanbanHost
       cityId={opts.cityId}
       cityName={opts.cityName}
+      onOpenWorker={opts.onOpenWorker}
     />
   )
 
@@ -969,6 +1003,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
             workspaceSlot={kanbanSlot}
             workspaceLabel="Kanban"
             workspaceLetter="K"
+            apiRef={captureApi}
           />
         </AnnotationActionsProvider>
       </AdapterProvider>,
@@ -1017,7 +1052,15 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       .catch(() => mountWith(''))
   }
 
-  return { close }
+  return {
+    close,
+    setMode: (mode) => api?.setMode(internalFromPublic(mode)),
+    // Default to 'narrative' before first mount or in file mode (no apiRef
+    // is wired there — the kanban tab is suppressed). Reads via the api so
+    // post-mount callers see the latest committed mode.
+    getMode: () =>
+      api ? publicFromInternal(api.getMode()) : (opts.initialMode ?? 'narrative'),
+  }
 }
 
 async function resolveCityRootSlug(cityId: string | undefined): Promise<string | null> {

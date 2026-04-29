@@ -18,6 +18,7 @@ import '@wterm/dom/css'
 // Hoisted: lazy import the vellum mount module so DomPinLayer (built below)
 // can close over it for inline markdown + fiber rendering.
 const vellumMountPromise = import('./vellum/mount')
+import type { VellumModalHandle } from './vellum/mount'
 import { listPins, putPin, pinFile, deletePin, type Pin, type PinKind, type PinSource } from './state/layoutClient'
 import { PinDragController } from './PinDragController'
 import { FileDropController } from './FileDropController'
@@ -33,7 +34,6 @@ import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
 import { KanbanLaunchButton } from './ui/KanbanLaunchButton'
-import { KanbanModal } from './ui/KanbanModal'
 import { RecentWorkerBar } from './ui/RecentWorkerBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
@@ -177,7 +177,7 @@ const domPinLayer = new DomPinLayer({
     if (pin?.kind === 'fiber') {
       items.push({
         label: 'Open Fiber',
-        action: () => openCityWorkspace(city, slug),
+        action: () => openCityWorkspace(city, { initialSlug: slug }),
       })
     } else if (pin?.kind === 'terminal' && pin.source?.sessionId) {
       items.push({
@@ -234,7 +234,7 @@ const domPinLayer = new DomPinLayer({
     const pin = domPinLayer.getPin(slug)
     if (!pin) return
     if (pin.kind === 'fiber') {
-      openCityWorkspace(city, slug)
+      openCityWorkspace(city, { initialSlug: slug })
     } else if (pin.source?.path) {
       openFile({
         path: pin.source.path,
@@ -812,7 +812,7 @@ function openFile(args: OpenFileArgs): void {
 // against the PortolanAdapter. Replaces TapestryView on `t` / deep-press; see
 // tapestry-dissolves. Single-instance: close the previous handle before opening
 // a new city.
-let activeWorkspaceHandle: { close(): void } | null = null
+let activeWorkspaceHandle: VellumModalHandle | null = null
 // Bumped every openCityWorkspace call. The async vellumMountPromise.then()
 // callback only mounts if the token is still current — without this guard,
 // rapid synchronous calls (mashing `t`, repeated hashchange handlers, …)
@@ -841,7 +841,15 @@ async function resolveFiberCity(slug: string, cities: City[]): Promise<City | nu
   }
 }
 
-function openCityWorkspace(city: City, initialSlug?: string): void {
+interface OpenCityWorkspaceOpts {
+  initialSlug?: string
+  /** Tab to land on at first paint. Defaults to `'narrative'`. The kanban
+   *  affordance on the city HUD passes `'kanban'` (Stage 6 retarget — see
+   *  vellum-reader/constitution-vellum-kanban). */
+  initialMode?: 'narrative' | 'kanban' | 'delta'
+}
+
+function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
   const myToken = ++workspaceOpenToken
@@ -853,15 +861,62 @@ function openCityWorkspace(city: City, initialSlug?: string): void {
     const handle = openVellumWorkspaceModal({
       cityId: city.id,
       originId: city.originId,
-      initialSlug,
+      initialSlug: opts.initialSlug,
+      initialMode: opts.initialMode,
       // Hand the city name through so vellum's IndexView can label its
       // cartouche correctly. Without this, the eyebrow above "Index"
       // collapses to nothing — honest, but less informative than naming
       // the city we're reading. See vellum's CollectionContext.
       cityName: city.name,
+      // Embedded kanban's running-worker indicator → camera focus + kitty tab
+      // pivot. Single shared helper so the standalone-modal vs vellum-embedded
+      // paths don't drift in their session-resolve logic.
+      onOpenWorker: focusWorkerByTmuxSession,
     })
     activeWorkspaceHandle = handle
   })
+}
+
+/**
+ * Open the global kanban — vellum mounted with `scope=global` (no cityId)
+ * and the Kanban tab active at first paint. Stage 6 entry point: replaces
+ * the standalone `kanbanModal.show()` from the launch button + `k` hotkey.
+ *
+ * If a vellum modal is already up, flip its mode to Kanban in place rather
+ * than tearing down and remounting — the constitution's "Hotkey k semantics"
+ * specifically asks for in-place flip on any open vellum.
+ */
+function openGlobalKanban(): void {
+  if (activeWorkspaceHandle) {
+    activeWorkspaceHandle.setMode('kanban')
+    return
+  }
+  const myToken = ++workspaceOpenToken
+  void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
+    if (myToken !== workspaceOpenToken) return
+    activeWorkspaceHandle = openVellumWorkspaceModal({
+      initialMode: 'kanban',
+      onOpenWorker: focusWorkerByTmuxSession,
+    })
+  })
+}
+
+/**
+ * Resolve a tmux session name to a portolan session and pivot the camera +
+ * focus its kitty tab. Shared between the standalone KanbanModal and the
+ * vellum-embedded KanbanHost so kanban running-worker behaviour is identical
+ * across surfaces.
+ */
+function focusWorkerByTmuxSession(tmuxSessionName: string): void {
+  const session = sessions.find(s => s.tmuxSession === tmuxSessionName)
+  if (!session) {
+    console.warn('[Kanban] no session tracked for tmux name:', tmuxSessionName)
+    return
+  }
+  const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
+  if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
+  else if (session.hex) camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
+  mapActions?.focusKittyTab(session.id)
 }
 
 // URL-param auto-open retained for deep-linking and debugging.
@@ -938,42 +993,21 @@ const globalSearchPalette = new GlobalSearchPalette({
 })
 
 // Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
-// Hotkey `k` opens it; the launch button at top-left mirrors the action and
-// surfaces an awaiting-review badge. Click-on-card opens the fiber's md in
-// vellum via the existing openFile() flow (originId 'local', no cityId —
-// the markdown lives under loom which isn't always tracked as a city).
-const kanbanModal = new KanbanModal({
-  onOpenFiber: (card) => {
-    kanbanModal.hide()
-    openFile({ path: card.path, originId: 'local' })
-  },
-  // Click the running-worker indicator → focus the worker's tmux session in kitty.
-  // The kanban knows the tmux session name (e.g. shuttle-<fiber-id>); we look up
-  // portolan's session by tmuxSession, then focus by session id. If portolan isn't
-  // tracking the session yet (rare race during dispatch), fall back to nothing —
-  // we don't want to open an unrelated tab.
-  //
-  // We do NOT hide the kanban here. Kitty owns its own window/tab, so focusing
-  // a worker is *additive* — the operator wants to glance at the worker without
-  // losing their place on the kanban (which they'll often want to keep working
-  // in: drag other cards, drill into another card's outcome). The camera focus
-  // is still set so closing the kanban later lands the map on the worker.
-  onOpenWorker: (tmuxSessionName) => {
-    const session = sessions.find(s => s.tmuxSession === tmuxSessionName)
-    if (!session) {
-      console.warn('[Kanban] no session tracked for tmux name:', tmuxSessionName)
-      return
-    }
-    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
-    if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
-    else if (session.hex) camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
-    mapActions?.focusKittyTab(session.id)
-  },
-})
+// Stage 6 retired the standalone full-viewport KanbanModal: every entry
+// point (launch button, hotkey `k`, city HUD's "Open kanban scoped to <city>"
+// button) now opens vellum-on-the-relevant-scope with the Kanban tab active
+// — see openGlobalKanban / openCityWorkspace + vellum-reader/constitution-
+// vellum-kanban §"Stage 6". The KanbanModal class still exists and is
+// instantiated per-mount inside vellum's workspace slot by KanbanHost
+// (mountEmbedded mode); the standalone (`mountMode: 'standalone'`) path is
+// wired to no callers in portolan and is queued for Stage-8 cleanup.
 
 const kanbanLaunchButton = new KanbanLaunchButton({
-  onOpen: () => kanbanModal.show(),
-  isModalOpen: () => kanbanModal.isVisible(),
+  onOpen: openGlobalKanban,
+  // Pause the awaiting-review badge poll while vellum is showing the kanban
+  // tab — the embedded grid maintains its own counts there. Vellum on
+  // narrative/delta still polls so the badge stays current.
+  isModalOpen: () => activeWorkspaceHandle?.getMode?.() === 'kanban',
 })
 
 const recentWorkerBar = new RecentWorkerBar({
@@ -997,15 +1031,15 @@ cityPanel.setOnViewPlaygrounds((city) => {
   playgroundViewer.show(city)
 })
 
-// Stage 1 of vellum-kanban constitution: opening the per-city kanban from
-// the HUD. Shows the standalone KanbanModal pre-scoped via `?cityId=`
-// (server enforces local-origin only — remote-origin scoping unlocks in
-// Stage 3). Stage 5 will retarget this to open vellum-on-this-city with
-// the Kanban tab active; same intent, different surface. See
-// ai-futures/portolan/vellum-reader/constitution-vellum-kanban.
+// City HUD's "Open kanban scoped to <city>" button. Stage 6 retargets it
+// from the standalone KanbanModal to vellum-on-this-city with the Kanban
+// tab active at first paint — same intent (pre-scoped kanban for this
+// city), now hosted inside vellum's chrome so the user can flip to
+// Narrative/Delta in place without re-opening anything. See
+// ai-futures/portolan/vellum-reader/constitution-vellum-kanban §"Stage 6".
 cityPanel.setOnViewKanban((city) => {
   cityPanel.hide()
-  kanbanModal.showForCity(city)
+  openCityWorkspace(city, { initialMode: 'kanban' })
 })
 
 // State
@@ -1117,12 +1151,12 @@ const stateSync = new FrontendStateSync({
       // vellum-dogfood/url-fragment-fiber-nav.
       cityPanel.hide()
       if (urlCity) {
-        openCityWorkspace(urlCity, urlFiberSlug)
+        openCityWorkspace(urlCity, { initialSlug: urlFiberSlug })
       } else {
         void resolveFiberCity(urlFiberSlug, cities).then((hit) => {
           if (hit) {
             handleCityClick(hit)
-            openCityWorkspace(hit, urlFiberSlug)
+            openCityWorkspace(hit, { initialSlug: urlFiberSlug })
           } else {
             // Comment above said "fall back to the targetCity's workspace
             // without the slug." The code passed the slug anyway, so vellum
@@ -1179,12 +1213,12 @@ window.addEventListener('hashchange', () => {
   if (urlFiberSlug) {
     cityPanel.hide()
     if (urlCity) {
-      openCityWorkspace(urlCity, urlFiberSlug)
+      openCityWorkspace(urlCity, { initialSlug: urlFiberSlug })
     } else {
       void resolveFiberCity(urlFiberSlug, cities).then((hit) => {
         if (hit) {
           handleCityClick(hit)
-          openCityWorkspace(hit, urlFiberSlug)
+          openCityWorkspace(hit, { initialSlug: urlFiberSlug })
         } else {
           console.warn('[hashchange] #fiber=', urlFiberSlug, 'not found in any local city')
         }
@@ -1306,13 +1340,25 @@ const onGlobalHotkeys = (event: KeyboardEvent): void => {
 
   // Kanban — global view of constitution-tagged fibers. Independent of any
   // city/HUD focus; works at any time the global hotkey gate above passes.
+  //
+  // Stage 6 semantics (constitution §"Hotkey k semantics"):
+  //   - vellum closed   → open vellum-on-global with Kanban tab active.
+  //   - vellum open, !kanban → flip to Kanban tab in place.
+  //   - vellum open, on kanban → close vellum (mirrors the legacy
+  //     standalone-modal toggle so a second `k` still dismisses).
   if (event.key === 'k') {
     event.preventDefault()
-    if (kanbanModal.isVisible()) {
-      kanbanModal.hide()
+    const handle = activeWorkspaceHandle
+    if (!handle) {
+      openGlobalKanban()
+      return
+    }
+    if (handle.getMode() === 'kanban') {
+      handle.close()
+      activeWorkspaceHandle = null
       kanbanLaunchButton.refreshSoon()
     } else {
-      kanbanModal.show()
+      handle.setMode('kanban')
     }
   }
 }
