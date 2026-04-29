@@ -38,12 +38,11 @@ fi
 # Refuse to dispatch closed fibers — Shuttle's eligibility predicate
 # already enforces this, but defence-in-depth is cheap.
 #
-# Anchor to the literal `Status:` header line in `felt show` output.
-# A loose `status:.*closed` match false-positives on prose in `outcome:`
-# that mentions a prior status transition (e.g. "flipped status from
-# `closed` → `active`"), since `felt show` wraps the outcome onto one
-# logical line.
-if (cd "$FELT_DIR" && $FELT show "$FIBER_ID" 2>/dev/null | grep -qE '^Status:[[:space:]]+closed[[:space:]]*$'); then
+# Read the raw frontmatter status field, not pretty-printed `felt show`
+# output: `--field` returns the unwrapped value (or empty for missing),
+# immune to prose echoing the keyword. Replaces the line-anchored grep
+# from gotcha-shuttle-worker-status-grep.
+if [[ "$(cd "$FELT_DIR" && $FELT show "$FIBER_ID" --field status 2>/dev/null)" == "closed" ]]; then
     echo "Fiber $FIBER_ID is closed; refusing to dispatch."
     exit 1
 fi
