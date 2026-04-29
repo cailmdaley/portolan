@@ -24,7 +24,7 @@ import WebSocket from 'ws';
 import { exec } from 'child_process';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync, watch } from 'fs';
+import { existsSync, readFileSync, readdirSync, watch, writeFileSync } from 'fs';
 import { resolve, join, relative, sep } from 'path';
 
 const execAsync = promisify(exec);
@@ -648,6 +648,221 @@ function stopFiberTreeWatcher() {
 }
 
 // ============================================================================
+// Kanban transition (Stage 4 of vellum-kanban constitution)
+// ============================================================================
+//
+// The server ships `kanban-transition` over the agent WebSocket via the
+// AgentRequestCoordinator's correlation-ID layer. The agent reads the fiber
+// file, applies the same frontmatter mutation the server applies for local
+// origins, writes back, and replies with `kanban-transition-result`. The
+// reply carries the new file content so the server applies a snapshot delta
+// eagerly — fs.watch will fire its own delta moments later, but we don't
+// want the HTTP caller to race with it.
+//
+// `applyTargetToFrontmatter` and `mutateTagsInPlace` are inlined here for the
+// same reason `extractSummary`/`extractActivityDetails` are: agent.js ships
+// as a single scp'd file, so a separate import would mean shipping two
+// files. Per the locked decision in [[constitution-vellum-kanban]] §Scope,
+// the helper bundles into agent.js; the trade-off is manual sync.
+//
+// SOURCE OF TRUTH: server/src/HttpApiKanban.ts
+//   `applyTargetToFrontmatter`, `mutateTagsInPlace`, `escapeRegex`
+// A vitest parity suite (`__tests__/agent-frontmatter-parity.test.ts`)
+// imports both copies and asserts byte-equality across a corpus, so drift
+// fails CI rather than the kanban round-trip.
+
+const KANBAN_VALID_TARGETS = new Set([
+    'drafts',
+    'inFlight',
+    'queued',
+    'active',
+    'awaitingReview',
+    'tempered',
+]);
+
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function mutateTagsInPlace(fmLines, opts) {
+    const add = opts.add ?? [];
+    const remove = opts.remove ?? [];
+    if (add.length === 0 && remove.length === 0) return;
+
+    let blockStart = -1;
+    let blockEnd = -1;
+    let existing = [];
+
+    for (let i = 0; i < fmLines.length; i++) {
+        if (/^tags:\s*$/.test(fmLines[i])) {
+            blockStart = i;
+            let j = i + 1;
+            while (j < fmLines.length && /^[ \t]+- /.test(fmLines[j])) {
+                const m = fmLines[j].match(/^[ \t]+- (.+)$/);
+                if (m) existing.push(m[1].trim().replace(/^["']|["']$/g, '').trim());
+                j++;
+            }
+            blockEnd = j;
+            break;
+        }
+        const inline = fmLines[i].match(/^tags:\s*\[(.*)\]\s*$/);
+        if (inline) {
+            blockStart = i;
+            blockEnd = i + 1;
+            existing = inline[1]
+                .split(',')
+                .map(s => s.trim().replace(/^["']|["']$/g, '').trim())
+                .filter(Boolean);
+            break;
+        }
+    }
+
+    const removeSet = new Set(remove);
+    const out = existing.filter(t => !removeSet.has(t));
+    for (const t of add) if (!out.includes(t)) out.push(t);
+
+    if (
+        blockStart !== -1 &&
+        out.length === existing.length &&
+        out.every((t, i) => t === existing[i])
+    ) return;
+
+    const newBlock = ['tags:', ...out.map(t => `  - ${t}`)];
+    if (blockStart === -1) {
+        fmLines.push(...newBlock);
+    } else {
+        fmLines.splice(blockStart, blockEnd - blockStart, ...newBlock);
+    }
+}
+
+export function applyTargetToFrontmatter(raw, target, nowIso) {
+    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if (!fmMatch) {
+        throw new Error('file has no YAML frontmatter; refusing to mutate');
+    }
+
+    const fmBlock = fmMatch[1];
+    const after = raw.slice(fmMatch[0].length);
+    const fmLines = fmBlock.split(/\r?\n/);
+
+    let status;
+    let tempered;
+    let closedAtAction;
+    let tagsToAdd = [];
+    let tagsToRemove = [];
+    switch (target) {
+        case 'drafts':
+            status = null;
+            tempered = false;
+            closedAtAction = 'clear';
+            tagsToAdd = ['draft'];
+            break;
+        case 'inFlight':
+        case 'queued':
+        case 'active':
+            status = 'active';
+            tempered = false;
+            closedAtAction = 'clear';
+            tagsToRemove = ['draft'];
+            break;
+        case 'awaitingReview':
+            status = 'closed';
+            tempered = false;
+            closedAtAction = 'set-if-missing';
+            break;
+        case 'tempered':
+            status = 'closed';
+            tempered = true;
+            closedAtAction = 'set-if-missing';
+            break;
+        default:
+            throw new Error(`unknown kanban target: ${target}`);
+    }
+
+    const setOrInsertScalar = (key, value) => {
+        const re = new RegExp(`^${escapeRegex(key)}:[\\t ]*.*$`);
+        let replaced = false;
+        for (let i = 0; i < fmLines.length; i++) {
+            if (re.test(fmLines[i])) {
+                fmLines[i] = `${key}: ${value}`;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) fmLines.push(`${key}: ${value}`);
+    };
+
+    const clearScalar = (key) => {
+        const re = new RegExp(`^${escapeRegex(key)}:[\\t ]*.*$`);
+        for (let i = fmLines.length - 1; i >= 0; i--) {
+            if (re.test(fmLines[i])) fmLines.splice(i, 1);
+        }
+    };
+
+    if (status !== null) setOrInsertScalar('status', status);
+    setOrInsertScalar('tempered', tempered ? 'true' : 'false');
+
+    if (closedAtAction === 'clear') {
+        clearScalar('closed-at');
+    } else {
+        const closedRe = /^closed-at:[\t ]*(.+)$/;
+        const hasClosedAt = fmLines.some(l => closedRe.test(l));
+        if (!hasClosedAt) {
+            fmLines.push(`closed-at: ${nowIso}`);
+        }
+    }
+
+    mutateTagsInPlace(fmLines, { add: tagsToAdd, remove: tagsToRemove });
+
+    const newFm = fmLines.join('\n');
+    return `---\n${newFm}\n---\n${after}`;
+}
+
+/**
+ * Handle a `kanban-transition` request from the server. Reads
+ * `<FELT_DIR>/<path>`, applies the frontmatter mutation, writes back,
+ * replies with `{correlationId, ok: true, content}` so the server can
+ * apply a snapshot delta eagerly. Errors come back as `{ok: false, error}`.
+ */
+function handleKanbanTransition(message) {
+    const { correlationId, path: relPath, target, nowIso } = message.payload || {};
+    if (!correlationId) {
+        debug('kanban-transition without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'kanban-transition-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+    try {
+        if (typeof relPath !== 'string' || relPath.includes('..') || relPath.startsWith('/')) {
+            throw new Error(`invalid path: ${relPath}`);
+        }
+        if (!KANBAN_VALID_TARGETS.has(target)) {
+            throw new Error(`unknown target: ${target}`);
+        }
+        const fullPath = join(FELT_DIR, relPath);
+        if (!existsSync(fullPath)) {
+            throw new Error(`fiber file missing: ${relPath}`);
+        }
+        const raw = readFileSync(fullPath, 'utf-8');
+        const updated = applyTargetToFrontmatter(raw, target, nowIso || new Date().toISOString());
+        if (updated !== raw) {
+            writeFileSync(fullPath, updated, 'utf-8');
+        }
+        reply({ ok: true, content: updated });
+        debug(`kanban-transition ok: ${relPath} → ${target}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`kanban-transition failed (${relPath}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
+// ============================================================================
 // WebSocket Connection
 // ============================================================================
 
@@ -737,6 +952,10 @@ function handleMessage(message) {
     switch (message.type) {
         case 'connected':
             log(`Registered with server (origin: ${message.payload?.originId})`);
+            break;
+
+        case 'kanban-transition':
+            handleKanbanTransition(message);
             break;
 
         default:
@@ -869,7 +1088,14 @@ async function main() {
     }
 }
 
-main().catch((error) => {
-    console.error('Fatal error:', error);
-    process.exit(1);
-});
+// Run as CLI only when invoked directly. Importing this file (e.g. for the
+// frontmatter-parity test in server/src/__tests__/) must not trigger main()
+// or the import would call printUsage() + process.exit().
+import { fileURLToPath as _fileURLToPath } from 'url';
+const _isMain = process.argv[1] === _fileURLToPath(import.meta.url);
+if (_isMain) {
+    main().catch((error) => {
+        console.error('Fatal error:', error);
+        process.exit(1);
+    });
+}

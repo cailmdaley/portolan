@@ -137,14 +137,33 @@ interface HttpApiKanbanOptions {
    * local copy — local-mirror-of-remote (e.g. an rsynced loom on the
    * laptop and the live one on cineca) renders as one card sourced from
    * local. Pure remote-only-no-mirror fibers appear once via the agent.
-   *
-   * `applyTransition` does NOT route remote-origin writes; that's Stage 4
-   * (the `kanban-transition` correlation-ID layer). For now, transitions
-   * against remote-origin fibers throw "fiber not found" — same as today's
-   * pre-Stage-3 behaviour, just sourced from the snapshot rather than
-   * the per-request 400.
    */
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  /**
+   * Stage 4 — executor for remote-origin transitions. When a card's origin
+   * isn't `local`, `applyTransition` ships the mutation through this
+   * callback instead of writing the file directly. The callback owns the
+   * agent round-trip (correlation-ID send + reply wait) and the
+   * snapshot-store delta apply, so by the time it resolves the snapshot
+   * for `originId` already reflects the new state and the kanban can
+   * re-read the refreshed fiber via `remoteSnapshotsProvider`.
+   *
+   * `path` is relative to the agent's `feltHost/.felt/` (e.g.
+   * `cmbx/cmbx.md`); the agent reconstructs the absolute path. `nowIso`
+   * is the timestamp to stamp into `closed-at` when the target asks for
+   * one — passed through so the server's clock wins in case of skew.
+   *
+   * If undefined, remote-origin transitions throw the Stage-4 boundary
+   * error (preserves Stage 3a behaviour for tests that don't wire an
+   * executor).
+   */
+  remoteTransitionExecutor?: (args: {
+    originId: string;
+    fiberId: string;
+    path: string;
+    target: KanbanTarget;
+    nowIso: string;
+  }) => Promise<void>;
   /** Max tempered cards to return. Defaults to 30. */
   temperedLimit?: number;
   /** Override clock for transitions (testing). */
@@ -187,6 +206,9 @@ export class HttpApiKanban {
   private readonly feltHost: string;
   private readonly feltHosts: string[] | undefined;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private readonly remoteTransitionExecutor:
+    | HttpApiKanbanOptions['remoteTransitionExecutor']
+    | undefined;
   private readonly temperedLimit: number;
   private readonly now: () => Date;
   private readonly listSessions: () => string[];
@@ -195,6 +217,7 @@ export class HttpApiKanban {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
     this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
+    this.remoteTransitionExecutor = opts.remoteTransitionExecutor;
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
@@ -451,25 +474,53 @@ export class HttpApiKanban {
         `kanban only mutates constitution-tagged fibers; ${fiberId} is tagged ${(fiber.tags ?? []).join(', ') || '(none)'}`,
       );
     }
+    const nowIso = this.now().toISOString();
+
     if (originId !== 'local') {
-      // Stage 3a lands the read path for remote origins; remote-origin
-      // mutation flows through the agent's `kanban-transition` message
-      // family and the correlation-ID layer that comes with Stage 4.
-      // Until then, refuse explicitly so the surface is honest about its
-      // boundary instead of silently falling back to a local-host write
-      // against a path that doesn't exist locally.
-      throw new Error(
-        `remote-origin transitions ship in Stage 4 of the vellum-kanban constitution ` +
-          `(fiber ${fiberId} is on origin '${originId}')`,
-      );
+      // Stage 4 — route through the agent over the correlation-ID layer.
+      // The executor owns the round-trip and the snapshot-store delta apply
+      // so by the time it resolves, the remote snapshot for this origin
+      // already reflects the new state and the refreshed card we return
+      // matches what the next /kanban GET will show.
+      if (!this.remoteTransitionExecutor) {
+        throw new Error(
+          `remote-origin transitions require remoteTransitionExecutor wiring ` +
+            `(fiber ${fiberId} is on origin '${originId}')`,
+        );
+      }
+      const relPath = relativeFeltPath(fiber);
+      await this.remoteTransitionExecutor({
+        originId,
+        fiberId,
+        path: relPath,
+        target,
+        nowIso,
+      });
+      // Re-read the snapshot via the provider — the executor has applied the
+      // delta, so byId for this origin carries the post-write fiber.
+      const refreshedById = new Map<string, Fiber>();
+      if (this.remoteSnapshotsProvider) {
+        for (const snap of this.remoteSnapshotsProvider()) {
+          if (snap.originId !== originId) continue;
+          for (const f of snap.fibers) refreshedById.set(f.id, f);
+        }
+      }
+      const refreshed = refreshedById.get(fiberId);
+      if (!refreshed) {
+        throw new Error(
+          `remote fiber disappeared from snapshot after transition: ${fiberId}`,
+        );
+      }
+      return this.toCard(refreshed, host, originId, refreshedById);
     }
+
     const path = this.fiberPath(host, fiber);
     if (!existsSync(path)) {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
 
     const raw = readFileSync(path, 'utf-8');
-    const updated = applyTargetToFrontmatter(raw, target, this.now().toISOString());
+    const updated = applyTargetToFrontmatter(raw, target, nowIso);
     if (updated !== raw) {
       writeFileSync(path, updated, 'utf-8');
     }
@@ -585,6 +636,23 @@ function byClosedAtDesc(a: KanbanCard, b: KanbanCard): number {
   const aT = a.closedAt || a.createdAt || '';
   const bT = b.closedAt || b.createdAt || '';
   return bT.localeCompare(aT);
+}
+
+/**
+ * Reconstruct a fiber's path relative to its `.felt/` root, mirroring the
+ * agent-side and FiberReader walks:
+ *   isRoot=true        → `<id>.md`
+ *   isRoot=false       → `<id>/<basename>.md` where basename is the last
+ *                        path segment of the id
+ *
+ * Stage 4 ships this to the agent in `kanban-transition` so the agent can
+ * resolve `feltHost/.felt/<relPath>` without re-deriving the convention.
+ * This is the inverse of `idFromPath` in FiberTreeSnapshotStore.
+ */
+function relativeFeltPath(fiber: Fiber): string {
+  const segments = fiber.id.split('/');
+  const basename = segments[segments.length - 1];
+  return fiber.isRoot ? `${basename}.md` : `${fiber.id}/${basename}.md`;
 }
 
 // ── JSON body reader ─────────────────────────────────────────────────────────

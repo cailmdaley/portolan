@@ -20,7 +20,7 @@ import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
-import { HttpApiKanban } from './HttpApiKanban.js';
+import { HttpApiKanban, type KanbanTarget } from './HttpApiKanban.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiLayouts } from './HttpApiLayouts.js';
@@ -67,11 +67,21 @@ type RuntimeDiagnosticsProvider = () => unknown | Promise<unknown>;
  * Cross-cutting deps that don't fit the lookup-shaped interfaces above.
  * Stage 3a of the vellum-kanban constitution adds the fiber-tree snapshot
  * provider here — the kanban folds remote-origin snapshots into the global
- * view alongside local-host walks. Optional so existing tests continue to
- * construct HttpApi without wiring a snapshot store.
+ * view alongside local-host walks. Stage 4 adds the remote-transition
+ * executor — `kanban/transition` against a remote-origin card flows through
+ * this callback (correlation-ID layer + snapshot-store delta apply) instead
+ * of writing the file directly. Both optional so existing tests continue to
+ * construct HttpApi without wiring an agent.
  */
 export interface HttpApiOptions {
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  remoteTransitionExecutor?: (args: {
+    originId: string;
+    fiberId: string;
+    path: string;
+    target: KanbanTarget;
+    nowIso: string;
+  }) => Promise<void>;
 }
 
 // ============================================================================
@@ -94,6 +104,7 @@ export class HttpApi {
   private layoutsApi: HttpApiLayouts;
   private layoutStore: LayoutStore;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
 
   constructor(
     cityLookup: CityLookup,
@@ -105,6 +116,7 @@ export class HttpApi {
     this.originLookup = originLookup;
     this.persistenceLookup = persistenceLookup;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
+    this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.annotationsApi = new HttpApiAnnotations({
       cityLookup,
       originLookup,
@@ -122,6 +134,7 @@ export class HttpApi {
     this.astraViewApi = new HttpApiAstraView({ originLookup });
     this.kanbanApi = new HttpApiKanban({
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+      remoteTransitionExecutor: this.remoteTransitionExecutor,
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
@@ -443,9 +456,11 @@ export class HttpApi {
       // snapshot (Stage 3a). HttpApiKanban dedupes id-collisions between
       // local and remote, with local winning — local-mirrors-of-remote
       // (e.g. an rsynced loom) render as one card sourced from local.
+      // Stage 4: remote-origin transitions go through the executor.
       return new HttpApiKanban({
         feltHosts: localPins,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+        remoteTransitionExecutor: this.remoteTransitionExecutor,
       });
     }
     const city = this.cityLookup.getCityById(cityId);

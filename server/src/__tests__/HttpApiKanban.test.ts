@@ -42,6 +42,18 @@ async function callKanban(api: HttpApiKanban): Promise<CapturedResponse> {
   return { status, body: raw ? JSON.parse(raw) : null };
 }
 
+/**
+ * Reconstruct a fiber's `.felt/`-relative path from its id + isRoot flag.
+ * Mirrors the agent-side and HttpApiKanban's `relativeFeltPath` for use in
+ * Stage 4 round-trip tests where the executor needs to know which file the
+ * server told it to mutate.
+ */
+function relativeFeltPathFromId(id: string, isRoot: boolean): string {
+  const segments = id.split('/');
+  const basename = segments[segments.length - 1];
+  return isRoot ? `${basename}.md` : `${id}/${basename}.md`;
+}
+
 /** Write a directory-based fiber under FELT_DIR. */
 function writeFib(slugPath: string, frontmatter: Record<string, unknown>, body = ''): void {
   const segments = slugPath.split('/');
@@ -689,7 +701,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(byId.get('pure_eb')).toBe('remote-candide');
     });
 
-    it('applyTransition refuses remote-origin fibers (Stage 4 boundary)', async () => {
+    it('applyTransition without a remoteTransitionExecutor still refuses remote fibers', async () => {
+      // Stage 4 wires the executor; absent it, behaviour falls back to the
+      // Stage-3a boundary so test harnesses that don't plumb an agent see
+      // an honest error instead of silent failure.
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
         { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
@@ -699,7 +714,9 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         remoteSnapshotsProvider: () => store.getAllSnapshots(),
         listSessions: () => [],
       });
-      await expect(api.applyTransition('cmbx', 'awaitingReview')).rejects.toThrow(/Stage 4/);
+      await expect(api.applyTransition('cmbx', 'awaitingReview')).rejects.toThrow(
+        /remoteTransitionExecutor wiring/,
+      );
     });
 
     it('response.staleness reports per-origin status with hostname', async () => {
@@ -733,6 +750,107 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
       const res = await callKanban(api);
       expect(res.body.staleness).toEqual({ local: { status: 'fresh' } });
+    });
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 4 — applyTransition routes remote-origin writes through the executor
+    // ────────────────────────────────────────────────────────────────────────
+
+    it('applyTransition routes remote-origin writes through remoteTransitionExecutor', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
+      ]);
+      const calls: Array<{
+        originId: string;
+        fiberId: string;
+        path: string;
+        target: string;
+        nowIso: string;
+      }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async (args) => {
+          calls.push(args);
+          // Simulate the agent reply: apply the mutation server-side to the
+          // snapshot. (In production the index.ts executor does this from
+          // the agent's result.content.) Use the same applyTargetToFrontmatter
+          // export the agent inlines, so this mirrors the round-trip shape.
+          const original = fiberContent('cmbx');
+          const updated = applyTargetToFrontmatter(original, args.target as any, args.nowIso);
+          store.applyDelta(args.originId, [
+            { path: args.path, op: 'upsert', content: updated },
+          ]);
+        },
+        listSessions: () => [],
+      });
+
+      const card = await api.applyTransition('cmbx', 'tempered');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        originId: 'remote-cineca',
+        fiberId: 'cmbx',
+        path: 'cmbx/cmbx.md',
+        target: 'tempered',
+      });
+      // Reflects the new state pulled from the snapshot post-delta.
+      expect(card.id).toBe('cmbx');
+      expect(card.originId).toBe('remote-cineca');
+      expect(card.tempered).toBe(true);
+      expect(card.status).toBe('closed');
+    });
+
+    it('applyTransition surfaces the executor error verbatim', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async () => {
+          throw new Error("remote agent didn't acknowledge");
+        },
+        listSessions: () => [],
+      });
+      await expect(api.applyTransition('cmbx', 'tempered')).rejects.toThrow(
+        /didn't acknowledge/,
+      );
+    });
+
+    it('relativeFeltPath round-trips both root-shaped and dir-shaped fibers', async () => {
+      // Fiber id semantics differ for entry-point (.felt/<slug>.md) vs.
+      // directory-shaped (.felt/<dir>/<dir>.md). The path the executor
+      // gets must match what the agent expects under FELT_DIR.
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        // Entry-point root fiber: .felt/loom.md
+        { path: 'loom.md', content: fiberContent('loom') },
+        // Nested container: .felt/ai-futures/portolan/portolan.md
+        { path: 'ai-futures/portolan/portolan.md', content: fiberContent('portolan') },
+      ]);
+      const seen: string[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async ({ path, target, nowIso, originId }) => {
+          seen.push(path);
+          // Apply locally so the post-call collectFibers reads new state.
+          const before = store.getSnapshot(originId)?.fibers.find(
+            f => relativeFeltPathFromId(f.id, f.isRoot) === path,
+          );
+          if (!before) throw new Error(`no fiber for path ${path}`);
+          const original = fiberContent(before.name);
+          const updated = applyTargetToFrontmatter(original, target as any, nowIso);
+          store.applyDelta(originId, [{ path, op: 'upsert', content: updated }]);
+        },
+        listSessions: () => [],
+      });
+
+      await api.applyTransition('loom', 'tempered');
+      await api.applyTransition('ai-futures/portolan', 'tempered');
+      expect(seen).toEqual(['loom.md', 'ai-futures/portolan/portolan.md']);
     });
 
     it('non-constitution remote fibers are excluded', async () => {

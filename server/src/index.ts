@@ -28,6 +28,7 @@ import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
 import { Shuttle, defaultShuttleConfig } from './Shuttle.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
+import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 
 // ============================================================================
 // Constants
@@ -51,6 +52,7 @@ const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
 const fiberTreeSnapshotStore = new FiberTreeSnapshotStore();
+const agentRequestCoordinator = new AgentRequestCoordinator(originManager);
 const meetingBridge = new MeetingBridge({
   sourceFactory: {
     createParakeetSource: (parakeetOptions, callbacks) =>
@@ -120,6 +122,25 @@ const cityLookup = {
 
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
   remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
+  // Stage 4 — remote-origin /kanban/transition routes through this executor.
+  // Sends a `kanban-transition` over the agent's WebSocket via the
+  // correlation-ID layer, applies the agent's reply content as a
+  // `fiber_tree_delta` so the snapshot reflects the new state immediately,
+  // and resolves so HttpApiKanban can build the refreshed card. The
+  // agent-side fs.watch will fire its own delta moments later; double-apply
+  // is idempotent because the second copy carries identical content.
+  remoteTransitionExecutor: async ({ originId, path, target, nowIso }) => {
+    const result = await agentRequestCoordinator.send<{ content?: string }>(
+      originId,
+      'kanban-transition',
+      { path, target, nowIso },
+    );
+    if (typeof result.content === 'string') {
+      fiberTreeSnapshotStore.applyDelta(originId, [
+        { path, op: 'upsert', content: result.content },
+      ]);
+    }
+  },
 });
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
@@ -404,6 +425,23 @@ wss.on('connection', async (ws, req) => {
             deltas: Array<{ path: string; op: 'upsert' | 'delete'; content?: string }>;
           };
           fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
+        } else if (message.type === 'kanban-transition-result') {
+          // Stage 4 — agent's reply to a `kanban-transition` round-trip.
+          // Resolves or rejects the matching pending entry in the
+          // coordinator; the executor in HttpApi then applies the delta
+          // and HttpApiKanban builds the refreshed card.
+          const { correlationId, ok, error, content } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            content?: string;
+          };
+          agentRequestCoordinator.handleResult(
+            correlationId,
+            !!ok,
+            content !== undefined ? { content } : {},
+            error,
+          );
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
@@ -419,6 +457,11 @@ wss.on('connection', async (ws, req) => {
         // with a "waiting on <hostname>" badge). Stage 3b wires the UI;
         // for now we just track the timestamp so the wire is honest.
         fiberTreeSnapshotStore.markStale(disconnectedOrigin.id, new Date().toISOString());
+        // Stage 4 — fail any kanban-transitions waiting on this origin so
+        // the HTTP caller gets an immediate "agent disconnected" response
+        // instead of waiting for the 5s timeout. The user re-drags after
+        // the agent reconnects.
+        agentRequestCoordinator.drainOnDisconnect(disconnectedOrigin.id);
         void browserStateCoordinator.broadcastCurrentState();
       }
       console.log(`Agent disconnected: ${originName}`);
