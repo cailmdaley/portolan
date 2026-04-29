@@ -952,14 +952,18 @@ const kanbanModal = new KanbanModal({
   // portolan's session by tmuxSession, then focus by session id. If portolan isn't
   // tracking the session yet (rare race during dispatch), fall back to nothing —
   // we don't want to open an unrelated tab.
+  //
+  // We do NOT hide the kanban here. Kitty owns its own window/tab, so focusing
+  // a worker is *additive* — the operator wants to glance at the worker without
+  // losing their place on the kanban (which they'll often want to keep working
+  // in: drag other cards, drill into another card's outcome). The camera focus
+  // is still set so closing the kanban later lands the map on the worker.
   onOpenWorker: (tmuxSessionName) => {
     const session = sessions.find(s => s.tmuxSession === tmuxSessionName)
     if (!session) {
       console.warn('[Kanban] no session tracked for tmux name:', tmuxSessionName)
       return
     }
-    kanbanModal.hide()
-    // Focus camera on the worker too so it lands in context.
     const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
     if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
     else if (session.hex) camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
