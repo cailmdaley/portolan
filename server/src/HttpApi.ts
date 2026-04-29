@@ -286,6 +286,14 @@ export class HttpApi {
       return true;
     }
 
+    // POST /fiber/create — vellum's stash button (constitution-stash-button).
+    // Must precede the `/fiber/` prefix match below; otherwise it routes to
+    // handleFiberContent and returns "Missing cityId parameter".
+    if (url.pathname === '/fiber/create' && req.method === 'POST') {
+      await this.annotationsApi.handleCreateFiber(req, res);
+      return true;
+    }
+
     if (url.pathname.startsWith('/fiber/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber/'.length));
       await this.tapestryApi.handleFiberContent(url, slug, res);
@@ -462,11 +470,19 @@ export class HttpApi {
    */
   private resolveKanbanApi(url: URL, res: ServerResponse): HttpApiKanban | null {
     const cityId = url.searchParams.get('cityId');
+    // Pinned local cities, threaded into HttpApiKanban so each card carries
+    // its owning cityId + project-relative slug. Without this, the global
+    // kanban emits loom-relative ids (`ai-futures/portolan/...`) that don't
+    // match anything in a project-scoped vellum collection — clicking a
+    // card lands on vellum's "not found" page. Cheap to compute per
+    // request: the kanban memoizes the realpath table internally per
+    // instance, and we build a fresh instance per request anyway.
+    const localCities = this.persistenceLookup
+      .getCities()
+      .filter(c => c.originId === 'local')
+      .map(c => ({ id: c.id, path: c.path }));
     if (!cityId) {
-      const localPins = this.persistenceLookup
-        .getCities()
-        .filter(c => c.originId === 'local')
-        .map(c => c.path);
+      const localPins = localCities.map(c => c.path);
       if (localPins.length === 0) return this.kanbanApi;
       // Global view: pinned local hosts + every remote origin's pushed
       // snapshot (Stage 3a). HttpApiKanban dedupes id-collisions between
@@ -475,6 +491,7 @@ export class HttpApi {
       // Stage 4: remote-origin transitions go through the executor.
       return new HttpApiKanban({
         feltHosts: localPins,
+        cities: localCities,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
         remoteTransitionExecutor: this.remoteTransitionExecutor,
       });
@@ -500,7 +517,7 @@ export class HttpApi {
       );
       return null;
     }
-    return new HttpApiKanban({ feltHost: city.path });
+    return new HttpApiKanban({ feltHost: city.path, cities: localCities });
   }
 
   /**

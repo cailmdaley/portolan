@@ -25,7 +25,7 @@
  * inside the React root this file creates — see vellum-in-portolan.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
   AdapterProvider,
@@ -48,6 +48,7 @@ import { createPortolanAdapter } from './portolan-adapter'
 import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'
 import { showToast } from '../ui/utils'
 import { lockModalBackground } from '../ui/modalBackgroundLock'
+import { StashForm, injectStashFormStyles } from './StashForm'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
@@ -73,6 +74,7 @@ function KanbanHost({
   cityId,
   cityName,
   onOpenWorker,
+  onOpenFiberInCity,
 }: {
   cityId?: string
   cityName?: string
@@ -80,22 +82,60 @@ function KanbanHost({
    *  `openVellumWorkspaceModal({ onOpenWorker })` — main.ts owns the camera
    *  + kitty-focus state, so this side just forwards the tmux session name. */
   onOpenWorker?: (tmuxSessionName: string) => void
+  /**
+   * Called when the user clicks a card whose owning city is different from
+   * the host vellum's current city (or when the host is global, which has
+   * no fiber graph at all). The host (main.ts) closes the current vellum and
+   * opens a fresh one scoped to `cityId` with `slug` selected. Without this,
+   * a click in the global kanban lands on vellum's "not found" page — the
+   * fiber graph is project-scoped but the card.id is loom-relative.
+   *
+   * Optional: when omitted, the kanban falls back to the legacy
+   * `setMode + navigate(/${id})` path which only works for cards that live
+   * in the host vellum's collection.
+   */
+  onOpenFiberInCity?: (cityId: string, slug: string) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
   const { setMode } = useMode()
+  const kanbanRef = useRef<KanbanModal | null>(null)
+  // Stash form state. Open via `+` button or `n` hotkey; closes on submit
+  // (with kanban refetch) or cancel/esc.
+  const [stashOpen, setStashOpen] = useState(false)
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
     const kanban = new KanbanModal({
       onOpenFiber: (card) => {
-        // Vellum's narrative-mode renderer keys off the URL slug. Card.id
-        // is the fiber slug ("portolan/vellum-reader/constitution-vellum-kanban"
-        // etc.), so a direct navigate + setMode lands the user on the prose.
+        // Three click paths, in order of preference:
+        //
+        //   1. Card's owning city matches the host vellum's city — navigate to
+        //      the project-relative slug in place. Same behaviour you'd get
+        //      from clicking a search result in this collection.
+        //   2. Card's owning city differs (or host is global) — pivot vellum
+        //      via onOpenFiberInCity. The current modal closes and a fresh
+        //      one opens scoped to the card's city with the fiber selected
+        //      and Narrative mode active. This is the global-kanban path:
+        //      cards from across loom each open in their own city's vellum.
+        //   3. Server didn't resolve a city for the card (remote origins,
+        //      unpinned felt hosts) — fall back to the legacy navigate. It
+        //      will land on "not found" if the slug isn't in the current
+        //      collection, but the failure is no worse than today's.
+        //
         // Mirrors FloatingIsland's search-result handler: setMode then
         // navigate so the post-paint URL settles on the new fiber inside
         // narrative mode.
+        if (card.cityId && card.projectSlug && card.cityId === cityId) {
+          setMode('narrative')
+          navigate(`/${card.projectSlug}`)
+          return
+        }
+        if (card.cityId && card.projectSlug && onOpenFiberInCity) {
+          onOpenFiberInCity(card.cityId, card.projectSlug)
+          return
+        }
         setMode('narrative')
         navigate(`/${card.id}`)
       },
@@ -105,27 +145,119 @@ function KanbanHost({
       // openVellumWorkspaceModal({onOpenWorker}) plumbing.
       onOpenWorker,
     })
+    kanbanRef.current = kanban
     const cityScope =
       cityId !== undefined
         ? { cityId, cityName: cityName ?? cityId }
         : null
     kanban.mount(host, { cityScope })
+    injectStashFormStyles()
     return () => {
       kanban.unmount()
+      kanbanRef.current = null
     }
-  }, [cityId, cityName, navigate, setMode, onOpenWorker])
+  }, [cityId, cityName, navigate, setMode, onOpenWorker, onOpenFiberInCity])
+
+  // Hotkey: `n` opens the stash form. Active whenever KanbanHost is mounted
+  // (i.e. the user is on the kanban tab) — vellum tears KanbanHost down on
+  // tab-away, so the listener auto-cleans. Ignored when focus is inside an
+  // input/textarea/contenteditable (typing 'n' in a text field shouldn't
+  // trigger the modal). Capture-phase so we beat KanbanModal's own column-
+  // zoom Enter/Space handlers, but they don't bind 'n'. Only `n` (lowercase
+  // n only — uppercase, ctrl/cmd+n stay free for "new browser window".)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return
+      const target = e.target as HTMLElement | null
+      if (target) {
+        const tag = target.tagName.toLowerCase()
+        if (tag === 'input' || tag === 'textarea' || target.isContentEditable) return
+      }
+      if (stashOpen) return
+      e.preventDefault()
+      e.stopPropagation()
+      setStashOpen(true)
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [stashOpen])
+
+  // Resolve the cityPath we'll feed to /fiber/create. For a city-scoped
+  // host, that's the city's filesystem path (the directory containing
+  // `.felt/`). For the global view, return null — StashForm falls back to
+  // /kanban's `feltHost` (~/loom) so the global stash lands at the loom
+  // monorepo root.
+  const resolveCityPath = (): string | null => {
+    if (!cityId) return null
+    const city = mountContext?.getCities().find((c) => c.id === cityId)
+    return city?.path ?? null
+  }
+  const resolveOriginId = (): string => {
+    if (!cityId) return 'local'
+    const city = mountContext?.getCities().find((c) => c.id === cityId)
+    return city?.originId ?? 'local'
+  }
 
   // Position fixed so the host covers the modal viewport regardless of
   // vellum-page's natural-flow height. z-index: 100 sits below
   // FloatingIsland (500) and the modal close button (1001) so vellum's
   // chrome stays usable on top of the kanban grid. The embedded KanbanModal
   // inside fills `position: absolute; inset: 0` against this host.
+  //
+  // Stash button + form sit as siblings to the kanban DOM inside this host:
+  // the button is `position: absolute` at top-right (z 150, above the kanban
+  // grid but below vellum's outer chrome), and the form modal sits at z 200
+  // when open with its own scrim.
   return (
     <div
       ref={hostRef}
       className="kanban-host"
       style={{ position: 'fixed', inset: 0, zIndex: 100 }}
-    />
+    >
+      <button
+        type="button"
+        className="stash-trigger"
+        onClick={() => setStashOpen(true)}
+        aria-label="Stash a new fiber (n)"
+        title="Stash a new fiber (n)"
+      >
+        +
+      </button>
+      {stashOpen && (
+        <StashForm
+          cityPath={resolveCityPath()}
+          originId={resolveOriginId()}
+          onCreated={(fiberId) => {
+            setStashOpen(false)
+            // Refresh kanban so the new fiber appears (it'll only land in
+            // a column when constitution-tagged — the visible signal for
+            // a non-constitution stash is the toast). Re-call mount() with
+            // the same scope: KanbanModal short-circuits to a fetchAndRender
+            // when already mounted. A short delay gives the FS time to
+            // surface the freshly-written file before the kanban walks the
+            // tree (felt's exec returned but a lazy sync can lag); without
+            // it the first kanban refresh occasionally misses the new fiber
+            // and the user has to flip tabs to see it.
+            const refresh = (): void => {
+              const k = kanbanRef.current
+              if (!k) return
+              const cityScope =
+                cityId !== undefined
+                  ? { cityId, cityName: cityName ?? cityId }
+                  : null
+              const host = hostRef.current
+              if (host) k.mount(host, { cityScope })
+            }
+            window.setTimeout(refresh, 100)
+            // Second refresh slightly later — covers cases where the first
+            // walk raced the disk; cheap belt-and-braces.
+            window.setTimeout(refresh, 600)
+            showToast(`Stashed: ${fiberId}`, 'success', 2500)
+          }}
+          onCancel={() => setStashOpen(false)}
+        />
+      )}
+    </div>
   )
 }
 
@@ -792,6 +924,13 @@ export interface OpenWorkspaceModalOptions {
    *  clicks the indicator. Optional; if omitted the indicator is informational
    *  only. */
   onOpenWorker?: (tmuxSessionName: string) => void
+  /** Click-through for a kanban card whose owning city differs from this
+   *  modal's `cityId` (or when this modal is global). The host closes the
+   *  current vellum and opens a fresh one scoped to the card's city with
+   *  the fiber selected. Without this, the global-kanban click path lands
+   *  on vellum's "not found" page because the loom-relative card id isn't
+   *  in any project-scoped collection. */
+  onOpenFiberInCity?: (cityId: string, slug: string) => void
 }
 
 /**
@@ -930,6 +1069,11 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     // Users close the modal via click-outside or the X button in that case.
     const target = event.target
     if (target instanceof Element && target.closest('.cm-editor')) return
+    // Skip when an inline stash form is mounted — Esc should close the
+    // form, not unwind the whole vellum modal underneath it.
+    // (constitution-stash-button) The form's own React onKeyDown handles
+    // the close; we just stay out of its way.
+    if (document.querySelector('.stash-scrim')) return
     event.preventDefault()
     event.stopPropagation()
     close()
@@ -988,6 +1132,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       cityId={opts.cityId}
       cityName={opts.cityName}
       onOpenWorker={opts.onOpenWorker}
+      onOpenFiberInCity={opts.onOpenFiberInCity}
     />
   )
 

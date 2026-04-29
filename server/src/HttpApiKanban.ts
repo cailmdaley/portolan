@@ -55,6 +55,29 @@ export interface KanbanCard {
    * a card without one and `status==open` is Queued.
    */
   runningWorker?: string;
+  /**
+   * The pinned local city whose `.felt/` physically owns this fiber, when
+   * resolvable. Computed by realpath-matching the fiber's md against each
+   * city's `<path>/.felt` realpath; the deepest match wins so a city like
+   * `portolan` (whose `.felt/` is symlinked into `loom/.felt/ai-futures/portolan/`)
+   * resolves to itself rather than to loom.
+   *
+   * Drives the click-to-open flow on the frontend: when the kanban is global
+   * (no city scope), the card's `id` is loom-relative and meaningless to the
+   * vellum collection; the frontend reads `cityId` + `projectSlug` to pivot
+   * vellum to the owning city and navigate to the project-relative slug.
+   * Undefined for fibers whose canonical path doesn't fall under any pinned
+   * local city (e.g. remote-origin snapshots, or a felt host that isn't
+   * pinned as a city).
+   */
+  cityId?: string;
+  /**
+   * Slug relative to the owning city's `.felt/` root (e.g.
+   * `vellum-reader/constitution-vellum-kanban`). Pairs with `cityId`. The
+   * vellum collection's astra graph is keyed by these project-relative
+   * slugs, so this is what the frontend hands to `navigate()`.
+   */
+  projectSlug?: string;
 }
 
 export interface KanbanColumns {
@@ -101,6 +124,16 @@ export interface KanbanResponse {
    * to disable drag targets for stale-origin cards.
    */
   staleness: Record<string, KanbanOriginStaleness>;
+  /**
+   * Sorted unique tag set across **all** fibers in the resolved hosts,
+   * not just constitution-tagged ones. Powers the stash-button form's
+   * tag autocomplete (constitution-stash-button) without forcing a
+   * separate `/tags` round-trip — the frontend already polls /kanban on
+   * mount, and the cost of collecting tags from the same `collectFibers`
+   * walk is trivial. Excludes empty strings; multi-comma-split tags are
+   * already normalized at FiberReader's parse step.
+   */
+  tagIndex: string[];
   generatedAt: number;
 }
 
@@ -125,6 +158,18 @@ interface HttpApiKanbanOptions {
    * fiber's file before writing.
    */
   feltHosts?: string[];
+  /**
+   * Pinned local cities, used to resolve each card's `cityId` + `projectSlug`
+   * via realpath matching. Without this, the frontend's click-to-open path
+   * gets a loom-relative fiber id (e.g. `ai-futures/portolan/vellum-reader/X`)
+   * which doesn't match any slug in the project-scoped vellum collection.
+   *
+   * The match is deepest-prefix-wins on `<city.path>/.felt` realpath: a
+   * fiber under a project city whose `.felt/` is symlinked into loom resolves
+   * to the project, not to loom — so the frontend knows which city to pivot
+   * to and which project-relative slug to navigate to.
+   */
+  cities?: Array<{ id: string; path: string }>;
   /**
    * Provider for remote-origin fiber-tree snapshots — Stage 3a of the
    * vellum-kanban constitution. Returns the per-origin snapshots that
@@ -205,6 +250,7 @@ export interface KanbanTransitionRequest {
 export class HttpApiKanban {
   private readonly feltHost: string;
   private readonly feltHosts: string[] | undefined;
+  private readonly cities: Array<{ id: string; path: string }> | undefined;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private readonly remoteTransitionExecutor:
     | HttpApiKanbanOptions['remoteTransitionExecutor']
@@ -213,14 +259,85 @@ export class HttpApiKanban {
   private readonly now: () => Date;
   private readonly listSessions: () => string[];
 
+  /**
+   * Per-instance memo: realpath of each pinned city's `.felt` directory,
+   * sorted deepest-first so prefix matches pick the most-specific city
+   * (e.g. portolan's `.felt/` wins over loom's `.felt/`, which sym-links
+   * into it). Computed lazily on first lookup; null until populated.
+   */
+  private cityFeltRealpaths: Array<{ id: string; feltRealPath: string }> | null = null;
+
   constructor(opts: HttpApiKanbanOptions = {}) {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
     this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
+    this.cities = opts.cities && opts.cities.length > 0 ? opts.cities : undefined;
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
     this.remoteTransitionExecutor = opts.remoteTransitionExecutor;
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
+  }
+
+  /**
+   * Lazy-init the city `.felt/` realpath table. Cities whose `.felt/`
+   * doesn't exist or can't be statted are silently skipped — they
+   * contribute no fibers, so they can't own any card resolution.
+   *
+   * Sorted deepest-first: for a fiber whose canonical path lies under both
+   * `loom/.felt/ai-futures/portolan/` (via symlink) and
+   * `Documents/projects/portolan/.felt/` (the physical location), the
+   * portolan entry wins because its realpath is the actual deeper one
+   * the symlink resolves to.
+   */
+  private getCityFeltRealpaths(): Array<{ id: string; feltRealPath: string }> {
+    if (this.cityFeltRealpaths !== null) return this.cityFeltRealpaths;
+    const out: Array<{ id: string; feltRealPath: string }> = [];
+    for (const c of this.cities ?? []) {
+      const feltPath = join(c.path, '.felt');
+      try {
+        out.push({ id: c.id, feltRealPath: realpathSync(feltPath) });
+      } catch {
+        // city's .felt is missing or unreadable — skip; it can't own any
+        // card resolution either way.
+      }
+    }
+    out.sort((a, b) => b.feltRealPath.length - a.feltRealPath.length);
+    this.cityFeltRealpaths = out;
+    return out;
+  }
+
+  /**
+   * Match a fiber's canonical (realpath) md path against pinned cities and
+   * return the owning `{ cityId, projectSlug }`. Returns null when no city
+   * owns the path (e.g. unpinned felt host, no cities configured, or
+   * canonical path doesn't end in the expected `<basename>.md`).
+   *
+   * `basename` is the fiber's last id segment — used to peel the trailing
+   * file from the relative path to recover the project-relative slug
+   * (`vellum-reader/constitution-vellum-kanban`, not the longer
+   * `vellum-reader/constitution-vellum-kanban/constitution-vellum-kanban.md`).
+   */
+  private resolveCityForCanonicalPath(
+    canonicalPath: string,
+    basename: string,
+  ): { cityId: string; projectSlug: string } | null {
+    for (const { id, feltRealPath } of this.getCityFeltRealpaths()) {
+      const prefix = `${feltRealPath}/`;
+      if (!canonicalPath.startsWith(prefix)) continue;
+      const rel = canonicalPath.slice(prefix.length);
+      const fileSuffix = `${basename}.md`;
+      if (rel === fileSuffix) {
+        // Root fiber: <feltRealPath>/<basename>.md → slug is the basename.
+        return { cityId: id, projectSlug: basename };
+      }
+      const dirSuffix = `/${fileSuffix}`;
+      if (rel.endsWith(dirSuffix)) {
+        return { cityId: id, projectSlug: rel.slice(0, -dirSuffix.length) };
+      }
+      // Prefix matched but layout is unexpected (e.g. an alternative basename);
+      // bail without claiming this card. Fall through to the next city.
+    }
+    return null;
   }
 
   /** Hosts to walk for /kanban reads + /kanban/transition writes. */
@@ -268,10 +385,10 @@ export class HttpApiKanban {
    * snapshot.
    */
   private async collectFibers(): Promise<{
-    merged: Array<{ fiber: Fiber; host: string; originId: string }>;
+    merged: Array<{ fiber: Fiber; host: string; originId: string; canonicalPath?: string }>;
     byId: Map<string, Fiber>;
   }> {
-    const seen = new Map<string, { fiber: Fiber; host: string; originId: string }>();
+    const seen = new Map<string, { fiber: Fiber; host: string; originId: string; canonicalPath?: string }>();
     const seenIds = new Set<string>();
     for (const host of this.resolveHosts()) {
       if (!existsSync(join(host, '.felt'))) continue;
@@ -291,7 +408,7 @@ export class HttpApiKanban {
           continue; // fiber file moved out from under us; skip rather than crash
         }
         if (!seen.has(canonical)) {
-          seen.set(canonical, { fiber: f, host, originId: 'local' });
+          seen.set(canonical, { fiber: f, host, originId: 'local', canonicalPath: canonical });
           seenIds.add(f.id);
         }
       }
@@ -299,6 +416,8 @@ export class HttpApiKanban {
     // Remote snapshots: id-deduped against the local set we just built,
     // and against each other. Use a synthetic key (`<originId>:<id>`)
     // for the seen-map so they don't collide with the realpath keys.
+    // Remote entries have no `canonicalPath` — we can't realpath a remote
+    // file path locally, and city resolution doesn't apply across machines.
     if (this.remoteSnapshotsProvider) {
       for (const snapshot of this.remoteSnapshotsProvider()) {
         for (const f of snapshot.fibers) {
@@ -325,6 +444,12 @@ export class HttpApiKanban {
         return;
       }
 
+      // Tag autocomplete index: union across the full unfiltered merged set
+      // so the stash-button form sees every tag the user has ever applied,
+      // not just constitution-related ones. Sorted lex for stable ordering
+      // in the autocomplete dropdown.
+      const tagIndex = collectTagIndex(merged);
+
       const constitutional = merged.filter(({ fiber }) =>
         fiber.tags?.includes('constitution'),
       );
@@ -338,8 +463,8 @@ export class HttpApiKanban {
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
 
-      for (const { fiber: f, host, originId } of constitutional) {
-        const card = this.toCard(f, host, originId, byId, liveSessions);
+      for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
+        const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
         const isDraft = f.tags?.includes('draft') ?? false;
         if (f.status !== 'closed') {
           if (isDraft) drafts.push(card);
@@ -385,6 +510,7 @@ export class HttpApiKanban {
         },
         temperedTotal,
         staleness: this.buildStaleness(),
+        tagIndex,
         generatedAt: Date.now(),
       } satisfies KanbanResponse);
     } catch (err: unknown) {
@@ -530,7 +656,17 @@ export class HttpApiKanban {
     const refreshedById = new Map(after.map(f => [f.id, f]));
     const refreshed = refreshedById.get(fiberId);
     if (!refreshed) throw new Error(`fiber disappeared after write: ${fiberId}`);
-    return this.toCard(refreshed, host, originId, refreshedById);
+    // Recompute the canonical path so the refreshed card carries the same
+    // cityId/projectSlug fields that /kanban GET emits — without it, an
+    // immediate optimistic-rerender after a transition would lose the
+    // click-to-open routing for the moved card.
+    let canonicalAfter: string | undefined;
+    try {
+      canonicalAfter = realpathSync(this.fiberPath(host, refreshed));
+    } catch {
+      canonicalAfter = undefined;
+    }
+    return this.toCard(refreshed, host, originId, refreshedById, undefined, canonicalAfter);
   }
 
   // ---------------------------------------------------------------------------
@@ -541,6 +677,7 @@ export class HttpApiKanban {
     originId: string,
     byId: Map<string, Fiber>,
     liveSessions: Set<string> = new Set(),
+    canonicalPath?: string,
   ): KanbanCard {
     const dependsOn = f.dependsOn ?? [];
     const dependsOnSatisfied =
@@ -560,6 +697,23 @@ export class HttpApiKanban {
     const expectedSession = shuttleSessionName(f.id);
     const runningWorker = liveSessions.has(expectedSession) ? expectedSession : undefined;
 
+    // Resolve which pinned local city physically owns this fiber so the
+    // frontend can pivot vellum to that city and navigate to the project-
+    // relative slug. Loom-relative ids (`ai-futures/portolan/vellum-reader/X`)
+    // don't match anything in a project-scoped fiber graph; the kanban-side
+    // canonical-path realpath gets us back to the project-rooted view.
+    let cityId: string | undefined;
+    let projectSlug: string | undefined;
+    if (canonicalPath !== undefined) {
+      const segments = f.id.split('/');
+      const basename = segments[segments.length - 1];
+      const owner = this.resolveCityForCanonicalPath(canonicalPath, basename);
+      if (owner !== null) {
+        cityId = owner.cityId;
+        projectSlug = owner.projectSlug;
+      }
+    }
+
     return {
       id: f.id,
       name: f.name,
@@ -574,6 +728,8 @@ export class HttpApiKanban {
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       dependsOnSatisfied,
       runningWorker,
+      cityId,
+      projectSlug,
     };
   }
 
@@ -584,6 +740,7 @@ export class HttpApiKanban {
       totals: { drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 },
       temperedTotal: 0,
       staleness: this.buildStaleness(),
+      tagIndex: [],
       generatedAt: Date.now(),
     };
   }
@@ -622,6 +779,25 @@ export class HttpApiKanban {
     });
     res.end(JSON.stringify(body));
   }
+}
+
+// ── Tag index ─────────────────────────────────────────────────────────────
+// Sorted unique tag set across the merged fiber list, used by the stash-
+// button form's autocomplete (constitution-stash-button). Empty/whitespace
+// tags drop on the floor; FiberReader has already split comma-bundled tags.
+
+function collectTagIndex(merged: Array<{ fiber: Fiber }>): string[] {
+  const seen = new Set<string>();
+  for (const { fiber } of merged) {
+    if (!Array.isArray(fiber.tags)) continue;
+    for (const t of fiber.tags) {
+      if (typeof t !== 'string') continue;
+      const trimmed = t.trim();
+      if (trimmed.length === 0) continue;
+      seen.add(trimmed);
+    }
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b));
 }
 
 // ── Sort helpers ─────────────────────────────────────────────────────────────

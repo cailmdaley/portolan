@@ -422,6 +422,131 @@ export class HttpApiAnnotations {
     }
   }
 
+  /**
+   * POST /fiber/create — inline stash from vellum's workspace tab.
+   *
+   * The GUI counterpart of `felt add <slug> <name> [-t tag] [-b body]`. Mounted
+   * by [[constitution-stash-button]]: a `+` button (or `n` hotkey) inside
+   * KanbanHost opens a small form that POSTs here. No agent in the loop —
+   * this is the *stash* affordance, not conversational authoring.
+   *
+   * Differs from `/file-as-fiber` (which exists to file annotation comments
+   * as a fiber): no annotation context, no synthesized body header, no
+   * `kind` defaulting. Tags are explicit and repeatable. The slug is
+   * derived from the title via the same kebab-case rule as `/file-as-fiber`
+   * for consistency. Optional `parentSlug` nests the new fiber under an
+   * existing one (felt's slash-joined slug convention).
+   *
+   * Returns `{success: true, fiberId}` where `fiberId` is the fully
+   * qualified slug (parentSlug + child) the felt CLI emitted on stdout.
+   */
+  async handleCreateFiber(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const data = await this.parseJsonBody<{
+      originId: string;
+      /** City root path (the directory containing `.felt/`). For local
+       *  stashes the frontend resolves this from the active city's path;
+       *  for remote stashes it's the agent-side `feltHost` path. */
+      cityPath: string;
+      title: string;
+      body?: string;
+      tags?: string[];
+      parentSlug?: string;
+      /**
+       * Initial status. Defaults to `open` (felt's default for `felt add`).
+       * Surfaced so the frontend can mark a stash `active` if the user
+       * wants to dispatch immediately, or carry through a constitution-
+       * with-draft pairing.
+       */
+      status?: string;
+    }>(req, res);
+    if (!data) return;
+
+    const { originId, cityPath, title, body, tags, parentSlug, status } = data;
+
+    if (!cityPath || !title) {
+      this.sendJsonError(res, 400, 'Missing required fields (cityPath, title)');
+      return;
+    }
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      this.sendJsonError(res, 400, 'Title must be non-empty');
+      return;
+    }
+    if (tags && (!Array.isArray(tags) || tags.some((t) => typeof t !== 'string'))) {
+      this.sendJsonError(res, 400, 'Tags must be an array of strings');
+      return;
+    }
+
+    const isRemote = originId !== 'local' && !!originId;
+
+    try {
+      // Slug derivation mirrors handleFileAsFiber for consistency: kebab-case,
+      // strip leading/trailing hyphens, cap at 60 chars, fallback to a
+      // timestamp slug when the title sluggifies to empty (all-special-chars
+      // edge case). felt itself enforces uniqueness — let it surface a
+      // collision error rather than pre-checking here.
+      const childSlug =
+        title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 60) || `stash-${Date.now()}`;
+      const slug = parentSlug ? `${parentSlug.replace(/^\/+|\/+$/g, '')}/${childSlug}` : childSlug;
+
+      // Build the felt invocation. `-t` is repeatable; emit one per tag so
+      // multi-word tags survive without comma-splitting heuristics.
+      const parts: string[] = [
+        `cd ${shellEscape(cityPath)}`,
+        '&&',
+        'felt add',
+        shellEscape(slug),
+        shellEscape(title.trim()),
+      ];
+      if (Array.isArray(tags)) {
+        for (const tag of tags) {
+          const trimmed = tag.trim();
+          if (!trimmed) continue;
+          parts.push('-t', shellEscape(trimmed));
+        }
+      }
+      if (status) {
+        parts.push('-s', shellEscape(status));
+      }
+      if (typeof body === 'string' && body.length > 0) {
+        parts.push('-b', shellEscape(body));
+      }
+      const feltCmd = parts.join(' ');
+
+      let fiberId: string;
+      let invalidateSshHost: string | undefined;
+      if (!isRemote) {
+        const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
+        fiberId = stdout.trim();
+      } else {
+        const origin = this.originLookup.getOrigin(originId);
+        if (!origin?.sshHost) {
+          this.sendJsonError(res, 404, 'Origin not found or not connected');
+          return;
+        }
+        const { stdout } = await execFileAsync(
+          'ssh', [origin.sshHost, feltCmd],
+          { timeout: 30000, maxBuffer: 1024 * 1024 }
+        );
+        fiberId = stdout.trim();
+        invalidateSshHost = origin.sshHost;
+      }
+
+      // Invalidate the tapestry's fiber-list cache so /astra/graph and
+      // /api/search reflect the new fiber immediately rather than waiting
+      // out the 30s TTL. Same hook /file-as-fiber uses.
+      this.onFiberCreated?.(cityPath, invalidateSshHost);
+
+      this.sendJsonSuccess(res, { success: true, fiberId, slug });
+    } catch (error: any) {
+      console.error('Failed to create fiber:', error.message);
+      this.sendJsonError(res, 500, 'Failed to create fiber: ' + error.message);
+    }
+  }
+
   async handlePromoteToFelt(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const data = await this.parseJsonBody<{ claimId: string; comment: string; cityId: string }>(req, res);
     if (!data) return;
