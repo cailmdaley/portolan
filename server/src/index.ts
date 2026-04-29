@@ -486,23 +486,43 @@ server.listen(PORT, () => {
 // Shuttle — fiber-as-ticket dispatcher
 // ============================================================================
 //
-// Polls loom for constitution-tagged, non-draft, unblocked, status!=closed
-// fibers and dispatches a single-shot worker per eligible fiber. Per the
+// Polls every pinned local-origin city for constitution-tagged, non-draft,
+// unblocked, status!=closed fibers, dedupes by realpath of the fiber's md
+// file, and dispatches one single-shot worker per eligible fiber. Per the
 // constitution-shuttle invariants, Shuttle never edits fibers — agents do.
 //
-// Default scope is loom-wide (no queuePrefixes) now that draft-tag opt-out
+// Multi-host alignment: the kanban view (HttpApiKanban) walks the same set
+// of pinned cities with the same realpath dedupe, so a constitution that
+// shows up as a card *also* gets a worker — and a fiber dispatched here is
+// the same physical fiber the kanban displays. Each worker spawns with its
+// contributing host as `cwd`, so `felt show <id>` from inside the worker
+// resolves the right file even when ids collide across hosts (see
+// gotchas/gotcha-kanban-fiber-id-collisions-across-cities).
+//
+// Default scope is unscoped (no queuePrefixes) now that draft-tag opt-out
 // is in place. Override via SHUTTLE_QUEUE_PREFIXES env var (comma-separated).
 // Set SHUTTLE_DISABLED=1 to skip startup entirely.
+function pinnedLocalFeltHosts(): string[] {
+  return cityPersistence
+    .getCities()
+    .filter(c => c.originId === 'local')
+    .map(c => c.path);
+}
+const shuttleHosts = pinnedLocalFeltHosts();
 const shuttle = (process.env.SHUTTLE_DISABLED === '1' || process.env.VITEST)
   ? null
   : new Shuttle(defaultShuttleConfig({
+      feltHosts: shuttleHosts.length > 0 ? shuttleHosts : undefined,
       queuePrefixes: process.env.SHUTTLE_QUEUE_PREFIXES
         ? process.env.SHUTTLE_QUEUE_PREFIXES.split(',').map(s => s.trim()).filter(Boolean)
         : undefined,
     }));
 if (shuttle) {
   shuttle.start();
-  console.log('[Shuttle] started — polling loom for eligible constitution fibers');
+  const scope = shuttleHosts.length > 0
+    ? `${shuttleHosts.length} pinned local cities`
+    : 'loom (no pins)';
+  console.log(`[Shuttle] started — polling ${scope} for eligible constitution fibers`);
 } else {
   console.log('[Shuttle] disabled via SHUTTLE_DISABLED=1');
 }

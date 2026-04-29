@@ -26,7 +26,7 @@
  */
 
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, statSync } from 'fs';
+import { existsSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -47,8 +47,26 @@ const BUNDLED_WORKER_SCRIPT = fileURLToPath(
 );
 
 export interface ShuttleConfig {
-  /** Path to a felt host directory (the parent of `.felt/`). */
+  /**
+   * Path to a felt host directory (the parent of `.felt/`). Used as the
+   * single host when `feltHosts` is unset (or empty); the worker spawns
+   * with this as its cwd.
+   */
   feltHost: string;
+  /**
+   * Multi-host aggregation. When non-empty, Shuttle walks each host's
+   * `.felt/` and dedupes by `realpath` of the fiber's md file —
+   * mirroring HttpApiKanban so the dispatch surface and the kanban view
+   * stay aligned. Each dispatched worker spawns with its contributing
+   * host as `cwd`, so `felt show <id>` from inside the worker resolves
+   * the fiber correctly even when ids collide across hosts (e.g.
+   * `vellum-reader/map` exists both in lightcone-myst-coherence and as
+   * a stale entry under loom's portolan subtree).
+   *
+   * The `?cityId=`-scoped kanban path doesn't affect Shuttle; the
+   * server-embedded Shuttle instance owns its own host list.
+   */
+  feltHosts?: string[];
   /**
    * Optional queue scope. Only fibers whose ID starts with one of these
    * prefixes are considered for dispatch. Empty / undefined means "no
@@ -72,10 +90,12 @@ export interface ShuttleConfig {
   onSnapshot?: (snap: ShuttleSnapshot) => void;
   /**
    * Test seam — replaces the actual worker invocation. Returns a
-   * synthetic tmux session name. When undefined, calls the real
+   * synthetic tmux session name. The optional `host` is the host that
+   * contributed the fiber via the multi-host walk (single-host mode
+   * passes the configured `feltHost`). When undefined, calls the real
    * `shuttleWorkerScript`.
    */
-  spawnShuttleWorker?: (fiberId: string) => string;
+  spawnShuttleWorker?: (fiberId: string, host: string) => string;
   /**
    * Test seam — replaces `listShuttleSessions()`. Returns the set of
    * tmux session names that should be considered "live". When
@@ -216,8 +236,8 @@ export function shuttleSessionName(fiberId: string): string {
 // ============================================================================
 
 export class Shuttle {
-  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions'>>
-    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions'>;
+  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts'>>
+    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts'>;
   private dispatched = new Map<string, DispatchEntry>();
   private timer: NodeJS.Timeout | null = null;
   private lastSnapshot: ShuttleSnapshot | null = null;
@@ -235,7 +255,14 @@ export class Shuttle {
 
   /** One reconcile pass: read, compute, dispatch, snapshot. Async because fiber walk is async. */
   async tick(): Promise<ShuttleSnapshot> {
-    const fibers = await getAllFibers(this.config.feltHost);
+    // Multi-host walk + realpath dedupe — same merge HttpApiKanban uses.
+    // Each merged entry carries the host that contributed it; dispatch uses
+    // that host as the worker's cwd so `felt show <id>` from inside the
+    // worker resolves the fiber correctly even when ids collide across
+    // hosts.
+    const merged = await this.collectFibers();
+    const fibers = merged.map(({ fiber }) => fiber);
+    const hostByFiberId = new Map(merged.map(({ fiber, host }) => [fiber.id, host]));
     const { eligible, blocked } = computeEligibility(fibers, this.config.queuePrefixes);
 
     const liveSessions = new Set(
@@ -290,8 +317,9 @@ export class Shuttle {
       // Spawn — single-shot. Worker exits when claude exits; we'll
       // observe the session as gone on a future tick and (if still
       // eligible) redispatch.
+      const host = hostByFiberId.get(f.id) ?? this.config.feltHost;
       try {
-        const session = this.spawn(f.id);
+        const session = this.spawn(f.id, host);
         const entry: DispatchEntry = {
           fiberId: f.id,
           tmuxSession: session,
@@ -361,18 +389,69 @@ export class Shuttle {
   // Internal
   // --------------------------------------------------------------------------
 
-  private spawn(fiberId: string): string {
+  /** Hosts to walk for the eligibility pass + worker dispatch. */
+  private resolveHosts(): string[] {
+    const explicit = this.config.feltHosts;
+    if (explicit && explicit.length > 0) return explicit;
+    return [this.config.feltHost];
+  }
+
+  /** Path to the fiber's md inside a given felt host. */
+  private fiberPath(host: string, f: Fiber): string {
+    const segments = f.id.split('/');
+    const basename = segments[segments.length - 1];
+    return f.isRoot
+      ? join(host, '.felt', `${basename}.md`)
+      : join(host, '.felt', f.id, `${basename}.md`);
+  }
+
+  /**
+   * Walk every configured host, parse fibers, and dedupe by realpath of
+   * the fiber's md file. First-seen host wins, in `resolveHosts()` order;
+   * the contributing host threads through dispatch as the worker's cwd.
+   *
+   * Mirrors HttpApiKanban.collectFibers — keeping the kanban's view and
+   * Shuttle's dispatch surface aligned by construction.
+   */
+  private async collectFibers(): Promise<Array<{ fiber: Fiber; host: string }>> {
+    const seen = new Map<string, { fiber: Fiber; host: string }>();
+    for (const host of this.resolveHosts()) {
+      if (!existsSync(join(host, '.felt'))) continue;
+      let fibers: Fiber[];
+      try {
+        fibers = await getAllFibers(host);
+      } catch (err) {
+        console.error(`[Shuttle] getAllFibers failed for host ${host}:`, err);
+        continue;
+      }
+      for (const f of fibers) {
+        const path = this.fiberPath(host, f);
+        let canonical: string;
+        try {
+          canonical = realpathSync(path);
+        } catch {
+          continue;
+        }
+        if (!seen.has(canonical)) seen.set(canonical, { fiber: f, host });
+      }
+    }
+    return [...seen.values()];
+  }
+
+  private spawn(fiberId: string, host: string): string {
     if (this.config.spawnShuttleWorker) {
-      return this.config.spawnShuttleWorker(fiberId);
+      return this.config.spawnShuttleWorker(fiberId, host);
     }
     const script = this.config.shuttleWorkerScript;
     if (!script || !existsSync(script)) {
       throw new Error(`shuttle-worker not available at ${script}`);
     }
-    // The worker uses pwd as workdir for the agent. Use the felt host
-    // so the agent lands in loom by default.
+    // The worker resolves the fiber via `felt show` from `cwd`; using the
+    // contributing host means the right `.felt/` is in scope, even when
+    // ids collide across hosts (multi-host gotcha — see
+    // gotcha-kanban-fiber-id-collisions-across-cities).
     const result = spawnSync(script, [fiberId], {
-      cwd: this.config.feltHost,
+      cwd: host,
       stdio: 'pipe',
       encoding: 'utf-8',
     });
