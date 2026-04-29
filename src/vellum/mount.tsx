@@ -52,8 +52,8 @@ import { lockModalBackground } from '../ui/modalBackgroundLock'
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
 /**
- * KanbanHost — React shell that mounts the vanilla-JS `KanbanModal` in
- * embedded mode inside vellum's workspace slot.
+ * KanbanHost — React shell that mounts the vanilla-JS `KanbanModal`
+ * inside vellum's workspace slot.
  *
  * Lives inside vellum's MemoryRouter + ModeProvider, so card clicks navigate
  * the host vellum (rather than opening another vellum modal) and flip the
@@ -109,9 +109,9 @@ function KanbanHost({
       cityId !== undefined
         ? { cityId, cityName: cityName ?? cityId }
         : null
-    kanban.mountEmbedded(host, { cityScope })
+    kanban.mount(host, { cityScope })
     return () => {
-      kanban.unmountEmbedded()
+      kanban.unmount()
     }
   }, [cityId, cityName, navigate, setMode, onOpenWorker])
 

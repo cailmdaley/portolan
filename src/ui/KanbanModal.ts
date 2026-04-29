@@ -25,9 +25,18 @@
  * Click anywhere on the card body (not on action buttons or drag handles)
  * → opens the fiber's md in vellum.
  *
- * Hotkey: `k` (registered in main.ts).
+ * Hotkey: `k` (registered in main.ts) — opens vellum on the Kanban tab.
+ *
+ * Lifecycle: this class is mount-only. It is constructed by `KanbanHost`
+ * (vellum's workspace slot) per visit, mounted with `mount(host, opts)`
+ * into a host element supplied by vellum, and torn down with `unmount()`
+ * on tab-away. The host owns scrim, Escape ordering, and lockBackground
+ * — `KanbanModal` only renders the column grid, the cards, and the
+ * transition wiring. Stage 8 of vellum-kanban retired the standalone
+ * full-viewport mode (`show()` / `hide()` / `showForCity()` plus a
+ * `kbn-scrim` sibling and a top-right close button); the embed is the
+ * sole entry point now.
  */
-import { lockModalBackground } from './modalBackgroundLock'
 
 /** Column identifier — also doubles as the API target. */
 type ColumnKind = 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered'
@@ -135,54 +144,22 @@ interface KanbanCityScope {
   cityName: string
 }
 
-/**
- * Two mount modes:
- *
- *  - `'standalone'` — self-mounting full-viewport modal. Manages its own
- *    scrim, body-mount, document-level Escape handler, and lockBackground.
- *    The chrome wins exclusive ownership of Escape while open. The historical
- *    mount, used by `KanbanLaunchButton` and the per-city HUD button.
- *
- *  - `'embedded'` — host-mounted into an arbitrary container element. Skips
- *    scrim, document keydown, and lockBackground; the host (vellum's
- *    workspace slot) owns Escape ordering and modal layering. Used by
- *    portolan's vellum-kanban embedding so the kanban renders as a tab body
- *    inside the workspace modal rather than a sibling full-screen layer.
- *
- * Both share the same render pipeline: header / banner / body grid / live
- * region. The split is purely about chrome — no functional diff in
- * column layout, drag-and-drop, transitions, or fetch behaviour.
- */
-type MountMode = 'standalone' | 'embedded'
-
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
   private readonly apiBase: string
 
   private container: HTMLDivElement | null = null
-  private scrim: HTMLDivElement | null = null
   private body: HTMLDivElement | null = null
   private statusEl: HTMLDivElement | null = null
   private subtitleEl: HTMLDivElement | null = null
   private liveEl: HTMLDivElement | null = null
   private bannerEl: HTMLDivElement | null = null
-  private unlockBackground: (() => void) | null = null
-  private mountMode: MountMode | null = null
-  /**
-   * Backwards-compatible alias for `mountMode === 'standalone'`. Tests and
-   * existing call sites use `isVisible()` to mean "is the standalone modal
-   * currently shown." Embedded mounts intentionally don't flip this — they
-   * answer the orthogonal question "is the host's tab currently rendered."
-   */
-  private get visible(): boolean {
-    return this.mountMode === 'standalone'
-  }
   private inflightFetchToken = 0
   private dragSourceId: string | null = null
   private bannerTimer: number | null = null
-  /** Null = global (default). Set by showForCity / mountEmbedded; cleared
-   *  by hide() / unmountEmbedded(). */
+  /** Null = global (default). Set by mount(...{cityScope}); cleared by
+   *  unmount(). */
   private cityScope: KanbanCityScope | null = null
 
   constructor(options: KanbanModalOptions) {
@@ -192,90 +169,24 @@ export class KanbanModal {
     this.injectStyles()
   }
 
-  isVisible(): boolean {
-    return this.visible
-  }
-
-  show(): void {
-    if (this.mountMode === 'embedded') {
-      // Defensive: the standalone modal and the embedded mount can't coexist.
-      // Tear down the embedded mount first; the host should be calling
-      // unmountEmbedded() before .show() in any well-formed flow, but if it
-      // doesn't we don't want a zombie DOM tree hanging off a stale host.
-      this.unmountEmbedded()
-    }
-    if (this.visible) {
-      // Already open: refresh the scope-dependent chrome and refetch in case
-      // the caller swapped scope without going through hide() first.
-      this.updateScopeChrome()
-      void this.fetchAndRender()
-      return
-    }
-    this.mountMode = 'standalone'
-    this.assembleChrome('standalone')
-    document.body.append(this.scrim!, this.container!)
-    this.unlockBackground = lockModalBackground(this.container!)
-    document.addEventListener('keydown', this.onKeydown, true)
-    void this.fetchAndRender()
-  }
-
-  /**
-   * Open the kanban scoped to a single city. Sets cityScope and shows; if
-   * already open, updates the scope chrome and refetches in place.
-   *
-   * Stage 1 of the vellum-kanban constitution: the server enforces
-   * local-origin only and returns 400 for remote cityIds. The frontend
-   * doesn't pre-filter (calling this with a remote city surfaces the
-   * server's 400 in the error banner — the right place to land that
-   * affordance until Stage 3 unlocks remote).
-   */
-  showForCity(city: { id: string; name?: string; path: string }): void {
-    const cityName = city.name ?? city.path.split('/').pop() ?? city.path
-    this.cityScope = { cityId: city.id, cityName }
-    this.show()
-  }
-
-  hide(): void {
-    if (this.mountMode !== 'standalone') return
-    document.removeEventListener('keydown', this.onKeydown, true)
-    this.unlockBackground?.()
-    this.unlockBackground = null
-    this.scrim?.remove()
-    this.container?.remove()
-    this.teardownState()
-  }
-
-  toggle(): void {
-    if (this.visible) this.hide()
-    else this.show()
-  }
-
   /**
    * Mount the kanban inside `host`. The host owns layout (size, position,
-   * border) and Escape semantics — vellum's workspace slot supplies a host
-   * div as a sibling to the FloatingIsland chrome and lets the kanban grid
-   * fill it.
+   * border), scrim, Escape ordering, and lockBackground — vellum's workspace
+   * slot supplies the host div and the modal chrome around it; the kanban
+   * only stretches to fill it.
    *
-   * Skipped relative to standalone:
-   *  - no scrim (the host modal already provides one)
-   *  - no document-level keydown (vellum owns Escape ordering)
-   *  - no lockBackground (the outer modal already locked the body)
-   *  - no body.appendChild (host owns DOM ownership)
+   * Re-mount with a different `cityScope` is supported in place: scope swap
+   * updates the chrome and refetches without rebuilding the DOM. Re-mount
+   * onto a different host element isn't supported (call `unmount()` first).
    *
    * @param host  container element; the kanban appends a single child div.
    * @param opts.cityScope  optional per-city scope; null = global aggregation.
    */
-  mountEmbedded(
+  mount(
     host: HTMLElement,
     opts: { cityScope?: KanbanCityScope | null } = {},
   ): void {
-    if (this.mountMode === 'standalone') {
-      // Hosts shouldn't open the embedded mount on top of an open standalone
-      // modal — but if they do, prefer the embedded mount. Tear the
-      // standalone down first so we don't end up with two competing chromes.
-      this.hide()
-    }
-    if (this.mountMode === 'embedded') {
+    if (this.container !== null) {
       // Already mounted: scope swap is the only meaningful re-call. Update
       // and refetch in place rather than rebuilding DOM from scratch.
       this.cityScope = opts.cityScope ?? null
@@ -284,65 +195,32 @@ export class KanbanModal {
       return
     }
     this.cityScope = opts.cityScope ?? null
-    this.mountMode = 'embedded'
-    this.assembleChrome('embedded')
+    this.assembleChrome()
     host.append(this.container!)
     void this.fetchAndRender()
   }
 
   /**
-   * Tear down an embedded mount. Safe to call when not embedded — no-op.
+   * Tear down a mounted kanban. Safe to call when not mounted — no-op.
    * The host is responsible for removing the host div itself; we only own
    * the kanban's container (already a child of host).
    */
-  unmountEmbedded(): void {
-    if (this.mountMode !== 'embedded') return
-    this.container?.remove()
+  unmount(): void {
+    if (this.container === null) return
+    this.container.remove()
     this.teardownState()
   }
 
   // ---------------------------------------------------------------------------
 
-  private onKeydown = (event: KeyboardEvent): void => {
-    if (event.key === 'Escape') {
-      // Capture phase + stopImmediatePropagation: this modal owns Escape while open.
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      this.hide()
-      return
-    }
-    // `r` reloads the kanban (cheap and useful while iterating)
-    if (event.key === 'r' && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      const target = event.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
-      event.preventDefault()
-      void this.fetchAndRender()
-    }
-  }
-
   /**
-   * Build the kanban DOM into `this.container` (and `this.scrim`, in
-   * standalone mode). Called by both `show()` and `mountEmbedded()`. The
-   * caller owns final placement — `show()` appends to body; `mountEmbedded()`
-   * appends to the host. The chrome differs in two places only:
-   *
-   *  1. Standalone mode adds a scrim sibling (full-viewport click-to-close).
-   *     Embedded mode skips it — the outer host already supplies one.
-   *  2. Standalone mode wires the close-button click to `hide()`. Embedded
-   *     mode hides the close button entirely; the host's outer chrome
-   *     (vellum's workspace modal close button) closes the whole surface.
-   *     A direct embed-only close would close only the kanban tab, which
-   *     isn't a coherent affordance — switch tabs instead.
+   * Build the kanban DOM into `this.container`. Vellum's outer modal owns
+   * close (via its own close button) — the kanban only renders the column
+   * grid, header, banner, and live region.
    */
-  private assembleChrome(mode: MountMode): void {
-    if (mode === 'standalone') {
-      this.scrim = document.createElement('div')
-      this.scrim.className = 'kbn-scrim'
-      this.scrim.addEventListener('click', () => this.hide())
-    }
-
+  private assembleChrome(): void {
     this.container = document.createElement('div')
-    this.container.className = `kbn-modal kbn-modal--${mode}`
+    this.container.className = 'kbn-modal'
     this.container.setAttribute('role', 'dialog')
     this.container.setAttribute('aria-modal', 'true')
     this.container.setAttribute('aria-label', 'Kanban — constitution fibers')
@@ -365,18 +243,7 @@ export class KanbanModal {
     this.statusEl.className = 'kbn-status'
     this.statusEl.textContent = 'Loading…'
 
-    if (mode === 'standalone') {
-      const closeBtn = document.createElement('button')
-      closeBtn.type = 'button'
-      closeBtn.className = 'kbn-close'
-      closeBtn.setAttribute('aria-label', 'Close kanban')
-      closeBtn.textContent = '×'
-      closeBtn.addEventListener('click', () => this.hide())
-      header.append(titleWrap, this.statusEl, closeBtn)
-    } else {
-      // Embedded: no close button — vellum's outer modal owns close.
-      header.append(titleWrap, this.statusEl)
-    }
+    header.append(titleWrap, this.statusEl)
 
     this.body = document.createElement('div')
     this.body.className = 'kbn-body'
@@ -397,13 +264,9 @@ export class KanbanModal {
     this.container.append(header, this.bannerEl, this.body, this.liveEl)
   }
 
-  /**
-   * Reset all field state to "not mounted." The DOM removal is the caller's
-   * responsibility (different teardown paths in `hide()` vs
-   * `unmountEmbedded()` because of scrim ownership / lockBackground).
-   */
+  /** Reset all field state to "not mounted." DOM removal is `unmount()`'s
+   *  responsibility; this only clears references. */
   private teardownState(): void {
-    this.scrim = null
     this.container = null
     this.body = null
     this.statusEl = null
@@ -412,10 +275,9 @@ export class KanbanModal {
     this.bannerEl = null
     this.dragSourceId = null
     // Reset scope on every teardown so the next mount lands at default
-    // global scope; a follow-on showForCity / mountEmbedded with a scope
+    // global scope; a follow-on `mount(...{cityScope})` with a scope
     // re-sets before assemble.
     this.cityScope = null
-    this.mountMode = null
     if (this.bannerTimer !== null) {
       window.clearTimeout(this.bannerTimer)
       this.bannerTimer = null
@@ -861,55 +723,29 @@ export class KanbanModal {
     const style = document.createElement('style')
     style.id = 'kbn-styles'
     style.textContent = `
-      .kbn-scrim {
-        position: fixed; inset: 0;
-        background: rgba(46, 42, 38, 0.45);
-        z-index: 9000;
-        backdrop-filter: blur(2px);
-      }
+      /* Fills the host element supplied by vellum's workspace slot
+         (KanbanHost in src/vellum/mount.tsx). The host gives us a fixed-
+         viewport positioning context; the kanban stretches to inset:0
+         inside it. No border or shadow — vellum's outer modal already
+         provides the chrome boundary, and a nested border reads as
+         tile-in-tile.
+
+         Header padding-left clears 44px for vellum's modal close button
+         (24px wide at left:8px — see vellum/mount.tsx:openVellumWorkspaceModal). */
       .kbn-modal {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
         background: #EDE8E0;
         display: flex; flex-direction: column;
         font-family: var(--font-main, 'EB Garamond', serif);
         color: #2E2A26;
         overflow: hidden;
       }
-      /* Standalone: full-viewport modal with its own scrim. */
-      .kbn-modal--standalone {
-        position: fixed;
-        top: 5vh; left: 5vw;
-        width: 90vw; height: 90vh;
-        border: 1px solid rgba(46, 42, 38, 0.18);
-        border-radius: 4px;
-        box-shadow: 0 12px 48px rgba(46, 42, 38, 0.35);
-        z-index: 9001;
-      }
-      /* Embedded: fills the host element. The vellum workspace slot supplies
-         the host with absolute/full-viewport positioning; the kanban only
-         stretches to fit. No border or shadow — vellum's outer modal already
-         provides the chrome boundary, and a nested border reads as a tile-in-
-         tile. The host needs to give us a positioning context (default
-         block flow against a flex/grid parent works); inside, kbn-modal
-         goes 100% × 100% so the column grid has room to lay out. */
-      .kbn-modal--embedded {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        border: none;
-        border-radius: 0;
-      }
-      /* Embedded clears space at the top-left for vellum's modal close
-         button (24px wide at left:8px, top:14px — see
-         vellum/mount.tsx:openVellumWorkspaceModal). The standalone modal
-         doesn't share a viewport with vellum's chrome so its header doesn't
-         need the inset. */
-      .kbn-modal--embedded .kbn-header {
-        padding-left: 44px;
-      }
       .kbn-header {
         display: flex; align-items: baseline; gap: 16px;
-        padding: 14px 20px;
+        padding: 14px 20px 14px 44px;
         border-bottom: 1px solid rgba(46, 42, 38, 0.12);
         background: #E5DED2;
         flex-shrink: 0;
@@ -934,21 +770,6 @@ export class KanbanModal {
         color: #7A7068;
         letter-spacing: 0.02em;
         text-align: center;
-      }
-      .kbn-close {
-        background: transparent;
-        border: none;
-        font-size: 28px;
-        line-height: 1;
-        color: #7A7068;
-        cursor: pointer;
-        padding: 0 8px;
-        border-radius: 2px;
-        transition: color 120ms ease, background 120ms ease;
-      }
-      .kbn-close:hover {
-        color: #2E2A26;
-        background: rgba(46, 42, 38, 0.08);
       }
       /* aria-live region — invisible but observable in the a11y tree. */
       .kbn-live {

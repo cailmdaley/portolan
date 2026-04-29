@@ -188,13 +188,12 @@ export class CityHUDHeader {
     if (city.hasClaims) {
       buttons.push('<button class="hud-action-btn hud-action-claims" title="Open vellum (t)" aria-label="Open vellum workspace">⚖</button>')
     }
-    // Kanban scoped to this city. Stage 1 of vellum-kanban: this opens the
-    // standalone KanbanModal pre-scoped via `?cityId=`. When Stage 5 lands,
-    // this affordance becomes "open vellum-on-this-city with Kanban tab
-    // active" — same intent, different surface. Local-origin only for now;
-    // remote cities would surface the server's 400 in the modal banner. We
-    // skip the button entirely for remote cities so the affordance only
-    // appears where it works (Stage 3 will reintroduce it for remotes).
+    // Kanban scoped to this city — opens vellum-on-this-city with the
+    // Kanban tab active at first paint, scoped via `?cityId=`. Local-origin
+    // only for now; remote cities would surface the server's 400 in the
+    // modal banner. We skip the button entirely for remote cities so the
+    // affordance only appears where it works. Constitution's deferred
+    // dimension (c) covers the remote-city scoping unlock.
     if (city.originId === 'local') {
       const cityLabel = escapeHtml(city.name)
       buttons.push(

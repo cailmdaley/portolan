@@ -1,6 +1,7 @@
 /**
  * KanbanLaunchButton — small fixed icon at top-left, perches alongside the
- * RecentWorkerBar's bird wire. Click to open the KanbanModal.
+ * RecentWorkerBar's bird wire. Click invokes `onOpen`; `main.ts` wires it
+ * to `openGlobalKanban()` (vellum mounted on the Kanban tab, global scope).
  *
  * Visual: three vertical strokes in the porch-morning ink palette, suggesting
  * kanban columns. Same height as the bird perches (16px-ish), same subdued
@@ -8,8 +9,8 @@
  *
  * Polls `/kanban` every 30s when idle to surface the awaiting-review count
  * as a small badge — the primary "your move" signal for the human. Skips
- * the badge update while the modal is open (the modal itself shows fresh
- * counts).
+ * the badge update while vellum is showing the kanban tab (the embedded
+ * grid renders fresh counts there).
  */
 
 interface KanbanLaunchButtonOptions {

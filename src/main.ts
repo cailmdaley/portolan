@@ -879,8 +879,9 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
 
 /**
  * Open the global kanban — vellum mounted with `scope=global` (no cityId)
- * and the Kanban tab active at first paint. Stage 6 entry point: replaces
- * the standalone `kanbanModal.show()` from the launch button + `k` hotkey.
+ * and the Kanban tab active at first paint. Single entry point for the
+ * launch button + `k` hotkey since Stage 6 retired the standalone modal
+ * (the standalone path itself was collapsed in Stage 8).
  *
  * If a vellum modal is already up, flip its mode to Kanban in place rather
  * than tearing down and remounting — the constitution's "Hotkey k semantics"
@@ -903,9 +904,9 @@ function openGlobalKanban(): void {
 
 /**
  * Resolve a tmux session name to a portolan session and pivot the camera +
- * focus its kitty tab. Shared between the standalone KanbanModal and the
- * vellum-embedded KanbanHost so kanban running-worker behaviour is identical
- * across surfaces.
+ * focus its kitty tab. Used by the vellum-embedded KanbanHost via the
+ * `onOpenWorker` plumbing on `openVellumWorkspaceModal` so a click on a
+ * running-worker indicator inside a card brings up the live terminal.
  */
 function focusWorkerByTmuxSession(tmuxSessionName: string): void {
   const session = sessions.find(s => s.tmuxSession === tmuxSessionName)
@@ -993,14 +994,13 @@ const globalSearchPalette = new GlobalSearchPalette({
 })
 
 // Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
-// Stage 6 retired the standalone full-viewport KanbanModal: every entry
-// point (launch button, hotkey `k`, city HUD's "Open kanban scoped to <city>"
-// button) now opens vellum-on-the-relevant-scope with the Kanban tab active
-// — see openGlobalKanban / openCityWorkspace + vellum-reader/constitution-
-// vellum-kanban §"Stage 6". The KanbanModal class still exists and is
-// instantiated per-mount inside vellum's workspace slot by KanbanHost
-// (mountEmbedded mode); the standalone (`mountMode: 'standalone'`) path is
-// wired to no callers in portolan and is queued for Stage-8 cleanup.
+// Every entry point (launch button, hotkey `k`, city HUD's "Open kanban
+// scoped to <city>" button) opens vellum-on-the-relevant-scope with the
+// Kanban tab active — see openGlobalKanban / openCityWorkspace +
+// vellum-reader/constitution-vellum-kanban. The KanbanModal class is
+// instantiated per-mount inside vellum's workspace slot by KanbanHost; the
+// standalone full-viewport path (Stage 6 retired the entry points; Stage 8
+// collapsed the code) is gone.
 
 const kanbanLaunchButton = new KanbanLaunchButton({
   onOpen: openGlobalKanban,
@@ -1031,12 +1031,11 @@ cityPanel.setOnViewPlaygrounds((city) => {
   playgroundViewer.show(city)
 })
 
-// City HUD's "Open kanban scoped to <city>" button. Stage 6 retargets it
-// from the standalone KanbanModal to vellum-on-this-city with the Kanban
-// tab active at first paint — same intent (pre-scoped kanban for this
-// city), now hosted inside vellum's chrome so the user can flip to
-// Narrative/Delta in place without re-opening anything. See
-// ai-futures/portolan/vellum-reader/constitution-vellum-kanban §"Stage 6".
+// City HUD's "Open kanban scoped to <city>" button — opens vellum-on-this-
+// city with the Kanban tab active at first paint. Hosted inside vellum's
+// chrome so the user can flip to Narrative/Delta in place without re-
+// opening anything. See ai-futures/portolan/vellum-reader/constitution-
+// vellum-kanban §"Stage 6".
 cityPanel.setOnViewKanban((city) => {
   cityPanel.hide()
   openCityWorkspace(city, { initialMode: 'kanban' })
