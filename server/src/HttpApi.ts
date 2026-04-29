@@ -21,6 +21,7 @@ import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiKanban } from './HttpApiKanban.js';
+import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiLayouts } from './HttpApiLayouts.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
@@ -62,6 +63,17 @@ interface SessionLookup {
 
 type RuntimeDiagnosticsProvider = () => unknown | Promise<unknown>;
 
+/**
+ * Cross-cutting deps that don't fit the lookup-shaped interfaces above.
+ * Stage 3a of the vellum-kanban constitution adds the fiber-tree snapshot
+ * provider here — the kanban folds remote-origin snapshots into the global
+ * view alongside local-host walks. Optional so existing tests continue to
+ * construct HttpApi without wiring a snapshot store.
+ */
+export interface HttpApiOptions {
+  remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+}
+
 // ============================================================================
 // HttpApi
 // ============================================================================
@@ -81,15 +93,18 @@ export class HttpApi {
   private tapestryApi: HttpApiTapestry;
   private layoutsApi: HttpApiLayouts;
   private layoutStore: LayoutStore;
+  private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
 
   constructor(
     cityLookup: CityLookup,
     originLookup: OriginLookup,
-    persistenceLookup: PersistenceLookup
+    persistenceLookup: PersistenceLookup,
+    options: HttpApiOptions = {},
   ) {
     this.cityLookup = cityLookup;
     this.originLookup = originLookup;
     this.persistenceLookup = persistenceLookup;
+    this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
     this.annotationsApi = new HttpApiAnnotations({
       cityLookup,
       originLookup,
@@ -105,7 +120,9 @@ export class HttpApi {
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
     this.astraViewApi = new HttpApiAstraView({ originLookup });
-    this.kanbanApi = new HttpApiKanban();
+    this.kanbanApi = new HttpApiKanban({
+      remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+    });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
@@ -422,7 +439,14 @@ export class HttpApi {
         .filter(c => c.originId === 'local')
         .map(c => c.path);
       if (localPins.length === 0) return this.kanbanApi;
-      return new HttpApiKanban({ feltHosts: localPins });
+      // Global view: pinned local hosts + every remote origin's pushed
+      // snapshot (Stage 3a). HttpApiKanban dedupes id-collisions between
+      // local and remote, with local winning — local-mirrors-of-remote
+      // (e.g. an rsynced loom) render as one card sourced from local.
+      return new HttpApiKanban({
+        feltHosts: localPins,
+        remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+      });
     }
     const city = this.cityLookup.getCityById(cityId);
     if (!city) {
@@ -430,11 +454,18 @@ export class HttpApi {
       return null;
     }
     if (city.originId !== 'local') {
+      // Stage 3a lands the *global* view for remote origins. Per-city
+      // remote scoping needs the agent to walk multiple feltHosts and
+      // ship per-city snapshots (or the server to filter by city.path
+      // → id-prefix), neither of which is in the Stage 3a ambit.
+      // See [[finding-restaged-implementation-plan]] §3a — the protocol
+      // is the unblock; per-city remote scoping is a follow-up.
       this.sendJsonError(
         res,
         400,
         `cityId=${cityId} resolves to remote origin '${city.originId}'; ` +
-          `remote-origin kanban scoping ships in Stage 3 of the vellum-kanban constitution`,
+          `per-city remote scoping is a Stage 3a follow-up — the global view ` +
+          `(no cityId) already aggregates remote origins via agent push`,
       );
       return null;
     }

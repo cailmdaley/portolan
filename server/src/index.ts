@@ -27,6 +27,7 @@ import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
 import { Shuttle, defaultShuttleConfig } from './Shuttle.js';
+import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 
 // ============================================================================
 // Constants
@@ -49,6 +50,7 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
+const fiberTreeSnapshotStore = new FiberTreeSnapshotStore();
 const meetingBridge = new MeetingBridge({
   sourceFactory: {
     createParakeetSource: (parakeetOptions, callbacks) =>
@@ -116,7 +118,9 @@ const cityLookup = {
 // Extracted Modules
 // ============================================================================
 
-const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
+const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
+  remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
+});
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
 httpApi.setRecentFileTracker(recentFileTracker);
@@ -380,6 +384,26 @@ wss.on('connection', async (ws, req) => {
           remoteAgentCoordinator.handleAgentSessionsUpdate(origin.id, message.payload.sessions);
         } else if (message.type === 'agent_activity') {
           remoteAgentCoordinator.handleAgentActivity(origin.id, (message as AgentActivityMessage).activity);
+        } else if (message.type === 'fiber_tree_dump') {
+          // Stage 3a — agent ships its full fiber-tree on connect (and again
+          // on each reconnect). Replaces this origin's snapshot wholesale;
+          // the agent is the sole writer to its host's tree, so there's no
+          // reconciliation to do. See [[constitution-vellum-kanban]].
+          const { feltHost, files } = message.payload as {
+            feltHost: string;
+            files: Array<{ path: string; content: string }>;
+          };
+          fiberTreeSnapshotStore.upsertFullDump(origin.id, feltHost, files ?? []);
+          console.log(
+            `[FiberTree] full dump from ${origin.id}: ${(files ?? []).length} files at ${feltHost}`,
+          );
+          // The kanban view rebuilds per request, so we don't need to push;
+          // browsers polling /kanban will pick up the new state on next read.
+        } else if (message.type === 'fiber_tree_delta') {
+          const { deltas } = message.payload as {
+            deltas: Array<{ path: string; op: 'upsert' | 'delete'; content?: string }>;
+          };
+          fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
@@ -390,6 +414,11 @@ wss.on('connection', async (ws, req) => {
       const disconnectedOrigin = originManager.handleDisconnect(ws);
       if (disconnectedOrigin) {
         remoteAgentCoordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
+        // Stage 3a — flag the origin's fiber-tree snapshot stale (kept,
+        // not cleared, so the kanban can render last-known-good cards
+        // with a "waiting on <hostname>" badge). Stage 3b wires the UI;
+        // for now we just track the timestamp so the wire is honest.
+        fiberTreeSnapshotStore.markStale(disconnectedOrigin.id, new Date().toISOString());
         void browserStateCoordinator.broadcastCurrentState();
       }
       console.log(`Agent disconnected: ${originName}`);

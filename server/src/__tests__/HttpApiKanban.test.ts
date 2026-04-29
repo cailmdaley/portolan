@@ -16,6 +16,7 @@ import { join } from 'path';
 import { IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
 import { HttpApiKanban, applyTargetToFrontmatter, mutateTagsInPlace } from '../HttpApiKanban.js';
+import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-kanban');
 const FELT_DIR = join(TEST_DIR, '.felt');
@@ -583,6 +584,144 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(fmStatusLines).toEqual(['status: closed']);
       // Body unchanged.
       expect(after).toContain('The body explains "status: open" semantics in prose.');
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Stage 3a — remote-origin snapshots fold into the merged set
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('remote-origin snapshots (Stage 3a)', () => {
+    /** Build a constitution fiber's md content for a snapshot file. */
+    function fiberContent(name: string, status = 'active'): string {
+      return [
+        '---',
+        `name: ${name}`,
+        `status: ${status}`,
+        'tags:',
+        '  - constitution',
+        'created-at: 2026-04-15T00:00:00Z',
+        '---',
+        '',
+        'body',
+      ].join('\n');
+    }
+
+    it('remote-snapshot fibers appear in the kanban response', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        listSessions: () => [],
+      });
+      const res = await callKanban(api);
+      expect(res.status).toBe(200);
+      const ids = res.body.columns.inFlight.map((c: any) => c.id);
+      expect(ids).toContain('cmbx');
+      const cmbx = res.body.columns.inFlight.find((c: any) => c.id === 'cmbx');
+      expect(cmbx.originId).toBe('remote-cineca');
+    });
+
+    it('remote and local fibers coexist; local wins on id collision', async () => {
+      writeFib('shared-id', {
+        name: 'Local copy',
+        status: 'active',
+        tags: ['constitution'],
+        'created-at': '2026-04-15T00:00:00Z',
+      });
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'shared-id/shared-id.md', content: fiberContent('Remote copy') },
+        { path: 'remote-only/remote-only.md', content: fiberContent('Remote-only fiber') },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        listSessions: () => [],
+      });
+      const res = await callKanban(api);
+      expect(res.status).toBe(200);
+      const cards = res.body.columns.inFlight;
+      const shared = cards.find((c: any) => c.id === 'shared-id');
+      expect(shared).toBeDefined();
+      expect(shared.name).toBe('Local copy');
+      expect(shared.originId).toBe('local');
+      // Remote-only fiber appears via the snapshot.
+      const remoteOnly = cards.find((c: any) => c.id === 'remote-only');
+      expect(remoteOnly).toBeDefined();
+      expect(remoteOnly.originId).toBe('remote-cineca');
+    });
+
+    it('local fibers carry originId=local even when no remote snapshots', async () => {
+      writeFib('local-only', {
+        name: 'Local',
+        status: 'active',
+        tags: ['constitution'],
+        'created-at': '2026-04-15T00:00:00Z',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+      const res = await callKanban(api);
+      expect(res.body.columns.inFlight[0].originId).toBe('local');
+    });
+
+    it('multiple remote origins both appear', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
+      ]);
+      store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
+        { path: 'pure_eb/pure_eb.md', content: fiberContent('pure_eb') },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        listSessions: () => [],
+      });
+      const res = await callKanban(api);
+      const byId = new Map<string, string>(
+        (res.body.columns.inFlight as Array<{ id: string; originId: string }>)
+          .map(c => [c.id, c.originId]),
+      );
+      expect(byId.get('cmbx')).toBe('remote-cineca');
+      expect(byId.get('pure_eb')).toBe('remote-candide');
+    });
+
+    it('applyTransition refuses remote-origin fibers (Stage 4 boundary)', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        listSessions: () => [],
+      });
+      await expect(api.applyTransition('cmbx', 'awaitingReview')).rejects.toThrow(/Stage 4/);
+    });
+
+    it('non-constitution remote fibers are excluded', async () => {
+      const store = new FiberTreeSnapshotStore();
+      // Strip the constitution tag from the content.
+      const noTag = [
+        '---',
+        'name: Untagged',
+        'status: active',
+        'created-at: 2026-04-15T00:00:00Z',
+        '---',
+      ].join('\n');
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'untagged/untagged.md', content: noTag },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        listSessions: () => [],
+      });
+      const res = await callKanban(api);
+      expect(res.body.totals.inFlight).toBe(0);
     });
   });
 

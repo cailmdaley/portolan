@@ -24,6 +24,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { getAllFibers, type Fiber } from './FiberReader.js';
+import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
 
 export interface KanbanCard {
@@ -31,6 +32,13 @@ export interface KanbanCard {
   name: string;
   /** Absolute filesystem path to the fiber's md (for open-in-vellum). */
   path: string;
+  /**
+   * Origin that contributed this fiber — `local` for filesystem-walk
+   * sources, `remote-<hostname>` for fibers sourced from an agent's
+   * fiber-tree snapshot. Drives remote-origin badging and (Stage 3b)
+   * the "waiting on <hostname>" stale state.
+   */
+  originId: string;
   status: string;
   outcome?: string;
   tags?: string[];
@@ -90,6 +98,26 @@ interface HttpApiKanbanOptions {
    * fiber's file before writing.
    */
   feltHosts?: string[];
+  /**
+   * Provider for remote-origin fiber-tree snapshots — Stage 3a of the
+   * vellum-kanban constitution. Returns the per-origin snapshots that
+   * have been pushed by connected portolan-agents. Called per request
+   * so newly-arrived dumps and deltas surface without restart.
+   *
+   * The kanban folds these into the merged set after the local-host
+   * walks: remote entries dedupe by id (no realpath cross-machine), and
+   * a remote fiber whose id collides with a local entry yields to the
+   * local copy — local-mirror-of-remote (e.g. an rsynced loom on the
+   * laptop and the live one on cineca) renders as one card sourced from
+   * local. Pure remote-only-no-mirror fibers appear once via the agent.
+   *
+   * `applyTransition` does NOT route remote-origin writes; that's Stage 4
+   * (the `kanban-transition` correlation-ID layer). For now, transitions
+   * against remote-origin fibers throw "fiber not found" — same as today's
+   * pre-Stage-3 behaviour, just sourced from the snapshot rather than
+   * the per-request 400.
+   */
+  remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   /** Max tempered cards to return. Defaults to 30. */
   temperedLimit?: number;
   /** Override clock for transitions (testing). */
@@ -131,6 +159,7 @@ export interface KanbanTransitionRequest {
 export class HttpApiKanban {
   private readonly feltHost: string;
   private readonly feltHosts: string[] | undefined;
+  private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private readonly temperedLimit: number;
   private readonly now: () => Date;
   private readonly listSessions: () => string[];
@@ -138,6 +167,7 @@ export class HttpApiKanban {
   constructor(opts: HttpApiKanbanOptions = {}) {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
     this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
+    this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
@@ -159,21 +189,40 @@ export class HttpApiKanban {
 
   /**
    * Walk every configured host and return constitution-tag-filtering's input:
-   * a flat list of `{fiber, host}` pairs deduped by `realpath` of the fiber's
-   * md file. First host that surfaces a given file wins; the `host` field
-   * threads through `toCard` so the per-card `path` always resolves against
-   * the host that actually contributed it (not, e.g., a different host that
-   * happens to share the fiber's id).
+   * a flat list of `{fiber, host, originId}` entries deduped:
    *
-   * `byId` (used for dependsOn satisfaction) is built off the same merged
-   * set, so cross-host dependency references resolve correctly when the
-   * dependee is reachable through *any* configured host.
+   *   - Local-host walks dedupe by `realpath` of the fiber's md file —
+   *     the kanban's loom-symlink scenario where a project's `.felt/`
+   *     appears via multiple mount points still renders the fiber once.
+   *     First-seen wins, in host iteration order.
+   *   - Remote snapshots (Stage 3a, pushed by portolan-agent) fold in
+   *     after the local walk. They dedupe against the local set by id —
+   *     no realpath cross-machine, but a remote fiber whose id matches
+   *     a local entry yields to local (the local copy is canonical when
+   *     both exist; pure remote-only fibers don't collide). Within the
+   *     remote set itself, first-snapshot wins on id collision (rare —
+   *     same fiber id existing on two different remote hosts would
+   *     mean the user manually synced; not a worried-about case).
+   *
+   * The `host` field threads through `toCard` so the per-card `path`
+   * always resolves against the contributing host. For local that's the
+   * filesystem path used to read the file; for remote that's the
+   * snapshot's `feltHost` (a path on the *remote* machine — the local
+   * server can't stat it, but it's correct as an identifier and as
+   * what shows up in clickthrough URLs once Stage 5/6 wire vellum to
+   * remote origins).
+   *
+   * `byId` (used for dependsOn satisfaction) is built off the merged
+   * set, so cross-host dependency references resolve correctly when
+   * the dependee is reachable through *any* configured host or remote
+   * snapshot.
    */
   private async collectFibers(): Promise<{
-    merged: Array<{ fiber: Fiber; host: string }>;
+    merged: Array<{ fiber: Fiber; host: string; originId: string }>;
     byId: Map<string, Fiber>;
   }> {
-    const seen = new Map<string, { fiber: Fiber; host: string }>();
+    const seen = new Map<string, { fiber: Fiber; host: string; originId: string }>();
+    const seenIds = new Set<string>();
     for (const host of this.resolveHosts()) {
       if (!existsSync(join(host, '.felt'))) continue;
       let fibers: Fiber[];
@@ -191,7 +240,25 @@ export class HttpApiKanban {
         } catch {
           continue; // fiber file moved out from under us; skip rather than crash
         }
-        if (!seen.has(canonical)) seen.set(canonical, { fiber: f, host });
+        if (!seen.has(canonical)) {
+          seen.set(canonical, { fiber: f, host, originId: 'local' });
+          seenIds.add(f.id);
+        }
+      }
+    }
+    // Remote snapshots: id-deduped against the local set we just built,
+    // and against each other. Use a synthetic key (`<originId>:<id>`)
+    // for the seen-map so they don't collide with the realpath keys.
+    if (this.remoteSnapshotsProvider) {
+      for (const snapshot of this.remoteSnapshotsProvider()) {
+        for (const f of snapshot.fibers) {
+          if (seenIds.has(f.id)) continue;
+          const key = `${snapshot.originId}::${f.id}`;
+          if (!seen.has(key)) {
+            seen.set(key, { fiber: f, host: snapshot.feltHost, originId: snapshot.originId });
+            seenIds.add(f.id);
+          }
+        }
       }
     }
     const merged = [...seen.values()];
@@ -221,8 +288,8 @@ export class HttpApiKanban {
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
 
-      for (const { fiber: f, host } of constitutional) {
-        const card = this.toCard(f, host, byId, liveSessions);
+      for (const { fiber: f, host, originId } of constitutional) {
+        const card = this.toCard(f, host, originId, byId, liveSessions);
         const isDraft = f.tags?.includes('draft') ?? false;
         if (f.status !== 'closed') {
           if (isDraft) drafts.push(card);
@@ -350,10 +417,22 @@ export class HttpApiKanban {
     const { merged } = await this.collectFibers();
     const entry = merged.find(({ fiber }) => fiber.id === fiberId);
     if (!entry) throw new Error(`fiber not found: ${fiberId}`);
-    const { fiber, host } = entry;
+    const { fiber, host, originId } = entry;
     if (!fiber.tags?.includes('constitution')) {
       throw new Error(
         `kanban only mutates constitution-tagged fibers; ${fiberId} is tagged ${(fiber.tags ?? []).join(', ') || '(none)'}`,
+      );
+    }
+    if (originId !== 'local') {
+      // Stage 3a lands the read path for remote origins; remote-origin
+      // mutation flows through the agent's `kanban-transition` message
+      // family and the correlation-ID layer that comes with Stage 4.
+      // Until then, refuse explicitly so the surface is honest about its
+      // boundary instead of silently falling back to a local-host write
+      // against a path that doesn't exist locally.
+      throw new Error(
+        `remote-origin transitions ship in Stage 4 of the vellum-kanban constitution ` +
+          `(fiber ${fiberId} is on origin '${originId}')`,
       );
     }
     const path = this.fiberPath(host, fiber);
@@ -372,7 +451,7 @@ export class HttpApiKanban {
     const refreshedById = new Map(after.map(f => [f.id, f]));
     const refreshed = refreshedById.get(fiberId);
     if (!refreshed) throw new Error(`fiber disappeared after write: ${fiberId}`);
-    return this.toCard(refreshed, host, refreshedById);
+    return this.toCard(refreshed, host, originId, refreshedById);
   }
 
   // ---------------------------------------------------------------------------
@@ -380,6 +459,7 @@ export class HttpApiKanban {
   private toCard(
     f: Fiber,
     host: string,
+    originId: string,
     byId: Map<string, Fiber>,
     liveSessions: Set<string> = new Set(),
   ): KanbanCard {
@@ -392,7 +472,10 @@ export class HttpApiKanban {
     // appeared via loom carries a loom path; a fiber that lives in a
     // standalone-city `.felt/` (no loom symlink) carries that city's path.
     // Pre-multi-host code computed this off `this.feltHost` and silently
-    // returned a wrong path for the latter case.
+    // returned a wrong path for the latter case. Remote-origin fibers
+    // carry their feltHost path on the *remote* machine (the local server
+    // can't stat it; it's an identifier, not a clickable file path here —
+    // remote clickthrough wires up via the agent in Stages 5/6).
     const path = this.fiberPath(host, f);
 
     const expectedSession = shuttleSessionName(f.id);
@@ -402,6 +485,7 @@ export class HttpApiKanban {
       id: f.id,
       name: f.name,
       path,
+      originId,
       status: f.status,
       outcome: f.outcome,
       tags: f.tags,

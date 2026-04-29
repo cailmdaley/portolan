@@ -24,8 +24,8 @@ import WebSocket from 'ws';
 import { exec } from 'child_process';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync } from 'fs';
-import { resolve, join } from 'path';
+import { existsSync, readFileSync, readdirSync, watch } from 'fs';
+import { resolve, join, relative, sep } from 'path';
 
 const execAsync = promisify(exec);
 
@@ -40,6 +40,25 @@ const EVENTS_FILE = join(homedir(), '.portolan', 'data', 'events.jsonl');
 const DEBUG = process.env.PORTOLAN_DEBUG === 'true';
 const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLANNOTATOR_PORT, 10) : null;
 
+// ─── Fiber-tree push (Stage 3a of vellum-kanban constitution) ────────────────
+//
+// The agent ships fiber-tree state to the server alongside activity events,
+// enabling remote-origin fibers to land in the kanban's global view.
+//
+// PORTOLAN_FELT_HOST: parent dir of `.felt/`; defaults to `~/loom`. v1
+// supports a single feltHost per agent — multi-feltHost-per-origin is a
+// follow-up (the server already knows pinned cities for each origin and
+// will eventually push that list back to the agent on connect).
+//
+// Watch debounces with FELT_WATCH_DEBOUNCE_MS so bursts (sweeps, mass
+// renames, git pulls) batch into a single delta message. Per the
+// constitution, ~250ms is the design point. Override via env for tests.
+const FELT_HOST = process.env.PORTOLAN_FELT_HOST || join(homedir(), 'loom');
+const FELT_DIR = join(FELT_HOST, '.felt');
+const FELT_WATCH_DEBOUNCE_MS = process.env.PORTOLAN_FELT_DEBOUNCE_MS
+  ? parseInt(process.env.PORTOLAN_FELT_DEBOUNCE_MS, 10)
+  : 250;
+
 // CLI provider detection — detect both claude and codex simultaneously
 const ALL_CLI_PROCESS_NAMES = ['claude', 'codex'];
 function isCliProcess(comm) { return ALL_CLI_PROCESS_NAMES.some(n => comm.includes(n)); }
@@ -53,6 +72,9 @@ let connected = false;
 let pollInterval = null;
 let eventsWatchInterval = null;
 let lastEventsCharPosition = 0;
+let fiberTreeWatcher = null;
+let fiberTreeFlushTimer = null;
+const fiberTreePending = new Map();  // relPath → 'upsert' | 'delete'
 
 // ============================================================================
 // Logging
@@ -477,6 +499,155 @@ function processEvent(event) {
 }
 
 // ============================================================================
+// Fiber-tree push (Stage 3a of vellum-kanban constitution)
+// ============================================================================
+
+/**
+ * Recursively collect every `.md` file under FELT_DIR. Returns an array of
+ * `{path, content}` objects with `path` relative to FELT_DIR (e.g.
+ * `cmbx/cmbx.md`, `ai-futures/portolan/portolan.md`).
+ *
+ * The agent ships every .md file unfiltered; the server's
+ * FiberTreeSnapshotStore drops non-container .md files (sibling notes that
+ * aren't fibers) via `idFromPath`. Keeping the agent simple — no YAML
+ * parsing, no fiber-shape awareness — keeps deployment footprint minimal.
+ */
+function collectFeltMdFiles(dir) {
+    const out = [];
+    function walk(currentDir) {
+        let entries;
+        try {
+            entries = readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const full = join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                walk(full);
+            } else if (entry.isFile() && entry.name.endsWith('.md')) {
+                let content;
+                try {
+                    content = readFileSync(full, 'utf-8');
+                } catch {
+                    continue; // skip unreadable
+                }
+                const relPath = relative(dir, full).split(sep).join('/');
+                out.push({ path: relPath, content });
+            }
+        }
+    }
+    walk(dir);
+    return out;
+}
+
+/**
+ * Send a full fiber-tree dump for FELT_DIR. Called after the agent
+ * registers with the server (initial connect, and on every reconnect — the
+ * server replaces the snapshot wholesale, no reconciliation needed).
+ */
+function sendFiberTreeDump() {
+    if (!existsSync(FELT_DIR)) {
+        log(`Fiber-tree dump skipped: ${FELT_DIR} does not exist`);
+        return;
+    }
+    const t0 = Date.now();
+    const files = collectFeltMdFiles(FELT_DIR);
+    if (connected && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'fiber_tree_dump',
+            payload: { feltHost: FELT_HOST, files },
+        }));
+        log(`Sent fiber_tree_dump: ${files.length} files (walk ${Date.now() - t0}ms) from ${FELT_DIR}`);
+    }
+}
+
+/**
+ * Start watching FELT_DIR for `.md` changes. Per-file events are coalesced
+ * into a `pending` map (path → op) and flushed in batched `fiber_tree_delta`
+ * messages on a debounce timer.
+ *
+ * Node's fs.watch with `recursive: true` works on macOS, Windows, and Linux
+ * (kernel 5.2+, libuv-based). The agent catches the rare unsupported-OS
+ * error and degrades gracefully — the dump on connect still ships, just
+ * without live deltas. Reconnect-triggered re-dumps recover any drift.
+ */
+function startFiberTreeWatcher() {
+    if (!existsSync(FELT_DIR)) {
+        log(`Fiber-tree watcher skipped: ${FELT_DIR} does not exist`);
+        return;
+    }
+    try {
+        fiberTreeWatcher = watch(FELT_DIR, { recursive: true, persistent: false }, (eventType, filename) => {
+            if (!filename) return;
+            // Normalize to forward slashes for wire consistency. fs.watch on
+            // Windows would emit backslashes; harmless on POSIX.
+            const relPath = String(filename).split(sep).join('/');
+            if (!relPath.endsWith('.md')) return;
+            const fullPath = join(FELT_DIR, relPath);
+            // Probe existence at event time rather than trusting eventType:
+            // 'change' usually means write, 'rename' covers create/delete/move.
+            // existsSync is the unambiguous signal — file present = upsert,
+            // absent = delete. The flush re-reads, so a flap (delete-then-
+            // recreate within debounce window) settles to the final state.
+            const op = existsSync(fullPath) ? 'upsert' : 'delete';
+            fiberTreePending.set(relPath, op);
+            scheduleFiberTreeFlush();
+        });
+        log(`Watching fiber tree: ${FELT_DIR} (debounce ${FELT_WATCH_DEBOUNCE_MS}ms)`);
+    } catch (err) {
+        log(`Fiber-tree watcher unsupported on this platform: ${err.message}. ` +
+            `Reconnect-triggered re-dumps will recover any drift.`);
+    }
+}
+
+function scheduleFiberTreeFlush() {
+    if (fiberTreeFlushTimer) clearTimeout(fiberTreeFlushTimer);
+    fiberTreeFlushTimer = setTimeout(flushFiberTreeDeltas, FELT_WATCH_DEBOUNCE_MS);
+}
+
+function flushFiberTreeDeltas() {
+    fiberTreeFlushTimer = null;
+    if (fiberTreePending.size === 0) return;
+    const deltas = [];
+    for (const [path, op] of fiberTreePending) {
+        const fullPath = join(FELT_DIR, path);
+        if (op === 'upsert') {
+            try {
+                const content = readFileSync(fullPath, 'utf-8');
+                deltas.push({ path, op: 'upsert', content });
+            } catch {
+                // File vanished between watch and read — emit delete.
+                deltas.push({ path, op: 'delete' });
+            }
+        } else {
+            deltas.push({ path, op: 'delete' });
+        }
+    }
+    fiberTreePending.clear();
+    if (deltas.length === 0) return;
+    if (connected && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'fiber_tree_delta',
+            payload: { deltas },
+        }));
+        debug(`Sent fiber_tree_delta: ${deltas.length} ops`);
+    }
+}
+
+function stopFiberTreeWatcher() {
+    if (fiberTreeWatcher) {
+        try { fiberTreeWatcher.close(); } catch { /* already closed */ }
+        fiberTreeWatcher = null;
+    }
+    if (fiberTreeFlushTimer) {
+        clearTimeout(fiberTreeFlushTimer);
+        fiberTreeFlushTimer = null;
+    }
+    fiberTreePending.clear();
+}
+
+// ============================================================================
 // WebSocket Connection
 // ============================================================================
 
@@ -531,6 +702,12 @@ function connect(serverUrl, sshHost) {
 
         // Send initial sessions
         pollSessions();
+
+        // Stage 3a: ship the fiber tree on connect. The server replaces
+        // any prior snapshot wholesale — reconnects don't need state-diff
+        // coordination because the agent is the sole writer to its
+        // host's `.felt/`.
+        sendFiberTreeDump();
     });
 
     ws.on('message', (data) => {
@@ -640,6 +817,13 @@ async function main() {
             // Start events watcher (for activity stream)
             startEventsWatcher();
 
+            // Start fiber-tree watcher (debounced delta push). Started up
+            // front so it's running by the time the WS opens; events that
+            // fire before connect just queue in the pending map and
+            // flush on the first scheduled timer tick after the socket
+            // is ready.
+            startFiberTreeWatcher();
+
             // Connect to server
             connect(serverUrl, sshHost);
 
@@ -648,6 +832,7 @@ async function main() {
                 log('Shutting down...');
                 if (pollInterval) clearInterval(pollInterval);
                 if (eventsWatchInterval) clearInterval(eventsWatchInterval);
+                stopFiberTreeWatcher();
                 if (ws) ws.close();
                 process.exit(0);
             });
