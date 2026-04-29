@@ -14,8 +14,12 @@
  *     narrative slot routed to FileViewerPage). Files used to have their own
  *     openVellumFileModal; that retired 2026-04-25 — see
  *     card-redesign/file-modal-absorbs-into-workspace.
- *   - openVellumStaticFileModal(…) — separate path used by the static
- *     GitHub-Pages tapestry viewer; no city or workspace, just FileViewerModal.
+ *
+ * Previously also exposed `openVellumStaticFileModal()` for the standalone
+ * GitHub-Pages tapestry viewer; that surface and its dependents retired
+ * with the broader tapestry retirement in commit `<sweep>` (see the
+ * `gotchas/tapestry-retirement-recovery` fiber for how to fish anything
+ * back out of git history if needed).
  *
  * Everything outside this file stays vanilla TS/Three.js. React only lives
  * inside the React root this file creates — see vellum-in-portolan.
@@ -27,7 +31,6 @@ import {
   AnnotationActionsProvider,
   DecisionFlipProvider,
   FiberCard,
-  FileViewerModal,
   FileViewerPage,
   WorkspaceMount,
   type Annotation,
@@ -36,7 +39,7 @@ import {
   type GraphNode,
 } from 'vellum'
 import 'vellum/css'
-import { createPortolanAdapter, createPortolanStaticAdapter } from './portolan-adapter'
+import { createPortolanAdapter } from './portolan-adapter'
 import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'
 import { showToast } from '../ui/utils'
 import { lockModalBackground } from '../ui/modalBackgroundLock'
@@ -657,10 +660,6 @@ export interface VellumModalHandle {
 // openVellumWorkspaceModal({ initialFilePath, … }), which lands on
 // FileViewerPage in the workspace's narrative slot. See
 // card-redesign/file-modal-absorbs-into-workspace.
-//
-// FileViewerModal stays imported from vellum because openVellumStaticFileModal
-// (the GitHub-Pages tapestry viewer) still mounts it directly — that path has
-// no city or workspace, just a flat file viewer.
 
 export interface OpenWorkspaceModalOptions {
   /** City context for fiber operations (graph fetch, search, fiber content).
@@ -918,14 +917,6 @@ async function resolveCityRootSlug(cityId: string | undefined): Promise<string |
   return typeof data.rootSlug === 'string' ? data.rootSlug : null
 }
 
-export interface OpenStaticFileModalOptions {
-  /** File href as it appears in the tapestry export (absolute, `./`, or relative). */
-  path: string
-  /** Base URL for the static tapestry export (e.g. "./data/pure_eb"). */
-  staticDataBase: string
-  jumpToLine?: number
-}
-
 export interface MountFiberSurfaceOptions {
   slug: string
   cityId?: string
@@ -1043,30 +1034,3 @@ export function mountVellumFiberSurface(
   }
 }
 
-export function openVellumStaticFileModal(opts: OpenStaticFileModalOptions): VellumModalHandle {
-  const container = document.createElement('div')
-  document.body.appendChild(container)
-  const root = createRoot(container)
-  const unlockBackground = lockModalBackground(container)
-
-  const adapter = createPortolanStaticAdapter({ staticDataBase: opts.staticDataBase })
-
-  const close = () => {
-    unlockBackground()
-    root.unmount()
-    container.remove()
-  }
-
-  root.render(
-    <AdapterProvider adapter={adapter}>
-      <FileViewerModal
-        path={opts.path}
-        editable={false}
-        jumpToLine={opts.jumpToLine}
-        onClose={close}
-      />
-    </AdapterProvider>,
-  )
-
-  return { close }
-}

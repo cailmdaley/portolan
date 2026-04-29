@@ -228,13 +228,6 @@ export function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString()
 }
 
-/** Staleness → color map used by TapestryView. */
-export const STALENESS_COLORS: Record<string, string> = {
-  'fresh': '#5A7B7B',
-  'stale': '#A87070',
-  'no-evidence': '#7A7368',
-}
-
 /**
  * Format an ISO date string as "20 Feb 2026".
  */

@@ -6,9 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview",
-    "build:static": "vite build --config vite.static.config.ts",
-    "export:tapestry": "tsx scripts/export-tapestry.ts"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.1",
