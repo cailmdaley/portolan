@@ -31,12 +31,20 @@ export default defineConfig({
     // *relative* URLs so the same paths resolve in both the iframe paper-view
     // (origin :4004) and the vellum-native render (origin :5173).
     // See `vellum-reader/vellum-native-astra-renderer`.
+    //
+    // `/static` proxies fiber-embedded image assets — markdown like
+    // `![alt](/static/.felt/<rest>)` resolves through the backend's
+    // `handleStaticFeltAsset` to `<projectRoot>/.felt/<rest>`. Restored
+    // after commit 5755034 retired the static viewer; see the
+    // `vellum-reader/constitution-restore-static-felt-route` fiber +
+    // `gotchas/static-felt-route-fragility`.
     proxy: {
       '/project-file': 'http://localhost:4004',
       '/papers': 'http://localhost:4004',
       '/astra-paper-view': 'http://localhost:4004',
       '/astra-bundle': 'http://localhost:4004',
       '/astra/asset': 'http://localhost:4004',
+      '/static': 'http://localhost:4004',
     },
   },
   // Make .portolan accessible as static files

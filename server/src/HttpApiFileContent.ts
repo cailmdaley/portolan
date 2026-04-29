@@ -2,13 +2,31 @@ import { execFile, spawn } from 'child_process';
 import { createReadStream } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { promisify } from 'util';
-import { extname } from 'path';
+import { extname, resolve as resolvePath, sep as pathSep } from 'path';
+import { fileURLToPath } from 'url';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Origin } from './OriginManager.js';
 import { shellEscape } from './ShellPathUtils.js';
 import { markdownToMdast, extractFrontmatter } from './MarkdownToMdast.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Default felt root for the `/static/.felt/<rest>` asset route.
+ *
+ * The portolan server lives at `<projectRoot>/server/{src,dist}/...`, so two
+ * levels up from this module file is the project root regardless of whether
+ * we're running under `tsx watch` (src/) or compiled (dist/). The `.felt/`
+ * symlink in the project root points at portolan's slice of the loom monorepo,
+ * which is exactly the tree fiber-embedded image paths reference.
+ *
+ * Tests override via the `feltRoot` constructor option to point at an
+ * isolated tmpdir so they don't reach into the real project tree.
+ */
+const DEFAULT_FELT_ROOT = resolvePath(
+  fileURLToPath(new URL('../../', import.meta.url)),
+  '.felt',
+);
 
 export const HTTP_API_MIME_TYPES: Record<string, string> = {
   'html': 'text/html',
@@ -145,6 +163,12 @@ interface HttpApiFileContentDeps {
   parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
+  /**
+   * Override the felt root the `/static/.felt/<rest>` route resolves
+   * against. Defaults to `<projectRoot>/.felt` (computed from this
+   * module's URL); tests inject an isolated tmpdir.
+   */
+  feltRoot?: string;
 }
 
 export class HttpApiFileContent {
@@ -152,12 +176,14 @@ export class HttpApiFileContent {
   private parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
   private sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   private sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
+  private feltRoot: string;
 
   constructor(deps: HttpApiFileContentDeps) {
     this.originLookup = deps.originLookup;
     this.parseJsonBody = deps.parseJsonBody;
     this.sendJsonError = deps.sendJsonError;
     this.sendJsonSuccess = deps.sendJsonSuccess;
+    this.feltRoot = resolvePath(deps.feltRoot ?? DEFAULT_FELT_ROOT);
   }
 
   async handleFileContent(url: URL, res: ServerResponse): Promise<void> {
@@ -284,6 +310,79 @@ export class HttpApiFileContent {
       } else {
         await this.streamLocalBinaryFile(filePath, mimeType, 'no-cache', res);
       }
+    } catch (error: any) {
+      if (res.headersSent || res.writableEnded) return;
+      const statusCode = typeof error.statusCode === 'number'
+        ? error.statusCode
+        : (error.code === 'ENOENT' ? 404 : 500);
+      this.sendProjectFileError(
+        res,
+        statusCode,
+        statusCode === 404 ? 'File not found' : 'Failed to read file',
+      );
+    }
+  }
+
+  /**
+   * Route: `GET /static/.felt/<rest>`
+   *
+   * Streams a file from `<feltRoot>/<rest>` — the inline-image asset
+   * channel that fiber markdown uses (e.g.
+   * `![alt](/static/.felt/vellum-reader/aesthetic/evidence/palette.svg)`).
+   * Predates the tapestry retirement; commit `5755034` removed the
+   * static-viewer Vite config that incidentally served this prefix, and
+   * this route restores it on the long-running portolan backend so the
+   * vellum reader's image embeds resolve again. See the
+   * `vellum-reader/constitution-restore-static-felt-route` fiber and
+   * the sibling gotcha for the regression history.
+   *
+   * Path-traversal hardened in two layers:
+   *   1. reject any `..` segment in the URL-pathname rest;
+   *   2. resolve against `feltRoot` and reject if the result escapes.
+   */
+  async handleStaticFeltAsset(url: URL, res: ServerResponse): Promise<void> {
+    const prefix = '/static/.felt/';
+    if (!url.pathname.startsWith(prefix)) {
+      this.sendProjectFileError(res, 400, 'Invalid path');
+      return;
+    }
+
+    let rest: string;
+    try {
+      rest = decodeURIComponent(url.pathname.slice(prefix.length));
+    } catch {
+      this.sendProjectFileError(res, 400, 'Invalid path');
+      return;
+    }
+
+    if (!rest) {
+      this.sendProjectFileError(res, 400, 'Missing file path');
+      return;
+    }
+    // Reject path-traversal at the URL layer. URL parsing in node
+    // normalizes `..` segments before we get here, so an attacker would
+    // need to slip them through encoded; this guard catches both.
+    if (rest.startsWith('/') || rest.split('/').some(seg => seg === '..' || seg === '')) {
+      this.sendProjectFileError(res, 400, 'Invalid path');
+      return;
+    }
+
+    const filePath = resolvePath(this.feltRoot, rest);
+    // Defense in depth — even with the segment check, ensure the resolved
+    // path lives inside the felt root.
+    if (filePath !== this.feltRoot && !filePath.startsWith(this.feltRoot + pathSep)) {
+      this.sendProjectFileError(res, 400, 'Invalid path');
+      return;
+    }
+
+    const ext = extname(filePath).toLowerCase().slice(1);
+    const mimeType = HTTP_API_MIME_TYPES[ext] || 'application/octet-stream';
+
+    try {
+      // Same cache policy as `/project-file/local/...` — `no-cache` so
+      // the vellum reader picks up fiber-asset edits without a forced
+      // browser refresh during dogfooding.
+      await this.streamLocalBinaryFile(filePath, mimeType, 'no-cache', res);
     } catch (error: any) {
       if (res.headersSent || res.writableEnded) return;
       const statusCode = typeof error.statusCode === 'number'

@@ -82,6 +82,11 @@ export interface HttpApiOptions {
     target: KanbanTarget;
     nowIso: string;
   }) => Promise<void>;
+  /**
+   * Override felt root for the `/static/.felt/<rest>` asset route. Defaults
+   * to `<projectRoot>/.felt`; tests inject an isolated tmpdir.
+   */
+  feltRoot?: string;
 }
 
 // ============================================================================
@@ -130,6 +135,7 @@ export class HttpApi {
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+      feltRoot: options.feltRoot,
     });
     this.astraViewApi = new HttpApiAstraView({ originLookup });
     this.kanbanApi = new HttpApiKanban({
@@ -303,6 +309,16 @@ export class HttpApi {
 
     if (req.method === 'GET' && url.pathname.startsWith('/project-file/')) {
       await this.fileContentApi.handleProjectFile(url, res);
+      return true;
+    }
+
+    // Inline-image asset channel for fiber markdown:
+    // `![alt](/static/.felt/<rest>)` resolves to `<projectRoot>/.felt/<rest>`.
+    // Predates tapestry retirement; restored after commit 5755034 removed the
+    // static-viewer Vite config that incidentally served this prefix. See
+    // `vellum-reader/constitution-restore-static-felt-route` + sibling gotcha.
+    if (req.method === 'GET' && url.pathname.startsWith('/static/.felt/')) {
+      await this.fileContentApi.handleStaticFeltAsset(url, res);
       return true;
     }
 
