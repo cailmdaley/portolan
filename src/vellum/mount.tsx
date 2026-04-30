@@ -16,9 +16,9 @@
  * Previously also exposed `mountVellumFileSurface` /
  * `mountVellumFiberSurface` for the floating-card pin layer, and
  * `openVellumStaticFileModal()` for the standalone GitHub-Pages tapestry
- * viewer. Both retired alongside the floating-card and tapestry rollups —
- * git history (and `gotchas/tapestry-retirement-recovery`) carry the
- * recoverable shape if needed.
+ * viewer. Both retired alongside the floating-card and tapestry rollups
+ * (commit 1f25e71 and predecessors); git history carries the recoverable
+ * shape if needed.
  *
  * Everything outside this file stays vanilla TS/Three.js. React only lives
  * inside the React root this file creates — see vellum-in-portolan.
@@ -854,8 +854,8 @@ export interface OpenWorkspaceModalOptions {
 /**
  * Full-viewport vellum workspace modal for a portolan city. Mounts
  * vellum's WorkspaceMount (narrative / workspace / delta modes) against
- * the PortolanAdapter for the given city. Replaces the native TapestryView
- * on `t` / deep-press; see tapestry-dissolves.
+ * the PortolanAdapter for the given city. Opens on `t` / deep-press / city
+ * click; the single reading surface for both fibers and files.
  *
  * Two opening modes:
  *   - `initialSlug` (default): land on a fiber. The historical mode.

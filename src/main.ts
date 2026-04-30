@@ -59,9 +59,8 @@ labelRenderer.domElement.style.pointerEvents = 'none'
 labelRenderer.domElement.style.userSelect = 'none'
 // CSS2DRenderer assigns each label a per-frame z-index from its camera depth
 // (range roughly 0..100000). Confine that range with `isolation: isolate` so
-// CSS2D labels can never punch up through the DOM pin layer (z-index 20) or
-// HUD panels. Without this, labels from neighbouring cities would render on
-// top of open pin cards. [[floating-card-feel]]
+// CSS2D labels stay below HUD panels and modals; without it, labels from
+// neighbouring cities would punch up through anything stacked above the map.
 labelRenderer.domElement.style.zIndex = '10'
 labelRenderer.domElement.style.isolation = 'isolate'
 labelRenderer.domElement.classList.add('label-container')
@@ -228,9 +227,8 @@ function openFile(args: OpenFileArgs): void {
 }
 
 // Vellum workspace modal for a city — narrative / workspace / delta / map modes
-// against the PortolanAdapter. Replaces TapestryView on `t` / deep-press; see
-// tapestry-dissolves. Single-instance: close the previous handle before opening
-// a new city.
+// against the PortolanAdapter. Single-instance: close the previous handle
+// before opening a new city.
 let activeWorkspaceHandle: VellumModalHandle | null = null
 // Bumped every openCityWorkspace call. The async vellumMountPromise.then()
 // callback only mounts if the token is still current — without this guard,
