@@ -178,45 +178,6 @@
         vertical-align: baseline;
       }
 
-      /* Drag-to-pin ghost — follows the cursor while a fiber is being
-         dragged from the HUD onto the map. pointer-events:none so
-         elementFromPoint resolves to the actual drop target underneath. */
-      .pin-drag-ghost {
-        position: fixed;
-        z-index: 10000;
-        pointer-events: none;
-        transform: translate(-50%, -100%);
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 10px 4px 6px;
-        background: rgba(248, 240, 228, 0.95);
-        border: 1px solid rgba(140, 110, 80, 0.55);
-        border-radius: 12px;
-        box-shadow: 0 4px 10px rgba(30, 20, 10, 0.18);
-        font-family: 'EB Garamond', Garamond, serif;
-        font-size: 14px;
-        color: #2E2A26;
-        white-space: nowrap;
-        max-width: 320px;
-      }
-      .pin-drag-ghost .pin-drag-pin { font-size: 16px; }
-      .pin-drag-ghost .pin-drag-label {
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      body.pin-dragging, body.pin-dragging * {
-        cursor: grabbing !important;
-        user-select: none;
-        -webkit-user-select: none;
-      }
-      /* Native external drop in progress (Finder file, browser tab/link). The
-         canvas accepts the drop; this gives a soft inset gold glow as a hint
-         that the map is the receiver. See FileDropController. */
-      body.pin-dropping #canvas {
-        box-shadow: inset 0 0 0 3px rgba(154, 123, 53, 0.55);
-      }
-
       .worker-label {
         font-family: 'EB Garamond', Garamond, serif;
         font-weight: 500;
@@ -253,16 +214,6 @@
 
       .worker-label.hidden {
         display: none !important;
-      }
-
-      /* Pinned-card hover preview — mounts a vellum FiberCard. The wrapper is
-         a pure positioner: the card paints its own parchment surface via
-         vellum.css, so the wrapper only contributes drop-shadow + layering. */
-      .pin-hover-preview {
-        position: fixed;
-        z-index: 3000;
-        pointer-events: none;
-        filter: drop-shadow(0 8px 18px rgba(30, 20, 10, 0.25));
       }
 
       .worker-file-tooltip {
@@ -2291,24 +2242,6 @@
          same gold wash as map-hovered. Ancestors of matches render plain so
          you can see the path without losing focus on the actual hits. */
       .hud-fiber-item.search-match { background: rgba(154, 123, 53, 0.18); }
-
-      /* Fiber is already pinned on the map — subtle gold inset bar on the
-         left so the HUD stays quiet but you can see at a glance which fibers
-         already have a card placed. Matches the sepia-accent / city-hex palette. */
-      .hud-fiber-item.pinned {
-        box-shadow: inset 3px 0 0 var(--sepia-accent);
-      }
-      .hud-fiber-item.pinned .hud-fiber-title::after {
-        content: " ·";
-        color: var(--sepia-accent);
-      }
-
-      /* Mirror of on-map pin hover: when the pin card on the map is lifted,
-         its corresponding HUD entry gets the same faint gold wash so the two
-         surfaces feel stitched together. */
-      .hud-fiber-item.map-hovered {
-        background: rgba(154, 123, 53, 0.14);
-      }
 
       .hud-fiber-handoff {
         flex-shrink: 0;

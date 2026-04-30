@@ -54,7 +54,6 @@ export class CityHUD {
   private onOpenFile: ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null = null
   private onOpenDirectory: ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null = null
   private onFocusWorker: ((sessionId: string) => void) | null = null
-  private onPinnedFiberHover: ((slug: string | null) => void) | null = null
   private newWorkerDialog: NewWorkerDialog | null = null
 
   constructor() {
@@ -91,7 +90,6 @@ export class CityHUD {
       getWebSocket: () => this.ws,
       getOnOpenFile: () => this.onOpenFile,
       getOnOpenDirectory: () => this.onOpenDirectory,
-      getOnPinnedFiberHover: () => this.onPinnedFiberHover,
       renderEmptyFileSearchState: () => this.fileTree.renderEmptySearchState(),
     })
     this.setupEventHandlers()
@@ -294,24 +292,6 @@ export class CityHUD {
     return this.content.getFibers()
   }
 
-  setPinnedSlugs(slugs: Set<string>): void {
-    this.content.setPinnedSlugs(slugs)
-  }
-
-  /** Reflect map-pin hover back into the HUD: the matching `.hud-fiber-item`
-   *  gets a `.map-hovered` class so the user can see which HUD entry
-   *  corresponds to the lifted card on the map. Pair to
-   *  `setOnPinnedFiberHover`, which bridges the other direction. */
-  setMapHoveredFiber(slug: string | null): void {
-    const prev = this.sidebar.querySelectorAll<HTMLElement>('.hud-fiber-item.map-hovered')
-    prev.forEach((el) => el.classList.remove('map-hovered'))
-    if (!slug) return
-    const next = this.sidebar.querySelectorAll<HTMLElement>(
-      `.hud-fiber-item[data-fiber-id="${CSS.escape(slug)}"]`,
-    )
-    next.forEach((el) => el.classList.add('map-hovered'))
-  }
-
   getRuntimeStats(): {
     visible: boolean
     activeTab: 'fibers' | 'files'
@@ -344,8 +324,7 @@ export class CityHUD {
     // On reconnect (new socket replaces a previous one), re-issue the
     // in-flight fiber request if the HUD is open. Otherwise the response
     // to the stale socket is dropped and the panel sits on "Loading…"
-    // forever — see `hud-fibers-stuck-on-cold-load`. Mirrors the re-attach
-    // pattern in TerminalPinManager.setWebSocket.
+    // forever — see `hud-fibers-stuck-on-cold-load`.
     if (isReconnect && this.isVisible() && this.currentCity) {
       this.content.requestFibers(this.currentCity.id)
     }
@@ -373,10 +352,6 @@ export class CityHUD {
 
   setNewWorkerDialog(dialog: NewWorkerDialog): void {
     this.newWorkerDialog = dialog
-  }
-
-  setOnPinnedFiberHover(callback: (slug: string | null) => void): void {
-    this.onPinnedFiberHover = callback
   }
 
   setOnFocusWorker(callback: (sessionId: string) => void): void {

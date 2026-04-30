@@ -23,10 +23,8 @@ import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiKanban, type KanbanTarget } from './HttpApiKanban.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
-import { HttpApiLayouts } from './HttpApiLayouts.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
 import { HttpApiTapestry } from './HttpApiTapestry.js';
-import { LayoutStore } from './LayoutStore.js';
 import type { MeetingBridge } from './MeetingBridge.js';
 
 // ============================================================================
@@ -106,8 +104,6 @@ export class HttpApi {
   private activationApi: HttpApiActivation;
   private playgroundApi: HttpApiPlayground;
   private tapestryApi: HttpApiTapestry;
-  private layoutsApi: HttpApiLayouts;
-  private layoutStore: LayoutStore;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
 
@@ -175,14 +171,6 @@ export class HttpApi {
     // construction above — tapestryApi didn't exist yet.
     this.annotationsApi.setOnFiberCreated((cityPath, sshHost) => {
       this.tapestryApi.invalidateFiberListCache(cityPath, sshHost);
-    });
-    this.layoutStore = new LayoutStore();
-    this.layoutsApi = new HttpApiLayouts({
-      layoutStore: this.layoutStore,
-      parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
-      sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
-      sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
-      cityLookup,
     });
   }
 
@@ -401,11 +389,6 @@ export class HttpApi {
     if (url.pathname === '/promote-to-felt' && req.method === 'POST') {
       await this.annotationsApi.handlePromoteToFelt(req, res);
       return true;
-    }
-
-    if (url.pathname.startsWith('/layouts/')) {
-      const handled = await this.layoutsApi.handle(url, req, res);
-      if (handled) return true;
     }
 
     if (url.pathname === '/playground-list') {

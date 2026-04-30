@@ -24,7 +24,6 @@ interface CityHUDContentHost {
   getWebSocket: () => WebSocket | null
   getOnOpenFile: () => ((fullPath: string, originId: string, cityPath: string, cityId: string, line?: number) => void) | null
   getOnOpenDirectory: () => ((fullPath: string, originId: string, cityPath: string, cityId: string) => void) | null
-  getOnPinnedFiberHover: () => ((slug: string | null) => void) | null
   renderEmptyFileSearchState: () => void
 }
 
@@ -38,7 +37,6 @@ export class CityHUDContent {
   // clears currentCity before the response arrives (the cold-load
   // `#city=X` path). See `hud-fiber-loading-stuck`.
   private lastRequestedCityId: string | null = null
-  private pinnedSlugs: Set<string> = new Set()
   private search: CityHUDSearch
   // Expanded container fiber IDs. Default is collapsed; user expands
   // explicitly. State is per-session, not per-city — small cost, lets you
@@ -110,13 +108,6 @@ export class CityHUDContent {
     }
   }
 
-  setPinnedSlugs(slugs: Set<string>): void {
-    this.pinnedSlugs = slugs
-    if (this.openFibers.length || this.closedFibers.length) {
-      this.renderFibers(this.openFibers, this.closedFibers)
-    }
-  }
-
   requestFibers(cityId: string): void {
     const ws = this.host.getWebSocket()
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -171,31 +162,6 @@ export class CityHUDContent {
   }
 
   private setupDelegatedListeners(): void {
-    // HUD→map pin hover bridge: when the cursor passes over a pinned fiber
-    // entry (either in the open fiber list or a search result), lift its
-    // corresponding card on the map. Closes the HUD↔map coherence loop that
-    // the `pinned` badge established visually — see tapestry-dissolves.
-    // mouseover/mouseout bubble, so a single listener on the sidebar covers
-    // both fiberList and searchResultsList.
-    let hoveredPinnedSlug: string | null = null
-    const setHoveredPinned = (slug: string | null): void => {
-      if (slug === hoveredPinnedSlug) return
-      hoveredPinnedSlug = slug
-      this.host.getOnPinnedFiberHover()?.(slug)
-    }
-    this.host.sidebar.addEventListener('mouseover', (event) => {
-      const item = (event.target as HTMLElement).closest<HTMLElement>('.hud-fiber-item.pinned')
-      setHoveredPinned(item?.dataset.fiberId ?? null)
-    })
-    this.host.sidebar.addEventListener('mouseout', (event) => {
-      // If the relatedTarget (where the cursor moved to) is still inside a
-      // pinned item, mouseover will handle the transition. Only clear when
-      // leaving pinned items entirely.
-      const related = event.relatedTarget as HTMLElement | null
-      if (related?.closest?.('.hud-fiber-item.pinned')) return
-      setHoveredPinned(null)
-    })
-
     this.host.fiberList.addEventListener('click', (event) => {
       const target = event.target as HTMLElement
 
@@ -372,7 +338,6 @@ export class CityHUDContent {
     const kind = fiber.kind || 'task'
     const classes = ['hud-fiber-item', kind]
     classes.push(`status-${fiber.status || 'unset'}`)
-    if (this.pinnedSlugs.has(fiber.id)) classes.push('pinned')
     if (isRoot) classes.push('root')
     if (hasChildren) classes.push('has-children')
     if (this.searchMatchIds?.has(fiber.id)) classes.push('search-match')

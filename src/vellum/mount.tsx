@@ -5,21 +5,20 @@
  *
  *   - mountVellumFileViewer(container, …) — raw page mount, used when the
  *     host already owns a container and wants FileViewerPage inside it
- *     (e.g. inline panels, debug surfaces).
- *   - mountVellumFileSurface(container, …) — DOM card mount used by
- *     DomPinLayer to host vellum inside a portolan pin.
- *   - mountVellumFiberSurface(container, …) — DOM card mount for fiber pins.
+ *     (inline panels, debug surfaces).
  *   - openVellumWorkspaceModal({ … }) — full-viewport modal hosting either
  *     a fiber (initialSlug) or a file (initialFilePath, with the workspace's
- *     narrative slot routed to FileViewerPage). Files used to have their own
- *     openVellumFileModal; that retired 2026-04-25 — see
- *     card-redesign/file-modal-absorbs-into-workspace.
+ *     narrative slot routed to FileViewerPage). The single reading surface
+ *     for both fibers and files; opened by HUD/search clicks and `t`/`k`
+ *     hotkeys. See [[constitution-remove-floating-cards]] for the broader
+ *     "map = navigation, vellum = reading" framing.
  *
- * Previously also exposed `openVellumStaticFileModal()` for the standalone
- * GitHub-Pages tapestry viewer; that surface and its dependents retired
- * with the broader tapestry retirement in commit `<sweep>` (see the
- * `gotchas/tapestry-retirement-recovery` fiber for how to fish anything
- * back out of git history if needed).
+ * Previously also exposed `mountVellumFileSurface` /
+ * `mountVellumFiberSurface` for the floating-card pin layer, and
+ * `openVellumStaticFileModal()` for the standalone GitHub-Pages tapestry
+ * viewer. Both retired alongside the floating-card and tapestry rollups —
+ * git history (and `gotchas/tapestry-retirement-recovery`) carry the
+ * recoverable shape if needed.
  *
  * Everything outside this file stays vanilla TS/Three.js. React only lives
  * inside the React root this file creates — see vellum-in-portolan.
@@ -30,16 +29,12 @@ import { createRoot, type Root } from 'react-dom/client'
 import {
   AdapterProvider,
   AnnotationActionsProvider,
-  DecisionFlipProvider,
-  FiberCard,
   FileViewerPage,
   WorkspaceMount,
   useMode,
   useNavigate,
   type Annotation,
   type AnnotationBulkAction,
-  type FiberContent,
-  type GraphNode,
   type WorkspaceMountApi,
 } from 'vellum'
 import 'vellum/css'
@@ -790,83 +785,6 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
   }
 }
 
-export interface MountFileSurfaceOptions {
-  /** File path resolved by the active adapter. */
-  path: string
-  originId?: string
-  cityId?: string
-  editable?: boolean
-  jumpToLine?: number
-  /**
-   * Suppress vellum's own file-mode toolbar. Used by astra cards: the
-   * inline ladder picker is the only ladder/source affordance the card
-   * carries, and the constitution scopes source mode to the workspace
-   * modal — vellum's toolbar would otherwise stack a second source
-   * toggle. See `vellum-reader/vellum-native-astra-renderer`.
-   */
-  hideToolbar?: boolean
-}
-
-export interface VellumFileSurfaceHandle {
-  /** Re-render with new file/options. */
-  update(opts: MountFileSurfaceOptions): void
-  unmount(): void
-}
-
-/**
- * Non-modal mount of vellum's `FileViewerPage` into an arbitrary container.
- * Same fetch + render pipeline as the workspace's file mode, no scrim or chrome.
- *
- * Used by the floating-card primitive (see [[file-view-as-floating-card]]) and
- * any other host that wants vellum's file rendering inline. The container
- * controls sizing; vellum fills it.
- */
-export function mountVellumFileSurface(
-  container: HTMLElement,
-  opts: MountFileSurfaceOptions,
-): VellumFileSurfaceHandle {
-  const root = createRoot(container)
-
-  const render = (next: MountFileSurfaceOptions) => {
-    const adapter = createPortolanAdapter({
-      cityId: next.cityId,
-      defaultOriginId: next.originId,
-    })
-    // DecisionFlipProvider gives each card its own thought-experiment
-    // scope: clicking an alternative on an astra card flips that card's
-    // hypothetical universe without leaking into other cards or the
-    // workspace modal (the modal has its own provider via WorkspaceMount).
-    // Identical bundles open in two cards stay independent on purpose —
-    // flips are surface-local thought experiments, not bundle state.
-    // Non-astra files pay no cost: provider is a tiny in-memory Map and
-    // FileViewerPage's other branches don't read the context.
-    root.render(
-      <AdapterProvider adapter={adapter}>
-        <DecisionFlipProvider>
-          <FileViewerPage
-            path={next.path}
-            originId={next.originId}
-            editable={next.editable}
-            jumpToLine={next.jumpToLine}
-            hideToolbar={next.hideToolbar}
-          />
-        </DecisionFlipProvider>
-      </AdapterProvider>,
-    )
-  }
-
-  render(opts)
-
-  return {
-    update(next) {
-      render(next)
-    },
-    unmount() {
-      root.unmount()
-    },
-  }
-}
-
 /**
  * Public mode names used by portolan callers. Translates to vellum's internal
  * `Mode` ('workspace' instead of 'kanban') at the boundary in
@@ -1218,122 +1136,5 @@ async function resolveCityRootSlug(cityId: string | undefined): Promise<string |
   if (!res.ok) return null
   const data = await res.json()
   return typeof data.rootSlug === 'string' ? data.rootSlug : null
-}
-
-export interface MountFiberSurfaceOptions {
-  slug: string
-  cityId?: string
-  originId?: string
-  width?: number
-  /** Optional seed node used for the first paint before the adapter fetch
-   *  resolves. Typically built from the HUD fiber list so the card shows a
-   *  title/status immediately instead of flashing empty. */
-  seedNode?: GraphNode | null
-  onNavigate?: (slug: string) => void
-}
-
-export interface VellumFiberSurfaceHandle {
-  update(opts: MountFiberSurfaceOptions): void
-  unmount(): void
-}
-
-/**
- * Non-modal mount of vellum's FiberCard into an arbitrary container. Fetches
- * the fiber's body via the PortolanAdapter and paints the full card
- * (pretext lockup + prose lede + tags). Used by the floating-card primitive
- * for fiber-kind pins — see [[file-view-as-floating-card]] and
- * `tapestry-dissolves` Next: "Fiber pins as DOM cards too."
- */
-export function mountVellumFiberSurface(
-  container: HTMLElement,
-  opts: MountFiberSurfaceOptions,
-): VellumFiberSurfaceHandle {
-  const root = createRoot(container)
-  let unmounted = false
-  let currentOpts = opts
-  let cachedContent: FiberContent | null = null
-  let cachedNode: GraphNode | null = opts.seedNode ?? null
-  let adapter = createPortolanAdapter({
-    cityId: opts.cityId,
-    defaultOriginId: opts.originId,
-  })
-
-  const paint = () => {
-    if (unmounted) return
-    const width = currentOpts.width ?? 320
-    if (!cachedNode) {
-      root.render(<></>)
-      return
-    }
-    root.render(
-      <AdapterProvider adapter={adapter}>
-        <FiberCard
-          node={cachedNode}
-          width={width}
-          content={cachedContent ?? undefined}
-          onNavigate={currentOpts.onNavigate}
-        />
-      </AdapterProvider>,
-    )
-  }
-
-  const fetchContent = (slug: string) => {
-    if (!adapter.getFiberContent) return
-    void adapter.getFiberContent(slug).then((content) => {
-      if (unmounted || currentOpts.slug !== slug) return
-      cachedContent = content ?? null
-      // Without a seedNode, derive the node from the fiber's frontmatter so
-      // tags, status, and outcome actually land in FiberCard. The prior
-      // fallback constructed an empty-looking node (status:'open', tags:[],
-      // label:slug) that dropped everything FiberCard needs to render.
-      const fm = content?.frontmatter ?? {}
-      cachedNode =
-        currentOpts.seedNode ??
-        ({
-          id: slug,
-          slug,
-          label: typeof fm.name === 'string' && fm.name.length > 0 ? fm.name : slug,
-          status: typeof fm.status === 'string' ? fm.status : 'open',
-          kind: 'fiber',
-          tags: Array.isArray(fm.tags) ? fm.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
-          verdict: typeof fm.outcome === 'string' ? fm.outcome : undefined,
-          tempered: fm.tempered === true,
-        } as GraphNode)
-      paint()
-    }).catch(() => {})
-  }
-
-  const applyUpdate = (next: MountFiberSurfaceOptions) => {
-    const prev = currentOpts
-    currentOpts = next
-    const slugChanged = prev.slug !== next.slug
-    const cityChanged = prev.cityId !== next.cityId || prev.originId !== next.originId
-    if (slugChanged || cityChanged) {
-      if (cityChanged) {
-        adapter = createPortolanAdapter({
-          cityId: next.cityId,
-          defaultOriginId: next.originId,
-        })
-      }
-      cachedContent = null
-      cachedNode = next.seedNode ?? null
-      paint()
-      fetchContent(next.slug)
-      return
-    }
-    // Width / onNavigate tweak only — re-render with cached content.
-    paint()
-  }
-
-  paint()
-  fetchContent(opts.slug)
-
-  return {
-    update(next) { applyUpdate(next) },
-    unmount() {
-      unmounted = true
-      root.unmount()
-    },
-  }
 }
 

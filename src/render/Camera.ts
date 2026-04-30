@@ -2,7 +2,6 @@
 
 import { OrthographicCamera, Vector3, Raycaster, Plane, Vector2 } from 'three'
 import type { CartesianCoord } from '../state/types'
-import { trackWheelEvent } from './wheelGesture'
 
 // Safari-specific gesture event (pinch-to-zoom)
 interface GestureEvent extends Event {
@@ -113,23 +112,15 @@ export class Camera {
     this.eventTarget.addEventListener('click', this.clickHandler)
 
     // Scroll wheel for zoom. Listens at the window level so a zoom gesture
-    // that originated on the map keeps zooming even when the cursor drifts
-    // over a pin mid-gesture. `trackWheelEvent` arbitrates between this
-    // handler and DomPinLayer's pin wheel handler — whichever side the
-    // gesture started on owns every wheel in the burst.
+    // initiated anywhere on the map continues smoothly even as the cursor
+    // drifts. Scrollable host surfaces (HUD panes, modals) opt out by
+    // matching their selectors below — otherwise this handler's preventDefault
+    // would eat their wheel and the map would zoom instead.
     this.wheelHandler = (e: WheelEvent) => {
       const target = e.target as HTMLElement
-      // Scrollable host surfaces need their own native wheel — otherwise the
-      // global camera handler preventDefaults the event and the map zooms
-      // instead. Any new full-viewport modal or HUD pane that overflows must
-      // be added here. See gotcha-modal-scroll-window-wheel.
       if (target.closest(
         '#city-panel, .hud-pane, .vellum-modal-scrim, .vellum-workspace-modal-container, .kbn-modal'
       )) return
-      const onCard = !!target.closest('.dom-pin')
-      const owner = trackWheelEvent(onCard ? 'card' : 'canvas')
-      // Card owns this burst — the pin's own wheel handler will handle it.
-      if (owner === 'card') return
       e.preventDefault()
       e.stopPropagation()
       const delta = e.deltaY > 0 ? 1.02 : 0.98  // Gentle zoom
