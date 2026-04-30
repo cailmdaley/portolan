@@ -220,6 +220,20 @@ function KanbanHost({
           cityPath={resolveCityPath()}
           originId={resolveOriginId()}
           availableCities={mountContext?.getCities() ?? []}
+          // Per-city activity for recency sort: max(lastActivity) across
+          // sessions in each city. Sessions without a cityId are skipped.
+          // Computed at form-open time (not memoized) — the picker is
+          // short-lived and the session list is small.
+          cityActivityById={(() => {
+            const map: Record<string, number> = {}
+            for (const s of mountContext?.getSessions() ?? []) {
+              if (!s.cityId) continue
+              if ((map[s.cityId] ?? 0) < s.lastActivity) {
+                map[s.cityId] = s.lastActivity
+              }
+            }
+            return map
+          })()}
           onCreated={(fiberId) => {
             setStashOpen(false)
             // Refresh kanban so the new fiber appears (it'll only land in
@@ -322,8 +336,9 @@ function FindHost({
           Find · scope: {cityId ? (cityName ?? cityId) : 'global'}
         </div>
         <div style={{ fontSize: '0.85rem', maxWidth: '32rem', lineHeight: 1.5 }}>
-          Stage A — shell only. Tree, search, spatial, and recents land in
-          subsequent stages of the navigation-layer constitution.
+          Stage A — shell only. The dashboard sections (Spatial, Fibers, Files,
+          Search, Git, Recents) land in subsequent stages of the navigation-layer
+          constitution. CityHUD retires once Find covers them.
         </div>
       </div>
     </div>
@@ -347,6 +362,11 @@ export interface PortolanMountContext {
     cityId: string | null
     originId: string
     status: 'idle' | 'working'
+    /** Unix-ms of the worker's most recent tool event (or session creation
+     *  if no tool events yet). Threaded through from `state/types.ts:Session`
+     *  so consumers can rank cities/workers by recent activity without
+     *  needing to walk back into the full state graph. */
+    lastActivity: number
   }>
   getCities: () => Array<{ id: string; name?: string; path: string; originId: string }>
 }
