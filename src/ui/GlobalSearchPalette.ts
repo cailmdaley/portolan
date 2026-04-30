@@ -1,13 +1,53 @@
 import type { City, Session } from '../state/types'
 import { lockModalBackground } from './modalBackgroundLock'
 
+/**
+ * One fiber match returned by the `/global-search` endpoint. The shape
+ * mirrors HttpApiGlobalSearch.GlobalSearchHit on the server — kept in this
+ * module rather than imported from `../../server/...` to preserve the
+ * frontend / backend boundary the rest of `src/ui/` follows.
+ */
+export interface FiberSearchHit {
+  /** Click-through slug — project-relative when `cityId` is set, else loomId. */
+  id: string
+  loomId?: string
+  name: string
+  status: string
+  kind: string
+  tags: string[]
+  outcome?: string
+  snippet?: string
+  originId: string
+  cityId?: string
+  projectSlug?: string
+  hostname?: string
+  score: number
+}
+
 type SearchResult =
   | { type: 'city'; city: City }
   | { type: 'worker'; session: Session; cityName: string }
+  | { type: 'fiber'; hit: FiberSearchHit }
 
 interface GlobalSearchPaletteOptions {
   onSelectCity: (city: City) => void
   onSelectWorker: (session: Session) => void
+  /**
+   * Open a fiber that was matched in the cross-project search section.
+   * Receives the full hit so callers can pivot vellum to (cityId, projectSlug)
+   * — the click-through identifier — while preserving origin/host context for
+   * eventual remote-origin navigation. See [[ai-futures/portolan/design/
+   * constitution-portolan-navigation-layer]] §"Stage 2".
+   */
+  onSelectFiber?: (hit: FiberSearchHit) => void
+  /**
+   * Async fiber search backend. The palette debounces input changes and
+   * calls this with the trimmed lowercased query; the same query is also
+   * used for in-memory city/worker filtering. Optional — when undefined
+   * the Fibers section is hidden, preserving the original cities-and-workers
+   * palette behaviour for callers that don't want fiber search.
+   */
+  searchFibers?: (query: string) => Promise<FiberSearchHit[]>
 }
 
 /** A city with its associated workers, for tree rendering. */
@@ -22,6 +62,8 @@ const HEX_SVG = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xml
 export class GlobalSearchPalette {
   private readonly onSelectCity: (city: City) => void
   private readonly onSelectWorker: (session: Session) => void
+  private readonly onSelectFiber: ((hit: FiberSearchHit) => void) | null
+  private readonly searchFibers: ((query: string) => Promise<FiberSearchHit[]>) | null
 
   private readonly backdrop: HTMLDivElement
   private readonly palette: HTMLDivElement
@@ -35,6 +77,25 @@ export class GlobalSearchPalette {
   private visible = false
   private filteredResults: SearchResult[] = []
   private selectedIndex = 0
+  // Fiber-search async state. Re-rendering happens twice per keystroke when
+  // fibers are wired: once synchronously for the cities/workers, then again
+  // when the fiber Promise resolves. Stored alongside the input value (the
+  // debounce token) so a stale resolution from a fast typer doesn't blow
+  // away a fresher render.
+  private fiberHits: FiberSearchHit[] = []
+  private fiberQuery: string = ''
+  private fiberLoading = false
+  private fiberDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  // Tracks the last query that triggered a "smart selection" via findBestMatch.
+  // Re-rendering for an async fiber resolution shouldn't blow away the
+  // user's ArrowDown/ArrowUp navigation, so we only re-pick when the
+  // input itself has changed.
+  private lastSelectionQuery: string | null = null
+  // Debounce: ~110ms felt right empirically for cross-origin felt walks.
+  // Short enough that fast typers don't see lag between cities/workers
+  // (synchronous) and fibers (async); long enough to coalesce a typed
+  // word into one /global-search request, not one per keypress.
+  private static readonly FIBER_DEBOUNCE_MS = 110
   // Set in show(), called and cleared in hide(). See modalBackgroundLock —
   // the palette is role=dialog aria-modal=true, so background siblings (map,
   // city HUD, pinned cards, recent-worker bar) must be inerted while it's open.
@@ -50,6 +111,8 @@ export class GlobalSearchPalette {
   constructor(options: GlobalSearchPaletteOptions) {
     this.onSelectCity = options.onSelectCity
     this.onSelectWorker = options.onSelectWorker
+    this.onSelectFiber = options.onSelectFiber ?? null
+    this.searchFibers = options.searchFibers ?? null
 
     this.injectStyles()
 
@@ -98,7 +161,10 @@ export class GlobalSearchPalette {
     this.onDocumentKeydown = (event) => {
       if (event.key === 'Escape') { event.preventDefault(); this.hide() }
     }
-    this.onInput = () => this.renderResults()
+    this.onInput = () => {
+      this.renderResults()
+      this.scheduleFiberSearch()
+    }
     this.onInputKeydown = (event) => {
       if (event.key === 'ArrowDown') { event.preventDefault(); this.moveSelection(1); return }
       if (event.key === 'ArrowUp') { event.preventDefault(); this.moveSelection(-1); return }
@@ -125,6 +191,11 @@ export class GlobalSearchPalette {
     if (this.visible) this.hide()
     this.cities = cities.slice().sort((a, b) => a.name.localeCompare(b.name))
     this.sessions = sessions.slice().sort((a, b) => a.name.localeCompare(b.name))
+    // Stale fibers from a previous show() would render until the first
+    // input event fires; clear here so an empty palette starts empty.
+    this.fiberHits = []
+    this.fiberQuery = ''
+    this.fiberLoading = false
     // Names shared by 2+ cities get an origin suffix on map labels
     // (2d9c75d); mirror that in the palette so "City ai-futures" isn't
     // rendered twice with identical names when a remote project shares a
@@ -164,6 +235,14 @@ export class GlobalSearchPalette {
     this.input.value = ''
     this.results.innerHTML = ''
     this.filteredResults = []
+    if (this.fiberDebounceTimer !== null) {
+      clearTimeout(this.fiberDebounceTimer)
+      this.fiberDebounceTimer = null
+    }
+    this.fiberHits = []
+    this.fiberQuery = ''
+    this.fiberLoading = false
+    this.lastSelectionQuery = null
     this.unlockBackground?.()
     this.unlockBackground = null
   }
@@ -298,6 +377,15 @@ export class GlobalSearchPalette {
       .filter(s => !query || sessionMatches(s))
       .map(session => ({ session, cityName: '' }))
 
+    // Fiber hits — only counted into the flat result list (and rendered)
+    // when the latest async resolution matches the current input. A stale
+    // resolution from a fast typer (input "shut" then "shuttle") would
+    // otherwise leak into the displayed list. Hidden entirely when no
+    // searchFibers callback was provided.
+    const fiberHits = this.searchFibers && query && this.fiberQuery === query
+      ? this.fiberHits
+      : []
+
     // Flatten into results list for keyboard nav
     this.filteredResults = []
     for (const group of groups) {
@@ -309,8 +397,11 @@ export class GlobalSearchPalette {
     for (const w of orphanWorkers) {
       this.filteredResults.push({ type: 'worker', session: w.session, cityName: w.cityName })
     }
+    for (const hit of fiberHits) {
+      this.filteredResults.push({ type: 'fiber', hit })
+    }
 
-    if (this.filteredResults.length === 0) {
+    if (this.filteredResults.length === 0 && !this.fiberLoading) {
       this.selectedIndex = 0
       // The container carries role="listbox" — a generic <div> child with no
       // role is invisible to a11y inside a listbox (which expects options),
@@ -323,8 +414,21 @@ export class GlobalSearchPalette {
       return
     }
 
-    // Smart selection: target the best match, not always index 0
-    this.selectedIndex = this.findBestMatch(query)
+    // Smart selection: target the best match, not always index 0. Only
+    // re-pick when the input changed since the last render — async fiber
+    // resolutions trigger renderResults too, and clobbering selectedIndex
+    // there would yank the user out of any ArrowDown navigation they did
+    // while waiting for the fiber Promise to land.
+    if (this.lastSelectionQuery !== query) {
+      this.selectedIndex = this.findBestMatch(query)
+      this.lastSelectionQuery = query
+    } else if (this.selectedIndex >= this.filteredResults.length) {
+      // The result set may have shrunk (or, more likely, grown — fibers
+      // appended below cities/workers). If the prior index is now out of
+      // range, fall back to the front of the list rather than rendering
+      // nothing-selected.
+      this.selectedIndex = 0
+    }
     this.results.innerHTML = ''
 
     let itemOrdinal = 0
@@ -347,6 +451,21 @@ export class GlobalSearchPalette {
         r.type === 'worker' && r.session.id === w.session.id
       )
       this.results.appendChild(this.createWorkerItem(w.session, wIdx, itemOrdinal++, true))
+    }
+
+    if (fiberHits.length > 0) {
+      this.results.appendChild(this.createSectionHeader('Fibers', itemOrdinal++))
+      for (const hit of fiberHits) {
+        const idx = this.filteredResults.findIndex(
+          r => r.type === 'fiber' && r.hit.id === hit.id && r.hit.originId === hit.originId,
+        )
+        this.results.appendChild(this.createFiberItem(hit, idx, itemOrdinal++))
+      }
+    } else if (this.fiberLoading && this.searchFibers && query) {
+      // Async search in flight — show a tiny placeholder so the user knows
+      // a fiber section is coming, not that there are zero matches. No
+      // role on the placeholder so keyboard nav skips it.
+      this.results.appendChild(this.createFiberLoadingPlaceholder(itemOrdinal++))
     }
 
     this.updateSelection()
@@ -384,6 +503,89 @@ export class GlobalSearchPalette {
 
     item.append(icon, label)
     return item
+  }
+
+  private createSectionHeader(label: string, ordinal: number): HTMLElement {
+    const header = document.createElement('div')
+    header.className = 'gs-section-header'
+    header.textContent = label
+    header.style.animationDelay = `${ordinal * 30}ms`
+    // Headers aren't selectable — keep them out of the listbox a11y tree.
+    return header
+  }
+
+  private createFiberLoadingPlaceholder(ordinal: number): HTMLElement {
+    const el = document.createElement('div')
+    el.className = 'gs-fiber-loading'
+    el.style.animationDelay = `${ordinal * 30}ms`
+    el.setAttribute('aria-hidden', 'true')
+    el.textContent = 'searching fibers…'
+    return el
+  }
+
+  private createFiberItem(hit: FiberSearchHit, index: number, ordinal: number): HTMLElement {
+    const item = document.createElement('div')
+    item.className = 'gs-item gs-fiber'
+    item.dataset.index = String(index)
+    item.style.animationDelay = `${ordinal * 30}ms`
+    item.setAttribute('role', 'option')
+    // a11y label: "Fiber <name> in <project> on <host>" — give screen readers
+    // enough context to disambiguate cross-project matches without forcing
+    // the visual row to carry every breadcrumb.
+    const projectLabel = this.projectLabelForFiberHit(hit)
+    const hostLabel = hit.hostname ? ` on ${hit.hostname}` : ''
+    item.setAttribute(
+      'aria-label',
+      `Fiber ${hit.name}${projectLabel ? ` in ${projectLabel}` : ''}${hostLabel}`,
+    )
+
+    // Glyph: a small ◆ stand-in for the fiber/diamond motif felt fibers carry
+    // in vellum's rendering. Keeps the row visually distinct from cities (hex)
+    // and workers (bird) without demanding a new sprite.
+    const icon = document.createElement('span')
+    icon.className = 'gs-icon gs-icon-fiber'
+    icon.textContent = '◆'
+
+    const main = document.createElement('span')
+    main.className = 'gs-fiber-main'
+
+    const title = document.createElement('span')
+    title.className = 'gs-fiber-title'
+    title.textContent = hit.name
+
+    const meta = document.createElement('span')
+    meta.className = 'gs-fiber-meta'
+    const metaParts: string[] = []
+    if (projectLabel) metaParts.push(projectLabel)
+    if (hit.hostname) metaParts.push(hit.hostname)
+    if (hit.status && hit.status !== 'open') metaParts.push(hit.status)
+    meta.textContent = metaParts.join(' · ')
+
+    main.append(title, meta)
+
+    if (hit.snippet) {
+      const snippet = document.createElement('span')
+      snippet.className = 'gs-fiber-snippet'
+      snippet.textContent = hit.snippet
+      main.appendChild(snippet)
+    }
+
+    item.append(icon, main)
+    return item
+  }
+
+  /**
+   * Display label for a fiber hit's project — derived from cityId mapping
+   * back to the loaded city list (so a fiber under "wedding" reads as "wedding"
+   * in the meta line). Falls back to the hostname-stripped originId for remote
+   * hits without a resolved city, and to empty for fibers we can't trace.
+   */
+  private projectLabelForFiberHit(hit: FiberSearchHit): string {
+    if (hit.cityId) {
+      const city = this.cities.find(c => c.id === hit.cityId)
+      if (city) return city.name
+    }
+    return ''
   }
 
   private createWorkerItem(session: Session, index: number, ordinal: number, isLast: boolean): HTMLElement {
@@ -457,7 +659,75 @@ export class GlobalSearchPalette {
       this.onSelectCity(result.city)
       return
     }
+    if (result.type === 'fiber') {
+      this.onSelectFiber?.(result.hit)
+      return
+    }
     this.onSelectWorker(result.session)
+  }
+
+  /**
+   * Debounced fiber search. Re-renders synchronously once the response
+   * lands; a stale resolution from a fast typer is filtered in renderResults
+   * (we hold the last query that produced the cached hits in `fiberQuery`).
+   */
+  private scheduleFiberSearch(): void {
+    if (!this.searchFibers) return
+    if (this.fiberDebounceTimer !== null) {
+      clearTimeout(this.fiberDebounceTimer)
+      this.fiberDebounceTimer = null
+    }
+    const query = this.input.value.trim().toLowerCase()
+    if (!query) {
+      // Empty query: clear stale hits and re-render so the Fibers section
+      // disappears immediately rather than waiting out the debounce.
+      this.fiberHits = []
+      this.fiberQuery = ''
+      this.fiberLoading = false
+      this.renderResults()
+      return
+    }
+    this.fiberLoading = true
+    this.fiberDebounceTimer = setTimeout(() => {
+      this.fiberDebounceTimer = null
+      const search = this.searchFibers
+      if (!search) return
+      // Snapshot the query at fire time — by the time the Promise resolves,
+      // the user may have typed more. We compare against the live input
+      // value before adopting the result.
+      const fired = this.input.value.trim().toLowerCase()
+      if (!fired) {
+        this.fiberHits = []
+        this.fiberQuery = ''
+        this.fiberLoading = false
+        return
+      }
+      void search(fired).then(
+        (hits) => {
+          // The palette may have been hidden, or the user may have moved on
+          // to a different query — only adopt if the latest input still
+          // matches what we fired. Stale resolutions are dropped silently.
+          if (!this.visible) return
+          const live = this.input.value.trim().toLowerCase()
+          if (live !== fired) return
+          this.fiberHits = hits
+          this.fiberQuery = fired
+          this.fiberLoading = false
+          this.renderResults()
+        },
+        (err) => {
+          // Network failure or 5xx: log, clear loading, leave whatever
+          // hits the previous successful query produced (better than going
+          // blank on a transient blip).
+          console.warn('[GlobalSearchPalette] fiber search failed:', err)
+          if (!this.visible) return
+          const live = this.input.value.trim().toLowerCase()
+          if (live !== fired) return
+          this.fiberLoading = false
+          this.renderResults()
+        },
+      )
+    }, GlobalSearchPalette.FIBER_DEBOUNCE_MS)
   }
 
   private injectStyles(): void {
@@ -731,6 +1001,105 @@ export class GlobalSearchPalette {
         font-style: italic;
         text-align: center;
         font-size: 14px;
+      }
+
+      /* ── Section header (between cities/workers and fibers) ── */
+      .gs-section-header {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 9.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--ink-faded, #7A7068);
+        padding: 9px 14px 4px 14px;
+        margin-top: 4px;
+        border-top: 1px solid var(--parchment-edge, #BBA890);
+        opacity: 0.7;
+        animation: gs-fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+      }
+
+      /* ── Fiber loading placeholder ── */
+      .gs-fiber-loading {
+        padding: 8px 14px;
+        font-style: italic;
+        font-size: 12px;
+        color: var(--ink-faded, #7A7068);
+        opacity: 0.65;
+        animation: gs-fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+      }
+
+      /* ── Fiber row ── */
+      .gs-fiber {
+        padding: 7px 14px;
+        gap: 9px;
+        align-items: flex-start;
+      }
+
+      .gs-fiber .gs-icon-fiber {
+        width: 14px;
+        height: 18px;
+        font-size: 10px;
+        line-height: 18px;
+        color: var(--rust, #8A5548);
+        opacity: 0.55;
+        transition: opacity 100ms ease, color 100ms ease;
+      }
+
+      .gs-fiber-main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        flex: 1;
+        gap: 1px;
+      }
+
+      .gs-fiber-title {
+        font-size: 14px;
+        color: var(--ink-dark, #2A2520);
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .gs-fiber-meta {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10px;
+        color: var(--ink-faded, #7A7368);
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .gs-fiber-snippet {
+        font-size: 11.5px;
+        color: var(--ink-light, #5A524A);
+        font-style: italic;
+        line-height: 1.35;
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* Fiber selected: rust accent (matches the worker register since
+         fibers also lean into rust in vellum's chrome) but slightly darker
+         to keep the color distinct from selected workers. */
+      .gs-fiber.selected {
+        background: rgba(138, 85, 72, 0.08);
+      }
+
+      .gs-fiber.selected::after {
+        content: '';
+        position: absolute;
+        left: 0; top: 2px; bottom: 2px;
+        width: 2.5px;
+        background: var(--rust, #8A5548);
+        border-radius: 0 2px 2px 0;
+      }
+
+      .gs-fiber.selected .gs-icon-fiber {
+        opacity: 1;
       }
     `
     document.head.appendChild(style)

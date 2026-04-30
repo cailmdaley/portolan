@@ -437,7 +437,70 @@ const globalSearchPalette = new GlobalSearchPalette({
     }
     mapActions?.focusKittyTab(session.id)
   },
+  // Stage 2 of constitution-portolan-navigation-layer — fiber matches in
+  // the cross-project search. The hit carries cityId + projectSlug for
+  // local-origin fibers (the click-through identifier vellum's collection
+  // expects); remote-origin hits carry only id/originId today and route
+  // through the bare-slug locate path until per-origin remote vellum
+  // navigation lands in a follow-up constitution.
+  onSelectFiber: (hit) => {
+    void openFiberFromSearch(hit)
+  },
+  searchFibers: async (query) => {
+    const host = window.location.hostname
+    const url = `http://${host}:4004/global-search?q=${encodeURIComponent(query)}&limit=20`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`global-search ${res.status}`)
+    const data = await res.json()
+    return Array.isArray(data?.hits) ? data.hits : []
+  },
 })
+
+/**
+ * Open a fiber matched in the cross-project search palette.
+ *
+ *   - Local origin with cityId resolved → pivot vellum into that city's
+ *     collection at the project-relative slug. Same surface a city-HUD
+ *     fiber click already lands on.
+ *   - Local origin without cityId (an unpinned felt host) → fall back to
+ *     `resolveFiberCity` over `/fiber-locate`; if still not found, surface
+ *     a console warning rather than silently dropping the click.
+ *   - Remote origin → no per-origin vellum collection exists yet (the
+ *     navigation layer's vellum-side cross-project rendering is deferred
+ *     per the constitution's Scope §"Out"). Open vellum in file mode at
+ *     the snapshot's md path, which the existing static-felt asset route
+ *     can serve. Console-warn so the gap is discoverable until follow-up
+ *     work lands.
+ */
+async function openFiberFromSearch(hit: import('./ui/GlobalSearchPalette').FiberSearchHit): Promise<void> {
+  if (hit.originId === 'local') {
+    if (hit.cityId) {
+      const city = cities.find(c => c.id === hit.cityId)
+      if (city) {
+        openCityWorkspace(city, { initialSlug: hit.projectSlug ?? hit.id })
+        return
+      }
+    }
+    // Pinned-city path didn't resolve; let the server tell us which local
+    // city owns the slug (mirrors the URL-fragment fiber-nav path).
+    const slug = hit.projectSlug ?? hit.id
+    const owner = await resolveFiberCity(slug, cities)
+    if (owner) {
+      openCityWorkspace(owner, { initialSlug: slug })
+      return
+    }
+    console.warn('[search] could not resolve local fiber to a pinned city:', hit.id)
+    return
+  }
+  // Remote-origin hit. Per-origin vellum navigation is a follow-up; for
+  // now, log so the gap is observable. Drag-from-search → vellum-on-remote
+  // would land naturally once the agent ships per-fiber file-content.
+  console.warn(
+    `[search] remote-origin fiber click is not yet wired ` +
+    `(originId=${hit.originId}, id=${hit.id}). Follow-up work in the ` +
+    `navigation-layer constitution.`,
+  )
+}
 
 // Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
 // Every entry point (launch button, hotkey `k`, city HUD's "Open kanban

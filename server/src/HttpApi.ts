@@ -21,6 +21,7 @@ import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiKanban, type KanbanTarget } from './HttpApiKanban.js';
+import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
@@ -267,6 +268,17 @@ export class HttpApi {
       return true;
     }
 
+    // /global-search — Stage 2 of constitution-portolan-navigation-layer.
+    // Cross-project fiber search over every pinned local city + every
+    // connected remote origin's pushed snapshot. Built fresh per request so
+    // newly-pinned cities show up without restart; HttpApiGlobalSearch's
+    // realpath dedupe handles the loom-symlink case.
+    if (url.pathname === '/global-search' && req.method === 'GET') {
+      const searchApi = this.resolveGlobalSearchApi();
+      await searchApi.handleSearch(url, res);
+      return true;
+    }
+
     if (url.pathname === '/kanban/transition' && req.method === 'POST') {
       const kanbanApi = this.resolveKanbanApi(url, res);
       if (!kanbanApi) return true; // error response already sent
@@ -501,6 +513,27 @@ export class HttpApi {
       return null;
     }
     return new HttpApiKanban({ feltHost: city.path, cities: localCities });
+  }
+
+  /**
+   * Build an HttpApiGlobalSearch scoped to the same multi-host fan-out the
+   * global kanban uses: pinned local cities (felt hosts) + remote-origin
+   * snapshots. Built per request so newly-pinned cities appear immediately
+   * (matches the cityId-less branch of `resolveKanbanApi`); cheap because
+   * the realpath table memoizes per-instance and the fiber walk only happens
+   * when a query is actually issued.
+   */
+  private resolveGlobalSearchApi(): HttpApiGlobalSearch {
+    const localCities = this.persistenceLookup
+      .getCities()
+      .filter((c) => c.originId === 'local')
+      .map((c) => ({ id: c.id, path: c.path }));
+    const localPins = localCities.map((c) => c.path);
+    return new HttpApiGlobalSearch({
+      feltHosts: localPins.length > 0 ? localPins : undefined,
+      cities: localCities,
+      remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+    });
   }
 
   /**
