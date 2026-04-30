@@ -259,6 +259,89 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(child.path).toBe(join(TEST_DIR, '.felt', 'parent', 'child', 'child.md'));
   });
 
+  it('resolves cityId + projectSlug for nested cards when the pinned city owns the .felt', async () => {
+    writeFib('parent/child', {
+      name: 'Child',
+      status: 'open',
+      tags: ['constitution'],
+      'created-at': '2026-04-01',
+    });
+    // Pin TEST_DIR itself as a city — its `.felt` realpath is exactly
+    // FELT_DIR, so every walk-discovered fiber falls under it. The
+    // resolver should echo `cityId` and emit the same project-relative
+    // slug as the card id.
+    const api = new HttpApiKanban({
+      feltHost: TEST_DIR,
+      cities: [{ id: 'self', path: TEST_DIR }],
+    });
+    const res = await callKanban(api);
+    const card = res.body.columns.inFlight.find((c: any) => c.id === 'parent/child');
+    expect(card).toBeTruthy();
+    expect(card.cityId).toBe('self');
+    expect(card.projectSlug).toBe('parent/child');
+  });
+
+  it('resolves to the deeper-matching city when a fiber is reachable via a symlinked alias', async () => {
+    // Mirror the real loom layout: portolan's `.felt/` is a *symlink into*
+    // loom's tree, so the fiber physically lives at
+    // `loom/.felt/ai-futures/portolan/<slug>` and `realpath(portolan/.felt)`
+    // resolves to the same loom subdirectory. TEST_DIR is loom; create a
+    // real `aliased/` subtree under loom's .felt with the fiber, then
+    // build a sibling "project" directory whose `.felt/` is a symlink
+    // pointing at that subtree.
+    // Directory-shape fiber: `<slug-as-dir>/<basename>.md`.
+    mkdirSync(join(FELT_DIR, 'aliased', 'real-fiber'), { recursive: true });
+    writeFileSync(
+      join(FELT_DIR, 'aliased', 'real-fiber', 'real-fiber.md'),
+      '---\nname: Real\nstatus: open\ntags:\n  - constitution\ncreated-at: 2026-04-01\n---\nbody\n',
+      'utf-8',
+    );
+    // Project city: its `.felt/` is a symlink into loom's `.felt/aliased/`.
+    const projDir = join(TEST_DIR, 'proj-a');
+    mkdirSync(projDir, { recursive: true });
+    const { symlinkSync } = require('fs') as typeof import('fs');
+    symlinkSync(join(FELT_DIR, 'aliased'), join(projDir, '.felt'));
+    // Loom is pinned first (matches the real ~/.portolan/cities.json
+    // ordering), proj-a second; resolver still picks proj-a because its
+    // `.felt` realpath is the deeper prefix match (deepest-first sort).
+    const api = new HttpApiKanban({
+      feltHost: TEST_DIR,
+      cities: [
+        { id: 'loom-city', path: TEST_DIR },
+        { id: 'proj-a-city', path: projDir },
+      ],
+    });
+    const res = await callKanban(api);
+    // Loom's walk produces id="aliased/real-fiber" (loom-relative).
+    const card = res.body.columns.inFlight.find((c: any) => c.id === 'aliased/real-fiber');
+    expect(card).toBeTruthy();
+    // The deeper-matching city wins, with the project-relative slug
+    // stripped of the loom-side prefix.
+    expect(card.cityId).toBe('proj-a-city');
+    expect(card.projectSlug).toBe('real-fiber');
+  });
+
+  it('omits cityId/projectSlug when cards have no matching pinned city', async () => {
+    writeFib('orphan-fiber', {
+      name: 'Orphan',
+      status: 'open',
+      tags: ['constitution'],
+      'created-at': '2026-04-01',
+    });
+    // Pin a totally unrelated city — the fiber's canonical path won't fall
+    // under it, so the resolver should leave both fields undefined rather
+    // than mis-attributing.
+    const api = new HttpApiKanban({
+      feltHost: TEST_DIR,
+      cities: [{ id: 'unrelated', path: '/tmp/some-other-city' }],
+    });
+    const res = await callKanban(api);
+    const card = res.body.columns.inFlight.find((c: any) => c.id === 'orphan-fiber');
+    expect(card).toBeTruthy();
+    expect(card.cityId).toBeUndefined();
+    expect(card.projectSlug).toBeUndefined();
+  });
+
   // ── POST /kanban/transition ────────────────────────────────────────────────
 
   describe('handleTransition', () => {

@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { parse as parseYaml } from 'yaml';
 // ── Internal ───────────────────────────────────────────────────────
 /**
  * Read and parse all directory-based fibers in a city's .felt/ directory.
@@ -146,29 +147,52 @@ export function parseFiber(id, content) {
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     const frontmatter = fmMatch ? fmMatch[1] : '';
     const body = fmMatch ? content.slice(fmMatch[0].length).trim() : content.trim();
-    // Parse single-line frontmatter field
+    // Parse the frontmatter once with a real YAML parser so we get block
+    // scalars (`|`, `|-`, `>`), multi-line flow strings, and proper unquoting
+    // for free. The previous regex-based approach treated `outcome: |-`
+    // as a literal string `"|-"` and silently corrupted any multi-line
+    // outcome — see ai-futures/portolan/gotchas/constitution-draft-prefix-in-title
+    // for the surfacing.
+    let fm = {};
+    try {
+        const parsed = parseYaml(frontmatter);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            fm = parsed;
+        }
+    }
+    catch {
+        // Bad YAML → empty frontmatter. The fiber still gets included with
+        // defaults (matches the old regex parser's silent-skip behavior).
+    }
+    // Single-value field. Coerces Date (from ISO timestamps in YAML) back
+    // to ISO string so downstream consumers see strings consistently.
     const getField = (name) => {
-        const match = frontmatter.match(new RegExp(`^${name}:\\s*(.+)$`, 'm'));
-        if (!match)
+        const v = fm[name];
+        if (v === null || v === undefined)
             return undefined;
-        return match[1].trim().replace(/^["']|["']$/g, '');
+        if (v instanceof Date)
+            return v.toISOString();
+        return String(v).trim();
     };
-    // Parse YAML list field (indented "- item" lines after field header)
+    // List field (YAML sequence). Strings get trimmed; other types are
+    // coerced via String().
     const getListField = (name) => {
-        const regex = new RegExp(`^${name}:\\s*\\n((?:[ \\t]+- .+\\n?)*)`, 'm');
-        const match = frontmatter.match(regex);
-        if (!match)
+        const v = fm[name];
+        if (!Array.isArray(v))
             return undefined;
-        const items = match[1].match(/^\s+- (.+)$/gm);
-        if (!items)
-            return undefined;
-        return items.map(line => line.replace(/^\s+- /, '').trim().replace(/^["']|["']$/g, ''));
+        return v.map(item => String(item).trim());
     };
     // Normalize tags: split comma-separated values within a single YAML list item
     // into individual tags. Handles "claim, tapestry:foo" → ["claim", "tapestry:foo"]
     const rawTags = getListField('tags');
     const tags = rawTags?.flatMap(t => t.includes(',') ? t.split(',').map(s => s.trim()).filter(Boolean) : [t]);
-    const dependsOn = getListField('depends-on');
+    const dependsOn = getListField('depends-on') ?? getListField('depends_on');
+    // tempered: human-acceptance signal. Parsed permissively — frontmatter
+    // convention is `tempered: true` but YAML truthiness is forgiving.
+    const temperedRaw = getField('tempered');
+    const tempered = temperedRaw === undefined
+        ? undefined
+        : /^(true|yes|1)$/i.test(temperedRaw);
     return {
         id,
         name: getField('name') || id,
@@ -181,6 +205,7 @@ export function parseFiber(id, content) {
         body: body || undefined,
         tags: tags,
         dependsOn: dependsOn,
+        tempered: tempered,
     };
 }
 //# sourceMappingURL=FiberReader.js.map

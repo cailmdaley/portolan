@@ -175,18 +175,6 @@ export class CityManager {
         return null;
     }
     /**
-     * Public: cityKey for a known cityId. Returns the same normalized
-     * `${originId}:${path}` string that hashes to the cityId. Used by
-     * LayoutStore via HttpApiLayouts to record the key on each pin write,
-     * so a later orphan-detection pass can verify cityId = stableCityId(cityKey).
-     */
-    getCityKey(cityId) {
-        const city = this.getCityById(cityId);
-        if (!city)
-            return null;
-        return this.makeKey(city.originId, city.path);
-    }
-    /**
      * Make city key from originId and path.
      * For remote origins with a known sshHost, normalizes the key so different
      * login nodes (e.g., login05, login07) share the same city.

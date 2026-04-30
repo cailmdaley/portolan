@@ -10,6 +10,7 @@ export interface Fiber {
     closedAt?: string;
     tags?: string[];
     dependsOn?: string[];
+    tempered?: boolean;
     parentId?: string | null;
     isRoot?: boolean;
 }

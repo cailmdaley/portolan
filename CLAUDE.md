@@ -136,12 +136,11 @@ When adding new code, these are the rules new code will violate if you don't kno
 - **Touching SSH?** `execFileAsync` + `shellEscape()`; single-quote remote commands (double-quotes expand locally); `--ssh-host` is the base name; one origin = one live agent (duplicate sockets race); `reconnectTunnel` must `ssh -O exit` first.
 - **Touching felt?** Fibers use `name`, never `title`. `felt add <slug> <name>` (two args). Tags are comma-separated. `depends_on` is objects, extract `.id`.
 - **Mounting `<PretextProse>`?** Sibling `<TextAnnotationLayer>` for selection-to-comment / margin notes; measure `proseRef`'s `contentBoxSize.inlineSize` for `contentWidth`, not the wrapper's `clientWidth` — `.vellum-prose` has 3.5rem horizontal padding the wrapper doesn't account for.
-- **Authoring CSS inside `.dom-pin-vellum-shell`?** The shell injects `h1/h2/h3` rules at (0,1,1); class-only rules at (0,1,0) are silently overridden. Repeat the parent class to clear.
-- **Type/picker that mounts in both modal and pin cards?** Container queries (`container-type: inline-size`), not media queries. Pin cards shrink to ~192px; viewport doesn't change.
+- **Type/picker that mounts in differently-sized containers?** Container queries (`container-type: inline-size`), not media queries — viewport doesn't change when the component shrinks inside a modal/embed.
 
 ## Trap fibers
 
-Past surprises live in fibers — `felt ls -s all gotcha` is the live index. High-density areas: vellum modal a11y, astra rendering inside pin cards, SSH/remote-agent lifecycle, container-query sized typography. Search by area: `felt ls -s all gotcha vellum`, `felt ls -s all gotcha ssh`, `felt ls -s all gotcha astra`.
+Past surprises live in fibers — `felt ls -s all gotcha` is the live index. High-density areas: vellum modal a11y, SSH/remote-agent lifecycle, container-query sized typography. Search by area: `felt ls -s all gotcha vellum`, `felt ls -s all gotcha ssh`, `felt ls -s all gotcha astra`.
 
 ## Deep Dives
 

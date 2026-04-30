@@ -24,6 +24,9 @@ import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinato
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
+import { Shuttle, defaultShuttleConfig } from './Shuttle.js';
+import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
+import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 // ============================================================================
 // Constants
 // ============================================================================
@@ -42,6 +45,8 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
+const fiberTreeSnapshotStore = new FiberTreeSnapshotStore();
+const agentRequestCoordinator = new AgentRequestCoordinator(originManager);
 const meetingBridge = new MeetingBridge({
     sourceFactory: {
         createParakeetSource: (parakeetOptions, callbacks) => new ParakeetTranscriptSource(parakeetOptions, callbacks),
@@ -102,7 +107,24 @@ const cityLookup = {
 // ============================================================================
 // Extracted Modules
 // ============================================================================
-const httpApi = new HttpApi(cityManager, originManager, cityPersistence);
+const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
+    remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
+    // Stage 4 — remote-origin /kanban/transition routes through this executor.
+    // Sends a `kanban-transition` over the agent's WebSocket via the
+    // correlation-ID layer, applies the agent's reply content as a
+    // `fiber_tree_delta` so the snapshot reflects the new state immediately,
+    // and resolves so HttpApiKanban can build the refreshed card. The
+    // agent-side fs.watch will fire its own delta moments later; double-apply
+    // is idempotent because the second copy carries identical content.
+    remoteTransitionExecutor: async ({ originId, path, target, nowIso }) => {
+        const result = await agentRequestCoordinator.send(originId, 'kanban-transition', { path, target, nowIso });
+        if (typeof result.content === 'string') {
+            fiberTreeSnapshotStore.applyDelta(originId, [
+                { path, op: 'upsert', content: result.content },
+            ]);
+        }
+    },
+});
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
 httpApi.setRecentFileTracker(recentFileTracker);
@@ -142,6 +164,11 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
             entryCount: recentFileTracker.getTotalEntryCount(),
         },
         meetingBridge: meetingBridge.getState(),
+        // Constitution `shuttle-remote-dispatch` — composite of local
+        // Shuttle's last tick and every connected remote agent's pushed
+        // shuttle_snapshot. Useful for confirming that a fiber on (e.g.)
+        // candide is dispatching there rather than locally.
+        shuttle: shuttle?.getCompositeSnapshot() ?? null,
     };
 });
 httpApi.setMeetingBridge(meetingBridge);
@@ -347,6 +374,40 @@ wss.on('connection', async (ws, req) => {
                 else if (message.type === 'agent_activity') {
                     remoteAgentCoordinator.handleAgentActivity(origin.id, message.activity);
                 }
+                else if (message.type === 'fiber_tree_dump') {
+                    // Stage 3a — agent ships its full fiber-tree on connect (and again
+                    // on each reconnect). Replaces this origin's snapshot wholesale;
+                    // the agent is the sole writer to its host's tree, so there's no
+                    // reconciliation to do. See [[constitution-vellum-kanban]].
+                    const { feltHost, files } = message.payload;
+                    fiberTreeSnapshotStore.upsertFullDump(origin.id, feltHost, files ?? []);
+                    console.log(`[FiberTree] full dump from ${origin.id}: ${(files ?? []).length} files at ${feltHost}`);
+                    // The kanban view rebuilds per request, so we don't need to push;
+                    // browsers polling /kanban will pick up the new state on next read.
+                }
+                else if (message.type === 'fiber_tree_delta') {
+                    const { deltas } = message.payload;
+                    fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
+                }
+                else if (message.type === 'shuttle_snapshot') {
+                    // Constitution `shuttle-remote-dispatch` — agent's per-tick
+                    // report of its own dispatch state. Replaces this origin's
+                    // prior snapshot wholesale; the agent always ships its full
+                    // eligible/blocked/orphans, so the server treats each push as
+                    // authoritative.
+                    const { snapshot } = message.payload;
+                    if (snapshot && shuttle) {
+                        shuttle.setRemoteSnapshot(origin.id, snapshot);
+                    }
+                }
+                else if (message.type === 'kanban-transition-result') {
+                    // Stage 4 — agent's reply to a `kanban-transition` round-trip.
+                    // Resolves or rejects the matching pending entry in the
+                    // coordinator; the executor in HttpApi then applies the delta
+                    // and HttpApiKanban builds the refreshed card.
+                    const { correlationId, ok, error, content } = message.payload;
+                    agentRequestCoordinator.handleResult(correlationId, !!ok, content !== undefined ? { content } : {}, error);
+                }
             }
             catch (error) {
                 console.error('Failed to handle agent message:', error);
@@ -356,6 +417,25 @@ wss.on('connection', async (ws, req) => {
             const disconnectedOrigin = originManager.handleDisconnect(ws);
             if (disconnectedOrigin) {
                 remoteAgentCoordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
+                // Stage 3a — flag the origin's fiber-tree snapshot stale (kept,
+                // not cleared, so the kanban can render last-known-good cards
+                // with a "waiting on <hostname>" badge). Stage 3b wires the UI;
+                // for now we just track the timestamp so the wire is honest.
+                fiberTreeSnapshotStore.markStale(disconnectedOrigin.id, new Date().toISOString());
+                // Stage 4 — fail any kanban-transitions waiting on this origin so
+                // the HTTP caller gets an immediate "agent disconnected" response
+                // instead of waiting for the 5s timeout. The user re-drags after
+                // the agent reconnects.
+                agentRequestCoordinator.drainOnDisconnect(disconnectedOrigin.id);
+                // Constitution `shuttle-remote-dispatch` — drop the agent's
+                // pushed shuttle_snapshot. The fiber-tree snapshot stays
+                // (last-known-good for kanban rendering); the dispatch
+                // snapshot doesn't, because dispatch state on the remote
+                // continues evolving without our visibility, and last-known-
+                // good would lie. The kanban can still surface "running" via
+                // the agent_sessions_update record of `shuttle-*` tmux
+                // sessions when they were last seen.
+                shuttle?.clearRemoteSnapshot(disconnectedOrigin.id);
                 void browserStateCoordinator.broadcastCurrentState();
             }
             console.log(`Agent disconnected: ${originName}`);
@@ -429,6 +509,70 @@ server.listen(PORT, () => {
     console.log(`Portolan server running on port ${PORT}`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
 });
+// ============================================================================
+// Shuttle — fiber-as-ticket dispatcher
+// ============================================================================
+//
+// Polls every pinned local-origin city for constitution-tagged, non-draft,
+// unblocked, status!=closed fibers, dedupes by realpath of the fiber's md
+// file, and dispatches one single-shot worker per eligible fiber. Per the
+// constitution-shuttle invariants, Shuttle never edits fibers — agents do.
+//
+// Multi-host alignment: the kanban view (HttpApiKanban) walks the same set
+// of pinned cities with the same realpath dedupe, so a constitution that
+// shows up as a card *also* gets a worker — and a fiber dispatched here is
+// the same physical fiber the kanban displays. Each worker spawns with its
+// contributing host as `cwd`, so `felt show <id>` from inside the worker
+// resolves the right file even when ids collide across hosts (see
+// gotchas/gotcha-kanban-fiber-id-collisions-across-cities).
+//
+// Default scope is unscoped (no queuePrefixes) now that draft-tag opt-out
+// is in place. Override via SHUTTLE_QUEUE_PREFIXES env var (comma-separated).
+// Set SHUTTLE_DISABLED=1 to skip startup entirely.
+function pinnedLocalFeltHosts() {
+    return cityPersistence
+        .getCities()
+        .filter(c => c.originId === 'local')
+        .map(c => c.path);
+}
+const shuttleHosts = pinnedLocalFeltHosts();
+const shuttle = (process.env.SHUTTLE_DISABLED === '1' || process.env.VITEST)
+    ? null
+    : new Shuttle({
+        ...defaultShuttleConfig({
+            feltHosts: shuttleHosts.length > 0 ? shuttleHosts : undefined,
+            queuePrefixes: process.env.SHUTTLE_QUEUE_PREFIXES
+                ? process.env.SHUTTLE_QUEUE_PREFIXES.split(',').map(s => s.trim()).filter(Boolean)
+                : undefined,
+        }),
+        // Stage 7 — suspend dispatch into fibers whose remote-origin
+        // writer (a portolan-agent) is currently disconnected. The check
+        // is a method call into the same FiberTreeSnapshotStore that
+        // backs the kanban's remote-origin reads, so dispatch suspension
+        // and the kanban's "waiting on <hostname>" badge stay aligned.
+        staleOriginsForFiber: (id) => fiberTreeSnapshotStore.getStaleOriginsForFiber(id),
+        // Constitution `shuttle-remote-dispatch` — defer to a connected
+        // remote agent for any fiber that lives in its snapshot. The
+        // agent runs its own pollShuttle() loop on the remote machine
+        // and dispatches workers there; the laptop's Shuttle stays out
+        // of its way. The 'local' originId guard is a defence-in-depth
+        // no-op (FiberTreeSnapshotStore only carries remote snapshots),
+        // kept explicit so a future local-snapshot extension doesn't
+        // silently turn into self-deferral.
+        deferredOriginsForFiber: (id) => fiberTreeSnapshotStore
+            .getOriginsForFiber(id)
+            .filter(originId => originId !== 'local' && originManager.isOriginConnected(originId)),
+    });
+if (shuttle) {
+    shuttle.start();
+    const scope = shuttleHosts.length > 0
+        ? `${shuttleHosts.length} pinned local cities`
+        : 'loom (no pins)';
+    console.log(`[Shuttle] started — polling ${scope} for eligible constitution fibers`);
+}
+else {
+    console.log('[Shuttle] disabled via SHUTTLE_DISABLED=1');
+}
 let shuttingDown = false;
 function stopBackgroundTimers() {
     browserStateCoordinator.stop();
@@ -447,6 +591,7 @@ function shutdown() {
     gitStatusManager.stop();
     eventWatcher.stop();
     meetingBridge.stop();
+    shuttle?.stop();
     wss.close();
     server.close(() => {
         process.exit(0);
