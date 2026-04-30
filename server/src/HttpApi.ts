@@ -279,6 +279,17 @@ export class HttpApi {
       return true;
     }
 
+    // /global-fibers — Stage 1 of constitution-portolan-navigation-layer.
+    // Tree view of every fiber across pinned local cities + remote-origin
+    // snapshots, grouped by city/origin. Powers the `/` palette's
+    // empty-state body. Same multi-host fan-out as /global-search; the
+    // class is reused (search + tree are two shapes over one fiber pool).
+    if (url.pathname === '/global-fibers' && req.method === 'GET') {
+      const searchApi = this.resolveGlobalSearchApi();
+      await searchApi.handleTree(url, res);
+      return true;
+    }
+
     if (url.pathname === '/kanban/transition' && req.method === 'POST') {
       const kanbanApi = this.resolveKanbanApi(url, res);
       if (!kanbanApi) return true; // error response already sent

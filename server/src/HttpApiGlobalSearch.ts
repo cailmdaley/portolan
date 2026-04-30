@@ -1,24 +1,28 @@
 /**
- * HttpApiGlobalSearch — cross-project fiber search.
+ * HttpApiGlobalSearch — cross-project fiber API (search + tree).
  *
- * Stage 2 of constitution-portolan-navigation-layer. The portolan map's
- * existing `/` palette searches *cities + workers*; this endpoint extends
- * the same affordance with a third surface — *fibers* — pulled from every
- * pinned local city plus every connected remote origin's pushed
- * fiber-tree snapshot.
+ * Stages 1 + 2 of constitution-portolan-navigation-layer. The portolan map's
+ * existing `/` palette searches *cities + workers*; this module adds two
+ * more shapes over the same multi-host fiber pool:
  *
- * Architecturally a search-shaped sibling of HttpApiKanban: same multi-host
- * collection (pinned local cities walked via FiberReader; remote origins
- * read from FiberTreeSnapshotStore), same realpath-and-id dedupe so a
- * fiber visible through multiple loom symlinks renders once, same
- * cityId+projectSlug resolution so the click-through pivots vellum to
- * the project-scoped slug instead of the loom-relative id (which vellum's
- * collection would 404 on).
+ *   - `/global-search?q=…` — Stage 2: extends the palette with a *fibers*
+ *     section keyed off a free-text query.
+ *   - `/global-fibers`     — Stage 1: the palette's empty-state body —
+ *     a tree view grouped by city, used when the user opens `/` without
+ *     typing a query.
  *
- * Score model mirrors HttpApiTapestry.handleSearch (the per-city /api/search
- * endpoint vellum's side-strip uses): name 100, id 80, tags 40, outcome 20,
- * body 5. Substring contains-match, lower-cased; FTS5 is left as a
- * follow-up (the constitution explicitly defers semantic/embedding search).
+ * Architecturally a sibling of HttpApiKanban: same multi-host collection
+ * (pinned local cities walked via FiberReader; remote origins read from
+ * FiberTreeSnapshotStore), same realpath-and-id dedupe so a fiber visible
+ * through multiple loom symlinks renders once, same cityId+projectSlug
+ * resolution so the click-through pivots vellum to the project-scoped slug
+ * instead of the loom-relative id (which vellum's collection would 404 on).
+ *
+ * Score model for search mirrors HttpApiTapestry.handleSearch (the per-city
+ * /api/search endpoint vellum's side-strip uses): name 100, id 80, tags 40,
+ * outcome 20, body 5. Substring contains-match, lower-cased; FTS5 is left
+ * as a follow-up (the constitution explicitly defers semantic/embedding
+ * search).
  */
 
 import type { ServerResponse } from 'http';
@@ -67,6 +71,54 @@ export interface GlobalSearchHit {
 
 export interface GlobalSearchResponse {
   hits: GlobalSearchHit[];
+  generatedAt: number;
+}
+
+/**
+ * One fiber row in the tree view (Stage 1). Slimmer than GlobalSearchHit —
+ * no score, no snippet (the tree is browse-not-find), but carries `parentId`
+ * + `hasChildren` so the frontend can render expand/collapse without
+ * walking the full id table.
+ */
+export interface GlobalFiberNode {
+  /** Click-through slug — projectSlug for local hits, loom id for unscoped. */
+  id: string;
+  loomId?: string;
+  name: string;
+  status: string;
+  kind: string;
+  tags: string[];
+  /** First non-empty line of outcome (or body fallback), trimmed to ~120 chars. */
+  outcome?: string;
+  /**
+   * Project-relative parent id derived from the displayed `id` (slash-prefix).
+   * `null` for top-level fibers within the city. The frontend uses this to
+   * fold children under their parent when rendering; descendant fibers whose
+   * parent doesn't exist as a fiber file (intermediate dirs are bare scope
+   * folders) still surface at top level — better to show than to drop.
+   */
+  parentId: string | null;
+  /** True if any sibling fiber in this city group claims this node as parent. */
+  hasChildren: boolean;
+}
+
+/** Fibers grouped by their owning city / origin, in tree-render order. */
+export interface GlobalFiberCityGroup {
+  /** Pinned local city id when resolvable; undefined for unmapped remote. */
+  cityId?: string;
+  /** `local` for filesystem-walk sources, `remote-<hostname>` for snapshots. */
+  originId: string;
+  /** Hostname for remote origins (display label). Undefined for local. */
+  hostname?: string;
+  /** Remote-origin snapshot status; local groups are always fresh. */
+  isStale: boolean;
+  /** ISO timestamp; populated for stale remote groups. */
+  staleSince?: string;
+  fibers: GlobalFiberNode[];
+}
+
+export interface GlobalFiberTreeResponse {
+  cities: GlobalFiberCityGroup[];
   generatedAt: number;
 }
 
@@ -188,6 +240,106 @@ export class HttpApiGlobalSearch {
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, limit).map((s) => s.hit);
+  }
+
+  /**
+   * GET /global-fibers — tree view of every fiber across all configured
+   * hosts and connected remote origins, grouped by owning city. Powers the
+   * `/` palette's empty-state body (Stage 1 of constitution-portolan-
+   * navigation-layer). No query parameter; the response is the full tree.
+   */
+  async handleTree(_url: URL, res: ServerResponse): Promise<void> {
+    try {
+      const cities = await this.tree();
+      this.json(res, 200, { cities, generatedAt: Date.now() });
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      console.error('[GlobalSearch] tree failed:', msg);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  /**
+   * Public for testing — collect every fiber, group by city/origin, compute
+   * parentId+hasChildren so the frontend can render expand/collapse without
+   * walking the full id table itself.
+   *
+   * Group ordering: local first, then alphabetical by cityId/hostname so
+   * a stable disconnect/reconnect cycle doesn't reshuffle the tree.
+   */
+  async tree(): Promise<GlobalFiberCityGroup[]> {
+    const merged = await this.collectFibers();
+    if (merged.length === 0) return [];
+
+    const groups = new Map<string, GlobalFiberCityGroup>();
+    const remoteSnapshotByOrigin = new Map<string, FiberTreeSnapshot>();
+    if (this.remoteSnapshotsProvider) {
+      for (const snap of this.remoteSnapshotsProvider()) {
+        remoteSnapshotByOrigin.set(snap.originId, snap);
+      }
+    }
+
+    for (const entry of merged) {
+      // Group key: cityId for resolved-local, originId otherwise. Local
+      // fibers without a cityId (an unpinned felt host) collapse into a
+      // single "unscoped local" bucket so the user sees them at all.
+      const isLocal = entry.originId === 'local';
+      const key = isLocal && entry.cityId
+        ? `local::${entry.cityId}`
+        : isLocal
+        ? 'local::?'
+        : entry.originId;
+
+      let group = groups.get(key);
+      if (!group) {
+        const snap = !isLocal ? remoteSnapshotByOrigin.get(entry.originId) : undefined;
+        group = {
+          cityId: entry.cityId,
+          originId: entry.originId,
+          hostname: entry.hostname,
+          isStale: snap?.status === 'stale',
+          staleSince: snap?.staleSince,
+          fibers: [],
+        };
+        groups.set(key, group);
+      }
+
+      const id = entry.projectSlug ?? entry.fiber.id;
+      group.fibers.push({
+        id,
+        loomId: entry.loomId,
+        name: entry.fiber.name || id,
+        status: entry.fiber.status || 'open',
+        kind: entry.fiber.kind || 'task',
+        tags: entry.fiber.tags ?? [],
+        outcome: makeLede(entry.fiber),
+        parentId: parentIdOf(id),
+        hasChildren: false, // patched in second pass
+      });
+    }
+
+    // Second pass: hasChildren + sort. Sort alphabetically by id so the
+    // tree reads like a directory listing — parents adjacent to their
+    // children, siblings stable across calls.
+    for (const group of groups.values()) {
+      const idsInGroup = new Set(group.fibers.map((f) => f.id));
+      const claimedAsParent = new Set<string>();
+      for (const f of group.fibers) {
+        if (f.parentId && idsInGroup.has(f.parentId)) claimedAsParent.add(f.parentId);
+      }
+      for (const f of group.fibers) {
+        f.hasChildren = claimedAsParent.has(f.id);
+      }
+      group.fibers.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    return [...groups.values()].sort((a, b) => {
+      if (a.originId === 'local' && b.originId !== 'local') return -1;
+      if (b.originId === 'local' && a.originId !== 'local') return 1;
+      const aKey = a.cityId ?? a.hostname ?? a.originId;
+      const bKey = b.cityId ?? b.hostname ?? b.originId;
+      return aKey.localeCompare(bKey);
+    });
   }
 
   /**
@@ -369,4 +521,30 @@ function makeSnippet(fiber: Fiber, needle: string): string | undefined {
     );
   }
   return fiber.body.split('\n').find((line) => line.trim())?.slice(0, 120);
+}
+
+/**
+ * Lede for the tree view: first non-empty line of `outcome`, falling back to
+ * `body`. Trimmed to 120 chars so the row stays one-line. Used by `tree()`
+ * only — the search side prefers the needle-windowed snippet.
+ */
+function makeLede(fiber: Fiber): string | undefined {
+  const sources = [fiber.outcome, fiber.body];
+  for (const src of sources) {
+    if (!src) continue;
+    const firstLine = src.split('\n').find((line) => line.trim());
+    if (firstLine) return firstLine.trim().slice(0, 120);
+  }
+  return undefined;
+}
+
+/**
+ * Project-relative parent id: everything before the last `/`. `null` for
+ * top-level fibers within their city group. Computed off the displayed id
+ * (projectSlug for resolved-local, loom id otherwise) so the frontend's
+ * fold/expand reads off the same string the user clicks.
+ */
+function parentIdOf(id: string): string | null {
+  const slash = id.lastIndexOf('/');
+  return slash >= 0 ? id.slice(0, slash) : null;
 }
