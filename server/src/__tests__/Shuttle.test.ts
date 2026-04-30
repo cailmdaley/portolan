@@ -446,4 +446,120 @@ created-at: 2026-04-28T00:00:00Z
     expect(snap.eligible).toEqual([]);
     expect(snap.blocked.map(b => b.fiberId)).toEqual(['tests/haiku']);
   });
+
+  it('shuttle-remote-dispatch: deferral gate routes a fiber to the connected remote agent', async () => {
+    // Constitution shuttle-remote-dispatch: when a fiber is also visible
+    // in a connected remote agent's snapshot, the laptop's Shuttle does
+    // NOT dispatch — the agent will. The blocked entry's reason names
+    // the deferral target so debug surfaces are legible.
+    writeFiber(
+      feltDir,
+      'tests/cmbx',
+      `---
+name: Cmbx
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    let deferredOrigins: string[] = ['remote-candide'];
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        return shuttleSessionName(id);
+      },
+      deferredOriginsForFiber: () => [...deferredOrigins],
+    });
+
+    // Tick 1: fiber visible to a connected remote → blocked, no dispatch.
+    const snap1 = await shuttle.tick();
+    expect(spawned).toEqual([]);
+    expect(snap1.eligible).toEqual([]);
+    const blocked = snap1.blocked.find(b => b.fiberId === 'tests/cmbx');
+    expect(blocked?.reason).toContain('deferred to');
+    expect(blocked?.reason).toContain('remote-candide');
+
+    // Tick 2: agent disconnects (no longer in deferred list and not stale
+    // either — local-only). Now we dispatch.
+    deferredOrigins = [];
+    const snap2 = await shuttle.tick();
+    expect(spawned).toEqual(['tests/cmbx']);
+    expect(snap2.eligible.map(e => e.fiberId)).toEqual(['tests/cmbx']);
+  });
+
+  it('shuttle-remote-dispatch: stale gate fires before deferral gate', async () => {
+    // Edge: a fiber listed in BOTH a stale snapshot and a connected
+    // remote's snapshot (e.g. a local symlink AND a separate cineca
+    // mirror). Stale wins because the surfaced reason should describe
+    // the more conservative gate. (Test order: stale check, then
+    // deferral.)
+    writeFiber(
+      feltDir,
+      'tests/cmbx',
+      `---
+name: Cmbx
+status: active
+tags:
+    - constitution
+created-at: 2026-04-28T00:00:00Z
+---
+`,
+    );
+    const spawned: string[] = [];
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id) => {
+        spawned.push(id);
+        return shuttleSessionName(id);
+      },
+      staleOriginsForFiber: () => ['remote-cineca'],
+      deferredOriginsForFiber: () => ['remote-candide'],
+    });
+
+    const snap = await shuttle.tick();
+    expect(spawned).toEqual([]);
+    const blocked = snap.blocked.find(b => b.fiberId === 'tests/cmbx');
+    expect(blocked?.reason).toContain('origin stale');
+    expect(blocked?.reason).toContain('remote-cineca');
+    expect(blocked?.reason).not.toContain('deferred to');
+  });
+
+  it('shuttle-remote-dispatch: per-origin remote snapshots round-trip through Shuttle', () => {
+    // Server stores each agent's pushed snapshot indexed by originId and
+    // exposes a composite for the kanban / debug view. clearRemoteSnapshot
+    // (called on agent disconnect) drops the entry.
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host }),
+      spawnShuttleWorker: () => 'unused',
+    });
+
+    const candideSnap = {
+      pollAt: 1,
+      eligible: [{ fiberId: 'cmbx/foo', state: 'running' as const, tmuxSession: 'shuttle-cmbx/foo', startedAt: 1 }],
+      blocked: [],
+      orphans: [],
+    };
+    const cinecaSnap = {
+      pollAt: 2,
+      eligible: [],
+      blocked: [{ fiberId: 'cmbx/bar', reason: 'tag: draft' }],
+      orphans: [],
+    };
+    shuttle.setRemoteSnapshot('remote-candide', candideSnap);
+    shuttle.setRemoteSnapshot('remote-cineca', cinecaSnap);
+
+    const composite = shuttle.getCompositeSnapshot();
+    expect(composite.local).toBeNull();
+    expect(composite.remote['remote-candide']).toBe(candideSnap);
+    expect(composite.remote['remote-cineca']).toBe(cinecaSnap);
+
+    shuttle.clearRemoteSnapshot('remote-candide');
+    const after = shuttle.getCompositeSnapshot();
+    expect(after.remote['remote-candide']).toBeUndefined();
+    expect(after.remote['remote-cineca']).toBe(cinecaSnap);
+  });
 });

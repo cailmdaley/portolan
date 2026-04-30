@@ -21,7 +21,7 @@
  */
 
 import WebSocket from 'ws';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
 import { existsSync, readFileSync, readdirSync, watch, writeFileSync } from 'fs';
@@ -59,6 +59,38 @@ const FELT_WATCH_DEBOUNCE_MS = process.env.PORTOLAN_FELT_DEBOUNCE_MS
   ? parseInt(process.env.PORTOLAN_FELT_DEBOUNCE_MS, 10)
   : 250;
 
+// ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
+//
+// The agent owns dispatch for fibers that live on its host. The server's
+// Shuttle defers to a connected agent for any fiber visible in that
+// agent's fiber-tree snapshot, so dispatch can run autonomously here even
+// when the laptop is closed and the SSH tunnel is down. Loom git-sync
+// carries the worker's frontmatter edits back to the laptop on next sync.
+//
+// PORTOLAN_SHUTTLE_ENABLED=1    → opt-in. Off by default — safer first
+//                                 contact, since `~/loom/.felt/` may
+//                                 contain stale constitution-tagged
+//                                 fibers from past pulls that the user
+//                                 doesn't want auto-dispatched.
+// PORTOLAN_SHUTTLE_INTERVAL_MS  → poll cadence (default 30s, matches server).
+// PORTOLAN_SHUTTLE_WORKER       → override path to shuttle-worker.sh.
+// PORTOLAN_SHUTTLE_PREFIXES     → comma-separated id-prefix scope (mirrors
+//                                 server's SHUTTLE_QUEUE_PREFIXES). Empty
+//                                 means "every constitution-tagged,
+//                                 non-draft, unblocked, non-closed fiber
+//                                 on this host" — only meaningful when
+//                                 PORTOLAN_SHUTTLE_ENABLED=1.
+const SHUTTLE_ENABLED = process.env.PORTOLAN_SHUTTLE_ENABLED === '1';
+const SHUTTLE_INTERVAL_MS = process.env.PORTOLAN_SHUTTLE_INTERVAL_MS
+  ? parseInt(process.env.PORTOLAN_SHUTTLE_INTERVAL_MS, 10)
+  : 30_000;
+const SHUTTLE_WORKER_SCRIPT = process.env.PORTOLAN_SHUTTLE_WORKER
+  || join(homedir(), '.portolan', 'bin', 'shuttle-worker.sh');
+const SHUTTLE_PREFIXES = (process.env.PORTOLAN_SHUTTLE_PREFIXES || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
 // CLI provider detection — detect both claude and codex simultaneously
 const ALL_CLI_PROCESS_NAMES = ['claude', 'codex'];
 function isCliProcess(comm) { return ALL_CLI_PROCESS_NAMES.some(n => comm.includes(n)); }
@@ -75,6 +107,9 @@ let lastEventsCharPosition = 0;
 let fiberTreeWatcher = null;
 let fiberTreeFlushTimer = null;
 const fiberTreePending = new Map();  // relPath → 'upsert' | 'delete'
+let shuttleInterval = null;
+const shuttleDispatched = new Map();  // fiberId → { fiberId, tmuxSession, state, startedAt }
+let lastShuttleSnapshot = null;
 
 // ============================================================================
 // Logging
@@ -863,6 +898,369 @@ function handleKanbanTransition(message) {
 }
 
 // ============================================================================
+// Shuttle on the agent (constitution-shuttle-remote-dispatch)
+// ============================================================================
+//
+// SOURCE OF TRUTH for the eligibility predicate is server/src/Shuttle.ts
+// `computeEligibility`. The agent inlines a minimal port — same shape, no
+// queuePrefixes-API surface (we read SHUTTLE_PREFIXES once at startup) and
+// no sub-fiber resolution beyond what idFromPath surfaces. The
+// agent-frontmatter-parity vitest covers the parser, not the predicate;
+// the predicate is small enough to stay in human-eyeballed sync.
+//
+// The path: on each tick, walk FELT_DIR for .md files (we already do it
+// for the dump), translate path → fiber id, parse frontmatter for
+// {status, tags, depends_on, tempered}, then run the predicate and
+// dispatch. tmux is probed by `tmux ls` filtered to `shuttle-*`.
+
+/**
+ * Tiny YAML-ish frontmatter parser scoped to the fields Shuttle needs.
+ * Robust against scalar `tags: [a, b]`, block `tags:\n  - a\n  - b`, and
+ * the common `depends_on: [x, y]` / block list shapes felt fibers use.
+ *
+ * We don't pull a YAML lib in — agent.js ships as a single file and
+ * mutateTagsInPlace / applyTargetToFrontmatter already proves the
+ * regex-on-frontmatter idiom is good enough for the fiber shapes we see.
+ *
+ * Returns `null` when no frontmatter block opens the file; otherwise an
+ * object with possibly-undefined fields. Missing fields read as
+ * untagged / unstatused / no deps (i.e. the fiber is *not* a constitution
+ * and falls out of eligibility).
+ */
+export function parseFiberFrontmatter(raw) {
+    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if (!fmMatch) return null;
+    const lines = fmMatch[1].split(/\r?\n/);
+
+    const out = { tags: [], dependsOn: [], status: undefined, tempered: undefined };
+
+    const stripQuotes = s => s.trim().replace(/^["']|["']$/g, '').trim();
+    const parseInlineList = body => body
+        .split(',')
+        .map(s => stripQuotes(s))
+        .filter(Boolean);
+
+    const readBlockListFrom = (startIdx) => {
+        const items = [];
+        let j = startIdx + 1;
+        while (j < lines.length && /^[ \t]+- /.test(lines[j])) {
+            const m = lines[j].match(/^[ \t]+- (.+)$/);
+            if (m) items.push(stripQuotes(m[1]));
+            j++;
+        }
+        return items;
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // tags
+        if (/^tags:\s*$/.test(line)) {
+            out.tags = readBlockListFrom(i);
+            continue;
+        }
+        const tagsInline = line.match(/^tags:\s*\[(.*)\]\s*$/);
+        if (tagsInline) {
+            out.tags = parseInlineList(tagsInline[1]);
+            continue;
+        }
+        // depends_on
+        if (/^depends_on:\s*$/.test(line)) {
+            out.dependsOn = readBlockListFrom(i);
+            continue;
+        }
+        const depsInline = line.match(/^depends_on:\s*\[(.*)\]\s*$/);
+        if (depsInline) {
+            out.dependsOn = parseInlineList(depsInline[1]);
+            continue;
+        }
+        // status
+        const statusMatch = line.match(/^status:\s*(.*)$/);
+        if (statusMatch) {
+            out.status = stripQuotes(statusMatch[1]);
+            continue;
+        }
+        // tempered
+        const temperedMatch = line.match(/^tempered:\s*(.*)$/);
+        if (temperedMatch) {
+            const v = stripQuotes(temperedMatch[1]).toLowerCase();
+            out.tempered = v === 'true' ? true : v === 'false' ? false : undefined;
+        }
+    }
+    return out;
+}
+
+/**
+ * Translate a `.felt/`-relative file path to a fiber id, mirroring
+ * server/src/FiberTreeSnapshotStore.idFromPath. Container fibers only:
+ * `<slug>.md`, `<dir>/<dir>.md`, `<a>/<b>/<b>.md`. Sibling notes return
+ * null and are skipped.
+ *
+ * SOURCE OF TRUTH: server/src/FiberTreeSnapshotStore.ts `idFromPath`.
+ */
+export function shuttleIdFromPath(filePath) {
+    if (!filePath.endsWith('.md')) return null;
+    const cleaned = filePath.replace(/^\.?\/?/, '');
+    const noExt = cleaned.slice(0, -3);
+    const parts = noExt.split('/').filter(Boolean);
+    if (parts.length === 0) return null;
+    if (parts.length === 1) return parts[0];
+    const last = parts[parts.length - 1];
+    const secondLast = parts[parts.length - 2];
+    if (last !== secondLast) return null;
+    return parts.slice(0, -1).join('/');
+}
+
+/**
+ * Read FELT_DIR and produce `[{ id, status, tags, dependsOn, tempered }]`
+ * for every container fiber file. Cheap enough to run every tick on
+ * realistic loom sizes; if not, we'll add caching later.
+ */
+function collectShuttleFibers() {
+    if (!existsSync(FELT_DIR)) return [];
+    const out = [];
+    const walk = (currentDir) => {
+        let entries;
+        try {
+            entries = readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const full = join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                walk(full);
+            } else if (entry.isFile() && entry.name.endsWith('.md')) {
+                const relPath = relative(FELT_DIR, full).split(sep).join('/');
+                const id = shuttleIdFromPath(relPath);
+                if (!id) continue;
+                let raw;
+                try {
+                    raw = readFileSync(full, 'utf-8');
+                } catch {
+                    continue;
+                }
+                const fm = parseFiberFrontmatter(raw);
+                if (!fm) continue;
+                out.push({
+                    id,
+                    status: fm.status,
+                    tags: fm.tags,
+                    dependsOn: fm.dependsOn,
+                    tempered: fm.tempered,
+                });
+            }
+        }
+    };
+    walk(FELT_DIR);
+    return out;
+}
+
+/**
+ * Eligibility predicate. Mirror of server/src/Shuttle.ts
+ * `computeEligibility` semantics:
+ *   1. tags includes 'constitution'
+ *   2. NOT tagged 'draft'
+ *   3. status != 'closed'
+ *   4. all dependsOn references resolve to fibers with tempered === true
+ *   5. id is in scope per SHUTTLE_PREFIXES (when set)
+ */
+export function computeShuttleEligibility(fibers, prefixes) {
+    const byId = new Map(fibers.map(f => [f.id, f]));
+    const eligible = [];
+    const blocked = [];
+
+    const inScope = (id) => {
+        if (!prefixes || prefixes.length === 0) return true;
+        return prefixes.some(p => id === p || id.startsWith(p + '/'));
+    };
+
+    for (const f of fibers) {
+        if (!f.tags || !f.tags.includes('constitution')) continue;
+        if (!inScope(f.id)) continue;
+        if (f.tags.includes('draft')) {
+            blocked.push({ fiberId: f.id, reason: 'tag: draft' });
+            continue;
+        }
+        if (f.status === 'closed') {
+            blocked.push({ fiberId: f.id, reason: 'status: closed' });
+            continue;
+        }
+        const deps = f.dependsOn || [];
+        const unsatisfied = deps.filter(depId => {
+            const dep = byId.get(depId);
+            return !dep || dep.tempered !== true;
+        });
+        if (unsatisfied.length > 0) {
+            blocked.push({
+                fiberId: f.id,
+                reason: `blocked on: ${unsatisfied.join(', ')}`,
+            });
+            continue;
+        }
+        eligible.push(f);
+    }
+    return { eligible, blocked };
+}
+
+/** Probe tmux for `shuttle-*` sessions. Empty array if tmux isn't running. */
+async function listShuttleSessions() {
+    try {
+        const { stdout } = await execAsync(
+            'tmux ls -F "#{session_name}" 2>/dev/null',
+            { timeout: 3000 }
+        );
+        return stdout.split('\n').map(s => s.trim()).filter(s => s.startsWith('shuttle-'));
+    } catch {
+        return [];
+    }
+}
+
+function shuttleSessionName(fiberId) {
+    return `shuttle-${fiberId}`;
+}
+
+/**
+ * Spawn a shuttle worker on this host. Detached so the worker survives
+ * the agent restarting; matches the server-side dispatcher's contract.
+ * The worker script itself runs `tmux new-session -d`, so we shell out
+ * once and trust tmux to take ownership of the actual session.
+ */
+function spawnShuttleWorker(fiberId) {
+    if (!existsSync(SHUTTLE_WORKER_SCRIPT)) {
+        log(`[shuttle] worker script missing at ${SHUTTLE_WORKER_SCRIPT}; skipping ${fiberId}`);
+        return null;
+    }
+    try {
+        const child = spawn('bash', ['-l', SHUTTLE_WORKER_SCRIPT, fiberId], {
+            cwd: FELT_HOST,
+            detached: true,
+            stdio: 'ignore',
+        });
+        child.unref();
+        debug(`[shuttle] spawned worker for ${fiberId}`);
+        return shuttleSessionName(fiberId);
+    } catch (err) {
+        log(`[shuttle] spawn failed for ${fiberId}: ${err.message}`);
+        return null;
+    }
+}
+
+/**
+ * One reconcile pass. Walks FELT_DIR, computes eligibility, probes tmux,
+ * spawns workers for newly-eligible fibers, and ships a `shuttle_snapshot`
+ * to the server. Single-shot semantics: if a worker exits and the fiber
+ * is still eligible on the next tick, we redispatch.
+ */
+async function pollShuttle() {
+    const fibers = collectShuttleFibers();
+    const { eligible: eligibleFibers, blocked } = computeShuttleEligibility(fibers, SHUTTLE_PREFIXES);
+    const liveSessions = new Set(await listShuttleSessions());
+    const eligibleIds = new Set(eligibleFibers.map(f => f.id));
+
+    // Reconcile in-memory dispatch state with reality.
+    for (const [id, entry] of shuttleDispatched) {
+        if (entry.tmuxSession && !liveSessions.has(entry.tmuxSession)) {
+            entry.state = 'gone';
+        }
+        if (!eligibleIds.has(id)) {
+            shuttleDispatched.delete(id);
+        }
+    }
+
+    const eligibleEntries = [];
+    for (const f of eligibleFibers) {
+        const expectedSession = shuttleSessionName(f.id);
+        const existing = shuttleDispatched.get(f.id);
+        const sessionLive = existing && existing.tmuxSession && liveSessions.has(existing.tmuxSession);
+
+        if (sessionLive) {
+            eligibleEntries.push(existing);
+            continue;
+        }
+
+        // Adopt an external shuttle session by name (e.g. one we spawned
+        // before agent restart, or a manual launch).
+        if (liveSessions.has(expectedSession)) {
+            const adopted = {
+                fiberId: f.id,
+                tmuxSession: expectedSession,
+                state: 'running',
+                startedAt: existing?.startedAt ?? Date.now(),
+                reason: 'adopted existing tmux session',
+            };
+            shuttleDispatched.set(f.id, adopted);
+            eligibleEntries.push(adopted);
+            continue;
+        }
+
+        const session = spawnShuttleWorker(f.id);
+        if (!session) {
+            eligibleEntries.push({
+                fiberId: f.id,
+                state: 'idle',
+                reason: 'spawn failed (worker script missing or unavailable)',
+            });
+            continue;
+        }
+        const entry = {
+            fiberId: f.id,
+            tmuxSession: session,
+            state: 'running',
+            startedAt: Date.now(),
+        };
+        shuttleDispatched.set(f.id, entry);
+        eligibleEntries.push(entry);
+    }
+
+    const trackedSessions = new Set(
+        Array.from(shuttleDispatched.values())
+            .map(e => e.tmuxSession)
+            .filter(Boolean)
+    );
+    const orphans = Array.from(liveSessions).filter(s => !trackedSessions.has(s));
+
+    const snapshot = {
+        pollAt: Date.now(),
+        eligible: eligibleEntries,
+        blocked,
+        orphans,
+    };
+    lastShuttleSnapshot = snapshot;
+
+    if (connected && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'shuttle_snapshot',
+            payload: { snapshot },
+        }));
+        debug(`[shuttle] snapshot: ${eligibleEntries.length} eligible, ${blocked.length} blocked, ${orphans.length} orphans`);
+    }
+    return snapshot;
+}
+
+function startShuttlePoller() {
+    if (!SHUTTLE_ENABLED) {
+        log('[shuttle] disabled (set PORTOLAN_SHUTTLE_ENABLED=1 to enable)');
+        return;
+    }
+    if (!existsSync(FELT_DIR)) {
+        log(`[shuttle] FELT_DIR missing (${FELT_DIR}); shuttle poller will idle until it appears`);
+    }
+    log(`[shuttle] poller starting — interval ${SHUTTLE_INTERVAL_MS}ms, worker ${SHUTTLE_WORKER_SCRIPT}` +
+        (SHUTTLE_PREFIXES.length ? `, scope ${SHUTTLE_PREFIXES.join(',')}` : ', unscoped'));
+    pollShuttle().catch(err => log(`[shuttle] tick error: ${err.message}`));
+    shuttleInterval = setInterval(() => {
+        pollShuttle().catch(err => log(`[shuttle] tick error: ${err.message}`));
+    }, SHUTTLE_INTERVAL_MS);
+}
+
+function stopShuttlePoller() {
+    if (shuttleInterval) {
+        clearInterval(shuttleInterval);
+        shuttleInterval = null;
+    }
+}
+
+// ============================================================================
 // WebSocket Connection
 // ============================================================================
 
@@ -923,6 +1321,18 @@ function connect(serverUrl, sshHost) {
         // coordination because the agent is the sole writer to its
         // host's `.felt/`.
         sendFiberTreeDump();
+
+        // Constitution shuttle-remote-dispatch: ship the most recent
+        // shuttle snapshot if we have one. Lets the server pick up the
+        // dispatch view immediately after a reconnect rather than
+        // waiting up to SHUTTLE_INTERVAL_MS for the next tick.
+        if (lastShuttleSnapshot) {
+            ws.send(JSON.stringify({
+                type: 'shuttle_snapshot',
+                payload: { snapshot: lastShuttleSnapshot },
+            }));
+            debug(`[shuttle] resent last snapshot on reconnect`);
+        }
     });
 
     ws.on('message', (data) => {
@@ -1043,6 +1453,12 @@ async function main() {
             // is ready.
             startFiberTreeWatcher();
 
+            // Constitution shuttle-remote-dispatch: poller runs whether or
+            // not the WS is up, so dispatch survives tunnel drops and
+            // laptop-closes. The first tick fires immediately so
+            // already-eligible fibers don't wait a full interval.
+            startShuttlePoller();
+
             // Connect to server
             connect(serverUrl, sshHost);
 
@@ -1052,6 +1468,7 @@ async function main() {
                 if (pollInterval) clearInterval(pollInterval);
                 if (eventsWatchInterval) clearInterval(eventsWatchInterval);
                 stopFiberTreeWatcher();
+                stopShuttlePoller();
                 if (ws) ws.close();
                 process.exit(0);
             });

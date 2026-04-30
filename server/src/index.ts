@@ -26,7 +26,7 @@ import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinato
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
-import { Shuttle, defaultShuttleConfig } from './Shuttle.js';
+import { Shuttle, defaultShuttleConfig, type ShuttleSnapshot } from './Shuttle.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 
@@ -182,6 +182,11 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       entryCount: recentFileTracker.getTotalEntryCount(),
     },
     meetingBridge: meetingBridge.getState(),
+    // Constitution `shuttle-remote-dispatch` — composite of local
+    // Shuttle's last tick and every connected remote agent's pushed
+    // shuttle_snapshot. Useful for confirming that a fiber on (e.g.)
+    // candide is dispatching there rather than locally.
+    shuttle: shuttle?.getCompositeSnapshot() ?? null,
   };
 });
 httpApi.setMeetingBridge(meetingBridge);
@@ -425,6 +430,16 @@ wss.on('connection', async (ws, req) => {
             deltas: Array<{ path: string; op: 'upsert' | 'delete'; content?: string }>;
           };
           fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
+        } else if (message.type === 'shuttle_snapshot') {
+          // Constitution `shuttle-remote-dispatch` — agent's per-tick
+          // report of its own dispatch state. Replaces this origin's
+          // prior snapshot wholesale; the agent always ships its full
+          // eligible/blocked/orphans, so the server treats each push as
+          // authoritative.
+          const { snapshot } = message.payload as { snapshot?: ShuttleSnapshot };
+          if (snapshot && shuttle) {
+            shuttle.setRemoteSnapshot(origin.id, snapshot);
+          }
         } else if (message.type === 'kanban-transition-result') {
           // Stage 4 — agent's reply to a `kanban-transition` round-trip.
           // Resolves or rejects the matching pending entry in the
@@ -462,6 +477,15 @@ wss.on('connection', async (ws, req) => {
         // instead of waiting for the 5s timeout. The user re-drags after
         // the agent reconnects.
         agentRequestCoordinator.drainOnDisconnect(disconnectedOrigin.id);
+        // Constitution `shuttle-remote-dispatch` — drop the agent's
+        // pushed shuttle_snapshot. The fiber-tree snapshot stays
+        // (last-known-good for kanban rendering); the dispatch
+        // snapshot doesn't, because dispatch state on the remote
+        // continues evolving without our visibility, and last-known-
+        // good would lie. The kanban can still surface "running" via
+        // the agent_sessions_update record of `shuttle-*` tmux
+        // sessions when they were last seen.
+        shuttle?.clearRemoteSnapshot(disconnectedOrigin.id);
         void browserStateCoordinator.broadcastCurrentState();
       }
       console.log(`Agent disconnected: ${originName}`);
@@ -596,6 +620,18 @@ const shuttle = (process.env.SHUTTLE_DISABLED === '1' || process.env.VITEST)
       // backs the kanban's remote-origin reads, so dispatch suspension
       // and the kanban's "waiting on <hostname>" badge stay aligned.
       staleOriginsForFiber: (id) => fiberTreeSnapshotStore.getStaleOriginsForFiber(id),
+      // Constitution `shuttle-remote-dispatch` — defer to a connected
+      // remote agent for any fiber that lives in its snapshot. The
+      // agent runs its own pollShuttle() loop on the remote machine
+      // and dispatches workers there; the laptop's Shuttle stays out
+      // of its way. The 'local' originId guard is a defence-in-depth
+      // no-op (FiberTreeSnapshotStore only carries remote snapshots),
+      // kept explicit so a future local-snapshot extension doesn't
+      // silently turn into self-deferral.
+      deferredOriginsForFiber: (id) =>
+        fiberTreeSnapshotStore
+          .getOriginsForFiber(id)
+          .filter(originId => originId !== 'local' && originManager.isOriginConnected(originId)),
     });
 if (shuttle) {
   shuttle.start();

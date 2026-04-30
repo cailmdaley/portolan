@@ -19,6 +19,13 @@ export const stubOriginLookup = {
 
 export const stubPersistenceLookup = {
   getCityById: () => null,
+  // resolveKanbanApi reads pinned cities to thread per-card cityId/projectSlug
+  // through HttpApiKanban (so the frontend can resolve loom-relative card ids
+  // back to a project-scoped slug for click-through). Tests that don't care
+  // about enrichment get an empty pin list — cards still render, just without
+  // the extra fields.
+  getCities: () => [] as Array<{ id: string; path: string; originId: string }>,
+  findSshHostForPath: () => undefined,
 };
 
 // ── AnnotationPersistence factory ────────────────────────────────────

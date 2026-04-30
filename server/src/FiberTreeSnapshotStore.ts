@@ -196,6 +196,29 @@ export class FiberTreeSnapshotStore {
     }
     return stale;
   }
+
+  /**
+   * Return the originIds of *every* snapshot — fresh or stale — that
+   * contains `fiberId`. Empty when no remote snapshot owns the fiber
+   * (i.e. it's local-only).
+   *
+   * Constitution `shuttle-remote-dispatch`: the server's Shuttle uses
+   * this to identify fibers whose dispatch should be deferred to a
+   * remote agent. A fresh remote owner means an alive agent will run
+   * the worker on its own machine; a stale remote owner means the
+   * Stage-7 gate has already suspended dispatch. Either way, the
+   * server should not race with the agent over the same fiber file.
+   *
+   * The shape is symmetric to `getStaleOriginsForFiber` so callers can
+   * pick the predicate that matches their gate semantics.
+   */
+  getOriginsForFiber(fiberId: string): string[] {
+    const origins: string[] = [];
+    for (const snap of this.snapshots.values()) {
+      if (snap.byId.has(fiberId)) origins.push(snap.originId);
+    }
+    return origins;
+  }
 }
 
 // ============================================================================

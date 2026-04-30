@@ -117,6 +117,23 @@ export interface ShuttleConfig {
    * `FiberTreeSnapshotStore.getStaleOriginsForFiber`.
    */
   staleOriginsForFiber?: (fiberId: string) => string[];
+  /**
+   * Constitution `shuttle-remote-dispatch` — per-fiber deferral gate.
+   * When supplied, called for each eligible fiber before dispatch.
+   * Returns the originIds of *connected* remote agents that own the
+   * fiber. Non-empty means "this fiber is the agent's responsibility,
+   * not ours" — the fiber moves to `blocked` with a "deferred to
+   * <originId>" reason. Symmetric to `staleOriginsForFiber`: the
+   * stale gate covers disconnected remotes (workers may still run
+   * autonomously, but we have no fresh visibility), this one covers
+   * the steady-state connected remote case.
+   *
+   * Wired in production to a closure over
+   * `FiberTreeSnapshotStore.getOriginsForFiber` filtered by
+   * `OriginManager.isOriginConnected` — and skipping the local origin
+   * since the server *is* local Shuttle.
+   */
+  deferredOriginsForFiber?: (fiberId: string) => string[];
 }
 
 export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): ShuttleConfig {
@@ -250,11 +267,19 @@ export function shuttleSessionName(fiberId: string): string {
 // ============================================================================
 
 export class Shuttle {
-  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts' | 'staleOriginsForFiber'>>
-    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts' | 'staleOriginsForFiber'>;
+  private config: Required<Omit<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts' | 'staleOriginsForFiber' | 'deferredOriginsForFiber'>>
+    & Pick<ShuttleConfig, 'spawnShuttleWorker' | 'onSnapshot' | 'queuePrefixes' | 'listSessions' | 'feltHosts' | 'staleOriginsForFiber' | 'deferredOriginsForFiber'>;
   private dispatched = new Map<string, DispatchEntry>();
   private timer: NodeJS.Timeout | null = null;
   private lastSnapshot: ShuttleSnapshot | null = null;
+  /**
+   * Per-origin agent-pushed snapshots. Constitution
+   * `shuttle-remote-dispatch`: each connected remote agent pushes its
+   * own `ShuttleSnapshot` periodically; we store the latest per-origin
+   * for the kanban / debug composite view. The local Shuttle's own
+   * tick result lives in `lastSnapshot`; remotes live here.
+   */
+  private remoteSnapshots = new Map<string, ShuttleSnapshot>();
 
   constructor(config: ShuttleConfig) {
     const cfg = { ...defaultShuttleConfig(), ...config };
@@ -279,16 +304,27 @@ export class Shuttle {
     const hostByFiberId = new Map(merged.map(({ fiber, host }) => [fiber.id, host]));
     const { eligible: rawEligible, blocked } = computeEligibility(fibers, this.config.queuePrefixes);
 
-    // Stage 7 — partition eligible fibers by remote-origin freshness.
-    // A fiber whose canonical writer (a remote agent) is currently
-    // stale moves to blocked rather than being dispatched; the next
-    // tick re-checks and resumes once the agent reconnects.
+    // Stage 7 + remote-dispatch deferral — partition eligible fibers
+    // by remote ownership before dispatch.
+    //
+    //   stale gate    → owning remote agent is disconnected; suspend.
+    //   deferred gate → owning remote agent is connected; the agent
+    //                   will dispatch on its own host.
+    //
+    // Either way, the local server does not spawn a worker. Reasons
+    // are distinct so the snapshot legibly explains why we paused.
     const eligible: Fiber[] = [];
     const staleOrigins = this.config.staleOriginsForFiber;
+    const deferredOrigins = this.config.deferredOriginsForFiber;
     for (const f of rawEligible) {
       const stale = staleOrigins ? staleOrigins(f.id) : [];
       if (stale.length > 0) {
         blocked.push({ fiber: f, reason: `origin stale: ${stale.join(', ')}` });
+        continue;
+      }
+      const deferred = deferredOrigins ? deferredOrigins(f.id) : [];
+      if (deferred.length > 0) {
+        blocked.push({ fiber: f, reason: `deferred to ${deferred.join(', ')}` });
         continue;
       }
       eligible.push(f);
@@ -412,6 +448,47 @@ export class Shuttle {
 
   getSnapshot(): ShuttleSnapshot | null {
     return this.lastSnapshot;
+  }
+
+  /**
+   * Constitution `shuttle-remote-dispatch` — record a remote agent's
+   * latest dispatch snapshot. Called from the WebSocket handler when a
+   * `shuttle_snapshot` message lands. Replaces any prior snapshot for
+   * that origin wholesale (push is idempotent on the wire — agent
+   * always ships its full eligible/blocked/orphans).
+   */
+  setRemoteSnapshot(originId: string, snapshot: ShuttleSnapshot): void {
+    this.remoteSnapshots.set(originId, snapshot);
+  }
+
+  /**
+   * Drop the per-origin remote snapshot, e.g. when an agent
+   * disconnects. The kanban can choose to render last-known-good
+   * instead — that's a UI decision, not a Shuttle one.
+   */
+  clearRemoteSnapshot(originId: string): void {
+    this.remoteSnapshots.delete(originId);
+  }
+
+  /**
+   * Map of every remote origin's most recent snapshot. The kanban
+   * composes this with the local snapshot (`getSnapshot()`) to produce
+   * a unified per-origin picture without inventing new transport.
+   */
+  getRemoteSnapshots(): Map<string, ShuttleSnapshot> {
+    return new Map(this.remoteSnapshots);
+  }
+
+  /**
+   * Composite snapshot: local + every connected remote, keyed by
+   * originId. `local` is always present (even if null when the first
+   * tick hasn't run yet). Useful for `/debug-runtime` and for the
+   * kanban frontend's per-origin badging.
+   */
+  getCompositeSnapshot(): { local: ShuttleSnapshot | null; remote: Record<string, ShuttleSnapshot> } {
+    const remote: Record<string, ShuttleSnapshot> = {};
+    for (const [originId, snap] of this.remoteSnapshots) remote[originId] = snap;
+    return { local: this.lastSnapshot, remote };
   }
 
   // --------------------------------------------------------------------------
