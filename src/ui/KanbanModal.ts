@@ -81,6 +81,21 @@ interface KanbanCard {
   dependsOnSatisfied: boolean
   /** When set, a Shuttle worker is currently running for this fiber. */
   runningWorker?: string
+  /**
+   * Pinned local city whose `.felt/` physically owns this fiber, when the
+   * server can resolve it (loom-deduped to the deepest project root).
+   * Pairs with `projectSlug` to drive the click-to-open flow: the frontend
+   * pivots vellum to this city and navigates to `projectSlug` instead of
+   * the loom-relative `id`. Undefined for remote-origin fibers and for
+   * paths that don't fall under any pinned city.
+   */
+  cityId?: string
+  /**
+   * Slug relative to the owning city's `.felt/` root. The vellum collection's
+   * astra graph is keyed by these project-relative slugs, so this is what
+   * the frontend hands to `navigate()` once it's pivoted to `cityId`.
+   */
+  projectSlug?: string
 }
 
 /**
@@ -129,6 +144,13 @@ interface KanbanModalOptions {
    * kitty tab. No-op when the running tmux session isn't tracked by portolan.
    */
   onOpenWorker?: (tmuxSessionName: string) => void
+  /**
+   * Called when the user clicks the header's `+` stash button. The host
+   * (KanbanHost in src/vellum/mount.tsx) opens the StashForm modal. Mirrors
+   * the `n` hotkey path so keyboard and mouse converge on the same affordance.
+   * Omit to hide the button (e.g. read-only contexts).
+   */
+  onStashClick?: () => void
   /** Override fetch base. Defaults to `http://${hostname}:4004`. */
   apiBase?: string
 }
@@ -147,6 +169,7 @@ interface KanbanCityScope {
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
+  private readonly onStashClick?: () => void
   private readonly apiBase: string
 
   private container: HTMLDivElement | null = null
@@ -165,6 +188,7 @@ export class KanbanModal {
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
     this.onOpenWorker = options.onOpenWorker
+    this.onStashClick = options.onStashClick
     this.apiBase = options.apiBase ?? `http://${window.location.hostname}:4004`
     this.injectStyles()
   }
@@ -244,6 +268,21 @@ export class KanbanModal {
     this.statusEl.textContent = 'Loading…'
 
     header.append(titleWrap, this.statusEl)
+
+    // Stash button: gold `+` at the header's right edge, mirroring the `n`
+    // hotkey owned by KanbanHost. We bind via callback so the React host
+    // keeps ownership of the StashForm modal state — KanbanModal just emits
+    // the click. Hidden when no callback wired (read-only contexts).
+    if (this.onStashClick !== undefined) {
+      const stashBtn = document.createElement('button')
+      stashBtn.type = 'button'
+      stashBtn.className = 'kbn-stash-btn'
+      stashBtn.setAttribute('aria-label', 'Stash a new fiber (n)')
+      stashBtn.title = 'Stash a new fiber (n)'
+      stashBtn.textContent = '+'
+      stashBtn.addEventListener('click', () => this.onStashClick?.())
+      header.append(stashBtn)
+    }
 
     this.body = document.createElement('div')
     this.body.className = 'kbn-body'
@@ -770,6 +809,38 @@ export class KanbanModal {
         color: #7A7068;
         letter-spacing: 0.02em;
         text-align: center;
+      }
+      /* Stash trigger: gold + at the header's right edge. Pairs with the
+         "n" hotkey owned by KanbanHost; semantically belongs in the kanban's
+         own chrome rather than floated over from the React host (the floating
+         version was getting hidden behind FloatingIsland and offset wrong by
+         vellum's chrome assumptions). */
+      .kbn-stash-btn {
+        flex-shrink: 0;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #9A7B35;
+        color: #FFFFFF;
+        border: 1px solid #7A6028;
+        box-shadow: 0 2px 4px rgba(46, 42, 38, 0.18);
+        font-size: 18px;
+        line-height: 1;
+        font-family: var(--font-main, 'EB Garamond', serif);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 120ms ease-out, transform 120ms ease-out;
+      }
+      .kbn-stash-btn:hover,
+      .kbn-stash-btn:focus-visible {
+        background: #B08D3D;
+        transform: scale(1.06);
+        outline: none;
+      }
+      .kbn-stash-btn:focus-visible {
+        box-shadow: 0 0 0 3px rgba(154, 123, 53, 0.36);
       }
       /* aria-live region — invisible but observable in the a11y tree. */
       .kbn-live {

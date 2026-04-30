@@ -31,17 +31,36 @@ const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostn
 export interface StashFormProps {
   /**
    * Path to the city root (the directory containing `.felt/`). When the
-   * host knows the city it threads its `path` here. Optional: when null,
-   * the form fetches the kanban's `feltHost` (~/loom by default) from
-   * /kanban and falls back to that — the global stash lands at the loom
-   * monorepo root.
+   * host knows the city it threads its `path` here. Used as the *default*
+   * destination for the city picker (matched to a city in `availableCities`
+   * by path); the user can switch to any other city or to loom root before
+   * submit. Optional: when null and no city is matched, the form fetches
+   * the kanban's `feltHost` (~/loom by default) from /kanban and uses that
+   * as the loom-root fallback.
    */
   cityPath?: string | null
   /**
    * Origin id for the felt invocation. `local` for filesystem hosts;
    * `remote-<host>` proxies through SSH. Defaults to `local` when omitted.
+   * Used only as a default when `cityPath` matches a city in
+   * `availableCities`; the picker carries each city's own originId.
    */
   originId?: string
+  /**
+   * All connected cities (local + remote). Surfaced as a combobox so the
+   * user can choose where the new fiber lands. The `<select>`-style picker
+   * defaults to the city whose `path` matches the `cityPath` prop, falling
+   * back to "Loom root" (no project) when nothing matches. Each city
+   * carries its own originId so remote stashing routes through the right
+   * portolan-agent without the form having to thread `originId` separately.
+   * Empty array = picker collapses to a static "Loom root" line.
+   */
+  availableCities?: Array<{
+    id: string
+    name?: string
+    path: string
+    originId: string
+  }>
   /**
    * Optional default parent slug. Per the constitution: "default = current
    * vellum context (e.g., the fiber being viewed) or a configurable global
@@ -83,9 +102,42 @@ function previewSlug(title: string): string {
   return s || 'stash-…'
 }
 
+/**
+ * Validate a parent-fiber slug. Felt slugs are kebab-case ASCII with optional
+ * `/`-separated nesting (e.g. `shuttle`, `vellum-reader/constitution-stash-
+ * button`). They are NOT filesystem paths — leading `~`, leading `/`, `..`
+ * segments, spaces, and other path-shaped characters silently get embedded
+ * into the .felt/ tree as literal directory names if they slip through, which
+ * produces a fiber that the kanban can show but the loader can't open
+ * ("Fiber ~/Documents/… not found in this collection"). See
+ * vellum-reader/constitution-stash-button/finding-trigger-relocated-to-header
+ * for the trip into that hole.
+ *
+ * Returns null when the slug is well-formed, otherwise a human-readable
+ * error message that can be surfaced under the field.
+ */
+function validateParentSlug(raw: string): string | null {
+  const s = raw.trim()
+  if (!s) return null // empty = top-level, perfectly fine
+  if (s.startsWith('~') || s.startsWith('/') || s.startsWith('.')) {
+    return 'Parent is a fiber slug (e.g. shuttle), not a filesystem path.'
+  }
+  if (s.includes('..')) {
+    return 'Parent slug cannot contain `..`.'
+  }
+  // Allow lowercase letters, digits, hyphens, and `/` as the nesting separator.
+  // Underscores and uppercase aren't part of felt's slug rule; reject early
+  // so the user gets a clear error rather than a 400 from the server.
+  if (!/^[a-z0-9]+(?:[-/][a-z0-9]+)*$/.test(s)) {
+    return 'Parent slug must be kebab-case (lowercase letters, digits, hyphens, optional `/` for nesting).'
+  }
+  return null
+}
+
 export function StashForm({
   cityPath,
   originId = 'local',
+  availableCities = [],
   defaultParentSlug,
   tagSuggestions,
   onCreated,
@@ -100,11 +152,37 @@ export function StashForm({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fetchedTags, setFetchedTags] = useState<string[]>([])
-  // Loom-root fallback for global stash (when cityPath wasn't threaded).
-  // Read from /kanban's `feltHost` field once, on first open.
+  // Loom-root fallback for global stash (when cityPath wasn't threaded
+  // *and* no city is selected in the picker). Read from /kanban's
+  // `feltHost` field once, on first open.
   const [fallbackFeltHost, setFallbackFeltHost] = useState<string | null>(null)
 
+  // City picker state. Always picks a *project* — the loom-root
+  // distinction was confusing more than it helped (Cail's fibers all
+  // live under a project root). Default selection priority:
+  //   1. The city in `availableCities` whose `path` matches the
+  //      `cityPath` prop (kanban tab opens scoped to its own city).
+  //   2. The first city in `availableCities` alphabetically — gives the
+  //      global-kanban case a sensible default that the user can override.
+  //   3. `null` — only if `availableCities` is empty, in which case the
+  //      picker isn't rendered and the form falls through to
+  //      `cityPath`/`fallbackFeltHost`.
+  const [selectedCityId, setSelectedCityId] = useState<string | null>(() => {
+    if (cityPath) {
+      const match = availableCities.find((c) => c.path === cityPath)
+      if (match) return match.id
+    }
+    if (availableCities.length === 0) return null
+    const sorted = [...availableCities].sort((a, b) =>
+      (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' }),
+    )
+    return sorted[0].id
+  })
+  const [cityPickerOpen, setCityPickerOpen] = useState(false)
+  const [cityFilter, setCityFilter] = useState('')
+
   const titleRef = useRef<HTMLInputElement | null>(null)
+  const cityPickerRef = useRef<HTMLDivElement | null>(null)
 
   // Autofocus the title on first paint — title is required, and the
   // user pressed `+` / `n` to start writing.
@@ -136,6 +214,54 @@ export function StashForm({
       cancelled = true
     }
   }, [tagSuggestions, cityPath])
+
+  // Close the city dropdown when the user clicks anywhere outside the picker.
+  // Bound to the document so clicking other form fields, the scrim, etc. all
+  // collapse the menu — same idiom as the tag suggestions, just for a single-
+  // select picker. Mounted only while the dropdown is open so the listener
+  // isn't churning on every paint.
+  useEffect(() => {
+    if (!cityPickerOpen) return
+    const handleDown = (e: MouseEvent): void => {
+      const root = cityPickerRef.current
+      if (root && !root.contains(e.target as Node)) {
+        setCityPickerOpen(false)
+        setCityFilter('')
+      }
+    }
+    document.addEventListener('mousedown', handleDown)
+    return () => document.removeEventListener('mousedown', handleDown)
+  }, [cityPickerOpen])
+
+  // Sort cities by name (alphabetical, case-insensitive). Stable across
+  // renders since `availableCities` is the source of truth, so the same
+  // input → same order.
+  const sortedCities = [...availableCities].sort((a, b) =>
+    (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' }),
+  )
+  // Filter by typed cityFilter (substring match against name/id). Empty
+  // filter = full list. Keeps the dropdown manageable as cities accumulate.
+  const cityFilterLower = cityFilter.trim().toLowerCase()
+  const filteredCities = cityFilterLower
+    ? sortedCities.filter((c) =>
+        (c.name ?? c.id).toLowerCase().includes(cityFilterLower) ||
+        c.originId.toLowerCase().includes(cityFilterLower),
+      )
+    : sortedCities
+
+  // Label rendered in the picker's collapsed state. The default initializer
+  // always picks a city when `availableCities` is non-empty, so the empty-
+  // selection case only fires when no cities are connected — in which case
+  // the picker isn't rendered at all and the form falls through to
+  // `cityPath`/`fallbackFeltHost`. The placeholder stays empty to keep the
+  // input's natural `placeholder="search projects…"` visible.
+  const selectedCityLabel = (() => {
+    if (selectedCityId === null) return ''
+    const c = availableCities.find((x) => x.id === selectedCityId)
+    if (!c) return ''
+    const remoteSuffix = c.originId === 'local' ? '' : ` · ${c.originId}`
+    return `${c.name ?? c.id}${remoteSuffix}`
+  })()
 
   const allSuggestions = (tagSuggestions && tagSuggestions.length > 0 ? tagSuggestions : fetchedTags) ?? []
 
@@ -178,10 +304,27 @@ export function StashForm({
       titleRef.current?.focus()
       return
     }
-    const effectiveCityPath = cityPath ?? fallbackFeltHost
+    const parentError = validateParentSlug(parentSlug)
+    if (parentError) {
+      setError(parentError)
+      return
+    }
+    // Resolve the destination from the picker. Selected city → its own
+    // path + originId. Loom root → fall through to the kanban's `feltHost`
+    // (or the explicit `cityPath` prop if the host threaded one without
+    // matching an entry in `availableCities`). The picker is the source
+    // of truth for both location *and* origin: a remote city carries its
+    // own `originId` so /fiber/create routes through the right
+    // portolan-agent without the form needing to mix and match.
+    const selectedCity =
+      selectedCityId !== null
+        ? availableCities.find((c) => c.id === selectedCityId) ?? null
+        : null
+    const effectiveCityPath = selectedCity?.path ?? cityPath ?? fallbackFeltHost
+    const effectiveOriginId = selectedCity?.originId ?? originId
     if (!effectiveCityPath) {
       setError(
-        'Loom path not yet resolved — try again in a moment, or supply a cityPath.',
+        'Loom path not yet resolved — try again in a moment, or pick a city.',
       )
       return
     }
@@ -201,7 +344,7 @@ export function StashForm({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          originId,
+          originId: effectiveOriginId,
           cityPath: effectiveCityPath,
           title: trimmedTitle,
           body: body.length > 0 ? body : undefined,
@@ -256,6 +399,68 @@ export function StashForm({
         </div>
 
         <div className="stash-body">
+          {availableCities.length > 0 && (
+            <div className="stash-field">
+              <span className="stash-label">Project</span>
+              <div
+                className="stash-city-picker"
+                ref={cityPickerRef}
+              >
+                <input
+                  type="text"
+                  className="stash-input"
+                  value={cityPickerOpen ? cityFilter : selectedCityLabel}
+                  onFocus={() => setCityPickerOpen(true)}
+                  onClick={() => setCityPickerOpen(true)}
+                  onChange={(e) => setCityFilter(e.target.value)}
+                  // readOnly when collapsed: the input shows the selection
+                  // label as a button-like display. On focus, switches to the
+                  // editable filter so type-to-search works without a mode
+                  // toggle. Click anywhere on the row opens the menu.
+                  readOnly={!cityPickerOpen}
+                  placeholder="search projects…"
+                  aria-haspopup="listbox"
+                  aria-expanded={cityPickerOpen}
+                />
+                {cityPickerOpen && (
+                  <div className="stash-city-list" role="listbox">
+                    {filteredCities.map((c) => (
+                      <button
+                        key={`${c.originId}:${c.id}`}
+                        type="button"
+                        className={
+                          selectedCityId === c.id
+                            ? 'stash-city-option stash-city-option-active'
+                            : 'stash-city-option'
+                        }
+                        role="option"
+                        aria-selected={selectedCityId === c.id}
+                        onClick={() => {
+                          setSelectedCityId(c.id)
+                          setCityPickerOpen(false)
+                          setCityFilter('')
+                        }}
+                      >
+                        <span>{c.name ?? c.id}</span>
+                        <span className="stash-city-meta">
+                          {c.originId === 'local' ? c.path : `${c.originId} · ${c.path}`}
+                        </span>
+                      </button>
+                    ))}
+                    {filteredCities.length === 0 && cityFilterLower && (
+                      <div className="stash-city-empty">
+                        No connected city matches "{cityFilter}".
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="stash-hint">
+                Project the new fiber lands in.
+              </div>
+            </div>
+          )}
+
           <label className="stash-field">
             <span className="stash-label">Title</span>
             <input
@@ -335,18 +540,25 @@ export function StashForm({
 
           <label className="stash-field">
             <span className="stash-label">
-              Parent path <span className="stash-optional">(optional)</span>
+              Parent fiber <span className="stash-optional">(optional)</span>
             </span>
             <input
               type="text"
               className="stash-input"
               value={parentSlug}
               onChange={(e) => setParentSlug(e.target.value)}
-              placeholder="leave empty for top-level"
+              placeholder="e.g. shuttle  or  vellum-reader/constitution-stash-button"
             />
-            <div className="stash-hint">
-              Nests the new fiber under an existing one.
-            </div>
+            {validateParentSlug(parentSlug) ? (
+              <div className="stash-hint stash-hint-warn">
+                {validateParentSlug(parentSlug)}
+              </div>
+            ) : (
+              <div className="stash-hint">
+                Existing fiber slug to nest under (kebab-case, `/` for deeper
+                nesting). Leave empty for top-level.
+              </div>
+            )}
           </label>
 
           <label className="stash-checkbox-row">
@@ -522,6 +734,13 @@ export function injectStashFormStyles(): void {
       padding: 1px 5px;
       border-radius: 2px;
     }
+    /* Warn variant: surfaced live by validateParentSlug() for path-shaped or
+       otherwise malformed parent slugs. Same size as the regular hint so the
+       row doesn't jump on transition; just shifts to a warning hue. */
+    .stash-hint-warn {
+      color: #8C5A1A;
+      font-style: normal;
+    }
     .stash-chips {
       display: flex;
       flex-wrap: wrap;
@@ -593,6 +812,69 @@ export function injectStashFormStyles(): void {
     .stash-suggestion:hover {
       background: rgba(154, 123, 53, 0.18);
       border-color: rgba(154, 123, 53, 0.42);
+    }
+    /* City picker — single-select combobox over availableCities. The input
+       acts as both display and filter (readOnly collapses it to a button-
+       like surface). The list is absolutely-positioned beneath the input,
+       elevation matches the form card so it visually hovers over the
+       fields below. Z-index 10 keeps it above sibling fields without
+       fighting the scrim (z 200). */
+    .stash-city-picker {
+      position: relative;
+    }
+    .stash-city-list {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      z-index: 10;
+      max-height: 240px;
+      overflow-y: auto;
+      background: #FFFFFF;
+      border: 1px solid rgba(46, 42, 38, 0.18);
+      border-radius: 3px;
+      box-shadow: 0 8px 18px rgba(46, 42, 38, 0.18);
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .stash-city-option {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      padding: 8px 10px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 2px;
+      font-family: var(--font-main, 'EB Garamond', serif);
+      font-size: 14px;
+      color: #2E2A26;
+      text-align: left;
+      cursor: pointer;
+      transition: background 100ms ease-out;
+    }
+    .stash-city-option:hover,
+    .stash-city-option:focus-visible {
+      background: rgba(154, 123, 53, 0.14);
+      outline: none;
+    }
+    .stash-city-option-active {
+      background: rgba(154, 123, 53, 0.22);
+      border-color: rgba(154, 123, 53, 0.48);
+    }
+    .stash-city-meta {
+      font-family: var(--font-mono, 'JetBrains Mono', monospace);
+      font-size: 10.5px;
+      color: #7A7068;
+      letter-spacing: 0.02em;
+    }
+    .stash-city-empty {
+      padding: 8px 10px;
+      font-size: 12px;
+      color: #7A7068;
+      font-style: italic;
     }
     .stash-checkbox-row {
       display: flex;
@@ -666,40 +948,14 @@ export function injectStashFormStyles(): void {
       cursor: not-allowed;
     }
 
-    /* Floating + button on the kanban-host. Anchored to the right edge of
-       the kanban grid (right: 380px clears vellum's thumb-index, which sits
-       at right:0 width:360 z:500) and aligned with vellum's modal close
-       button at top:14 so the chrome strip stays visually balanced. */
-    .stash-trigger {
-      position: absolute;
-      top: 14px;
-      right: 380px;
-      z-index: 150;
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      background: #9A7B35;
-      color: #FFFFFF;
-      border: 1px solid #7A6028;
-      box-shadow: 0 2px 6px rgba(46, 42, 38, 0.18);
-      font-size: 20px;
-      line-height: 1;
-      font-family: var(--font-main, 'EB Garamond', serif);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 120ms ease-out, transform 120ms ease-out;
-    }
-    .stash-trigger:hover,
-    .stash-trigger:focus-visible {
-      background: #B08D3D;
-      transform: scale(1.06);
-      outline: none;
-    }
-    .stash-trigger:focus-visible {
-      box-shadow: 0 0 0 3px rgba(154, 123, 53, 0.36);
-    }
+    /* Stash trigger lives inside KanbanModal's own header now
+       (.kbn-stash-btn, styles colocated with the rest of the kanban
+       header in src/ui/KanbanModal.ts). The previous floating
+       .stash-trigger was anchored at right:380px assuming vellum's
+       file-viewer thumb-index, which doesn't appear on the kanban tab —
+       and FloatingIsland (z 500) ate the click area. The header position
+       puts the affordance where users look (next to the title) and
+       sidesteps the chrome stack entirely. */
   `
   document.head.appendChild(style)
 }

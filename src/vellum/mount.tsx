@@ -139,6 +139,12 @@ function KanbanHost({
       // owns the actual focus implementation. Wired through Stage 6's
       // openVellumWorkspaceModal({onOpenWorker}) plumbing.
       onOpenWorker,
+      // Header `+` button mirrors the `n` hotkey: both open the StashForm
+      // modal owned by this React host. The kanban renders the button in
+      // its own header so it's reliably visible regardless of vellum's
+      // chrome state (the previous absolute-positioned button at right:380px
+      // assumed a thumb-index that doesn't appear on the kanban tab).
+      onStashClick: () => setStashOpen(true),
     })
     kanbanRef.current = kanban
     const cityScope =
@@ -199,29 +205,21 @@ function KanbanHost({
   // chrome stays usable on top of the kanban grid. The embedded KanbanModal
   // inside fills `position: absolute; inset: 0` against this host.
   //
-  // Stash button + form sit as siblings to the kanban DOM inside this host:
-  // the button is `position: absolute` at top-right (z 150, above the kanban
-  // grid but below vellum's outer chrome), and the form modal sits at z 200
-  // when open with its own scrim.
+  // Stash trigger lives inside KanbanModal's own header now (wired via the
+  // `onStashClick` option above). The form modal still sits as a sibling
+  // to the kanban DOM inside this host — z 200 with its own scrim, mounted
+  // only when `stashOpen` is true.
   return (
     <div
       ref={hostRef}
       className="kanban-host"
       style={{ position: 'fixed', inset: 0, zIndex: 100 }}
     >
-      <button
-        type="button"
-        className="stash-trigger"
-        onClick={() => setStashOpen(true)}
-        aria-label="Stash a new fiber (n)"
-        title="Stash a new fiber (n)"
-      >
-        +
-      </button>
       {stashOpen && (
         <StashForm
           cityPath={resolveCityPath()}
           originId={resolveOriginId()}
+          availableCities={mountContext?.getCities() ?? []}
           onCreated={(fiberId) => {
             setStashOpen(false)
             // Refresh kanban so the new fiber appears (it'll only land in
