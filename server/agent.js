@@ -1120,24 +1120,40 @@ function shuttleSessionName(fiberId) {
 }
 
 /**
+ * Map a fiber's tags to the dispatch agent. Mirrors `agentForFiber()`
+ * in `server/src/Shuttle.ts` — the `codex` tag selects codex, anything
+ * else falls back to claude. Same semantics, kept in lockstep so a
+ * single fiber dispatches identically whether picked up by the
+ * server-side Shuttle or by an agent on its own host.
+ */
+function agentForFiber(tags) {
+    if (Array.isArray(tags) && tags.includes('codex')) return 'codex';
+    return 'claude';
+}
+
+/**
  * Spawn a shuttle worker on this host. Detached so the worker survives
  * the agent restarting; matches the server-side dispatcher's contract.
  * The worker script itself runs `tmux new-session -d`, so we shell out
  * once and trust tmux to take ownership of the actual session.
+ *
+ * `agent` ('claude' | 'codex') is appended as `--agent <agent>` so the
+ * worker script picks the right CLI invocation; selection is
+ * tag-driven (see `agentForFiber`).
  */
-function spawnShuttleWorker(fiberId) {
+function spawnShuttleWorker(fiberId, agent) {
     if (!existsSync(SHUTTLE_WORKER_SCRIPT)) {
         log(`[shuttle] worker script missing at ${SHUTTLE_WORKER_SCRIPT}; skipping ${fiberId}`);
         return null;
     }
     try {
-        const child = spawn('bash', ['-l', SHUTTLE_WORKER_SCRIPT, fiberId], {
+        const child = spawn('bash', ['-l', SHUTTLE_WORKER_SCRIPT, fiberId, '--agent', agent], {
             cwd: FELT_HOST,
             detached: true,
             stdio: 'ignore',
         });
         child.unref();
-        debug(`[shuttle] spawned worker for ${fiberId}`);
+        debug(`[shuttle] spawned worker for ${fiberId} (agent=${agent})`);
         return shuttleSessionName(fiberId);
     } catch (err) {
         log(`[shuttle] spawn failed for ${fiberId}: ${err.message}`);
@@ -1172,6 +1188,7 @@ async function pollShuttle() {
         const expectedSession = shuttleSessionName(f.id);
         const existing = shuttleDispatched.get(f.id);
         const sessionLive = existing && existing.tmuxSession && liveSessions.has(existing.tmuxSession);
+        const agent = agentForFiber(f.tags);
 
         if (sessionLive) {
             eligibleEntries.push(existing);
@@ -1186,6 +1203,7 @@ async function pollShuttle() {
                 tmuxSession: expectedSession,
                 state: 'running',
                 startedAt: existing?.startedAt ?? Date.now(),
+                agent,
                 reason: 'adopted existing tmux session',
             };
             shuttleDispatched.set(f.id, adopted);
@@ -1193,11 +1211,12 @@ async function pollShuttle() {
             continue;
         }
 
-        const session = spawnShuttleWorker(f.id);
+        const session = spawnShuttleWorker(f.id, agent);
         if (!session) {
             eligibleEntries.push({
                 fiberId: f.id,
                 state: 'idle',
+                agent,
                 reason: 'spawn failed (worker script missing or unavailable)',
             });
             continue;
@@ -1207,6 +1226,7 @@ async function pollShuttle() {
             tmuxSession: session,
             state: 'running',
             startedAt: Date.now(),
+            agent,
         };
         shuttleDispatched.set(f.id, entry);
         eligibleEntries.push(entry);

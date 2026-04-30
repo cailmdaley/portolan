@@ -92,10 +92,13 @@ export interface ShuttleConfig {
    * Test seam — replaces the actual worker invocation. Returns a
    * synthetic tmux session name. The optional `host` is the host that
    * contributed the fiber via the multi-host walk (single-host mode
-   * passes the configured `feltHost`). When undefined, calls the real
-   * `shuttleWorkerScript`.
+   * passes the configured `feltHost`). `agent` is the coding-agent
+   * CLI selected by `agentForFiber(fiber.tags)` — tests can assert
+   * that codex-tagged fibers dispatch with `'codex'`, etc. When
+   * undefined, calls the real `shuttleWorkerScript` with `--agent
+   * <agent>` appended.
    */
-  spawnShuttleWorker?: (fiberId: string, host: string) => string;
+  spawnShuttleWorker?: (fiberId: string, host: string, agent: DispatchAgent) => string;
   /**
    * Test seam — replaces `listShuttleSessions()`. Returns the set of
    * tmux session names that should be considered "live". When
@@ -157,6 +160,29 @@ export function defaultShuttleConfig(overrides: Partial<ShuttleConfig> = {}): Sh
 
 export type DispatchState = 'idle' | 'running' | 'gone';
 
+/**
+ * Coding-agent CLI a worker dispatches into. Selected per-fiber via the
+ * `agentForFiber()` predicate; defaults to claude when no override tag
+ * is set. Threaded through to `shuttle-worker.sh --agent <agent>` so
+ * the shell side can pick the right CLI invocation.
+ */
+export type DispatchAgent = 'claude' | 'codex';
+
+/**
+ * Map a fiber's tags to the dispatch agent. The constitution's
+ * `codex` tag is the elegant equivalent of "use codex for this one";
+ * `claude` is implicit (no tag needed) but accepted for symmetry.
+ *
+ * Tag-based rather than a new frontmatter field: tags are felt's
+ * primary classification primitive, already discoverable on the
+ * kanban card, no schema change. Mirrors how `draft` opts a
+ * constitution out of dispatch — same surface, same shape.
+ */
+export function agentForFiber(tags?: string[]): DispatchAgent {
+  if (tags?.includes('codex')) return 'codex';
+  return 'claude';
+}
+
 export interface DispatchEntry {
   fiberId: string;
   /** tmux session name (set once a worker is spawned). */
@@ -164,6 +190,13 @@ export interface DispatchEntry {
   state: DispatchState;
   /** ms since epoch when the worker was first spawned this lifetime. */
   startedAt?: number;
+  /**
+   * Coding-agent the worker dispatched into. Surfaces "running on
+   * codex" badging in the kanban without inventing a new data path.
+   * Set when a worker is spawned (or adopted); undefined for
+   * blocked / spawn-failed entries.
+   */
+  agent?: DispatchAgent;
   /**
    * Reason an eligible fiber is *not* running. Useful for the UI; only
    * populated in the snapshot, not stored on the entry itself.
@@ -363,6 +396,8 @@ export class Shuttle {
         continue;
       }
 
+      const agent = agentForFiber(f.tags);
+
       // Adopt an external shuttle session if it already matches by name —
       // covers the case where the user (or a previous Shuttle process)
       // launched the same fiber manually.
@@ -372,6 +407,7 @@ export class Shuttle {
           tmuxSession: expectedSession,
           state: 'running',
           startedAt: existing?.startedAt ?? Date.now(),
+          agent,
           reason: 'adopted existing tmux session',
         };
         this.dispatched.set(f.id, adopted);
@@ -379,17 +415,20 @@ export class Shuttle {
         continue;
       }
 
-      // Spawn — single-shot. Worker exits when claude exits; we'll
+      // Spawn — single-shot. Worker exits when the agent exits; we'll
       // observe the session as gone on a future tick and (if still
-      // eligible) redispatch.
+      // eligible) redispatch. Agent (claude vs codex) is derived from
+      // tags via `agentForFiber()` and threaded into the worker
+      // invocation as `--agent <agent>`.
       const host = hostByFiberId.get(f.id) ?? this.config.feltHost;
       try {
-        const session = this.spawn(f.id, host);
+        const session = this.spawn(f.id, host, agent);
         const entry: DispatchEntry = {
           fiberId: f.id,
           tmuxSession: session,
           state: 'running',
           startedAt: Date.now(),
+          agent,
         };
         this.dispatched.set(f.id, entry);
         entries.push(entry);
@@ -398,6 +437,7 @@ export class Shuttle {
         entries.push({
           fiberId: f.id,
           state: 'idle',
+          agent,
           reason: `spawn failed: ${msg}`,
         });
         console.error(`[Shuttle] spawn failed for ${f.id}:`, msg);
@@ -544,9 +584,9 @@ export class Shuttle {
     return [...seen.values()];
   }
 
-  private spawn(fiberId: string, host: string): string {
+  private spawn(fiberId: string, host: string, agent: DispatchAgent): string {
     if (this.config.spawnShuttleWorker) {
-      return this.config.spawnShuttleWorker(fiberId, host);
+      return this.config.spawnShuttleWorker(fiberId, host, agent);
     }
     const script = this.config.shuttleWorkerScript;
     if (!script || !existsSync(script)) {
@@ -556,7 +596,7 @@ export class Shuttle {
     // contributing host means the right `.felt/` is in scope, even when
     // ids collide across hosts (multi-host gotcha — see
     // gotcha-kanban-fiber-id-collisions-across-cities).
-    const result = spawnSync(script, [fiberId], {
+    const result = spawnSync(script, [fiberId, '--agent', agent], {
       cwd: host,
       stdio: 'pipe',
       encoding: 'utf-8',

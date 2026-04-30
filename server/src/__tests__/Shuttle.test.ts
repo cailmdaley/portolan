@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  agentForFiber,
   computeEligibility,
   Shuttle,
   defaultShuttleConfig,
@@ -561,5 +562,88 @@ created-at: 2026-04-28T00:00:00Z
     const after = shuttle.getCompositeSnapshot();
     expect(after.remote['remote-candide']).toBeUndefined();
     expect(after.remote['remote-cineca']).toBe(cinecaSnap);
+  });
+});
+
+// ── agent-for-fiber (codex parity) ─────────────────────────────────────
+
+describe('agentForFiber', () => {
+  it('selects codex when the fiber carries the `codex` tag', () => {
+    expect(agentForFiber(['constitution', 'codex'])).toBe('codex');
+    expect(agentForFiber(['codex'])).toBe('codex');
+  });
+
+  it('defaults to claude when no opt-in tag is present', () => {
+    expect(agentForFiber(['constitution'])).toBe('claude');
+    expect(agentForFiber([])).toBe('claude');
+    expect(agentForFiber(undefined)).toBe('claude');
+  });
+});
+
+describe('Shuttle dispatch agent selection', () => {
+  let host: string;
+  let feltDir: string;
+
+  beforeEach(() => {
+    host = join(tmpdir(), `shuttle-agent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    feltDir = join(host, '.felt');
+    mkdirSync(feltDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(host)) rmSync(host, { recursive: true, force: true });
+  });
+
+  it('threads the codex tag through to the worker invocation', async () => {
+    // Codex parity: a constitution fiber tagged `codex` dispatches via
+    // codex; an untagged sibling defaults to claude. The dispatch
+    // entry carries `agent` so the kanban can badge each card.
+    writeFiber(
+      feltDir,
+      'tests/codex-fiber',
+      `---
+name: Codex
+status: active
+tags:
+    - constitution
+    - codex
+created-at: 2026-04-30T00:00:00Z
+---
+`,
+    );
+    writeFiber(
+      feltDir,
+      'tests/claude-fiber',
+      `---
+name: Claude
+status: active
+tags:
+    - constitution
+created-at: 2026-04-30T00:00:00Z
+---
+`,
+    );
+
+    const spawned: Array<{ id: string; agent: string }> = [];
+    const shuttle = new Shuttle({
+      ...defaultShuttleConfig({ feltHost: host, queuePrefixes: ['tests'] }),
+      spawnShuttleWorker: (id, _host, agent) => {
+        spawned.push({ id, agent });
+        return shuttleSessionName(id);
+      },
+    });
+    const snap = await shuttle.tick();
+
+    // Both eligible; agent threads through dispatch and lands on the entry.
+    const byId = new Map(snap.eligible.map(e => [e.fiberId, e]));
+    expect(byId.get('tests/codex-fiber')?.agent).toBe('codex');
+    expect(byId.get('tests/claude-fiber')?.agent).toBe('claude');
+
+    // Worker invocation receives the agent — the worker script branches
+    // on this to pick `codex exec` vs `claude` and to bundle WAKE.md
+    // appropriately.
+    const spawnedById = new Map(spawned.map(s => [s.id, s.agent]));
+    expect(spawnedById.get('tests/codex-fiber')).toBe('codex');
+    expect(spawnedById.get('tests/claude-fiber')).toBe('claude');
   });
 });
