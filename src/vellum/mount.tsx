@@ -255,6 +255,82 @@ function KanbanHost({
 }
 
 /**
+ * FindHost — React shell mounted in vellum's Find tab slot.
+ *
+ * Mirrors `KanbanHost`'s pattern: a portolan-owned shell that mounts inside
+ * vellum's tab slot, lazy on tab-enter. Stage A (this commit) renders a
+ * minimal placeholder so flipping to Find doesn't land on an empty page;
+ * Stages B/C/D/E fill the body with the Spatial section (cities + workers),
+ * the cross-project fiber tree (`/global-fibers`), the search input
+ * (`/global-search`), and the Recent toggle.
+ *
+ * Scope is communicated by `cityId`: undefined → global Find (the
+ * cross-project entry point hit when `/` is pressed without a focused
+ * city); set → city-scoped Find (filtered to that origin). The placeholder
+ * surfaces the scope so stage-A behaviour is observable without a full
+ * implementation.
+ *
+ * Click-through callbacks are wired now even though Stage A doesn't fire
+ * them — Stage B's tree clicks will route through `onOpenFiberInCity` and
+ * Stage D's worker clicks through `onOpenWorker`. Threading the props now
+ * keeps the host's signature stable across stages.
+ */
+function FindHost({
+  cityId,
+  cityName,
+}: {
+  cityId?: string
+  cityName?: string
+  /** Reserved for Stage D (Spatial section): focus a worker's kitty tab when
+   *  the user clicks its bird. Unused in Stage A. */
+  onOpenWorker?: (tmuxSessionName: string) => void
+  /** Reserved for Stage B (tree view): pivot vellum to a different city when
+   *  the user clicks a fiber from outside the current scope. Unused in
+   *  Stage A — when this lands, see the constitution's "open question"
+   *  about scope transitions. */
+  onOpenFiberInCity?: (cityId: string, slug: string) => void
+}) {
+  // Same fixed-position chrome treatment as KanbanHost so the slot fills
+  // vellum's modal viewport regardless of the page's natural-flow height.
+  return (
+    <div
+      className="find-host"
+      style={{ position: 'fixed', inset: 0, zIndex: 100 }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%',
+          color: 'var(--text-muted, #7A7368)',
+          fontFamily: 'inherit',
+          gap: '0.5rem',
+          padding: '2rem',
+          textAlign: 'center',
+        }}
+      >
+        <div
+          style={{
+            fontSize: '0.7rem',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            opacity: 0.7,
+          }}
+        >
+          Find · scope: {cityId ? (cityName ?? cityId) : 'global'}
+        </div>
+        <div style={{ fontSize: '0.85rem', maxWidth: '32rem', lineHeight: 1.5 }}>
+          Stage A — shell only. Tree, search, spatial, and recents land in
+          subsequent stages of the navigation-layer constitution.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
  * Minimal shape of portolan frontend state this file needs to route annotation
  * actions. main.ts registers getters that read the module-scoped `sessions`
  * and `cities` lists; the closures see the latest values after every WS
@@ -786,9 +862,11 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
 /**
  * Public mode names used by portolan callers. Translates to vellum's internal
  * `Mode` ('workspace' instead of 'kanban') at the boundary in
- * `openVellumWorkspaceModal`.
+ * `openVellumWorkspaceModal`. `'find'` is portolan's name for vellum's
+ * (identically-named) Find tab — no translation needed; included here to keep
+ * the public-facing union aligned with what callers see in the UI.
  */
-export type VellumModalMode = 'narrative' | 'kanban' | 'delta'
+export type VellumModalMode = 'narrative' | 'kanban' | 'find' | 'delta'
 
 export interface VellumModalHandle {
   close(): void
@@ -832,6 +910,8 @@ export interface OpenWorkspaceModalOptions {
    *  `'kanban'` deep-links to the (slot-overridden) Workspace tab so the user
    *  sees the kanban grid immediately — used by the global launch button and
    *  the city HUD's kanban affordance once Stage 6 retargets them.
+   *  `'find'` deep-links to the Find tab (used by the `/` hotkey's scope
+   *  ladder; see [[ai-futures/portolan/design/constitution-portolan-navigation-layer]]).
    *  `'delta'` for completeness. Ignored in file mode (locked to narrative). */
   initialMode?: VellumModalMode
   /** Click-handler for a card's running-worker indicator inside the embedded
@@ -847,6 +927,13 @@ export interface OpenWorkspaceModalOptions {
    *  on vellum's "not found" page because the loom-relative card id isn't
    *  in any project-scoped collection. */
   onOpenFiberInCity?: (cityId: string, slug: string) => void
+  /** Fired exactly once when the modal closes (Escape key, click on the
+   *  ×, programmatic `handle.close()`). Lets the host reset its tracking
+   *  state — without this, `activeWorkspaceHandle` becomes a stale
+   *  reference after Escape and subsequent hotkeys (`/` ladder, `k` chord)
+   *  silently no-op against a torn-down React tree. Idempotent: only ever
+   *  called for the first close; later close() invocations short-circuit. */
+  onClose?: () => void
 }
 
 /**
@@ -976,6 +1063,17 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     root.unmount()
     container.remove()
     document.removeEventListener('keydown', onKey, true)
+    // Notify the host so it can clear its own bookkeeping (e.g. portolan's
+    // `activeWorkspaceHandle` / `activeWorkspaceCityId`). Wrapped in
+    // try/catch because a host throw mid-close would leave the modal half-
+    // dismantled — better to log and continue.
+    if (opts.onClose) {
+      try {
+        opts.onClose()
+      } catch (err) {
+        console.error('[vellum-modal] onClose handler threw:', err)
+      }
+    }
   }
 
   const onKey = (event: KeyboardEvent) => {
@@ -1020,12 +1118,15 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
 
   // Vellum's 'workspace' tab is the slot vellum-kanban embeds into. The
   // public-facing initialMode says 'kanban' (honest naming for portolan
-  // users); translate to vellum's internal mode id here. 'delta' and
-  // 'narrative' pass through unchanged.
+  // users); translate to vellum's internal mode id here. 'delta', 'narrative',
+  // and 'find' pass through unchanged.
   const internalFromPublic = (m: VellumModalMode) =>
-    m === 'kanban' ? ('workspace' as const) : (m as 'narrative' | 'delta')
-  const publicFromInternal = (m: 'narrative' | 'workspace' | 'delta'): VellumModalMode =>
-    m === 'workspace' ? 'kanban' : m
+    m === 'kanban'
+      ? ('workspace' as const)
+      : (m as 'narrative' | 'find' | 'delta')
+  const publicFromInternal = (
+    m: 'narrative' | 'workspace' | 'find' | 'delta',
+  ): VellumModalMode => (m === 'workspace' ? 'kanban' : m)
   const initialVellumMode = internalFromPublic(opts.initialMode ?? 'narrative')
 
   // Bridge captured from <WorkspaceMount apiRef={…}/> on first React commit.
@@ -1051,6 +1152,17 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       onOpenFiberInCity={opts.onOpenFiberInCity}
     />
   )
+  // The find slot mirrors the kanban slot's shape: vellum lazy-mounts on
+  // tab-enter, portolan owns the body. Stage A (shell only); Stages B/C/D/E
+  // fill it. See [[ai-futures/portolan/design/constitution-portolan-navigation-layer]].
+  const findSlot = (
+    <FindHost
+      cityId={opts.cityId}
+      cityName={opts.cityName}
+      onOpenWorker={opts.onOpenWorker}
+      onOpenFiberInCity={opts.onOpenFiberInCity}
+    />
+  )
 
   const mountWith = (initialSlug: string) => {
     if (closed) return
@@ -1064,6 +1176,9 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
             workspaceSlot={kanbanSlot}
             workspaceLabel="Kanban"
             workspaceLetter="K"
+            findSlot={findSlot}
+            findLabel="Find"
+            findLetter="F"
             apiRef={captureApi}
           />
         </AnnotationActionsProvider>

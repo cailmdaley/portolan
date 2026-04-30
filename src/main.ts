@@ -205,6 +205,7 @@ function openFile(args: OpenFileArgs): void {
   // vice versa) keeps only the latest modal mounted.
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
+  activeWorkspaceCityId = args.cityId ?? null
   const myToken = ++workspaceOpenToken
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     if (myToken !== workspaceOpenToken) return
@@ -221,6 +222,7 @@ function openFile(args: OpenFileArgs): void {
       editable: args.editable ?? false,
       jumpToLine: args.jumpToLine,
       cityName: args.cityId ? cities.find(c => c.id === args.cityId)?.name : undefined,
+      onClose: handleWorkspaceClosed,
     })
     activeWorkspaceHandle = handle
   })
@@ -230,6 +232,11 @@ function openFile(args: OpenFileArgs): void {
 // against the PortolanAdapter. Single-instance: close the previous handle
 // before opening a new city.
 let activeWorkspaceHandle: VellumModalHandle | null = null
+// The cityId the active vellum is scoped to (null = global / no city). Tracked
+// at this level so the `/` hotkey's scope-step ladder (city → global → close)
+// can decide whether to escalate scope or just close. Updated alongside every
+// openCityWorkspace / openGlobalKanban / openGlobalFind call; cleared on close.
+let activeWorkspaceCityId: string | null = null
 // Bumped every openCityWorkspace call. The async vellumMountPromise.then()
 // callback only mounts if the token is still current — without this guard,
 // rapid synchronous calls (mashing `t`, repeated hashchange handlers, …)
@@ -262,13 +269,16 @@ interface OpenCityWorkspaceOpts {
   initialSlug?: string
   /** Tab to land on at first paint. Defaults to `'narrative'`. The kanban
    *  affordance on the city HUD passes `'kanban'` (Stage 6 retarget — see
-   *  vellum-reader/constitution-vellum-kanban). */
-  initialMode?: 'narrative' | 'kanban' | 'delta'
+   *  vellum-reader/constitution-vellum-kanban). The `/` hotkey passes
+   *  `'find'` to land on the Find tab (Stage A of the navigation-layer
+   *  constitution). */
+  initialMode?: 'narrative' | 'kanban' | 'find' | 'delta'
 }
 
 function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
+  activeWorkspaceCityId = city.id
   const myToken = ++workspaceOpenToken
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     // A later openCityWorkspace call already took over — skip mounting so we
@@ -293,9 +303,30 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // Flipping the kanban tab in the new city would be surprising though —
       // the user clicked through *to* a fiber, so land on its prose.
       onOpenFiberInCity: openFiberInCityFromKanban,
+      onClose: handleWorkspaceClosed,
     })
     activeWorkspaceHandle = handle
   })
+}
+
+/**
+ * Called by `openVellumWorkspaceModal`'s `onClose` callback whenever vellum
+ * closes (Escape, ×, programmatic close). Resets host-side bookkeeping —
+ * without this, `activeWorkspaceHandle` becomes a stale reference and
+ * subsequent hotkeys (`/` ladder, `k` chord) silently no-op against a torn-
+ * down React tree (handle methods short-circuit after close).
+ *
+ * Safe to fire synchronously even mid-replacement: every open path
+ * (`openCityWorkspace`, `openFile`, `openGlobalKanban`, `openGlobalFind`)
+ * calls `activeWorkspaceHandle?.close()` *before* setting the new state, so
+ * the order is always close-clears-then-assign. The vellumMount.then() that
+ * installs the new handle runs as a microtask after this fire-and-clear, so
+ * we never wipe a freshly-installed reference.
+ */
+function handleWorkspaceClosed(): void {
+  activeWorkspaceCityId = null
+  activeWorkspaceHandle = null
+  kanbanLaunchButton.refreshSoon()
 }
 
 /**
@@ -313,6 +344,7 @@ function openGlobalKanban(): void {
     activeWorkspaceHandle.setMode('kanban')
     return
   }
+  activeWorkspaceCityId = null
   const myToken = ++workspaceOpenToken
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     if (myToken !== workspaceOpenToken) return
@@ -322,6 +354,37 @@ function openGlobalKanban(): void {
       // The global kanban has no fiber graph (cityId is undefined) — every
       // card click needs to pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
+      onClose: handleWorkspaceClosed,
+    })
+  })
+}
+
+/**
+ * Open vellum on the Find tab in *global scope* (no cityId). Mirror of
+ * `openGlobalKanban` for the navigation-layer constitution's `/` hotkey,
+ * Stage A. If a vellum is already open, flip its tab to Find in place
+ * rather than tearing down — same in-place pattern as the `k` chord.
+ *
+ * Scope is communicated to FindHost via the modal's `cityId` (undefined =
+ * global). The `/` hotkey's scope ladder calls this for the global rung;
+ * for the city rung it calls `openCityWorkspace(city, { initialMode: 'find' })`.
+ */
+function openGlobalFind(): void {
+  if (activeWorkspaceHandle) {
+    activeWorkspaceHandle.setMode('find')
+    return
+  }
+  activeWorkspaceCityId = null
+  const myToken = ++workspaceOpenToken
+  void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
+    if (myToken !== workspaceOpenToken) return
+    activeWorkspaceHandle = openVellumWorkspaceModal({
+      initialMode: 'find',
+      onOpenWorker: focusWorkerByTmuxSession,
+      // Global Find has no fiber graph (cityId undefined); fiber clicks from
+      // the (forthcoming Stage B) tree pivot vellum to the card's owning city.
+      onOpenFiberInCity: openFiberInCityFromKanban,
+      onClose: handleWorkspaceClosed,
     })
   })
 }
@@ -760,17 +823,80 @@ const isEditableElement = (element: Element | null): boolean => {
   return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT'
 }
 
-const onGlobalSearchKeydown = (event: KeyboardEvent): void => {
+// `/` — scope-step ladder for the Find tab (constitution-portolan-navigation-
+// layer §"/ chord — scope-step semantics"). Bound at *capture phase* on
+// document so it beats vellum's own FiberPage `/` handler (which focuses the
+// in-collection thumb-index search input). Once we own the keystroke we
+// stopImmediatePropagation so vellum's bubble-phase listener never sees it
+// — otherwise the second `/` press would focus vellum's search input first,
+// flipping document.activeElement to an editable target before we read it,
+// and our scope-ladder would short-circuit on the isEditableElement guard.
+//
+// Each press climbs one rung:
+//
+//   - vellum closed, no focused city → open vellum-on-Find in global scope.
+//   - vellum closed, focused city X  → open vellum-on-Find scoped to X.
+//   - vellum open, not on Find       → flip the active tab to Find in place
+//                                       (mirrors the `k` chord for kanban).
+//   - vellum open on Find at city X  → escalate to global scope (close +
+//                                       reopen with no cityId, mode=find).
+//   - vellum open on Find at global  → close vellum (returns to the map).
+//
+// The user can always reach global by pressing `/` twice. Pure ladder; no
+// chord-detection or timing semantics. The standalone GlobalSearchPalette
+// is no longer bound to `/` — it stays in the codebase through Stage B and
+// retires in Stage C once Find's search input lands.
+const onFindHotkey = (event: KeyboardEvent): void => {
   if (event.key !== '/') return
   if (event.metaKey || event.ctrlKey || event.altKey) return
-  if (globalSearchPalette.isVisible()) return
   if (isEditableElement(document.activeElement)) return
 
   event.preventDefault()
-  globalSearchPalette.show(cities, sessions)
+  // Beat vellum's bubble-phase `/` handler (FiberPage thumb-index search).
+  // Without stopImmediatePropagation, vellum focuses its in-collection
+  // search input *after* we open Find, leaving the user typing into the
+  // wrong control.
+  event.stopImmediatePropagation()
+
+  const handle = activeWorkspaceHandle
+  if (!handle) {
+    // Vellum closed. Pick scope from focused-city, falling back to global.
+    // Same focus resolution `t` uses so the two hotkeys agree on what
+    // "current city" means — the visible HUD wins, otherwise the most-
+    // recently-focused city sticks (vellum-dogfood/t-key-needs-hud).
+    const visibleCity = cityPanel.getCurrentCity()
+    const focusedCity = visibleCity
+      ?? (lastFocusedCityId ? cities.find(c => c.id === lastFocusedCityId) ?? null : null)
+    if (focusedCity) {
+      cityPanel.hide()
+      openCityWorkspace(focusedCity, { initialMode: 'find' })
+    } else {
+      openGlobalFind()
+    }
+    return
+  }
+
+  if (handle.getMode() !== 'find') {
+    handle.setMode('find')
+    return
+  }
+
+  // Already on Find. Climb the scope ladder: city → global → close.
+  if (activeWorkspaceCityId !== null) {
+    handle.close()
+    activeWorkspaceHandle = null
+    activeWorkspaceCityId = null
+    openGlobalFind()
+    return
+  }
+  // Already global Find — close.
+  handle.close()
+  activeWorkspaceHandle = null
+  activeWorkspaceCityId = null
 }
 
-window.addEventListener('keydown', onGlobalSearchKeydown)
+// Capture phase + document so we land before vellum's document-bubble handler.
+document.addEventListener('keydown', onFindHotkey, true)
 
 const onGlobalHotkeys = (event: KeyboardEvent): void => {
   if (event.metaKey || event.ctrlKey || event.altKey) return
@@ -885,7 +1011,7 @@ appRuntime.start()
 // HMR cleanup
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    window.removeEventListener('keydown', onGlobalSearchKeydown)
+    document.removeEventListener('keydown', onFindHotkey, true)
     window.removeEventListener('keydown', onGlobalHotkeys)
     globalSearchPalette.hide()
     recentWorkerBar.dispose()
