@@ -44,6 +44,7 @@ import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './
 import { showToast } from '../ui/utils'
 import { lockModalBackground } from '../ui/modalBackgroundLock'
 import { StashForm, injectStashFormStyles } from './StashForm'
+import { FindHost, injectFindHostStyles } from './FindHost'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
@@ -269,83 +270,6 @@ function KanbanHost({
 }
 
 /**
- * FindHost — React shell mounted in vellum's Find tab slot.
- *
- * Mirrors `KanbanHost`'s pattern: a portolan-owned shell that mounts inside
- * vellum's tab slot, lazy on tab-enter. Stage A (this commit) renders a
- * minimal placeholder so flipping to Find doesn't land on an empty page;
- * Stages B/C/D/E fill the body with the Spatial section (cities + workers),
- * the cross-project fiber tree (`/global-fibers`), the search input
- * (`/global-search`), and the Recent toggle.
- *
- * Scope is communicated by `cityId`: undefined → global Find (the
- * cross-project entry point hit when `/` is pressed without a focused
- * city); set → city-scoped Find (filtered to that origin). The placeholder
- * surfaces the scope so stage-A behaviour is observable without a full
- * implementation.
- *
- * Click-through callbacks are wired now even though Stage A doesn't fire
- * them — Stage B's tree clicks will route through `onOpenFiberInCity` and
- * Stage D's worker clicks through `onOpenWorker`. Threading the props now
- * keeps the host's signature stable across stages.
- */
-function FindHost({
-  cityId,
-  cityName,
-}: {
-  cityId?: string
-  cityName?: string
-  /** Reserved for Stage D (Spatial section): focus a worker's kitty tab when
-   *  the user clicks its bird. Unused in Stage A. */
-  onOpenWorker?: (tmuxSessionName: string) => void
-  /** Reserved for Stage B (tree view): pivot vellum to a different city when
-   *  the user clicks a fiber from outside the current scope. Unused in
-   *  Stage A — when this lands, see the constitution's "open question"
-   *  about scope transitions. */
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
-}) {
-  // Same fixed-position chrome treatment as KanbanHost so the slot fills
-  // vellum's modal viewport regardless of the page's natural-flow height.
-  return (
-    <div
-      className="find-host"
-      style={{ position: 'fixed', inset: 0, zIndex: 100 }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          height: '100%',
-          color: 'var(--text-muted, #7A7368)',
-          fontFamily: 'inherit',
-          gap: '0.5rem',
-          padding: '2rem',
-          textAlign: 'center',
-        }}
-      >
-        <div
-          style={{
-            fontSize: '0.7rem',
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            opacity: 0.7,
-          }}
-        >
-          Find · scope: {cityId ? (cityName ?? cityId) : 'global'}
-        </div>
-        <div style={{ fontSize: '0.85rem', maxWidth: '32rem', lineHeight: 1.5 }}>
-          Stage A — shell only. The dashboard sections (Spatial, Fibers, Files,
-          Search, Git, Recents) land in subsequent stages of the navigation-layer
-          constitution. CityHUD retires once Find covers them.
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/**
  * Minimal shape of portolan frontend state this file needs to route annotation
  * actions. main.ts registers getters that read the module-scoped `sessions`
  * and `cities` lists; the closures see the latest values after every WS
@@ -383,6 +307,21 @@ let mountContext: PortolanMountContext | null = null
  */
 export function setPortolanMountContext(ctx: PortolanMountContext | null): void {
   mountContext = ctx
+}
+
+/**
+ * Read-only accessor for sibling vellum-mount components (e.g. `FindHost`)
+ * that need to resolve city/session metadata without prop-threading. Returns
+ * `null` until `setPortolanMountContext` runs — callers should degrade
+ * gracefully (empty city name, "?" hostname) when the context isn't ready.
+ *
+ * Kept narrow on purpose: the same object that flows through
+ * `setPortolanMountContext` so consumers see live values across state-sync
+ * pushes (the closures inside `mountContext` read the latest `cities`/
+ * `sessions` arrays at call time).
+ */
+export function getPortolanMountContext(): PortolanMountContext | null {
+  return mountContext
 }
 
 /**
@@ -1173,8 +1112,11 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     />
   )
   // The find slot mirrors the kanban slot's shape: vellum lazy-mounts on
-  // tab-enter, portolan owns the body. Stage A (shell only); Stages B/C/D/E
-  // fill it. See [[ai-futures/portolan/design/constitution-portolan-navigation-layer]].
+  // tab-enter, portolan owns the body. Stage A (shell only) → Stage B
+  // (cross-project Fibers tree from /global-fibers); Stages C/D/E/F/G
+  // bring the rest of the dashboard sections per
+  // [[ai-futures/portolan/design/constitution-portolan-navigation-layer]].
+  injectFindHostStyles()
   const findSlot = (
     <FindHost
       cityId={opts.cityId}
