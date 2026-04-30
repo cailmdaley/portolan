@@ -48,12 +48,10 @@ export interface StashFormProps {
   originId?: string
   /**
    * All connected cities (local + remote). Surfaced as a combobox so the
-   * user can choose where the new fiber lands. The `<select>`-style picker
-   * defaults to the city whose `path` matches the `cityPath` prop, falling
-   * back to "Loom root" (no project) when nothing matches. Each city
-   * carries its own originId so remote stashing routes through the right
-   * portolan-agent without the form having to thread `originId` separately.
-   * Empty array = picker collapses to a static "Loom root" line.
+   * user can choose where the new fiber lands. Each city carries its own
+   * originId so remote stashing routes through the right portolan-agent
+   * without the form having to thread `originId` separately. Empty array
+   * = picker isn't rendered (form falls through to `cityPath`).
    */
   availableCities?: Array<{
     id: string
@@ -61,6 +59,15 @@ export interface StashFormProps {
     path: string
     originId: string
   }>
+  /**
+   * Optional activity timestamps per city, used to sort the picker by
+   * recency (most recently touched first). Map keyed by `cityId`; the
+   * value is the unix-ms of the most recent worker activity in that city.
+   * Cities not in the map sort to the bottom alphabetically. Threaded
+   * from KanbanHost which derives this from `mountContext.getSessions()`.
+   * Omitted = falls back to alphabetical.
+   */
+  cityActivityById?: Record<string, number>
   /**
    * Optional default parent slug. Per the constitution: "default = current
    * vellum context (e.g., the fiber being viewed) or a configurable global
@@ -138,6 +145,7 @@ export function StashForm({
   cityPath,
   originId = 'local',
   availableCities = [],
+  cityActivityById = {},
   defaultParentSlug,
   tagSuggestions,
   onCreated,
@@ -162,9 +170,12 @@ export function StashForm({
   // live under a project root). Default selection priority:
   //   1. The city in `availableCities` whose `path` matches the
   //      `cityPath` prop (kanban tab opens scoped to its own city).
-  //   2. The first city in `availableCities` alphabetically — gives the
-  //      global-kanban case a sensible default that the user can override.
-  //   3. `null` — only if `availableCities` is empty, in which case the
+  //   2. The most-recently-active city per `cityActivityById` — gives
+  //      the global-kanban case a default that matches what the user
+  //      was just working in.
+  //   3. The first city alphabetically — fallback when no activity is
+  //      recorded yet.
+  //   4. `null` — only if `availableCities` is empty, in which case the
   //      picker isn't rendered and the form falls through to
   //      `cityPath`/`fallbackFeltHost`.
   const [selectedCityId, setSelectedCityId] = useState<string | null>(() => {
@@ -173,10 +184,14 @@ export function StashForm({
       if (match) return match.id
     }
     if (availableCities.length === 0) return null
-    const sorted = [...availableCities].sort((a, b) =>
-      (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' }),
-    )
-    return sorted[0].id
+    // Most-recently-active city wins. Cities without an entry in the
+    // activity map count as 0 — they sort behind any city with activity.
+    const ranked = [...availableCities].sort((a, b) => {
+      const recencyDelta = (cityActivityById[b.id] ?? 0) - (cityActivityById[a.id] ?? 0)
+      if (recencyDelta !== 0) return recencyDelta
+      return (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' })
+    })
+    return ranked[0].id
   })
   const [cityPickerOpen, setCityPickerOpen] = useState(false)
   const [cityFilter, setCityFilter] = useState('')
@@ -233,12 +248,16 @@ export function StashForm({
     return () => document.removeEventListener('mousedown', handleDown)
   }, [cityPickerOpen])
 
-  // Sort cities by name (alphabetical, case-insensitive). Stable across
-  // renders since `availableCities` is the source of truth, so the same
-  // input → same order.
-  const sortedCities = [...availableCities].sort((a, b) =>
-    (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' }),
-  )
+  // Sort cities by recent activity, then alphabetically as the tiebreaker.
+  // Cities with a `cityActivityById` entry come first (most-recent first);
+  // the rest fall to the bottom in name order. Mirrors the default-
+  // selection logic above so the city the form lands on is always at the
+  // top of the dropdown when the user opens it.
+  const sortedCities = [...availableCities].sort((a, b) => {
+    const recencyDelta = (cityActivityById[b.id] ?? 0) - (cityActivityById[a.id] ?? 0)
+    if (recencyDelta !== 0) return recencyDelta
+    return (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' })
+  })
   // Filter by typed cityFilter (substring match against name/id). Empty
   // filter = full list. Keeps the dropdown manageable as cities accumulate.
   const cityFilterLower = cityFilter.trim().toLowerCase()
