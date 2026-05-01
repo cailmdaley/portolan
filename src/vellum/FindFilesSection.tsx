@@ -108,7 +108,21 @@ export function FindFilesSection({
   useEffect(() => {
     setData((prev) => {
       const byId = new Map(prev.map((n) => [n.id, n]))
-      return localCities.map((c) => byId.get(c.id) ?? makeCityNode(c))
+      let changed = prev.length !== localCities.length
+      const next = localCities.map((c) => {
+        const existing = byId.get(c.id)
+        if (!existing) {
+          changed = true
+          return makeCityNode(c)
+        }
+        const name = cityNodeName(c)
+        if (existing.name !== name || existing.fullPath !== c.path) {
+          changed = true
+          return { ...existing, name, fullPath: c.path }
+        }
+        return existing
+      })
+      return changed ? next : prev
     })
   }, [localCities])
 
@@ -427,13 +441,17 @@ function makeCityNode(city: {
 }): FileTreeNode {
   return {
     id: city.id,
-    name: city.name ?? city.path.split('/').pop() ?? city.id,
+    name: cityNodeName(city),
     kind: 'city',
     cityId: city.id,
     fullPath: city.path,
     // children stay undefined — first toggle / preload kicks off the
     // listing and patches the node with [] or [...].
   }
+}
+
+function cityNodeName(city: { id: string; name?: string; path: string }): string {
+  return city.name ?? city.path.split('/').pop() ?? city.id
 }
 
 function makePlaceholder(
@@ -474,18 +492,22 @@ function patchNode(
   targetId: string,
   patch: (current: FileTreeNode) => Partial<FileTreeNode>,
 ): FileTreeNode[] {
-  return nodes.map((node) => {
+  let changed = false
+  const next = nodes.map((node) => {
     if (node.id === targetId) {
+      changed = true
       return { ...node, ...patch(node) }
     }
     if (node.children && node.children.length > 0) {
       const nextChildren = patchNode(node.children, targetId, patch)
       if (nextChildren !== node.children) {
+        changed = true
         return { ...node, children: nextChildren }
       }
     }
     return node
   })
+  return changed ? next : nodes
 }
 
 function findNode(

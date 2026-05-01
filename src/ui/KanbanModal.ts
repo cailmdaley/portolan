@@ -782,12 +782,24 @@ export class KanbanModal {
         color: #2E2A26;
         overflow: hidden;
       }
+      /* Header band aligns with vellum's thumb-index: bottom edge meets
+         --thumb-index-bottom (so the kanban grid below starts on the same
+         horizontal line as the thumb-index ends), right edge clears
+         --canvas-width (so the band's content doesn't sit under the
+         thumb-index in the top-right corner). The thumb-index visually
+         extends the band's right portion — same chrome layer, two pieces.
+         The min-height falls back to the natural header height when the
+         var isn't published yet (initial paint, before FloatingIsland's
+         ResizeObserver fires). */
       .kbn-header {
-        display: flex; align-items: baseline; gap: 16px;
+        display: flex; align-items: center; gap: 16px;
         padding: 14px 20px 14px 44px;
+        padding-right: calc(20px + var(--canvas-width, 360px));
+        min-height: var(--thumb-index-bottom, auto);
         border-bottom: 1px solid rgba(46, 42, 38, 0.12);
         background: #E5DED2;
         flex-shrink: 0;
+        box-sizing: border-box;
       }
       .kbn-title-wrap {
         display: flex; align-items: baseline; gap: 8px;
@@ -907,6 +919,26 @@ export class KanbanModal {
         grid-column: 1 / -1;
         flex: 1;
         opacity: 1;
+      }
+      /* When the zoomed column lives inside .kbn-third (awaitingReview or
+         tempered), kbn-third itself only occupies its 1.15fr grid track —
+         the zoomed column would fill the third only, not the body. Span
+         kbn-third across all tracks when it contains a zoomed column so
+         the zoom genuinely fills the body. */
+      .kbn-body.kbn-body-zoomed .kbn-third:has(.kbn-col-zoomed) {
+        grid-column: 1 / -1;
+      }
+      /* When zoomed, tile cards as a CSS grid filling the available width
+         rather than stacking in a single column. The zoom's whole point is
+         to reveal more of a column's contents at once; a single stack inside
+         a full-width view leaves most of the screen empty. auto-fill +
+         minmax keeps cards at a readable minimum and packs as many per row
+         as the width allows. */
+      .kbn-col-zoomed .kbn-col-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        align-content: start;
+        gap: 12px;
       }
       .kbn-col-head {
         cursor: zoom-in;

@@ -378,26 +378,47 @@ export function FindHost({
         style={{
           maxWidth: '88rem',
           margin: '0 auto',
-          padding: '1.75rem 1.5rem 4rem',
+          padding: '0 1.5rem 4rem',
           display: 'flex',
           flexDirection: 'column',
           gap: '1rem',
         }}
       >
-        <Eyebrow
-          scopedCityName={scopedCityName}
-          showClearScope={!!localScopeCityId}
-          // Stage J — pass `null` to distinguish "user explicitly chose
-          // global" from "scope happens to be undefined" (the
-          // inherit-from-cityId case). Encoded as `&scope=global` in URL.
-          onClearScope={() => handleScopeChange(null)}
-          onRefresh={() => setRefreshTick((n) => n + 1)}
-        />
-        <SearchBar
-          inputRef={searchInputRef}
-          value={query}
-          onChange={setQuery}
-        />
+        {/* Top band — bottom edge aligns with vellum's thumb-index bottom
+            (var(--thumb-index-bottom)) so the cities/fibers/files grid
+            below starts on the same horizontal line as the thumb-index
+            ends. Right edge clears var(--canvas-width) so the band's
+            content (eyebrow + search) doesn't sit under the thumb-index in
+            the top-right corner. The thumb-index visually extends this
+            band's right portion — chrome continuous across the seam. */}
+        <header
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            gap: '0.6rem',
+            minHeight: 'var(--thumb-index-bottom, 6rem)',
+            paddingTop: '1rem',
+            paddingBottom: '0.75rem',
+            paddingRight: 'var(--canvas-width, 360px)',
+            boxSizing: 'border-box',
+          }}
+        >
+          <Eyebrow
+            scopedCityName={scopedCityName}
+            showClearScope={!!localScopeCityId}
+            // Stage J — pass `null` to distinguish "user explicitly chose
+            // global" from "scope happens to be undefined" (the
+            // inherit-from-cityId case). Encoded as `&scope=global` in URL.
+            onClearScope={() => handleScopeChange(null)}
+            onRefresh={() => setRefreshTick((n) => n + 1)}
+          />
+          <SearchBar
+            inputRef={searchInputRef}
+            value={query}
+            onChange={setQuery}
+          />
+        </header>
         <div
           className="find-grid-top"
           style={{
