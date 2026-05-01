@@ -393,10 +393,11 @@ export function FindHost({
           }}
         >
           <GitSection cities={gitCities} focusedCityId={localScopeCityId} />
-          <PlaceholderColumn
-            title="Recents"
-            stage="G"
-            note="SQLite (viewer_kind, viewer_id, originId, path, last_viewed_at, view_count); top-N for current scope; fibers + files unified with kind badges."
+          <RecentsSection
+            focusedCityId={localScopeCityId}
+            cities={portolanCities}
+            refreshTick={refreshTick}
+            onOpenFiberInCity={onOpenFiberInCity}
           />
         </div>
       </div>
@@ -571,67 +572,6 @@ function SearchBar({
         </button>
       )}
     </div>
-  )
-}
-
-/* ------------------------------------------------------------------------ *
- * PlaceholderColumn — visually obvious "stage X land here" block. Used for
- * Cities (D), Files (C+E), Recents (G) until those stages ship. The dashed
- * border + stage chip + one-line description make it clear at a glance what
- * the column is reserved for, so progress is legible without diving into
- * the source.
- * ------------------------------------------------------------------------ */
-
-function PlaceholderColumn({
-  title,
-  stage,
-  note,
-}: {
-  title: string
-  stage: string
-  note: string
-}): JSX.Element {
-  return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-      <SectionHeader title={title} />
-      <div
-        style={{
-          border: '1px dashed var(--border-muted, #D8D2C8)',
-          borderRadius: '4px',
-          padding: '1rem 0.85rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.5rem',
-          minHeight: '7rem',
-          background: 'transparent',
-        }}
-      >
-        <span
-          style={{
-            alignSelf: 'flex-start',
-            fontSize: '0.6rem',
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            color: 'var(--text-muted, #7A7368)',
-            border: '1px solid var(--border-muted, #D8D2C8)',
-            padding: '0.1rem 0.4rem',
-            borderRadius: '2px',
-          }}
-        >
-          stage {stage}
-        </span>
-        <p
-          style={{
-            margin: 0,
-            fontSize: '0.78rem',
-            opacity: 0.6,
-            lineHeight: 1.5,
-          }}
-        >
-          {note}
-        </p>
-      </div>
-    </section>
   )
 }
 
@@ -1110,6 +1050,269 @@ function FiberRow({
       )}
     </li>
   )
+}
+
+/* ------------------------------------------------------------------------ *
+ * RecentsSection — Stage G of constitution-portolan-navigation-layer.
+ *
+ * Top-N rolled-up view log fed by the SQLite-backed RecentsStore. One row
+ * per (origin, city, kind, path), sorted by latest view across viewers.
+ * Kind badges: ⬡ for fibers, 📄 for files. Viewer badges: [h] when a
+ * human's viewed it, [a] when an agent has — both when both. Click a
+ * row to open it in vellum (pivots scope across cities as needed).
+ *
+ * Scope follows the in-Find scope (`focusedCityId`). Polls every 5s
+ * and re-fetches whenever the scope flips so a brand-new view from the
+ * agent or another window shows up without a manual refresh.
+ *
+ * Disconnected origins are tagged "stale" via the same-origin-id check
+ * the constitution requires; here that's the empty-list path (server
+ * returns enabled:false → empty entries → "no recents yet"). Once a
+ * remote-origin recents wire grows, the stale tag will move out of the
+ * empty-state fallback into per-row annotation.
+ * ------------------------------------------------------------------------ */
+
+interface RecentEntry {
+  originId: string
+  cityId: string
+  kind: 'fiber' | 'file'
+  path: string
+  lastViewedAt: number
+  viewCount: number
+  viewerKinds: Array<'human' | 'agent'>
+}
+
+interface RecentsCity {
+  id: string
+  name?: string
+  path: string
+  originId: string
+}
+
+function RecentsSection({
+  focusedCityId,
+  cities,
+  refreshTick,
+  onOpenFiberInCity,
+}: {
+  focusedCityId?: string
+  cities: RecentsCity[]
+  /** Bumped by the eyebrow Refresh button + by recordRecentTouch callers
+   *  so a fresh open shows up immediately rather than waiting for the
+   *  poll. Threaded through from FindHost. */
+  refreshTick: number
+  onOpenFiberInCity?: (cityId: string, slug: string) => void
+}): JSX.Element {
+  const [entries, setEntries] = useState<RecentEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Re-fetch on scope or refresh, then poll every 5s. The poll catches
+  // agent file-touches arriving from EventWatcher and human opens fired
+  // from a different window without forcing the user to hit refresh.
+  useEffect(() => {
+    let cancelled = false
+    const fetchRecents = async (): Promise<void> => {
+      try {
+        const params = new URLSearchParams()
+        if (focusedCityId) params.set('cityId', focusedCityId)
+        params.set('limit', '12')
+        const res = await fetch(`${API_BASE}/recents?${params}`)
+        if (!res.ok) throw new Error(`recents ${res.status}`)
+        const body = await res.json() as { entries?: RecentEntry[] }
+        if (cancelled) return
+        setEntries(body.entries ?? [])
+        setError(null)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'unknown')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void fetchRecents()
+    const id = window.setInterval(fetchRecents, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [focusedCityId, refreshTick])
+
+  const cityById = useMemo(() => new Map(cities.map(c => [c.id, c])), [cities])
+
+  const handleClick = (entry: RecentEntry): void => {
+    if (entry.kind === 'fiber') {
+      if (!onOpenFiberInCity) {
+        console.warn('[RecentsSection] onOpenFiberInCity not wired; click ignored.')
+        return
+      }
+      onOpenFiberInCity(entry.cityId, entry.path)
+      return
+    }
+    // File click: route through the mountContext.openFile() callback
+    // (installed by main.ts). Reconstitute the absolute path from city
+    // root + relative path so vellum's file mode receives a real fs
+    // path (matches the FilesColumn click contract).
+    const ctx = getPortolanMountContext()
+    if (!ctx?.openFile) {
+      console.warn('[RecentsSection] openFile not wired; click ignored.')
+      return
+    }
+    const city = cityById.get(entry.cityId)
+    if (!city) {
+      console.warn('[RecentsSection] city not found for entry; click ignored.', entry)
+      return
+    }
+    const cityRoot = city.path.endsWith('/') ? city.path : `${city.path}/`
+    const absolutePath = entry.path.startsWith('/') ? entry.path : cityRoot + entry.path
+    ctx.openFile({ path: absolutePath, cityId: entry.cityId, originId: entry.originId })
+  }
+
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <SectionHeader title="Recents" />
+      {loading && entries.length === 0 ? (
+        <Status>Loading…</Status>
+      ) : error ? (
+        <Status tone="error">recents: {error}</Status>
+      ) : entries.length === 0 ? (
+        <Status>No recents yet.</Status>
+      ) : (
+        <ul
+          style={{
+            listStyle: 'none',
+            padding: 0,
+            margin: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.15rem',
+          }}
+        >
+          {entries.map((entry) => (
+            <RecentsRow
+              key={`${entry.originId}::${entry.cityId}::${entry.kind}::${entry.path}`}
+              entry={entry}
+              cityName={cityById.get(entry.cityId)?.name ?? entry.cityId}
+              onClick={() => handleClick(entry)}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function RecentsRow({
+  entry,
+  cityName,
+  onClick,
+}: {
+  entry: RecentEntry
+  cityName: string
+  onClick: () => void
+}): JSX.Element {
+  const kindGlyph = entry.kind === 'fiber' ? '⬡' : '📄'
+  const lastViewedLabel = formatDistanceToNow(entry.lastViewedAt, { addSuffix: true })
+  const showHuman = entry.viewerKinds.includes('human')
+  const showAgent = entry.viewerKinds.includes('agent')
+  // Display path: for fibers, the full slug; for files, the basename
+  // with the parent dir for context (matches the activity-row pattern
+  // RecentWorkerBar uses on the map). Full path goes in the title attr
+  // so hover discloses the rest.
+  const display = entry.kind === 'fiber'
+    ? entry.path
+    : displayFilePath(entry.path)
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        title={`${entry.path} — ${entry.viewCount}× — ${lastViewedLabel}`}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          border: 'none',
+          padding: '0.3rem 0.4rem',
+          borderRadius: '3px',
+          cursor: 'pointer',
+          display: 'grid',
+          gridTemplateColumns: 'auto minmax(0, 1fr) auto auto',
+          alignItems: 'baseline',
+          gap: '0.5rem',
+          color: 'inherit',
+          fontSize: '0.82rem',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-hover, #F1ECE3)'
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+        }}
+      >
+        <span aria-hidden style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+          {kindGlyph}
+        </span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {display}
+        </span>
+        <span
+          style={{
+            fontSize: '0.65rem',
+            letterSpacing: '0.04em',
+            textTransform: 'uppercase',
+            opacity: 0.55,
+            border: '1px solid var(--border-muted, #D8D2C8)',
+            padding: '0.05rem 0.35rem',
+            borderRadius: '2px',
+          }}
+        >
+          {cityName}
+        </span>
+        <span style={{ display: 'flex', gap: '0.2rem' }}>
+          {showHuman && (
+            <span
+              aria-label="human view"
+              title="Human view"
+              style={{
+                fontSize: '0.6rem',
+                opacity: 0.7,
+                border: '1px solid var(--border-muted, #D8D2C8)',
+                padding: '0.05rem 0.3rem',
+                borderRadius: '2px',
+              }}
+            >
+              h
+            </span>
+          )}
+          {showAgent && (
+            <span
+              aria-label="agent view"
+              title="Agent view"
+              style={{
+                fontSize: '0.6rem',
+                opacity: 0.7,
+                border: '1px solid var(--border-muted, #D8D2C8)',
+                padding: '0.05rem 0.3rem',
+                borderRadius: '2px',
+              }}
+            >
+              a
+            </span>
+          )}
+        </span>
+      </button>
+    </li>
+  )
+}
+
+function displayFilePath(path: string): string {
+  const parts = path.split('/')
+  if (parts.length <= 1) return path
+  const filename = parts.pop() ?? ''
+  const parent = parts.pop() ?? ''
+  if (!parent) return filename
+  return `${parent}/${filename}`
 }
 
 /* ------------------------------------------------------------------------ *

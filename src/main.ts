@@ -216,6 +216,12 @@ function openFile(args: OpenFileArgs): void {
   activeWorkspaceHandle = null
   activeWorkspaceCityId = args.cityId ?? null
   const myToken = ++workspaceOpenToken
+  // Stage G recents — every file open is a human view. Skips silently if
+  // there's no resolved city (file system path with no owning city);
+  // those don't have a meaningful Recents row.
+  if (args.cityId && args.path) {
+    recordRecentTouch({ kind: 'file', cityId: args.cityId, originId: args.originId, path: args.path })
+  }
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     if (myToken !== workspaceOpenToken) return
     const handle = openVellumWorkspaceModal({
@@ -289,6 +295,13 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
   activeWorkspaceHandle = null
   activeWorkspaceCityId = city.id
   const myToken = ++workspaceOpenToken
+  // Stage G recents — fiber views from the URL-hash restore, FindHost
+  // click-throughs, and kanban click-throughs all flow through here with
+  // an `initialSlug`. Map-hex clicks land on Index without a slug and
+  // are not recorded (no specific resource was viewed).
+  if (opts.initialSlug && opts.initialMode !== 'kanban' && opts.initialMode !== 'find') {
+    recordRecentTouch({ kind: 'fiber', cityId: city.id, originId: city.originId, path: opts.initialSlug })
+  }
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     // A later openCityWorkspace call already took over — skip mounting so we
     // don't leave an orphan modal container in the DOM next to the one the
@@ -551,6 +564,53 @@ let origins: ServerOrigin[] = []
 let selectedHex: { q: number; r: number } | null = null
 let mapActions: FrontendMapActions | null = null
 
+// Stage G of constitution-portolan-navigation-layer: HTTP base for the
+// recents endpoints. Tracks `window.location.hostname` so dev-server
+// proxying works (matches FindHost's API_BASE pattern, which derives the
+// same way).
+const PORTOLAN_HTTP_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
+
+/**
+ * Stage G — fire-and-forget recents touch from the open paths in this
+ * module (openFile, openCityWorkspace). The mountContext exposes the
+ * same call to FindHost; this helper hits the same endpoint so map-hex
+ * clicks, URL-hash restores, and any other in-host open route also
+ * accrete recents without prop-threading the mountContext.
+ *
+ * Files use city-relative paths so the entry survives moving the city
+ * directory across machines (matches the agent path on the server side
+ * — see server's relativeToCity). Falls back to the absolute path if
+ * the file lives outside the city root, which can happen when the user
+ * hand-passes a system path.
+ */
+function recordRecentTouch(args: {
+  kind: 'fiber' | 'file'
+  cityId: string
+  originId?: string
+  path: string
+}): void {
+  if (!args.cityId || !args.path) return
+  const city = cities.find(c => c.id === args.cityId)
+  const originId = args.originId ?? city?.originId ?? 'local'
+  let path = args.path
+  if (args.kind === 'file' && city) {
+    const cityRoot = city.path.endsWith('/') ? city.path : `${city.path}/`
+    if (path.startsWith(cityRoot)) path = path.slice(cityRoot.length)
+  }
+  void fetch(`${PORTOLAN_HTTP_BASE}/recents/touch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      viewerKind: 'human',
+      viewerId: 'human',
+      originId,
+      cityId: args.cityId,
+      kind: args.kind,
+      path,
+    }),
+  }).catch(err => console.debug('[recents] touch failed:', err))
+}
+
 // Promise-wrapped WS-listDirectory client. FindHost's Files column (Stage E
 // of constitution-portolan-navigation-layer) needs an awaitable directory
 // listing API; the legacy CityHUDFileTree owns the WS-side listener but
@@ -570,6 +630,55 @@ void vellumMountPromise.then(({ setPortolanMountContext }) => {
     requestDirectoryListing: (cityId, path) =>
       directoryListingClient.request(cityId, path),
     openFile: (args) => openFile(args),
+    // Stage G of constitution-portolan-navigation-layer: wrap POST
+    // /recents/touch as a getter so any FindHost / openFile / openCityWorkspace
+    // open path that resolves a (cityId, fiber|file path) feeds the SQLite
+    // recents store. Fire-and-forget — the server tolerates missing
+    // sqlite (returns enabled:false) and a failed write doesn't block the
+    // user's navigation.
+    recordRecentView: ({ kind, path, cityId, originId }) => {
+      const resolvedOriginId = originId
+        ?? cities.find(c => c.id === cityId)?.originId
+        ?? 'local'
+      void fetch(`${PORTOLAN_HTTP_BASE}/recents/touch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          viewerKind: 'human',
+          viewerId: 'human',
+          originId: resolvedOriginId,
+          cityId,
+          kind,
+          path,
+        }),
+      }).catch(err => {
+        // Recents is best-effort: log at debug level so a transient
+        // server outage doesn't spam the console.
+        console.debug('[recents] touch failed:', err)
+      })
+    },
+    getRecents: async ({ cityId, limit = 8 } = {}) => {
+      const params = new URLSearchParams()
+      if (cityId) params.set('cityId', cityId)
+      params.set('limit', String(limit))
+      try {
+        const res = await fetch(`${PORTOLAN_HTTP_BASE}/recents?${params}`)
+        if (!res.ok) return []
+        const body = await res.json() as { entries?: unknown }
+        return Array.isArray(body.entries) ? body.entries as Array<{
+          originId: string
+          cityId: string
+          kind: 'fiber' | 'file'
+          path: string
+          lastViewedAt: number
+          viewCount: number
+          viewerKinds: Array<'human' | 'agent'>
+        }> : []
+      } catch (err) {
+        console.debug('[recents] fetch failed:', err)
+        return []
+      }
+    },
   })
 })
 

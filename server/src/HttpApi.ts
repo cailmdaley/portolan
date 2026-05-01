@@ -15,11 +15,13 @@ import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence } from './AnnotationPersistence.js';
 import type { Session } from './SessionTracker.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
+import type { RecentsStore } from './RecentsStore.js';
 import { HttpApiActivation } from './HttpApiActivation.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
+import { HttpApiRecents } from './HttpApiRecents.js';
 import { HttpApiKanban, type KanbanTarget } from './HttpApiKanban.js';
 import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
 import { HttpApiFilesSearch } from './HttpApiFilesSearch.js';
@@ -101,6 +103,7 @@ export class HttpApi {
   private astraViewApi: HttpApiAstraView;
   private fileContentApi: HttpApiFileContent;
   private hooksRuntimeApi: HttpApiHooksRuntime;
+  private recentsApi: HttpApiRecents;
   private kanbanApi: HttpApiKanban;
   private meetingApi: HttpApiMeeting;
   private activationApi: HttpApiActivation;
@@ -141,6 +144,11 @@ export class HttpApi {
       remoteTransitionExecutor: this.remoteTransitionExecutor,
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
+      parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
+      sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
+      sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+    });
+    this.recentsApi = new HttpApiRecents({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
@@ -196,6 +204,17 @@ export class HttpApi {
    */
   setRecentFileTracker(tracker: RecentFileTracker): void {
     this.hooksRuntimeApi.setRecentFileTracker(tracker);
+  }
+
+  /**
+   * Set the SQLite-backed recents store powering Find's Recents column
+   * (Stage G of constitution-portolan-navigation-layer). Boot wires the
+   * store after eventWatcher.start() so the GET /recents endpoint
+   * returns rolled-up entries and POST /recents/touch persists views
+   * across restarts.
+   */
+  setRecentsStore(store: RecentsStore): void {
+    this.recentsApi.setStore(store);
   }
 
   /**
@@ -438,6 +457,20 @@ export class HttpApi {
 
     if (url.pathname === '/recent-files' && req.method === 'GET') {
       await this.hooksRuntimeApi.handleRecentFiles(url, res);
+      return true;
+    }
+
+    // /recents — Stage G of constitution-portolan-navigation-layer.
+    // Top-N rolled-up view log for fibers + files; cityId filter is the
+    // scoped/global toggle. /recents/touch records a single view (POST);
+    // GET reads. Both fall back to enabled=false when node:sqlite is
+    // missing rather than 500ing — see RecentsStore.
+    if (url.pathname === '/recents' && req.method === 'GET') {
+      await this.recentsApi.handleGetRecents(url, res);
+      return true;
+    }
+    if (url.pathname === '/recents/touch' && req.method === 'POST') {
+      await this.recentsApi.handleTouchRecent(req, res);
       return true;
     }
 

@@ -355,6 +355,47 @@ export interface PortolanMountContext {
     cityId?: string
     jumpToLine?: number
   }) => void
+  /**
+   * Stage G of constitution-portolan-navigation-layer. Record a single
+   * vellum view in the SQLite-backed recents store (via POST
+   * /recents/touch). The Recents column in FindHost reads back through
+   * `getRecents`. Optional; absence is tolerated (Recents column
+   * degrades to empty).
+   *
+   * `kind` partitions fibers from files; `path` is the fiber slug for
+   * fibers, the city-relative path for files (matches how the server
+   * stores agent file-touches — see server's `relativeToCity`).
+   */
+  recordRecentView?: (args: {
+    kind: 'fiber' | 'file'
+    path: string
+    cityId: string
+    originId?: string
+  }) => void
+  /**
+   * Stage G of constitution-portolan-navigation-layer. Fetch top-N
+   * rolled-up recent views (across humans + agents) for the given
+   * scope. Pass `cityId` to scope; omit for global.
+   */
+  getRecents?: (args: {
+    cityId?: string
+    limit?: number
+  }) => Promise<RecentEntry[]>
+}
+
+/**
+ * Mirror of server's RecentEntry — kept narrow on the client side so the
+ * FindHost RecentsSection doesn't need to import server types. Server
+ * truth lives in `server/src/RecentsStore.ts`.
+ */
+export interface RecentEntry {
+  originId: string
+  cityId: string
+  kind: 'fiber' | 'file'
+  path: string
+  lastViewedAt: number
+  viewCount: number
+  viewerKinds: Array<'human' | 'agent'>
 }
 
 let mountContext: PortolanMountContext | null = null

@@ -16,6 +16,7 @@ import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager } from './GitStatusManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
+import { RecentsStore } from './RecentsStore.js';
 import { EventWatcher } from './EventWatcher.js';
 import { HttpApi } from './HttpApi.js';
 import { KittyIntegration } from './KittyIntegration.js';
@@ -51,6 +52,7 @@ const originManager = new OriginManager();
 const eventWatcher = new EventWatcher();
 const gitStatusManager = new GitStatusManager();
 const recentFileTracker = new RecentFileTracker();
+const recentsStore = new RecentsStore();
 const fiberTreeSnapshotStore = new FiberTreeSnapshotStore();
 const agentRequestCoordinator = new AgentRequestCoordinator(originManager);
 const meetingBridge = new MeetingBridge({
@@ -145,6 +147,7 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
 httpApi.setRecentFileTracker(recentFileTracker);
+httpApi.setRecentsStore(recentsStore);
 httpApi.setRuntimeDiagnosticsProvider(() => {
   const localSessionCount = sessionTracker.getSessions().length;
   const remoteSessionCount = getRemoteSessionCount();
@@ -542,11 +545,59 @@ eventWatcher.onActivity((activity) => {
         activity.fullPath,
         activity.timestamp,
       );
+
+      // Stage G of constitution-portolan-navigation-layer: agent file
+      // touches feed the SQLite recents store as `viewer_kind:agent`,
+      // surfacing in Find's Recents column with an [a] badge so the
+      // human can see what their workers are touching across cities.
+      // session.cityId / originId / path comes from BrowserStateCoordinator's
+      // assignSessionToCity reconciliation. Path stored relative to city
+      // root so the Recents row is portable across machines (matches the
+      // file-tree row scheme).
+      if (session.cityId && session.originId) {
+        const city = cityManager.getCityById(session.cityId);
+        if (city) {
+          const relPath = relativeToCity(activity.fullPath, city.path);
+          if (relPath) {
+            recentsStore.recordView({
+              viewerKind: 'agent',
+              viewerId: session.id,
+              originId: session.originId,
+              cityId: session.cityId,
+              kind: 'file',
+              path: relPath,
+              timestamp: activity.timestamp,
+            });
+          }
+        }
+      }
     }
   }
 
   browserStateCoordinator.broadcastActivity(activity, LOCAL_ORIGIN_ID);
 });
+
+/**
+ * Stage G helper: relativize an absolute file path to a city root, so
+ * agent file-touches surface in Recents with portable, city-rooted paths
+ * (matching how /global-files-search and the Files-column tree key
+ * entries). Returns null when the path lives outside the city — those
+ * touches don't belong in the city's Recents and global Recents would
+ * have no city to attribute them to.
+ *
+ * Realpath is intentionally NOT resolved here: cities like loom that are
+ * symlinked into project trees (`portolan/.felt → loom/.felt/portolan`)
+ * already have their canonical path on the City record, and the file
+ * paths we receive from EventWatcher are the literal Read/Write/Edit
+ * arguments, which the user wrote in the symlinked form. Both come out
+ * identically prefixed; no extra realpath step needed.
+ */
+function relativeToCity(fullPath: string, cityPath: string): string | null {
+  const normalized = cityPath.endsWith('/') ? cityPath : `${cityPath}/`;
+  if (!fullPath.startsWith(normalized)) return null;
+  const rel = fullPath.slice(normalized.length);
+  return rel.length > 0 ? rel : null;
+}
 eventWatcher.start();
 
 gitStatusManager.setUpdateHandler(({ path, status }) => {
