@@ -321,6 +321,35 @@ export interface PortolanMountContext {
       isRepo: boolean
     }
   }>
+  /**
+   * Request a directory listing for `(cityId, path)`. Stage E of
+   * constitution-portolan-navigation-layer: the Find dashboard's Files
+   * column lazy-loads each directory through the same WS protocol the
+   * legacy CityHUDFileTree uses. Promise-shaped wrapper lives in
+   * `runtime/DirectoryListingClient`; main.ts wires it into the WS pipe
+   * so listings observed by the panel handler also drain Find's pending
+   * promise map.
+   *
+   * Optional: callers (FindHost) degrade to "offline" state when the
+   * context's request method isn't installed yet (e.g. before
+   * `setPortolanMountContext` runs in `main.ts`).
+   */
+  requestDirectoryListing?: (cityId: string, path: string) => Promise<{
+    entries: Array<{ name: string; type: 'file' | 'dir' }>
+    error?: string
+  }>
+  /**
+   * Open a file at `path` (absolute) in vellum's file mode. Wraps the
+   * portolan `openFile()` helper so FindHost can route a Files-column
+   * click without re-implementing the workspace-modal hand-off. Optional;
+   * if absent, FindHost falls back to a console warning.
+   */
+  openFile?: (args: {
+    path: string
+    originId?: string
+    cityId?: string
+    jumpToLine?: number
+  }) => void
 }
 
 let mountContext: PortolanMountContext | null = null

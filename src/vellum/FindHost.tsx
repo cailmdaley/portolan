@@ -40,6 +40,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { fiberStatusIcon } from '../ui/utils'
 import { getPortolanMountContext } from './mount'
 import { FIND_FOCUS_SEARCH_EVENT, FIND_SEARCH_INPUT_CLASS } from './find-shared'
+import { FindFilesSection } from './FindFilesSection'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
@@ -130,14 +131,20 @@ export function FindHost({
   const [refreshTick, setRefreshTick] = useState(0)
 
   /**
-   * Search query state. Lifted to FindHost so Stages C+E can land their
-   * wiring (Fibers + Files columns flatten into a combined ranked list when
-   * non-empty) without restructuring the tree. Today: the input renders and
-   * is `/`-focusable, but no downstream filtering happens — the trees show
-   * regardless of query. Stage C plugs `fzy` ranking onto this value.
+   * Search query state. Lifted to FindHost; Stages C+E wire it so when
+   * non-empty, the Fibers + Files columns flatten into a single combined
+   * ranked list (kind + origin badges per row). Empty input shows the
+   * trees in both columns.
    */
   const [query, setQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  // Debounced query — only the trailing edge of typing triggers HTTP
+  // fetches against /global-search + /global-files-search. 110ms matches
+  // the legacy GlobalSearchPalette debounce, which felt right for fast
+  // typers without leaving lag visible.
+  const debouncedQuery = useDebouncedValue(query.trim(), 110)
+  const isSearching = debouncedQuery.length > 0
+  const combined = useCombinedSearch(debouncedQuery)
 
   // Listen for the `/` hotkey's focus request. Dispatched by main.ts when
   // the user wants to focus the search input from outside FindHost (e.g.,
@@ -180,25 +187,37 @@ export function FindHost({
     }
   }, [refreshTick])
 
-  // Resolve city name + path + gitStatus for any cityId in the response.
-  // mountContext is module-scoped in mount.tsx; reading at render-time
-  // picks up the latest state-sync push automatically. Re-reads on every
-  // refresh tick so the Git section reflects the latest poll result without
-  // needing a frame-driven WS subscription inside FindHost itself.
-  const cityById = useMemo(() => {
+  // FindHost re-reads frontend state on a slow tick so cityById,
+  // gitCities, and the Files-column city list pick up state-sync pushes
+  // (city pinning, gitStatus poll, mock-fallback → real cities) without
+  // wiring a custom subscription. The mount context is module-scoped, so
+  // tying re-reads to a tick keeps the React-tree reactive while leaving
+  // the actual subscription mechanics inside main.ts.
+  const [stateTick, setStateTick] = useState(0)
+  useEffect(() => {
+    const handle = window.setInterval(() => setStateTick((n) => n + 1), 1500)
+    return () => window.clearInterval(handle)
+  }, [])
+
+  // Read cities once per render via the live mount context. Used by
+  // multiple sections downstream so we materialize once rather than
+  // re-reading at each call site.
+  const portolanCities = useMemo(() => {
     const ctx = getPortolanMountContext()
-    if (!ctx)
-      return new Map<
-        string,
-        {
-          name?: string
-          path: string
-          originId: string
-          gitStatus?: CityGitStatus
-        }
-      >()
-    return new Map(ctx.getCities().map((c) => [c.id, c]))
-  }, [data, refreshTick])
+    return ctx ? ctx.getCities() : []
+    // stateTick + refreshTick + data drive the memo so a state-sync push
+    // or a /global-fibers refresh pulls fresh values without a one-off
+    // signal per consumer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateTick, refreshTick, data])
+
+  // Resolve city name + path + gitStatus for any cityId in the response.
+  // Re-reads on every refresh tick so the Git section reflects the latest
+  // poll result; re-reads on stateTick so a transition from mock fallback
+  // → real cities (e.g., cold load) doesn't strand stale display names.
+  const cityById = useMemo(() => {
+    return new Map(portolanCities.map((c) => [c.id, c]))
+  }, [portolanCities])
 
   // Build the row list for the Git section: every local city we know about,
   // sorted with the focused city first then alphabetical. Remote cities are
@@ -206,10 +225,8 @@ export function FindHost({
   // section regardless (so a "no git" empty-state surfaces) but only iterate
   // local cities for rows.
   const gitCities = useMemo<GitSectionCity[]>(() => {
-    const ctx = getPortolanMountContext()
-    if (!ctx) return []
     const rows: GitSectionCity[] = []
-    for (const c of ctx.getCities()) {
+    for (const c of portolanCities) {
       if (c.originId !== 'local') continue
       const displayName = c.name ?? c.path.split('/').pop() ?? c.id
       rows.push({ cityId: c.id, displayName, gitStatus: c.gitStatus })
@@ -222,7 +239,7 @@ export function FindHost({
       return a.displayName.localeCompare(b.displayName)
     })
     return rows
-  }, [cityId, refreshTick, data])
+  }, [cityId, portolanCities])
 
   // Sections collapse/expand state, indexed by stable group key. Default:
   // every group collapsed except the focused city's, which auto-expands
@@ -296,23 +313,38 @@ export function FindHost({
             stage="D"
             note="hex glyphs + workers nested under each city; click city → re-scope Find in place; click worker → kitty focus."
           />
-          <FibersSection
-            loading={loading}
-            error={error}
-            data={data}
-            cityById={cityById}
-            focusedCityId={cityId}
-            openCityKeys={openCityKeys}
-            setOpenCityKeys={setOpenCityKeys}
-            openFiberKeys={openFiberKeys}
-            setOpenFiberKeys={setOpenFiberKeys}
-            onOpenFiberInCity={onOpenFiberInCity}
-          />
-          <PlaceholderColumn
-            title="Files"
-            stage="E"
-            note="react-arborist virtualized tree; async-load via the existing directory-listing WS; click → vellum file mode."
-          />
+          {isSearching ? (
+            // Constitution §"Find layout" — non-empty input collapses the
+            // Fibers + Files columns into one combined ranked list. The
+            // grid keeps Cities in its column on the left; the results
+            // span the remaining two grid columns so we don't reflow the
+            // whole layout on every keystroke.
+            <CombinedResultsSection
+              query={debouncedQuery}
+              loading={combined.loading}
+              error={combined.error}
+              fiberHits={combined.fiberHits}
+              fileHits={combined.fileHits}
+              cityById={cityById}
+              onOpenFiberInCity={onOpenFiberInCity}
+            />
+          ) : (
+            <>
+              <FibersSection
+                loading={loading}
+                error={error}
+                data={data}
+                cityById={cityById}
+                focusedCityId={cityId}
+                openCityKeys={openCityKeys}
+                setOpenCityKeys={setOpenCityKeys}
+                openFiberKeys={openFiberKeys}
+                setOpenFiberKeys={setOpenFiberKeys}
+                onOpenFiberInCity={onOpenFiberInCity}
+              />
+              <FilesColumn cityId={cityId} cities={portolanCities} />
+            </>
+          )}
         </div>
         <div
           className="find-grid-footer"
@@ -1441,6 +1473,415 @@ function statusRank(status: string): number {
       return 3
     default:
       return 4
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * FilesColumn — wraps `FindFilesSection` with the section header so the
+ * empty-input layout reads parallel to Fibers (header above body). Lives
+ * here rather than in FindFilesSection because the inline section header
+ * convention is FindHost's vocabulary; the tree component itself stays
+ * decoupled from the dashboard's typography.
+ * ------------------------------------------------------------------------ */
+
+function FilesColumn({
+  cityId,
+  cities,
+}: {
+  cityId?: string
+  cities: Array<{ id: string; name?: string; path: string; originId: string }>
+}): JSX.Element {
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <SectionHeader title="Files" />
+      <FindFilesSection cityId={cityId} cities={cities} />
+    </section>
+  )
+}
+
+/* ------------------------------------------------------------------------ *
+ * CombinedResultsSection — the single ranked list rendered when the search
+ * input is non-empty. Spans the Fibers + Files grid columns so the layout
+ * doesn't reflow when the user types/clears. Each row carries kind (fiber
+ * | file | dir) and origin (city/host) badges so the user can see at a
+ * glance where a hit comes from.
+ *
+ * Ranking: the server ranks each axis with fzy independently and returns
+ * scored hits. We merge by interleaving on score, then render the union
+ * top-N. The constitution doesn't ask for tie-breaking by kind, but
+ * we sort by `score` descending and let the natural fzy weights resolve
+ * (filename hits typically score higher than mid-body fiber hits, which
+ * matches what the user expects).
+ * ------------------------------------------------------------------------ */
+
+interface CombinedFiberHit {
+  kind: 'fiber'
+  id: string
+  name: string
+  status: string
+  fiberKind: string
+  outcome?: string
+  snippet?: string
+  originId: string
+  cityId?: string
+  projectSlug?: string
+  hostname?: string
+  score: number
+}
+
+interface CombinedFileHit {
+  kind: 'file' | 'dir'
+  fullPath: string
+  relativePath: string
+  name: string
+  cityId: string
+  cityName?: string
+  originId: string
+  score: number
+}
+
+type CombinedHit = CombinedFiberHit | CombinedFileHit
+
+function CombinedResultsSection({
+  query,
+  loading,
+  error,
+  fiberHits,
+  fileHits,
+  cityById,
+  onOpenFiberInCity,
+}: {
+  query: string
+  loading: boolean
+  error: string | null
+  fiberHits: CombinedFiberHit[]
+  fileHits: CombinedFileHit[]
+  cityById: Map<
+    string,
+    { name?: string; path: string; originId: string; gitStatus?: CityGitStatus }
+  >
+  onOpenFiberInCity?: (cityId: string, slug: string) => void
+}): JSX.Element {
+  const ctx = getPortolanMountContext()
+  const openFile = ctx?.openFile
+
+  const merged = useMemo<CombinedHit[]>(() => {
+    const all: CombinedHit[] = [...fiberHits, ...fileHits]
+    all.sort((a, b) => b.score - a.score)
+    return all
+  }, [fiberHits, fileHits])
+
+  const handleClick = (hit: CombinedHit): void => {
+    if (hit.kind === 'fiber') {
+      if (hit.originId !== 'local' || !hit.cityId) {
+        console.warn(
+          '[FindHost] remote-origin fiber click is not yet wired ' +
+            `(originId=${hit.originId}, id=${hit.id}).`,
+        )
+        return
+      }
+      onOpenFiberInCity?.(hit.cityId, hit.projectSlug ?? hit.id)
+      return
+    }
+    if (hit.kind === 'file') {
+      if (!openFile) {
+        console.warn('[FindHost] openFile not wired; click ignored.')
+        return
+      }
+      openFile({
+        path: hit.fullPath,
+        cityId: hit.cityId,
+        originId: hit.originId,
+      })
+      return
+    }
+    // Directory click in combined results: no in-modal browse target,
+    // since opening the directory in vellum's file mode would 404 on a
+    // path-not-a-file. Surface in console so it's discoverable.
+    console.info('[FindHost] directory results are browse-only:', hit.fullPath)
+  }
+
+  return (
+    <section
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem',
+        // Span the Fibers + Files columns. The Cities column is the
+        // first track of the grid; this section is grid-column 2/4 so
+        // it occupies the middle and right tracks together.
+        gridColumn: '2 / span 2',
+      }}
+    >
+      <SectionHeader
+        title={`Results · "${query}"${
+          loading ? ' · loading…' : merged.length > 0 ? ` · ${merged.length}` : ''
+        }`}
+      />
+      {error && <Status tone="error">{error}</Status>}
+      {!loading && !error && merged.length === 0 && (
+        <Status>No matches.</Status>
+      )}
+      {merged.length > 0 && (
+        <ul
+          style={{
+            listStyle: 'none',
+            margin: 0,
+            padding: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.15rem',
+          }}
+        >
+          {merged.map((hit) => (
+            <li key={keyForHit(hit)}>
+              <CombinedRow
+                hit={hit}
+                cityName={resolveCityName(hit, cityById)}
+                onClick={() => handleClick(hit)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function CombinedRow({
+  hit,
+  cityName,
+  onClick,
+}: {
+  hit: CombinedHit
+  cityName?: string
+  onClick: () => void
+}): JSX.Element {
+  const isFiber = hit.kind === 'fiber'
+  const kindLabel = hit.kind
+  const originLabel = isFiber
+    ? hit.hostname ?? cityName ?? hit.cityId ?? hit.originId
+    : cityName ?? hit.cityId
+  const lede = isFiber ? hit.snippet ?? hit.outcome : hit.relativePath
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={isFiber ? hit.id : hit.fullPath}
+      className="find-fiber-row"
+      style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: '0.5rem',
+        width: '100%',
+        padding: '0.35rem 0.5rem',
+        background: 'transparent',
+        border: 'none',
+        borderRadius: '3px',
+        cursor: 'pointer',
+        color: 'inherit',
+        font: 'inherit',
+        textAlign: 'left',
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          opacity: 0.7,
+          fontSize: '0.75rem',
+          width: '0.9rem',
+          textAlign: 'center',
+          flexShrink: 0,
+        }}
+      >
+        {isFiber ? fiberStatusIcon(hit.status || 'open') : hit.kind === 'dir' ? '📁' : '📄'}
+      </span>
+      <span
+        style={{
+          fontSize: '0.85rem',
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {hit.name}
+        {lede && (
+          <span
+            style={{
+              fontSize: '0.72rem',
+              opacity: 0.55,
+              marginLeft: '0.6rem',
+            }}
+          >
+            {lede}
+          </span>
+        )}
+      </span>
+      <Badge>{kindLabel}</Badge>
+      {originLabel && <Badge muted>{originLabel}</Badge>}
+    </button>
+  )
+}
+
+function Badge({
+  children,
+  muted,
+}: {
+  children: React.ReactNode
+  muted?: boolean
+}): JSX.Element {
+  return (
+    <span
+      style={{
+        fontSize: '0.6rem',
+        letterSpacing: '0.05em',
+        textTransform: 'uppercase',
+        opacity: muted ? 0.5 : 0.7,
+        border: '1px solid var(--border-muted, #E5DFD5)',
+        padding: '0.1rem 0.35rem',
+        borderRadius: '2px',
+        flexShrink: 0,
+      }}
+    >
+      {children}
+    </span>
+  )
+}
+
+function keyForHit(hit: CombinedHit): string {
+  if (hit.kind === 'fiber') {
+    return `fiber::${hit.originId}::${hit.id}`
+  }
+  return `${hit.kind}::${hit.cityId}::${hit.fullPath}`
+}
+
+function resolveCityName(
+  hit: CombinedHit,
+  cityById: Map<string, { name?: string; path: string }>,
+): string | undefined {
+  if (hit.kind === 'fiber') {
+    if (!hit.cityId) return undefined
+    const meta = cityById.get(hit.cityId)
+    return meta?.name ?? meta?.path?.split('/').pop()
+  }
+  if (hit.cityName) return hit.cityName
+  const meta = cityById.get(hit.cityId)
+  return meta?.name ?? meta?.path?.split('/').pop()
+}
+
+/* ------------------------------------------------------------------------ *
+ * Hooks
+ * ------------------------------------------------------------------------ */
+
+/** Trailing-edge debounce: returns `value` after `ms` of stability. */
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), ms)
+    return () => clearTimeout(handle)
+  }, [value, ms])
+  return debounced
+}
+
+/**
+ * Drive the cross-axis search behind the combined results column. Two
+ * parallel fetches per debounced query — `/global-search` (fibers) and
+ * `/global-files-search` (files). Stale resolutions are dropped via a
+ * cancellation token; an empty query immediately clears state so the
+ * column drops back to trees without waiting for an in-flight request.
+ */
+function useCombinedSearch(query: string): {
+  loading: boolean
+  error: string | null
+  fiberHits: CombinedFiberHit[]
+  fileHits: CombinedFileHit[]
+} {
+  const [state, setState] = useState<{
+    loading: boolean
+    error: string | null
+    fiberHits: CombinedFiberHit[]
+    fileHits: CombinedFileHit[]
+  }>({
+    loading: false,
+    error: null,
+    fiberHits: [],
+    fileHits: [],
+  })
+
+  useEffect(() => {
+    if (!query) {
+      setState({ loading: false, error: null, fiberHits: [], fileHits: [] })
+      return
+    }
+    let cancelled = false
+    setState((prev) => ({ ...prev, loading: true, error: null }))
+    const fibersUrl = `${API_BASE}/global-search?q=${encodeURIComponent(query)}&limit=20`
+    const filesUrl = `${API_BASE}/global-files-search?q=${encodeURIComponent(query)}&limit=20`
+    Promise.all([
+      fetch(fibersUrl).then(async (res) => {
+        if (!res.ok) throw new Error(`global-search ${res.status}`)
+        return (await res.json()) as { hits?: unknown[] }
+      }),
+      fetch(filesUrl).then(async (res) => {
+        if (!res.ok) throw new Error(`global-files-search ${res.status}`)
+        return (await res.json()) as { hits?: unknown[] }
+      }),
+    ])
+      .then(([fibers, files]) => {
+        if (cancelled) return
+        const fiberHits = (Array.isArray(fibers.hits) ? fibers.hits : []).map(
+          (raw: unknown) => fiberHitOfWire(raw as Record<string, unknown>),
+        )
+        const fileHits = (Array.isArray(files.hits) ? files.hits : []).map(
+          (raw: unknown) => fileHitOfWire(raw as Record<string, unknown>),
+        )
+        setState({ loading: false, error: null, fiberHits, fileHits })
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        const msg = (err as { message?: string })?.message ?? String(err)
+        console.error('[FindHost] combined search failed:', msg)
+        setState({ loading: false, error: msg, fiberHits: [], fileHits: [] })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [query])
+
+  return state
+}
+
+function fiberHitOfWire(raw: Record<string, unknown>): CombinedFiberHit {
+  return {
+    kind: 'fiber',
+    id: String(raw.id ?? ''),
+    name: String(raw.name ?? raw.id ?? ''),
+    status: String(raw.status ?? 'open'),
+    fiberKind: String(raw.kind ?? 'task'),
+    outcome: typeof raw.outcome === 'string' ? raw.outcome : undefined,
+    snippet: typeof raw.snippet === 'string' ? raw.snippet : undefined,
+    originId: String(raw.originId ?? 'local'),
+    cityId: typeof raw.cityId === 'string' ? raw.cityId : undefined,
+    projectSlug: typeof raw.projectSlug === 'string' ? raw.projectSlug : undefined,
+    hostname: typeof raw.hostname === 'string' ? raw.hostname : undefined,
+    score: typeof raw.score === 'number' ? raw.score : 0,
+  }
+}
+
+function fileHitOfWire(raw: Record<string, unknown>): CombinedFileHit {
+  const type = raw.type === 'dir' ? 'dir' : 'file'
+  return {
+    kind: type,
+    fullPath: String(raw.fullPath ?? ''),
+    relativePath: String(raw.relativePath ?? ''),
+    name: String(raw.name ?? ''),
+    cityId: String(raw.cityId ?? ''),
+    cityName: typeof raw.cityName === 'string' ? raw.cityName : undefined,
+    originId: String(raw.originId ?? 'local'),
+    score: typeof raw.score === 'number' ? raw.score : 0,
   }
 }
 

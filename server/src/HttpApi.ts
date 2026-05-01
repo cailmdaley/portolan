@@ -22,6 +22,7 @@ import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiKanban, type KanbanTarget } from './HttpApiKanban.js';
 import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
+import { HttpApiFilesSearch } from './HttpApiFilesSearch.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
@@ -290,6 +291,17 @@ export class HttpApi {
       return true;
     }
 
+    // /global-files-search — Stage E of constitution-portolan-navigation-
+    // layer. Cross-project file search (filename-only); the file-tree
+    // *browse* path stays on the WebSocket directoryListing protocol
+    // (WorkspaceBrowser). Built per-request like the global-search api so
+    // newly-pinned cities are visible without restart.
+    if (url.pathname === '/global-files-search' && req.method === 'GET') {
+      const filesApi = this.resolveFilesSearchApi();
+      await filesApi.handleSearch(url, res);
+      return true;
+    }
+
     if (url.pathname === '/kanban/transition' && req.method === 'POST') {
       const kanbanApi = this.resolveKanbanApi(url, res);
       if (!kanbanApi) return true; // error response already sent
@@ -544,6 +556,30 @@ export class HttpApi {
       feltHosts: localPins.length > 0 ? localPins : undefined,
       cities: localCities,
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+    });
+  }
+
+  /**
+   * Build an HttpApiFilesSearch scoped to the same pinned local cities as
+   * the global fiber search. Built per request so newly-pinned cities
+   * surface without a server restart, mirroring `resolveGlobalSearchApi`.
+   * Pulls `name` off the live CityLookup so warning rows can display the
+   * city's display name rather than its opaque id.
+   */
+  private resolveFilesSearchApi(): HttpApiFilesSearch {
+    const localCities = this.persistenceLookup
+      .getCities()
+      .filter((c) => c.originId === 'local')
+      .map((c) => {
+        const live = this.cityLookup.getCityById(c.id);
+        return {
+          id: c.id,
+          path: c.path,
+          name: live?.name,
+        };
+      });
+    return new HttpApiFilesSearch({
+      cities: localCities,
     });
   }
 

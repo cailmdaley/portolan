@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "express": "^4.18.2",
+    "fzy.js": "^0.4.1",
     "lightcone-ui-core": "file:../../LightconeResearch/lightcone-ui/packages/core",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",

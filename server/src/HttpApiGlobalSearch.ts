@@ -18,11 +18,15 @@
  * resolution so the click-through pivots vellum to the project-scoped slug
  * instead of the loom-relative id (which vellum's collection would 404 on).
  *
- * Score model for search mirrors HttpApiTapestry.handleSearch (the per-city
- * /api/search endpoint vellum's side-strip uses): name 100, id 80, tags 40,
- * outcome 20, body 5. Substring contains-match, lower-cased; FTS5 is left
- * as a follow-up (the constitution explicitly defers semantic/embedding
- * search).
+ * Score model for search **as of Stage C+E** is fzy-driven (the same
+ * fuzzy-finder ranking the fzf/Selecta family use): a per-field fzy score
+ * weighted to keep name+id matches dominant, with body/outcome contributing
+ * a damped tail so a typo in the title still surfaces a body hit. Replaces
+ * the older substring-contains scoring that mirrored HttpApiTapestry; the
+ * tradeoff is fewer false negatives on partial typos at the cost of
+ * occasionally surprising matches on very short queries (clamped via the
+ * positive-score-only filter — fzy returns -Infinity when no character in
+ * the needle appears in the haystack).
  */
 
 import type { ServerResponse } from 'http';
@@ -31,6 +35,11 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
+// fzy.js is a small ESM module shipped at the repo root (also a server-side
+// devDep). Both the frontend search merge in FindHost and this server-side
+// ranker go through the same scorer, so a fiber's wire score lines up with
+// what the file-search column produces — no reranking on the client.
+import { score as fzyScore, hasMatch } from 'fzy.js';
 
 // ============================================================================
 // Wire types
@@ -212,7 +221,11 @@ export class HttpApiGlobalSearch {
     if (!q.trim()) return [];
     const merged = await this.collectFibers();
     if (merged.length === 0) return [];
-    const needle = q.toLowerCase();
+    // fzy is case-insensitive internally but `makeSnippet` still does an
+    // explicit indexOf on a lower-cased body, so keep the lower-cased
+    // form for the snippet path. The score path uses the raw needle.
+    const needle = q.trim();
+    const lowerNeedle = needle.toLowerCase();
 
     const scored: Array<{ hit: GlobalSearchHit; score: number }> = [];
     for (const entry of merged) {
@@ -228,7 +241,7 @@ export class HttpApiGlobalSearch {
           kind: fiber.kind || 'task',
           tags: fiber.tags ?? [],
           outcome: fiber.outcome,
-          snippet: makeSnippet(fiber, needle),
+          snippet: makeSnippet(fiber, lowerNeedle),
           originId,
           cityId,
           projectSlug,
@@ -482,25 +495,58 @@ interface MergedEntry {
 }
 
 /**
- * Score a fiber against a lower-cased needle. Mirrors
- * HttpApiTapestry.handleSearch — name hits dominate body hits so the
- * dropdown ordering matches what the user expects ("constitution shuttle"
- * surfaces fibers literally named that, not bodies that mention both).
+ * Score a fiber against a needle. Each field is fzy-scored independently and
+ * the strongest hit dominates: name beats id beats tags beats outcome beats
+ * body, with the per-field weights compressing the long tail so a body hit
+ * never overtakes a name hit. fzy.score returns a real number for matches
+ * and `-Infinity` for no-match (or candidates >1024 chars); the body field
+ * is truncated before scoring so long fiber prose doesn't trip the cap.
+ *
+ * Returning 0 here means "not a match" — callers filter on `score > 0`. The
+ * needle is normalized lower-case (fzy is case-insensitive but the call
+ * sites lowercased before; keeping the same shape avoids a behaviour swap
+ * for callers).
  */
 function scoreFiber(fiber: Fiber, needle: string): number {
-  const name = (fiber.name || fiber.id).toLowerCase();
-  const id = fiber.id.toLowerCase();
-  const outcome = (fiber.outcome ?? '').toLowerCase();
-  const body = (fiber.body ?? '').toLowerCase();
-  const tags = (fiber.tags ?? []).join(' ').toLowerCase();
+  const name = fiber.name || fiber.id;
+  const id = fiber.id;
+  const outcome = fiber.outcome ?? '';
+  // fzy.score returns SCORE_MIN for haystacks > 1024 chars; clamp body
+  // before passing in so a long prose fiber still contributes the score
+  // of its first paragraph instead of getting filtered to zero.
+  const body = (fiber.body ?? '').slice(0, 1024);
+  const tags = (fiber.tags ?? []).join(' ');
 
-  let score = 0;
-  if (name.includes(needle)) score += 100;
-  if (id.includes(needle)) score += 80;
-  if (tags.includes(needle)) score += 40;
-  if (outcome.includes(needle)) score += 20;
-  if (body.includes(needle)) score += 5;
-  return score;
+  // Weights chosen so name still dominates (1.0) and body stays a tail
+  // contributor (0.05), matching the previous substring model's ordering.
+  // Adding the per-field scores rewards fibers that match in multiple
+  // places (name + tag, etc.); fzy's per-call score is bounded above by
+  // SCORE_MAX (Infinity) for exact-equality candidates, which we don't
+  // expect in practice but would short-circuit the sum.
+  let total = 0;
+  total += scoreField(name, needle, 1.0);
+  total += scoreField(id, needle, 0.8);
+  total += scoreField(tags, needle, 0.4);
+  total += scoreField(outcome, needle, 0.2);
+  total += scoreField(body, needle, 0.05);
+  return total;
+}
+
+/** Single fzy lookup with weight + match-gate. Returns 0 on no match so
+ *  scoreFiber's accumulator stays additive without dragging non-matching
+ *  fields down with `-Infinity`. */
+function scoreField(haystack: string, needle: string, weight: number): number {
+  if (!haystack) return 0;
+  if (!hasMatch(needle, haystack)) return 0;
+  const s = fzyScore(needle, haystack);
+  // SCORE_MAX (Infinity) only fires when needle === haystack (case-insensitive);
+  // collapse to a large finite number so the sum stays meaningful on the
+  // far tail. A name match of equal length is still "as good as it gets."
+  if (!Number.isFinite(s)) return weight * 100;
+  // fzy's typical match scores live in [-0.5, 1.0] per character; rescaling
+  // to a 0–100 band makes the additive weights legible alongside the old
+  // model (name ~100 ceiling).
+  return Math.max(0, weight * (s + 0.5) * 50);
 }
 
 /**

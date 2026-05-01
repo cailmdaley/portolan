@@ -27,12 +27,17 @@ import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
 import { getActivitySessionKey } from './runtime/FrontendActivityStore'
 import { FrontendStateSync, readUrlCityId, readUrlFiberSlug } from './runtime/FrontendStateSync'
+import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { CityHUD } from './ui/CityHUD'
 import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
-import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
+// GlobalSearchPalette retired in Stage C+E of constitution-portolan-
+// navigation-layer — `/` now opens vellum's Find tab, which carries the
+// cross-project fiber + file search the palette previously hosted. The
+// physical `src/ui/GlobalSearchPalette.ts` file stays on disk until
+// Stage I sweeps it; nothing in main.ts references it anymore.
 import { KanbanLaunchButton } from './ui/KanbanLaunchButton'
 import { RecentWorkerBar } from './ui/RecentWorkerBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
@@ -491,84 +496,6 @@ cityPanel.setOnViewClaims((city) => {
 // Setup playground viewer
 const playgroundViewer = new PlaygroundViewer()
 
-const globalSearchPalette = new GlobalSearchPalette({
-  onSelectCity: (city) => {
-    handleCityClick(city)
-  },
-  onSelectWorker: (session) => {
-    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
-    if (swarmPos) {
-      camera.focusAndZoom(swarmPos, 6, 0.95)
-    } else if (session.hex) {
-      camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
-    }
-    mapActions?.focusKittyTab(session.id)
-  },
-  // Stage 2 of constitution-portolan-navigation-layer — fiber matches in
-  // the cross-project search. The hit carries cityId + projectSlug for
-  // local-origin fibers (the click-through identifier vellum's collection
-  // expects); remote-origin hits carry only id/originId today and route
-  // through the bare-slug locate path until per-origin remote vellum
-  // navigation lands in a follow-up constitution.
-  onSelectFiber: (hit) => {
-    void openFiberFromSearch(hit)
-  },
-  searchFibers: async (query) => {
-    const host = window.location.hostname
-    const url = `http://${host}:4004/global-search?q=${encodeURIComponent(query)}&limit=20`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`global-search ${res.status}`)
-    const data = await res.json()
-    return Array.isArray(data?.hits) ? data.hits : []
-  },
-})
-
-/**
- * Open a fiber matched in the cross-project search palette.
- *
- *   - Local origin with cityId resolved → pivot vellum into that city's
- *     collection at the project-relative slug. Same surface a city-HUD
- *     fiber click already lands on.
- *   - Local origin without cityId (an unpinned felt host) → fall back to
- *     `resolveFiberCity` over `/fiber-locate`; if still not found, surface
- *     a console warning rather than silently dropping the click.
- *   - Remote origin → no per-origin vellum collection exists yet (the
- *     navigation layer's vellum-side cross-project rendering is deferred
- *     per the constitution's Scope §"Out"). Open vellum in file mode at
- *     the snapshot's md path, which the existing static-felt asset route
- *     can serve. Console-warn so the gap is discoverable until follow-up
- *     work lands.
- */
-async function openFiberFromSearch(hit: import('./ui/GlobalSearchPalette').FiberSearchHit): Promise<void> {
-  if (hit.originId === 'local') {
-    if (hit.cityId) {
-      const city = cities.find(c => c.id === hit.cityId)
-      if (city) {
-        openCityWorkspace(city, { initialSlug: hit.projectSlug ?? hit.id })
-        return
-      }
-    }
-    // Pinned-city path didn't resolve; let the server tell us which local
-    // city owns the slug (mirrors the URL-fragment fiber-nav path).
-    const slug = hit.projectSlug ?? hit.id
-    const owner = await resolveFiberCity(slug, cities)
-    if (owner) {
-      openCityWorkspace(owner, { initialSlug: slug })
-      return
-    }
-    console.warn('[search] could not resolve local fiber to a pinned city:', hit.id)
-    return
-  }
-  // Remote-origin hit. Per-origin vellum navigation is a follow-up; for
-  // now, log so the gap is observable. Drag-from-search → vellum-on-remote
-  // would land naturally once the agent ships per-fiber file-content.
-  console.warn(
-    `[search] remote-origin fiber click is not yet wired ` +
-    `(originId=${hit.originId}, id=${hit.id}). Follow-up work in the ` +
-    `navigation-layer constitution.`,
-  )
-}
-
 // Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
 // Every entry point (launch button, hotkey `k`, city HUD's "Open kanban
 // scoped to <city>" button) opens vellum-on-the-relevant-scope with the
@@ -624,6 +551,15 @@ let origins: ServerOrigin[] = []
 let selectedHex: { q: number; r: number } | null = null
 let mapActions: FrontendMapActions | null = null
 
+// Promise-wrapped WS-listDirectory client. FindHost's Files column (Stage E
+// of constitution-portolan-navigation-layer) needs an awaitable directory
+// listing API; the legacy CityHUDFileTree owns the WS-side listener but
+// dispatches into DOM mutation, not promises. The client here observes the
+// same `directoryListing` messages and drains pending FindHost promises
+// without consuming the message — CityHUDFileTree keeps seeing it too until
+// Stage I retires the HUD.
+const directoryListingClient = new DirectoryListingClient()
+
 // Register portolan state getters with the vellum mount layer so the
 // annotation-action handlers (send-to-worker, save-as-fiber) can resolve a
 // worker session and city path for any open file. See annotation-actions.
@@ -631,6 +567,9 @@ void vellumMountPromise.then(({ setPortolanMountContext }) => {
   setPortolanMountContext({
     getSessions: () => sessions,
     getCities: () => cities,
+    requestDirectoryListing: (cityId, path) =>
+      directoryListingClient.request(cityId, path),
+    openFile: (args) => openFile(args),
   })
 })
 
@@ -638,9 +577,19 @@ void vellumMountPromise.then(({ setPortolanMountContext }) => {
 let movingCityId: string | null = null
 
 const stateSync = new FrontendStateSync({
-  handlePanelMessage: (message) => cityPanel.handleMessage(message),
+  // Two consumers see every WS message: the directory-listing client
+  // (Stage E lazy-load promises) observes without consuming, then the
+  // legacy CityHUDFileTree path runs as before. The client returns false
+  // so the panel handler still gets the message; if the panel handler
+  // returns true we honor that. See DirectoryListingClient.handleMessage
+  // for the cooperate-don't-consume contract.
+  handlePanelMessage: (message) => {
+    directoryListingClient.handleMessage(message)
+    return cityPanel.handleMessage(message)
+  },
   onSocketOpen: (socket) => {
     cityPanel.setWebSocket(socket)
+    directoryListingClient.setWebSocket(socket)
   },
   onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge, isInitialState, urlCityId, urlFiberSlug }) => {
     cities = nextCities
@@ -839,8 +788,10 @@ const isEditableElement = (element: Element | null): boolean => {
  * matters; otherwise tinykeys handles modifier-state matching for us.
  *
  * Why each hotkey behaves the way it does is documented at its handler.
- * Common to all of them: bail when typing into an editable element, bail
- * when the legacy GlobalSearchPalette overlay is up.
+ * Common to all of them: bail when typing into an editable element. The
+ * Stage K-era `globalSearchPalette.isVisible()` check retired alongside
+ * the rest of the legacy `/` palette in Stage C+E — Find lives in
+ * vellum's tab now and `isEditableElement` covers the same focus case.
  * ────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -955,10 +906,16 @@ const handleSlashHotkey = (event: KeyboardEvent): void => {
  * Common preflight for the bubble-phase hotkeys (`v`, `k`, `n`, `t`).
  * Returns true to abort the hotkey (keep the event flowing untouched);
  * the caller handles `event.preventDefault()` itself when it acts.
+ *
+ * Stage K had a `globalSearchPalette.isVisible()` short-circuit here for
+ * the legacy `/` palette overlay; that palette retired in Stage C+E
+ * along with the rest of `GlobalSearchPalette` wiring (the search lives
+ * in vellum's Find tab now). The `isEditableElement` check still covers
+ * the case where focus is inside vellum's own search input — typing 'v'
+ * there shouldn't flip the modal mode.
  */
 const shouldSkipBubbleHotkey = (): boolean => {
   if (isEditableElement(document.activeElement)) return true
-  if (globalSearchPalette.isVisible()) return true
   return false
 }
 
@@ -1097,7 +1054,6 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     unbindSlashHotkey()
     unbindBubbleHotkeys()
-    globalSearchPalette.hide()
     recentWorkerBar.dispose()
     appRuntime.dispose()
   })
