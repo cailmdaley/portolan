@@ -292,7 +292,35 @@ export interface PortolanMountContext {
      *  needing to walk back into the full state graph. */
     lastActivity: number
   }>
-  getCities: () => Array<{ id: string; name?: string; path: string; originId: string }>
+  getCities: () => Array<{
+    id: string
+    name?: string
+    path: string
+    originId: string
+    /**
+     * Git repository status — populated by `GitStatusManager` and threaded
+     * through the WS state-sync. Optional because not every city is in a
+     * git repo (and the field may be absent before the first git poll).
+     * Used by `FindHost`'s Git section (Stage F of constitution-portolan-
+     * navigation-layer) to render branch / diff / last-commit per city
+     * without prop-threading. Shape mirrors `state/types.ts:GitStatus` —
+     * keep narrow and structural to avoid pulling the full type into
+     * vellum's module boundary.
+     */
+    gitStatus?: {
+      branch: string
+      ahead: number
+      behind: number
+      staged: { added: number; modified: number; deleted: number }
+      unstaged: { added: number; modified: number; deleted: number }
+      untracked: number
+      linesAdded: number
+      linesRemoved: number
+      lastCommitTime: number | null
+      lastCommitMessage: string | null
+      isRepo: boolean
+    }
+  }>
 }
 
 let mountContext: PortolanMountContext | null = null
