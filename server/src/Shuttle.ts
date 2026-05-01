@@ -165,21 +165,35 @@ export type DispatchState = 'idle' | 'running' | 'gone';
  * `agentForFiber()` predicate; defaults to claude when no override tag
  * is set. Threaded through to `shuttle-worker.sh --agent <agent>` so
  * the shell side can pick the right CLI invocation.
+ *
+ * `pi` was added 2026-05-01 as Stage 0 of [[constitution-shuttle-standalone]],
+ * which extracts Shuttle to a standalone Elixir application and uses Pi as
+ * the worker doing the reimplementation. The `pi` branch here is the
+ * minimum viable wiring to make Pi dispatchable through the existing TS
+ * Shuttle until the Elixir cutover lands.
  */
-export type DispatchAgent = 'claude' | 'codex';
+export type DispatchAgent = 'claude' | 'codex' | 'pi';
 
 /**
  * Map a fiber's tags to the dispatch agent. The constitution's
- * `codex` tag is the elegant equivalent of "use codex for this one";
- * `claude` is implicit (no tag needed) but accepted for symmetry.
+ * `codex` / `pi` tag is the elegant equivalent of "use codex/pi for
+ * this one"; `claude` is implicit (no tag needed) but accepted for
+ * symmetry.
  *
  * Tag-based rather than a new frontmatter field: tags are felt's
  * primary classification primitive, already discoverable on the
  * kanban card, no schema change. Mirrors how `draft` opts a
  * constitution out of dispatch — same surface, same shape.
+ *
+ * Precedence: `codex` wins over `pi` if both are present (no current
+ * fiber expects both; tie-breaking is defensive). The downstream
+ * Elixir Shuttle will replace this binary precedence with a record-
+ * shaped `agent:<name>` compound tag — see
+ * [[constitution-shuttle-standalone]].
  */
 export function agentForFiber(tags?: string[]): DispatchAgent {
   if (tags?.includes('codex')) return 'codex';
+  if (tags?.includes('pi')) return 'pi';
   return 'claude';
 }
 

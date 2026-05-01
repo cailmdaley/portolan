@@ -36,13 +36,32 @@
 #                      interactively in the tmux pane.
 #   codex            — codex wrapper from loom/shell-functions.sh;
 #                      injects WAKE.md + felt-hook output into
-#                      developer_instructions; we use `codex exec`
-#                      for non-interactive single-shot semantics
-#                      (see ~/.claude/skills/confer/SKILL.md on why
-#                      interactive codex in tmux is unreliable).
+#                      developer_instructions; runs interactively
+#                      with the dispatch prompt passed as the
+#                      positional initial-user-message arg, the same
+#                      shape ralph's codex backend uses. (Earlier
+#                      revisions used `codex exec` for non-interactive
+#                      single-shot semantics, but exec mode renders
+#                      without a TUI / text bar — fine for one-off
+#                      Codex-from-Claude calls in `confer`, jarring
+#                      when a human attaches to inspect a worker.
+#                      The "interactive codex in tmux is unreliable"
+#                      caveat from confer/SKILL.md was about `codex
+#                      resume` specifically, not interactive codex.)
 #                      Selection is tag-driven: a `codex` tag on the
 #                      constitution fiber tells Shuttle to dispatch
 #                      via codex.
+#   pi               — pi wrapper from loom/shell-functions.sh;
+#                      appends WAKE.md to the system prompt via
+#                      `--append-system-prompt`; runs interactively
+#                      with the dispatch prompt passed as the
+#                      positional initial-message arg (Pi's
+#                      `[messages...]` positional, same shape as
+#                      codex). Added 2026-05-01 as Stage 0 of
+#                      [[constitution-shuttle-standalone]] — Pi is
+#                      the worker doing the Elixir Shuttle
+#                      reimplementation. Selection is tag-driven via
+#                      `pi`.
 #
 # Contrast with `~/.claude/skills/felt/scripts/ralph`, which wraps
 # claude in a `while ... status:open|active` respawn loop. Shuttle
@@ -77,9 +96,9 @@ while (( $# )); do
 done
 
 case "$AGENT" in
-    claude|codex) ;;
+    claude|codex|pi) ;;
     *)
-        echo "shuttle-worker: unknown --agent '$AGENT' (expected claude|codex)" >&2
+        echo "shuttle-worker: unknown --agent '$AGENT' (expected claude|codex|pi)" >&2
         exit 2
         ;;
 esac
@@ -170,12 +189,26 @@ case "$AGENT" in
         ;;
     codex)
         # codex wrapper (loom/shell-functions.sh) injects WAKE.md +
-        # felt-hook output into developer_instructions. `codex exec` is
-        # non-interactive (interactive codex in tmux is unreliable per
-        # confer/SKILL.md), single-shot, exits when done. We pass the
-        # user message via stdin (`-`) so multi-line content stays
-        # clean.
-        codex exec --dangerously-bypass-approvals-and-sandbox $EXTRA_FLAGS - <<< "$PROMPT"
+        # felt-hook output into developer_instructions. Interactive
+        # codex (no `exec`) so the TUI renders normally — text bar,
+        # streaming response, the same shape ralph uses for its codex
+        # backend. The dispatch prompt is passed as the positional
+        # initial-user-message arg; codex auto-sends it on launch and
+        # the agent starts responding. The agent calls `kill \$PPID`
+        # to exit when it's done, same exit etiquette as the claude
+        # branch.
+        codex --dangerously-bypass-approvals-and-sandbox $EXTRA_FLAGS "$PROMPT"
+        ;;
+    pi)
+        # pi wrapper (loom/shell-functions.sh) appends WAKE.md to the
+        # system prompt via --append-system-prompt and runs pi
+        # interactively. The dispatch prompt is passed as the
+        # positional initial-message arg (Pi's `[messages...]`
+        # positional, same shape as codex). Pi defaults to provider
+        # `google`; per-fiber model selection isn't wired here yet —
+        # the Elixir cutover replaces tag-as-selector with
+        # `agent:<name>` compound tags resolving against config.
+        pi $EXTRA_FLAGS "$PROMPT"
         ;;
 esac
 

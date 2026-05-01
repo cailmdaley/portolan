@@ -573,10 +573,19 @@ describe('agentForFiber', () => {
     expect(agentForFiber(['codex'])).toBe('codex');
   });
 
+  it('selects pi when the fiber carries the `pi` tag', () => {
+    expect(agentForFiber(['constitution', 'pi'])).toBe('pi');
+    expect(agentForFiber(['pi'])).toBe('pi');
+  });
+
   it('defaults to claude when no opt-in tag is present', () => {
     expect(agentForFiber(['constitution'])).toBe('claude');
     expect(agentForFiber([])).toBe('claude');
     expect(agentForFiber(undefined)).toBe('claude');
+  });
+
+  it('codex wins when both `codex` and `pi` are present (defensive tie-break)', () => {
+    expect(agentForFiber(['codex', 'pi'])).toBe('codex');
   });
 });
 
@@ -640,8 +649,9 @@ created-at: 2026-04-30T00:00:00Z
     expect(byId.get('tests/claude-fiber')?.agent).toBe('claude');
 
     // Worker invocation receives the agent — the worker script branches
-    // on this to pick `codex exec` vs `claude` and to bundle WAKE.md
-    // appropriately.
+    // on this to pick interactive `codex` vs `claude` (both via their
+    // loom/shell-functions.sh wrappers, which bundle WAKE.md /
+    // developer_instructions appropriately).
     const spawnedById = new Map(spawned.map(s => [s.id, s.agent]));
     expect(spawnedById.get('tests/codex-fiber')).toBe('codex');
     expect(spawnedById.get('tests/claude-fiber')).toBe('claude');
