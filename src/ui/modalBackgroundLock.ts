@@ -1,9 +1,7 @@
 /**
  * Mark every body sibling of `modalContainer` as `inert` + `aria-hidden`,
- * so screen readers and keyboard focus can't reach the map, pinned cards,
- * or recent-worker bar while a full-viewport overlay is on top. The global
- * search palette is intentionally left interactive — it's the one overlay
- * we expect to layer over an open modal (Cmd-K-style navigation).
+ * so screen readers and keyboard focus can't reach the map or chrome bar
+ * while a full-viewport overlay is on top.
  *
  * Returns an unlock function that restores each sibling's prior `inert`
  * and `aria-hidden` state. Symmetric save/restore composes cleanly when
@@ -12,17 +10,19 @@
  * modal's own lock undisturbed.
  *
  * Without this, agent-browser snapshots (and screen readers) see every
- * city label, pinned-card region, and the "Recent workers" nav alongside
- * the modal — `aria-modal="true"` alone doesn't hide background siblings.
+ * city label and the chrome bar's worker birds alongside the modal —
+ * `aria-modal="true"` alone doesn't hide background siblings.
+ *
+ * (Pre-Stage-I, this helper also exempted the `GlobalSearchPalette`'s
+ * `gs-palette` / `gs-backdrop` siblings so it could layer over modals
+ * Cmd-K-style; the palette retired in Stage C+E and its disk file in
+ * Stage I, so the carve-out is gone.)
  */
 export function lockModalBackground(modalContainer: HTMLElement): () => void {
   const restorers: Array<() => void> = []
   for (const child of Array.from(document.body.children)) {
     if (child === modalContainer) continue
     if (!(child instanceof HTMLElement)) continue
-    // GlobalSearchPalette layers on top of modals (Cmd-K-style nav).
-    if (child.classList.contains('gs-palette')) continue
-    if (child.classList.contains('gs-backdrop')) continue
     const prevInert = child.inert
     const prevAriaHidden = child.getAttribute('aria-hidden')
     child.inert = true

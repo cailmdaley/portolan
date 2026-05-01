@@ -329,11 +329,11 @@ export interface PortolanMountContext {
   /**
    * Request a directory listing for `(cityId, path)`. Stage E of
    * constitution-portolan-navigation-layer: the Find dashboard's Files
-   * column lazy-loads each directory through the same WS protocol the
-   * legacy CityHUDFileTree uses. Promise-shaped wrapper lives in
+   * column lazy-loads each directory through the WS `listDirectory`
+   * protocol. Promise-shaped wrapper lives in
    * `runtime/DirectoryListingClient`; main.ts wires it into the WS pipe
-   * so listings observed by the panel handler also drain Find's pending
-   * promise map.
+   * (the only consumer post-Stage-I; the pre-Stage-I CityHUDFileTree
+   * co-handler retired with the rest of the HUD).
    *
    * Optional: callers (FindHost) degrade to "offline" state when the
    * context's request method isn't installed yet (e.g. before

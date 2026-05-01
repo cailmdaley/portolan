@@ -2,15 +2,17 @@
  * AppDialog — a thin Radix Dialog wrapper that should be the default surface
  * for *new* modals in portolan.
  *
- * Background: the legacy modals in this codebase (`NewWorkerDialog`,
- * `GlobalSearchPalette`, `PlaygroundViewer`, `KanbanLaunchButton`,
- * `KanbanModal`) are imperative DOM-driven classes that share the
- * hand-rolled `modalBackgroundLock` helper for body-scroll/focus locking.
- * They were not migrated to Radix in Stage K because each one has
- * idiosyncratic open-points scattered across the codebase and the
- * migration risk is much larger than the win — see the constitution's
- * "Lean on stable packages" decision (≥50 LOC saved, headless / TS-typed
- * / stable; opportunistic adoption only).
+ * Background: the surviving legacy modals in this codebase
+ * (`NewWorkerDialog`, `PlaygroundViewer`, `KanbanModal`) are imperative
+ * DOM-driven classes that share the hand-rolled `modalBackgroundLock`
+ * helper for body-scroll/focus locking. They were not migrated to Radix
+ * in Stage K because each one has idiosyncratic open-points scattered
+ * across the codebase and the migration risk is much larger than the win
+ * — see the constitution's "Lean on stable packages" decision (≥50 LOC
+ * saved, headless / TS-typed / stable; opportunistic adoption only).
+ * (The pre-Stage-I `GlobalSearchPalette` and `KanbanLaunchButton`
+ * retired alongside the CityHUD overlay; `RecentWorkerBar` retired in
+ * Stage H along with the legacy `t` hotkey.)
  *
  * What changes for *new* modals: instead of growing a fresh
  * `lockModalBackground`-style class, mount a React component that uses

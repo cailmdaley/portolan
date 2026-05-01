@@ -147,8 +147,8 @@ export function FindHost({
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   // Debounced query — only the trailing edge of typing triggers HTTP
   // fetches against /global-search + /global-files-search. 110ms matches
-  // the legacy GlobalSearchPalette debounce, which felt right for fast
-  // typers without leaving lag visible.
+  // the predecessor `/` palette's debounce (retired in Stage C+E), which
+  // felt right for fast typers without leaving lag visible.
   const debouncedQuery = useDebouncedValue(query.trim(), 110)
   const isSearching = debouncedQuery.length > 0
   const combined = useCombinedSearch(debouncedQuery)
@@ -699,7 +699,7 @@ function CityGroup({
       // If a fiber's `parentId` isn't in this group (e.g. parent is in a
       // sibling project, or hasn't been crawled), bubble it up to the
       // top level rather than dropping it. Mirrors the orphan-handling
-      // CityHUDContent does for closed parents.
+      // the pre-Stage-I HUD did for closed parents.
       const rawParent = fiber.parentId
       const parent = rawParent && presentIds.has(rawParent) ? rawParent : null
       if (!map.has(parent)) map.set(parent, [])
@@ -1316,12 +1316,12 @@ function displayFilePath(path: string): string {
 }
 
 /* ------------------------------------------------------------------------ *
- * GitSection — per-city git status (Stage F). Lifted from
- * `CityHUDHeader.renderGitDetail`. The HUD's per-city layout stacks here:
- * one row per local city, with the focused city pinned to the top. Global
- * scope shows the same stack (the constitution's "noisy is acceptable —
- * the user wanted it in"); city scope auto-collapses non-focused cities
- * behind their headers.
+ * GitSection — per-city git status (Stage F). The pre-Stage-I CityHUD
+ * carried a single-city git block in its header; this section lifts that
+ * shape to a stack, one row per local city, with the focused city pinned
+ * to the top. Global scope shows the full stack (the constitution's
+ * "noisy is acceptable — the user wanted it in"); city scope auto-
+ * collapses non-focused cities behind their headers.
  *
  * Remote cities don't carry gitStatus across the snapshot wire today, so
  * they're excluded from the section. If/when remote-snapshot wiring grows
@@ -1362,16 +1362,9 @@ function GitSection({
  * details (staged/unstaged/untracked + lines + last commit) live inside a
  * collapsible body so the section stays scannable across many cities.
  *
- * Visual choice: keep the inline-style React idiom from the rest of
- * FindHost rather than re-using `.hud-gd-*` classes from CityHUDHeader.
- * Reasons:
- *   - The HUD CSS lives in index.html and styles a fixed-position panel;
- *     rendering inside vellum's modal would inherit overlay styling we
- *     don't want.
- *   - Find's color tokens (--text, --text-muted, --border-muted) and the
- *     HUD's (--ink-body, --ink-faded, --parchment-edge) overlap in intent
- *     but use different identifiers; matching FindHost's existing palette
- *     keeps the section visually coherent with Fibers above it.
+ * Visual choice: inline-style React idiom matching the rest of FindHost.
+ * (The pre-Stage-I CityHUD git block used `.hud-gd-*` classes in
+ * index.html; that styling retired with the HUD.)
  */
 function GitCityRow({
   city,

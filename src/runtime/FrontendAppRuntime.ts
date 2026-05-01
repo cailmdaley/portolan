@@ -4,7 +4,6 @@ import type { Camera } from '../render/Camera'
 import type { ZoneRenderer } from '../render/ZoneRenderer'
 import type { FrontendStateSync } from './FrontendStateSync'
 import type { MapInteractionController } from '../MapInteractionController'
-import type { CityHUD } from '../ui/CityHUD'
 import type { ContextMenu } from '../ui/ContextMenu'
 import type { NewWorkerDialog } from '../ui/NewWorkerDialog'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
@@ -18,13 +17,19 @@ interface FrontendAppRuntimeOptions {
   zoneRenderer: ZoneRenderer
   stateSync: FrontendStateSync
   mapInteractions: MapInteractionController
-  cityPanel: CityHUD
   contextMenu: ContextMenu
   newWorkerDialog: NewWorkerDialog
   playgroundViewer: PlaygroundViewer
   clearArtifactMediaCaches: () => void
   getCities: () => City[]
+  /** Re-render the workers surface — Stage I retired the CityHUD; the
+   *  surviving consumer is the chrome bar's worker-bird strip. Kept as a
+   *  hook because activity-event scheduling lives here. */
   updateWorkerHud: () => void
+  /** Whether the workers surface should be redrawn at all. Stage I — the
+   *  chrome bar is always visible, so this is effectively `() => true`;
+   *  kept for symmetry with the pre-Stage-I HUD-visibility gate, which a
+   *  future on-demand-render strategy could re-introduce. */
   isWorkerHudVisible: () => boolean
   applyMockState: (cities: City[], sessions: Session[]) => void
   /** Optional per-frame hook, called after scene render. Useful for DOM
@@ -75,7 +80,6 @@ export class FrontendAppRuntime {
     this.options.mapInteractions.dispose()
     window.removeEventListener('resize', this.onResize)
 
-    this.options.cityPanel.dispose()
     this.options.contextMenu.dispose()
     this.options.newWorkerDialog.dispose()
     this.options.playgroundViewer.dispose()

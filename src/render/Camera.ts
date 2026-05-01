@@ -118,8 +118,11 @@ export class Camera {
     // would eat their wheel and the map would zoom instead.
     this.wheelHandler = (e: WheelEvent) => {
       const target = e.target as HTMLElement
+      // Stage I — `#city-panel` and `.hud-pane` retired with the CityHUD
+      // overlay; the surviving scrollable surfaces are vellum's modal
+      // (workspace + scrim) and the kanban modal.
       if (target.closest(
-        '#city-panel, .hud-pane, .vellum-modal-scrim, .vellum-workspace-modal-container, .kbn-modal'
+        '.vellum-modal-scrim, .vellum-workspace-modal-container, .kbn-modal'
       )) return
       e.preventDefault()
       e.stopPropagation()

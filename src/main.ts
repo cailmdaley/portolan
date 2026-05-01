@@ -29,19 +29,16 @@ import { getActivitySessionKey } from './runtime/FrontendActivityStore'
 import { FrontendStateSync, readUrlCityId, readUrlFiberSlug } from './runtime/FrontendStateSync'
 import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
-import { CityHUD } from './ui/CityHUD'
 import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
-// GlobalSearchPalette retired in Stage C+E of constitution-portolan-
-// navigation-layer — `/` now opens vellum's Find tab, which carries the
-// cross-project fiber + file search the palette previously hosted. The
-// physical `src/ui/GlobalSearchPalette.ts` file stays on disk until
-// Stage I sweeps it; nothing in main.ts references it anymore.
-// Stage H of constitution-portolan-navigation-layer: MapChromeBar replaces
-// the predecessor `KanbanLaunchButton` + `RecentWorkerBar` widgets with a
-// single thin Civ-style chrome bar at the top of the map. The two source
-// files retire alongside this rewire — they're no longer imported anywhere.
+// Stage H of constitution-portolan-navigation-layer: MapChromeBar is the
+// only persistent UI on top of the map (vellum launch + V/K/F chips +
+// worker birds + glance + awaiting-review badge); it replaced the
+// predecessor `KanbanLaunchButton` + `RecentWorkerBar` widgets in Stage H,
+// and the CityHUD overlay + `GlobalSearchPalette` retired alongside it in
+// Stage I. The map now shows just geography + this bar; per-city detail
+// lives entirely in vellum's Find tab.
 import { MapChromeBar } from './ui/MapChromeBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
@@ -109,9 +106,12 @@ const camera = new Camera(canvas, canvasOverlay)
 const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 
 // Last city the user landed on (sprite click, label click, hash nav, deep
-// link). Used for hotkey fallbacks (`t` after the HUD has been hidden) and
-// nothing else — there's no per-city pin set to load anymore so the concept
-// has narrowed from "pinned city" to "most-recently-focused city."
+// link). Drives the v/k hotkeys' "act on the focused city" semantics and
+// the chrome bar's launch-button fallback. Stage I of the navigation-layer
+// constitution made this the *only* notion of focus — the CityHUD overlay
+// retired, so a hex click sets `lastFocusedCityId` and moves the camera
+// and that's it; no panel is summoned. Stage J will round-trip this
+// through the URL fragment.
 let lastFocusedCityId: string | null = null
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
@@ -149,8 +149,8 @@ zoneRenderer.setWorkerLabelHoverHandlers(
   }
 )
 
-// Wire up city label click handler (needed for remote cities without sprites)
-// Uses handleCityClick defined below (after cityPanel initialization)
+// Wire up city label click handler (needed for remote cities without sprites).
+// Uses handleCityClick defined below.
 zoneRenderer.setCityLabelClickHandler((cityId) => {
   const city = cities.find(c => c.id === cityId)
   if (city) handleCityClick(city)
@@ -158,9 +158,6 @@ zoneRenderer.setCityLabelClickHandler((cityId) => {
 
 // Provide camera's screen-to-world conversion for accurate drag
 zoneRenderer.setScreenToWorldConverter((x, y) => camera.screenToWorld(x, y))
-
-// Setup city HUD (corner-anchored widgets, replaces CityPanel)
-const cityPanel = new CityHUD()
 
 // Resolve a URL city token (`#city=X` / `?city=X`) to a City. Tokens are
 // either opaque ids (from copy-link affordances) or human-readable names (what
@@ -180,7 +177,11 @@ function resolveCityFromUrlId(urlCityId: string): City | null {
   ) ?? byName[0]
 }
 
-// Shared handler for city clicks (used by sprite click and label click)
+// Shared handler for city clicks (used by sprite click and label click).
+// Stage I — hex click only sets focus + moves the camera. The CityHUD
+// overlay retired; per-city detail lives in vellum's Find tab now (open
+// with `/` or the chrome bar's F chip), and `v` / `k` open
+// narrative / kanban scoped to the focused city.
 function handleCityClick(city: City): void {
   selectedHex = city.hex
   lastFocusedCityId = city.id
@@ -191,9 +192,6 @@ function handleCityClick(city: City): void {
 
   if (city.isDormant && city.originId !== 'local') {
     void mapActions?.activateRemoteCity(city)
-  } else {
-    cityPanel.show(city)
-    cityPanel.updateWorkers(sessions)
   }
 }
 
@@ -511,42 +509,18 @@ zoneRenderer.setWorkerFileClickHandler((fullPath, originId, _workerId) => {
   openFile({ path: fullPath, originId, cityId: city?.id })
 })
 
-// HUD file/fiber click → vellum modal. Fiber paths land in the workspace
-// modal at that fiber's slug; everything else lands in file mode. The
-// previous floating-card spawn path retired with
-// [[constitution-remove-floating-cards]].
-cityPanel.setOnOpenFile((fullPath, originId, _cityPath, cityId, line) => {
-  const city = cities.find(c => c.id === cityId)
-  if (!city) return
-  const fiberMatch = /\/\.felt\/([^/]+)\/\1\.md$/.exec(fullPath)
-  if (fiberMatch) {
-    cityPanel.hide()
-    openCityWorkspace(city, { initialSlug: fiberMatch[1] })
-    return
-  }
-  openFile({ path: fullPath, originId, cityId: city.id, jumpToLine: line })
-})
-
 // Setup context menu
 const contextMenu = new ContextMenu()
 
 // Setup new worker dialog
 const newWorkerDialog = new NewWorkerDialog()
 
-// Wire up new worker dialog to city panel
-cityPanel.setNewWorkerDialog(newWorkerDialog)
-
-// Wire up worker click from city HUD
-cityPanel.setOnFocusWorker((sessionId) => {
-  mapActions?.focusKittyTab(sessionId)
-})
-
-cityPanel.setOnViewClaims((city) => {
-  cityPanel.hide()
-  openCityWorkspace(city)
-})
-
-// Setup playground viewer
+// Setup playground viewer. Stage I — `playgroundViewer.show(city)` is
+// reached via the deep-press affordance in `MapInteractionController`
+// (force-click / two-finger-press on a city hex with `hasPlaygrounds` and
+// no claims). Previously also wired through the CityHUD's "View
+// Playgrounds" button, retired in this stage; the deep-press is the
+// surviving primary affordance until a Playgrounds row lands in Find.
 const playgroundViewer = new PlaygroundViewer()
 
 // Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
@@ -616,7 +590,6 @@ function openLastView(): void {
   // Default and `lastVellumMode === 'narrative'` both land on
   // narrative-on-focused-city.
   if (focusedCity) {
-    cityPanel.hide()
     openCityWorkspace(focusedCity, { initialMode: lastVellumMode === 'find' ? 'find' : 'narrative' })
   }
 }
@@ -628,21 +601,6 @@ commitVellumMode = (mode) => {
   mapChromeBar.syncMode(mode)
   if (mode) lastVellumMode = mode
 }
-
-// Wire up View Playgrounds button
-cityPanel.setOnViewPlaygrounds((city) => {
-  playgroundViewer.show(city)
-})
-
-// City HUD's "Open kanban scoped to <city>" button — opens vellum-on-this-
-// city with the Kanban tab active at first paint. Hosted inside vellum's
-// chrome so the user can flip to Narrative/Delta in place without re-
-// opening anything. See ai-futures/portolan/vellum-reader/constitution-
-// vellum-kanban §"Stage 6".
-cityPanel.setOnViewKanban((city) => {
-  cityPanel.hide()
-  openCityWorkspace(city, { initialMode: 'kanban' })
-})
 
 // State
 let cities: City[] = []
@@ -698,13 +656,11 @@ function recordRecentTouch(args: {
   }).catch(err => console.debug('[recents] touch failed:', err))
 }
 
-// Promise-wrapped WS-listDirectory client. FindHost's Files column (Stage E
-// of constitution-portolan-navigation-layer) needs an awaitable directory
-// listing API; the legacy CityHUDFileTree owns the WS-side listener but
-// dispatches into DOM mutation, not promises. The client here observes the
-// same `directoryListing` messages and drains pending FindHost promises
-// without consuming the message — CityHUDFileTree keeps seeing it too until
-// Stage I retires the HUD.
+// Promise-wrapped WS-listDirectory client. FindHost's Files column
+// (Stage E of constitution-portolan-navigation-layer) needs an awaitable
+// directory listing API. The client observes the WS `directoryListing`
+// messages and drains pending FindHost promises. Stage I retired the
+// legacy `CityHUDFileTree` co-consumer, so this is the only handler now.
 const directoryListingClient = new DirectoryListingClient()
 
 // Register portolan state getters with the vellum mount layer so the
@@ -773,21 +729,15 @@ void vellumMountPromise.then(({ setPortolanMountContext }) => {
 let movingCityId: string | null = null
 
 const stateSync = new FrontendStateSync({
-  // Two consumers see every WS message: the directory-listing client
-  // (Stage E lazy-load promises) observes without consuming, then the
-  // legacy CityHUDFileTree path runs as before. The client returns false
-  // so the panel handler still gets the message; if the panel handler
-  // returns true we honor that. See DirectoryListingClient.handleMessage
-  // for the cooperate-don't-consume contract.
-  handlePanelMessage: (message) => {
-    directoryListingClient.handleMessage(message)
-    return cityPanel.handleMessage(message)
-  },
+  // Stage I — `DirectoryListingClient` is the only consumer of
+  // `directoryListing` messages; the CityHUDFileTree co-handler retired
+  // alongside the rest of the HUD. The panel-handler return value is
+  // informational only.
+  handlePanelMessage: (message) => directoryListingClient.handleMessage(message),
   onSocketOpen: (socket) => {
-    cityPanel.setWebSocket(socket)
     directoryListingClient.setWebSocket(socket)
   },
-  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge, isInitialState, urlCityId, urlFiberSlug }) => {
+  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge: _meetingBridge, isInitialState, urlCityId, urlFiberSlug }) => {
     cities = nextCities
     sessions = nextSessions
     origins = nextOrigins
@@ -801,11 +751,12 @@ const stateSync = new FrontendStateSync({
       }
     }
 
-    cityPanel.updateWorkers(sessions)
-    cityPanel.updateMeetingState(meetingBridge)
-    // Stage H — chrome bar replaces the predecessor RecentWorkerBar; same
-    // data feed (filters idle workers, ranks by lastActivity) plus a live
-    // working-count for the right-edge glance.
+    // Stage I — `meetingBridge` is still tracked in `FrontendStateSync`
+    // (so a future Meetings home can pick it up without a server-side
+    // change) but no UI surface renders it now that the HUD retired. The
+    // map chrome bar carries workers + glance only; meetings are an
+    // explicit known-orphaned affordance until either Find or the chrome
+    // bar grows a section for them.
     mapChromeBar.update(cities, sessions)
 
     if (!isInitialState || cities.length === 0) return
@@ -824,10 +775,10 @@ const stateSync = new FrontendStateSync({
 
     // `?city=X` / `#city=X` wins over most-recent-activity heuristic. Without
     // this, deep links opened the workspace but never ran handleCityClick —
-    // HUD stayed empty and pins never loaded until the user clicked the hex.
+    // the camera + lastFocusedCityId stayed pinned to whatever loaded first.
     // X may be a city id (opaque hash) or a city name (what the user sees in
-    // URLs and the HUD); match by id first, then by name, and prefer names
-    // with active sessions when multiple cities share a name. See
+    // URLs); match by id first, then by name, preferring names with active
+    // sessions when multiple cities share a name. See
     // hash-restore-does-not-select-city.
     const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
     const targetCity = urlCity || mostRecentCity || cities[0]
@@ -848,7 +799,6 @@ const stateSync = new FrontendStateSync({
       // targetCity's workspace without the slug if resolution fails so the
       // user still lands somewhere coherent. See
       // vellum-dogfood/url-fragment-fiber-nav.
-      cityPanel.hide()
       if (urlCity) {
         openCityWorkspace(urlCity, { initialSlug: urlFiberSlug })
       } else {
@@ -870,7 +820,6 @@ const stateSync = new FrontendStateSync({
         })
       }
     } else if (urlCity) {
-      cityPanel.hide()
       openCityWorkspace(urlCity)
     }
   },
@@ -886,11 +835,12 @@ const stateSync = new FrontendStateSync({
 
 // Mid-session hash navigation — `#city=X` / `#fiber=Y` re-runs the deep-link
 // resolution. Without this, pasting a hash URL into the address bar or hitting
-// browser back/forward changed `location.hash` but left the HUD, camera, and
-// workspace pinned to whatever was previously selected; only a full reload
-// (different path or query) actually routed the URL. Same flow as InitialFocus:
-// pick the city, click it (HUD + camera focus), and if a fiber slug is present
-// open the vellum workspace at it. See `hash-restore-does-not-select-city`.
+// browser back/forward changed `location.hash` but left the camera + workspace
+// pinned to whatever was previously selected; only a full reload (different
+// path or query) actually routed the URL. Same flow as InitialFocus: pick the
+// city, click it (camera focus + lastFocusedCityId), and if a fiber slug is
+// present open the vellum workspace at it. See
+// `hash-restore-does-not-select-city`.
 window.addEventListener('hashchange', () => {
   const urlCityId = readUrlCityId()
   const urlFiberSlug = readUrlFiberSlug()
@@ -910,7 +860,6 @@ window.addEventListener('hashchange', () => {
   }
   if (urlCity) handleCityClick(urlCity)
   if (urlFiberSlug) {
-    cityPanel.hide()
     if (urlCity) {
       openCityWorkspace(urlCity, { initialSlug: urlFiberSlug })
     } else {
@@ -924,7 +873,6 @@ window.addEventListener('hashchange', () => {
       })
     }
   } else if (urlCity) {
-    cityPanel.hide()
     openCityWorkspace(urlCity)
   }
 })
@@ -943,8 +891,15 @@ const mapInteractions = new MapInteractionController({
   handleCityClick,
   handleDeepCityPress: (city) => {
     handleCityClick(city)
+    // Stage I — deep-press is the surviving primary affordance for
+    // playgrounds (the CityHUD's "View Playgrounds" button retired). Cities
+    // with claims open vellum's narrative on the city; cities without
+    // claims (so the deep-press has no fiber graph to surface) fall to
+    // the playground viewer if they have one. The screening for
+    // `hasClaims || hasPlaygrounds` happens upstream in
+    // `MapInteractionController.onCanvasForceDown` — we only see cities
+    // that pass that gate.
     if (city.hasClaims) {
-      cityPanel.hide()
       openCityWorkspace(city)
     } else {
       playgroundViewer.show(city)
@@ -965,7 +920,6 @@ mapActions = new FrontendMapActions({
   newWorkerDialog,
   sendMessage: (message) => stateSync.send(message),
   getWebSocketState: () => stateSync.getWebSocketState(),
-  showCity: (city) => cityPanel.show(city),
 })
 
 const isEditableElement = (element: Element | null): boolean => {
@@ -982,26 +936,24 @@ const isEditableElement = (element: Element | null): boolean => {
  * Two declarative `tinykeys` binding maps: one at capture phase on
  * `document` for `/` (beats vellum's bubble-phase `/` handler that focuses
  * its in-collection thumb-index search), and one at bubble phase on
- * `window` for the rest (`v`, `k`, `n`, `t`) where there is no listener
+ * `window` for the rest (`v`, `k`, `n`) where there is no listener
  * conflict. The capture/bubble split is the only place phase still
  * matters; otherwise tinykeys handles modifier-state matching for us.
  *
  * Why each hotkey behaves the way it does is documented at its handler.
- * Common to all of them: bail when typing into an editable element. The
- * Stage K-era `globalSearchPalette.isVisible()` check retired alongside
- * the rest of the legacy `/` palette in Stage C+E — Find lives in
- * vellum's tab now and `isEditableElement` covers the same focus case.
+ * Common to all of them: bail when typing into an editable element. (The
+ * Stage K-era `globalSearchPalette.isVisible()` check retired in Stage C+E
+ * along with the legacy `/` palette; the HUD-visibility check retired in
+ * Stage I along with the rest of CityHUD.)
  * ────────────────────────────────────────────────────────────────────── */
 
 /**
- * Resolve "the city the hotkey should act on." Visible HUD wins; otherwise
- * fall back to the most-recently-focused city so the same key that just
- * closed the workspace can reopen it without first re-summoning the HUD.
- * See vellum-dogfood/t-key-needs-hud for the rationale.
+ * Resolve "the city the hotkey should act on." Stage I — the CityHUD
+ * retired, so this is just the most-recently-focused-city lookup. A hex
+ * click sets `lastFocusedCityId` (without summoning anything), and that's
+ * what `v` / `k` / `/` act on when no vellum is open.
  */
 const resolveFocusedCity = (): City | null => {
-  const visible = cityPanel.getCurrentCity()
-  if (visible) return visible
   if (!lastFocusedCityId) return null
   return cities.find(c => c.id === lastFocusedCityId) ?? null
 }
@@ -1082,7 +1034,6 @@ const handleSlashHotkey = (event: KeyboardEvent): void => {
   if (!handle) {
     const focusedCity = resolveFocusedCity()
     if (focusedCity) {
-      cityPanel.hide()
       openCityWorkspace(focusedCity, { initialMode: 'find' })
     } else {
       openGlobalFind()
@@ -1109,10 +1060,10 @@ const handleSlashHotkey = (event: KeyboardEvent): void => {
  *
  * Stage K had a `globalSearchPalette.isVisible()` short-circuit here for
  * the legacy `/` palette overlay; that palette retired in Stage C+E
- * along with the rest of `GlobalSearchPalette` wiring (the search lives
- * in vellum's Find tab now). The `isEditableElement` check still covers
- * the case where focus is inside vellum's own search input — typing 'v'
- * there shouldn't flip the modal mode.
+ * along with the rest of `GlobalSearchPalette` (the search lives in
+ * vellum's Find tab now). `isEditableElement` covers the remaining case:
+ * focus inside vellum's own search input — typing 'v' there shouldn't
+ * flip the modal mode.
  */
 const shouldSkipBubbleHotkey = (): boolean => {
   if (isEditableElement(document.activeElement)) return true
@@ -1141,17 +1092,24 @@ const handleNarrativeHotkey = (event: KeyboardEvent): void => {
   }
   const focusedCity = resolveFocusedCity()
   if (!focusedCity) return
-  cityPanel.hide()
   openCityWorkspace(focusedCity, { initialMode: 'narrative' })
 }
 
-/** `k` — global Kanban tab toggle. Independent of city/HUD focus. */
+/** `k` — Kanban tab toggle. Stage I — per-city scope follows from focus
+ *  (the chrome bar's K chip and this hotkey share semantics): a focused
+ *  city → K opens kanban scoped to it; no focused city → global. Mirrors
+ *  `v`'s focused-city-aware open path. */
 const handleKanbanHotkey = (event: KeyboardEvent): void => {
   if (shouldSkipBubbleHotkey()) return
   event.preventDefault()
   const handle = activeWorkspaceHandle
   if (!handle) {
-    openGlobalKanban()
+    const focusedCity = resolveFocusedCity()
+    if (focusedCity) {
+      openCityWorkspace(focusedCity, { initialMode: 'kanban' })
+    } else {
+      openGlobalKanban()
+    }
     return
   }
   if (handle.getMode() === 'kanban') {
@@ -1165,14 +1123,16 @@ const handleKanbanHotkey = (event: KeyboardEvent): void => {
   }
 }
 
-/** `n` — new worker for the visible-HUD city. Requires HUD visibility on
- *  purpose: the prompt has no obvious target otherwise. */
+/** `n` — new worker for the focused city. Stage I — without the HUD,
+ *  "focused city" is just `lastFocusedCityId` (set by every hex / label
+ *  click). Bails when no city has been focused yet — the prompt has no
+ *  obvious target otherwise. */
 const handleNewWorkerHotkey = (event: KeyboardEvent): void => {
   if (shouldSkipBubbleHotkey()) return
-  const visibleCity = cityPanel.getCurrentCity()
-  if (!visibleCity || !cityPanel.isVisible()) return
+  const focusedCity = resolveFocusedCity()
+  if (!focusedCity) return
   event.preventDefault()
-  void mapActions?.promptNewWorker(visibleCity)
+  void mapActions?.promptNewWorker(focusedCity)
 }
 
 // Stage H — `t` is retired. `v` carries the open / flip-to / close
@@ -1200,14 +1160,18 @@ const appRuntime = new FrontendAppRuntime({
   zoneRenderer,
   stateSync,
   mapInteractions,
-  cityPanel,
   contextMenu,
   newWorkerDialog,
   playgroundViewer,
   clearArtifactMediaCaches,
   getCities: () => cities,
-  updateWorkerHud: () => cityPanel.updateWorkers(sessions),
-  isWorkerHudVisible: () => cityPanel.isVisible(),
+  // Stage I — workers used to be re-rendered onto the HUD whenever a
+  // worker activity event arrived. Without the HUD, the chrome bar's
+  // worker-bird strip is the only worker UI; it picks up changes via the
+  // `mapChromeBar.update(cities, sessions)` call in the onStateChange
+  // path above, which already runs whenever sessions change.
+  updateWorkerHud: () => mapChromeBar.update(cities, sessions),
+  isWorkerHudVisible: () => true,
   applyMockState: (mockCities, mockSessions) => {
     cities = mockCities
     sessions = mockSessions
@@ -1225,7 +1189,6 @@ const appRuntime = new FrontendAppRuntime({
 installFrontendRuntimeDiagnostics({
   renderer,
   zoneRenderer,
-  cityPanel,
   playgroundViewer,
   getArtifactMediaCacheStats,
   getRuntimeDisposed: () => appRuntime.isDisposed(),

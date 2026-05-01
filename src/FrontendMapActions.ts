@@ -5,20 +5,17 @@ interface FrontendMapActionsOptions {
   newWorkerDialog: NewWorkerDialog
   sendMessage: (message: unknown) => boolean
   getWebSocketState: () => 'missing' | 'connecting' | 'open' | 'closing' | 'closed'
-  showCity: (city: City) => void
 }
 
 export class FrontendMapActions {
   private newWorkerDialog: NewWorkerDialog
   private sendMessage: (message: unknown) => boolean
   private getWebSocketState: () => 'missing' | 'connecting' | 'open' | 'closing' | 'closed'
-  private showCity: (city: City) => void
 
   constructor(options: FrontendMapActionsOptions) {
     this.newWorkerDialog = options.newWorkerDialog
     this.sendMessage = options.sendMessage
     this.getWebSocketState = options.getWebSocketState
-    this.showCity = options.showCity
   }
 
   async promptNewWorker(city: City): Promise<void> {
@@ -84,12 +81,18 @@ export class FrontendMapActions {
 
       const result = await response.json()
 
-      if (response.ok) {
-        this.showCity(city)
-      } else {
+      if (!response.ok) {
         console.error(`[Activate] Failed: ${result.error}`)
         alert(`Failed to activate remote city: ${result.error}`)
+        return
       }
+      // Stage I — pre-Stage-I we summoned the CityHUD on success
+      // (`this.showCity(city)`); without the HUD there's no overlay to
+      // bring up. The hex click that triggered activation already moved
+      // the camera + set `lastFocusedCityId`, and the now-active city
+      // re-arrives via the next `onStateChange` snapshot, so the user's
+      // next `v` / `k` / `/` lands on the activated city correctly.
+      void city
     } catch (err) {
       console.error('[Activate] Network error:', err)
       alert('Failed to connect to server')

@@ -2,14 +2,13 @@
  * DirectoryListingClient — promise-shaped wrapper around the WebSocket
  * `listDirectory` ↔ `directoryListing` round-trip used by `WorkspaceBrowser`.
  *
- * Stage E of constitution-portolan-navigation-layer adds a *cross-project*
+ * Stage E of constitution-portolan-navigation-layer added a *cross-project*
  * Files column to the Find dashboard; that column is a `react-arborist`
- * virtualized tree that lazy-loads each directory on expand. The existing
- * WS protocol is fine for the request, but the client side of it lived
- * inside `CityHUDFileTree` (event-handler shape, mutates DOM in place).
- * For Find we want the *same* messages exchanged but exposed through a
- * plain `requestDirectoryListing(cityId, path) => Promise<...>` API the
- * React tree can `await`.
+ * virtualized tree that lazy-loads each directory on expand. This client
+ * exposes the WS protocol through a plain
+ * `requestDirectoryListing(cityId, path) => Promise<...>` API the React
+ * tree can `await`. (Stage I retired the legacy `CityHUDFileTree`
+ * event-handler-shaped consumer of the same protocol.)
  *
  * Shape mirrors the protocol in `MessageRouter`:
  *
@@ -24,11 +23,16 @@
  *
  * Lives next to `FrontendStateSync` because it observes the same WS
  * messages; the wiring in `main.ts` plumbs each `directoryListing` through
- * `client.handleMessage` *as well as* the panel's own handler so legacy
- * `CityHUDFileTree` keeps working until Stage I retires it.
+ * `client.handleMessage` (the only consumer post-Stage-I).
  */
 
-import type { DirectoryEntry } from '../ui/hud-types'
+/** Directory entry shape returned by the server's `directoryListing`
+ *  message. Lives here because this module is the only consumer post-Stage-I
+ *  (formerly shared with `CityHUDFileTree` via `src/ui/hud-types.ts`). */
+export interface DirectoryEntry {
+  name: string
+  type: 'file' | 'dir'
+}
 
 export interface DirectoryListingResult {
   entries: DirectoryEntry[]
@@ -93,13 +97,11 @@ export class DirectoryListingClient {
 
   /**
    * Receive a server message. Returns true if it was a `directoryListing`
-   * we cared about (so the caller can stop walking other handlers); false
-   * lets `FrontendStateSync` continue dispatching to the panel handlers.
-   *
-   * **Doesn't consume**: even if we resolve our pending promises, we don't
-   * signal "handled" because `CityHUDFileTree` still wants to see the same
-   * message until Stage I retires the HUD. Returning `false` is the
-   * cooperate-with-others signal.
+   * we resolved against; false otherwise. The `main.ts` wiring previously
+   * cooperated with `CityHUDFileTree` (which also wanted to see the same
+   * message) by deliberately *not* consuming — Stage I retired that
+   * second consumer, so we're now the only handler and the boolean is
+   * effectively informational.
    */
   handleMessage(message: unknown): boolean {
     const msg = message as Partial<DirectoryListingMessage>
@@ -114,8 +116,7 @@ export class DirectoryListingClient {
       error: msg.error,
     }
     for (const resolve of waiters) resolve(result)
-    // Fall through — see method docstring.
-    return false
+    return true
   }
 
   /**

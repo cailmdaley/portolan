@@ -1,6 +1,5 @@
 import type { WebGLRenderer } from 'three'
 import type { ZoneRenderer } from '../render/ZoneRenderer'
-import type { CityHUD } from '../ui/CityHUD'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
 import type { getArtifactMediaCacheStats } from '../ui/ArtifactMedia'
@@ -51,7 +50,10 @@ export interface FrontendRuntimeDiagnostics {
   }
   artifactMediaCaches: ReturnType<typeof getArtifactMediaCacheStats>
   views: {
-    cityHud: ReturnType<CityHUD['getRuntimeStats']>
+    /** Stage I — the CityHUD overlay retired, so its `getRuntimeStats()`
+     *  contribution went with it. Kept the wrapper struct (and the
+     *  `playground` field inside) so consumers reading `views.*` keep
+     *  finding what they expect rather than getting an undefined. */
     playground: ReturnType<PlaygroundViewer['getRuntimeStats']>
   }
 }
@@ -66,7 +68,6 @@ interface ActivityBufferStats {
 interface InstallFrontendRuntimeDiagnosticsOptions {
   renderer: WebGLRenderer
   zoneRenderer: ZoneRenderer
-  cityPanel: CityHUD
   playgroundViewer: PlaygroundViewer
   getArtifactMediaCacheStats: () => ReturnType<typeof getArtifactMediaCacheStats>
   getRuntimeDisposed: () => boolean
@@ -146,7 +147,6 @@ export function installFrontendRuntimeDiagnostics(
       },
       artifactMediaCaches: options.getArtifactMediaCacheStats(),
       views: {
-        cityHud: options.cityPanel.getRuntimeStats(),
         playground: options.playgroundViewer.getRuntimeStats(),
       },
     }
