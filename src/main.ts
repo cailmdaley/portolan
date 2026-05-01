@@ -26,9 +26,10 @@ import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
 import { getActivitySessionKey } from './runtime/FrontendActivityStore'
-import { FrontendStateSync, readUrlCityId, readUrlFiberSlug } from './runtime/FrontendStateSync'
+import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
+import { UrlFragmentSync, SCOPE_GLOBAL, type UrlState, type VellumMode } from './runtime/UrlFragment'
 import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
@@ -110,9 +111,99 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 // the chrome bar's launch-button fallback. Stage I of the navigation-layer
 // constitution made this the *only* notion of focus — the CityHUD overlay
 // retired, so a hex click sets `lastFocusedCityId` and moves the camera
-// and that's it; no panel is summoned. Stage J will round-trip this
-// through the URL fragment.
+// and that's it; no panel is summoned. Stage J round-trips this through
+// the URL fragment via `pushCurrentUrl()` below.
 let lastFocusedCityId: string | null = null
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Stage J — URL-fragment-stable navigation
+ *
+ * The four axes that round-trip through `#…` (per
+ * [[ai-futures/portolan/design/constitution-portolan-navigation-layer]]
+ * §"URL-stable navigation"):
+ *
+ *   - `cityId`     ← `lastFocusedCityId` (above)
+ *   - `mode`       ← which vellum tab is open, or absent if vellum is closed
+ *   - `fiberSlug`  ← active fiber (narrative mode) or `null` for city index
+ *   - `filePath`   ← active file (narrative mode in file mode)
+ *   - `scopeCityId`← Find/Kanban scope when it diverges from `cityId`
+ *                    (`SCOPE_GLOBAL` for explicit global with a focused city)
+ *
+ * Every open / close / scope-change updates these vars and calls
+ * `pushCurrentUrl()`, which builds the canonical state and either
+ * `pushState`s or no-ops (when the URL already matches). `popstate` /
+ * `hashchange` flow through `applyUrlState()` to converge the UI.
+ *
+ * Suppression of incidental URL writes during convergence is owned by
+ * `UrlFragmentSync.runSuppressed`; everything in this module just calls
+ * `pushCurrentUrl()` and lets the sync layer decide.
+ * ────────────────────────────────────────────────────────────────────── */
+const urlSync = new UrlFragmentSync()
+let activeWorkspaceFiberSlug: string | null = null
+let activeWorkspaceFilePath: string | null = null
+/** Vellum scope tracker — distinct from `activeWorkspaceCityId` because
+ *  Find tab lets the user re-scope in place without changing the modal's
+ *  outer cityId. `null` = scope inherits from `lastFocusedCityId`;
+ *  `SCOPE_GLOBAL` = explicit global override; cityId string = explicit
+ *  city scope. Drives the `scope` URL param. */
+let activeWorkspaceScopeOverride: string | typeof SCOPE_GLOBAL | null = null
+
+/** Stage J — when the open paths (`openCityWorkspace` etc.) close the
+ *  current modal as a prelude to opening a fresh one, `handleWorkspaceClosed`
+ *  fires synchronously and would push a (transient) "vellum closed" URL
+ *  entry between the old and new state. We set this flag around the
+ *  close so the transient push is skipped; the subsequent open's
+ *  commitVellumMode/pushCurrentUrl writes the final state directly.
+ *
+ *  Genuine closes (Escape key, × button, `v`/`k` toggle-close) don't
+ *  flip the flag, so handleWorkspaceClosed pushes the closed-state URL
+ *  as expected. */
+let modalReopenInProgress = false
+
+/** Stage J — whether vellum is *intended* to be open. Flipped true at the
+ *  start of every open path (synchronously, before the async vellum-mount
+ *  promise resolves) and false in `handleWorkspaceClosed`. This decouples
+ *  URL-encoding-of-mode from the live `activeWorkspaceHandle` reference
+ *  (which is null during the async window between open-call and mount),
+ *  so commitVellumMode's URL push during that window still emits `mode`.
+ *
+ *  `lastVellumMode` continues to track the most-recent-tab semantic for
+ *  the chrome bar's launch button — it's NOT cleared on close, so back-
+ *  via-launch-button restores the last tab. `vellumOpenIntent` is the
+ *  is-currently-open signal; the two are distinct on purpose. */
+let vellumOpenIntent = false
+
+/** Build the canonical URL state from the live module-level vars. Called
+ *  by `pushCurrentUrl` and also by `applyUrlState` for diffing. The "is
+ *  vellum open" check uses `vellumOpenIntent` rather than the live
+ *  `activeWorkspaceHandle` so URL writes during the async mount window
+ *  (between open-call and mount-completion) still emit `mode`. */
+function buildCurrentUrlState(): UrlState {
+  const state: UrlState = {}
+  if (lastFocusedCityId) state.cityId = lastFocusedCityId
+
+  if (vellumOpenIntent && lastVellumMode) {
+    state.mode = lastVellumMode
+    // Only narrative mode carries fiber/file in URL; in kanban/find the
+    // fiber/file vars stay set across mode flips (so `v` after `k` can
+    // land back on the same fiber) but they're not the user-visible nav
+    // state for those tabs.
+    if (lastVellumMode === 'narrative') {
+      if (activeWorkspaceFiberSlug) state.fiberSlug = activeWorkspaceFiberSlug
+      if (activeWorkspaceFilePath) state.filePath = activeWorkspaceFilePath
+    }
+    if (activeWorkspaceScopeOverride) state.scopeCityId = activeWorkspaceScopeOverride
+  }
+  return state
+}
+
+/** Push the URL fragment to match the current module-state. No-op when
+ *  the URL already matches (e.g., redundant `commitVellumMode('find')` on
+ *  in-place tab flips). Suppressed during popstate / hashchange
+ *  convergence so the converging open paths don't double-push. */
+function pushCurrentUrl(): void {
+  urlSync.push(buildCurrentUrlState())
+}
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)
 zoneRenderer.setWorkerClickHandler((workerId, _tmuxSession) => {
@@ -184,6 +275,7 @@ function resolveCityFromUrlId(urlCityId: string): City | null {
 // narrative / kanban scoped to the focused city.
 function handleCityClick(city: City): void {
   selectedHex = city.hex
+  const cityChanged = lastFocusedCityId !== city.id
   lastFocusedCityId = city.id
 
   // Focus on city and zoom to detail level
@@ -193,6 +285,13 @@ function handleCityClick(city: City): void {
   if (city.isDormant && city.originId !== 'local') {
     void mapActions?.activateRemoteCity(city)
   }
+
+  // Stage J — push the new focused city into the URL fragment so back/
+  // forward navigates the camera. Skip the no-op case so a `v` after a
+  // hex-click on the same city doesn't sediment two identical history
+  // entries; pushCurrentUrl already short-circuits state-equal writes,
+  // but the explicit guard documents the intent.
+  if (cityChanged) pushCurrentUrl()
 }
 
 // `commitVellumMode` is reassigned to the real implementation below once
@@ -230,13 +329,22 @@ function openFile(args: OpenFileArgs): void {
   // File mode is single-instance, same lifecycle as the fiber-side workspace.
   // Reuse the workspace open-token so a rapid file-then-fiber sequence (or
   // vice versa) keeps only the latest modal mounted.
+  modalReopenInProgress = true
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
+  modalReopenInProgress = false
+  vellumOpenIntent = true
   activeWorkspaceCityId = args.cityId ?? null
+  // Stage J — track the file path and clear fiber/scope so the URL
+  // fragment reflects file mode (`mode=narrative&file=…`).
+  activeWorkspaceFilePath = args.path
+  activeWorkspaceFiberSlug = null
+  activeWorkspaceScopeOverride = null
   // Stage H — file mode lives in the narrative slot (vellum disables
   // workspace + delta tabs in file mode). Light the V chip so the chrome
   // bar reflects the current reading surface.
   commitVellumMode('narrative')
+  pushCurrentUrl()
   const myToken = ++workspaceOpenToken
   // Stage G recents — every file open is a human view. Skips silently if
   // there's no resolved city (file system path with no owning city);
@@ -310,12 +418,35 @@ interface OpenCityWorkspaceOpts {
    *  `'find'` to land on the Find tab (Stage A of the navigation-layer
    *  constitution). */
   initialMode?: 'narrative' | 'kanban' | 'find' | 'delta'
+  /** Stage J — initial Find/Kanban scope override. Used by the URL applier
+   *  when restoring a `&scope=…` deep link with mode=find/kanban: e.g., the
+   *  user was on Find at city X, scoped to global → URL `mode=find&city=X
+   *  &scope=global` → reload calls `openCityWorkspace(X, { initialMode:
+   *  'find', initialScope: SCOPE_GLOBAL })`, and the FindHost mounts with
+   *  scope=global rather than inheriting cityId. Plumbed down to FindHost
+   *  via the `findInitialScope` option on `openVellumWorkspaceModal`. */
+  initialScope?: string | typeof SCOPE_GLOBAL
 }
 
 function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
+  modalReopenInProgress = true
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
+  modalReopenInProgress = false
+  vellumOpenIntent = true
   activeWorkspaceCityId = city.id
+  // Stage J — track the fiber/file/scope so pushCurrentUrl encodes them.
+  // Find scope inherits from the modal's cityId by default; the scope
+  // override only kicks in when the user later flips Find scope or arrives
+  // through a `&scope=…` deep link (the URL applier sets it explicitly via
+  // `applyUrlState` before openCityWorkspace runs).
+  activeWorkspaceFiberSlug = opts.initialSlug ?? null
+  activeWorkspaceFilePath = null
+  if (opts.initialScope === SCOPE_GLOBAL || (opts.initialScope && opts.initialScope !== city.id)) {
+    activeWorkspaceScopeOverride = opts.initialScope
+  } else {
+    activeWorkspaceScopeOverride = null
+  }
   // Stage H — push the requested tab into the chrome bar so the matching
   // V/K/F chip lights up immediately (before vellum's React tree mounts).
   // 'delta' isn't a chip mode; treat it as narrative for highlight
@@ -324,6 +455,24 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
     : opts.initialMode === 'find' ? 'find'
     : 'narrative'
   commitVellumMode(chipMode)
+  // Stage J — pivot the map camera to the modal city when this opener is
+  // pivoting across cities (Find search-result click, kanban card click,
+  // URL deep-link restore, etc.). Constitutional carve-out preserved
+  // separately: Cities-column click in Find re-scopes Find *without*
+  // moving the camera — that path goes through `handleFindScopeChange`,
+  // not `openCityWorkspace`, so it doesn't reach this branch.
+  //
+  // Letting the camera follow modal city makes "URL `city=` matches the
+  // modal city" an invariant (when vellum is open with a city), which
+  // simplifies the convergence path: applyUrlState no longer has to keep
+  // camera-city and modal-city as independent axes. The trade-off is the
+  // map gently slides into position on cross-city fiber clicks; that's
+  // consonant with the constitution's "v / map hex = go there" framing
+  // (the user clicked through *to* a fiber — they meant to go there).
+  if (lastFocusedCityId !== city.id) {
+    handleCityClick(city)
+  }
+  pushCurrentUrl()
   const myToken = ++workspaceOpenToken
   // Stage G recents — fiber views from the URL-hash restore, FindHost
   // click-throughs, and kanban click-throughs all flow through here with
@@ -342,6 +491,14 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       originId: city.originId,
       initialSlug: opts.initialSlug,
       initialMode: opts.initialMode,
+      // Stage J — propagate the FindHost scope override (only set when the
+      // URL applier restored a `&scope=…` deep link, or when a Find scope
+      // change is being applied via openCityWorkspace).
+      findInitialScope: opts.initialScope,
+      // Stage J — Find's Cities-column / ⊕ Global click flips
+      // `localScopeCityId` inside FindHost; we mirror that into the URL
+      // fragment so reload restores the user's chosen scope.
+      onFindScopeChange: handleFindScopeChange,
       // Hand the city name through so vellum's IndexView can label its
       // cartouche correctly. Without this, the eyebrow above "Index"
       // collapses to nothing — honest, but less informative than naming
@@ -362,6 +519,35 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
 }
 
 /**
+ * Stage J — FindHost's scope-change callback. Fires when the user clicks
+ * a city in the Cities column (re-scoping in place) or hits ⊕ Global to
+ * clear scope. We mirror the new scope into the URL fragment so reload
+ * restores it; reload-time the URL applier reads `&scope=…` and passes it
+ * into `openCityWorkspace({ initialScope })`, which threads it to FindHost
+ * via `findInitialScope`.
+ *
+ * `newScope === undefined` means "scope inherits from modal cityId" (the
+ * pre-Stage-J default state). We encode this by clearing the URL `scope`
+ * param. `null` (sent by FindHost when ⊕ Global is hit on a modal that
+ * had a city scope) is encoded as `&scope=global` to make the explicit
+ * choice durable.
+ */
+function handleFindScopeChange(newScope: string | null | undefined): void {
+  if (newScope === null || (activeWorkspaceCityId && newScope === undefined)) {
+    // FindHost flipped to global (⊕ Global). Encode explicit global.
+    activeWorkspaceScopeOverride = SCOPE_GLOBAL
+  } else if (newScope === undefined) {
+    activeWorkspaceScopeOverride = null
+  } else if (activeWorkspaceCityId && newScope === activeWorkspaceCityId) {
+    // Re-scoping back to the modal's own city — that's the inherit-default.
+    activeWorkspaceScopeOverride = null
+  } else {
+    activeWorkspaceScopeOverride = newScope
+  }
+  pushCurrentUrl()
+}
+
+/**
  * Called by `openVellumWorkspaceModal`'s `onClose` callback whenever vellum
  * closes (Escape, ×, programmatic close). Resets host-side bookkeeping —
  * without this, `activeWorkspaceHandle` becomes a stale reference and
@@ -378,11 +564,25 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
 function handleWorkspaceClosed(): void {
   activeWorkspaceCityId = null
   activeWorkspaceHandle = null
+  vellumOpenIntent = false
+  // Stage J — clear the modal-state vars that feed the URL fragment. The
+  // city focus stays (camera doesn't move on close); just the modal axes
+  // (mode, fiber, file, scope) drop. lastVellumMode is preserved so the
+  // chrome bar's launch button can re-open the same tab.
+  activeWorkspaceFiberSlug = null
+  activeWorkspaceFilePath = null
+  activeWorkspaceScopeOverride = null
   // Vellum is gone — clear the chrome bar's chip highlight and refresh the
   // awaiting-review badge in case the user just closed the kanban tab
   // (Stage H — the chrome bar carries this responsibility now).
   mapChromeBar.syncMode(null)
   mapChromeBar.refreshSoon()
+  // Stage J — push the closed-state URL only when this is a *genuine*
+  // close (Escape, ×, hotkey toggle-close). Open-replacement (the
+  // `openCityWorkspace` etc. close-then-reopen pattern) sets
+  // `modalReopenInProgress` so the in-flight transition state isn't
+  // sedimented into history.
+  if (!modalReopenInProgress) pushCurrentUrl()
 }
 
 /**
@@ -396,19 +596,31 @@ function handleWorkspaceClosed(): void {
  * specifically asks for in-place flip on any open vellum.
  */
 function openGlobalKanban(): void {
+  // Stage J — global kanban scope is explicit-global, but only meaningful
+  // alongside `mode=kanban`; clear the per-modal axes that don't apply.
+  vellumOpenIntent = true
+  activeWorkspaceFiberSlug = null
+  activeWorkspaceFilePath = null
+  activeWorkspaceScopeOverride = SCOPE_GLOBAL
   // Stage H — chip lights up regardless of the open-vs-flip branch.
   commitVellumMode('kanban')
   if (activeWorkspaceHandle) {
     activeWorkspaceHandle.setMode('kanban')
+    pushCurrentUrl()
     return
   }
   activeWorkspaceCityId = null
+  pushCurrentUrl()
   const myToken = ++workspaceOpenToken
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     if (myToken !== workspaceOpenToken) return
     activeWorkspaceHandle = openVellumWorkspaceModal({
       initialMode: 'kanban',
       onOpenWorker: focusWorkerByTmuxSession,
+      // Stage J — Find scope-change callback; the kanban tab itself doesn't
+      // surface scope, but if the user flips to Find from here the change
+      // path goes through this same modal handle.
+      onFindScopeChange: handleFindScopeChange,
       // The global kanban has no fiber graph (cityId is undefined) — every
       // card click needs to pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
@@ -428,18 +640,28 @@ function openGlobalKanban(): void {
  * for the city rung it calls `openCityWorkspace(city, { initialMode: 'find' })`.
  */
 function openGlobalFind(): void {
+  // Stage J — global Find scope is explicit-global; clear non-Find axes.
+  vellumOpenIntent = true
+  activeWorkspaceFiberSlug = null
+  activeWorkspaceFilePath = null
+  activeWorkspaceScopeOverride = SCOPE_GLOBAL
   // Stage H — chip lights up regardless of the open-vs-flip branch.
   commitVellumMode('find')
   if (activeWorkspaceHandle) {
     activeWorkspaceHandle.setMode('find')
+    pushCurrentUrl()
     return
   }
   activeWorkspaceCityId = null
+  pushCurrentUrl()
   const myToken = ++workspaceOpenToken
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     if (myToken !== workspaceOpenToken) return
     activeWorkspaceHandle = openVellumWorkspaceModal({
       initialMode: 'find',
+      // Stage J — initial scope = global, mirrored into FindHost.
+      findInitialScope: SCOPE_GLOBAL,
+      onFindScopeChange: handleFindScopeChange,
       onOpenWorker: focusWorkerByTmuxSession,
       // Global Find has no fiber graph (cityId undefined); fiber clicks from
       // the (forthcoming Stage B) tree pivot vellum to the card's owning city.
@@ -600,6 +822,14 @@ function openLastView(): void {
 commitVellumMode = (mode) => {
   mapChromeBar.syncMode(mode)
   if (mode) lastVellumMode = mode
+  // Stage J — every mode change is a navigation; mirror it into the URL
+  // fragment. The bubble-phase hotkey handlers (`v` / `k`) and the
+  // chrome-bar mode chips both call commitVellumMode + handle.setMode for
+  // in-place tab flips; pushing here covers the in-place path without
+  // re-instrumenting every call site. The dedicated open paths
+  // (openCityWorkspace etc.) push their own URL too — both calls converge
+  // on the same state so the second push no-ops.
+  pushCurrentUrl()
 }
 
 // State
@@ -737,7 +967,7 @@ const stateSync = new FrontendStateSync({
   onSocketOpen: (socket) => {
     directoryListingClient.setWebSocket(socket)
   },
-  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge: _meetingBridge, isInitialState, urlCityId, urlFiberSlug }) => {
+  onStateChange: ({ cities: nextCities, sessions: nextSessions, origins: nextOrigins, activityBySessionKey, meetingBridge: _meetingBridge, isInitialState, urlState }) => {
     cities = nextCities
     sessions = nextSessions
     origins = nextOrigins
@@ -773,14 +1003,12 @@ const stateSync = new FrontendStateSync({
       }
     }
 
-    // `?city=X` / `#city=X` wins over most-recent-activity heuristic. Without
-    // this, deep links opened the workspace but never ran handleCityClick —
-    // the camera + lastFocusedCityId stayed pinned to whatever loaded first.
-    // X may be a city id (opaque hash) or a city name (what the user sees in
-    // URLs); match by id first, then by name, preferring names with active
-    // sessions when multiple cities share a name. See
-    // hash-restore-does-not-select-city.
-    const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
+    // Stage J — full URL-fragment-driven cold-load. `applyUrlState` reads
+    // the URL and converges the UI; the most-recent-city fallback only
+    // applies when there's no city in the URL. The `?city=X` / `#city=X`
+    // legacy precedence (URL wins over most-recent) survives via
+    // applyUrlState's first branch.
+    const urlCity = urlState?.cityId ? resolveCityFromUrlId(urlState.cityId) : null
     const targetCity = urlCity || mostRecentCity || cities[0]
     console.log(
       '[InitialFocus]',
@@ -788,40 +1016,20 @@ const stateSync = new FrontendStateSync({
       sessions.length,
       'sessions,',
       sessions.filter(s => s.cityId).length,
-      'with cityId'
+      'with cityId',
+      urlState?.mode ? `mode=${urlState.mode}` : '',
     )
-    handleCityClick(targetCity)
-
-    if (urlFiberSlug) {
-      // `#fiber=Y` opens the vellum workspace at that fiber. When `#city=X`
-      // is present it scopes the lookup; otherwise we ask the server which
-      // local city owns the slug. Either way, fall back to opening the
-      // targetCity's workspace without the slug if resolution fails so the
-      // user still lands somewhere coherent. See
-      // vellum-dogfood/url-fragment-fiber-nav.
-      if (urlCity) {
-        openCityWorkspace(urlCity, { initialSlug: urlFiberSlug })
-      } else {
-        void resolveFiberCity(urlFiberSlug, cities).then((hit) => {
-          if (hit) {
-            handleCityClick(hit)
-            openCityWorkspace(hit, { initialSlug: urlFiberSlug })
-          } else {
-            // Comment above said "fall back to the targetCity's workspace
-            // without the slug." The code passed the slug anyway, so vellum
-            // tried to load it and rendered its internal not-found message
-            // ("Fiber X not found. Is mystra running on port 3100?") on a
-            // city the user never asked for. Land on the targetCity's entry
-            // point instead — coherent fallback, and the warn carries the
-            // diagnostic for anyone watching console.
-            console.warn('[InitialFocus] #fiber=', urlFiberSlug, 'not found in any local city')
-            openCityWorkspace(targetCity)
-          }
-        })
+    // Stage J — wrap initial-load convergence in suppressed mode so the
+    // intermediate URL writes (handleCityClick → city-only URL) don't
+    // overwrite the mode/fiber/scope/file the user actually asked for via
+    // the typed deep link. applyUrlState's internal runSuppressed nests
+    // fine; both layers share the depth counter.
+    void urlSync.runSuppressed(async () => {
+      handleCityClick(targetCity)
+      if (urlState && (urlState.mode || urlState.fiberSlug || urlState.filePath)) {
+        await applyUrlState(urlState, { cities, fallbackCity: targetCity })
       }
-    } else if (urlCity) {
-      openCityWorkspace(urlCity)
-    }
+    })
   },
   onActivity: ({ activitySessionKey, activities }) => {
     zoneRenderer.updateWorkerActivity(activitySessionKey, activities)
@@ -833,48 +1041,158 @@ const stateSync = new FrontendStateSync({
   },
 })
 
-// Mid-session hash navigation — `#city=X` / `#fiber=Y` re-runs the deep-link
-// resolution. Without this, pasting a hash URL into the address bar or hitting
-// browser back/forward changed `location.hash` but left the camera + workspace
-// pinned to whatever was previously selected; only a full reload (different
-// path or query) actually routed the URL. Same flow as InitialFocus: pick the
-// city, click it (camera focus + lastFocusedCityId), and if a fiber slug is
-// present open the vellum workspace at it. See
-// `hash-restore-does-not-select-city`.
-window.addEventListener('hashchange', () => {
-  const urlCityId = readUrlCityId()
-  const urlFiberSlug = readUrlFiberSlug()
-  if (!urlCityId && !urlFiberSlug) return
-  // Bail before initial state arrives. Vite HMR (and some agent-browser
-  // navigations) fire hashchange before the WS delivers cities; resolving
-  // against an empty city list would warn-and-no-op for a hash that
-  // InitialFocus is about to handle correctly. Once cities load, normal
-  // hash navigation runs through this handler.
-  if (cities.length === 0) return
-  const urlCity = urlCityId ? resolveCityFromUrlId(urlCityId) : null
-  if (urlCityId && !urlCity) {
-    // Stale link or now-removed city: warn for symmetry with the #fiber=
-    // branch below so console traffic is even, and fall through to the
-    // urlFiberSlug branch which can still resolve city-by-fiber.
-    console.warn('[hashchange] #city=', urlCityId, 'not found in any local or remote city')
-  }
-  if (urlCity) handleCityClick(urlCity)
-  if (urlFiberSlug) {
-    if (urlCity) {
-      openCityWorkspace(urlCity, { initialSlug: urlFiberSlug })
-    } else {
-      void resolveFiberCity(urlFiberSlug, cities).then((hit) => {
-        if (hit) {
-          handleCityClick(hit)
-          openCityWorkspace(hit, { initialSlug: urlFiberSlug })
-        } else {
-          console.warn('[hashchange] #fiber=', urlFiberSlug, 'not found in any local city')
-        }
+/**
+ * Stage J — converge the UI to a target URL state. Called from:
+ *   - `onStateChange`'s initial-load branch (cold load deep link)
+ *   - the `popstate` handler (browser back/forward)
+ *   - the `hashchange` listener (user types a hash URL into the address bar)
+ *
+ * The function reads the live module-state (`activeWorkspaceHandle`,
+ * `lastFocusedCityId`, …), diffs against `target`, and dispatches the
+ * minimum set of opens / closes / setMode flips needed to land the UI in
+ * the target state. The whole thing runs inside `urlSync.runSuppressed`
+ * so the open paths' incidental URL pushes don't try to write the URL
+ * we're already reconciling against.
+ *
+ * Diff rules (mode-first, then fiber/file/scope, then city):
+ *   - mode missing in URL + modal open → close
+ *   - mode set in URL + modal closed → open with full state
+ *   - same mode + same fiber/file/scope: setMode no-op (URL was idempotent)
+ *   - same mode + different fiber/file/scope: close + reopen (fiber-navigate
+ *     isn't exposed via VellumModalHandle yet; close + reopen is the
+ *     cheapest unambiguous reset and preserves Stage J's quality bar at
+ *     the cost of a brief flicker — refining via apiRef-exposed navigate
+ *     is a future stage)
+ *   - different mode + same scope/fiber: setMode in place
+ *   - different mode + different fiber: close + reopen
+ *   - city in URL ≠ lastFocusedCityId: handleCityClick, then settle modal
+ *
+ * The fallback path (`urlState.fiberSlug` set with no `urlState.cityId`)
+ * resolves city via `/fiber-locate`; we await it before opening the modal
+ * so the camera + scope land together.
+ */
+async function applyUrlState(
+  target: UrlState,
+  opts: { cities?: City[]; fallbackCity?: City | null } = {},
+): Promise<void> {
+  const liveCities = opts.cities ?? cities
+  if (liveCities.length === 0) return // wait for InitialFocus
+
+  await urlSync.runSuppressed(async () => {
+    // Resolve the city the URL is pointing at. May be unset (global modal
+    // or just-the-fiber URL) — we then ask the server which city owns the
+    // fiber.
+    let targetCity: City | null = target.cityId
+      ? resolveCityFromUrlId(target.cityId)
+      : null
+
+    if (!targetCity && target.fiberSlug) {
+      const hit = await resolveFiberCity(target.fiberSlug, liveCities)
+      if (hit) targetCity = hit
+    }
+    // Fallback for bare-`#city=X` URLs whose city no longer resolves —
+    // keep the camera where it was rather than blanking out.
+    if (!targetCity && target.cityId) {
+      console.warn('[applyUrlState] #city=', target.cityId, 'not found in any local or remote city')
+    }
+
+    // Camera focus first — handleCityClick is idempotent on same-city.
+    const focusCity = targetCity ?? opts.fallbackCity ?? null
+    if (focusCity && lastFocusedCityId !== focusCity.id) {
+      handleCityClick(focusCity)
+    }
+
+    // Resolve the modal-scope city for openCityWorkspace's initialScope:
+    // explicit `&scope=cityId` overrides the inherited cityId; `&scope=global`
+    // means "explicit global override" (the modal's own cityId stays — the
+    // user is on Find at city X, scoped to global).
+    const scopeOverride: string | typeof SCOPE_GLOBAL | undefined =
+      target.scopeCityId ?? undefined
+
+    // Modal-state diff. The current state is what `buildCurrentUrlState`
+    // would emit; cheaper to read directly off the live vars.
+    const currentMode: VellumMode | null = activeWorkspaceHandle ? lastVellumMode : null
+    const sameMode = currentMode === (target.mode ?? null)
+    const sameFiber = (activeWorkspaceFiberSlug ?? null) === (target.fiberSlug ?? null)
+    const sameFile = (activeWorkspaceFilePath ?? null) === (target.filePath ?? null)
+    const sameScope = (activeWorkspaceScopeOverride ?? null) === (target.scopeCityId ?? null)
+    const sameCity = (activeWorkspaceCityId ?? null) === (targetCity?.id ?? null)
+
+    if (sameMode && sameFiber && sameFile && sameScope && sameCity) {
+      return // nothing to do
+    }
+
+    // Mode missing → close any open modal.
+    if (!target.mode) {
+      if (activeWorkspaceHandle) {
+        const handle = activeWorkspaceHandle
+        activeWorkspaceHandle = null
+        handle.close()
+      }
+      return
+    }
+
+    // Mode set. Decide setMode-in-place vs close+reopen. We can flip in
+    // place only when the modal is open AND the fiber/file/scope/city
+    // already match the target — otherwise we tear down so the new
+    // adapter / scope / fiber surface comes up with consistent state.
+    const canFlipInPlace =
+      activeWorkspaceHandle != null
+      && sameFiber
+      && sameFile
+      && sameScope
+      && sameCity
+    if (canFlipInPlace && !sameMode) {
+      commitVellumMode(target.mode)
+      activeWorkspaceHandle?.setMode(target.mode)
+      return
+    }
+
+    // Close + reopen path. The reopen branches mirror openGlobalFind /
+    // openGlobalKanban / openCityWorkspace / openFile in main.ts.
+    if (activeWorkspaceHandle) {
+      const handle = activeWorkspaceHandle
+      activeWorkspaceHandle = null
+      handle.close()
+    }
+
+    if (target.filePath) {
+      // File mode lives in narrative; cityId optional.
+      openFile({
+        path: target.filePath,
+        cityId: targetCity?.id,
+        originId: targetCity?.originId,
+      })
+      return
+    }
+
+    if (target.mode === 'kanban' && (!targetCity || scopeOverride === SCOPE_GLOBAL)) {
+      openGlobalKanban()
+      return
+    }
+    if (target.mode === 'find' && (!targetCity || scopeOverride === SCOPE_GLOBAL)) {
+      openGlobalFind()
+      return
+    }
+    if (targetCity) {
+      openCityWorkspace(targetCity, {
+        initialSlug: target.fiberSlug,
+        initialMode: target.mode,
+        initialScope: scopeOverride,
       })
     }
-  } else if (urlCity) {
-    openCityWorkspace(urlCity)
-  }
+  })
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Stage J — bind URL events. `popstate` (browser back/forward) and
+ * `hashchange` (user-typed hash URL) both converge through `applyUrlState`.
+ * ────────────────────────────────────────────────────────────────────── */
+urlSync.setPopHandler((state) => {
+  void applyUrlState(state)
+})
+window.addEventListener('hashchange', () => {
+  void applyUrlState(urlSync.read())
 })
 
 const mapInteractions = new MapInteractionController({
@@ -973,7 +1291,13 @@ const escalateFindScope = (): void => {
   const handle = activeWorkspaceHandle
   if (!handle) return
   const wasCityScoped = activeWorkspaceCityId !== null
+  // Stage J — when escalating city → global, the close is a transition
+  // (followed by openGlobalFind), so suppress the transient
+  // "vellum-closed" URL push. When already on global, this is a real
+  // close and we want the URL push.
+  modalReopenInProgress = wasCityScoped
   handle.close()
+  modalReopenInProgress = false
   activeWorkspaceHandle = null
   activeWorkspaceCityId = null
   if (wasCityScoped) {

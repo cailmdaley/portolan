@@ -9,38 +9,9 @@ import type {
 } from '../state/types'
 import { normalizeCity, normalizeSession } from '../state/types'
 import { FrontendActivityStore, type FrontendActivityEvent } from './FrontendActivityStore'
+import { readUrlState, type UrlState } from './UrlFragment'
 
 const API_BASE = `ws://${window.location.hostname}:4004`
-
-/**
- * Read the target city from either a `?city=X` query param or a `#city=X`
- * hash fragment (constitution documents both; `#city=X` is the canonical
- * form — see `hash-restore-does-not-select-city`). The hash wins when
- * both are present, since it's the form we link.
- */
-export function readUrlCityId(): string | null {
-  const hash = window.location.hash.replace(/^#/, '')
-  if (hash) {
-    const fromHash = new URLSearchParams(hash).get('city')
-    if (fromHash) return fromHash
-  }
-  return new URLSearchParams(window.location.search).get('city')
-}
-
-/**
- * Read the target fiber slug from `#fiber=Y` / `?fiber=Y`. On initial load
- * the frontend resolves this to a city (via explicit `#city=X` or a server
- * /fiber-locate lookup) and opens the vellum workspace at that fiber.
- * See vellum-dogfood/url-fragment-fiber-nav.
- */
-export function readUrlFiberSlug(): string | null {
-  const hash = window.location.hash.replace(/^#/, '')
-  if (hash) {
-    const fromHash = new URLSearchParams(hash).get('fiber')
-    if (fromHash) return fromHash
-  }
-  return new URLSearchParams(window.location.search).get('fiber')
-}
 
 interface ServerState {
   cities: ServerCity[]
@@ -99,8 +70,10 @@ interface FrontendStateSnapshot {
   activityBySessionKey: ReadonlyMap<string, Activity[]>
   meetingBridge: ServerMeetingBridgeState | null
   isInitialState: boolean
-  urlCityId: string | null
-  urlFiberSlug: string | null
+  /** Initial-load URL fragment state — full Stage J shape (mode, fiber,
+   *  file, scope, city). Null on non-initial state pushes. The host uses
+   *  this to drive the cold-load deep-link restore in main.ts. */
+  urlState: UrlState | null
 }
 
 interface FrontendActivityUpdate {
@@ -293,8 +266,7 @@ export class FrontendStateSync {
       activityBySessionKey: this.activityStore.getActivities(),
       meetingBridge: this.meetingBridge,
       isInitialState,
-      urlCityId: isInitialState ? readUrlCityId() : null,
-      urlFiberSlug: isInitialState ? readUrlFiberSlug() : null,
+      urlState: isInitialState ? readUrlState() : null,
     })
   }
 

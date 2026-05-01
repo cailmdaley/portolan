@@ -83,6 +83,30 @@ interface CityGitStatus {
   isRepo: boolean
 }
 
+interface PortolanCity {
+  id: string
+  name?: string
+  path: string
+  originId: string
+  gitStatus?: CityGitStatus
+}
+
+interface PortolanSession {
+  id: string
+  name: string
+  tmuxSession: string
+  cityId: string | null
+  originId: string
+  status: 'idle' | 'working'
+  lastActivity: number
+}
+
+interface PortolanRuntimeSnapshot {
+  cities: PortolanCity[]
+  sessions: PortolanSession[]
+  signature: string
+}
+
 /** Per-city row used by the Git section. Built from the mount context's
  *  city list; only local cities populate this (remote cities don't carry
  *  git status across the snapshot wire). */
@@ -113,6 +137,8 @@ export function FindHost({
   cityName,
   onOpenWorker,
   onOpenFiberInCity,
+  initialScope,
+  onScopeChange,
 }: {
   cityId?: string
   cityName?: string
@@ -127,6 +153,20 @@ export function FindHost({
    *  Optional — when omitted (no global-search consumer was wired) clicks
    *  are no-ops, but the constitution requires this path for Find. */
   onOpenFiberInCity?: (cityId: string, slug: string) => void
+  /** Stage J — initial scope override. `'global'` opens FindHost in
+   *  explicit-global scope (overriding the modal's `cityId`); a cityId
+   *  string lands at that scope. Undefined ⇒ inherit from modal `cityId`
+   *  (pre-Stage-J behaviour). The URL applier sets this when restoring
+   *  `&scope=…` deep links. */
+  initialScope?: string | 'global'
+  /** Stage J — fires when localScopeCityId changes via the Cities-column
+   *  click (`onScopeCity`) or the eyebrow's ⊕ Global button
+   *  (`onClearScope`). The host mirrors the new scope into the URL
+   *  fragment. `null` ⇒ explicit clear (user hit ⊕ Global), `string` ⇒
+   *  specific cityId, `undefined` ⇒ inherit. The distinction matters
+   *  because `&scope=global` (explicit) is durable across reload while
+   *  the inherit case lets the modal's outer cityId drive scope. */
+  onScopeChange?: (scopeCityId: string | null | undefined) => void
 }) {
   const [data, setData] = useState<GlobalFibersResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -151,7 +191,6 @@ export function FindHost({
   // felt right for fast typers without leaving lag visible.
   const debouncedQuery = useDebouncedValue(query.trim(), 110)
   const isSearching = debouncedQuery.length > 0
-  const combined = useCombinedSearch(debouncedQuery)
 
   // Listen for the `/` hotkey's focus request. Dispatched by main.ts when
   // the user wants to focus the search input from outside FindHost (e.g.,
@@ -194,34 +233,11 @@ export function FindHost({
     }
   }, [refreshTick])
 
-  // FindHost re-reads frontend state on a slow tick so cityById,
-  // gitCities, and the Files-column city list pick up state-sync pushes
-  // (city pinning, gitStatus poll, mock-fallback → real cities) without
-  // wiring a custom subscription. The mount context is module-scoped, so
-  // tying re-reads to a tick keeps the React-tree reactive while leaving
-  // the actual subscription mechanics inside main.ts.
-  const [stateTick, setStateTick] = useState(0)
-  useEffect(() => {
-    const handle = window.setInterval(() => setStateTick((n) => n + 1), 1500)
-    return () => window.clearInterval(handle)
-  }, [])
-
-  // Read cities once per render via the live mount context. Used by
-  // multiple sections downstream so we materialize once rather than
-  // re-reading at each call site.
-  const portolanCities = useMemo(() => {
-    const ctx = getPortolanMountContext()
-    return ctx ? ctx.getCities() : []
-    // stateTick + refreshTick + data drive the memo so a state-sync push
-    // or a /global-fibers refresh pulls fresh values without a one-off
-    // signal per consumer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stateTick, refreshTick, data])
+  const portolanSnapshot = usePortolanRuntimeSnapshot()
+  const portolanCities = portolanSnapshot.cities
+  const portolanSessions = portolanSnapshot.sessions
 
   // Resolve city name + path + gitStatus for any cityId in the response.
-  // Re-reads on every refresh tick so the Git section reflects the latest
-  // poll result; re-reads on stateTick so a transition from mock fallback
-  // → real cities (e.g., cold load) doesn't strand stale display names.
   const cityById = useMemo(() => {
     return new Map(portolanCities.map((c) => [c.id, c]))
   }, [portolanCities])
@@ -229,13 +245,61 @@ export function FindHost({
   // Find scope — the in-Find scope the user can flip in place via the
   // Cities column. Distinct from props.cityId (the modal's outer scope,
   // which decides which adapter the host opened against). Initialized
-  // from the prop and re-synced when the prop changes (cold open with
-  // a different focused city); user clicks on Cities-column rows
-  // override locally without touching props or the map camera.
-  const [localScopeCityId, setLocalScopeCityId] = useState<string | undefined>(cityId)
+  // from `initialScope` (Stage J URL-restore override) when set, else
+  // from the modal's `cityId` (pre-Stage-J behaviour). User clicks on
+  // Cities-column rows override locally without touching props or the
+  // map camera; `onScopeChange` mirrors the change into the URL fragment.
+  //
+  // `initialScope === 'global'` collapses to `undefined` on the local
+  // axis (FindHost's own state language), but the host knows that an
+  // explicit-global scope is in play and emits `&scope=global` in the
+  // URL. Future re-mounts (popstate convergence) drop a fresh
+  // `initialScope` in via the prop.
+  const resolveInitialScope = (): string | undefined =>
+    initialScope === 'global' ? undefined : initialScope ?? cityId
+  const [localScopeCityId, setLocalScopeCityId] = useState<string | undefined>(
+    resolveInitialScope,
+  )
   useEffect(() => {
-    setLocalScopeCityId(cityId)
-  }, [cityId])
+    setLocalScopeCityId(resolveInitialScope())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cityId, initialScope])
+
+  /**
+   * Stage J wrapper: every local-scope flip mirrors into the URL via
+   * `onScopeChange`. The callback that lands at the host distinguishes:
+   *
+   *   - `null`     → user explicitly cleared scope (eyebrow ⊕ Global, or
+   *                  "All cities" pseudo-row, or de-toggle on the active
+   *                  scoped row). When the modal opened with a `cityId`
+   *                  this earns an explicit `&scope=global` in the URL so
+   *                  reload restores the user's choice rather than re-
+   *                  inheriting cityId.
+   *   - `undefined`→ no override needed; scope inherits from modal cityId
+   *                  (only meaningful when the modal is already global).
+   *   - `cityId`   → explicit re-scope to that city.
+   *
+   * Inside this component every clear sends `undefined` to setLocalScope
+   * (the local-state shape doesn't distinguish "explicit global" from
+   * "inherit"); we promote-to-null at the host edge based on whether the
+   * modal had an outer cityId to clear from.
+   */
+  const handleScopeChange = (newScope: string | null | undefined): void => {
+    setLocalScopeCityId(newScope ?? undefined)
+    if (!onScopeChange) return
+    if (newScope === null || newScope === undefined) {
+      // Promote ambiguous-clear → explicit-global only when the modal has
+      // an outer cityId to clear from. Without an outer cityId, the modal
+      // is already global; signaling "explicit-global" against an
+      // already-global state would dirty the URL with a redundant
+      // &scope=global on every clear (and Stage J's idempotency would
+      // hide the bug at runtime, but consistency in the contract matters).
+      onScopeChange(cityId ? null : undefined)
+    } else {
+      onScopeChange(newScope)
+    }
+  }
+  const combined = useCombinedSearch(debouncedQuery, localScopeCityId)
 
   // Resolve the scope-city's display name from cityById. Falls back to
   // the modal's cityName prop when the user hasn't re-scoped (the
@@ -323,7 +387,10 @@ export function FindHost({
         <Eyebrow
           scopedCityName={scopedCityName}
           showClearScope={!!localScopeCityId}
-          onClearScope={() => setLocalScopeCityId(undefined)}
+          // Stage J — pass `null` to distinguish "user explicitly chose
+          // global" from "scope happens to be undefined" (the
+          // inherit-from-cityId case). Encoded as `&scope=global` in URL.
+          onClearScope={() => handleScopeChange(null)}
           onRefresh={() => setRefreshTick((n) => n + 1)}
         />
         <SearchBar
@@ -345,8 +412,11 @@ export function FindHost({
         >
           <CitiesColumn
             cities={portolanCities}
+            sessions={portolanSessions}
             scopedCityId={localScopeCityId}
-            onScopeCity={setLocalScopeCityId}
+            // Stage J — Cities-column row click flips local scope AND
+            // mirrors the change into the URL fragment via onScopeChange.
+            onScopeCity={(next) => handleScopeChange(next)}
             onOpenWorker={onOpenWorker}
             query={debouncedQuery}
           />
@@ -541,7 +611,7 @@ function SearchBar({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Search fibers + files…  (Stage C+E will wire ranking)"
+        placeholder="Search fibers + files..."
         style={{
           flex: 1,
           minWidth: 0,
@@ -1781,12 +1851,14 @@ interface CityWithWorkers {
 
 function CitiesColumn({
   cities,
+  sessions,
   scopedCityId,
   onScopeCity,
   onOpenWorker,
   query,
 }: {
-  cities: Array<{ id: string; name?: string; path: string; originId: string }>
+  cities: PortolanCity[]
+  sessions: PortolanSession[]
   scopedCityId: string | undefined
   /** Setter from FindHost; passing undefined re-scopes to global. */
   onScopeCity: (next: string | undefined) => void
@@ -1796,13 +1868,6 @@ function CitiesColumn({
    *  filtering and shows every city. */
   query: string
 }): JSX.Element {
-  // Read sessions live via the mount context. Stage E established the
-  // tick-based refresh pattern (FindHost re-runs portolanCities every
-  // stateTick), but worker rosters change less often than city pins;
-  // re-reading on every render is cheap (sessions array < 50 entries).
-  const ctx = getPortolanMountContext()
-  const sessions = ctx ? ctx.getSessions() : []
-
   const trimmed = query.trim()
   const isFiltering = trimmed.length > 0
 
@@ -2453,6 +2518,83 @@ function resolveCityName(
  * Hooks
  * ------------------------------------------------------------------------ */
 
+const EMPTY_PORTOLAN_RUNTIME_SNAPSHOT: PortolanRuntimeSnapshot = {
+  cities: [],
+  sessions: [],
+  signature: '',
+}
+
+function usePortolanRuntimeSnapshot(): PortolanRuntimeSnapshot {
+  const [snapshot, setSnapshot] = useState(readPortolanRuntimeSnapshot)
+
+  useEffect(() => {
+    let lastSignature = snapshot.signature
+    const refresh = (): void => {
+      const next = readPortolanRuntimeSnapshot()
+      if (next.signature === lastSignature) return
+      lastSignature = next.signature
+      setSnapshot(next)
+    }
+    refresh()
+    const handle = window.setInterval(refresh, 1500)
+    return () => window.clearInterval(handle)
+    // The interval compares against a local signature so it can avoid
+    // React state updates when the module-scoped mount context is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return snapshot
+}
+
+function readPortolanRuntimeSnapshot(): PortolanRuntimeSnapshot {
+  const ctx = getPortolanMountContext()
+  if (!ctx) return EMPTY_PORTOLAN_RUNTIME_SNAPSHOT
+  const cities = ctx.getCities()
+  const sessions = ctx.getSessions()
+  return {
+    cities,
+    sessions,
+    signature: `${cities.map(citySignature).join('\n')}\u0000${sessions.map(sessionSignature).join('\n')}`,
+  }
+}
+
+function citySignature(city: PortolanCity): string {
+  const git = city.gitStatus
+  return [
+    city.id,
+    city.name ?? '',
+    city.path,
+    city.originId,
+    git?.branch ?? '',
+    git?.ahead ?? '',
+    git?.behind ?? '',
+    git?.staged?.added ?? '',
+    git?.staged?.modified ?? '',
+    git?.staged?.deleted ?? '',
+    git?.unstaged?.added ?? '',
+    git?.unstaged?.modified ?? '',
+    git?.unstaged?.deleted ?? '',
+    git?.untracked ?? '',
+    git?.linesAdded ?? '',
+    git?.linesRemoved ?? '',
+    git?.lastCommitTime ?? '',
+    git?.lastCommitMessage ?? '',
+    git?.isRepo ?? '',
+  ].join('\u001f')
+}
+
+function sessionSignature(session: PortolanSession): string {
+  return [
+    session.id,
+    session.name,
+    session.tmuxSession,
+    session.cityId ?? '',
+    session.originId,
+    session.status,
+    session.lastActivity,
+  ].join('\u001f')
+}
+
 /** Trailing-edge debounce: returns `value` after `ms` of stability. */
 function useDebouncedValue<T>(value: T, ms: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -2470,7 +2612,7 @@ function useDebouncedValue<T>(value: T, ms: number): T {
  * cancellation token; an empty query immediately clears state so the
  * column drops back to trees without waiting for an in-flight request.
  */
-function useCombinedSearch(query: string): {
+function useCombinedSearch(query: string, scopeCityId?: string): {
   loading: boolean
   error: string | null
   fiberHits: CombinedFiberHit[]
@@ -2494,15 +2636,18 @@ function useCombinedSearch(query: string): {
       return
     }
     let cancelled = false
+    const controller = new AbortController()
     setState((prev) => ({ ...prev, loading: true, error: null }))
-    const fibersUrl = `${API_BASE}/global-search?q=${encodeURIComponent(query)}&limit=20`
-    const filesUrl = `${API_BASE}/global-files-search?q=${encodeURIComponent(query)}&limit=20`
+    const params = new URLSearchParams({ q: query, limit: '20' })
+    if (scopeCityId) params.set('cityId', scopeCityId)
+    const fibersUrl = `${API_BASE}/global-search?${params}`
+    const filesUrl = `${API_BASE}/global-files-search?${params}`
     Promise.all([
-      fetch(fibersUrl).then(async (res) => {
+      fetch(fibersUrl, { signal: controller.signal }).then(async (res) => {
         if (!res.ok) throw new Error(`global-search ${res.status}`)
         return (await res.json()) as { hits?: unknown[] }
       }),
-      fetch(filesUrl).then(async (res) => {
+      fetch(filesUrl, { signal: controller.signal }).then(async (res) => {
         if (!res.ok) throw new Error(`global-files-search ${res.status}`)
         return (await res.json()) as { hits?: unknown[] }
       }),
@@ -2519,14 +2664,16 @@ function useCombinedSearch(query: string): {
       })
       .catch((err: unknown) => {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === 'AbortError') return
         const msg = (err as { message?: string })?.message ?? String(err)
         console.error('[FindHost] combined search failed:', msg)
         setState({ loading: false, error: msg, fiberHits: [], fileHits: [] })
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [query])
+  }, [query, scopeCityId])
 
   return state
 }

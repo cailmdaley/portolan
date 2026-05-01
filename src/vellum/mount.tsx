@@ -9,9 +9,9 @@
  *   - openVellumWorkspaceModal({ … }) — full-viewport modal hosting either
  *     a fiber (initialSlug) or a file (initialFilePath, with the workspace's
  *     narrative slot routed to FileViewerPage). The single reading surface
- *     for both fibers and files; opened by HUD/search clicks and `t`/`k`
- *     hotkeys. See [[constitution-remove-floating-cards]] for the broader
- *     "map = navigation, vellum = reading" framing.
+ *     for both fibers and files; opened by map chrome, Find clicks, and
+ *     `v`/`k`/`/` hotkeys. See [[constitution-remove-floating-cards]] for
+ *     the broader "map = navigation, vellum = reading" framing.
  *
  * Previously also exposed `mountVellumFileSurface` /
  * `mountVellumFiberSurface` for the floating-card pin layer, and
@@ -989,6 +989,18 @@ export interface OpenWorkspaceModalOptions {
    *  on vellum's "not found" page because the loom-relative card id isn't
    *  in any project-scoped collection. */
   onOpenFiberInCity?: (cityId: string, slug: string) => void
+  /** Stage J of `constitution-portolan-navigation-layer` — initial Find
+   *  scope override. When undefined (default), Find scope inherits from
+   *  the modal's `cityId`. When set to a cityId or the literal `'global'`,
+   *  FindHost mounts with that scope instead. Used by the URL applier on
+   *  reload-restore to land on `&scope=…` deep links faithfully. */
+  findInitialScope?: string | 'global'
+  /** Stage J — fired when the user re-scopes Find in place via the
+   *  Cities-column click or the eyebrow's ⊕ Global button. Lets the host
+   *  mirror the new scope into the URL fragment so reload restores it.
+   *  `null` ⇒ explicit clear (⊕ Global), `string` ⇒ specific cityId,
+   *  `undefined` ⇒ scope inherits from modal cityId. */
+  onFindScopeChange?: (scopeCityId: string | null | undefined) => void
   /** Fired exactly once when the modal closes (Escape key, click on the
    *  ×, programmatic `handle.close()`). Lets the host reset its tracking
    *  state — without this, `activeWorkspaceHandle` becomes a stale
@@ -1226,6 +1238,8 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       cityName={opts.cityName}
       onOpenWorker={opts.onOpenWorker}
       onOpenFiberInCity={opts.onOpenFiberInCity}
+      initialScope={opts.findInitialScope}
+      onScopeChange={opts.onFindScopeChange}
     />
   )
 
@@ -1315,4 +1329,3 @@ async function resolveCityRootSlug(cityId: string | undefined): Promise<string |
   const data = await res.json()
   return typeof data.rootSlug === 'string' ? data.rootSlug : null
 }
-
