@@ -91,6 +91,7 @@ export interface ServerMeetingTranscriptChunk {
 
 export interface ServerMeetingRunState {
   meetingId: string
+  sourceType: 'parakeet' | 'vibevoice'
   status: 'running' | 'stopped' | 'error'
   startedAt: number
   stoppedAt?: number

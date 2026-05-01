@@ -65,8 +65,10 @@ export class HttpApiMeeting {
 
     const data = await this.parseJsonBody<{
       workerId: string;
+      sourceType?: MeetingBridgeStartOptions['sourceType'];
       initialPrompt?: string;
       parakeet?: MeetingBridgeStartOptions['parakeet'];
+      vibevoice?: MeetingBridgeStartOptions['vibevoice'];
     }>(req, res);
     if (!data) return;
 
@@ -104,8 +106,10 @@ export class HttpApiMeeting {
           cwd: session.cwd,
           sshHost,
         },
+        sourceType: data.sourceType,
         initialPrompt: data.initialPrompt,
         parakeet: data.parakeet,
+        vibevoice: data.vibevoice,
       });
       this.sendJsonSuccess(res, { success: true, meeting });
     } catch (error) {

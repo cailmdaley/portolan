@@ -17,6 +17,9 @@ import type {
   TranscriptSource,
   ParakeetTranscriptSourceOptions,
 } from './ParakeetTranscriptSource.js';
+import type { VibeVoiceTranscriptSourceOptions } from './VibeVoiceTranscriptSource.js';
+
+export type MeetingTranscriptSourceType = 'parakeet' | 'vibevoice';
 
 export interface MeetingBridgeTarget extends TmuxSessionTarget {
   sessionId: string;
@@ -26,8 +29,10 @@ export interface MeetingBridgeTarget extends TmuxSessionTarget {
 
 export interface MeetingBridgeStartOptions {
   target: MeetingBridgeTarget;
+  sourceType?: MeetingTranscriptSourceType;
   initialPrompt?: string;
   parakeet?: ParakeetTranscriptSourceOptions;
+  vibevoice?: VibeVoiceTranscriptSourceOptions;
 }
 
 export interface MeetingTranscriptEntry {
@@ -45,6 +50,7 @@ export interface MeetingTranscriptEntry {
 
 export interface MeetingRunState {
   meetingId: string;
+  sourceType: MeetingTranscriptSourceType;
   status: 'running' | 'stopped' | 'error';
   startedAt: number;
   stoppedAt?: number;
@@ -81,6 +87,14 @@ export interface MeetingBridgeMessageSender {
 export interface MeetingTranscriptSourceFactory {
   createParakeetSource(
     options: ParakeetTranscriptSourceOptions,
+    callbacks: {
+      onChunk: (chunk: unknown) => void;
+      onError: (error: Error) => void;
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+    },
+  ): TranscriptSource;
+  createVibeVoiceSource(
+    options: VibeVoiceTranscriptSourceOptions,
     callbacks: {
       onChunk: (chunk: unknown) => void;
       onError: (error: Error) => void;
@@ -140,6 +154,12 @@ export class MeetingBridge {
             + 'Production wires the factory in index.ts; tests must pass sourceFactory.createParakeetSource.',
         );
       },
+      createVibeVoiceSource: () => {
+        throw new Error(
+          'MeetingBridge.createVibeVoiceSource not injected — refusing to spawn a real VibeVoice daemon. '
+            + 'Production wires the factory in index.ts; tests must pass sourceFactory.createVibeVoiceSource.',
+        );
+      },
       ...options.sourceFactory,
     };
     mkdirSync(this.baseDir, { recursive: true });
@@ -166,6 +186,9 @@ export class MeetingBridge {
     this.transcriptByIndex.clear();
 
     const startedAt = Date.now();
+    const sourceType = normalizeMeetingTranscriptSourceType(
+      options.sourceType ?? (options.vibevoice ? 'vibevoice' : 'parakeet'),
+    );
     const meetingId = `${new Date(startedAt).toISOString().replace(/[:.]/g, '-')}-${sanitizeSegment(options.target.tmuxSession)}`;
     const meetingDir = join(
       this.baseDir,
@@ -179,6 +202,7 @@ export class MeetingBridge {
 
     const run: MeetingRunState = {
       meetingId,
+      sourceType,
       status: 'running',
       startedAt,
       sessionId: options.target.sessionId,
@@ -200,8 +224,7 @@ export class MeetingBridge {
     this.writeMetadata(run);
 
     try {
-      const parakeetOptions = this.withParakeetDefaults(options.parakeet ?? {}, meetingDir);
-      run.audioPath = parakeetOptions.saveAudioPath;
+      const source = this.createTranscriptSource(sourceType, options, meetingDir, run);
 
       const bootstrapMessage = options.initialPrompt?.trim() || this.buildBootstrapPrompt(run);
       this.messenger.send(options.target, bootstrapMessage, { pressEnter: true });
@@ -209,16 +232,6 @@ export class MeetingBridge {
       run.bootstrapMessage = bootstrapMessage;
       this.writeMetadata(run);
 
-      const source = this.sourceFactory.createParakeetSource(parakeetOptions, {
-        onChunk: (chunk) => this.handleChunk(run, chunk),
-        onError: (error) => this.handleError(run, error),
-        onExit: () => {
-          if (this.state.activeMeeting?.meetingId !== run.meetingId) return;
-          if (run.status === 'running') {
-            this.finishRun(run, 'stopped');
-          }
-        },
-      });
       this.activeSource = source;
       source.start();
     } catch (error) {
@@ -423,6 +436,36 @@ export class MeetingBridge {
     return options;
   }
 
+  private createTranscriptSource(
+    sourceType: MeetingTranscriptSourceType,
+    options: MeetingBridgeStartOptions,
+    meetingDir: string,
+    run: MeetingRunState,
+  ): TranscriptSource {
+    const callbacks = {
+      onChunk: (chunk: unknown) => this.handleChunk(run, chunk),
+      onError: (error: Error) => this.handleError(run, error),
+      onExit: () => {
+        if (this.state.activeMeeting?.meetingId !== run.meetingId) return;
+        if (run.status === 'running') {
+          this.finishRun(run, 'stopped');
+        }
+      },
+    };
+
+    if (sourceType === 'vibevoice') {
+      const vibevoiceOptions = options.vibevoice ?? {};
+      if (vibevoiceOptions.audioPath) {
+        run.audioPath = vibevoiceOptions.audioPath;
+      }
+      return this.sourceFactory.createVibeVoiceSource(vibevoiceOptions, callbacks);
+    }
+
+    const parakeetOptions = this.withParakeetDefaults(options.parakeet ?? {}, meetingDir);
+    run.audioPath = parakeetOptions.saveAudioPath;
+    return this.sourceFactory.createParakeetSource(parakeetOptions, callbacks);
+  }
+
   private writeMetadata(run: MeetingRunState): void {
     writeFileSync(run.metadataPath, JSON.stringify(run, null, 2));
     writeFileSync(this.latestStatePath, JSON.stringify(run, null, 2));
@@ -510,8 +553,11 @@ export class MeetingBridge {
     const fallbackNote = run.currentMeetingSymlinkPath
       ? ` (absolute: ${run.transcriptMarkdownPath})`
       : '';
+    const sourceLine = run.sourceType === 'vibevoice'
+      ? 'A VibeVoice-ASR transcript job is writing to a transcript file you can read on demand.'
+      : 'A live meeting is now streaming to a transcript file you can read on demand.';
     return [
-      'A live meeting is now streaming to a transcript file you can read on demand.',
+      sourceLine,
       '',
       `Transcript: ${transcriptRef}${fallbackNote}`,
       '',
@@ -561,6 +607,18 @@ function maybeBoolean(value: unknown): boolean | null {
 
 function maybeMeetingStatus(value: unknown): MeetingRunState['status'] | null {
   return value === 'running' || value === 'stopped' || value === 'error' ? value : null;
+}
+
+function maybeMeetingTranscriptSourceType(value: unknown): MeetingTranscriptSourceType | null {
+  return value === 'parakeet' || value === 'vibevoice' ? value : null;
+}
+
+function normalizeMeetingTranscriptSourceType(value: unknown): MeetingTranscriptSourceType {
+  const sourceType = maybeMeetingTranscriptSourceType(value);
+  if (!sourceType) {
+    throw new Error(`Unsupported meeting transcript source: ${String(value)}`);
+  }
+  return sourceType;
 }
 
 function selectTranscriptText(record: Record<string, unknown>): string {
@@ -647,6 +705,7 @@ function parseMeetingRunState(value: unknown): MeetingRunState | null {
   }
   return {
     meetingId,
+    sourceType: maybeMeetingTranscriptSourceType(value.sourceType) ?? 'parakeet',
     status,
     startedAt,
     stoppedAt: maybeNumber(value.stoppedAt) ?? undefined,

@@ -61,8 +61,10 @@ describe('HttpApi — meeting bridge endpoints', () => {
         cwd: localSession.cwd,
         sshHost: undefined,
       },
+      sourceType: undefined,
       initialPrompt: undefined,
       parakeet: undefined,
+      vibevoice: undefined,
     });
     expect(res.data.meeting).toEqual({ meetingId: 'meeting-1', status: 'running' });
   });
@@ -90,8 +92,40 @@ describe('HttpApi — meeting bridge endpoints', () => {
     expect(res.status).toBe(200);
     expect(meetingBridge.start).toHaveBeenCalledWith({
       target: expect.objectContaining({ sessionId: localSession.id }),
+      sourceType: undefined,
       initialPrompt: 'Custom bootstrap',
       parakeet: { mode: 'mic', model: 'mlx-community/parakeet-tdt-0.6b-v3' },
+      vibevoice: undefined,
+    });
+  });
+
+  it('forwards vibevoice source options', async () => {
+    const api = new HttpApi(stubCityLookup as any, { getOrigin: () => null } as any, stubPersistenceLookup as any);
+    const meetingBridge = {
+      getState: vi.fn(() => ({ activeMeeting: null, lastMeeting: null })),
+      start: vi.fn(() => ({ meetingId: 'meeting-vibevoice', status: 'running' })),
+      stop: vi.fn(),
+    };
+
+    api.setSessionLookup({
+      findSession: (sessionId: string) => (sessionId === localSession.id ? localSession : undefined),
+      getAllSessions: () => [localSession],
+    });
+    api.setMeetingBridge(meetingBridge as any);
+
+    const res = await httpRequest(api, 'POST', '/meeting-bridge/start', {
+      workerId: localSession.id,
+      sourceType: 'vibevoice',
+      vibevoice: { mode: 'audio', audioPath: '/tmp/meeting.wav', prompt: 'CMB lensing' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(meetingBridge.start).toHaveBeenCalledWith({
+      target: expect.objectContaining({ sessionId: localSession.id }),
+      sourceType: 'vibevoice',
+      initialPrompt: undefined,
+      parakeet: undefined,
+      vibevoice: { mode: 'audio', audioPath: '/tmp/meeting.wav', prompt: 'CMB lensing' },
     });
   });
 

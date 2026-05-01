@@ -1,0 +1,2 @@
+{"delay_ms": 0, "id": "v1", "speaker": "Speaker 0", "text": "we should revisit the beam transfer function.", "status": "complete", "start_seconds": 0.0, "end_seconds": 3.2}
+{"delay_ms": 30, "id": "v2", "speaker": "Speaker 1", "text": "and file the decision with the calibration plot.", "status": "complete", "start_seconds": 3.2, "end_seconds": 6.8}

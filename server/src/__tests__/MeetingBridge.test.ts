@@ -34,12 +34,15 @@ function makeBridge(overrides: { baseDir?: string; messenger?: { send: ReturnTyp
   const createParakeetSource = vi.fn<(options: unknown, callbacks: TranscriptSourceCallbacks) => TranscriptSource>(
     (_options, callbacks) => new FakeTranscriptSource(callbacks),
   );
+  const createVibeVoiceSource = vi.fn<(options: unknown, callbacks: TranscriptSourceCallbacks) => TranscriptSource>(
+    (_options, callbacks) => new FakeTranscriptSource(callbacks),
+  );
   const bridge = new MeetingBridge({
     baseDir,
     messenger,
-    sourceFactory: { createParakeetSource },
+    sourceFactory: { createParakeetSource, createVibeVoiceSource },
   });
-  return { bridge, baseDir, messenger, createParakeetSource };
+  return { bridge, baseDir, messenger, createParakeetSource, createVibeVoiceSource };
 }
 
 describe('MeetingBridge', () => {
@@ -133,6 +136,24 @@ describe('MeetingBridge', () => {
       });
       const [options] = createParakeetSource.mock.calls[0];
       expect((options as { saveAudioPath?: string }).saveAudioPath).toBe('/tmp/custom.wav');
+    });
+
+    it('starts the vibevoice source when requested and records the audio path', () => {
+      const cityPath = mkdtempSync(join(tmpdir(), 'meeting-city-'));
+      const { bridge, createParakeetSource, createVibeVoiceSource } = makeBridge();
+      const run = bridge.start({
+        target: { sessionId: 'w', tmuxSession: 'w', originId: 'local', cwd: cityPath },
+        sourceType: 'vibevoice',
+        vibevoice: { mode: 'audio', audioPath: '/tmp/meeting.wav', prompt: 'CMB lensing meeting' },
+      });
+
+      expect(createParakeetSource).not.toHaveBeenCalled();
+      expect(createVibeVoiceSource).toHaveBeenCalledWith(
+        { mode: 'audio', audioPath: '/tmp/meeting.wav', prompt: 'CMB lensing meeting' },
+        expect.anything(),
+      );
+      expect(run.sourceType).toBe('vibevoice');
+      expect(run.audioPath).toBe('/tmp/meeting.wav');
     });
   });
 
