@@ -4,39 +4,43 @@
  * Mirrors `KanbanHost`'s pattern: a portolan-owned shell that mounts inside
  * vellum's tab slot, lazy on tab-enter. Stage A landed the empty shell;
  * Stages B + F filled in the cross-project Fibers tree and the per-city Git
- * status. **Stage K (this file)** refactors the dashboard from a single-column
- * scroll to the constitution's spatial grid:
+ * status; Stage K refactored the dashboard to the spatial grid; Stage C+E
+ * wired search + Files column. **Stage D (this file)** fills in the Cities
+ * column: every pinned local city as a row with its workers nested
+ * underneath. Clicking a city re-scopes Find in place (no map move);
+ * clicking a worker focuses its kitty tab via the `onOpenWorker` plumb.
  *
  *   ┌───────────────────────────────────────────────────────────┐
- *   │ FIND · scope: <…>                                [Refresh]│  eyebrow
+ *   │ FIND · scope: <…>                       [⊕ Global][Refresh]│  eyebrow
  *   │ ⌕ search fibers + files…                                  │  search bar
  *   ├──────────┬───────────────────────┬────────────────────────┤
- *   │ CITIES*  │ FIBERS  (Stage B)     │ FILES*                 │
+ *   │ CITIES   │ FIBERS  (Stage B)     │ FILES (Stage E)        │
+ *   │ ⬢ city₁  │                       │                        │
+ *   │  🐦 wkr₁ │                       │                        │
  *   ├──────────┴───────────┬───────────┴────────────────────────┤
- *   │ GIT  (Stage F)       │ RECENTS*                           │
+ *   │ GIT  (Stage F)       │ RECENTS (Stage G)                  │
  *   └──────────────────────┴────────────────────────────────────┘
- *   *placeholder until Stages D / C+E / G land.
  *
- * The placeholders are visually obvious (dashed border + shrugging note) so
- * progress is legible without looking at the source. The search input above
- * the grid is the seed for Stage C+E — empty today (no wiring yet); the
- * portolan `/` hotkey can already focus it via the `find:focus-search` event
- * (see main.ts), and the constitution's `// chord` (focused-but-empty input
- * → escalate scope) is implemented in main.ts by inspecting this input's
- * value when the next `/` arrives.
+ * Two scope axes coexist. The **modal scope** is the cityId the modal
+ * was opened with (props.cityId); it doesn't change once the modal is
+ * up. The **find scope** (`localScopeCityId`) is the in-Find scope —
+ * what the eyebrow displays, which city's group auto-expands in Fibers,
+ * which city pre-loads in Files, which city pins to the top in Git.
+ * It initializes from the modal scope and re-syncs when the prop
+ * changes; clicking a city in the Cities column updates it without
+ * touching props or the map camera. That separation is the
+ * constitution's "Cities click re-scopes Find in place" decision: two
+ * intents (`v`/map hex = "go there", camera moves; Cities-column click
+ * = "check on there", only Find scope flips).
  *
- * Future stages add Spatial (D), Files (E), Search (C), Recents (G) per
- * [[ai-futures/portolan/design/constitution-portolan-navigation-layer]].
- *
- * Scope is communicated by `cityId`: undefined → global Find (cross-project
- * entry point hit when `/` is pressed without a focused city); set →
- * city-scoped Find. Today the only behavioural difference is auto-expand
- * of the focused city's group; once Stages D/E/F land, scope will gate
- * which sections render and where they aggregate.
+ * Click-throughs in any section honour the source-city of the clicked
+ * row (vellum pivots cross-city), so re-scoping doesn't constrain what
+ * the user can open — only what they're presented with by default.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
+import { score as fzyScore, hasMatch as fzyHasMatch } from 'fzy.js'
 import { fiberStatusIcon } from '../ui/utils'
 import { getPortolanMountContext } from './mount'
 import { FIND_FOCUS_SEARCH_EVENT, FIND_SEARCH_INPUT_CLASS } from './find-shared'
@@ -107,12 +111,15 @@ interface GlobalFibersResponse {
 export function FindHost({
   cityId,
   cityName,
+  onOpenWorker,
   onOpenFiberInCity,
 }: {
   cityId?: string
   cityName?: string
-  /** Reserved for Stage D (Spatial section): focus a worker's kitty tab
-   *  when the user clicks its bird. Unused in Stage B. */
+  /** Stage D click-through for the Cities column's nested workers. Forwards
+   *  the worker's tmux session name to main.ts, which resolves it to a
+   *  Session and focuses the matching kitty tab (and pivots the camera).
+   *  Optional — when omitted, clicks are no-ops with a console warning. */
   onOpenWorker?: (tmuxSessionName: string) => void
   /** Stage B click-through: pivot vellum to the city that owns a fiber.
    *  main.ts already resolves `cityId` → City and reopens vellum scoped
@@ -219,8 +226,31 @@ export function FindHost({
     return new Map(portolanCities.map((c) => [c.id, c]))
   }, [portolanCities])
 
+  // Find scope — the in-Find scope the user can flip in place via the
+  // Cities column. Distinct from props.cityId (the modal's outer scope,
+  // which decides which adapter the host opened against). Initialized
+  // from the prop and re-synced when the prop changes (cold open with
+  // a different focused city); user clicks on Cities-column rows
+  // override locally without touching props or the map camera.
+  const [localScopeCityId, setLocalScopeCityId] = useState<string | undefined>(cityId)
+  useEffect(() => {
+    setLocalScopeCityId(cityId)
+  }, [cityId])
+
+  // Resolve the scope-city's display name from cityById. Falls back to
+  // the modal's cityName prop when the user hasn't re-scoped (the
+  // initial state where localScopeCityId === cityId), then to path
+  // basename, then to the bare cityId. Keeps the eyebrow honest for
+  // any scope the user reaches.
+  const scopedCityName = useMemo<string | undefined>(() => {
+    if (!localScopeCityId) return undefined
+    if (localScopeCityId === cityId && cityName) return cityName
+    const meta = cityById.get(localScopeCityId)
+    return meta?.name ?? meta?.path?.split('/').pop() ?? localScopeCityId
+  }, [localScopeCityId, cityId, cityName, cityById])
+
   // Build the row list for the Git section: every local city we know about,
-  // sorted with the focused city first then alphabetical. Remote cities are
+  // sorted with the scoped city first then alphabetical. Remote cities are
   // omitted — gitStatus doesn't ride the snapshot wire today. We render the
   // section regardless (so a "no git" empty-state surfaces) but only iterate
   // local cities for rows.
@@ -232,17 +262,17 @@ export function FindHost({
       rows.push({ cityId: c.id, displayName, gitStatus: c.gitStatus })
     }
     rows.sort((a, b) => {
-      if (cityId) {
-        if (a.cityId === cityId && b.cityId !== cityId) return -1
-        if (b.cityId === cityId && a.cityId !== cityId) return 1
+      if (localScopeCityId) {
+        if (a.cityId === localScopeCityId && b.cityId !== localScopeCityId) return -1
+        if (b.cityId === localScopeCityId && a.cityId !== localScopeCityId) return 1
       }
       return a.displayName.localeCompare(b.displayName)
     })
     return rows
-  }, [cityId, portolanCities])
+  }, [localScopeCityId, portolanCities])
 
   // Sections collapse/expand state, indexed by stable group key. Default:
-  // every group collapsed except the focused city's, which auto-expands
+  // every group collapsed except the scoped city's, which auto-expands
   // on first render so the user lands on something usable.
   const [openCityKeys, setOpenCityKeys] = useState<Set<string>>(() =>
     cityId ? new Set([`local::${cityId}`]) : new Set(),
@@ -252,20 +282,20 @@ export function FindHost({
   // cities with the same project-relative slug don't collide.
   const [openFiberKeys, setOpenFiberKeys] = useState<Set<string>>(new Set())
 
-  // If the focused city changes (e.g. user opened Find in a different
-  // city than the one we previously mounted with), auto-expand the new
-  // one. Don't collapse the previously-open city — the user might still
+  // If the find scope changes (Cities-column click, or the modal's
+  // outer scope flipped), auto-expand the new one in the Fibers tree.
+  // Don't collapse the previously-open city — the user might still
   // want to see it; this matches the kanban tab's "additive" feel.
   useEffect(() => {
-    if (!cityId) return
+    if (!localScopeCityId) return
     setOpenCityKeys((prev) => {
-      const key = `local::${cityId}`
+      const key = `local::${localScopeCityId}`
       if (prev.has(key)) return prev
       const next = new Set(prev)
       next.add(key)
       return next
     })
-  }, [cityId])
+  }, [localScopeCityId])
 
   return (
     <div
@@ -290,7 +320,12 @@ export function FindHost({
           gap: '1rem',
         }}
       >
-        <Eyebrow cityId={cityId} cityName={cityName} onRefresh={() => setRefreshTick((n) => n + 1)} />
+        <Eyebrow
+          scopedCityName={scopedCityName}
+          showClearScope={!!localScopeCityId}
+          onClearScope={() => setLocalScopeCityId(undefined)}
+          onRefresh={() => setRefreshTick((n) => n + 1)}
+        />
         <SearchBar
           inputRef={searchInputRef}
           value={query}
@@ -308,10 +343,12 @@ export function FindHost({
             alignItems: 'start',
           }}
         >
-          <PlaceholderColumn
-            title="Cities"
-            stage="D"
-            note="hex glyphs + workers nested under each city; click city → re-scope Find in place; click worker → kitty focus."
+          <CitiesColumn
+            cities={portolanCities}
+            scopedCityId={localScopeCityId}
+            onScopeCity={setLocalScopeCityId}
+            onOpenWorker={onOpenWorker}
+            query={debouncedQuery}
           />
           {isSearching ? (
             // Constitution §"Find layout" — non-empty input collapses the
@@ -335,14 +372,14 @@ export function FindHost({
                 error={error}
                 data={data}
                 cityById={cityById}
-                focusedCityId={cityId}
+                focusedCityId={localScopeCityId}
                 openCityKeys={openCityKeys}
                 setOpenCityKeys={setOpenCityKeys}
                 openFiberKeys={openFiberKeys}
                 setOpenFiberKeys={setOpenFiberKeys}
                 onOpenFiberInCity={onOpenFiberInCity}
               />
-              <FilesColumn cityId={cityId} cities={portolanCities} />
+              <FilesColumn cityId={localScopeCityId} cities={portolanCities} />
             </>
           )}
         </div>
@@ -355,7 +392,7 @@ export function FindHost({
             alignItems: 'start',
           }}
         >
-          <GitSection cities={gitCities} focusedCityId={cityId} />
+          <GitSection cities={gitCities} focusedCityId={localScopeCityId} />
           <PlaceholderColumn
             title="Recents"
             stage="G"
@@ -374,15 +411,24 @@ export function FindHost({
  * ------------------------------------------------------------------------ */
 
 function Eyebrow({
-  cityId,
-  cityName,
+  scopedCityName,
+  showClearScope,
+  onClearScope,
   onRefresh,
 }: {
-  cityId?: string
-  cityName?: string
+  /** Resolved city display name when scoped; undefined for global scope. */
+  scopedCityName: string | undefined
+  /** True iff a "scope back to global" affordance should render. Mirrors
+   *  `localScopeCityId !== undefined`; pulled out so the Eyebrow renders
+   *  the action without re-resolving state. */
+  showClearScope: boolean
+  /** Reset the in-Find scope to global. Counterpart to clicking the All
+   *  cities row in the Cities column; here for users who navigate
+   *  primarily through the eyebrow. */
+  onClearScope: () => void
   onRefresh: () => void
 }): JSX.Element {
-  const scope = cityId ? (cityName ?? cityId) : 'global'
+  const scope = scopedCityName ?? 'global'
   return (
     <div
       style={{
@@ -402,24 +448,46 @@ function Eyebrow({
       >
         Find · scope: {scope}
       </div>
-      <button
-        type="button"
-        onClick={onRefresh}
-        title="Reload /global-fibers"
-        style={{
-          fontSize: '0.7rem',
-          letterSpacing: '0.04em',
-          textTransform: 'uppercase',
-          background: 'transparent',
-          border: '1px solid var(--border-muted, #D8D2C8)',
-          color: 'var(--text-muted, #7A7368)',
-          padding: '0.25rem 0.55rem',
-          borderRadius: '3px',
-          cursor: 'pointer',
-        }}
-      >
-        Refresh
-      </button>
+      <div style={{ display: 'flex', gap: '0.4rem' }}>
+        {showClearScope && (
+          <button
+            type="button"
+            onClick={onClearScope}
+            title="Clear scope (show all cities)"
+            style={{
+              fontSize: '0.7rem',
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+              background: 'transparent',
+              border: '1px solid var(--border-muted, #D8D2C8)',
+              color: 'var(--text-muted, #7A7368)',
+              padding: '0.25rem 0.55rem',
+              borderRadius: '3px',
+              cursor: 'pointer',
+            }}
+          >
+            ⊕ Global
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onRefresh}
+          title="Reload /global-fibers"
+          style={{
+            fontSize: '0.7rem',
+            letterSpacing: '0.04em',
+            textTransform: 'uppercase',
+            background: 'transparent',
+            border: '1px solid var(--border-muted, #D8D2C8)',
+            color: 'var(--text-muted, #7A7368)',
+            padding: '0.25rem 0.55rem',
+            borderRadius: '3px',
+            cursor: 'pointer',
+          }}
+        >
+          Refresh
+        </button>
+      </div>
     </div>
   )
 }
@@ -1474,6 +1542,419 @@ function statusRank(status: string): number {
     default:
       return 4
   }
+}
+
+/* ------------------------------------------------------------------------ *
+ * CitiesColumn — Stage D's left column. Pinned local cities, with their
+ * workers nested underneath. Click city → re-scope Find in place (the
+ * map camera stays put per the constitution); click worker → kitty
+ * focus via the host's `onOpenWorker` plumb. Filters in step with the
+ * search input: when the query is non-empty, fzy-rank both city names
+ * and nested worker names, drop rows that match neither, and order by
+ * the best score across the row's contents.
+ *
+ * "All cities" pseudo-row at the top resets scope to global. Doubles
+ * with the eyebrow's `⊕ Global` affordance — both surfaces accept the
+ * de-scope action so the user can climb back without remembering which
+ * one carries it.
+ *
+ * Activity ranking: cities sort by max(session.lastActivity) of their
+ * workers descending, with the scoped city pinned to the top. Cities
+ * without active workers fall to alphabetical at the bottom.
+ *
+ * Remote cities are listed when known but render with a muted "remote"
+ * badge; the constitution scopes Find primarily to local cities (the
+ * Files column already does so), but the Cities column's job is
+ * navigational discovery — surfacing remote cities here is cheap and
+ * keeps cross-host parity legible.
+ * ------------------------------------------------------------------------ */
+
+interface CityWithWorkers {
+  city: { id: string; name?: string; path: string; originId: string }
+  workers: Array<{ id: string; name: string; tmuxSession: string; status: 'idle' | 'working'; lastActivity: number }>
+  /** Highest of `lastActivity` across the city's workers; 0 if none.
+   *  Used for activity-descending sort when query is empty. */
+  lastActivity: number
+  /** fzy match score when query is non-empty; max over (city name,
+   *  worker names). Cities/workers below SCORE_MIN are dropped. */
+  matchScore: number
+  /** Workers that survive the query filter when query is non-empty.
+   *  When query is empty, all workers pass through. */
+  matchedWorkers: Array<{ id: string; name: string; tmuxSession: string; status: 'idle' | 'working'; lastActivity: number }>
+}
+
+function CitiesColumn({
+  cities,
+  scopedCityId,
+  onScopeCity,
+  onOpenWorker,
+  query,
+}: {
+  cities: Array<{ id: string; name?: string; path: string; originId: string }>
+  scopedCityId: string | undefined
+  /** Setter from FindHost; passing undefined re-scopes to global. */
+  onScopeCity: (next: string | undefined) => void
+  onOpenWorker?: (tmuxSessionName: string) => void
+  /** Debounced query — same source as the Fibers/Files combined-results
+   *  filter, so all three columns narrow in step. Empty string disables
+   *  filtering and shows every city. */
+  query: string
+}): JSX.Element {
+  // Read sessions live via the mount context. Stage E established the
+  // tick-based refresh pattern (FindHost re-runs portolanCities every
+  // stateTick), but worker rosters change less often than city pins;
+  // re-reading on every render is cheap (sessions array < 50 entries).
+  const ctx = getPortolanMountContext()
+  const sessions = ctx ? ctx.getSessions() : []
+
+  const trimmed = query.trim()
+  const isFiltering = trimmed.length > 0
+
+  const rows = useMemo<CityWithWorkers[]>(() => {
+    const sessionsByCity = new Map<string, typeof sessions>()
+    for (const s of sessions) {
+      if (!s.cityId) continue
+      const list = sessionsByCity.get(s.cityId) ?? []
+      list.push(s)
+      sessionsByCity.set(s.cityId, list)
+    }
+    // Sort each city's workers by lastActivity descending (most recent
+    // first) so a quick glance at a city shows the active set up top.
+    for (const list of sessionsByCity.values()) {
+      list.sort((a, b) => b.lastActivity - a.lastActivity)
+    }
+
+    const all: CityWithWorkers[] = cities.map((city) => {
+      const list = sessionsByCity.get(city.id) ?? []
+      const workers = list.map((s) => ({
+        id: s.id,
+        name: s.name,
+        tmuxSession: s.tmuxSession,
+        status: s.status,
+        lastActivity: s.lastActivity,
+      }))
+      const lastActivity = workers.reduce((max, w) => Math.max(max, w.lastActivity), 0)
+
+      // Filter logic when querying. fzy.hasMatch is cheap (single pass
+      // over haystack), so we run it city-then-each-worker and keep the
+      // max score across the row. A worker match keeps its city in the
+      // results even if the city's own name didn't match (the constitution
+      // wants "filters in step with the search" — surfacing a city
+      // because of one of its workers is the navigationally-useful read).
+      let matchScore = -Infinity
+      let matchedWorkers = workers
+      if (isFiltering) {
+        const cityHaystack = city.name ?? city.path.split('/').pop() ?? city.id
+        if (fzyHasMatch(trimmed, cityHaystack)) {
+          matchScore = Math.max(matchScore, fzyScore(trimmed, cityHaystack))
+        }
+        const survivingWorkers: typeof workers = []
+        for (const w of workers) {
+          if (fzyHasMatch(trimmed, w.name)) {
+            const s = fzyScore(trimmed, w.name)
+            matchScore = Math.max(matchScore, s)
+            survivingWorkers.push(w)
+          }
+        }
+        // If the city's own name matched but no individual worker name
+        // did, keep all workers (city-level match is a row-level keep).
+        // If the city's name didn't match, only the surviving workers
+        // belong on this row.
+        const cityMatched = matchScore > -Infinity && fzyHasMatch(trimmed, cityHaystack)
+        matchedWorkers = cityMatched ? workers : survivingWorkers
+      }
+
+      return { city, workers, lastActivity, matchScore, matchedWorkers }
+    })
+
+    if (isFiltering) {
+      return all
+        .filter((r) => r.matchScore > -Infinity)
+        .sort((a, b) => {
+          // Pin scoped city to the top regardless of score so the user
+          // can always see their current scope while filtering.
+          if (a.city.id === scopedCityId && b.city.id !== scopedCityId) return -1
+          if (b.city.id === scopedCityId && a.city.id !== scopedCityId) return 1
+          return b.matchScore - a.matchScore
+        })
+    }
+
+    return all.sort((a, b) => {
+      if (a.city.id === scopedCityId && b.city.id !== scopedCityId) return -1
+      if (b.city.id === scopedCityId && a.city.id !== scopedCityId) return 1
+      // Activity descending; cities with no activity fall to the bottom
+      // sorted alphabetically by display name.
+      if (a.lastActivity !== b.lastActivity) return b.lastActivity - a.lastActivity
+      const an = a.city.name ?? a.city.path.split('/').pop() ?? a.city.id
+      const bn = b.city.name ?? b.city.path.split('/').pop() ?? b.city.id
+      return an.localeCompare(bn)
+    })
+  }, [cities, sessions, scopedCityId, trimmed, isFiltering])
+
+  const handleWorkerClick = (worker: { tmuxSession: string }): void => {
+    if (!onOpenWorker) {
+      console.warn('[FindHost/Cities] onOpenWorker not wired; click ignored.')
+      return
+    }
+    onOpenWorker(worker.tmuxSession)
+  }
+
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <SectionHeader title="Cities" />
+      {rows.length === 0 ? (
+        <Status>{isFiltering ? 'No matches.' : 'No connected cities.'}</Status>
+      ) : (
+        <ul
+          style={{
+            listStyle: 'none',
+            margin: 0,
+            padding: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.05rem',
+          }}
+        >
+          {/* All cities pseudo-row — visible whenever scope can be cleared.
+              Counterpart to the eyebrow's ⊕ Global affordance. Suppressed
+              while filtering: the scope-clear action is itself global,
+              and showing it inside a filtered list reads as a stray
+              non-match. */}
+          {!isFiltering && (
+            <li>
+              <CityRow
+                label="All cities"
+                glyph="⊕"
+                isScoped={scopedCityId === undefined}
+                onClick={() => onScopeCity(undefined)}
+                isRemote={false}
+                isAllRow
+              />
+            </li>
+          )}
+          {rows.map(({ city, matchedWorkers }) => {
+            const displayName = city.name ?? city.path.split('/').pop() ?? city.id
+            const isScoped = city.id === scopedCityId
+            const isRemote = city.originId !== 'local'
+            return (
+              <li key={city.id}>
+                <CityRow
+                  label={displayName}
+                  glyph="⬢"
+                  isScoped={isScoped}
+                  onClick={() =>
+                    // Toggle: clicking the currently-scoped city de-scopes.
+                    // Mirrors how the eyebrow's ⊕ Global button works; lets
+                    // the user navigate without crossing back to the eyebrow.
+                    onScopeCity(isScoped ? undefined : city.id)
+                  }
+                  isRemote={isRemote}
+                />
+                {matchedWorkers.length > 0 && (
+                  <ul
+                    style={{
+                      listStyle: 'none',
+                      margin: 0,
+                      padding: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                    }}
+                  >
+                    {matchedWorkers.map((worker) => (
+                      <li key={worker.id}>
+                        <WorkerRow
+                          name={worker.name}
+                          status={worker.status}
+                          onClick={() => handleWorkerClick(worker)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function CityRow({
+  label,
+  glyph,
+  isScoped,
+  onClick,
+  isRemote,
+  isAllRow,
+}: {
+  label: string
+  glyph: string
+  isScoped: boolean
+  onClick: () => void
+  isRemote: boolean
+  isAllRow?: boolean
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="find-fiber-row"
+      title={isScoped ? `Scoped to ${label} — click to clear` : `Scope Find to ${label}`}
+      aria-pressed={isScoped}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
+        width: '100%',
+        background: isScoped ? 'var(--surface-raised, #FFFDF8)' : 'transparent',
+        border: '1px solid',
+        borderColor: isScoped ? 'var(--border-muted, #D8D2C8)' : 'transparent',
+        borderRadius: '3px',
+        padding: '0.35rem 0.5rem',
+        cursor: 'pointer',
+        color: 'inherit',
+        font: 'inherit',
+        textAlign: 'left',
+        // Italicize the All cities pseudo-row a touch so it reads as a
+        // pseudo-row (an action) rather than a city the user could open.
+        fontStyle: isAllRow ? 'italic' : 'normal',
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          fontSize: '0.95rem',
+          opacity: 0.75,
+          width: '1rem',
+          textAlign: 'center',
+          flexShrink: 0,
+        }}
+      >
+        {glyph}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          fontSize: '0.85rem',
+          fontWeight: isScoped ? 500 : 400,
+        }}
+      >
+        {label}
+      </span>
+      {isScoped && !isAllRow && (
+        <span
+          style={{
+            fontSize: '0.55rem',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            opacity: 0.6,
+            flexShrink: 0,
+          }}
+        >
+          scoped
+        </span>
+      )}
+      {isRemote && (
+        <span
+          style={{
+            fontSize: '0.6rem',
+            letterSpacing: '0.05em',
+            opacity: 0.5,
+            border: '1px solid var(--border-muted, #E5DFD5)',
+            padding: '0.05rem 0.3rem',
+            borderRadius: '2px',
+            flexShrink: 0,
+          }}
+        >
+          remote
+        </span>
+      )}
+    </button>
+  )
+}
+
+function WorkerRow({
+  name,
+  status,
+  onClick,
+}: {
+  name: string
+  status: 'idle' | 'working'
+  onClick: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="find-fiber-row"
+      title={`Focus kitty tab for ${name}`}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
+        width: '100%',
+        // Indent under the city row. Matches the FibersSection nested
+        // padding so the visual hierarchy reads consistent across columns.
+        paddingLeft: '1.7rem',
+        paddingRight: '0.5rem',
+        paddingTop: '0.2rem',
+        paddingBottom: '0.2rem',
+        background: 'transparent',
+        border: 'none',
+        borderRadius: '3px',
+        cursor: 'pointer',
+        color: 'inherit',
+        font: 'inherit',
+        textAlign: 'left',
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          fontSize: '0.85rem',
+          opacity: status === 'working' ? 0.95 : 0.55,
+          width: '1rem',
+          textAlign: 'center',
+          flexShrink: 0,
+        }}
+      >
+        🐦
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          fontSize: '0.78rem',
+          opacity: status === 'working' ? 0.95 : 0.65,
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {name}
+      </span>
+      {status === 'working' && (
+        <span
+          aria-label="working"
+          title="Working"
+          style={{
+            display: 'inline-block',
+            width: '0.45rem',
+            height: '0.45rem',
+            borderRadius: '50%',
+            background: 'var(--text-success, #5a8a5a)',
+            flexShrink: 0,
+          }}
+        />
+      )}
+    </button>
+  )
 }
 
 /* ------------------------------------------------------------------------ *

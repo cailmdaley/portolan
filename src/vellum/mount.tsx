@@ -283,6 +283,11 @@ export interface PortolanMountContext {
   getSessions: () => Array<{
     id: string
     name: string
+    /** Tmux session name — the contract `onOpenWorker(tmuxSession)`
+     *  callers downstream (kanban, Find's Cities column workers nest)
+     *  use to resolve a worker → kitty tab on click. Mirrors
+     *  `state/types.ts:Session.tmuxSession`. */
+    tmuxSession: string
     cityId: string | null
     originId: string
     status: 'idle' | 'working'
