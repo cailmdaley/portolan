@@ -219,6 +219,12 @@ interface HttpApiKanbanOptions {
    * Shuttle.listShuttleSessions. Empty list = no workers known to be running.
    */
   listSessions?: () => string[];
+  /**
+   * Short-lived cache for the collected fiber pool, in milliseconds.
+   * Defaults to 0 for direct unit-test use; HttpApi sets a small TTL so
+   * repeated Kanban reads don't re-walk every felt host.
+   */
+  cacheTtlMs?: number;
 }
 
 /**
@@ -241,6 +247,18 @@ export type KanbanTarget =
   | 'queued'
   | 'active';
 
+type KanbanFiberEntry = {
+  fiber: Fiber;
+  host: string;
+  originId: string;
+  canonicalPath?: string;
+};
+
+interface KanbanFiberPool {
+  merged: KanbanFiberEntry[];
+  byId: Map<string, Fiber>;
+}
+
 /** What POST /kanban/transition expects in the body. */
 export interface KanbanTransitionRequest {
   fiberId: string;
@@ -258,6 +276,7 @@ export class HttpApiKanban {
   private readonly temperedLimit: number;
   private readonly now: () => Date;
   private readonly listSessions: () => string[];
+  private readonly cacheTtlMs: number;
 
   /**
    * Per-instance memo: realpath of each pinned city's `.felt` directory,
@@ -266,6 +285,11 @@ export class HttpApiKanban {
    * into it). Computed lazily on first lookup; null until populated.
    */
   private cityFeltRealpaths: Array<{ id: string; feltRealPath: string }> | null = null;
+  private fiberPoolCache: {
+    expiresAt: number;
+    result: KanbanFiberPool;
+  } | null = null;
+  private fiberPoolInFlight: Promise<KanbanFiberPool> | null = null;
 
   constructor(opts: HttpApiKanbanOptions = {}) {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
@@ -276,6 +300,7 @@ export class HttpApiKanban {
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
+    this.cacheTtlMs = opts.cacheTtlMs ?? 0;
   }
 
   /**
@@ -384,21 +409,50 @@ export class HttpApiKanban {
    * the dependee is reachable through *any* configured host or remote
    * snapshot.
    */
-  private async collectFibers(): Promise<{
-    merged: Array<{ fiber: Fiber; host: string; originId: string; canonicalPath?: string }>;
-    byId: Map<string, Fiber>;
-  }> {
-    const seen = new Map<string, { fiber: Fiber; host: string; originId: string; canonicalPath?: string }>();
-    const seenIds = new Set<string>();
-    for (const host of this.resolveHosts()) {
-      if (!existsSync(join(host, '.felt'))) continue;
-      let fibers: Fiber[];
-      try {
-        fibers = await getAllFibers(host);
-      } catch (err) {
-        console.error(`[Kanban] getAllFibers failed for host ${host}:`, err);
-        continue;
+  private async collectFibers(): Promise<KanbanFiberPool> {
+    const now = Date.now();
+    if (
+      this.cacheTtlMs > 0 &&
+      this.fiberPoolCache !== null &&
+      this.fiberPoolCache.expiresAt > now
+    ) {
+      return this.fiberPoolCache.result;
+    }
+    if (this.fiberPoolInFlight !== null) return this.fiberPoolInFlight;
+
+    const pending = this.collectFibersFresh();
+    this.fiberPoolInFlight = pending;
+    try {
+      const result = await pending;
+      if (this.cacheTtlMs > 0) {
+        this.fiberPoolCache = {
+          result,
+          expiresAt: Date.now() + this.cacheTtlMs,
+        };
       }
+      return result;
+    } finally {
+      if (this.fiberPoolInFlight === pending) this.fiberPoolInFlight = null;
+    }
+  }
+
+  private async collectFibersFresh(): Promise<KanbanFiberPool> {
+    const seen = new Map<string, KanbanFiberEntry>();
+    const seenIds = new Set<string>();
+
+    const hostResults = await Promise.all(
+      this.resolveHosts().map(async (host) => {
+        if (!existsSync(join(host, '.felt'))) return { host, fibers: [] as Fiber[] };
+        try {
+          return { host, fibers: await getAllFibers(host) };
+        } catch (err) {
+          console.error(`[Kanban] getAllFibers failed for host ${host}:`, err);
+          return { host, fibers: [] as Fiber[] };
+        }
+      }),
+    );
+
+    for (const { host, fibers } of hostResults) {
       for (const f of fibers) {
         const path = this.fiberPath(host, f);
         let canonical: string;
@@ -433,6 +487,11 @@ export class HttpApiKanban {
     const merged = [...seen.values()];
     const byId = new Map(merged.map(({ fiber }) => [fiber.id, fiber]));
     return { merged, byId };
+  }
+
+  private clearFiberPoolCache(): void {
+    this.fiberPoolCache = null;
+    this.fiberPoolInFlight = null;
   }
 
   /** GET /kanban → KanbanResponse. */
@@ -622,6 +681,7 @@ export class HttpApiKanban {
         target,
         nowIso,
       });
+      this.clearFiberPoolCache();
       // Re-read the snapshot via the provider — the executor has applied the
       // delta, so byId for this origin carries the post-write fiber.
       const refreshedById = new Map<string, Fiber>();
@@ -650,6 +710,7 @@ export class HttpApiKanban {
     if (updated !== raw) {
       writeFileSync(path, updated, 'utf-8');
     }
+    this.clearFiberPoolCache();
 
     // Re-read this host so the returned card reflects the new state.
     const after = await getAllFibers(host);

@@ -158,6 +158,12 @@ interface HttpApiGlobalSearchOptions {
   defaultLimit?: number;
   /** Hard cap for `?limit=`. Defaults to 200. */
   maxLimit?: number;
+  /**
+   * Short-lived cache for the collected fiber pool, in milliseconds.
+   * Defaults to 0 for direct unit-test use; HttpApi sets a small TTL so
+   * Find's per-keystroke searches don't walk every felt host repeatedly.
+   */
+  cacheTtlMs?: number;
 }
 
 // ============================================================================
@@ -171,9 +177,12 @@ export class HttpApiGlobalSearch {
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private readonly defaultLimit: number;
   private readonly maxLimit: number;
+  private readonly cacheTtlMs: number;
 
   /** Lazy-init memo of city `.felt/` realpaths, sorted deepest-first. */
   private cityFeltRealpaths: Array<{ id: string; feltRealPath: string }> | null = null;
+  private fiberPoolCache: { expiresAt: number; entries: MergedEntry[] } | null = null;
+  private fiberPoolInFlight: Promise<MergedEntry[]> | null = null;
 
   constructor(opts: HttpApiGlobalSearchOptions = {}) {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
@@ -182,6 +191,7 @@ export class HttpApiGlobalSearch {
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
     this.defaultLimit = opts.defaultLimit ?? 30;
     this.maxLimit = opts.maxLimit ?? 200;
+    this.cacheTtlMs = opts.cacheTtlMs ?? 0;
   }
 
   /**
@@ -192,6 +202,7 @@ export class HttpApiGlobalSearch {
    */
   async handleSearch(url: URL, res: ServerResponse): Promise<void> {
     const q = (url.searchParams.get('q') ?? '').trim();
+    const cityId = (url.searchParams.get('cityId') ?? '').trim() || undefined;
     const limitParam = parseInt(url.searchParams.get('limit') ?? '', 10);
     const limit = Number.isFinite(limitParam)
       ? Math.max(1, Math.min(this.maxLimit, limitParam))
@@ -203,7 +214,7 @@ export class HttpApiGlobalSearch {
     }
 
     try {
-      const hits = await this.search(q, limit);
+      const hits = await this.search(q, limit, cityId);
       this.json(res, 200, { hits, generatedAt: Date.now() });
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err);
@@ -217,9 +228,11 @@ export class HttpApiGlobalSearch {
    * Empty query short-circuits to no hits; the empty string would otherwise
    * substring-match every fiber and the score model would degenerate.
    */
-  async search(q: string, limit: number): Promise<GlobalSearchHit[]> {
+  async search(q: string, limit: number, cityId?: string): Promise<GlobalSearchHit[]> {
     if (!q.trim()) return [];
-    const merged = await this.collectFibers();
+    const merged = (await this.collectFibers()).filter((entry) =>
+      cityId ? entry.cityId === cityId : true,
+    );
     if (merged.length === 0) return [];
     // fzy is case-insensitive internally but `makeSnippet` still does an
     // explicit indexOf on a lower-cased body, so keep the lower-cased
@@ -363,18 +376,50 @@ export class HttpApiGlobalSearch {
    * mirror of a local fiber yields to local).
    */
   private async collectFibers(): Promise<MergedEntry[]> {
+    const now = Date.now();
+    if (
+      this.cacheTtlMs > 0 &&
+      this.fiberPoolCache !== null &&
+      this.fiberPoolCache.expiresAt > now
+    ) {
+      return this.fiberPoolCache.entries;
+    }
+    if (this.fiberPoolInFlight !== null) return this.fiberPoolInFlight;
+
+    const pending = this.collectFibersFresh();
+    this.fiberPoolInFlight = pending;
+    try {
+      const entries = await pending;
+      if (this.cacheTtlMs > 0) {
+        this.fiberPoolCache = {
+          entries,
+          expiresAt: Date.now() + this.cacheTtlMs,
+        };
+      }
+      return entries;
+    } finally {
+      if (this.fiberPoolInFlight === pending) this.fiberPoolInFlight = null;
+    }
+  }
+
+  private async collectFibersFresh(): Promise<MergedEntry[]> {
     const seen = new Map<string, MergedEntry>();
     const seenIds = new Set<string>();
 
-    for (const host of this.resolveHosts()) {
+    const hostResults = await Promise.all(
+      this.resolveHosts().map(async (host) => {
+        if (!existsSync(join(host, '.felt'))) return { host, fibers: [] as Fiber[] };
+        try {
+          return { host, fibers: await getAllFibers(host) };
+        } catch (err) {
+          console.error(`[GlobalSearch] getAllFibers failed for host ${host}:`, err);
+          return { host, fibers: [] as Fiber[] };
+        }
+      }),
+    );
+
+    for (const { host, fibers } of hostResults) {
       if (!existsSync(join(host, '.felt'))) continue;
-      let fibers: Fiber[];
-      try {
-        fibers = await getAllFibers(host);
-      } catch (err) {
-        console.error(`[GlobalSearch] getAllFibers failed for host ${host}:`, err);
-        continue;
-      }
       for (const fiber of fibers) {
         const path = this.fiberPath(host, fiber);
         let canonical: string;

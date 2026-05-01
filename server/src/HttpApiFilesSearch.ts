@@ -93,6 +93,8 @@ interface HttpApiFilesSearchOptions {
   /** Per-city wall-clock budget in ms. Defaults to 1500ms — fast typers
    *  shouldn't be chasing a search that's already stale. */
   perCityTimeoutMs?: number;
+  /** Bound concurrent `fd`/`find` processes. Defaults to 4. */
+  maxConcurrentCitySearches?: number;
 }
 
 // ============================================================================
@@ -105,6 +107,7 @@ export class HttpApiFilesSearch {
   private readonly maxLimit: number;
   private readonly perCityCap: number;
   private readonly perCityTimeoutMs: number;
+  private readonly maxConcurrentCitySearches: number;
   /** Lazy: `fd` availability probe. Cached for the instance's lifetime. */
   private hasFd: boolean | null = null;
 
@@ -114,6 +117,7 @@ export class HttpApiFilesSearch {
     this.maxLimit = opts.maxLimit ?? 200;
     this.perCityCap = opts.perCityCap ?? 200;
     this.perCityTimeoutMs = opts.perCityTimeoutMs ?? 1500;
+    this.maxConcurrentCitySearches = opts.maxConcurrentCitySearches ?? 4;
   }
 
   /**
@@ -125,6 +129,7 @@ export class HttpApiFilesSearch {
    */
   async handleSearch(url: URL, res: ServerResponse): Promise<void> {
     const q = (url.searchParams.get('q') ?? '').trim();
+    const cityId = (url.searchParams.get('cityId') ?? '').trim() || undefined;
     const limitParam = parseInt(url.searchParams.get('limit') ?? '', 10);
     const limit = Number.isFinite(limitParam)
       ? Math.max(1, Math.min(this.maxLimit, limitParam))
@@ -136,7 +141,7 @@ export class HttpApiFilesSearch {
     }
 
     try {
-      const { hits, warnings } = await this.search(q, limit);
+      const { hits, warnings } = await this.search(q, limit, cityId);
       const body: GlobalFilesSearchResponse = {
         hits,
         generatedAt: Date.now(),
@@ -162,13 +167,19 @@ export class HttpApiFilesSearch {
   async search(
     q: string,
     limit: number,
+    cityId?: string,
   ): Promise<{ hits: GlobalFileHit[]; warnings: Array<{ cityId: string; message: string }> }> {
     if (!q.trim()) return { hits: [], warnings: [] };
-    if (this.cities.length === 0) return { hits: [], warnings: [] };
+    const cities = cityId
+      ? this.cities.filter((city) => city.id === cityId)
+      : this.cities;
+    if (cities.length === 0) return { hits: [], warnings: [] };
 
     const fd = await this.detectFd();
-    const perCity = await Promise.allSettled(
-      this.cities.map((city) => this.walkCity(city, q, fd)),
+    const perCity = await mapSettledWithConcurrency(
+      cities,
+      Math.max(1, this.maxConcurrentCitySearches),
+      (city) => this.walkCity(city, q, fd),
     );
 
     const merged: GlobalFileHit[] = [];
@@ -176,7 +187,7 @@ export class HttpApiFilesSearch {
 
     for (let i = 0; i < perCity.length; i++) {
       const result = perCity[i];
-      const city = this.cities[i];
+      const city = cities[i];
       if (result.status === 'rejected') {
         const message = (result.reason as { message?: string })?.message ?? String(result.reason);
         warnings.push({ cityId: city.id, message });
@@ -238,6 +249,10 @@ export class HttpApiFilesSearch {
               '--full-path',
               '--hidden',
               '--no-ignore',
+              '--max-results',
+              String(this.perCityCap),
+              '--threads',
+              '1',
               '--exclude', '.git',
               '--exclude', '.felt',
               '--exclude', 'node_modules',
@@ -342,6 +357,34 @@ export class HttpApiFilesSearch {
 // ============================================================================
 // Internals
 // ============================================================================
+
+async function mapSettledWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<Array<PromiseSettledResult<R>>> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        try {
+          results[index] = {
+            status: 'fulfilled',
+            value: await mapper(items[index], index),
+          };
+        } catch (reason) {
+          results[index] = { status: 'rejected', reason };
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
 
 /**
  * fzy-score a hit against the query. Filename gets full weight; the relative

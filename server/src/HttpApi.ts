@@ -65,6 +65,11 @@ interface SessionLookup {
 
 type RuntimeDiagnosticsProvider = () => unknown | Promise<unknown>;
 
+interface CachedApi<T> {
+  key: string;
+  api: T;
+}
+
 /**
  * Cross-cutting deps that don't fit the lookup-shaped interfaces above.
  * Stage 3a of the vellum-kanban constitution adds the fiber-tree snapshot
@@ -111,6 +116,10 @@ export class HttpApi {
   private tapestryApi: HttpApiTapestry;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
+  private globalKanbanApiCache: CachedApi<HttpApiKanban> | null = null;
+  private scopedKanbanApiCache = new Map<string, CachedApi<HttpApiKanban>>();
+  private globalSearchApiCache: CachedApi<HttpApiGlobalSearch> | null = null;
+  private filesSearchApiCache: CachedApi<HttpApiFilesSearch> | null = null;
 
   constructor(
     cityLookup: CityLookup,
@@ -142,6 +151,7 @@ export class HttpApi {
     this.kanbanApi = new HttpApiKanban({
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
       remoteTransitionExecutor: this.remoteTransitionExecutor,
+      cacheTtlMs: 1000,
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
@@ -503,16 +513,12 @@ export class HttpApi {
    * response if the scope can't be honored.
    *
    *   - No `cityId` query param → *global view*, aggregating over every
-   *     pinned local-origin city from `~/.portolan/cities.json`. Constructed
-   *     fresh per request so newly-pinned cities show up immediately;
-   *     `HttpApiKanban` dedupes by realpath, so a fiber that appears in both
-   *     loom and a project city (because the project's `.felt/` is symlinked
-   *     into loom) renders once. Falls back to the legacy loom-only shared
-   *     instance if no cities are pinned (covers first-run before any pins
-   *     and tests).
-   *   - `cityId` resolves to a local-origin city → per-request HttpApiKanban
-   *     scoped to that city's path. New instance per request is fine; the
-   *     class is stateless beyond construction options and reads on demand.
+   *     pinned local-origin city from `~/.portolan/cities.json`. The
+   *     instance is cached by the pinned-city signature so memoized realpath
+   *     tables survive across badge polls and tab opens while newly-pinned
+   *     cities still produce a fresh instance.
+   *   - `cityId` resolves to a local-origin city → cached HttpApiKanban
+   *     scoped to that city's path, keyed by city path + local-pin signature.
    *   - `cityId` resolves to a remote-origin city → 400. Stage 1 of the
    *     vellum-kanban constitution is local-origin only; remote-origin
    *     scoping unlocks once the agent fiber-tree push protocol lands
@@ -535,17 +541,24 @@ export class HttpApi {
     if (!cityId) {
       const localPins = localCities.map(c => c.path);
       if (localPins.length === 0) return this.kanbanApi;
+      const cacheKey = localCityPinsKey(localCities);
+      if (this.globalKanbanApiCache?.key === cacheKey) {
+        return this.globalKanbanApiCache.api;
+      }
       // Global view: pinned local hosts + every remote origin's pushed
       // snapshot (Stage 3a). HttpApiKanban dedupes id-collisions between
       // local and remote, with local winning — local-mirrors-of-remote
       // (e.g. an rsynced loom) render as one card sourced from local.
       // Stage 4: remote-origin transitions go through the executor.
-      return new HttpApiKanban({
+      const api = new HttpApiKanban({
         feltHosts: localPins,
         cities: localCities,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
         remoteTransitionExecutor: this.remoteTransitionExecutor,
+        cacheTtlMs: 1000,
       });
+      this.globalKanbanApiCache = { key: cacheKey, api };
+      return api;
     }
     const city = this.cityLookup.getCityById(cityId);
     if (!city) {
@@ -568,16 +581,20 @@ export class HttpApi {
       );
       return null;
     }
-    return new HttpApiKanban({ feltHost: city.path, cities: localCities });
+    const cacheKey = `${city.path}\u0000${localCityPinsKey(localCities)}`;
+    const cached = this.scopedKanbanApiCache.get(cityId);
+    if (cached?.key === cacheKey) return cached.api;
+    const api = new HttpApiKanban({ feltHost: city.path, cities: localCities, cacheTtlMs: 1000 });
+    this.scopedKanbanApiCache.set(cityId, { key: cacheKey, api });
+    return api;
   }
 
   /**
    * Build an HttpApiGlobalSearch scoped to the same multi-host fan-out the
    * global kanban uses: pinned local cities (felt hosts) + remote-origin
-   * snapshots. Built per request so newly-pinned cities appear immediately
-   * (matches the cityId-less branch of `resolveKanbanApi`); cheap because
-   * the realpath table memoizes per-instance and the fiber walk only happens
-   * when a query is actually issued.
+   * snapshots. Cached by pinned-city signature so typing in Find can reuse
+   * realpath tables and a short-lived fiber-pool cache; newly-pinned cities
+   * still produce a fresh instance.
    */
   private resolveGlobalSearchApi(): HttpApiGlobalSearch {
     const localCities = this.persistenceLookup
@@ -585,17 +602,24 @@ export class HttpApi {
       .filter((c) => c.originId === 'local')
       .map((c) => ({ id: c.id, path: c.path }));
     const localPins = localCities.map((c) => c.path);
-    return new HttpApiGlobalSearch({
+    const cacheKey = localCityPinsKey(localCities);
+    if (this.globalSearchApiCache?.key === cacheKey) {
+      return this.globalSearchApiCache.api;
+    }
+    const api = new HttpApiGlobalSearch({
       feltHosts: localPins.length > 0 ? localPins : undefined,
       cities: localCities,
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+      cacheTtlMs: 1000,
     });
+    this.globalSearchApiCache = { key: cacheKey, api };
+    return api;
   }
 
   /**
    * Build an HttpApiFilesSearch scoped to the same pinned local cities as
-   * the global fiber search. Built per request so newly-pinned cities
-   * surface without a server restart, mirroring `resolveGlobalSearchApi`.
+   * the global fiber search. Cached by pinned-city signature so `fd`
+   * availability and bounded fan-out settings persist across keystrokes.
    * Pulls `name` off the live CityLookup so warning rows can display the
    * city's display name rather than its opaque id.
    */
@@ -611,9 +635,15 @@ export class HttpApi {
           name: live?.name,
         };
       });
-    return new HttpApiFilesSearch({
+    const cacheKey = localCityPinsKey(localCities);
+    if (this.filesSearchApiCache?.key === cacheKey) {
+      return this.filesSearchApiCache.api;
+    }
+    const api = new HttpApiFilesSearch({
       cities: localCities,
     });
+    this.filesSearchApiCache = { key: cacheKey, api };
+    return api;
   }
 
   /**
@@ -678,4 +708,10 @@ export class HttpApi {
     res.end(JSON.stringify(data));
   }
 
+}
+
+function localCityPinsKey(cities: Array<{ id: string; path: string; name?: string }>): string {
+  return cities
+    .map((city) => `${city.id}\u001f${city.path}\u001f${city.name ?? ''}`)
+    .join('\u001e');
 }
