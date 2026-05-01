@@ -1,6 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
+import { realpathSync } from 'node:fs'
+import { dirname } from 'node:path'
+
+// node_modules/vellum is a symlink to the lightcone repo. Vite resolves
+// symlinks before checking fs.allow, so the real path (and its siblings like
+// lightcone/node_modules for react-tweet, pdfjs-dist) fall outside the default
+// allowlist. Resolve the symlink and allow the whole lightcone project root.
+const vellumRealPath = realpathSync(fileURLToPath(new URL('./node_modules/vellum', import.meta.url)))
+const lightconeRoot = dirname(vellumRealPath)
 
 export default defineConfig({
   plugins: [react()],
@@ -17,9 +26,11 @@ export default defineConfig({
     hmr: {
       overlay: false
     },
-    // Serve .portolan directory for city sprites
+    // Serve .portolan directory for city sprites, and the real path of the
+    // vellum symlink (node_modules/vellum → ../../lightcone/vellum) so Vite
+    // doesn't reject those files as outside the allow list.
     fs: {
-      allow: ['.', '.portolan']
+      allow: ['.', '.portolan', lightconeRoot]
     },
     // Proxy server-side asset routes (project-file artifacts, paper PDFs,
     // astra view templates, and friends) to the portolan backend on :4004.
