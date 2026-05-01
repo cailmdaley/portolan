@@ -38,8 +38,11 @@ import { NewWorkerDialog } from './ui/NewWorkerDialog'
 // cross-project fiber + file search the palette previously hosted. The
 // physical `src/ui/GlobalSearchPalette.ts` file stays on disk until
 // Stage I sweeps it; nothing in main.ts references it anymore.
-import { KanbanLaunchButton } from './ui/KanbanLaunchButton'
-import { RecentWorkerBar } from './ui/RecentWorkerBar'
+// Stage H of constitution-portolan-navigation-layer: MapChromeBar replaces
+// the predecessor `KanbanLaunchButton` + `RecentWorkerBar` widgets with a
+// single thin Civ-style chrome bar at the top of the map. The two source
+// files retire alongside this rewire — they're no longer imported anywhere.
+import { MapChromeBar } from './ui/MapChromeBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
 import { findBestMatchingCity, findNearestCity } from './state/cityLookup'
@@ -194,6 +197,23 @@ function handleCityClick(city: City): void {
   }
 }
 
+// `commitVellumMode` is reassigned to the real implementation below once
+// `mapChromeBar` is constructed. The declaration up here lets the open paths
+// (openFile / openCityWorkspace / openGlobalKanban / openGlobalFind) reference
+// it without caring about module-init order — the debugPath auto-open runs
+// before the chrome bar exists, so we ship a noop until the real one lands.
+//
+// Stage H — single helper every open / mode-flip / close path threads
+// through. Pushes the mode into the chrome bar (so the V/K/F chip
+// highlights track the active vellum tab) and remembers it for the
+// launch button's "open the last view" affordance. Pass `null` when
+// vellum closes. Stage J will widen this so reload restores the same
+// view without needing a session-local memo.
+let lastVellumMode: 'narrative' | 'kanban' | 'find' | null = null
+// Reassigned at chrome-bar construction; see `commitVellumMode = …` below.
+let commitVellumMode: (mode: 'narrative' | 'kanban' | 'find' | null) => void
+  = (_mode) => { /* noop until chrome bar is constructed */ }
+
 // Vellum is the file viewer. Files open in the workspace modal in *file mode*
 // — FileViewerPage in the narrative slot, Workspace + Delta tabs disabled.
 // The standalone openVellumFileModal has been retired in favor of routing
@@ -215,6 +235,10 @@ function openFile(args: OpenFileArgs): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
   activeWorkspaceCityId = args.cityId ?? null
+  // Stage H — file mode lives in the narrative slot (vellum disables
+  // workspace + delta tabs in file mode). Light the V chip so the chrome
+  // bar reflects the current reading surface.
+  commitVellumMode('narrative')
   const myToken = ++workspaceOpenToken
   // Stage G recents — every file open is a human view. Skips silently if
   // there's no resolved city (file system path with no owning city);
@@ -294,6 +318,14 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
   activeWorkspaceHandle?.close()
   activeWorkspaceHandle = null
   activeWorkspaceCityId = city.id
+  // Stage H — push the requested tab into the chrome bar so the matching
+  // V/K/F chip lights up immediately (before vellum's React tree mounts).
+  // 'delta' isn't a chip mode; treat it as narrative for highlight
+  // purposes (delta sits adjacent to narrative in vellum's tab order).
+  const chipMode = opts.initialMode === 'kanban' ? 'kanban'
+    : opts.initialMode === 'find' ? 'find'
+    : 'narrative'
+  commitVellumMode(chipMode)
   const myToken = ++workspaceOpenToken
   // Stage G recents — fiber views from the URL-hash restore, FindHost
   // click-throughs, and kanban click-throughs all flow through here with
@@ -348,7 +380,11 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
 function handleWorkspaceClosed(): void {
   activeWorkspaceCityId = null
   activeWorkspaceHandle = null
-  kanbanLaunchButton.refreshSoon()
+  // Vellum is gone — clear the chrome bar's chip highlight and refresh the
+  // awaiting-review badge in case the user just closed the kanban tab
+  // (Stage H — the chrome bar carries this responsibility now).
+  mapChromeBar.syncMode(null)
+  mapChromeBar.refreshSoon()
 }
 
 /**
@@ -362,6 +398,8 @@ function handleWorkspaceClosed(): void {
  * specifically asks for in-place flip on any open vellum.
  */
 function openGlobalKanban(): void {
+  // Stage H — chip lights up regardless of the open-vs-flip branch.
+  commitVellumMode('kanban')
   if (activeWorkspaceHandle) {
     activeWorkspaceHandle.setMode('kanban')
     return
@@ -392,6 +430,8 @@ function openGlobalKanban(): void {
  * for the city rung it calls `openCityWorkspace(city, { initialMode: 'find' })`.
  */
 function openGlobalFind(): void {
+  // Stage H — chip lights up regardless of the open-vs-flip branch.
+  commitVellumMode('find')
   if (activeWorkspaceHandle) {
     activeWorkspaceHandle.setMode('find')
     return
@@ -518,15 +558,16 @@ const playgroundViewer = new PlaygroundViewer()
 // standalone full-viewport path (Stage 6 retired the entry points; Stage 8
 // collapsed the code) is gone.
 
-const kanbanLaunchButton = new KanbanLaunchButton({
-  onOpen: openGlobalKanban,
-  // Pause the awaiting-review badge poll while vellum is showing the kanban
-  // tab — the embedded grid maintains its own counts there. Vellum on
-  // narrative/delta still polls so the badge stays current.
-  isModalOpen: () => activeWorkspaceHandle?.getMode?.() === 'kanban',
-})
-
-const recentWorkerBar = new RecentWorkerBar({
+// Stage H — single Civ-style chrome bar on top of the map. Carries the
+// vellum launch button, V/K/F mode chips, worker birds (RecentWorkerBar's
+// data, horizontal), and an awaiting-review/working glance. Mode-chip
+// highlighting is pushed in by the host every time vellum opens, closes,
+// or flips tabs (search for `mapChromeBar.syncMode` below).
+const mapChromeBar = new MapChromeBar({
+  onOpenLastView: () => openLastView(),
+  onOpenNarrative: () => handleNarrativeHotkey(new KeyboardEvent('synthetic')),
+  onOpenKanban: () => handleKanbanHotkey(new KeyboardEvent('synthetic')),
+  onOpenFind: () => handleSlashHotkey(new KeyboardEvent('synthetic')),
   onSelectWorker: (session) => {
     const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
     if (swarmPos) {
@@ -536,11 +577,57 @@ const recentWorkerBar = new RecentWorkerBar({
     }
     mapActions?.focusKittyTab(session.id)
   },
-  onFileClick: (fullPath, originId, _workerId) => {
-    const city = findBestMatchingCity(cities, originId, fullPath)
-    openFile({ path: fullPath, originId, cityId: city?.id })
-  },
+  // Pause the awaiting-review badge poll while vellum is showing the kanban
+  // tab — the embedded grid renders fresh counts there. Mirrors the
+  // pre-Stage-H KanbanLaunchButton policy.
+  isKanbanModalOpen: () => activeWorkspaceHandle?.getMode?.() === 'kanban',
 })
+
+/**
+ * Stage H — launch button. Open the vellum view that best matches "last
+ * thing the user was reading."
+ *
+ * Pre-Stage-J the URL fragment doesn't carry tab/scope; we approximate by
+ * reading `lastVellumMode` (set on every open / setMode below) and
+ * combining with the focused city. Stage J will rewrite this against
+ * `FrontendStateSync` once the URL fragment encodes mode + scope, at
+ * which point the fallback ladder shrinks to "URL-fragment → focused-
+ * city narrative → global kanban."
+ */
+function openLastView(): void {
+  const handle = activeWorkspaceHandle
+  if (handle) {
+    // Vellum already up — promote the chrome bar's launch button to a
+    // "go-to-last-tab" affordance: re-flip to the last interacted mode
+    // (i.e. close-and-reopen surfaces the launch as a read-the-prose
+    // sense rather than a tab-cycle). Keep simple: do nothing if vellum
+    // is already open; the V/K/F chips handle in-vellum flips.
+    return
+  }
+  const focusedCity = resolveFocusedCity()
+  if (lastVellumMode === 'kanban' || (!focusedCity && !lastVellumMode)) {
+    openGlobalKanban()
+    return
+  }
+  if (lastVellumMode === 'find' && !focusedCity) {
+    openGlobalFind()
+    return
+  }
+  // Default and `lastVellumMode === 'narrative'` both land on
+  // narrative-on-focused-city.
+  if (focusedCity) {
+    cityPanel.hide()
+    openCityWorkspace(focusedCity, { initialMode: lastVellumMode === 'find' ? 'find' : 'narrative' })
+  }
+}
+
+// Install the real `commitVellumMode` now that `mapChromeBar` is live;
+// see the early forward declaration above the open paths for why this
+// lands here instead of next to the open functions.
+commitVellumMode = (mode) => {
+  mapChromeBar.syncMode(mode)
+  if (mode) lastVellumMode = mode
+}
 
 // Wire up View Playgrounds button
 cityPanel.setOnViewPlaygrounds((city) => {
@@ -716,7 +803,10 @@ const stateSync = new FrontendStateSync({
 
     cityPanel.updateWorkers(sessions)
     cityPanel.updateMeetingState(meetingBridge)
-    recentWorkerBar.update(cities, sessions)
+    // Stage H — chrome bar replaces the predecessor RecentWorkerBar; same
+    // data feed (filters idle workers, ranks by lastActivity) plus a live
+    // working-count for the right-edge glance.
+    mapChromeBar.update(cities, sessions)
 
     if (!isInitialState || cities.length === 0) return
 
@@ -1001,6 +1091,7 @@ const handleSlashHotkey = (event: KeyboardEvent): void => {
   }
 
   if (handle.getMode() !== 'find') {
+    commitVellumMode('find')
     handle.setMode('find')
     return
   }
@@ -1029,8 +1120,8 @@ const shouldSkipBubbleHotkey = (): boolean => {
 }
 
 /** `v` — open / flip-to / close the Narrative tab on the focused city. The
- *  full-semantics replacement for `t` (which stays bound through Stage K
- *  for muscle-memory; both keys do the same thing). Stage H removes `t`. */
+ *  full-semantics replacement for `t` (`t` retired in Stage H per the
+ *  constitution's "Hotkey scheme: v / k / / and //"). */
 const handleNarrativeHotkey = (event: KeyboardEvent): void => {
   if (shouldSkipBubbleHotkey()) return
   event.preventDefault()
@@ -1040,7 +1131,10 @@ const handleNarrativeHotkey = (event: KeyboardEvent): void => {
       handle.close()
       activeWorkspaceHandle = null
       activeWorkspaceCityId = null
+      // handleWorkspaceClosed (via opts.onClose) already syncs the chrome
+      // bar to null; nothing extra to do here.
     } else {
+      commitVellumMode('narrative')
       handle.setMode('narrative')
     }
     return
@@ -1063,8 +1157,10 @@ const handleKanbanHotkey = (event: KeyboardEvent): void => {
   if (handle.getMode() === 'kanban') {
     handle.close()
     activeWorkspaceHandle = null
-    kanbanLaunchButton.refreshSoon()
+    // handleWorkspaceClosed (via opts.onClose) syncs chrome bar mode to
+    // null and refreshes the awaiting-review badge.
   } else {
+    commitVellumMode('kanban')
     handle.setMode('kanban')
   }
 }
@@ -1079,17 +1175,9 @@ const handleNewWorkerHotkey = (event: KeyboardEvent): void => {
   void mapActions?.promptNewWorker(visibleCity)
 }
 
-/** `t` — legacy "open vellum on focused city" (no flip / close semantics).
- *  Kept for muscle-memory through Stage K. Stage H removes it in favour
- *  of `v` per constitution §"Hotkey scheme". */
-const handleLegacyTHotkey = (event: KeyboardEvent): void => {
-  if (shouldSkipBubbleHotkey()) return
-  const focusedCity = resolveFocusedCity()
-  if (!focusedCity) return
-  event.preventDefault()
-  cityPanel.hide()
-  openCityWorkspace(focusedCity)
-}
+// Stage H — `t` is retired. `v` carries the open / flip-to / close
+// semantics for the narrative tab; constitution §"Hotkey scheme" §"`t` is
+// removed in Stage H".
 
 const unbindSlashHotkey = tinykeys(
   document,
@@ -1100,7 +1188,6 @@ const unbindBubbleHotkeys = tinykeys(window, {
   v: handleNarrativeHotkey,
   k: handleKanbanHotkey,
   n: handleNewWorkerHotkey,
-  t: handleLegacyTHotkey,
 })
 
 let lastCameraRevision = camera.cameraRevision
@@ -1163,7 +1250,7 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     unbindSlashHotkey()
     unbindBubbleHotkeys()
-    recentWorkerBar.dispose()
+    mapChromeBar.dispose()
     appRuntime.dispose()
   })
 }
