@@ -23,11 +23,11 @@ import { KittyIntegration } from './KittyIntegration.js';
 import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
 import { MeetingBridge } from './MeetingBridge.js';
 import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
+import { VibeVoiceTranscriptSource } from './VibeVoiceTranscriptSource.js';
 import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
-import { Shuttle, defaultShuttleConfig, type ShuttleSnapshot } from './Shuttle.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 
@@ -59,6 +59,8 @@ const meetingBridge = new MeetingBridge({
   sourceFactory: {
     createParakeetSource: (parakeetOptions, callbacks) =>
       new ParakeetTranscriptSource(parakeetOptions, callbacks),
+    createVibeVoiceSource: (vibeVoiceOptions, callbacks) =>
+      new VibeVoiceTranscriptSource(vibeVoiceOptions, callbacks),
   },
 });
 
@@ -189,7 +191,11 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     // Shuttle's last tick and every connected remote agent's pushed
     // shuttle_snapshot. Useful for confirming that a fiber on (e.g.)
     // candide is dispatching there rather than locally.
-    shuttle: shuttle?.getCompositeSnapshot() ?? null,
+    // Stage 6 cutover — local Shuttle engine retired. Remote snapshot
+    // composition deferred to BEAM-distribution phase (see constitution-
+    // shuttle-standalone § Stage 7). Debug view no longer shows composite
+    // dispatch state; use `shuttle snapshot` CLI against the Elixir daemon.
+    shuttle: null,
   };
 });
 httpApi.setMeetingBridge(meetingBridge);
@@ -433,16 +439,6 @@ wss.on('connection', async (ws, req) => {
             deltas: Array<{ path: string; op: 'upsert' | 'delete'; content?: string }>;
           };
           fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
-        } else if (message.type === 'shuttle_snapshot') {
-          // Constitution `shuttle-remote-dispatch` — agent's per-tick
-          // report of its own dispatch state. Replaces this origin's
-          // prior snapshot wholesale; the agent always ships its full
-          // eligible/blocked/orphans, so the server treats each push as
-          // authoritative.
-          const { snapshot } = message.payload as { snapshot?: ShuttleSnapshot };
-          if (snapshot && shuttle) {
-            shuttle.setRemoteSnapshot(origin.id, snapshot);
-          }
         } else if (message.type === 'kanban-transition-result') {
           // Stage 4 — agent's reply to a `kanban-transition` round-trip.
           // Resolves or rejects the matching pending entry in the
@@ -480,15 +476,6 @@ wss.on('connection', async (ws, req) => {
         // instead of waiting for the 5s timeout. The user re-drags after
         // the agent reconnects.
         agentRequestCoordinator.drainOnDisconnect(disconnectedOrigin.id);
-        // Constitution `shuttle-remote-dispatch` — drop the agent's
-        // pushed shuttle_snapshot. The fiber-tree snapshot stays
-        // (last-known-good for kanban rendering); the dispatch
-        // snapshot doesn't, because dispatch state on the remote
-        // continues evolving without our visibility, and last-known-
-        // good would lie. The kanban can still surface "running" via
-        // the agent_sessions_update record of `shuttle-*` tmux
-        // sessions when they were last seen.
-        shuttle?.clearRemoteSnapshot(disconnectedOrigin.id);
         void browserStateCoordinator.broadcastCurrentState();
       }
       console.log(`Agent disconnected: ${originName}`);
@@ -630,69 +617,21 @@ server.listen(PORT, () => {
 });
 
 // ============================================================================
-// Shuttle — fiber-as-ticket dispatcher
+// Shuttle — retired in-process engine (Stage 6 cutover)
 // ============================================================================
 //
-// Polls every pinned local-origin city for constitution-tagged, non-draft,
-// unblocked, status!=closed fibers, dedupes by realpath of the fiber's md
-// file, and dispatches one single-shot worker per eligible fiber. Per the
-// constitution-shuttle invariants, Shuttle never edits fibers — agents do.
+// The local dispatch engine now lives in the standalone Elixir application
+// at ~/Documents/projects/shuttle/shuttle/. Start it with:
+//   cd ~/Documents/projects/shuttle/shuttle && mix run --no-halt
+// or (once released):
+//   shuttle start
 //
-// Multi-host alignment: the kanban view (HttpApiKanban) walks the same set
-// of pinned cities with the same realpath dedupe, so a constitution that
-// shows up as a card *also* gets a worker — and a fiber dispatched here is
-// the same physical fiber the kanban displays. Each worker spawns with its
-// contributing host as `cwd`, so `felt show <id>` from inside the worker
-// resolves the right file even when ids collide across hosts (see
-// gotchas/gotcha-kanban-fiber-id-collisions-across-cities).
-//
-// Default scope is unscoped (no queuePrefixes) now that draft-tag opt-out
-// is in place. Override via SHUTTLE_QUEUE_PREFIXES env var (comma-separated).
-// Set SHUTTLE_DISABLED=1 to skip startup entirely.
-function pinnedLocalFeltHosts(): string[] {
-  return cityPersistence
-    .getCities()
-    .filter(c => c.originId === 'local')
-    .map(c => c.path);
-}
-const shuttleHosts = pinnedLocalFeltHosts();
-const shuttle = (process.env.SHUTTLE_DISABLED === '1' || process.env.VITEST)
-  ? null
-  : new Shuttle({
-      ...defaultShuttleConfig({
-        feltHosts: shuttleHosts.length > 0 ? shuttleHosts : undefined,
-        queuePrefixes: process.env.SHUTTLE_QUEUE_PREFIXES
-          ? process.env.SHUTTLE_QUEUE_PREFIXES.split(',').map(s => s.trim()).filter(Boolean)
-          : undefined,
-      }),
-      // Stage 7 — suspend dispatch into fibers whose remote-origin
-      // writer (a portolan-agent) is currently disconnected. The check
-      // is a method call into the same FiberTreeSnapshotStore that
-      // backs the kanban's remote-origin reads, so dispatch suspension
-      // and the kanban's "waiting on <hostname>" badge stay aligned.
-      staleOriginsForFiber: (id) => fiberTreeSnapshotStore.getStaleOriginsForFiber(id),
-      // Constitution `shuttle-remote-dispatch` — defer to a connected
-      // remote agent for any fiber that lives in its snapshot. The
-      // agent runs its own pollShuttle() loop on the remote machine
-      // and dispatches workers there; the laptop's Shuttle stays out
-      // of its way. The 'local' originId guard is a defence-in-depth
-      // no-op (FiberTreeSnapshotStore only carries remote snapshots),
-      // kept explicit so a future local-snapshot extension doesn't
-      // silently turn into self-deferral.
-      deferredOriginsForFiber: (id) =>
-        fiberTreeSnapshotStore
-          .getOriginsForFiber(id)
-          .filter(originId => originId !== 'local' && originManager.isOriginConnected(originId)),
-    });
-if (shuttle) {
-  shuttle.start();
-  const scope = shuttleHosts.length > 0
-    ? `${shuttleHosts.length} pinned local cities`
-    : 'loom (no pins)';
-  console.log(`[Shuttle] started — polling ${scope} for eligible constitution fibers`);
-} else {
-  console.log('[Shuttle] disabled via SHUTTLE_DISABLED=1');
-}
+// Portolan's kanban still detects running workers by probing tmux sessions
+// (see src/Shuttle.ts utilities). The server's debug view no longer carries
+// composite dispatch state — query the Elixir daemon directly via
+//   shuttle snapshot
+// Remote snapshot composition (cross-host visibility) is deferred to the
+// BEAM-distribution phase (Stage 7 of constitution-shuttle-standalone).
 
 let shuttingDown = false;
 
@@ -713,7 +652,6 @@ function shutdown() {
   gitStatusManager.stop();
   eventWatcher.stop();
   meetingBridge.stop();
-  shuttle?.stop();
   wss.close();
   server.close(() => {
     process.exit(0);
