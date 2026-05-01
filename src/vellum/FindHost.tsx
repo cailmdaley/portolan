@@ -3,9 +3,29 @@
  *
  * Mirrors `KanbanHost`'s pattern: a portolan-owned shell that mounts inside
  * vellum's tab slot, lazy on tab-enter. Stage A landed the empty shell;
- * Stage B (this file) renders the cross-project Fibers tree against
- * `/global-fibers`. Future stages add Spatial (D), Files (E), Search (C),
- * Git (F), Recents (G) sections per
+ * Stages B + F filled in the cross-project Fibers tree and the per-city Git
+ * status. **Stage K (this file)** refactors the dashboard from a single-column
+ * scroll to the constitution's spatial grid:
+ *
+ *   ┌───────────────────────────────────────────────────────────┐
+ *   │ FIND · scope: <…>                                [Refresh]│  eyebrow
+ *   │ ⌕ search fibers + files…                                  │  search bar
+ *   ├──────────┬───────────────────────┬────────────────────────┤
+ *   │ CITIES*  │ FIBERS  (Stage B)     │ FILES*                 │
+ *   ├──────────┴───────────┬───────────┴────────────────────────┤
+ *   │ GIT  (Stage F)       │ RECENTS*                           │
+ *   └──────────────────────┴────────────────────────────────────┘
+ *   *placeholder until Stages D / C+E / G land.
+ *
+ * The placeholders are visually obvious (dashed border + shrugging note) so
+ * progress is legible without looking at the source. The search input above
+ * the grid is the seed for Stage C+E — empty today (no wiring yet); the
+ * portolan `/` hotkey can already focus it via the `find:focus-search` event
+ * (see main.ts), and the constitution's `// chord` (focused-but-empty input
+ * → escalate scope) is implemented in main.ts by inspecting this input's
+ * value when the next `/` arrives.
+ *
+ * Future stages add Spatial (D), Files (E), Search (C), Recents (G) per
  * [[ai-futures/portolan/design/constitution-portolan-navigation-layer]].
  *
  * Scope is communicated by `cityId`: undefined → global Find (cross-project
@@ -15,11 +35,17 @@
  * which sections render and where they aggregate.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { formatDistanceToNow } from 'date-fns'
 import { fiberStatusIcon } from '../ui/utils'
 import { getPortolanMountContext } from './mount'
+import { FIND_FOCUS_SEARCH_EVENT, FIND_SEARCH_INPUT_CLASS } from './find-shared'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
+
+// Re-export so existing callers that previously imported these from FindHost
+// (Stage K touched files) keep working without a churn-only change set.
+export { FIND_FOCUS_SEARCH_EVENT, FIND_SEARCH_INPUT_CLASS }
 
 /** Wire shape from `GET /global-fibers` — must match
  *  `server/src/HttpApiGlobalSearch.ts` `GlobalFiberNode`. */
@@ -102,6 +128,31 @@ export function FindHost({
   // refresh button and by future stages that want to rehydrate after a
   // stash creates a new fiber. Initial mount fetches once.
   const [refreshTick, setRefreshTick] = useState(0)
+
+  /**
+   * Search query state. Lifted to FindHost so Stages C+E can land their
+   * wiring (Fibers + Files columns flatten into a combined ranked list when
+   * non-empty) without restructuring the tree. Today: the input renders and
+   * is `/`-focusable, but no downstream filtering happens — the trees show
+   * regardless of query. Stage C plugs `fzy` ranking onto this value.
+   */
+  const [query, setQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Listen for the `/` hotkey's focus request. Dispatched by main.ts when
+  // the user wants to focus the search input from outside FindHost (e.g.,
+  // pressing `/` while vellum is already on Find). Window-level so we hear
+  // it regardless of which descendant currently owns focus.
+  useEffect(() => {
+    const handler = (): void => {
+      const el = searchInputRef.current
+      if (!el) return
+      el.focus()
+      el.select()
+    }
+    window.addEventListener(FIND_FOCUS_SEARCH_EVENT, handler)
+    return () => window.removeEventListener(FIND_FOCUS_SEARCH_EVENT, handler)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -214,29 +265,71 @@ export function FindHost({
     >
       <div
         style={{
-          maxWidth: '52rem',
+          maxWidth: '88rem',
           margin: '0 auto',
           padding: '1.75rem 1.5rem 4rem',
           display: 'flex',
           flexDirection: 'column',
-          gap: '1.25rem',
+          gap: '1rem',
         }}
       >
         <Eyebrow cityId={cityId} cityName={cityName} onRefresh={() => setRefreshTick((n) => n + 1)} />
-        <FibersSection
-          loading={loading}
-          error={error}
-          data={data}
-          cityById={cityById}
-          focusedCityId={cityId}
-          openCityKeys={openCityKeys}
-          setOpenCityKeys={setOpenCityKeys}
-          openFiberKeys={openFiberKeys}
-          setOpenFiberKeys={setOpenFiberKeys}
-          onOpenFiberInCity={onOpenFiberInCity}
+        <SearchBar
+          inputRef={searchInputRef}
+          value={query}
+          onChange={setQuery}
         />
-        <GitSection cities={gitCities} focusedCityId={cityId} />
-        <FutureSectionsNote />
+        <div
+          className="find-grid-top"
+          style={{
+            // Cities (sidebar) | Fibers (workhorse) | Files (workhorse).
+            // The two right columns split evenly; Cities is narrow because
+            // it's a city list, not a workspace.
+            display: 'grid',
+            gridTemplateColumns: 'minmax(13rem, 14rem) minmax(0, 1fr) minmax(0, 1fr)',
+            gap: '1rem',
+            alignItems: 'start',
+          }}
+        >
+          <PlaceholderColumn
+            title="Cities"
+            stage="D"
+            note="hex glyphs + workers nested under each city; click city → re-scope Find in place; click worker → kitty focus."
+          />
+          <FibersSection
+            loading={loading}
+            error={error}
+            data={data}
+            cityById={cityById}
+            focusedCityId={cityId}
+            openCityKeys={openCityKeys}
+            setOpenCityKeys={setOpenCityKeys}
+            openFiberKeys={openFiberKeys}
+            setOpenFiberKeys={setOpenFiberKeys}
+            onOpenFiberInCity={onOpenFiberInCity}
+          />
+          <PlaceholderColumn
+            title="Files"
+            stage="E"
+            note="react-arborist virtualized tree; async-load via the existing directory-listing WS; click → vellum file mode."
+          />
+        </div>
+        <div
+          className="find-grid-footer"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+            gap: '1rem',
+            alignItems: 'start',
+          }}
+        >
+          <GitSection cities={gitCities} focusedCityId={cityId} />
+          <PlaceholderColumn
+            title="Recents"
+            stage="G"
+            note="SQLite (viewer_kind, viewer_id, originId, path, last_viewed_at, view_count); top-N for current scope; fibers + files unified with kind badges."
+          />
+        </div>
       </div>
     </div>
   )
@@ -296,6 +389,149 @@ function Eyebrow({
         Refresh
       </button>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------------ *
+ * SearchBar — controlled search input. Wiring is Stage K only (state lift +
+ * `/` focus event). Stage C+E plugs the actual `fzy`-ranked results and the
+ * "trees flatten when query is non-empty" behaviour on top of `query`.
+ *
+ * The classname `FIND_SEARCH_INPUT_CLASS` is the contract main.ts uses to
+ * implement the `// chord`: when `/` arrives and the active element is this
+ * input, main.ts inspects `value.length` to decide between "type literally"
+ * and "escalate scope."
+ * ------------------------------------------------------------------------ */
+
+function SearchBar({
+  inputRef,
+  value,
+  onChange,
+}: {
+  inputRef: React.RefObject<HTMLInputElement>
+  value: string
+  onChange: (next: string) => void
+}): JSX.Element {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.55rem',
+        padding: '0.55rem 0.85rem',
+        border: '1px solid var(--border-muted, #D8D2C8)',
+        borderRadius: '4px',
+        background: 'var(--surface-raised, #FFFDF8)',
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          fontSize: '0.95rem',
+          opacity: 0.5,
+          fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, monospace)',
+        }}
+      >
+        ⌕
+      </span>
+      <input
+        ref={inputRef}
+        className={FIND_SEARCH_INPUT_CLASS}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search fibers + files…  (Stage C+E will wire ranking)"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          color: 'inherit',
+          font: 'inherit',
+          fontSize: '0.95rem',
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          aria-label="Clear search"
+          title="Clear"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            color: 'var(--text-muted, #7A7368)',
+            fontSize: '0.85rem',
+            padding: 0,
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------------ *
+ * PlaceholderColumn — visually obvious "stage X land here" block. Used for
+ * Cities (D), Files (C+E), Recents (G) until those stages ship. The dashed
+ * border + stage chip + one-line description make it clear at a glance what
+ * the column is reserved for, so progress is legible without diving into
+ * the source.
+ * ------------------------------------------------------------------------ */
+
+function PlaceholderColumn({
+  title,
+  stage,
+  note,
+}: {
+  title: string
+  stage: string
+  note: string
+}): JSX.Element {
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <SectionHeader title={title} />
+      <div
+        style={{
+          border: '1px dashed var(--border-muted, #D8D2C8)',
+          borderRadius: '4px',
+          padding: '1rem 0.85rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.5rem',
+          minHeight: '7rem',
+          background: 'transparent',
+        }}
+      >
+        <span
+          style={{
+            alignSelf: 'flex-start',
+            fontSize: '0.6rem',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            color: 'var(--text-muted, #7A7368)',
+            border: '1px solid var(--border-muted, #D8D2C8)',
+            padding: '0.1rem 0.4rem',
+            borderRadius: '2px',
+          }}
+        >
+          stage {stage}
+        </span>
+        <p
+          style={{
+            margin: 0,
+            fontSize: '0.78rem',
+            opacity: 0.6,
+            lineHeight: 1.5,
+          }}
+        >
+          {note}
+        </p>
+      </div>
+    </section>
   )
 }
 
@@ -777,29 +1013,6 @@ function FiberRow({
 }
 
 /* ------------------------------------------------------------------------ *
- * FutureSectionsNote — visible reminder of what's coming so the placeholder
- * text from Stage A doesn't disappear silently. Removed once the dashboard
- * fills in (Stages C–G).
- * ------------------------------------------------------------------------ */
-
-function FutureSectionsNote(): JSX.Element {
-  return (
-    <div
-      style={{
-        fontSize: '0.7rem',
-        opacity: 0.45,
-        lineHeight: 1.5,
-        borderTop: '1px dashed var(--border-muted, #E5DFD5)',
-        paddingTop: '0.75rem',
-      }}
-    >
-      Coming in subsequent stages: Spatial · Files · Search (cross-cutting fibers + files) ·
-      Recents. See [[ai-futures/portolan/design/constitution-portolan-navigation-layer]].
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------------ *
  * GitSection — per-city git status (Stage F). Lifted from
  * `CityHUDHeader.renderGitDetail`. The HUD's per-city layout stacks here:
  * one row per local city, with the focused city pinned to the top. Global
@@ -1120,7 +1333,9 @@ function GitDetailRows({ status }: { status: CityGitStatus }): JSX.Element {
       status.lastCommitMessage.length > 64
         ? status.lastCommitMessage.slice(0, 64) + '…'
         : status.lastCommitMessage
-    const time = status.lastCommitTime ? relativeTime(status.lastCommitTime) : null
+    const time = status.lastCommitTime
+      ? formatDistanceToNow(status.lastCommitTime, { addSuffix: true })
+      : null
     rows.push(
       <div
         key="commit"
@@ -1205,18 +1420,6 @@ function GitFileCounts({
   return <span style={{ color }}>{parts.join(' ')}</span>
 }
 
-function relativeTime(timestamp: number): string {
-  const now = Date.now()
-  const diff = now - timestamp
-  const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
-}
-
 /* ------------------------------------------------------------------------ *
  * Helpers.
  * ------------------------------------------------------------------------ */
@@ -1256,6 +1459,10 @@ export function injectFindHostStyles(): void {
     .find-fiber-row { transition: background 80ms linear; }
     .find-fiber-row:hover {
       background: var(--surface-hover, rgba(0, 0, 0, 0.04));
+    }
+    .${FIND_SEARCH_INPUT_CLASS}::placeholder {
+      color: var(--text-muted, #7A7368);
+      opacity: 0.55;
     }
   `
   document.head.appendChild(style)

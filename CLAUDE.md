@@ -130,7 +130,7 @@ Same hook, same event stream, same sinks — the tailer just runs in a different
 
 When adding new code, these are the rules new code will violate if you don't know:
 
-- **New modal?** Call `lockModalBackground()` from `src/ui/modalBackgroundLock.ts` on show, return value on hide. `aria-modal="true"` alone doesn't hide siblings — AT and the agent-browser snapshot still see the map through any full-viewport modal. Stacked modals also need window-capture Escape + body-sibling inert.
+- **New modal?** Default to `AppDialog` from `src/ui/AppDialog.tsx` (Radix-backed; focus trap + escape + portal + scroll lock for free) — that's the Stage K successor. Only fall back to the legacy `lockModalBackground()` from `src/ui/modalBackgroundLock.ts` when growing an *existing* imperative modal class (`NewWorkerDialog`, `GlobalSearchPalette`, `PlaygroundViewer`, `KanbanLaunchButton`); the legacy ones weren't migrated because the open-points are scattered. For the legacy path: call `lockModalBackground()` on show, return value on hide. `aria-modal="true"` alone doesn't hide siblings — AT and the agent-browser snapshot still see the map through any full-viewport modal. Stacked modals also need window-capture Escape + body-sibling inert.
 - **New scrollable overlay?** Add it to Camera's `closest()` exemption list, or window-wheel preventDefault eats overlay scroll and zooms the map instead.
 - **Popovers near vellum?** z-index ≥ 10000. `.vellum-modal-scrim` is 9999.
 - **Touching SSH?** `execFileAsync` + `shellEscape()`; single-quote remote commands (double-quotes expand locally); `--ssh-host` is the base name; one origin = one live agent (duplicate sockets race); `reconnectTunnel` must `ssh -O exit` first.

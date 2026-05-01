@@ -1,3 +1,5 @@
+import { formatDistanceToNowStrict } from 'date-fns'
+
 import type { City, GitStatus, Session } from '../state/types'
 import { escapeHtml } from './utils'
 import type { NewWorkerDialog } from './NewWorkerDialog'
@@ -165,16 +167,17 @@ export class CityHUDHeader {
     content.innerHTML = rows.join('')
   }
 
+  /**
+   * Thin wrapper over date-fns `formatDistanceToNowStrict` with `addSuffix`,
+   * kept as an instance method so the call sites read the same as before.
+   * Stage K (constitution-portolan-navigation-layer) replaced the bespoke
+   * "Xm ago" / "Xh ago" / "Xd ago" formatter with the library version; the
+   * one duplicate in `vellum/FindHost.tsx` was retired in the same pass.
+   * Output is slightly more verbose ("5 minutes ago" rather than "5m ago")
+   * but consistent across the app and not bespoke-to-maintain.
+   */
   private relativeTime(timestamp: number): string {
-    const now = Date.now()
-    const diff = now - timestamp
-    const minutes = Math.floor(diff / 60000)
-    if (minutes < 1) return 'just now'
-    if (minutes < 60) return `${minutes}m ago`
-    const hours = Math.floor(minutes / 60)
-    if (hours < 24) return `${hours}h ago`
-    const days = Math.floor(hours / 24)
-    return `${days}d ago`
+    return formatDistanceToNowStrict(timestamp, { addSuffix: true })
   }
 
   private renderActions(city: City): void {
