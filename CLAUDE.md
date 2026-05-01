@@ -1,7 +1,7 @@
 (portolan)=
 # portolan-v2
 
-Spatial map for Claude sessions. Click to go there. **This repo is local-only (no git remote).** The `docs/` subdirectory is a separate repo (`cailmdaley/tapestries`) — that's the only thing that pushes.
+Spatial map for Claude sessions. Click to go there. **This repo is local-only (no git remote).**
 
 ## Core Concepts
 
@@ -21,53 +21,23 @@ cd server && npm test       # ~282 tests
 
 Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
 
-### Static Tapestry (GitHub Pages)
-
-Deployed to `cailmdaley.github.io/tapestries/` from repo `cailmdaley/tapestries` (branch: `live`).
-
-**Repo structure:** `cailmdaley/tapestries` is a GitHub template repo with two branches:
-- `main` — template: viewer + demo data. Cloning gives a working tapestry site.
-- `live` — real data. GitHub Pages serves from here.
-
-**Local setup:** `docs/` is a clone of `cailmdaley/tapestries`. `~/.felt/tapestries` symlinks to it. `felt export --format tapestry` writes to `~/.felt/tapestries/data/{city}/`, which lands in `docs/data/{city}/`.
-
-**Export workflow** (replaces `publish-tapestry.sh`):
-```bash
-cd ~/Documents/projects/some-project
-felt export --format tapestry                        # writes to ~/.felt/tapestries/data/{project}/
-cd ~/Documents/projects/portolan/docs       # = the tapestries repo
-git checkout live
-git add -A && git commit -m "update" && git push
-```
-
-**Viewer rebuild** (rare — only when portolan frontend changes):
-```bash
-cd ~/Documents/projects/portolan
-npm run build:static                        # rebuilds index.html + assets/ into docs/
-cd docs
-git checkout main && git add index.html assets/ fonts/ && git commit -m "rebuild viewer" && git push
-git checkout live && git merge main && git push
-```
-
-On other machines, `~/.felt/tapestries/` is a standalone clone (not inside portolan). Same export command works everywhere.
-
 ## Architecture
 
 ```
 Server (Node, :4004)          Browser (Three.js, :5173)
 ├── SessionTracker            ├── ZoneRenderer (hex meshes)
 ├── CityManager               ├── Camera (sieve drag)
-├── OriginManager (remote)    ├── CityHUD (fibers, search)
-├── FiberReader               ├── VellumWorkspace (reader, on `t`)
-├── EvidenceReader            ├── GlobalSearchPalette (/ key)
-├── RecentFileTracker         ├── RecentWorkerBar (top wire)
-├── KittyIntegration          ├── ContextMenu
+├── OriginManager (remote)    ├── MapChromeBar (vellum + workers)
+├── FiberReader               ├── Vellum workspace (`v`/`k`/`/`)
+├── EvidenceReader            ├── Find dashboard (fibers/files/git)
+├── RecentFileTracker         ├── WorkerPicker / NewWorkerDialog
+├── KittyIntegration          ├── ContextMenu / PlaygroundViewer
 └── index.ts (state, WS)      └── main.ts
 ```
 
 Server polls tmux → builds state → broadcasts. File touches flow via hooks (POST `/hook/file-touch` → `RecentFileTracker`). Browser renders → user clicks → routes to Kitty.
 
-**File viewer = vellum.** Main app opens files via `openVellumWorkspaceModal({ initialFilePath })` in `src/vellum/mount.tsx` → `WorkspaceMount` → `FiberPage`'s `FileModeView` → vellum's `FileViewerPage` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Files and fibers share one workspace shell (the standalone `openVellumFileModal()` retired 2026-04-25 — see `card-redesign/file-modal-absorbs-into-workspace`). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js. The static GitHub Pages viewer uses `openVellumStaticFileModal()` with `createPortolanStaticAdapter` — same vellum modal, read-only adapter that resolves flat files under `${staticDataBase}/files/`.
+**File viewer = vellum.** Main app opens files via `openVellumWorkspaceModal({ initialFilePath })` in `src/vellum/mount.tsx` → `WorkspaceMount` → `FiberPage`'s `FileModeView` → vellum's `FileViewerPage` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Files and fibers share one workspace shell (the standalone `openVellumFileModal()` retired 2026-04-25 — see `card-redesign/file-modal-absorbs-into-workspace`). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js.
 
 ## Visual Language
 
@@ -130,7 +100,7 @@ Same hook, same event stream, same sinks — the tailer just runs in a different
 
 When adding new code, these are the rules new code will violate if you don't know:
 
-- **New modal?** Default to `AppDialog` from `src/ui/AppDialog.tsx` (Radix-backed; focus trap + escape + portal + scroll lock for free) — that's the Stage K successor. Only fall back to the legacy `lockModalBackground()` from `src/ui/modalBackgroundLock.ts` when growing an *existing* imperative modal class (`NewWorkerDialog`, `GlobalSearchPalette`, `PlaygroundViewer`, `KanbanLaunchButton`); the legacy ones weren't migrated because the open-points are scattered. For the legacy path: call `lockModalBackground()` on show, return value on hide. `aria-modal="true"` alone doesn't hide siblings — AT and the agent-browser snapshot still see the map through any full-viewport modal. Stacked modals also need window-capture Escape + body-sibling inert.
+- **New modal?** Default to `AppDialog` from `src/ui/AppDialog.tsx` (Radix-backed; focus trap + escape + portal + scroll lock for free). Only fall back to the legacy `lockModalBackground()` from `src/ui/modalBackgroundLock.ts` when growing an existing imperative modal class such as `NewWorkerDialog` or `PlaygroundViewer`. For the legacy path: call `lockModalBackground()` on show, return value on hide. `aria-modal="true"` alone doesn't hide siblings — AT and the agent-browser snapshot still see the map through any full-viewport modal. Stacked modals also need window-capture Escape + body-sibling inert.
 - **New scrollable overlay?** Add it to Camera's `closest()` exemption list, or window-wheel preventDefault eats overlay scroll and zooms the map instead.
 - **Popovers near vellum?** z-index ≥ 10000. `.vellum-modal-scrim` is 9999.
 - **Touching SSH?** `execFileAsync` + `shellEscape()`; single-quote remote commands (double-quotes expand locally); `--ssh-host` is the base name; one origin = one live agent (duplicate sockets race); `reconnectTunnel` must `ssh -O exit` first.
@@ -157,6 +127,5 @@ Core doc fibers. For more: `felt ls -s all pattern` or `felt ls -s all gotcha`.
 | Worker Swarms | `murmuration-workers` |
 | Tapestry → Vellum | `tapestry-dissolves` |
 | DAG Export (/tapestry) | `absorb-claims-dashboard-into` |
-| Static Tapestry | `static-rhizome-dashboard-on` |
 | Extraction Pattern | `extraction-pattern` |
-| Voice Ingress (Parakeet) | `constitution-portolan-voice-ingress`; daemon at `server/voice-ingress/parakeet_daemon.py`, Node wrapper at `server/src/ParakeetTranscriptSource.ts` |
+| Voice Ingress | `constitution-portolan-voice-ingress`; Parakeet live mic daemon at `server/voice-ingress/parakeet_daemon.py` / `server/src/ParakeetTranscriptSource.ts`; VibeVoice-ASR file/batch daemon at `server/voice-ingress/vibevoice_asr_daemon.py` / `server/src/VibeVoiceTranscriptSource.ts` |
