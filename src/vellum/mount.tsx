@@ -71,6 +71,8 @@ function KanbanHost({
   cityName: propCityName,
   onOpenWorker,
   onOpenFiberInCity,
+  kanbanInitialScope: propInitialScope,
+  onKanbanScopeChange: onPropScopeChange,
 }: {
   cityId?: string
   cityName?: string
@@ -91,6 +93,15 @@ function KanbanHost({
    * in the host vellum's collection.
    */
   onOpenFiberInCity?: (cityId: string, slug: string) => void
+  /**
+   * Initial kanban scope, from URL restore. `'global'` mounts the kanban
+   * in global scope even when the modal has a cityId. Undefined = inherit
+   * city scope from the modal's cityId. */
+  kanbanInitialScope?: string | 'global'
+  /**
+   * Fired when the kanban flips scope in place (⊕ Global → global). Lets
+   * the parent update the URL fragment. `null` = explicit global. */
+  onKanbanScopeChange?: (scopeCityId: string | null | undefined) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
@@ -105,11 +116,14 @@ function KanbanHost({
   // component even though the parent (openCityWorkspace / openGlobalKanban)
   // owns the outer cityId prop. We manage effectiveCityId locally:
   // initialized from the prop, then overridable by onPromoteToGlobal.
-  const [effectiveCityId, setEffectiveCityId] = useState<string | undefined>(propCityId)
+  // The initialScope prop (from URL restore) overrides the default.
+  const [effectiveCityId, setEffectiveCityId] = useState<string | undefined>(
+    propInitialScope === 'global' ? undefined : propCityId,
+  )
   // Reset when the parent prop changes (user navigates to a different city).
   useEffect(() => {
-    setEffectiveCityId(propCityId)
-  }, [propCityId])
+    setEffectiveCityId(propInitialScope === 'global' ? undefined : propCityId)
+  }, [propCityId, propInitialScope])
   const cityId = effectiveCityId
   const cityName = cityId === propCityId ? propCityName : undefined
 
@@ -164,7 +178,12 @@ function KanbanHost({
       // assumed a thumb-index that doesn't appear on the kanban tab).
       onStashClick: () => setStashOpen(true),
       // Bug 2: promote city-scoped kanban to global scope in place.
-      onPromoteToGlobal: () => setEffectiveCityId(undefined),
+      // Also notify the parent so it can mirror the scope into the URL
+      // fragment — without this, refresh reverts to city-scoped.
+      onPromoteToGlobal: () => {
+        setEffectiveCityId(undefined)
+        onPropScopeChange?.(null)
+      },
     })
     kanbanRef.current = kanban
     const cityScope =
@@ -1020,6 +1039,20 @@ export interface OpenWorkspaceModalOptions {
    *  `null` ⇒ explicit clear (⊕ Global), `string` ⇒ specific cityId,
    *  `undefined` ⇒ scope inherits from modal cityId. */
   onFindScopeChange?: (scopeCityId: string | null | undefined) => void
+  /**
+   * Initial scope for the kanban tab, analogous to `findInitialScope`.
+   * When `'global'`, KanbanHost mounts with global scope even when
+   * the modal has a cityId (used by URL restore to honour
+   * `&scope=global&mode=kanban`). Undefined means inherit from modal
+   * cityId (city-scoped). */
+  kanbanInitialScope?: string | 'global'
+  /**
+   * Fired when the kanban flips from city scope to global in place
+   * (via the ⊕ Global button). Mirrors `onFindScopeChange` — lets the
+   * host update the URL fragment so refresh restores the chosen scope.
+   * `null` ⇒ explicit global; kanban does not emit other values (no
+   * in-place city re-scoping). */
+  onKanbanScopeChange?: (scopeCityId: string | null | undefined) => void
   /** Fired exactly once when the modal closes (Escape key, click on the
    *  ×, programmatic `handle.close()`). Lets the host reset its tracking
    *  state — without this, `activeWorkspaceHandle` becomes a stale
@@ -1243,6 +1276,8 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       cityName={opts.cityName}
       onOpenWorker={opts.onOpenWorker}
       onOpenFiberInCity={opts.onOpenFiberInCity}
+      kanbanInitialScope={opts.kanbanInitialScope}
+      onKanbanScopeChange={opts.onKanbanScopeChange}
     />
   )
   // The find slot mirrors the kanban slot's shape: vellum lazy-mounts on

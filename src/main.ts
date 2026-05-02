@@ -503,6 +503,9 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // `localScopeCityId` inside FindHost; we mirror that into the URL
       // fragment so reload restores the user's chosen scope.
       onFindScopeChange: handleFindScopeChange,
+      // Kanban scope — same pattern: ⊕ Global -> URL scope update.
+      onKanbanScopeChange: handleKanbanScopeChange,
+      kanbanInitialScope: opts.initialScope,
       // Hand the city name through so vellum's IndexView can label its
       // cartouche correctly. Without this, the eyebrow above "Index"
       // collapses to nothing — honest, but less informative than naming
@@ -547,6 +550,18 @@ function handleFindScopeChange(newScope: string | null | undefined): void {
     activeWorkspaceScopeOverride = null
   } else {
     activeWorkspaceScopeOverride = newScope
+  }
+  pushCurrentUrl()
+}
+
+/** Wired through `openVellumWorkspaceModal({onKanbanScopeChange})` so that
+ *  when the user clicks ⊕ Global in a city-scoped kanban, the URL fragment
+ *  updates to `&scope=global` and survives refresh.
+ *  Kanban only emits `null` (global); cityId strings and undefined are not
+ *  emitted (the kanban has no in-place city re-scoping). */
+function handleKanbanScopeChange(newScope: string | null | undefined): void {
+  if (newScope === null) {
+    activeWorkspaceScopeOverride = SCOPE_GLOBAL
   }
   pushCurrentUrl()
 }
@@ -625,6 +640,10 @@ function openGlobalKanban(): void {
       // surface scope, but if the user flips to Find from here the change
       // path goes through this same modal handle.
       onFindScopeChange: handleFindScopeChange,
+      // Defensive: wire the kanban scope callback even though there's no
+      // city scope to promote from (the ⊕ Global button is hidden when
+      // cityId is undefined).
+      onKanbanScopeChange: handleKanbanScopeChange,
       // The global kanban has no fiber graph (cityId is undefined) — every
       // card click needs to pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
