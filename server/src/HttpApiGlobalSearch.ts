@@ -45,6 +45,39 @@ import { score as fzyScore, hasMatch } from 'fzy.js';
 // Wire types
 // ============================================================================
 
+// ============================================================================
+// /global-graph wire types (synthetic AstraGraph for global vellum)
+// ============================================================================
+
+// ============================================================================
+// Wire types
+// ============================================================================
+
+/**
+ * Synthetic graph node for /global-graph. Mirrors vellum's GraphNode shape
+ * (id, slug, label, status, tags, kind, createdAt, depth) so the server can
+ * produce an AstraGraph-compatible response without importing vellum types.
+ */
+export interface GraphNodeWorld {
+  id: string;
+  slug: string;
+  label: string;
+  status: string;
+  tags: string[];
+  kind: string;
+  createdAt: string;
+  depth: number;
+}
+
+/**
+ * Synthetic graph link for /global-graph.
+ */
+export interface GraphLinkWorld {
+  source: string;
+  target: string;
+  kind: 'contains' | 'data-flow' | 'cites';
+}
+
 export interface GlobalSearchHit {
   /** Fiber id (slug). For local fibers, project-relative when `cityId` set. */
   id: string;
@@ -152,6 +185,11 @@ interface HttpApiGlobalSearchOptions {
    * the right collection.
    */
   cities?: Array<{ id: string; path: string }>;
+  /**
+   * Optional display-name map for pinned cities, keyed by cityId. When
+   * provided, the global graph uses the city name instead of the id hash.
+   */
+  cityNames?: Record<string, string>;
   /** Remote-origin snapshot provider (Stage 3a wiring). */
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   /** Default cap for `?limit=`. Defaults to 30. */
@@ -174,6 +212,7 @@ export class HttpApiGlobalSearch {
   private readonly feltHost: string;
   private readonly feltHosts: string[] | undefined;
   private readonly cities: Array<{ id: string; path: string }> | undefined;
+  private readonly cityNames: Record<string, string>;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private readonly defaultLimit: number;
   private readonly maxLimit: number;
@@ -188,6 +227,7 @@ export class HttpApiGlobalSearch {
     this.feltHost = opts.feltHost ?? join(homedir(), 'loom');
     this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
     this.cities = opts.cities && opts.cities.length > 0 ? opts.cities : undefined;
+    this.cityNames = opts.cityNames ?? {};
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
     this.defaultLimit = opts.defaultLimit ?? 30;
     this.maxLimit = opts.maxLimit ?? 200;
@@ -283,6 +323,83 @@ export class HttpApiGlobalSearch {
       console.error('[GlobalSearch] tree failed:', msg);
       this.json(res, 500, { error: msg });
     }
+  }
+
+  /**
+   * GET /global-graph — synthetic vellum AstraGraph for global Vellum mode.
+   *
+   * Returns a graph where each pinned city is a top-level node, and the
+   * root fibers of each city are its children. Used by the portolan adapter
+   * when vellum mounts without a cityId (global view). The IndexView shows
+   * city nodes at the top; clicking one navigates into that city's fiber
+   * tree. `rootSlug` is omitted so vellum lands on the IndexView at the
+   * global level (the synthetic index of cities).
+   *
+   * Response shape: { nodes: GraphNode[], links: GraphLink[] }
+   * matching vellum's AstraGraph type.
+   */
+  async handleGlobalGraph(_url: URL, res: ServerResponse): Promise<void> {
+    try {
+      const graph = await this.globalGraph();
+      this.json(res, 200, graph);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      console.error('[GlobalSearch] global-graph failed:', msg);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  /**
+   * Build the synthetic global graph: city nodes + their root fiber children.
+   * Each city node uses `__city__:<cityId>` as its slug, which the portolan
+   * adapter intercepts in getFiberContent to route to the correct city.
+   */
+  async globalGraph(): Promise<{ nodes: GraphNodeWorld[]; links: GraphLinkWorld[] }> {
+    const cities = await this.tree();
+    const nodes: GraphNodeWorld[] = [];
+    const links: GraphLinkWorld[] = [];
+    const now = new Date().toISOString();
+
+    for (const city of cities) {
+      const citySlug = `__city__:${city.cityId}`;
+      const cityId = city.cityId ?? city.originId;
+      const cityLabel = this.cityNames[cityId] ?? city.hostname ?? cityId;
+
+      // Find the city's root fibers (no parent within the city)
+      const rootFibers = city.fibers.filter((f) => !f.parentId || !city.fibers.some((cf) => cf.id === f.parentId));
+
+      // City node: depth 0 so it appears as a top-level entry like any
+      // root fiber. The `kind` set to '__city__' labels it in the adapter.
+      nodes.push({
+        id: citySlug,
+        slug: citySlug,
+        label: cityLabel,
+        status: city.isStale ? 'suspended' : 'open',
+        tags: [],
+        kind: '__city__',
+        createdAt: now,
+        depth: 0,
+      });
+
+      // City root fibers: children of the city node. Depth 1 so they
+      // appear indented under the city in the thumb-index tree.
+      for (const fiber of rootFibers) {
+        const node: GraphNodeWorld = {
+          id: fiber.id,
+          slug: fiber.id,
+          label: fiber.name,
+          status: fiber.status,
+          tags: fiber.tags,
+          kind: fiber.kind,
+          createdAt: now,
+          depth: 1,
+        };
+        nodes.push(node);
+        links.push({ source: citySlug, target: fiber.id, kind: 'contains' });
+      }
+    }
+
+    return { nodes, links };
   }
 
   /**

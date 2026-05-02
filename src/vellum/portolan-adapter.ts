@@ -186,6 +186,28 @@ function projectAnnotationRow(r: Record<string, unknown>, fallbackSlug: string):
   };
 }
 
+/**
+ * Server-side synthetic graph node shape from /global-graph.
+ * Mirrors the server's GraphNodeWorld but typed locally so the adapter
+ * can map it to vellum's GraphNode without importing server types.
+ */
+interface GraphNodeWorld {
+  id: string;
+  slug: string;
+  label: string;
+  status: string;
+  tags: string[];
+  kind: string;
+  createdAt: string;
+  depth: number;
+}
+
+interface GraphLinkWorld {
+  source: string;
+  target: string;
+  kind: 'contains' | 'data-flow' | 'cites';
+}
+
 export interface PortolanAdapterOptions {
   /** City ID for graph-scoped queries. Optional because many calls are city-agnostic. */
   cityId?: string;
@@ -234,7 +256,25 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getFiberContent(slug: string): Promise<FiberContent | null> {
-      if (!opts.cityId) return null;
+      if (!opts.cityId) {
+        // Global vellum mode: resolve the slug to a city via /fiber-locate,
+        // then fetch the fiber content from that city's graph. This lets
+        // the thumb-index navigate into any fiber from the global IndexView
+        // — clicking a city child fiber resolves the city, fetches content,
+        // and vellum renders it within the same mount (the graph stays
+        // global, but individual fiber content comes from the correct city).
+        const locateRes = await fetch(
+          `${API_BASE}/fiber-locate?slug=${encodeURIComponent(slug)}`,
+        ).catch(() => null);
+        if (!locateRes || !locateRes.ok) return null;
+        const locate = await locateRes.json() as { cityId?: string };
+        const cityId = locate.cityId;
+        if (!cityId) return null;
+        const url = `${API_BASE}/fiber/${encodeSlug(slug)}?cityId=${encodeURIComponent(cityId)}`;
+        const res = await fetch(url).catch(() => null);
+        if (!res || res.status === 404 || !res.ok) return null;
+        return res.json() as Promise<FiberContent>;
+      }
       const url = `${API_BASE}/fiber/${encodeSlug(slug)}?cityId=${encodeURIComponent(opts.cityId)}`;
       const res = await fetch(url).catch(() => null);
       if (!res || res.status === 404 || !res.ok) return null;
@@ -242,7 +282,32 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getAstraGraph(): Promise<AstraGraph> {
-      if (!opts.cityId) return { nodes: [], links: [] };
+      if (!opts.cityId) {
+        // Global vellum mode: fetch the synthetic graph from the server.
+        // The response contains city nodes + their root fiber children.
+        const res = await fetch(`${API_BASE}/global-graph`).catch(() => null);
+        if (!res || !res.ok) return { nodes: [], links: [] };
+        const graph = await res.json() as { nodes: GraphNodeWorld[]; links: GraphLinkWorld[] };
+        // Map server types to vellum's GraphNode/GraphLink. The fields
+        // overlap; we spread with client-side defaults for vellum-specific
+        // fields the server doesn't emit (tags default, tempered, etc.).
+        return {
+          nodes: graph.nodes.map((n) => ({
+            id: n.id,
+            slug: n.slug,
+            label: n.label,
+            status: n.status,
+            tags: n.tags ?? [],
+            kind: n.kind ?? '',
+            createdAt: n.createdAt,
+          })),
+          links: graph.links.map((l) => ({
+            source: l.source,
+            target: l.target,
+            kind: l.kind,
+          })),
+        };
+      }
       const res = await fetch(`${API_BASE}/astra/graph?cityId=${encodeURIComponent(opts.cityId)}`).catch(
         () => null,
       );

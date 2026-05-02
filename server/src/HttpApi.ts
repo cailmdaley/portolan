@@ -322,6 +322,16 @@ export class HttpApi {
       return true;
     }
 
+    // /global-graph — synthetic vellum AstraGraph for global Vellum mode.
+    // Returns city nodes + their root fiber children so the IndexView can
+    // render the global synthetic index without a cityId. Built per-request
+    // so newly-pinned cities appear without restart.
+    if (url.pathname === '/global-graph' && req.method === 'GET') {
+      const searchApi = this.resolveGlobalSearchApi();
+      await searchApi.handleGlobalGraph(url, res);
+      return true;
+    }
+
     // /global-files-search — Stage E of constitution-portolan-navigation-
     // layer. Cross-project file search (filename-only); the file-tree
     // *browse* path stays on the WebSocket directoryListing protocol
@@ -617,9 +627,17 @@ export class HttpApi {
     if (this.globalSearchApiCache?.key === cacheKey) {
       return this.globalSearchApiCache.api;
     }
+    // Build city name lookup from live CityLookup so the global graph can
+    // display city names instead of opaque id hashes.
+    const cityNames: Record<string, string> = {};
+    for (const c of localCities) {
+      const live = this.cityLookup.getCityById(c.id);
+      if (live?.name) cityNames[c.id] = live.name;
+    }
     const api = new HttpApiGlobalSearch({
       feltHosts: localPins.length > 0 ? localPins : undefined,
       cities: localCities,
+      cityNames,
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
       cacheTtlMs: 1000,
     });
