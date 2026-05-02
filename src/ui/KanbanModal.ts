@@ -703,18 +703,43 @@ export class KanbanModal {
       el.append(outcome)
     }
 
-    // Tags + date row
+    // Tags + date row, with Feature 4 inline tag editor.
     const meta = document.createElement('div')
     meta.className = 'kbn-card-meta'
 
     const tagWrap = document.createElement('div')
     tagWrap.className = 'kbn-card-tags'
-    const visibleTags = (card.tags ?? []).filter(t => t !== 'constitution').slice(0, 4)
-    for (const t of visibleTags) {
+    const visibleTags = (card.tags ?? []).filter(t => t !== 'constitution')
+    const moreCount = Math.max(0, visibleTags.length - 4)
+    const shownTags = visibleTags.slice(0, 4)
+    for (const t of shownTags) {
       const chip = document.createElement('span')
       chip.className = 'kbn-tag'
       chip.textContent = t
       tagWrap.append(chip)
+    }
+    if (moreCount > 0) {
+      const more = document.createElement('span')
+      more.className = 'kbn-tag'
+      more.textContent = `+${moreCount}`
+      tagWrap.append(more)
+    }
+
+    // Feature 4: tag edit button — opens an inline tag editor on the card.
+    // Shown on all cards that aren't stale-origin (mutation has nowhere to
+    // land when the agent is disconnected).
+    if (!isStale) {
+      const editBtn = document.createElement('button')
+      editBtn.type = 'button'
+      editBtn.className = 'kbn-tag-edit-btn'
+      editBtn.setAttribute('aria-label', 'Edit tags')
+      editBtn.title = 'Edit tags'
+      editBtn.textContent = '✎'
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this.openTagEditor(el, card, tagWrap, editBtn)
+      })
+      tagWrap.append(editBtn)
     }
 
     const date = document.createElement('div')
@@ -814,6 +839,198 @@ export class KanbanModal {
       window.clearInterval(this.pollTimer)
       this.pollTimer = null
     }
+  }
+
+  /** POST endpoint for tag edits, with `?cityId=` when scoped. */
+  private kanbanTagsUrl(): string {
+    const base = `${this.apiBase}/kanban/tags`
+    if (!this.cityScope) return base
+    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
+  }
+
+  /**
+   * Open an inline tag editor on a kanban card, replacing the tag display
+   * with removable chips + add input + save/cancel buttons.
+   *
+   * The editor manages its own DOM inside the card: it caches the original
+   * tag set, renders editable chips (× to remove) and an add-input, and on
+   * save POSTs the full set to /kanban/tags. On error it shows the banner
+   * and restores the original chips; on success `fetchAndRender` refreshes
+   * the entire board.
+   */
+  private openTagEditor(
+    cardEl: HTMLElement,
+    card: KanbanCard,
+    tagWrap: HTMLElement,
+    editBtn: HTMLButtonElement,
+  ): void {
+    const originalTags = (card.tags ?? []).filter(t => t !== 'constitution')
+
+    // Build the editing container.
+    const editor = document.createElement('div')
+    editor.className = 'kbn-tag-editor'
+
+    // Chips row: each tag as a removable chip + the text input replacing
+    // the add-button concept (the input doubles as the "add new" affordance).
+    const chipsRow = document.createElement('div')
+    chipsRow.className = 'kbn-tag-editor-chips'
+
+    const currentTags = [...originalTags]
+    const renderChips = (): void => {
+      chipsRow.innerHTML = ''
+      for (let i = 0; i < currentTags.length; i++) {
+        const t = currentTags[i]
+        const chip = document.createElement('span')
+        chip.className = 'kbn-tag kbn-tag-editable'
+
+        const label = document.createElement('span')
+        label.textContent = t
+
+        const remBtn = document.createElement('button')
+        remBtn.type = 'button'
+        remBtn.className = 'kbn-tag-remove'
+        remBtn.setAttribute('aria-label', `Remove tag ${t}`)
+        remBtn.textContent = '×'
+        remBtn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          currentTags.splice(i, 1)
+          renderChips()
+          addInput.focus()
+        })
+
+        chip.append(label, remBtn)
+        chipsRow.append(chip)
+      }
+
+      // Re-append the add-input after the chips row rebuild.
+      chipsRow.append(addInput)
+    }
+
+    // Text input for adding a new tag. Enter commits the tag + stays in edit
+    // mode so the user can add multiple tags without re-clicking ✎.
+    const addInput = document.createElement('input')
+    addInput.type = 'text'
+    addInput.className = 'kbn-tag-add-input'
+    addInput.placeholder = 'new tag…'
+    addInput.setAttribute('aria-label', 'Add a new tag')
+    addInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return
+      e.preventDefault()
+      const val = addInput.value.trim()
+      if (val && !currentTags.includes(val)) {
+        currentTags.push(val)
+        renderChips()
+      }
+      addInput.value = ''
+    })
+    // Stop propagation on mousedown so clicks on the input don't trigger
+    // the card-level click handler (which opens the fiber in vellum).
+    addInput.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    // Action row: Save + Cancel buttons.
+    const actionsRow = document.createElement('div')
+    actionsRow.className = 'kbn-tag-editor-actions'
+
+    const saveBtn = document.createElement('button')
+    saveBtn.type = 'button'
+    saveBtn.className = 'kbn-action kbn-action-inFlight'
+    saveBtn.textContent = 'Save'
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      // Commit any pending input value first.
+      const pending = addInput.value.trim()
+      if (pending && !currentTags.includes(pending)) {
+        currentTags.push(pending)
+      }
+      addInput.value = ''
+      saveBtn.disabled = true
+      saveBtn.textContent = 'Saving…'
+      void this.saveTags(card, currentTags, cardEl, editor, tagWrap, editBtn)
+    })
+
+    const cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.className = 'kbn-action kbn-action-drafts'
+    cancelBtn.textContent = 'Cancel'
+    cancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.restoreTagDisplay(originalTags, tagWrap, editBtn)
+    })
+
+    actionsRow.append(cancelBtn, saveBtn)
+
+    renderChips()
+    editor.append(chipsRow, actionsRow)
+
+    // Replace the tagWrap content with the editor.
+    tagWrap.innerHTML = ''
+    tagWrap.append(editor)
+
+    // Focus the input after mount.
+    window.requestAnimationFrame(() => addInput.focus())
+  }
+
+  /**
+   * POST the tag set to /kanban/tags and handle the response. On success,
+   * refetch the board (the card will re-render with the new tags). On
+   * failure, restore the original display and show the error banner.
+   */
+  private async saveTags(
+    card: KanbanCard,
+    tags: string[],
+    _cardEl: HTMLElement,
+    _editor: HTMLElement,
+    tagWrap: HTMLElement,
+    editBtn: HTMLButtonElement,
+  ): Promise<void> {
+    const originalTags = (card.tags ?? []).filter(t => t !== 'constitution')
+    try {
+      const res = await fetch(this.kanbanTagsUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, tags }),
+      })
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Tags save failed: ${res.status}`)
+      }
+      this.announce(`Tags saved for “${card.name}”.`)
+      // Refetch — the server response includes the refreshed card, but
+      // a full refetch is simplest and keeps the board consistent.
+      void this.fetchAndRender()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      this.showBanner(`Couldn't save tags for “${card.name}”: ${msg}`, 'error')
+      this.announce(`Tags save failed: ${msg}`)
+      this.restoreTagDisplay(originalTags, tagWrap, editBtn)
+    }
+  }
+
+  /**
+   * Restore the tag display after a cancel or save failure. Removes the
+   * editor DOM and re-inserts the original tag chips + edit button.
+   */
+  private restoreTagDisplay(
+    originalTags: string[],
+    tagWrap: HTMLElement,
+    editBtn: HTMLButtonElement,
+  ): void {
+    tagWrap.innerHTML = ''
+    const moreCount = Math.max(0, originalTags.length - 4)
+    const shownTags = originalTags.slice(0, 4)
+    for (const t of shownTags) {
+      const chip = document.createElement('span')
+      chip.className = 'kbn-tag'
+      chip.textContent = t
+      tagWrap.append(chip)
+    }
+    if (moreCount > 0) {
+      const more = document.createElement('span')
+      more.className = 'kbn-tag'
+      more.textContent = `+${moreCount}`
+      tagWrap.append(more)
+    }
+    tagWrap.append(editBtn)
   }
 
   /** Update DOM that depends on `cityScope` after a scope swap. */
@@ -1549,7 +1766,105 @@ export class KanbanModal {
         padding: 1px 5px;
         border-radius: 2px;
       }
-      .kbn-card-date {
+      /* Feature 4: tag edit affordance — ✎ button next to tags */
+      .kbn-tag-edit-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        font-size: 11px;
+        line-height: 1;
+        color: #C8BFB3;
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+        flex-shrink: 0;
+      }
+      .kbn-tag-edit-btn:hover,
+      .kbn-tag-edit-btn:focus-visible {
+        color: #7A7068;
+        background: rgba(46, 42, 38, 0.08);
+        border-color: rgba(122, 112, 104, 0.3);
+        outline: none;
+      }
+      .kbn-tag-edit-btn:focus-visible {
+        outline: 1px dashed #7A7068;
+        outline-offset: 1px;
+      }
+      /* Tag editor: inline card-level editor for adding/removing tags */
+      .kbn-tag-editor {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        width: 100%;
+      }
+      .kbn-tag-editor-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+      }
+      .kbn-tag-editable {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        background: rgba(46, 42, 38, 0.07);
+        padding: 1px 2px 1px 5px;
+      }
+      .kbn-tag-remove {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 2px;
+        font-size: 11px;
+        line-height: 1;
+        color: #9A7068;
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease;
+      }
+      .kbn-tag-remove:hover,
+      .kbn-tag-remove:focus-visible {
+        color: #A03030;
+        background: rgba(160, 48, 48, 0.10);
+        outline: none;
+      }
+      .kbn-tag-add-input {
+        flex: 0 1 80px;
+        min-width: 60px;
+        max-width: 120px;
+        height: 18px;
+        padding: 0 5px;
+        border: 1px solid rgba(122, 112, 104, 0.22);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.6);
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10px;
+        color: #2E2A26;
+        outline: none;
+      }
+      .kbn-tag-add-input:focus {
+        border-color: rgba(122, 112, 104, 0.5);
+        background: #FFFFFF;
+      }
+      .kbn-tag-add-input::placeholder {
+        color: #C8BFB3;
+      }
+      .kbn-tag-editor-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .kbn-card-d
         font-family: var(--font-mono, 'JetBrains Mono', monospace);
         font-size: 10.5px;
         color: #B8AC9E;

@@ -340,6 +340,15 @@ export class HttpApi {
       return true;
     }
 
+    // POST /kanban/tags — Feature 4 (edit tags from kanban cards). Same
+    // city-scope resolution as the kanban read and transition routes.
+    if (url.pathname === '/kanban/tags' && req.method === 'POST') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleTags(req, res);
+      return true;
+    }
+
     // POST /fiber/create — vellum's stash button (constitution-stash-button).
     // Must precede the `/fiber/` prefix match below; otherwise it routes to
     // handleFiberContent and returns "Missing cityId parameter".

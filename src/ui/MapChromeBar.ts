@@ -50,6 +50,9 @@ interface MapChromeBarOptions {
    *  embedded grid renders fresh counts there. Mirrors KanbanLaunchButton's
    *  pre-Stage-H behaviour. */
   isKanbanModalOpen?: () => boolean
+  /** Scope the K-chip badge to the same kanban view the K chip would open.
+   *  Null means global; a city id means `/kanban?cityId=<id>`. */
+  getKanbanBadgeCityId?: () => string | null
   /** Override poll interval (ms). Default 30s. */
   pollIntervalMs?: number
 }
@@ -362,7 +365,11 @@ export class MapChromeBar {
 
   private async refreshAwaitingReview(): Promise<void> {
     try {
-      const res = await fetch(`${this.apiBase}/kanban`)
+      const cityId = this.opts.getKanbanBadgeCityId?.() ?? null
+      const url = cityId
+        ? `${this.apiBase}/kanban?cityId=${encodeURIComponent(cityId)}`
+        : `${this.apiBase}/kanban`
+      const res = await fetch(url)
       if (!res.ok) return
       const data = await res.json() as { totals?: { awaitingReview?: number } }
       const n = data.totals?.awaitingReview ?? 0

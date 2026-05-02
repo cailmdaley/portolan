@@ -773,6 +773,137 @@ export class HttpApiKanban {
     return this.toCard(refreshed, host, originId, refreshedById, undefined, canonicalAfter);
   }
 
+  /**
+   * POST /kanban/tags — replace the full tag set on a fiber, preserving all
+   * other frontmatter fields. Returns the refreshed KanbanCard so the
+   * frontend can update in place.
+   *
+   * Body: { fiberId, tags: string[] }
+   *
+   * Route resolution is the same as applyTransition (same merge lookup,
+   * same remote-origin routing) — the feature respects city scope / owning
+   * origin per the constitution acceptance criteria.
+   */
+  async handleTags(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: { fiberId: string; tags: string[] };
+    try {
+      body = await readJsonBody<{ fiberId: string; tags: string[] }>(req);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 400, { error: `bad request body: ${msg}` });
+      return;
+    }
+    if (!body || typeof body.fiberId !== 'string' || !Array.isArray(body.tags)) {
+      this.json(res, 400, { error: 'fiberId and tags[] are required' });
+      return;
+    }
+
+    try {
+      const updated = await this.applyTags(body.fiberId, body.tags);
+      this.json(res, 200, { ok: true, card: updated });
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      console.error('[Kanban] tags edit failed:', msg);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  /**
+   * Resolve a fiber by id, replace its tags in the frontmatter, and return
+   * the refreshed card. Follows the same multi-host / remote-origin routing
+   * as applyTransition:
+   *
+   *   - Local origin: read the file, apply tag replacement via
+   *     mutateTagsInPlace({ replace }), write back, clear cache, re-read.
+   *   - Remote origin: route through remoteTransitionExecutor if wired
+   *     (the executor\'s `target` is unused for tags but the path goes
+   *     through the same correlation-ID layer), or throw a clear error.
+   */
+  async applyTags(fiberId: string, tags: string[]): Promise<KanbanCard> {
+    const { merged } = await this.collectFibers();
+    const entry = merged.find(({ fiber }) => fiber.id === fiberId);
+    if (!entry) throw new Error(`fiber not found: ${fiberId}`);
+    const { fiber, host, originId, canonicalPath } = entry;
+
+    // Normalize: trim each tag, remove empties, deduplicate while preserving
+    // insertion order. The 'constitution' tag is always kept — removing it
+    // from a kanban-visible card would make the fiber disappear from the
+    // board on the next refresh, which is user-hostile.
+    const seen = new Set<string>();
+    const normalized: string[] = ['constitution'];
+    for (const t of tags) {
+      const trimmed = t.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      normalized.push(trimmed);
+    }
+
+    if (originId !== 'local') {
+      // Remote origin: try to route through the executor. The executor\'s
+      // `target` field is unused for tags but the path goes through the
+      // same correlation-ID layer so the remote agent can apply the change.
+      if (!this.remoteTransitionExecutor) {
+        throw new Error(
+          `remote-origin tag edits require remoteTransitionExecutor wiring ` +
+            `(fiber ${fiberId} is on origin '${originId}')`,
+        );
+      }
+      const relPath = relativeFeltPath(fiber);
+      // Ship the full tag set as a JSON payload on the `target` field;
+      // the remote executor interprets it as a tag-replace command.
+      await this.remoteTransitionExecutor({
+        originId,
+        fiberId,
+        path: relPath,
+        target: `__tags__${JSON.stringify(normalized)}` as KanbanTarget,
+        nowIso: '',
+      });
+      this.clearFiberPoolCache();
+      const refreshedById = new Map<string, Fiber>();
+      if (this.remoteSnapshotsProvider) {
+        for (const snap of this.remoteSnapshotsProvider()) {
+          if (snap.originId !== originId) continue;
+          for (const f of snap.fibers) refreshedById.set(f.id, f);
+        }
+      }
+      const refreshed = refreshedById.get(fiberId);
+      if (!refreshed) throw new Error(`remote fiber disappeared: ${fiberId}`);
+      return this.toCard(refreshed, host, originId, refreshedById);
+    }
+
+    // Local origin: read file, mutate tags, write back.
+    const path = this.fiberPath(host, fiber);
+    if (!existsSync(path)) throw new Error(`fiber file missing: ${path}`);
+
+    const raw = readFileSync(path, 'utf-8');
+    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if (!fmMatch) throw new Error('file has no YAML frontmatter; refusing to mutate');
+
+    const fmBlock = fmMatch[1];
+    const after = raw.slice(fmMatch[0].length);
+    const fmLines = fmBlock.split(/\r?\n/);
+    mutateTagsInPlace(fmLines, { replace: normalized });
+    const updated = `---\n${fmLines.join('\n')}\n---\n${after}`;
+
+    if (updated !== raw) {
+      writeFileSync(path, updated, 'utf-8');
+    }
+    this.clearFiberPoolCache();
+
+    // Re-read this host so the returned card reflects the new tags.
+    const afterFibers = await getAllFibers(host);
+    const refreshedById = new Map(afterFibers.map(f => [f.id, f]));
+    const refreshed = refreshedById.get(fiberId);
+    if (!refreshed) throw new Error(`fiber disappeared after write: ${fiberId}`);
+    let canonicalAfter: string | undefined;
+    try {
+      canonicalAfter = realpathSync(this.fiberPath(host, refreshed));
+    } catch {
+      canonicalAfter = undefined;
+    }
+    return this.toCard(refreshed, host, originId, refreshedById, undefined, canonicalAfter);
+  }
+
   // ---------------------------------------------------------------------------
 
   private toCard(
@@ -1106,8 +1237,42 @@ export function applyTargetToFrontmatter(
  */
 export function mutateTagsInPlace(
   fmLines: string[],
-  opts: { add?: string[]; remove?: string[] },
+  opts: { add?: string[]; remove?: string[]; replace?: string[] },
 ): void {
+  // Full replace mode: set the tag list to exactly `replace`, normalized.
+  // Ignored when `add` or `remove` are set so diff-style callers still work.
+  if (opts.replace !== undefined && opts.add === undefined && opts.remove === undefined) {
+    const newTags = [...new Set(opts.replace.map(t => t.trim()).filter(Boolean))];
+
+    // Find and replace the existing tags block.
+    for (let i = 0; i < fmLines.length; i++) {
+      if (/^tags:\s*$/.test(fmLines[i])) {
+        // Block-list form — collect existing tags and see if unchanged.
+        const existing: string[] = [];
+        let j = i + 1;
+        while (j < fmLines.length && /^[ \t]+- /.test(fmLines[j])) {
+          const m = fmLines[j].match(/^[ \t]+- (.+)$/);
+          if (m) existing.push(m[1].trim().replace(/^["']|["']$/g, '').trim());
+          j++;
+        }
+        if (newTags.length === existing.length && newTags.every((t, ix) => t === existing[ix])) return;
+        fmLines.splice(i + 1, j - i - 1, ...newTags.map(t => `  - ${t}`));
+        return;
+      }
+      // Inline form: `tags: [a, b]`
+      const inline = fmLines[i].match(/^tags:\s*\[(.*)\]\s*$/);
+      if (inline) {
+        const existing = inline[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '').trim()).filter(Boolean);
+        if (newTags.length === existing.length && newTags.every((t, ix) => t === existing[ix])) return;
+        fmLines.splice(i, 1, 'tags:', ...newTags.map(t => `  - ${t}`));
+        return;
+      }
+    }
+    // No tags block at all — append fresh.
+    fmLines.push('tags:', ...newTags.map(t => `  - ${t}`));
+    return;
+  }
+
   const add = opts.add ?? [];
   const remove = opts.remove ?? [];
   if (add.length === 0 && remove.length === 0) return;
