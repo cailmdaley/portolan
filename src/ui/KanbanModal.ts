@@ -1,15 +1,9 @@
 /**
  * KanbanModal — global view of constitution-tagged fibers grouped by lifecycle.
  *
- * Five columns in a horizontal scroll carousel (Drafts → Open → Awaiting → Tempered →
- * Composted). Three columns are visible at a time; scroll-snap lands on column starts.
- * Scrolling loops: past Composted wraps to Drafts, and before Drafts wraps to Composted.
- *
- * The loop uses a 9-column DOM track with start/end clones so the reset is seamless
- * (two of three visible columns survive the wrap, masking the instantaneous jump).
- *
- * Awaiting-review is visually emphasized — that's the human-action queue.
- * Tempered and Composted are scroll-reachable edge cases.
+ * Five flat columns: Drafts → Open → Awaiting → Tempered → Composted.
+ * Each column scrolls vertically; the body scrolls horizontally when 5 columns
+ * don't all fit. About 3 columns are visible at typical widths, hinting at more.
  *
  * Interaction: drag a card to any column (HTML5 DnD). Both surfaces POST to
  * /kanban/transition with {fiberId, target}. Click a card body to open in vellum.
@@ -265,13 +259,7 @@ export class KanbanModal {
     }
 
     this.body = document.createElement('div')
-    this.body.className = 'kbn-body kbn-carousel'
-    this.body.addEventListener('scrollend', () => this.handleCarouselScroll())
-    let scrollTimer: number | null = null
-    this.body.addEventListener('scroll', () => {
-      if (scrollTimer) window.clearTimeout(scrollTimer)
-      scrollTimer = window.setTimeout(() => this.handleCarouselScroll(), 150)
-    })
+    this.body.className = 'kbn-body'
 
     // aria-live region for transition announcements ("Moved 'X' to Tempered.")
     // — invisible but read by screen readers and observable in the a11y tree.
@@ -404,62 +392,14 @@ export class KanbanModal {
     this.body.innerHTML = ''
     this.body.classList.remove('kbn-body-zoomed')
 
-    // Build the 5-column carousel with lead/trail clones for seamless looping.
-    // 11 total columns: 3 lead clones + 5 real + 3 trail clones.
-    // Scroll-snap lands on column starts. Initial view: Drafts | InFlight | Awaiting.
     const colOrder: ColumnKind[] = ['drafts', 'inFlight', 'awaitingReview', 'tempered', 'composted']
-    const makeCol = (kind: ColumnKind) =>
-      this.renderColumn(kind, columns[kind], staleness, kind === 'tempered' ? temperedTotal : undefined)
-
-    const real = colOrder.map(makeCol)
-    const lead = colOrder.slice(2).map(makeCol)   // awaitingReview, tempered, composted
-    const trail = colOrder.slice(0, 3).map(makeCol) // drafts, inFlight, awaitingReview
-
-    for (const col of [...lead, ...real, ...trail]) {
-      col.classList.add('kbn-carousel-col')
-      this.body.append(col)
+    for (const kind of colOrder) {
+      this.body.append(
+        this.renderColumn(kind, columns[kind], staleness, kind === 'tempered' ? temperedTotal : undefined),
+      )
     }
-
-    // Snap to the real section start (index 3 = Drafts) after layout.
-    requestAnimationFrame(() => {
-      if (!this.body) return
-      const children = this.body.children
-      const realStart = children[3] as HTMLElement | undefined
-      if (realStart) this.body.scrollLeft = realStart.offsetLeft
-    })
 
     this.lastResponse = data
-  }
-
-  /**
-   * Loop detection for the horizontal carousel. Called on `scrollend` (and
-   * debounced `scroll` fallback). If the snap landed in a clone zone, jump
-   * silently to the equivalent real position so the loop is seamless.
-   */
-  private handleCarouselScroll(): void {
-    if (!this.body) return
-    if (this.body.classList.contains('kbn-body-zoomed')) return
-
-    const children = Array.from(this.body.children) as HTMLElement[]
-    if (children.length < 11) return
-
-    let pos = 0
-    let bestDist = Infinity
-    for (let i = 0; i < children.length; i++) {
-      const dist = Math.abs(children[i].offsetLeft - this.body.scrollLeft)
-      if (dist < bestDist) {
-        bestDist = dist
-        pos = i
-      }
-    }
-
-    if (pos < 3) {
-      const target = children[pos + 5]
-      if (target) this.body.scrollLeft = target.offsetLeft
-    } else if (pos > 7) {
-      const target = children[pos - 5]
-      if (target) this.body.scrollLeft = target.offsetLeft
-    }
   }
 
   /**
@@ -910,9 +850,8 @@ export class KanbanModal {
         border-color: rgba(178, 78, 60, 0.5);
         color: #8B3A28;
       }
-      /* Carousel: horizontal scroll with snap-to-column. Five equal columns,
-         three visible at a time (~33% each). Lead/trail clones sit offscreen
-         so the loop resets are seamless. */
+      /* Five-column flex grid. Columns all flex equally; horizontal scrolling
+         appears when they don't all fit. Vertical scroll is per-column. */
       .kbn-body {
         flex: 1;
         display: flex;
@@ -920,41 +859,32 @@ export class KanbanModal {
         padding: 12px;
         overflow-x: auto;
         overflow-y: hidden;
-        scroll-behavior: smooth;
-        scroll-snap-type: x mandatory;
-        -webkit-overflow-scrolling: touch;
         min-height: 0;
       }
-      .kbn-carousel-col {
-        flex: 0 0 calc((100% - 20px) / 3); /* account for two 10px gaps per 3-col view */
-        scroll-snap-align: start;
-        min-width: 0;
-        max-width: calc((100% - 20px) / 3);
+      .kbn-col {
+        flex: 1 1 0;
+        min-width: 260px;
+        display: flex; flex-direction: column;
+        min-height: 0;
+        max-height: 100%;
+        background: #F4F0E8;
+        border: 1px solid rgba(46, 42, 38, 0.10);
+        border-radius: 3px;
+        overflow: hidden;
+        transition: background 150ms ease, border-color 150ms ease;
       }
-      /* When zoomed, the carousel scroll is gated and the body becomes a
-         normal flex grid. */
+      /* When zoomed, the body becomes a single-column view. */
       .kbn-body.kbn-body-zoomed {
         overflow-x: hidden;
-        scroll-snap-type: none;
-      }
-      .kbn-body.kbn-body-zoomed .kbn-carousel-col {
-        flex: 0 0 auto;
-        min-width: unset;
-        max-width: none;
       }
       .kbn-body.kbn-body-zoomed .kbn-col:not(.kbn-col-zoomed) {
         display: none;
       }
       .kbn-body.kbn-body-zoomed .kbn-col-zoomed {
-        width: 100%;
         flex: 1;
+        min-width: 0;
       }
-      /* When zoomed, tile cards as a CSS grid filling the available width
-         rather than stacking in a single column. The zoom's whole point is
-         to reveal more of a column's contents at once; a single stack inside
-         a full-width view leaves most of the screen empty. auto-fill +
-         minmax keeps cards at a readable minimum and packs as many per row
-         as the width allows. */
+      /* When zoomed, tile cards as a CSS grid filling the available width. */
       .kbn-col-zoomed .kbn-col-list {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1370,9 +1300,9 @@ export class KanbanModal {
       }
 
       @media (max-width: 1100px) {
-        .kbn-carousel-col {
+        .kbn-col {
           flex: 0 0 85%;
-          max-width: 85%;
+          min-width: 0;
         }
       }
     `
