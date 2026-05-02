@@ -1,7 +1,7 @@
 /**
  * CLI Provider — abstracts which coding agent CLI is in use.
  *
- * Currently supports "claude" and "codex".
+ * Currently supports "claude", "codex", and "pi".
  * Set PORTOLAN_CLI=codex to detect/launch Codex instead of Claude.
  */
 
@@ -43,7 +43,19 @@ const codex: CliProvider = {
   remoteShell: 'bash',
 };
 
-export const providers: Record<string, CliProvider> = { claude, codex };
+const pi: CliProvider = {
+  cliName: 'pi',
+  processNames: ['pi'],
+  launchCmd: ({ continue: cont } = {}) => {
+    let cmd = 'pi';
+    if (cont) cmd += ' --continue';
+    return cmd;
+  },
+  localShell: 'zsh',
+  remoteShell: 'bash',
+};
+
+export const providers: Record<string, CliProvider> = { claude, codex, pi };
 
 /** Get a provider by name, defaulting to claude */
 export function getProvider(name: string): CliProvider {
