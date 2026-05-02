@@ -1,51 +1,29 @@
 /**
  * KanbanModal — global view of constitution-tagged fibers grouped by lifecycle.
  *
- * Three columns (left to right): Drafts → Open → Awaiting review/Tempered.
- *   - Awaiting review  : closed && !tempered. The "your move" queue.
- *   - Open             : status open/active (dispatchable; Shuttle picks them up).
- *   - Tempered         : closed && tempered:true (recent N, de-emphasized).
+ * Five columns in a horizontal scroll carousel (Drafts → Open → Awaiting → Tempered →
+ * Composted). Three columns are visible at a time; scroll-snap lands on column starts.
+ * Scrolling loops: past Composted wraps to Drafts, and before Drafts wraps to Composted.
+ *
+ * The loop uses a 9-column DOM track with start/end clones so the reset is seamless
+ * (two of three visible columns survive the wrap, masking the instantaneous jump).
  *
  * Awaiting-review is visually emphasized — that's the human-action queue.
- * Tempered is compact since it's "for the record."
+ * Tempered and Composted are scroll-reachable edge cases.
  *
- * Interaction surfaces (the same transition is available two ways):
- *   1. Drag a card to a column (HTML5 DnD; mouse-driven).
- *   2. Click a transition button on the card (keyboard + a11y-tree-driven).
- *      Each card carries explicit "Move to X" buttons for the columns it
- *      isn't currently in. This is the primary path for agent-browser
- *      snapshot tests: the buttons appear in the a11y tree with stable
- *      aria-labels regardless of mouse hover state.
- *
- * Both surfaces POST to /kanban/transition with {fiberId, target}. The card
- * is moved optimistically, then the kanban refetches to reconcile. Errors
- * surface as a transient banner inside the modal and roll the optimistic
- * change back.
- *
- * Click anywhere on the card body (not on action buttons or drag handles)
- * → opens the fiber's md in vellum.
- *
- * Hotkey: `k` (registered in main.ts) — opens vellum on the Kanban tab.
- *
- * Lifecycle: this class is mount-only. It is constructed by `KanbanHost`
- * (vellum's workspace slot) per visit, mounted with `mount(host, opts)`
- * into a host element supplied by vellum, and torn down with `unmount()`
- * on tab-away. The host owns scrim, Escape ordering, and lockBackground
- * — `KanbanModal` only renders the column grid, the cards, and the
- * transition wiring. Stage 8 of vellum-kanban retired the standalone
- * full-viewport mode (`show()` / `hide()` / `showForCity()` plus a
- * `kbn-scrim` sibling and a top-right close button); the embed is the
- * sole entry point now.
+ * Interaction: drag a card to any column (HTML5 DnD). Both surfaces POST to
+ * /kanban/transition with {fiberId, target}. Click a card body to open in vellum.
  */
 
 /** Column identifier — also doubles as the API target. */
-type ColumnKind = 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered'
+type ColumnKind = 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
 
 const COLUMN_TITLES: Record<ColumnKind, string> = {
   drafts: 'Drafts',
   inFlight: 'Open',
   awaitingReview: 'Awaiting review',
   tempered: 'Tempered',
+  composted: 'Composted',
 }
 
 const COLUMN_BLURBS: Record<ColumnKind, string> = {
@@ -53,6 +31,7 @@ const COLUMN_BLURBS: Record<ColumnKind, string> = {
   inFlight: 'Constitution-tagged, not closed. Workers running show ▸; otherwise queued.',
   awaitingReview: 'Your move — agent flipped the fiber to closed.',
   tempered: 'Recent — accepted by Cail.',
+  composted: 'Discarded — mooted, superseded, or did not survive review.',
 }
 
 // (Action-button helpers removed — drag is the only transition surface for
@@ -122,8 +101,9 @@ interface KanbanResponse {
     inFlight: KanbanCard[]
     awaitingReview: KanbanCard[]
     tempered: KanbanCard[]
+    composted: KanbanCard[]
   }
-  totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number }
+  totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number; composted: number }
   temperedTotal: number
   /**
    * Per-origin freshness, keyed by `originId`. Always includes `local` and
@@ -285,7 +265,13 @@ export class KanbanModal {
     }
 
     this.body = document.createElement('div')
-    this.body.className = 'kbn-body'
+    this.body.className = 'kbn-body kbn-carousel'
+    this.body.addEventListener('scrollend', () => this.handleCarouselScroll())
+    let scrollTimer: number | null = null
+    this.body.addEventListener('scroll', () => {
+      if (scrollTimer) window.clearTimeout(scrollTimer)
+      scrollTimer = window.setTimeout(() => this.handleCarouselScroll(), 150)
+    })
 
     // aria-live region for transition announcements ("Moved 'X' to Tempered.")
     // — invisible but read by screen readers and observable in the a11y tree.
@@ -412,24 +398,68 @@ export class KanbanModal {
     const { columns, totals, temperedTotal, staleness } = data
     this.statusEl.textContent =
       `${totals.drafts} drafts · ${totals.inFlight} open · ` +
-      `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered`
+      `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered` +
+      (totals.composted > 0 ? ` · ${totals.composted} composted` : '')
 
     this.body.innerHTML = ''
-    // Three columns wide. The third column is internally split top/bottom:
-    // Awaiting review (the human-action queue) on top, Tempered (the record)
-    // below — visually subordinate within the same column.
-    const third = document.createElement('div')
-    third.className = 'kbn-third'
-    third.append(
-      this.renderColumn('awaitingReview', columns.awaitingReview, staleness),
-      this.renderColumn('tempered', columns.tempered, staleness, temperedTotal),
-    )
+    this.body.classList.remove('kbn-body-zoomed')
 
-    this.body.append(
-      this.renderColumn('drafts', columns.drafts, staleness),
-      this.renderColumn('inFlight', columns.inFlight, staleness),
-      third,
-    )
+    // Build the 5-column carousel with lead/trail clones for seamless looping.
+    // 11 total columns: 3 lead clones + 5 real + 3 trail clones.
+    // Scroll-snap lands on column starts. Initial view: Drafts | InFlight | Awaiting.
+    const colOrder: ColumnKind[] = ['drafts', 'inFlight', 'awaitingReview', 'tempered', 'composted']
+    const makeCol = (kind: ColumnKind) =>
+      this.renderColumn(kind, columns[kind], staleness, kind === 'tempered' ? temperedTotal : undefined)
+
+    const real = colOrder.map(makeCol)
+    const lead = colOrder.slice(2).map(makeCol)   // awaitingReview, tempered, composted
+    const trail = colOrder.slice(0, 3).map(makeCol) // drafts, inFlight, awaitingReview
+
+    for (const col of [...lead, ...real, ...trail]) {
+      col.classList.add('kbn-carousel-col')
+      this.body.append(col)
+    }
+
+    // Snap to the real section start (index 3 = Drafts) after layout.
+    requestAnimationFrame(() => {
+      if (!this.body) return
+      const children = this.body.children
+      const realStart = children[3] as HTMLElement | undefined
+      if (realStart) this.body.scrollLeft = realStart.offsetLeft
+    })
+
+    this.lastResponse = data
+  }
+
+  /**
+   * Loop detection for the horizontal carousel. Called on `scrollend` (and
+   * debounced `scroll` fallback). If the snap landed in a clone zone, jump
+   * silently to the equivalent real position so the loop is seamless.
+   */
+  private handleCarouselScroll(): void {
+    if (!this.body) return
+    if (this.body.classList.contains('kbn-body-zoomed')) return
+
+    const children = Array.from(this.body.children) as HTMLElement[]
+    if (children.length < 11) return
+
+    let pos = 0
+    let bestDist = Infinity
+    for (let i = 0; i < children.length; i++) {
+      const dist = Math.abs(children[i].offsetLeft - this.body.scrollLeft)
+      if (dist < bestDist) {
+        bestDist = dist
+        pos = i
+      }
+    }
+
+    if (pos < 3) {
+      const target = children[pos + 5]
+      if (target) this.body.scrollLeft = target.offsetLeft
+    } else if (pos > 7) {
+      const target = children[pos - 5]
+      if (target) this.body.scrollLeft = target.offsetLeft
+    }
   }
 
   /**
@@ -743,8 +773,9 @@ export class KanbanModal {
     this.body.classList.toggle('kbn-body-zoomed', !wasZoomed)
   }
 
-  private pillKind(card: KanbanCard): 'open' | 'active' | 'closed' | 'tempered' {
+  private pillKind(card: KanbanCard): 'open' | 'active' | 'closed' | 'tempered' | 'composted' {
     if (card.tempered === true) return 'tempered'
+    if (card.tempered === false) return 'composted'
     if (card.status === 'closed') return 'closed'
     if (card.status === 'active') return 'active'
     return 'open'
@@ -752,6 +783,7 @@ export class KanbanModal {
 
   private pillLabel(card: KanbanCard): string {
     if (card.tempered === true) return 'tempered'
+    if (card.tempered === false) return 'composted'
     return card.status || 'open'
   }
 
@@ -878,55 +910,44 @@ export class KanbanModal {
         border-color: rgba(178, 78, 60, 0.5);
         color: #8B3A28;
       }
+      /* Carousel: horizontal scroll with snap-to-column. Five equal columns,
+         three visible at a time (~33% each). Lead/trail clones sit offscreen
+         so the loop resets are seamless. */
       .kbn-body {
         flex: 1;
-        display: grid;
-        grid-template-columns: 1fr 1fr 1.15fr;
+        display: flex;
         gap: 10px;
         padding: 12px;
-        overflow: hidden;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scroll-behavior: smooth;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
         min-height: 0;
       }
-      /* Third column: awaiting review on top, tempered below. */
-      .kbn-third {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        min-height: 0;
+      .kbn-carousel-col {
+        flex: 0 0 calc((100% - 20px) / 3); /* account for two 10px gaps per 3-col view */
+        scroll-snap-align: start;
+        min-width: 0;
+        max-width: calc((100% - 20px) / 3);
       }
-      /* Awaiting and Tempered split 50-50 inside the third column. */
-      .kbn-third .kbn-col {
-        flex: 1;
-        min-height: 0;
+      /* When zoomed, the carousel scroll is gated and the body becomes a
+         normal flex grid. */
+      .kbn-body.kbn-body-zoomed {
+        overflow-x: hidden;
+        scroll-snap-type: none;
       }
-      .kbn-third .kbn-col-tempered {
-        opacity: 0.94;
+      .kbn-body.kbn-body-zoomed .kbn-carousel-col {
+        flex: 0 0 auto;
+        min-width: unset;
+        max-width: none;
       }
-
-      /* Zoom: clicking a column header expands it to fill the modal body. */
-      .kbn-body.kbn-body-zoomed .kbn-col:not(.kbn-col-zoomed),
-      .kbn-body.kbn-body-zoomed .kbn-third:not(:has(.kbn-col-zoomed)) {
-        display: none;
-      }
-      .kbn-body.kbn-body-zoomed .kbn-third {
-        display: flex;
-      }
-      /* When zooming a member of the third column, hide the sibling. */
-      .kbn-body.kbn-body-zoomed .kbn-third > .kbn-col:not(.kbn-col-zoomed) {
+      .kbn-body.kbn-body-zoomed .kbn-col:not(.kbn-col-zoomed) {
         display: none;
       }
       .kbn-body.kbn-body-zoomed .kbn-col-zoomed {
-        grid-column: 1 / -1;
+        width: 100%;
         flex: 1;
-        opacity: 1;
-      }
-      /* When the zoomed column lives inside .kbn-third (awaitingReview or
-         tempered), kbn-third itself only occupies its 1.15fr grid track —
-         the zoomed column would fill the third only, not the body. Span
-         kbn-third across all tracks when it contains a zoomed column so
-         the zoom genuinely fills the body. */
-      .kbn-body.kbn-body-zoomed .kbn-third:has(.kbn-col-zoomed) {
-        grid-column: 1 / -1;
       }
       /* When zoomed, tile cards as a CSS grid filling the available width
          rather than stacking in a single column. The zoom's whole point is
@@ -965,6 +986,14 @@ export class KanbanModal {
         opacity: 0.92;
       }
       .kbn-col-drafts .kbn-col-title { color: #7A7068; font-style: italic; }
+      /* Composted column: desaturated Earth tone, visually sits at the
+         boundary between Tempered and "the unbuilt" (Drafts on wrap). */
+      .kbn-col-composted {
+        background: #EAE6DE;
+        border-color: rgba(122, 112, 104, 0.35);
+        box-shadow: inset 0 0 0 1px rgba(122, 112, 104, 0.12);
+      }
+      .kbn-col-composted .kbn-col-title { color: #7A7068; font-style: italic; }
       .kbn-col-tempered {
         background: #EFEBE3;
       }
@@ -1038,6 +1067,21 @@ export class KanbanModal {
       }
       .kbn-card-awaitingReview {
         border-color: rgba(154, 123, 53, 0.45);
+      }
+      .kbn-card-composted {
+        padding: 6px 10px;
+        gap: 4px;
+        background: #F2EEE6;
+        border-style: dashed;
+      }
+      .kbn-card-composted .kbn-card-name {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .kbn-card-composted .kbn-card-outcome {
+        font-size: 11.5px;
+        -webkit-line-clamp: 2;
+        color: #6A645E;
       }
       /* Tempered cards are smaller — they're for the record, not the focus. */
       .kbn-card-tempered {
@@ -1114,6 +1158,11 @@ export class KanbanModal {
         background: rgba(90, 123, 123, 0.18);
         color: #4A6868;
         border: 1px solid rgba(90, 123, 123, 0.4);
+      }
+      .kbn-pill-composted {
+        background: rgba(122, 112, 104, 0.12);
+        color: #8A7E72;
+        border: 1px solid rgba(122, 112, 104, 0.3);
       }
       .kbn-card-id {
         font-family: var(--font-mono, 'JetBrains Mono', monospace);
@@ -1321,8 +1370,10 @@ export class KanbanModal {
       }
 
       @media (max-width: 1100px) {
-        .kbn-body { grid-template-columns: 1fr; overflow-y: auto; }
-        .kbn-col { max-height: none; }
+        .kbn-carousel-col {
+          flex: 0 0 85%;
+          max-width: 85%;
+        }
       }
     `
     document.head.append(style)
@@ -1334,7 +1385,9 @@ export class KanbanModal {
 /** Which column the card belongs to per the same rules the server uses. */
 function columnOf(card: KanbanCard): ColumnKind {
   if (card.status === 'closed') {
-    return card.tempered === true ? 'tempered' : 'awaitingReview'
+    if (card.tempered === true) return 'tempered'
+    if (card.tempered === false) return 'composted'
+    return 'awaitingReview'
   }
   if (card.tags?.includes('draft')) return 'drafts'
   return 'inFlight'
@@ -1342,7 +1395,7 @@ function columnOf(card: KanbanCard): ColumnKind {
 
 function findCardById(resp: KanbanResponse | null, id: string): KanbanCard | null {
   if (!resp) return null
-  for (const col of [resp.columns.drafts, resp.columns.inFlight, resp.columns.awaitingReview, resp.columns.tempered]) {
+  for (const col of [resp.columns.drafts, resp.columns.inFlight, resp.columns.awaitingReview, resp.columns.tempered, resp.columns.composted]) {
     const hit = col.find(c => c.id === id)
     if (hit) return hit
   }
