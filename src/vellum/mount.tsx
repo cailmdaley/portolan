@@ -67,8 +67,8 @@ const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostn
  * fiber-tree snapshots").
  */
 function KanbanHost({
-  cityId,
-  cityName,
+  cityId: propCityId,
+  cityName: propCityName,
   onOpenWorker,
   onOpenFiberInCity,
 }: {
@@ -100,9 +100,26 @@ function KanbanHost({
   // (with kanban refetch) or cancel/esc.
   const [stashOpen, setStashOpen] = useState(false)
 
+  // Bug 2: local override state for the ∘ Global affordance. When a
+  // city-scoped kanban user clicks "⊕ Global", the scope stays in this
+  // component even though the parent (openCityWorkspace / openGlobalKanban)
+  // owns the outer cityId prop. We manage effectiveCityId locally:
+  // initialized from the prop, then overridable by onPromoteToGlobal.
+  const [effectiveCityId, setEffectiveCityId] = useState<string | undefined>(propCityId)
+  // Reset when the parent prop changes (user navigates to a different city).
+  useEffect(() => {
+    setEffectiveCityId(propCityId)
+  }, [propCityId])
+  const cityId = effectiveCityId
+  const cityName = cityId === propCityId ? propCityName : undefined
+
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
+    // Bug 2: pass onPromoteToGlobal so the ⊕ Global button in the kanban
+    // header can flip to global scope without navigating away. The callback
+    // sets effectiveCityId to undefined, which triggers a re-mount with
+    // cityScope=null (global aggregate).
     const kanban = new KanbanModal({
       onOpenFiber: (card) => {
         // Three click paths, in order of preference:
@@ -146,6 +163,8 @@ function KanbanHost({
       // chrome state (the previous absolute-positioned button at right:380px
       // assumed a thumb-index that doesn't appear on the kanban tab).
       onStashClick: () => setStashOpen(true),
+      // Bug 2: promote city-scoped kanban to global scope in place.
+      onPromoteToGlobal: () => setEffectiveCityId(undefined),
     })
     kanbanRef.current = kanban
     const cityScope =

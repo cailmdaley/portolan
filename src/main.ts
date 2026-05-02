@@ -114,6 +114,7 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 // and that's it; no panel is summoned. Stage J round-trips this through
 // the URL fragment via `pushCurrentUrl()` below.
 let lastFocusedCityId: string | null = null
+let refreshKanbanBadgeSoon: () => void = () => { /* noop until chrome bar is constructed */ }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Stage J — URL-fragment-stable navigation
@@ -291,7 +292,10 @@ function handleCityClick(city: City): void {
   // hex-click on the same city doesn't sediment two identical history
   // entries; pushCurrentUrl already short-circuits state-equal writes,
   // but the explicit guard documents the intent.
-  if (cityChanged) pushCurrentUrl()
+  if (cityChanged) {
+    pushCurrentUrl()
+    refreshKanbanBadgeSoon()
+  }
 }
 
 // `commitVellumMode` is reassigned to the real implementation below once
@@ -777,7 +781,16 @@ const mapChromeBar = new MapChromeBar({
   // tab — the embedded grid renders fresh counts there. Mirrors the
   // pre-Stage-H KanbanLaunchButton policy.
   isKanbanModalOpen: () => activeWorkspaceHandle?.getMode?.() === 'kanban',
+  // Keep the K-chip badge scoped to the same kanban that pressing K would
+  // reveal. Without this, the badge reports global awaiting-review count
+  // while a focused city opens a city-scoped kanban, so the badge and the
+  // visible cards disagree.
+  getKanbanBadgeCityId: () => {
+    if (activeWorkspaceHandle) return activeWorkspaceCityId
+    return resolveFocusedCity()?.id ?? null
+  },
 })
+refreshKanbanBadgeSoon = () => mapChromeBar.refreshSoon()
 
 /**
  * Stage H — launch button. Open the vellum view that best matches "last
@@ -801,18 +814,33 @@ function openLastView(): void {
     return
   }
   const focusedCity = resolveFocusedCity()
-  if (lastVellumMode === 'kanban' || (!focusedCity && !lastVellumMode)) {
-    openGlobalKanban()
-    return
-  }
-  if (lastVellumMode === 'find' && !focusedCity) {
-    openGlobalFind()
-    return
-  }
-  // Default and `lastVellumMode === 'narrative'` both land on
-  // narrative-on-focused-city.
+  // Bug 1 fix: cover all `(focusedCity, lastVellumMode)` pairs.
+  //
+  //   focusedCity  |  lastVellumMode  |  action
+  //   ─────────────┼──────────────────┼──────────────────────────
+  //   set          │  *any*           │ openCityWorkspace(city, initialMode)
+  //   null         │  kanban          │ openGlobalKanban()
+  //   null         │  find            │ openGlobalFind()
+  //   null         │  narrative|null  │ openGlobalKanban() [fallback]
+  //
+  // The key missing case before the fix: focusedCity=null, lastVellumMode='narrative'
+  // fell through all branches silently. We now treat it as the same fallback as
+  // the default: open the global kanban (the aggregate non-empty surface).
   if (focusedCity) {
-    openCityWorkspace(focusedCity, { initialMode: lastVellumMode === 'find' ? 'find' : 'narrative' })
+    const mode = lastVellumMode === 'find' ? 'find'
+      : lastVellumMode === 'kanban' ? 'kanban'
+      : 'narrative'
+    openCityWorkspace(focusedCity, { initialMode: mode })
+    return
+  }
+  // No focused city; open the aggregate surface matching last mode,
+  // defaulting to global kanban (the non-empty fallback per Bug 1
+  // acceptance: "global Kanban is acceptable as a non-empty fallback
+  // until the synthetic global Vellum index is implemented").
+  if (lastVellumMode === 'find') {
+    openGlobalFind()
+  } else {
+    openGlobalKanban()
   }
 }
 

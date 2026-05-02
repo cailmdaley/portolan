@@ -125,6 +125,13 @@ interface KanbanModalOptions {
    * Omit to hide the button (e.g. read-only contexts).
    */
   onStashClick?: () => void
+  /**
+   * Called when the user clicks "⊕ Global" in the header while viewing a
+   * city-scoped kanban. The host re-mounts the kanban with `cityScope: null`
+   * so the board shows the aggregate across all pinned cities. Omit to hide
+   * the button (no global view available).
+   */
+  onPromoteToGlobal?: () => void
   /** Override fetch base. Defaults to `http://${hostname}:4004`. */
   apiBase?: string
 }
@@ -140,29 +147,44 @@ interface KanbanCityScope {
   cityName: string
 }
 
+interface KanbanScrollSnapshot {
+  bodyLeft: number
+  columns: Partial<Record<ColumnKind, number>>
+}
+
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
   private readonly onStashClick?: () => void
+  private readonly onPromoteToGlobal?: () => void
   private readonly apiBase: string
+  private readonly handleDocumentKeyDown = (e: KeyboardEvent): void => this.handleKanbanKeyDown(e)
 
   private container: HTMLDivElement | null = null
   private body: HTMLDivElement | null = null
   private statusEl: HTMLDivElement | null = null
   private subtitleEl: HTMLDivElement | null = null
+  private globalBtn: HTMLButtonElement | null = null
   private liveEl: HTMLDivElement | null = null
   private bannerEl: HTMLDivElement | null = null
   private inflightFetchToken = 0
   private dragSourceId: string | null = null
+  private dragAutoScrollFrame: number | null = null
+  private dragAutoScrollVelocity = 0
   private bannerTimer: number | null = null
+  private hasClaimedInitialFocus = false
   /** Null = global (default). Set by mount(...{cityScope}); cleared by
    *  unmount(). */
   private cityScope: KanbanCityScope | null = null
+  /** Bug 3: lightweight auto-poll while mounted. 15s default. */
+  private pollTimer: number | null = null
+  private readonly pollIntervalMs = 15_000
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
     this.onOpenWorker = options.onOpenWorker
     this.onStashClick = options.onStashClick
+    this.onPromoteToGlobal = options.onPromoteToGlobal
     this.apiBase = options.apiBase ?? `http://${window.location.hostname}:4004`
     this.injectStyles()
   }
@@ -195,7 +217,9 @@ export class KanbanModal {
     this.cityScope = opts.cityScope ?? null
     this.assembleChrome()
     host.append(this.container!)
+    document.addEventListener('keydown', this.handleDocumentKeyDown, true)
     void this.fetchAndRender()
+    this.startPolling()
   }
 
   /**
@@ -205,6 +229,8 @@ export class KanbanModal {
    */
   unmount(): void {
     if (this.container === null) return
+    document.removeEventListener('keydown', this.handleDocumentKeyDown, true)
+    this.stopPolling()
     this.container.remove()
     this.teardownState()
   }
@@ -241,7 +267,33 @@ export class KanbanModal {
     this.statusEl.className = 'kbn-status'
     this.statusEl.textContent = 'Loading…'
 
-    header.append(titleWrap, this.statusEl)
+    // Bug 3: manual refresh button in the header. Lightens the refresh
+    // affordance (faded icon) so it doesn't compete with the stash trigger.
+    const refreshBtn = document.createElement('button')
+    refreshBtn.type = 'button'
+    refreshBtn.className = 'kbn-refresh-btn'
+    refreshBtn.setAttribute('aria-label', 'Refresh kanban')
+    refreshBtn.title = 'Refresh'
+    refreshBtn.textContent = '↻'
+    refreshBtn.addEventListener('click', () => {
+      void this.fetchAndRender()
+      this.announce('Refreshing…')
+    })
+
+    header.append(titleWrap, this.statusEl, refreshBtn)
+
+    // Bug 2: scope-escape affordance — "⊕ Global" button in the header.
+    // Only visible when the kanban is city-scoped. Re-mounts the kanban
+    // with global scope via the host callback.
+    this.globalBtn = document.createElement('button')
+    this.globalBtn.type = 'button'
+    this.globalBtn.className = 'kbn-global-btn'
+    this.globalBtn.setAttribute('aria-label', 'Switch to global kanban (all cities)')
+    this.globalBtn.title = 'All cities'
+    this.globalBtn.textContent = '⊕ Global'
+    this.globalBtn.style.display = this.cityScope ? '' : 'none'
+    this.globalBtn.addEventListener('click', () => this.onPromoteToGlobal?.())
+    header.append(this.globalBtn)
 
     // Stash button: gold `+` at the header's right edge, mirroring the `n`
     // hotkey owned by KanbanHost. We bind via callback so the React host
@@ -260,6 +312,11 @@ export class KanbanModal {
 
     this.body = document.createElement('div')
     this.body.className = 'kbn-body'
+    this.body.addEventListener('wheel', (e) => this.handleBodyWheel(e), { passive: false })
+    this.body.addEventListener('scroll', () => this.updateBodyScrollAffordance(), { passive: true })
+    this.body.addEventListener('dragover', (e) => this.handleBodyDragOver(e))
+    this.body.addEventListener('dragleave', (e) => this.handleBodyDragLeave(e))
+    this.body.addEventListener('drop', () => this.stopDragAutoScroll())
 
     // aria-live region for transition announcements ("Moved 'X' to Tempered.")
     // — invisible but read by screen readers and observable in the a11y tree.
@@ -284,9 +341,12 @@ export class KanbanModal {
     this.body = null
     this.statusEl = null
     this.subtitleEl = null
+    this.globalBtn = null
     this.liveEl = null
     this.bannerEl = null
     this.dragSourceId = null
+    this.hasClaimedInitialFocus = false
+    this.stopDragAutoScroll()
     // Reset scope on every teardown so the next mount lands at default
     // global scope; a follow-on `mount(...{cityScope})` with a scope
     // re-sets before assemble.
@@ -383,6 +443,7 @@ export class KanbanModal {
   private render(data: KanbanResponse): void {
     if (!this.body || !this.statusEl) return
 
+    const scrollSnapshot = this.captureScrollSnapshot()
     const { columns, totals, temperedTotal, staleness } = data
     this.statusEl.textContent =
       `${totals.drafts} drafts · ${totals.inFlight} open · ` +
@@ -399,7 +460,53 @@ export class KanbanModal {
       )
     }
 
+    this.restoreScrollSnapshot(scrollSnapshot)
+    this.claimInitialFocus()
+    this.updateBodyScrollAffordance()
+    window.requestAnimationFrame(() => this.updateBodyScrollAffordance())
     this.lastResponse = data
+  }
+
+  private claimInitialFocus(): void {
+    if (this.hasClaimedInitialFocus || !this.body) return
+
+    this.hasClaimedInitialFocus = true
+    window.requestAnimationFrame(() => {
+      if (!this.body) return
+      const active = document.activeElement
+      if (active instanceof HTMLElement && this.container?.contains(active)) return
+      this.body.querySelector<HTMLElement>('.kbn-col-head')?.focus({ preventScroll: true })
+    })
+  }
+
+  private captureScrollSnapshot(): KanbanScrollSnapshot | null {
+    if (!this.body) return null
+
+    const columns: Partial<Record<ColumnKind, number>> = {}
+    for (const col of this.body.querySelectorAll<HTMLElement>('.kbn-col[data-column]')) {
+      const kind = col.dataset.column as ColumnKind | undefined
+      const list = col.querySelector<HTMLElement>('.kbn-col-list')
+      if (kind && list) columns[kind] = list.scrollTop
+    }
+
+    return { bodyLeft: this.body.scrollLeft, columns }
+  }
+
+  private restoreScrollSnapshot(snapshot: KanbanScrollSnapshot | null): void {
+    if (!this.body || !snapshot) return
+
+    const restore = (): void => {
+      if (!this.body) return
+      this.body.scrollLeft = snapshot.bodyLeft
+      for (const [kind, scrollTop] of Object.entries(snapshot.columns) as [ColumnKind, number][]) {
+        const list = this.body.querySelector<HTMLElement>(`.kbn-col[data-column="${kind}"] .kbn-col-list`)
+        if (list) list.scrollTop = scrollTop
+      }
+      this.updateBodyScrollAffordance()
+    }
+
+    restore()
+    window.requestAnimationFrame(restore)
   }
 
   /**
@@ -472,6 +579,7 @@ export class KanbanModal {
       const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
       col.classList.remove('kbn-col-drop')
       this.dragSourceId = null
+      this.stopDragAutoScroll()
       if (!fiberId) return
       e.preventDefault()
       const card = findCardById(this.lastResponse, fiberId)
@@ -550,6 +658,7 @@ export class KanbanModal {
       el.addEventListener('dragend', () => {
         el.classList.remove('kbn-card-dragging')
         this.dragSourceId = null
+        this.stopDragAutoScroll()
       })
     }
 
@@ -692,9 +801,28 @@ export class KanbanModal {
     return `constitution-tagged fibers · ${this.cityScope.cityName}`
   }
 
+  /** Bug 3: lightweight auto-poll while mounted. 15s interval. */
+  private startPolling(): void {
+    this.stopPolling()
+    this.pollTimer = window.setInterval(() => {
+      void this.fetchAndRender()
+    }, this.pollIntervalMs)
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer !== null) {
+      window.clearInterval(this.pollTimer)
+      this.pollTimer = null
+    }
+  }
+
   /** Update DOM that depends on `cityScope` after a scope swap. */
   private updateScopeChrome(): void {
     if (this.subtitleEl) this.subtitleEl.textContent = this.subtitleText()
+    // Show the global-escape button only when city-scoped.
+    if (this.globalBtn) {
+      this.globalBtn.style.display = this.cityScope ? '' : 'none'
+    }
   }
 
   /**
@@ -711,6 +839,149 @@ export class KanbanModal {
     }
     if (!wasZoomed) col.classList.add('kbn-col-zoomed')
     this.body.classList.toggle('kbn-body-zoomed', !wasZoomed)
+    this.updateBodyScrollAffordance()
+  }
+
+  /**
+   * Shift+vertical wheel pans the five-column board horizontally. Ordinary
+   * vertical wheel events stay native so column and page scrolling do not fight
+   * trackpads.
+   */
+  private handleBodyWheel(e: WheelEvent): void {
+    if (!this.body || this.body.classList.contains('kbn-body-zoomed')) return
+    if (this.body.scrollWidth <= this.body.clientWidth) return
+    if (!e.shiftKey) return
+
+    const verticalDelta = e.deltaY
+    const horizontalDelta = e.deltaX
+    if (Math.abs(verticalDelta) < Math.abs(horizontalDelta)) return
+
+    const boardDelta = verticalDelta
+    if (boardDelta === 0) return
+
+    e.preventDefault()
+    this.body.scrollLeft += boardDelta
+    this.updateBodyScrollAffordance()
+  }
+
+  private handleKanbanKeyDown(e: KeyboardEvent): void {
+    if (!this.body || e.key !== 'Tab') return
+
+    const active = document.activeElement as HTMLElement | null
+    const heads = Array.from(this.body.querySelectorAll<HTMLElement>('.kbn-col-head'))
+      .filter(head => head.offsetParent !== null)
+    if (heads.length === 0) return
+
+    const activeHead = active?.closest<HTMLElement>('.kbn-col-head')
+    const activeCol = active?.closest<HTMLElement>('.kbn-col')
+    const activeColHead = activeCol?.querySelector<HTMLElement>('.kbn-col-head') ?? null
+    const currentHead = activeHead ?? activeColHead
+    const fallbackIndex = this.currentColumnIndexFromScroll(heads)
+    const index = currentHead && this.body.contains(currentHead)
+      ? heads.indexOf(currentHead)
+      : fallbackIndex
+
+    if (index === -1) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    const nextIndex = (index + (e.shiftKey ? -1 : 1) + heads.length) % heads.length
+    const next = heads[nextIndex]
+    next.focus({ preventScroll: true })
+    this.scrollColumnToStart(next.closest<HTMLElement>('.kbn-col'))
+    this.updateBodyScrollAffordance()
+  }
+
+  private currentColumnIndexFromScroll(heads: HTMLElement[]): number {
+    if (!this.body) return -1
+
+    const bodyLeft = this.body.getBoundingClientRect().left
+    const distances = heads.map((head, index) => {
+      const col = head.closest<HTMLElement>('.kbn-col')
+      const distance = col ? Math.abs(col.getBoundingClientRect().left - bodyLeft) : Number.POSITIVE_INFINITY
+      return { index, distance }
+    })
+    distances.sort((a, b) => a.distance - b.distance)
+    return distances[0]?.index ?? -1
+  }
+
+  private scrollColumnToStart(col: HTMLElement | null): void {
+    if (!this.body || !col) return
+
+    const bodyLeft = this.body.getBoundingClientRect().left
+    const colLeft = col.getBoundingClientRect().left
+    const paddingLeft = Number.parseFloat(window.getComputedStyle(this.body).paddingLeft) || 0
+    this.body.scrollTo({
+      left: this.body.scrollLeft + colLeft - bodyLeft - paddingLeft,
+      behavior: 'smooth',
+    })
+  }
+
+  private handleBodyDragOver(e: DragEvent): void {
+    if (!this.body || !this.dragSourceId || this.body.classList.contains('kbn-body-zoomed')) return
+    if (this.body.scrollWidth <= this.body.clientWidth) return
+
+    const rect = this.body.getBoundingClientRect()
+    const edge = 128
+    const maxStep = 42
+    const leftPressure = Math.max(0, edge - (e.clientX - rect.left))
+    const rightPressure = Math.max(0, edge - (rect.right - e.clientX))
+    const direction = rightPressure > 0 ? 1 : leftPressure > 0 ? -1 : 0
+    const pressure = Math.max(leftPressure, rightPressure) / edge
+
+    this.dragAutoScrollVelocity = direction === 0
+      ? 0
+      : direction * Math.max(10, Math.round(Math.pow(pressure, 1.35) * maxStep))
+
+    if (this.dragAutoScrollVelocity === 0) {
+      this.stopDragAutoScroll()
+      return
+    }
+
+    this.startDragAutoScroll()
+  }
+
+  private handleBodyDragLeave(e: DragEvent): void {
+    if (!this.body) return
+    if (e.relatedTarget && this.body.contains(e.relatedTarget as Node)) return
+    this.stopDragAutoScroll()
+  }
+
+  private startDragAutoScroll(): void {
+    if (this.dragAutoScrollFrame !== null) return
+
+    const tick = (): void => {
+      if (!this.body || !this.dragSourceId || this.dragAutoScrollVelocity === 0) {
+        this.stopDragAutoScroll()
+        return
+      }
+
+      this.body.scrollLeft += this.dragAutoScrollVelocity
+      this.updateBodyScrollAffordance()
+      this.dragAutoScrollFrame = window.requestAnimationFrame(tick)
+    }
+
+    this.dragAutoScrollFrame = window.requestAnimationFrame(tick)
+  }
+
+  private stopDragAutoScroll(): void {
+    this.dragAutoScrollVelocity = 0
+    if (this.dragAutoScrollFrame === null) return
+    window.cancelAnimationFrame(this.dragAutoScrollFrame)
+    this.dragAutoScrollFrame = null
+  }
+
+  private updateBodyScrollAffordance(): void {
+    if (!this.body) return
+    if (this.body.classList.contains('kbn-body-zoomed')) {
+      this.body.classList.remove('kbn-can-scroll-left', 'kbn-can-scroll-right')
+      return
+    }
+
+    const maxScrollLeft = this.body.scrollWidth - this.body.clientWidth
+    this.body.classList.toggle('kbn-can-scroll-left', this.body.scrollLeft > 1)
+    this.body.classList.toggle('kbn-can-scroll-right', this.body.scrollLeft < maxScrollLeft - 1)
   }
 
   private pillKind(card: KanbanCard): 'open' | 'active' | 'closed' | 'tempered' | 'composted' {
@@ -826,6 +1097,63 @@ export class KanbanModal {
       .kbn-stash-btn:focus-visible {
         box-shadow: 0 0 0 3px rgba(154, 123, 53, 0.36);
       }
+      /* "⊕ Global" button — visible only in city-scoped kanban. Sits
+         between the title-wrap and the stash button in the header. */
+      .kbn-global-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 26px;
+        padding: 0 10px;
+        background: transparent;
+        border: 1px solid rgba(122, 112, 104, 0.22);
+        border-radius: 3px;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.03em;
+        color: #7A7068;
+        cursor: pointer;
+        transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+        flex-shrink: 0;
+      }
+      .kbn-global-btn:hover,
+      .kbn-global-btn:focus-visible {
+        color: #2E2A26;
+        border-color: rgba(46, 42, 38, 0.36);
+        background: rgba(255, 255, 255, 0.55);
+        outline: none;
+      }
+      .kbn-global-btn:focus-visible {
+        outline: 1px dashed #7A7068;
+        outline-offset: 2px;
+      }
+      /* Refresh ↻ button in the header. Faded, low-prominence. */
+      .kbn-refresh-btn {
+        flex-shrink: 0;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 14px;
+        line-height: 1;
+        color: rgba(122, 112, 104, 0.55);
+        cursor: pointer;
+        transition: color 120ms ease, border-color 120ms ease;
+      }
+      .kbn-refresh-btn:hover,
+      .kbn-refresh-btn:focus-visible {
+        color: #7A7068;
+        border-color: rgba(122, 112, 104, 0.22);
+        outline: none;
+      }
+      .kbn-refresh-btn:focus-visible {
+        outline: 1px dashed #7A7068;
+        outline-offset: 2px;
+      }
       /* aria-live region — invisible but observable in the a11y tree. */
       .kbn-live {
         position: absolute;
@@ -850,8 +1178,12 @@ export class KanbanModal {
         border-color: rgba(178, 78, 60, 0.5);
         color: #8B3A28;
       }
-      /* Five-column flex grid. Columns all flex equally; horizontal scrolling
-         appears when they don't all fit. Vertical scroll is per-column. */
+      /* Five-column track with a three-column viewport. Drafts/Open/Awaiting
+         are visible at rest; horizontal scroll reveals Tempered and
+         Composted without clone-loop carousel state. Vertical scroll is
+         native/per-column; Shift+vertical wheel pans horizontally. Deliberately
+         no scroll-snap: trackpad deltas are small, and snap makes side-to-side
+         gestures feel stuck. */
       .kbn-body {
         flex: 1;
         display: flex;
@@ -859,11 +1191,23 @@ export class KanbanModal {
         padding: 12px;
         overflow-x: auto;
         overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
         min-height: 0;
       }
+      .kbn-body.kbn-can-scroll-right {
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+        mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+      }
+      .kbn-body.kbn-can-scroll-left {
+        -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px);
+        mask-image: linear-gradient(to right, transparent 0, #000 28px);
+      }
+      .kbn-body.kbn-can-scroll-left.kbn-can-scroll-right {
+        -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+        mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+      }
       .kbn-col {
-        flex: 1 1 0;
-        min-width: 260px;
+        flex: 0 0 max(260px, calc((100% - 20px) / 3));
         display: flex; flex-direction: column;
         min-height: 0;
         max-height: 100%;
@@ -881,7 +1225,7 @@ export class KanbanModal {
         display: none;
       }
       .kbn-body.kbn-body-zoomed .kbn-col-zoomed {
-        flex: 1;
+        flex: 1 1 auto;
         min-width: 0;
       }
       /* When zoomed, tile cards as a CSS grid filling the available width. */
