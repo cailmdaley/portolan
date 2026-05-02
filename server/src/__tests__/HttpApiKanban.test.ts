@@ -91,15 +91,15 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.status).toBe(200);
-    expect(res.body.columns).toEqual({ drafts: [], inFlight: [], awaitingReview: [], tempered: [] });
-    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 });
+    expect(res.body.columns).toEqual({ drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] });
+    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
   });
 
   it('skips fibers that are not constitution-tagged', async () => {
     writeFib('regular-task', { name: 'Task', status: 'open', tags: ['task'], 'created-at': '2026-04-01' });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 });
+    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
   });
 
   it('groups constitution fibers into drafts / in-flight / awaiting-review / tempered', async () => {
@@ -141,7 +141,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.totals).toEqual({ drafts: 1, inFlight: 2, awaitingReview: 1, tempered: 1 });
+    expect(res.body.totals).toEqual({ drafts: 1, inFlight: 2, awaitingReview: 1, tempered: 1, composted: 0 });
     expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['draft-one']);
     expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['active-one', 'open-one']);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);
@@ -385,7 +385,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toMatch(/^closed-at: 2026-04-15$/m);
     });
 
-    it('moves a tempered fiber back to awaiting review', async () => {
+    it('moves a tempered fiber back to awaiting review (clears tempered)', async () => {
       writeFib('approved', {
         name: 'Approved',
         status: 'closed',
@@ -399,11 +399,14 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       await api.handleTransition(jsonReq({ fiberId: 'approved', target: 'awaitingReview' }), res);
 
       expect(status()).toBe(200);
-      expect(body().card.tempered).toBe(false);
+      expect(body().card.tempered).toBeUndefined();
       expect(body().card.status).toBe('closed');
+
+      const after = readFileSync(join(FELT_DIR, 'approved', 'approved.md'), 'utf-8');
+      expect(after).not.toMatch(/^tempered:/m);
     });
 
-    it('legacy `queued` target is treated as inFlight (no draft, status=active)', async () => {
+    it('legacy `queued` target is treated as inFlight (no draft, status=active, clears tempered)', async () => {
       writeFib('legacy-queued', {
         name: 'Legacy queued',
         status: 'closed',
@@ -418,7 +421,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
       expect(status()).toBe(200);
       expect(body().card.status).toBe('active');
-      expect(body().card.tempered).toBe(false);
+      expect(body().card.tempered).toBeUndefined();
     });
 
     it('moves a fiber to drafts — adds the draft tag, clears closed-at', async () => {
@@ -458,7 +461,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(body().card.status).toBe('active');
     });
 
-    it('reopens a closed fiber to in flight, clearing closed-at', async () => {
+    it('reopens a closed fiber to in flight, clearing closed-at and tempered', async () => {
       writeFib('reactivate', {
         name: 'Reactivate',
         status: 'closed',
@@ -473,11 +476,12 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
       expect(status()).toBe(200);
       expect(body().card.status).toBe('active');
-      expect(body().card.tempered).toBe(false);
+      expect(body().card.tempered).toBeUndefined();
 
       const after = readFileSync(join(FELT_DIR, 'reactivate', 'reactivate.md'), 'utf-8');
       expect(after).toMatch(/^status: active$/m);
       expect(after).not.toMatch(/^closed-at:/m);
+      expect(after).not.toMatch(/^tempered:/m);
     });
 
     it('sets closed-at to now when transitioning in-flight → tempered', async () => {
@@ -515,6 +519,47 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       // File is byte-identical.
       const after = readFileSync(join(FELT_DIR, 'plain-task', 'plain-task.md'), 'utf-8');
       expect(after).toMatch(/^status: open$/m);
+      expect(after).not.toMatch(/^tempered:/m);
+    });
+
+    it('composts a fiber — closed with tempered:false', async () => {
+      writeFib('moot', {
+        name: 'Moot',
+        status: 'open',
+        tags: ['constitution'],
+        'created-at': '2026-04-01',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'moot', target: 'composted' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.status).toBe('closed');
+      expect(body().card.tempered).toBe(false);
+
+      const after = readFileSync(join(FELT_DIR, 'moot', 'moot.md'), 'utf-8');
+      expect(after).toMatch(/^status: closed$/m);
+      expect(after).toMatch(/^tempered: false$/m);
+    });
+
+    it('returns a composted fiber to in flight, clearing tempered', async () => {
+      writeFib('revive', {
+        name: 'Revive',
+        status: 'closed',
+        tempered: 'false',
+        tags: ['constitution'],
+        'created-at': '2026-04-01',
+        'closed-at': '2026-04-15',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'revive', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.status).toBe('active');
+      expect(body().card.tempered).toBeUndefined();
+
+      const after = readFileSync(join(FELT_DIR, 'revive', 'revive.md'), 'utf-8');
       expect(after).not.toMatch(/^tempered:/m);
     });
 
@@ -574,7 +619,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toContain('paragraph with status: open in prose');
     });
 
-    it('updates an existing tempered field rather than adding a duplicate', () => {
+    it('updates an existing tempered field by clearing it on awaitingReview', () => {
       const original = [
         '---',
         'name: Foo',
@@ -587,10 +632,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       ].join('\n');
 
       const after = applyTargetToFrontmatter(original, 'awaitingReview', NOW);
-      const matches = after.match(/^tempered:/gm);
-      expect(matches).not.toBeNull();
-      expect(matches!.length).toBe(1);
-      expect(after).toMatch(/^tempered: false$/m);
+      expect(after).not.toMatch(/^tempered:/m);
     });
 
     it('throws when no frontmatter exists', () => {
@@ -598,7 +640,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         .toThrow(/frontmatter/);
     });
 
-    it('adds a tag and preserves the existing tags block formatting', () => {
+    it('adds a tag and preserves the existing tags block formatting, without forcing tempered', () => {
       const original = [
         '---',
         'name: Foo',
@@ -612,9 +654,9 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
       const after = applyTargetToFrontmatter(original, 'drafts', NOW);
       expect(after).toMatch(/^tags:\n  - constitution\n  - alpha\n  - draft$/m);
-      // status untouched, tempered:false explicit
+      // status untouched, tempered absent (not written)
       expect(after).toMatch(/^status: open$/m);
-      expect(after).toMatch(/^tempered: false$/m);
+      expect(after).not.toMatch(/^tempered:/m);
     });
 
     it('removes a tag idempotently when not present', () => {

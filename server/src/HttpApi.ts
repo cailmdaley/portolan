@@ -10,6 +10,8 @@
 
 import { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
+import { realpathSync } from 'fs';
+import { join } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { AnnotationPersistence } from './AnnotationPersistence.js';
@@ -712,6 +714,14 @@ export class HttpApi {
 
 function localCityPinsKey(cities: Array<{ id: string; path: string; name?: string }>): string {
   return cities
-    .map((city) => `${city.id}\u001f${city.path}\u001f${city.name ?? ''}`)
+    .map((city) => {
+      let feltRealPath: string;
+      try {
+        feltRealPath = realpathSync(join(city.path, '.felt'));
+      } catch {
+        feltRealPath = '(missing)';
+      }
+      return `${city.id}\u001f${city.path}\u001f${city.name ?? ''}\u001f${feltRealPath}`;
+    })
     .join('\u001e');
 }

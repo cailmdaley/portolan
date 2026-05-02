@@ -1,13 +1,13 @@
 /**
  * KanbanModal — global view of constitution-tagged fibers grouped by lifecycle.
  *
- * Three columns (left to right): Awaiting review → In flight → Tempered.
+ * Three columns (left to right): Drafts → Open → Awaiting review/Tempered.
  *   - Awaiting review  : closed && !tempered. The "your move" queue.
- *   - In flight        : status open/active (dispatchable; Shuttle picks them up).
+ *   - Open             : status open/active (dispatchable; Shuttle picks them up).
  *   - Tempered         : closed && tempered:true (recent N, de-emphasized).
  *
- * Awaiting-review is leftmost and slightly emphasized — that's the human-action
- * column. Tempered is narrower and more compact since it's "for the record."
+ * Awaiting-review is visually emphasized — that's the human-action queue.
+ * Tempered is compact since it's "for the record."
  *
  * Interaction surfaces (the same transition is available two ways):
  *   1. Drag a card to a column (HTML5 DnD; mouse-driven).
@@ -43,7 +43,7 @@ type ColumnKind = 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered'
 
 const COLUMN_TITLES: Record<ColumnKind, string> = {
   drafts: 'Drafts',
-  inFlight: 'In flight',
+  inFlight: 'Open',
   awaitingReview: 'Awaiting review',
   tempered: 'Tempered',
 }
@@ -411,7 +411,7 @@ export class KanbanModal {
 
     const { columns, totals, temperedTotal, staleness } = data
     this.statusEl.textContent =
-      `${totals.drafts} drafts · ${totals.inFlight} in flight · ` +
+      `${totals.drafts} drafts · ${totals.inFlight} open · ` +
       `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered`
 
     this.body.innerHTML = ''

@@ -713,6 +713,7 @@ const KANBAN_VALID_TARGETS = new Set([
     'active',
     'awaitingReview',
     'tempered',
+    'composted',
 ]);
 
 function escapeRegex(s) {
@@ -780,15 +781,18 @@ export function applyTargetToFrontmatter(raw, target, nowIso) {
     const after = raw.slice(fmMatch[0].length);
     const fmLines = fmBlock.split(/\r?\n/);
 
+    // `tempered === null` here means "remove the field on write." Only the
+    // verdict targets (tempered, composted) write a boolean; every other
+    // target clears it. See HttpApiKanban.ts for the rationale.
     let status;
-    let tempered;
+    let tempered; // boolean | null — null = clear the field
     let closedAtAction;
     let tagsToAdd = [];
     let tagsToRemove = [];
     switch (target) {
         case 'drafts':
             status = null;
-            tempered = false;
+            tempered = null;
             closedAtAction = 'clear';
             tagsToAdd = ['draft'];
             break;
@@ -796,18 +800,23 @@ export function applyTargetToFrontmatter(raw, target, nowIso) {
         case 'queued':
         case 'active':
             status = 'active';
-            tempered = false;
+            tempered = null;
             closedAtAction = 'clear';
             tagsToRemove = ['draft'];
             break;
         case 'awaitingReview':
             status = 'closed';
-            tempered = false;
+            tempered = null;
             closedAtAction = 'set-if-missing';
             break;
         case 'tempered':
             status = 'closed';
             tempered = true;
+            closedAtAction = 'set-if-missing';
+            break;
+        case 'composted':
+            status = 'closed';
+            tempered = false;
             closedAtAction = 'set-if-missing';
             break;
         default:
@@ -835,7 +844,11 @@ export function applyTargetToFrontmatter(raw, target, nowIso) {
     };
 
     if (status !== null) setOrInsertScalar('status', status);
-    setOrInsertScalar('tempered', tempered ? 'true' : 'false');
+    if (tempered === null) {
+        clearScalar('tempered');
+    } else {
+        setOrInsertScalar('tempered', tempered ? 'true' : 'false');
+    }
 
     if (closedAtAction === 'clear') {
         clearScalar('closed-at');

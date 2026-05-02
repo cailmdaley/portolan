@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { HttpApi } from '../HttpApi.js';
@@ -155,7 +155,7 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     expect(res.status).toBe(200);
     expect(res.data.ok).toBe(true);
     expect(res.data.card.status).toBe('closed');
-    expect(res.data.card.tempered).toBe(false);
+    expect(res.data.card.tempered).toBeUndefined();
   });
 
   it('POST /kanban/transition?cityId=a refuses to operate on a fiber from another city', async () => {
@@ -169,5 +169,53 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     );
     expect(res.status).toBe(500);
     expect(res.data.error).toMatch(/fiber not found/);
+  });
+
+  it('invalidates global kanban cache when a nested city .felt symlink appears', async () => {
+    const loom = join(TEST_DIR, 'loom');
+    const aiFutures = join(TEST_DIR, 'ai-futures');
+    const shuttle = join(TEST_DIR, 'shuttle');
+    mkdirSync(join(loom, '.felt', 'ai-futures', 'shuttle', 'work'), { recursive: true });
+    mkdirSync(aiFutures, { recursive: true });
+    mkdirSync(shuttle, { recursive: true });
+    symlinkSync(join(loom, '.felt', 'ai-futures'), join(aiFutures, '.felt'));
+    writeFileSync(
+      join(loom, '.felt', 'ai-futures', 'shuttle', 'work', 'work.md'),
+      [
+        '---',
+        'name: Shuttle work',
+        'status: active',
+        'tags:',
+        '  - constitution',
+        'created-at: 2026-05-01T00:00:00Z',
+        '---',
+        '',
+        'body',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const cities = [
+      { id: 'loom', path: loom, name: 'loom', originId: 'local' },
+      { id: 'ai-futures', path: aiFutures, name: 'ai-futures', originId: 'local' },
+      { id: 'shuttle', path: shuttle, name: 'shuttle', originId: 'local' },
+    ];
+    const globalApi = new HttpApi(
+      makeMultiCityLookup(cities) as any,
+      stubOriginLookup as any,
+      { ...stubPersistenceLookup, getCities: () => cities } as any,
+    );
+
+    const before = await httpRequest(globalApi, 'GET', '/kanban');
+    const beforeCard = before.data.columns.inFlight.find((c: any) => c.id === 'ai-futures/shuttle/work');
+    expect(beforeCard.cityId).toBe('ai-futures');
+    expect(beforeCard.projectSlug).toBe('shuttle/work');
+
+    symlinkSync(join(loom, '.felt', 'ai-futures', 'shuttle'), join(shuttle, '.felt'));
+
+    const after = await httpRequest(globalApi, 'GET', '/kanban');
+    const afterCard = after.data.columns.inFlight.find((c: any) => c.id === 'ai-futures/shuttle/work');
+    expect(afterCard.cityId).toBe('shuttle');
+    expect(afterCard.projectSlug).toBe('work');
   });
 });

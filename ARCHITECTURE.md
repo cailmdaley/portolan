@@ -56,7 +56,7 @@ The old standalone file modal and CityHUD are retired. Per-city detail now lives
 - Felt state: fibers, fiber trees, global search, kanban transitions.
 - File state: project file search, raw/content fetches, annotations, recent file touches.
 - Research state: `/tapestry`, `/astra/graph`, evidence, and ASTRA view endpoints.
-- Shuttle state: fiber dispatch, worker launch, review transitions.
+- Shuttle state: reactive snapshot over the external Elixir shuttle (fiber dispatch, worker launch, review transitions).
 
 ## Design Constraints
 

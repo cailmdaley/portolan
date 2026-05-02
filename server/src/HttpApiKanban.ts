@@ -3,11 +3,20 @@
  *
  * Reads fibers from a felt host (defaults to ~/loom — the loom monorepo,
  * which symlinks every project's `.felt/`), filters to constitution-tagged,
- * and groups by lifecycle stage:
+ * and groups by lifecycle stage. `tempered` is a tristate verdict field —
+ * absent (no verdict yet), `true` (accepted), `false` (composted: mooted /
+ * superseded / did not survive review). The classifier reads all three:
  *
  *   - in-flight       : status != closed (open / active / dispatchable)
- *   - awaiting-review : status == closed && !tempered (agent-paused handoff)
- *   - tempered        : status == closed && tempered:true (human-accepted)
+ *   - awaiting-review : status == closed && tempered absent (agent-paused handoff)
+ *   - tempered        : status == closed && tempered === true (human-accepted)
+ *   - composted       : status == closed && tempered === false (human-rejected)
+ *
+ * The write side rescues `false` for actual composting: every non-verdict
+ * transition (drafts, inFlight, awaitingReview) *clears* `tempered` rather
+ * than stamping `false`. Only `tempered` and `composted` targets write the
+ * field. See `applyTargetToFrontmatter` for the line-based writer and
+ * [[ai-futures/shuttle/constitution-kanban-compost]] for the rationale.
  *
  * The "awaiting-review" column is the human-tempering action queue and the
  * primary reason this view exists. See:
@@ -85,10 +94,16 @@ export interface KanbanColumns {
   drafts: KanbanCard[];
   /** Constitution-tagged, NOT draft, status != closed. Queue + active are one bucket. */
   inFlight: KanbanCard[];
-  /** Constitution-tagged, status=closed && !tempered (the human-tempering queue). */
+  /** Constitution-tagged, status=closed && tempered absent (the human-tempering queue). */
   awaitingReview: KanbanCard[];
   /** Constitution-tagged, status=closed && tempered:true (recent N). */
   tempered: KanbanCard[];
+  /**
+   * Constitution-tagged, status=closed && tempered:false — composted. The
+   * human verdict for "tried it / considered it / no longer pursuing." See
+   * [[ai-futures/shuttle/constitution-kanban-compost]].
+   */
+  composted: KanbanCard[];
 }
 
 /**
@@ -112,7 +127,13 @@ export interface KanbanOriginStaleness {
 export interface KanbanResponse {
   feltHost: string;
   columns: KanbanColumns;
-  totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number };
+  totals: {
+    drafts: number;
+    inFlight: number;
+    awaitingReview: number;
+    tempered: number;
+    composted: number;
+  };
   /** Total tempered count *before* slicing — UI shows recent N but we surface the full count. */
   temperedTotal: number;
   /**
@@ -230,10 +251,16 @@ interface HttpApiKanbanOptions {
 /**
  * Where a transition can land a card.
  *
- *   drafts          → adds the `draft` tag, parks in drafts column
- *   inFlight        → removes `draft` tag, status=active, clears closed-at
- *   awaitingReview  → status=closed, tempered=false (agent-paused handoff)
- *   tempered        → status=closed, tempered=true (human-accepted)
+ *   drafts          → adds the `draft` tag, clears `tempered`, parks in drafts column
+ *   inFlight        → removes `draft` tag, status=active, clears `tempered`, clears closed-at
+ *   awaitingReview  → status=closed, clears `tempered` (agent-paused handoff)
+ *   tempered        → status=closed, tempered=true  (human-accepted)
+ *   composted       → status=closed, tempered=false (human-rejected: mooted, superseded)
+ *
+ * `tempered` is tristate. Only the verdict targets (`tempered`, `composted`)
+ * write the field; every other target *clears* it so the absent state means
+ * "no verdict" and `false` is reserved for actual composting. See
+ * [[ai-futures/shuttle/constitution-kanban-compost]].
  *
  * Legacy aliases kept for v0/v1 clients: `queued`/`active` both fold into
  * `inFlight` (the queued vs active split was decoration, not workflow).
@@ -243,6 +270,7 @@ export type KanbanTarget =
   | 'inFlight'
   | 'awaitingReview'
   | 'tempered'
+  | 'composted'
   // Legacy aliases (queued/active mapped to inFlight)
   | 'queued'
   | 'active';
@@ -521,6 +549,7 @@ export class HttpApiKanban {
       const inFlight: KanbanCard[] = [];
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
+      const composted: KanbanCard[] = [];
 
       for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
@@ -530,6 +559,8 @@ export class HttpApiKanban {
           else inFlight.push(card);
         } else if (f.tempered === true) {
           tempered.push(card);
+        } else if (f.tempered === false) {
+          composted.push(card);
         } else {
           awaitingReview.push(card);
         }
@@ -540,6 +571,7 @@ export class HttpApiKanban {
       //   inFlight        : running workers / status:active first, then by createdAt desc
       //   awaitingReview  : most-recently-closed first
       //   tempered        : most-recently-closed first
+      //   composted       : most-recently-closed first (the discarded, in reverse chrono)
       drafts.sort(byCreatedAtDesc);
       inFlight.sort((a, b) => {
         const aActive = a.runningWorker || a.status === 'active' ? 0 : 1;
@@ -549,6 +581,7 @@ export class HttpApiKanban {
       });
       awaitingReview.sort(byClosedAtDesc);
       tempered.sort(byClosedAtDesc);
+      composted.sort(byClosedAtDesc);
 
       const temperedTotal = tempered.length;
       const temperedSliced = tempered.slice(0, this.temperedLimit);
@@ -560,12 +593,14 @@ export class HttpApiKanban {
           inFlight,
           awaitingReview,
           tempered: temperedSliced,
+          composted,
         },
         totals: {
           drafts: drafts.length,
           inFlight: inFlight.length,
           awaitingReview: awaitingReview.length,
           tempered: temperedSliced.length,
+          composted: composted.length,
         },
         temperedTotal,
         staleness: this.buildStaleness(),
@@ -613,7 +648,15 @@ export class HttpApiKanban {
       this.json(res, 400, { error: 'fiberId and target are required' });
       return;
     }
-    const validTargets: KanbanTarget[] = ['drafts', 'inFlight', 'queued', 'active', 'awaitingReview', 'tempered'];
+    const validTargets: KanbanTarget[] = [
+      'drafts',
+      'inFlight',
+      'queued',
+      'active',
+      'awaitingReview',
+      'tempered',
+      'composted',
+    ];
     if (!validTargets.includes(body.target)) {
       this.json(res, 400, { error: `unknown target: ${body.target}` });
       return;
@@ -755,8 +798,7 @@ export class HttpApiKanban {
     // remote clickthrough wires up via the agent in Stages 5/6).
     const path = this.fiberPath(host, f);
 
-    const expectedSession = shuttleSessionName(f.id);
-    const runningWorker = liveSessions.has(expectedSession) ? expectedSession : undefined;
+    const runningWorker = resolveRunningWorker(f.id, liveSessions);
 
     // Resolve which pinned local city physically owns this fiber so the
     // frontend can pivot vellum to that city and navigate to the project-
@@ -797,8 +839,8 @@ export class HttpApiKanban {
   private emptyResponse(): KanbanResponse {
     return {
       feltHost: this.feltHost,
-      columns: { drafts: [], inFlight: [], awaitingReview: [], tempered: [] },
-      totals: { drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0 },
+      columns: { drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] },
+      totals: { drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 },
       temperedTotal: 0,
       staleness: this.buildStaleness(),
       tagIndex: [],
@@ -875,6 +917,19 @@ function byClosedAtDesc(a: KanbanCard, b: KanbanCard): number {
   return bT.localeCompare(aT);
 }
 
+function resolveRunningWorker(fiberId: string, liveSessions: Set<string>): string | undefined {
+  const exact = shuttleSessionName(fiberId);
+  if (liveSessions.has(exact)) return exact;
+
+  // Scoped kanban cards are project-relative (`constitution-x`) while the
+  // daemon may have dispatched from the global loom host
+  // (`ai-futures/shuttle/constitution-x`). Preserve exact-match priority,
+  // then allow a slash-boundary suffix match so city-scoped views show the
+  // same worker indicator as the global view.
+  const suffix = `/${fiberId}`;
+  return [...liveSessions].sort().find(session => session.endsWith(suffix));
+}
+
 /**
  * Reconstruct a fiber's path relative to its `.felt/` root, mirroring the
  * agent-side and FiberReader walks:
@@ -932,13 +987,19 @@ export function applyTargetToFrontmatter(
   const fmLines = fmBlock.split(/\r?\n/);
 
   // Compute desired values per target.
-  //   drafts          → keep status (or default active), add 'draft' tag, tempered=false, clear closed-at
-  //   inFlight        → status=active, remove 'draft' tag, tempered=false, clear closed-at
+  //   drafts          → keep status (or default active), add 'draft' tag, clear tempered, clear closed-at
+  //   inFlight        → status=active, remove 'draft' tag, clear tempered, clear closed-at
   //   queued/active   → legacy aliases for inFlight (queued vs active was decoration)
-  //   awaitingReview  → status=closed, tempered=false (agent-paused handoff)
-  //   tempered        → status=closed, tempered=true (human-accepted)
+  //   awaitingReview  → status=closed, clear tempered (agent-paused handoff)
+  //   tempered        → status=closed, tempered=true  (human-accepted)
+  //   composted       → status=closed, tempered=false (human-rejected verdict)
+  //
+  // `tempered === null` here means "remove the field on write." Only the
+  // verdict targets (tempered, composted) write a boolean; every other
+  // target clears it. This rescues `tempered: false` for actual composting
+  // — see [[ai-futures/shuttle/constitution-kanban-compost]].
   let status: string | null;  // null = leave untouched
-  let tempered: boolean;
+  let tempered: boolean | null;  // null = clear the field
   let closedAtAction: 'set-if-missing' | 'clear';
   let tagsToAdd: string[] = [];
   let tagsToRemove: string[] = [];
@@ -948,7 +1009,7 @@ export function applyTargetToFrontmatter(
       // the fiber already has (often `open` from felt add). The draft tag is
       // what matters for kanban classification.
       status = null;
-      tempered = false;
+      tempered = null;
       closedAtAction = 'clear';
       tagsToAdd = ['draft'];
       break;
@@ -956,18 +1017,23 @@ export function applyTargetToFrontmatter(
     case 'queued':
     case 'active':
       status = 'active';
-      tempered = false;
+      tempered = null;
       closedAtAction = 'clear';
       tagsToRemove = ['draft'];
       break;
     case 'awaitingReview':
       status = 'closed';
-      tempered = false;
+      tempered = null;
       closedAtAction = 'set-if-missing';
       break;
     case 'tempered':
       status = 'closed';
       tempered = true;
+      closedAtAction = 'set-if-missing';
+      break;
+    case 'composted':
+      status = 'closed';
+      tempered = false;
       closedAtAction = 'set-if-missing';
       break;
   }
@@ -996,7 +1062,11 @@ export function applyTargetToFrontmatter(
   };
 
   if (status !== null) setOrInsertScalar('status', status);
-  setOrInsertScalar('tempered', tempered ? 'true' : 'false');
+  if (tempered === null) {
+    clearScalar('tempered');
+  } else {
+    setOrInsertScalar('tempered', tempered ? 'true' : 'false');
+  }
 
   if (closedAtAction === 'clear') {
     clearScalar('closed-at');
