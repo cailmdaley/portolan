@@ -257,12 +257,31 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
 
     async getFiberContent(slug: string): Promise<FiberContent | null> {
       if (!opts.cityId) {
-        // Global vellum mode: resolve the slug to a city via /fiber-locate,
-        // then fetch the fiber content from that city's graph. This lets
-        // the thumb-index navigate into any fiber from the global IndexView
-        // — clicking a city child fiber resolves the city, fetches content,
-        // and vellum renders it within the same mount (the graph stays
-        // global, but individual fiber content comes from the correct city).
+        // Global vellum mode: resolve the slug via /fiber-locate, then fetch
+        // the fiber content from that city's graph.
+
+        // Handle synthetic __city__:cityId slugs — these are city-nodes in
+        // the global synthetic graph that have no real fiber file. Resolve
+        // to the city's root fiber via /city-root-slug, then fetch that.
+        // This makes clicking a city node (either from IndexView or the
+        // thumb-index ← parent button) land on the city's root fiber
+        // narrative page instead of a blank 404.
+        if (slug.startsWith('__city__:')) {
+          const cityId = slug.slice('__city__:'.length);
+          if (!cityId) return null;
+          const rootRes = await fetch(
+            `${API_BASE}/city-root-slug?cityId=${encodeURIComponent(cityId)}`,
+          ).catch(() => null);
+          if (!rootRes || !rootRes.ok) return null;
+          const rootData = await rootRes.json() as { rootSlug?: string };
+          if (!rootData.rootSlug) return null;
+          const url = `${API_BASE}/fiber/${encodeSlug(rootData.rootSlug)}?cityId=${encodeURIComponent(cityId)}`;
+          const res = await fetch(url).catch(() => null);
+          if (!res || res.status === 404 || !res.ok) return null;
+          return res.json() as Promise<FiberContent>;
+        }
+
+        // Normal global-mode path: resolve via /fiber-locate.
         const locateRes = await fetch(
           `${API_BASE}/fiber-locate?slug=${encodeURIComponent(slug)}`,
         ).catch(() => null);
