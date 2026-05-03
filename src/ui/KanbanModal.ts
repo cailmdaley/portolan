@@ -777,9 +777,15 @@ export class KanbanModal {
       el.append(waiting)
     }
 
+    // Review action cluster on awaiting-review cards. Non-stale only —
+    // stale-origin cards have nowhere to land for mutations.
+    if (kind === 'awaitingReview' && !isStale) {
+      el.append(this.renderReviewCluster(card))
+    }
+
     // Click outside any button → open in vellum (delegated catch-all).
     el.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('button')) return
+      if ((e.target as HTMLElement).closest('button, textarea')) return
       this.onOpenFiber(card)
     })
 
@@ -829,6 +835,13 @@ export class KanbanModal {
   /** POST endpoint for tag edits, with `?cityId=` when scoped. */
   private kanbanTagsUrl(): string {
     const base = `${this.apiBase}/kanban/tags`
+    if (!this.cityScope) return base
+    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
+  }
+
+  /** POST endpoint for review-comment directives, with `?cityId=` when scoped. */
+  private reviewCommentUrl(): string {
+    const base = `${this.apiBase}/kanban/review-comment`
     if (!this.cityScope) return base
     return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
   }
@@ -1016,6 +1029,157 @@ export class KanbanModal {
       tagWrap.append(more)
     }
     tagWrap.append(editBtn)
+  }
+
+  /**
+   * Render the review action cluster appended to awaiting-review cards.
+   *
+   * Layout:
+   *   [textarea — directive input, compact 2-row]
+   *   [Requeue fresh ▸] [Resume previous ▸ (disabled)]
+   *   [temper]  [compost]   ← secondary, smaller
+   *
+   * "Requeue fresh" is disabled until the textarea has non-empty content.
+   * "Resume previous" is always disabled until session UUID capture is wired.
+   * "Temper" and "Compost" are secondary conveniences; drag is primary.
+   */
+  private renderReviewCluster(card: KanbanCard): HTMLElement {
+    const cluster = document.createElement('div')
+    cluster.className = 'kbn-review-cluster'
+
+    // Textarea for the directive.
+    const textarea = document.createElement('textarea')
+    textarea.className = 'kbn-review-textarea'
+    textarea.placeholder = 'Add a directive for the next worker…'
+    textarea.rows = 2
+    textarea.setAttribute('aria-label', 'Review directive')
+    // Stop card-level click from triggering open-in-vellum while editing.
+    textarea.addEventListener('mousedown', (e) => e.stopPropagation())
+    textarea.addEventListener('click', (e) => e.stopPropagation())
+
+    // Primary action row.
+    const primaryRow = document.createElement('div')
+    primaryRow.className = 'kbn-review-primary'
+
+    const requeueBtn = document.createElement('button')
+    requeueBtn.type = 'button'
+    requeueBtn.className = 'kbn-action kbn-action-inFlight kbn-review-btn'
+    requeueBtn.textContent = 'Requeue fresh ▸'
+    requeueBtn.disabled = true
+    requeueBtn.setAttribute('aria-label', 'Requeue fiber with directive (fresh worker)')
+    requeueBtn.title = 'Type a directive above to enable'
+
+    const resumeBtn = document.createElement('button')
+    resumeBtn.type = 'button'
+    resumeBtn.className = 'kbn-action kbn-review-btn kbn-review-btn--disabled'
+    resumeBtn.textContent = 'Resume previous ▸'
+    resumeBtn.disabled = true
+    resumeBtn.setAttribute('aria-label', 'Resume previous worker session (not yet available)')
+    resumeBtn.title = 'Session UUID capture not yet implemented'
+
+    primaryRow.append(requeueBtn, resumeBtn)
+
+    // Secondary action row: temper / compost (drag alternatives).
+    const secondaryRow = document.createElement('div')
+    secondaryRow.className = 'kbn-review-secondary'
+
+    const temperBtn = document.createElement('button')
+    temperBtn.type = 'button'
+    temperBtn.className = 'kbn-action kbn-action-tempered kbn-review-secondary-btn'
+    temperBtn.textContent = 'Temper'
+    temperBtn.setAttribute('aria-label', `Temper fiber: ${card.name}`)
+    temperBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void this.transition(card, 'tempered')
+    })
+
+    const compostBtn = document.createElement('button')
+    compostBtn.type = 'button'
+    compostBtn.className = 'kbn-action kbn-action-drafts kbn-review-secondary-btn'
+    compostBtn.textContent = 'Compost'
+    compostBtn.setAttribute('aria-label', `Compost fiber: ${card.name}`)
+    compostBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void this.transition(card, 'composted')
+    })
+
+    secondaryRow.append(temperBtn, compostBtn)
+
+    // Wire: enable "Requeue fresh" only when textarea has content.
+    textarea.addEventListener('input', () => {
+      const hasContent = textarea.value.trim().length > 0
+      requeueBtn.disabled = !hasContent
+      if (hasContent) {
+        requeueBtn.title = 'Record directive and requeue as in-flight (fresh worker)'
+      } else {
+        requeueBtn.title = 'Type a directive above to enable'
+      }
+    })
+
+    // Wire: "Requeue fresh" click.
+    requeueBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void this.requeueFresh(card, textarea.value.trim(), requeueBtn, resumeBtn)
+    })
+
+    cluster.append(textarea, primaryRow, secondaryRow)
+    return cluster
+  }
+
+  /**
+   * Record a review directive and requeue the fiber as in-flight (fresh worker).
+   *
+   * Two-step: POST /kanban/review-comment to record the directive, then
+   * POST /kanban/transition {target: 'inFlight'} to move the card. Both must
+   * succeed; if the directive write fails the transition is skipped and the
+   * card stays in awaiting-review.
+   */
+  private async requeueFresh(
+    card: KanbanCard,
+    directive: string,
+    requeueBtn: HTMLButtonElement,
+    resumeBtn: HTMLButtonElement,
+  ): Promise<void> {
+    if (!directive) return
+    requeueBtn.disabled = true
+    resumeBtn.disabled = true
+    requeueBtn.textContent = 'Requeueing…'
+
+    try {
+      // Step 1: record the directive.
+      const commentRes = await fetch(this.reviewCommentUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: 'fresh' }),
+      })
+      if (!commentRes.ok) {
+        const errBody = await commentRes.json().catch(() => ({ error: `${commentRes.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Review comment failed: ${commentRes.status}`)
+      }
+
+      // Step 2: move to inFlight.
+      const transRes = await fetch(this.transitionUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
+      })
+      if (!transRes.ok) {
+        const errBody = await transRes.json().catch(() => ({ error: `${transRes.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Transition failed: ${transRes.status}`)
+      }
+
+      this.announce(`Requeued "${card.name}" with directive.`)
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      this.showBanner(`Couldn't requeue "${card.name}": ${msg}`, 'error')
+      // Restore buttons.
+      requeueBtn.textContent = 'Requeue fresh ▸'
+      requeueBtn.disabled = false
+      // resumeBtn stays disabled.
+      return
+    }
+
+    await this.fetchAndRender()
   }
 
   /** Update DOM that depends on `cityScope` after a scope swap. */
@@ -1817,7 +1981,7 @@ export class KanbanModal {
         display: flex;
         gap: 6px;
       }
-      .kbn-card-d
+      .kbn-card-date {
         font-family: var(--font-mono, 'JetBrains Mono', monospace);
         font-size: 10.5px;
         color: #B8AC9E;
@@ -1909,6 +2073,77 @@ export class KanbanModal {
         color: #6B5520;
         font-family: var(--font-mono, 'JetBrains Mono', monospace);
         font-size: 13px;
+      }
+
+      /* ── Review action cluster (awaiting-review cards only) ─────────────── */
+      /* Appended below the card body. Delimited from content by a top border.
+         Primary row: textarea + Requeue fresh + Resume previous (disabled).
+         Secondary row: temper + compost (drag alternatives, smaller). */
+      .kbn-review-cluster {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding-top: 8px;
+        margin-top: 4px;
+        border-top: 1px dashed rgba(154, 123, 53, 0.28);
+      }
+      .kbn-review-textarea {
+        width: 100%;
+        box-sizing: border-box;
+        resize: vertical;
+        min-height: 44px;
+        padding: 5px 8px;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.65);
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 12.5px;
+        line-height: 1.4;
+        color: #2E2A26;
+        outline: none;
+        transition: border-color 120ms ease, background 120ms ease;
+      }
+      .kbn-review-textarea:focus {
+        border-color: rgba(154, 123, 53, 0.55);
+        background: #FFFFFF;
+      }
+      .kbn-review-textarea::placeholder {
+        color: #C8BFB3;
+        font-style: italic;
+      }
+      .kbn-review-primary {
+        display: flex;
+        gap: 6px;
+      }
+      .kbn-review-btn {
+        flex: 1;
+        font-size: 10px;
+        padding: 3px 6px;
+        white-space: nowrap;
+      }
+      /* Disabled "Resume previous" uses a distinct muted style. */
+      .kbn-review-btn--disabled {
+        background: rgba(46, 42, 38, 0.03);
+        border-color: rgba(46, 42, 38, 0.12);
+        color: #C8BFB3;
+        cursor: not-allowed;
+      }
+      .kbn-review-btn--disabled:hover {
+        background: rgba(46, 42, 38, 0.03);
+        color: #C8BFB3;
+      }
+      .kbn-review-secondary {
+        display: flex;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+      .kbn-review-secondary-btn {
+        font-size: 9.5px;
+        padding: 2px 7px;
+        opacity: 0.75;
+      }
+      .kbn-review-secondary-btn:hover {
+        opacity: 1;
       }
 
       @media (max-width: 1100px) {

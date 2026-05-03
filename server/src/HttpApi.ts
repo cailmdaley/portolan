@@ -359,6 +359,16 @@ export class HttpApi {
       return true;
     }
 
+    // POST /kanban/review-comment — append a review directive to a fiber's
+    // felt history while it is in the awaiting-review column. The caller
+    // follows up with POST /kanban/transition to move the card back to inFlight.
+    if (url.pathname === '/kanban/review-comment' && req.method === 'POST') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleReviewComment(req, res);
+      return true;
+    }
+
     // POST /fiber/create — vellum's stash button (constitution-stash-button).
     // Must precede the `/fiber/` prefix match below; otherwise it routes to
     // handleFiberContent and returns "Missing cityId parameter".

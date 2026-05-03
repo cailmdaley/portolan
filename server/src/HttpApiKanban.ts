@@ -37,11 +37,15 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { URL } from 'url';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
+import { promisify } from 'util';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface KanbanCard {
   id: string;
@@ -298,6 +302,15 @@ interface KanbanFiberPool {
 export interface KanbanTransitionRequest {
   fiberId: string;
   target: KanbanTarget;
+}
+
+/** What POST /kanban/review-comment expects in the body. */
+export interface KanbanReviewCommentRequest {
+  fiberId: string;
+  /** The directive text — operational steering for the next Shuttle run. */
+  directive: string;
+  /** How to requeue: 'fresh' spawns a new worker; 'previous' resumes the prior session. */
+  resumeMode: 'fresh' | 'previous';
 }
 
 export class HttpApiKanban {
@@ -914,6 +927,62 @@ export class HttpApiKanban {
       canonicalAfter = undefined;
     }
     return this.toCard(refreshed, host, originId, refreshedById, undefined, canonicalAfter);
+  }
+
+  /**
+   * POST /kanban/review-comment — append a typed review directive to a
+   * fiber's felt history.
+   *
+   * Body: { fiberId, directive, resumeMode: 'fresh' | 'previous' }
+   *
+   * Shells out to:
+   *   felt -C <feltHost> history append <fiberId>
+   *        --kind review-comment --summary <directive>
+   *        --resume-mode <resumeMode>
+   *
+   * The caller is expected to follow up with POST /kanban/transition to move
+   * the card back to inFlight; this endpoint only records the directive and
+   * does not change fiber status itself.
+   */
+  async handleReviewComment(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: KanbanReviewCommentRequest;
+    try {
+      body = await readJsonBody<KanbanReviewCommentRequest>(req);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 400, { error: `bad request body: ${msg}` });
+      return;
+    }
+    if (!body || typeof body.fiberId !== 'string' || typeof body.directive !== 'string') {
+      this.json(res, 400, { error: 'fiberId and directive are required' });
+      return;
+    }
+    if (body.resumeMode !== 'fresh' && body.resumeMode !== 'previous') {
+      this.json(res, 400, { error: `resumeMode must be 'fresh' or 'previous'` });
+      return;
+    }
+    if (!body.directive.trim()) {
+      this.json(res, 400, { error: 'directive must not be empty' });
+      return;
+    }
+
+    try {
+      await execFileAsync('felt', [
+        '-C', this.feltHost,
+        'history', 'append', body.fiberId,
+        '--kind', 'review-comment',
+        '--summary', body.directive,
+        '--resume-mode', body.resumeMode,
+      ]);
+      this.json(res, 200, { ok: true });
+    } catch (err: unknown) {
+      const msg =
+        (err as { stderr?: string })?.stderr?.trim() ||
+        (err as { message?: string })?.message ||
+        String(err);
+      console.error('[Kanban] review-comment append failed:', msg);
+      this.json(res, 500, { error: `felt history append failed: ${msg}` });
+    }
   }
 
   // ---------------------------------------------------------------------------
