@@ -69,6 +69,13 @@ interface KanbanCard {
    * the frontend hands to `navigate()` once it's pivoted to `cityId`.
    */
   projectSlug?: string
+  /**
+   * Session UUID of the most recently dispatched worker. Non-null enables
+   * the "Resume previous" button on awaiting-review cards. Populated from
+   * `shuttle.session.id` in the fiber frontmatter (written by the Shuttle
+   * daemon via `shuttle-ctl session-set` after a successful worker spawn).
+   */
+  sessionId?: string
 }
 
 /**
@@ -1036,11 +1043,13 @@ export class KanbanModal {
    *
    * Layout:
    *   [textarea — directive input, compact 2-row]
-   *   [Requeue fresh ▸] [Resume previous ▸ (disabled)]
+   *   [Requeue fresh ▸] [Resume previous ▸]
    *   [temper]  [compost]   ← secondary, smaller
    *
    * "Requeue fresh" is disabled until the textarea has non-empty content.
-   * "Resume previous" is always disabled until session UUID capture is wired.
+   * "Resume previous" is enabled when the fiber has a stored session UUID
+   *   (shuttle.session.id ≠ null), disabled otherwise with an explanatory
+   *   tooltip. Both buttons require a non-empty directive.
    * "Temper" and "Compost" are secondary conveniences; drag is primary.
    */
   private renderReviewCluster(card: KanbanCard): HTMLElement {
@@ -1069,13 +1078,21 @@ export class KanbanModal {
     requeueBtn.setAttribute('aria-label', 'Requeue fiber with directive (fresh worker)')
     requeueBtn.title = 'Type a directive above to enable'
 
+    // "Resume previous" is enabled only when the fiber has a stored session UUID.
+    const hasSession = !!card.sessionId
     const resumeBtn = document.createElement('button')
     resumeBtn.type = 'button'
-    resumeBtn.className = 'kbn-action kbn-review-btn kbn-review-btn--disabled'
+    resumeBtn.className = hasSession
+      ? 'kbn-action kbn-review-btn'
+      : 'kbn-action kbn-review-btn kbn-review-btn--disabled'
     resumeBtn.textContent = 'Resume previous ▸'
-    resumeBtn.disabled = true
-    resumeBtn.setAttribute('aria-label', 'Resume previous worker session (not yet available)')
-    resumeBtn.title = 'Session UUID capture not yet implemented'
+    resumeBtn.disabled = true  // also requires non-empty directive; see input handler
+    resumeBtn.setAttribute('aria-label', hasSession
+      ? 'Resume previous worker session with directive'
+      : 'Resume previous worker session (no session available)')
+    resumeBtn.title = hasSession
+      ? 'Type a directive above to enable'
+      : 'No prior session stored — dispatch a fresh worker first'
 
     primaryRow.append(requeueBtn, resumeBtn)
 
@@ -1105,7 +1122,9 @@ export class KanbanModal {
 
     secondaryRow.append(temperBtn, compostBtn)
 
-    // Wire: enable "Requeue fresh" only when textarea has content.
+    // Wire: enable action buttons only when textarea has content.
+    // Requeue fresh: always available when textarea non-empty.
+    // Resume previous: available when textarea non-empty AND session exists.
     textarea.addEventListener('input', () => {
       const hasContent = textarea.value.trim().length > 0
       requeueBtn.disabled = !hasContent
@@ -1114,12 +1133,29 @@ export class KanbanModal {
       } else {
         requeueBtn.title = 'Type a directive above to enable'
       }
+      if (hasSession) {
+        resumeBtn.disabled = !hasContent
+        if (hasContent) {
+          resumeBtn.title = 'Record directive and resume previous worker session'
+        } else {
+          resumeBtn.title = 'Type a directive above to enable'
+        }
+      }
+      // If !hasSession, resumeBtn stays disabled regardless of textarea.
     })
 
     // Wire: "Requeue fresh" click.
     requeueBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       void this.requeueFresh(card, textarea.value.trim(), requeueBtn, resumeBtn)
+    })
+
+    // Wire: "Resume previous" click.
+    resumeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (hasSession && textarea.value.trim()) {
+        void this.resumePrevious(card, textarea.value.trim(), requeueBtn, resumeBtn)
+      }
     })
 
     cluster.append(textarea, primaryRow, secondaryRow)
@@ -1175,7 +1211,65 @@ export class KanbanModal {
       // Restore buttons.
       requeueBtn.textContent = 'Requeue fresh ▸'
       requeueBtn.disabled = false
-      // resumeBtn stays disabled.
+      resumeBtn.disabled = !card.sessionId || directive.length === 0
+      return
+    }
+
+    await this.fetchAndRender()
+  }
+
+  /**
+   * Record a review directive and requeue the fiber requesting resume of the
+   * previous worker session.
+   *
+   * Same two-step as requeueFresh, but POSTs `resumeMode: 'previous'`. The
+   * Shuttle dispatcher reads the resume_mode from the review-comment event
+   * and invokes the harness-appropriate resume command (e.g.
+   * `claude --resume <session-id>`). Only callable when `card.sessionId` is
+   * set (button is disabled otherwise by renderReviewCluster).
+   */
+  private async resumePrevious(
+    card: KanbanCard,
+    directive: string,
+    requeueBtn: HTMLButtonElement,
+    resumeBtn: HTMLButtonElement,
+  ): Promise<void> {
+    if (!directive || !card.sessionId) return
+    requeueBtn.disabled = true
+    resumeBtn.disabled = true
+    resumeBtn.textContent = 'Resuming…'
+
+    try {
+      // Step 1: record the directive with resume intent.
+      const commentRes = await fetch(this.reviewCommentUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: 'previous' }),
+      })
+      if (!commentRes.ok) {
+        const errBody = await commentRes.json().catch(() => ({ error: `${commentRes.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Review comment failed: ${commentRes.status}`)
+      }
+
+      // Step 2: move to inFlight — Shuttle picks it up and resumes the session.
+      const transRes = await fetch(this.transitionUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
+      })
+      if (!transRes.ok) {
+        const errBody = await transRes.json().catch(() => ({ error: `${transRes.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Transition failed: ${transRes.status}`)
+      }
+
+      this.announce(`Resuming previous session for "${card.name}" with directive.`)
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      this.showBanner(`Couldn't resume "${card.name}": ${msg}`, 'error')
+      // Restore buttons on failure.
+      resumeBtn.textContent = 'Resume previous ▸'
+      resumeBtn.disabled = false
+      requeueBtn.disabled = directive.length === 0
       return
     }
 

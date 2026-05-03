@@ -41,6 +41,14 @@ export interface Fiber {
    * (back to `scheduled`) by `shuttle-ctl accept`.
    */
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
+  /**
+   * `shuttle.session.id` — the session UUID of the most recently dispatched
+   * worker. Written by the Shuttle daemon after a successful worker spawn via
+   * `shuttle-ctl session-set`. Used to enable the "Resume previous" button on
+   * awaiting-review Kanban cards. Absent when no session has been stored yet,
+   * or after `shuttle-ctl session-clear`.
+   */
+  shuttleSessionId?: string;
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -285,6 +293,18 @@ export function parseFiber(id: string, content: string): Fiber {
     }
   }
 
+  // shuttleSessionId: shuttle.session.id — the harness-native session UUID from
+  // the most recent dispatch. Written by the Shuttle daemon via `shuttle-ctl
+  // session-set`; used to enable "Resume previous" on awaiting-review cards.
+  let shuttleSessionId: string | undefined;
+  if (hasShuttleBlock) {
+    const session = (shuttleRaw as Record<string, unknown>)['session'];
+    if (session && typeof session === 'object' && !Array.isArray(session)) {
+      const id = (session as Record<string, unknown>)['id'];
+      if (typeof id === 'string' && id) shuttleSessionId = id;
+    }
+  }
+
   return {
     id,
     name: getField('name') || id,
@@ -302,5 +322,6 @@ export function parseFiber(id: string, content: string): Fiber {
     shuttleEnabled,
     shuttleKind,
     shuttleReviewState,
+    shuttleSessionId,
   };
 }
