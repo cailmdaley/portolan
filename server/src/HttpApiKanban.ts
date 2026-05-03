@@ -38,39 +38,14 @@ import type { URL } from 'url';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { execFile } from 'child_process';
 import { homedir } from 'os';
-import { join, relative } from 'path';
+import { join } from 'path';
 import { promisify } from 'util';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
+import { resolveGlobalFiberId } from './loomGlobalId.js';
 
 const execFileAsync = promisify(execFile);
-
-/**
- * Resolve a project-local fiber id to a loom-global id for shuttle-ctl calls.
- *
- * shuttle-ctl resolves fibers relative to LOOM_HOME/.felt/ (the global loom).
- * City .felt/ directories are symlinks into subpaths of the loom, so the
- * global id is the prefix (relative path from loom/.felt to city/.felt)
- * prepended to the project-local slug. When the host IS the loom, prefix is
- * empty and the id is returned unchanged.
- *
- * Falls back to the local slug when realpath fails (shuttle-ctl's felt-ls
- * fallback may still resolve it). Shared with HttpApiAnnotations.ts.
- */
-function resolveGlobalFiberId(cityPath: string, localSlug: string): string {
-  const loomHome = process.env.LOOM_HOME || join(homedir(), 'loom');
-  const loomFelt = join(loomHome, '.felt');
-  let projectFelt: string;
-  try {
-    projectFelt = realpathSync(join(cityPath, '.felt'));
-  } catch {
-    return localSlug;
-  }
-  const prefix = relative(loomFelt, projectFelt);
-  if (!prefix || prefix.startsWith('..')) return localSlug;
-  return `${prefix}/${localSlug}`;
-}
 
 export interface KanbanCard {
   id: string;
@@ -1067,24 +1042,45 @@ export class HttpApiKanban {
   }
 
   /**
+   * Resolve the felt host for a fiber via the shuttle daemon's HTTP API.
+   *
+   * Calls `GET http://localhost:4000/api/v1/fiber/host?id=<fiberId>` and
+   * returns the `felt_host` field. Falls back to `LOOM_HOME || ~/loom` if
+   * the daemon is unreachable or returns a non-200 response, so single-host
+   * setups that don't run the daemon continue to work.
+   */
+  private async resolveShuttleFeltHost(fiberId: string): Promise<string> {
+    const fallback = process.env.LOOM_HOME || join(homedir(), 'loom');
+    try {
+      const url = `http://localhost:4000/api/v1/fiber/host?id=${encodeURIComponent(fiberId)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      if (!res.ok) return fallback;
+      const data = await res.json() as { felt_host?: string };
+      return data.felt_host ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  /**
    * POST /kanban/review-comment — file a review directive as a typed
    * `review-comment` event on a fiber's felt history.
    *
    * Body: { fiberId, directive, resumeMode: 'fresh' | 'previous' }
    *
    * Shells out to:
-   *   felt -C <loomRoot> history append <globalFiberId>
+   *   felt -C <feltHost> history append <globalFiberId>
    *        --kind review-comment --summary <directive>
    *
    * **Index-scope correctness:** felt has one index per `.felt/` directory;
    * a fiber that lives under both `~/loom/.felt/ai-futures/portolan/...`
    * (via symlink) and `<portolan>/.felt/...` (the physical project) has
-   * separate event streams in each index. Shuttle's dispatcher hardcodes
-   * `felt -C ~/loom`, so review-comment events MUST land in the loom-root
-   * index under the global fiber id. A city-scoped kanban (`?cityId=X`)
-   * has `this.feltHost = city.path` — using that here would file the
-   * event in the project's own index under a project-local id, which
-   * shuttle never reads. We deliberately bypass `this.feltHost` for this
+   * separate event streams in each index. The felt host is resolved via
+   * the shuttle daemon's `GET /api/v1/fiber/host?id=<id>` endpoint, which
+   * returns the owning host from the daemon's per-fiber cache. A city-scoped
+   * kanban (`?cityId=X`) has `this.feltHost = city.path` — using that here
+   * would file the event in the project's own index under a project-local id,
+   * which shuttle never reads. We deliberately bypass `this.feltHost` for this
    * endpoint and resolve the global id via the same helper the transition
    * path uses (`resolveGlobalFiberId`).
    *
@@ -1149,18 +1145,19 @@ export class HttpApiKanban {
       return;
     }
 
-    // Loom root must match shuttle's hardcoded `~/loom` (or LOOM_HOME).
-    // Same env-var fallback as resolveGlobalFiberId so a non-default loom
-    // works end-to-end if both processes share the env var.
-    const loomRoot = process.env.LOOM_HOME || join(homedir(), 'loom');
+    const feltHost = await this.resolveShuttleFeltHost(globalId);
 
     try {
+      // resumeMode is preserved on the API surface (validated above) for the
+      // future "Resume previous worker session" affordance, but felt history
+      // append doesn't carry the flag — there's no consumer downstream today.
+      // Passing it produces "unknown flag: --resume-mode" against current
+      // felt; keep the validation, drop the arg.
       await execFileAsync('felt', [
-        '-C', loomRoot,
+        '-C', feltHost,
         'history', 'append', globalId,
         '--kind', 'review-comment',
         '--summary', directive,
-        '--resume-mode', body.resumeMode,
       ]);
       this.json(res, 200, { ok: true });
     } catch (err: unknown) {
