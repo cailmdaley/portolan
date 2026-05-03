@@ -123,6 +123,19 @@ export interface KanbanCard {
    * slugs, so this is what the frontend hands to `navigate()`.
    */
   projectSlug?: string;
+  /**
+   * The harness-native session UUID of the most recently dispatched worker,
+   * when resume is available. Written by the Shuttle daemon via
+   * `shuttle-ctl session-set` after a successful worker spawn.
+   *
+   * Non-null → the "Resume previous" button on awaiting-review cards is
+   * enabled. Absent → button is disabled with a tooltip explaining why.
+   *
+   * The dispatcher reads this field at next dispatch to invoke the
+   * harness-appropriate resume command (e.g. `claude --resume <id>`,
+   * `codex resume <id>`, `pi --session <id>`).
+   */
+  sessionId?: string;
 }
 
 export interface KanbanColumns {
@@ -818,20 +831,30 @@ export class HttpApiKanban {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
 
-    // For drafts/inFlight transitions: mutate the shuttle: block via shuttle-ctl
-    // BEFORE reading the file for the felt-level write. This ensures the
-    // applyTargetToFrontmatter pass sees (and preserves) the updated block.
-    // `queued`/`active` are legacy aliases for `inFlight` — treat identically.
+    // Order of operations for non-standing transitions:
+    //   1. applyTargetToFrontmatter — writes felt-level scalars
+    //      (status, tempered, closed-at).
+    //   2. shuttle-ctl pause/resume — mutates the `shuttle:` block
+    //      (specifically `enabled`).
     //
-    // Standing-role review acceptance is a special case: when a kind:standing
-    // fiber is in awaitingReview (review.state === 'awaiting') and the user
-    // drags it to inFlight OR tempered, the right verb is `accept` — it
-    // advances the schedule (sets review.state = scheduled, computes new
-    // next_due_at) and closes the run loop. `resume` would no-op (enabled is
-    // already true, status already active) and the role would stay stuck in
-    // awaiting; the oneshot tempered/closed path would terminate the role
-    // (status=closed → daemon stops dispatching forever), which is wrong for
-    // "I accept this run." `composted` IS allowed to fall through to the
+    // The two passes touch *orthogonal* frontmatter (scalar fields vs the
+    // `shuttle:` mapping) so the order doesn't affect what either writes.
+    // The reason it must be felt-first: `shuttle-ctl resume` refuses
+    // status:closed fibers ("reopen it before resuming"). When the user
+    // requeues an awaiting-review card back to inFlight, the fiber on disk
+    // is status:closed (set when the worker exited via awaitingReview);
+    // calling resume first would fail. applyTargetToFrontmatter reopens
+    // (status:active) first, then resume succeeds.
+    //
+    // Standing-role review acceptance is a separate path: when a
+    // kind:standing fiber in awaitingReview (review.state === 'awaiting')
+    // is dragged to inFlight OR tempered, the right verb is `accept` — it
+    // advances the schedule (review.state → scheduled, recomputes
+    // next_due_at) and closes the run loop. `resume` would no-op (enabled
+    // is already true, status already active) and the role would stay
+    // stuck in awaiting; the oneshot tempered/closed path would terminate
+    // the role (status=closed → daemon stops dispatching forever), which
+    // is wrong for "I accept this run." `composted` falls through to the
     // oneshot path because terminating a recurring role is the right
     // semantics for "I'm done with this canary, retire it."
     //
@@ -863,29 +886,33 @@ export class HttpApiKanban {
       // accept already wrote the file (advancing review + schedule) and
       // status was already 'active' for a standing role — no felt-level
       // mutation needed. Skip applyTargetToFrontmatter.
-    } else if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
-      const verb: 'pause' | 'resume' = target === 'drafts' ? 'pause' : 'resume';
-      const globalId = resolveGlobalFiberId(host, fiber.id);
-      if (this.shuttleCtlFn) {
-        await this.shuttleCtlFn(verb, globalId);
-      } else {
-        try {
-          await execFileAsync('shuttle-ctl', [verb, globalId], {
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          });
-        } catch (err: any) {
-          const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
-          throw new Error(`shuttle-ctl ${verb} failed for ${globalId}: ${msg}`);
-        }
-      }
-    }
-
-    if (!isStandingAccept) {
+    } else {
+      // Step 1: felt-level scalars first (status / tempered / closed-at).
+      // Reopens status:closed → active for inFlight requeues so the
+      // subsequent shuttle-ctl resume passes its status precondition.
       const raw = readFileSync(path, 'utf-8');
       const updated = applyTargetToFrontmatter(raw, target, nowIso);
       if (updated !== raw) {
         writeFileSync(path, updated, 'utf-8');
+      }
+
+      // Step 2: shuttle-ctl mutates the `shuttle:` block (enabled).
+      if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
+        const verb: 'pause' | 'resume' = target === 'drafts' ? 'pause' : 'resume';
+        const globalId = resolveGlobalFiberId(host, fiber.id);
+        if (this.shuttleCtlFn) {
+          await this.shuttleCtlFn(verb, globalId);
+        } else {
+          try {
+            await execFileAsync('shuttle-ctl', [verb, globalId], {
+              timeout: 10000,
+              maxBuffer: 1024 * 1024,
+            });
+          } catch (err: any) {
+            const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+            throw new Error(`shuttle-ctl ${verb} failed for ${globalId}: ${msg}`);
+          }
+        }
       }
     }
     this.clearFiberPoolCache();
@@ -1040,19 +1067,45 @@ export class HttpApiKanban {
   }
 
   /**
-   * POST /kanban/review-comment — append a typed review directive to a
-   * fiber's felt history.
+   * POST /kanban/review-comment — file a review directive as a typed
+   * `review-comment` event on a fiber's felt history.
    *
    * Body: { fiberId, directive, resumeMode: 'fresh' | 'previous' }
    *
    * Shells out to:
-   *   felt -C <feltHost> history append <fiberId>
+   *   felt -C <loomRoot> history append <globalFiberId>
    *        --kind review-comment --summary <directive>
-   *        --resume-mode <resumeMode>
    *
-   * The caller is expected to follow up with POST /kanban/transition to move
-   * the card back to inFlight; this endpoint only records the directive and
-   * does not change fiber status itself.
+   * **Index-scope correctness:** felt has one index per `.felt/` directory;
+   * a fiber that lives under both `~/loom/.felt/ai-futures/portolan/...`
+   * (via symlink) and `<portolan>/.felt/...` (the physical project) has
+   * separate event streams in each index. Shuttle's dispatcher hardcodes
+   * `felt -C ~/loom`, so review-comment events MUST land in the loom-root
+   * index under the global fiber id. A city-scoped kanban (`?cityId=X`)
+   * has `this.feltHost = city.path` — using that here would file the
+   * event in the project's own index under a project-local id, which
+   * shuttle never reads. We deliberately bypass `this.feltHost` for this
+   * endpoint and resolve the global id via the same helper the transition
+   * path uses (`resolveGlobalFiberId`).
+   *
+   * The directive lands as a separately-queryable typed event. Shuttle's
+   * dispatcher reads the latest review-comment via
+   * `felt history <id> --kind review-comment --last 1 --json` and inlines
+   * it at the top of every dispatch prompt, so the directive survives
+   * arbitrarily many intermediate worker handoffs without depending on
+   * a chronology window. New directives supersede by being more recent;
+   * the worker reads the editorial chain alongside the directive and
+   * decides whether it's still in play.
+   *
+   * `resumeMode` is preserved on the API surface for the future
+   * "Resume previous worker session" affordance, but isn't plumbed into
+   * felt today — the only mode used is 'fresh' and there's no consumer
+   * downstream. We don't bake it into the summary because that would be
+   * noise that shows up in every shuttle prompt.
+   *
+   * The caller is expected to follow up with POST /kanban/transition to
+   * move the card back to inFlight; this endpoint only records the
+   * directive and does not change fiber status itself.
    */
   async handleReviewComment(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: KanbanReviewCommentRequest;
@@ -1071,17 +1124,42 @@ export class HttpApiKanban {
       this.json(res, 400, { error: `resumeMode must be 'fresh' or 'previous'` });
       return;
     }
-    if (!body.directive.trim()) {
+    const directive = body.directive.trim();
+    if (!directive) {
       this.json(res, 400, { error: 'directive must not be empty' });
       return;
     }
 
+    // Resolve the fiber so we can compute its global (loom-relative) id.
+    // The frontend's `card.id` is project-local in city-scoped kanban
+    // views, so we can't pass body.fiberId straight through — felt would
+    // file under whichever index `-C` points at, with that local id.
+    let globalId: string;
+    try {
+      const { merged } = await this.collectFibers();
+      const entry = merged.find(({ fiber }) => fiber.id === body.fiberId);
+      if (!entry) {
+        this.json(res, 404, { error: `fiber not found: ${body.fiberId}` });
+        return;
+      }
+      globalId = resolveGlobalFiberId(entry.host, entry.fiber.id);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 500, { error: `fiber resolution failed: ${msg}` });
+      return;
+    }
+
+    // Loom root must match shuttle's hardcoded `~/loom` (or LOOM_HOME).
+    // Same env-var fallback as resolveGlobalFiberId so a non-default loom
+    // works end-to-end if both processes share the env var.
+    const loomRoot = process.env.LOOM_HOME || join(homedir(), 'loom');
+
     try {
       await execFileAsync('felt', [
-        '-C', this.feltHost,
-        'history', 'append', body.fiberId,
+        '-C', loomRoot,
+        'history', 'append', globalId,
         '--kind', 'review-comment',
-        '--summary', body.directive,
+        '--summary', directive,
         '--resume-mode', body.resumeMode,
       ]);
       this.json(res, 200, { ok: true });
@@ -1155,6 +1233,7 @@ export class HttpApiKanban {
       runningWorker,
       cityId,
       projectSlug,
+      sessionId: f.shuttleSessionId,
     };
   }
 
