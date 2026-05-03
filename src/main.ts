@@ -499,12 +499,10 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // URL applier restored a `&scope=…` deep link, or when a Find scope
       // change is being applied via openCityWorkspace).
       findInitialScope: opts.initialScope,
-      // Stage J — Find's Cities-column / ⊕ Global click flips
-      // `localScopeCityId` inside FindHost; we mirror that into the URL
-      // fragment so reload restores the user's chosen scope.
+      // Stage J — Find's Cities-column click flips `localScopeCityId`
+      // inside FindHost; we mirror that into the URL fragment so reload
+      // restores the user's chosen scope.
       onFindScopeChange: handleFindScopeChange,
-      // Kanban scope — same pattern: ⊕ Global -> URL scope update.
-      onKanbanScopeChange: handleKanbanScopeChange,
       kanbanInitialScope: opts.initialScope,
       // Hand the city name through so vellum's IndexView can label its
       // cartouche correctly. Without this, the eyebrow above "Index"
@@ -520,28 +518,58 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // the user clicked through *to* a fiber, so land on its prose.
       onOpenFiberInCity: openFiberInCityFromKanban,
       onClose: handleWorkspaceClosed,
+      // Thumb-index `← index` from the city's root fiber escalates one
+      // scope level → global Vellum index. See
+      // [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]].
+      onIndexEscalate: escalateToGlobalVellumIndex,
     })
     activeWorkspaceHandle = handle
   })
 }
 
 /**
+ * Escalate the active modal one scope level upward — close the current
+ * city-scoped modal and open the global Vellum index in its place. Wired
+ * as `onIndexEscalate` on every city-scoped modal so the thumb-index
+ * `← index` button promotes city-root → global narrative without leaving
+ * a transient "vellum closed" history entry between the two states.
+ *
+ * Mirrors the close-then-reopen guard used in `escalateFindScope`: the
+ * `modalReopenInProgress` flag suppresses `handleWorkspaceClosed`'s URL
+ * push during the in-flight close so only the final
+ * `openGlobalVellumIndex` URL state lands in history.
+ */
+function escalateToGlobalVellumIndex(): void {
+  const handle = activeWorkspaceHandle
+  if (!handle) {
+    openGlobalVellumIndex()
+    return
+  }
+  modalReopenInProgress = true
+  handle.close()
+  modalReopenInProgress = false
+  activeWorkspaceHandle = null
+  activeWorkspaceCityId = null
+  openGlobalVellumIndex()
+}
+
+/**
  * Stage J — FindHost's scope-change callback. Fires when the user clicks
- * a city in the Cities column (re-scoping in place) or hits ⊕ Global to
- * clear scope. We mirror the new scope into the URL fragment so reload
- * restores it; reload-time the URL applier reads `&scope=…` and passes it
- * into `openCityWorkspace({ initialScope })`, which threads it to FindHost
- * via `findInitialScope`.
+ * a city in the Cities column (re-scoping in place) or hits the
+ * "All cities" pseudo-row to clear scope. We mirror the new scope into
+ * the URL fragment so reload restores it; reload-time the URL applier
+ * reads `&scope=…` and passes it into `openCityWorkspace({ initialScope
+ * })`, which threads it to FindHost via `findInitialScope`.
  *
  * `newScope === undefined` means "scope inherits from modal cityId" (the
  * pre-Stage-J default state). We encode this by clearing the URL `scope`
- * param. `null` (sent by FindHost when ⊕ Global is hit on a modal that
- * had a city scope) is encoded as `&scope=global` to make the explicit
- * choice durable.
+ * param. `null` (sent by FindHost from the "All cities" toggle when the
+ * modal had a city scope) is encoded as `&scope=global` to make the
+ * explicit choice durable.
  */
 function handleFindScopeChange(newScope: string | null | undefined): void {
   if (newScope === null || (activeWorkspaceCityId && newScope === undefined)) {
-    // FindHost flipped to global (⊕ Global). Encode explicit global.
+    // FindHost flipped to explicit global. Encode explicit global.
     activeWorkspaceScopeOverride = SCOPE_GLOBAL
   } else if (newScope === undefined) {
     activeWorkspaceScopeOverride = null
@@ -550,18 +578,6 @@ function handleFindScopeChange(newScope: string | null | undefined): void {
     activeWorkspaceScopeOverride = null
   } else {
     activeWorkspaceScopeOverride = newScope
-  }
-  pushCurrentUrl()
-}
-
-/** Wired through `openVellumWorkspaceModal({onKanbanScopeChange})` so that
- *  when the user clicks ⊕ Global in a city-scoped kanban, the URL fragment
- *  updates to `&scope=global` and survives refresh.
- *  Kanban only emits `null` (global); cityId strings and undefined are not
- *  emitted (the kanban has no in-place city re-scoping). */
-function handleKanbanScopeChange(newScope: string | null | undefined): void {
-  if (newScope === null) {
-    activeWorkspaceScopeOverride = SCOPE_GLOBAL
   }
   pushCurrentUrl()
 }
@@ -605,6 +621,64 @@ function handleWorkspaceClosed(): void {
 }
 
 /**
+ * Open the global Vellum index — vellum mounted with `scope=global` (no
+ * cityId) and the Narrative tab active at first paint. Lands on the
+ * synthetic global graph's `<IndexView>` (no `rootSlug` is published by
+ * `/global-graph`, so vellum doesn't redirect away from `slug=''`).
+ *
+ * Canonical destination of the thumb-index `← index` escalation: every
+ * city-scoped modal wires `onIndexEscalate` to this function so that
+ * clicking `index` from a city-root fiber escapes one scope level upward.
+ * Also the no-focused-city default for the chrome bar's launch button —
+ * see [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]].
+ *
+ * Idempotent on re-call: when this modal is already open and on
+ * narrative, the URL diff in `applyUrlState` short-circuits; arriving
+ * here from elsewhere tears down the previous modal first.
+ */
+function openGlobalVellumIndex(): void {
+  // Mirror openGlobalKanban / openGlobalFind state hygiene: explicit
+  // global scope, no fiber/file pinned, narrative tab.
+  vellumOpenIntent = true
+  activeWorkspaceFiberSlug = null
+  activeWorkspaceFilePath = null
+  activeWorkspaceScopeOverride = SCOPE_GLOBAL
+  commitVellumMode('narrative')
+  if (activeWorkspaceHandle) {
+    activeWorkspaceHandle.setMode('narrative')
+    pushCurrentUrl()
+    return
+  }
+  activeWorkspaceCityId = null
+  pushCurrentUrl()
+  const myToken = ++workspaceOpenToken
+  void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
+    if (myToken !== workspaceOpenToken) return
+    activeWorkspaceHandle = openVellumWorkspaceModal({
+      // No cityId → adapter fetches `/global-graph`; no initialSlug →
+      // vellum lands on `<IndexView>` for the synthetic collection. The
+      // eyebrow above the cartouche reads "loom" so the user knows what
+      // collection they're looking at instead of seeing a mute "Index".
+      initialMode: 'narrative',
+      cityName: 'loom',
+      onOpenWorker: focusWorkerByTmuxSession,
+      onFindScopeChange: handleFindScopeChange,
+      // Cards from the (currently empty) kanban or Find tab in this
+      // global mount pivot to their owning city's narrative — same
+      // contract as openGlobalKanban / openGlobalFind.
+      onOpenFiberInCity: openFiberInCityFromKanban,
+      onClose: handleWorkspaceClosed,
+      // No `onIndexEscalate` here: from the global Vellum index, the
+      // thumb-index `← index` button is structurally idempotent (the
+      // global graph's nav block is empty at slug='', and the synthetic
+      // city nodes' fallback `navigate('')` returns to this same
+      // IndexView). Wiring an escalate callback here would create a
+      // loop.
+    })
+  })
+}
+
+/**
  * Open the global kanban — vellum mounted with `scope=global` (no cityId)
  * and the Kanban tab active at first paint. Single entry point for the
  * launch button + `k` hotkey since Stage 6 retired the standalone modal
@@ -640,14 +714,17 @@ function openGlobalKanban(): void {
       // surface scope, but if the user flips to Find from here the change
       // path goes through this same modal handle.
       onFindScopeChange: handleFindScopeChange,
-      // Defensive: wire the kanban scope callback even though there's no
-      // city scope to promote from (the ⊕ Global button is hidden when
-      // cityId is undefined).
-      onKanbanScopeChange: handleKanbanScopeChange,
       // The global kanban has no fiber graph (cityId is undefined) — every
       // card click needs to pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
       onClose: handleWorkspaceClosed,
+      // No fiber graph in this mount, so vellum's thumb-index nav block
+      // doesn't render its `← index` button — but a kanban-card click can
+      // pivot to a city via `onOpenFiberInCity`, after which the user
+      // sits on a city root with the button visible. Wire escalation so
+      // that subsequent click escapes back to the global Vellum index
+      // rather than bouncing through the city's local rootSlug redirect.
+      onIndexEscalate: escalateToGlobalVellumIndex,
     })
   })
 }
@@ -690,6 +767,10 @@ function openGlobalFind(): void {
       // the (forthcoming Stage B) tree pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
       onClose: handleWorkspaceClosed,
+      // Same rationale as openGlobalKanban: a fiber-click pivot lands on
+      // a city root where the thumb-index `← index` button is visible;
+      // wire escalation so it returns to the global Vellum index.
+      onIndexEscalate: escalateToGlobalVellumIndex,
     })
   })
 }
@@ -852,14 +933,18 @@ function openLastView(): void {
     openCityWorkspace(focusedCity, { initialMode: mode })
     return
   }
-  // No focused city; open the aggregate surface matching last mode,
-  // defaulting to global kanban (the non-empty fallback per Bug 1
-  // acceptance: "global Kanban is acceptable as a non-empty fallback
-  // until the synthetic global Vellum index is implemented").
+  // No focused city; open the aggregate surface matching the last
+  // interacted tab. Narrative now has an honest non-empty global
+  // surface — the synthetic global Vellum index — so it's the default
+  // when neither Find nor Kanban was the last mode (the constitution
+  // makes `← index` the canonical path here; the launch button mirrors
+  // it for the no-focused-city case).
   if (lastVellumMode === 'find') {
     openGlobalFind()
-  } else {
+  } else if (lastVellumMode === 'kanban') {
     openGlobalKanban()
+  } else {
+    openGlobalVellumIndex()
   }
 }
 
@@ -1219,6 +1304,14 @@ async function applyUrlState(
     }
     if (target.mode === 'find' && (!targetCity || scopeOverride === SCOPE_GLOBAL)) {
       openGlobalFind()
+      return
+    }
+    // Global Vellum index — narrative tab in global scope, no city/fiber
+    // context. Reached by the URL state `#mode=narrative&scope=global`
+    // (the canonical thumb-index `← index` escalation; see
+    // [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]]).
+    if (target.mode === 'narrative' && !targetCity && !target.fiberSlug) {
+      openGlobalVellumIndex()
       return
     }
     if (targetCity) {

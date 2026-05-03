@@ -11,7 +11,7 @@
  * clicking a worker focuses its kitty tab via the `onOpenWorker` plumb.
  *
  *   ┌───────────────────────────────────────────────────────────┐
- *   │ FIND · scope: <…>                       [⊕ Global][Refresh]│  eyebrow
+ *   │ FIND · scope: <…>                                 [Refresh]│  eyebrow
  *   │ ⌕ search fibers + files…                                  │  search bar
  *   ├──────────┬───────────────────────┬────────────────────────┤
  *   │ CITIES   │ FIBERS  (Stage B)     │ FILES (Stage E)        │
@@ -160,12 +160,13 @@ export function FindHost({
    *  `&scope=…` deep links. */
   initialScope?: string | 'global'
   /** Stage J — fires when localScopeCityId changes via the Cities-column
-   *  click (`onScopeCity`) or the eyebrow's ⊕ Global button
-   *  (`onClearScope`). The host mirrors the new scope into the URL
-   *  fragment. `null` ⇒ explicit clear (user hit ⊕ Global), `string` ⇒
-   *  specific cityId, `undefined` ⇒ inherit. The distinction matters
-   *  because `&scope=global` (explicit) is durable across reload while
-   *  the inherit case lets the modal's outer cityId drive scope. */
+   *  click (`onScopeCity`); the host mirrors the new scope into the URL
+   *  fragment. `string` ⇒ specific cityId, `undefined` ⇒ inherit from
+   *  the modal's outer cityId. The eyebrow's in-place ⊕ Global emitter
+   *  retired with the thumb-index global-navigation constitution; users
+   *  reach explicit-global scope by closing the modal and re-opening at
+   *  global scope (the `←  index` thumb-index button on a city root, or
+   *  the chrome bar's F chip with no focused city). */
   onScopeChange?: (scopeCityId: string | null | undefined) => void
 }) {
   const [data, setData] = useState<GlobalFibersResponse | null>(null)
@@ -269,12 +270,12 @@ export function FindHost({
    * Stage J wrapper: every local-scope flip mirrors into the URL via
    * `onScopeChange`. The callback that lands at the host distinguishes:
    *
-   *   - `null`     → user explicitly cleared scope (eyebrow ⊕ Global, or
-   *                  "All cities" pseudo-row, or de-toggle on the active
-   *                  scoped row). When the modal opened with a `cityId`
-   *                  this earns an explicit `&scope=global` in the URL so
-   *                  reload restores the user's choice rather than re-
-   *                  inheriting cityId.
+   *   - `null`     → user explicitly cleared scope (Cities-column
+   *                  "All cities" pseudo-row, or de-toggle on the
+   *                  active scoped row). When the modal opened with a
+   *                  `cityId` this earns an explicit `&scope=global` in
+   *                  the URL so reload restores the user's choice rather
+   *                  than re-inheriting cityId.
    *   - `undefined`→ no override needed; scope inherits from modal cityId
    *                  (only meaningful when the modal is already global).
    *   - `cityId`   → explicit re-scope to that city.
@@ -406,11 +407,6 @@ export function FindHost({
         >
           <Eyebrow
             scopedCityName={scopedCityName}
-            showClearScope={!!localScopeCityId}
-            // Stage J — pass `null` to distinguish "user explicitly chose
-            // global" from "scope happens to be undefined" (the
-            // inherit-from-cityId case). Encoded as `&scope=global` in URL.
-            onClearScope={() => handleScopeChange(null)}
             onRefresh={() => setRefreshTick((n) => n + 1)}
           />
           <SearchBar
@@ -504,22 +500,18 @@ export function FindHost({
 
 function Eyebrow({
   scopedCityName,
-  showClearScope,
-  onClearScope,
   onRefresh,
 }: {
   /** Resolved city display name when scoped; undefined for global scope. */
   scopedCityName: string | undefined
-  /** True iff a "scope back to global" affordance should render. Mirrors
-   *  `localScopeCityId !== undefined`; pulled out so the Eyebrow renders
-   *  the action without re-resolving state. */
-  showClearScope: boolean
-  /** Reset the in-Find scope to global. Counterpart to clicking the All
-   *  cities row in the Cities column; here for users who navigate
-   *  primarily through the eyebrow. */
-  onClearScope: () => void
   onRefresh: () => void
 }): JSX.Element {
+  // The in-place ⊕ Global affordance retired with the thumb-index
+  // global-navigation constitution; scope flips happen by closing the
+  // modal (thumb-index `← index` from the city root, the `//` chord on
+  // the search input, or Escape) and re-opening at the desired scope.
+  // Cities-column rows still re-scope in place because they're
+  // city-pivoting rather than scope-escalating.
   const scope = scopedCityName ?? 'global'
   return (
     <div
@@ -541,26 +533,6 @@ function Eyebrow({
         Find · scope: {scope}
       </div>
       <div style={{ display: 'flex', gap: '0.4rem' }}>
-        {showClearScope && (
-          <button
-            type="button"
-            onClick={onClearScope}
-            title="Clear scope (show all cities)"
-            style={{
-              fontSize: '0.7rem',
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              background: 'transparent',
-              border: '1px solid var(--border-muted, #D8D2C8)',
-              color: 'var(--text-muted, #7A7368)',
-              padding: '0.25rem 0.55rem',
-              borderRadius: '3px',
-              cursor: 'pointer',
-            }}
-          >
-            ⊕ Global
-          </button>
-        )}
         <button
           type="button"
           onClick={onRefresh}
@@ -1840,10 +1812,10 @@ function statusRank(status: string): number {
  * and nested worker names, drop rows that match neither, and order by
  * the best score across the row's contents.
  *
- * "All cities" pseudo-row at the top resets scope to global. Doubles
- * with the eyebrow's `⊕ Global` affordance — both surfaces accept the
- * de-scope action so the user can climb back without remembering which
- * one carries it.
+ * "All cities" pseudo-row at the top resets scope to global. Sole
+ * de-scope affordance now that the eyebrow's `⊕ Global` button retired
+ * with the thumb-index global-navigation constitution; users escalating
+ * out of Find entirely use the modal's close + re-open path instead.
  *
  * Activity ranking: cities sort by max(session.lastActivity) of their
  * workers descending, with the scoped city pinned to the top. Cities
@@ -1998,10 +1970,11 @@ function CitiesColumn({
           }}
         >
           {/* All cities pseudo-row — visible whenever scope can be cleared.
-              Counterpart to the eyebrow's ⊕ Global affordance. Suppressed
-              while filtering: the scope-clear action is itself global,
-              and showing it inside a filtered list reads as a stray
-              non-match. */}
+              Sole de-scope affordance after the eyebrow's ⊕ Global button
+              retired with the thumb-index global-navigation constitution.
+              Suppressed while filtering: the scope-clear action is itself
+              global, and showing it inside a filtered list reads as a
+              stray non-match. */}
           {!isFiltering && (
             <li>
               <CityRow
@@ -2025,9 +1998,9 @@ function CitiesColumn({
                   glyph="⬢"
                   isScoped={isScoped}
                   onClick={() =>
-                    // Toggle: clicking the currently-scoped city de-scopes.
-                    // Mirrors how the eyebrow's ⊕ Global button works; lets
-                    // the user navigate without crossing back to the eyebrow.
+                    // Toggle: clicking the currently-scoped city de-scopes
+                    // (same as the "All cities" pseudo-row, locally), so
+                    // the user can navigate without leaving the column.
                     onScopeCity(isScoped ? undefined : city.id)
                   }
                   isRemote={isRemote}

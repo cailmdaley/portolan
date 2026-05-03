@@ -125,13 +125,6 @@ interface KanbanModalOptions {
    * Omit to hide the button (e.g. read-only contexts).
    */
   onStashClick?: () => void
-  /**
-   * Called when the user clicks "⊕ Global" in the header while viewing a
-   * city-scoped kanban. The host re-mounts the kanban with `cityScope: null`
-   * so the board shows the aggregate across all pinned cities. Omit to hide
-   * the button (no global view available).
-   */
-  onPromoteToGlobal?: () => void
   /** Override fetch base. Defaults to `http://${hostname}:4004`. */
   apiBase?: string
 }
@@ -156,7 +149,6 @@ export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
   private readonly onStashClick?: () => void
-  private readonly onPromoteToGlobal?: () => void
   private readonly apiBase: string
   private readonly handleDocumentKeyDown = (e: KeyboardEvent): void => this.handleKanbanKeyDown(e)
 
@@ -164,7 +156,6 @@ export class KanbanModal {
   private body: HTMLDivElement | null = null
   private statusEl: HTMLDivElement | null = null
   private subtitleEl: HTMLDivElement | null = null
-  private globalBtn: HTMLButtonElement | null = null
   private liveEl: HTMLDivElement | null = null
   private bannerEl: HTMLDivElement | null = null
   private inflightFetchToken = 0
@@ -184,7 +175,6 @@ export class KanbanModal {
     this.onOpenFiber = options.onOpenFiber
     this.onOpenWorker = options.onOpenWorker
     this.onStashClick = options.onStashClick
-    this.onPromoteToGlobal = options.onPromoteToGlobal
     this.apiBase = options.apiBase ?? `http://${window.location.hostname}:4004`
     this.injectStyles()
   }
@@ -282,18 +272,14 @@ export class KanbanModal {
 
     header.append(titleWrap, this.statusEl, refreshBtn)
 
-    // Bug 2: scope-escape affordance — "⊕ Global" button in the header.
-    // Only visible when the kanban is city-scoped. Re-mounts the kanban
-    // with global scope via the host callback.
-    this.globalBtn = document.createElement('button')
-    this.globalBtn.type = 'button'
-    this.globalBtn.className = 'kbn-global-btn'
-    this.globalBtn.setAttribute('aria-label', 'Switch to global kanban (all cities)')
-    this.globalBtn.title = 'All cities'
-    this.globalBtn.textContent = '⊕ Global'
-    this.globalBtn.style.display = this.cityScope ? '' : 'none'
-    this.globalBtn.addEventListener('click', () => this.onPromoteToGlobal?.())
-    header.append(this.globalBtn)
+    // The `⊕ Global` scope-escape affordance retired with the thumb-index
+    // global-navigation constitution
+    // ([[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]]).
+    // Scope flips happen by closing the modal and re-opening on the
+    // desired scope (the `← index` thumb-index button promotes city →
+    // global; the chrome bar's K chip + `k` hotkey re-enter on the
+    // currently-focused scope). Cards-in-place stay city-scoped for the
+    // life of this mount.
 
     // Stash button: gold `+` at the header's right edge, mirroring the `n`
     // hotkey owned by KanbanHost. We bind via callback so the React host
@@ -341,7 +327,6 @@ export class KanbanModal {
     this.body = null
     this.statusEl = null
     this.subtitleEl = null
-    this.globalBtn = null
     this.liveEl = null
     this.bannerEl = null
     this.dragSourceId = null
@@ -1036,10 +1021,9 @@ export class KanbanModal {
   /** Update DOM that depends on `cityScope` after a scope swap. */
   private updateScopeChrome(): void {
     if (this.subtitleEl) this.subtitleEl.textContent = this.subtitleText()
-    // Show the global-escape button only when city-scoped.
-    if (this.globalBtn) {
-      this.globalBtn.style.display = this.cityScope ? '' : 'none'
-    }
+    // The `⊕ Global` scope-escape button retired with the thumb-index
+    // global-navigation constitution — scope flips no longer happen
+    // in-place from inside the kanban tab.
   }
 
   /**
@@ -1313,37 +1297,6 @@ export class KanbanModal {
       }
       .kbn-stash-btn:focus-visible {
         box-shadow: 0 0 0 3px rgba(154, 123, 53, 0.36);
-      }
-      /* "⊕ Global" button — visible only in city-scoped kanban. Sits
-         between the title-wrap and the stash button in the header. */
-      .kbn-global-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        height: 26px;
-        padding: 0 10px;
-        background: transparent;
-        border: 1px solid rgba(122, 112, 104, 0.22);
-        border-radius: 3px;
-        font-family: var(--font-mono, 'JetBrains Mono', monospace);
-        font-size: 11px;
-        font-weight: 500;
-        letter-spacing: 0.03em;
-        color: #7A7068;
-        cursor: pointer;
-        transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
-        flex-shrink: 0;
-      }
-      .kbn-global-btn:hover,
-      .kbn-global-btn:focus-visible {
-        color: #2E2A26;
-        border-color: rgba(46, 42, 38, 0.36);
-        background: rgba(255, 255, 255, 0.55);
-        outline: none;
-      }
-      .kbn-global-btn:focus-visible {
-        outline: 1px dashed #7A7068;
-        outline-offset: 2px;
       }
       /* Refresh ↻ button in the header. Faded, low-prominence. */
       .kbn-refresh-btn {

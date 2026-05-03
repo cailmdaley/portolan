@@ -72,7 +72,6 @@ function KanbanHost({
   onOpenWorker,
   onOpenFiberInCity,
   kanbanInitialScope: propInitialScope,
-  onKanbanScopeChange: onPropScopeChange,
 }: {
   cityId?: string
   cityName?: string
@@ -96,12 +95,10 @@ function KanbanHost({
   /**
    * Initial kanban scope, from URL restore. `'global'` mounts the kanban
    * in global scope even when the modal has a cityId. Undefined = inherit
-   * city scope from the modal's cityId. */
+   * city scope from the modal's cityId. The in-place ⊕ Global flip retired
+   * with the thumb-index global-navigation constitution; this prop only
+   * carries restore-state now. */
   kanbanInitialScope?: string | 'global'
-  /**
-   * Fired when the kanban flips scope in place (⊕ Global → global). Lets
-   * the parent update the URL fragment. `null` = explicit global. */
-  onKanbanScopeChange?: (scopeCityId: string | null | undefined) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const navigate = useNavigate()
@@ -111,29 +108,18 @@ function KanbanHost({
   // (with kanban refetch) or cancel/esc.
   const [stashOpen, setStashOpen] = useState(false)
 
-  // Bug 2: local override state for the ∘ Global affordance. When a
-  // city-scoped kanban user clicks "⊕ Global", the scope stays in this
-  // component even though the parent (openCityWorkspace / openGlobalKanban)
-  // owns the outer cityId prop. We manage effectiveCityId locally:
-  // initialized from the prop, then overridable by onPromoteToGlobal.
-  // The initialScope prop (from URL restore) overrides the default.
-  const [effectiveCityId, setEffectiveCityId] = useState<string | undefined>(
-    propInitialScope === 'global' ? undefined : propCityId,
-  )
-  // Reset when the parent prop changes (user navigates to a different city).
-  useEffect(() => {
-    setEffectiveCityId(propInitialScope === 'global' ? undefined : propCityId)
-  }, [propCityId, propInitialScope])
-  const cityId = effectiveCityId
+  // Effective scope is a derivation of props: the URL-restored
+  // `propInitialScope === 'global'` mount in global scope; otherwise
+  // inherit the modal's cityId. The previous local-override state for
+  // the ⊕ Global button retired with the thumb-index global-navigation
+  // constitution — scope flips happen by closing+reopening the modal,
+  // so a single derivation is enough.
+  const cityId = propInitialScope === 'global' ? undefined : propCityId
   const cityName = cityId === propCityId ? propCityName : undefined
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
-    // Bug 2: pass onPromoteToGlobal so the ⊕ Global button in the kanban
-    // header can flip to global scope without navigating away. The callback
-    // sets effectiveCityId to undefined, which triggers a re-mount with
-    // cityScope=null (global aggregate).
     const kanban = new KanbanModal({
       onOpenFiber: (card) => {
         // Three click paths, in order of preference:
@@ -177,13 +163,6 @@ function KanbanHost({
       // chrome state (the previous absolute-positioned button at right:380px
       // assumed a thumb-index that doesn't appear on the kanban tab).
       onStashClick: () => setStashOpen(true),
-      // Bug 2: promote city-scoped kanban to global scope in place.
-      // Also notify the parent so it can mirror the scope into the URL
-      // fragment — without this, refresh reverts to city-scoped.
-      onPromoteToGlobal: () => {
-        setEffectiveCityId(undefined)
-        onPropScopeChange?.(null)
-      },
     })
     kanbanRef.current = kanban
     const cityScope =
@@ -821,6 +800,24 @@ function portolanHeaderActions(args: {
       },
     },
     {
+      // Nuclear option — clear every annotation on this file regardless
+      // of sent state. Confirms first because the action is irreversible
+      // and easy to mis-click against a dense margin. Uses window.confirm
+      // for now; can graduate to an inline confirm popover if the gesture
+      // proves too jarring.
+      id: 'clear-all',
+      label: 'Clear',
+      destructive: true,
+      title: 'Delete all comments on this file',
+      onInvoke: async (annotations, ctx) => {
+        const n = annotations.length
+        const noun = n === 1 ? 'comment' : 'comments'
+        if (!window.confirm(`Delete all ${n} ${noun} on this file? This can't be undone.`)) return
+        const ids = annotations.map((a) => a.id).filter((id): id is string => !!id)
+        await deleteAnnotationsById(ids, ctx.refreshAnnotations)
+      },
+    },
+    {
       id: 'save-as-fiber',
       label: 'Fiber',
       title: 'Save all comments as one fiber',
@@ -890,6 +887,24 @@ function portolanFiberBulkActions(args: {
       applicableTo: (a) => typeof a.sentAt === 'number',
       onInvoke: async (sent, ctx) => {
         const ids = sent.map((a) => a.id).filter((id): id is string => !!id)
+        await deleteAnnotationsById(ids, ctx.refreshAnnotations)
+      },
+    },
+    {
+      // Nuclear option for fiber mode — symmetric with the file-mode
+      // variant in `portolanHeaderActions`. Confirms first; the bar's
+      // count badge reflects just this fiber's annotations (the
+      // currentSlug filter), so the prompt's number matches what the
+      // user sees.
+      id: 'clear-all',
+      label: 'Clear',
+      destructive: true,
+      title: 'Delete all comments on this fiber',
+      onInvoke: async (annotations, ctx) => {
+        const n = annotations.length
+        const noun = n === 1 ? 'comment' : 'comments'
+        if (!window.confirm(`Delete all ${n} ${noun} on this fiber? This can't be undone.`)) return
+        const ids = annotations.map((a) => a.id).filter((id): id is string => !!id)
         await deleteAnnotationsById(ids, ctx.refreshAnnotations)
       },
     },
@@ -1034,25 +1049,23 @@ export interface OpenWorkspaceModalOptions {
    *  reload-restore to land on `&scope=…` deep links faithfully. */
   findInitialScope?: string | 'global'
   /** Stage J — fired when the user re-scopes Find in place via the
-   *  Cities-column click or the eyebrow's ⊕ Global button. Lets the host
-   *  mirror the new scope into the URL fragment so reload restores it.
-   *  `null` ⇒ explicit clear (⊕ Global), `string` ⇒ specific cityId,
-   *  `undefined` ⇒ scope inherits from modal cityId. */
+   *  Cities-column click (specific cityId, or `null` from the "All
+   *  cities" pseudo-row / de-toggle on the active scoped row). Lets the
+   *  host mirror the new scope into the URL fragment so reload restores
+   *  it. `null` ⇒ explicit clear, `string` ⇒ specific cityId,
+   *  `undefined` ⇒ scope inherits from modal cityId. The eyebrow's
+   *  in-place ⊕ Global button retired with the thumb-index
+   *  global-navigation constitution. */
   onFindScopeChange?: (scopeCityId: string | null | undefined) => void
   /**
    * Initial scope for the kanban tab, analogous to `findInitialScope`.
    * When `'global'`, KanbanHost mounts with global scope even when
    * the modal has a cityId (used by URL restore to honour
    * `&scope=global&mode=kanban`). Undefined means inherit from modal
-   * cityId (city-scoped). */
+   * cityId (city-scoped). The in-place ⊕ Global flip retired with the
+   * thumb-index global-navigation constitution; this option only carries
+   * URL-restore state now. */
   kanbanInitialScope?: string | 'global'
-  /**
-   * Fired when the kanban flips from city scope to global in place
-   * (via the ⊕ Global button). Mirrors `onFindScopeChange` — lets the
-   * host update the URL fragment so refresh restores the chosen scope.
-   * `null` ⇒ explicit global; kanban does not emit other values (no
-   * in-place city re-scoping). */
-  onKanbanScopeChange?: (scopeCityId: string | null | undefined) => void
   /** Fired exactly once when the modal closes (Escape key, click on the
    *  ×, programmatic `handle.close()`). Lets the host reset its tracking
    *  state — without this, `activeWorkspaceHandle` becomes a stale
@@ -1060,6 +1073,19 @@ export interface OpenWorkspaceModalOptions {
    *  silently no-op against a torn-down React tree. Idempotent: only ever
    *  called for the first close; later close() invocations short-circuit. */
   onClose?: () => void
+  /**
+   * Fired when the user clicks the thumb-index `← index` button while
+   * sitting at this collection's root (a fiber with no parent). Lets
+   * portolan promote the click into an escape upward — typically by
+   * closing this modal and opening a fresh global-scope vellum on the
+   * synthetic loom-wide collection. Wired by city-scoped opens
+   * (`openCityWorkspace`, `openGlobalKanban`, `openGlobalFind`); omitted
+   * for the global-Vellum mount itself so its top-level `← index` button
+   * stays idempotent (falls back to vellum's local `navigate('')`, which
+   * the global graph has no rootSlug to redirect away from). See
+   * [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]].
+   */
+  onIndexEscalate?: () => void
 }
 
 /**
@@ -1277,7 +1303,6 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       onOpenWorker={opts.onOpenWorker}
       onOpenFiberInCity={opts.onOpenFiberInCity}
       kanbanInitialScope={opts.kanbanInitialScope}
-      onKanbanScopeChange={opts.onKanbanScopeChange}
     />
   )
   // The find slot mirrors the kanban slot's shape: vellum lazy-mounts on
@@ -1305,6 +1330,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
           <WorkspaceMount
             initialSlug={initialSlug}
             eyebrow={opts.cityName}
+            onIndexEscalate={opts.onIndexEscalate}
             initialMode={initialVellumMode}
             workspaceSlot={kanbanSlot}
             workspaceLabel="Kanban"

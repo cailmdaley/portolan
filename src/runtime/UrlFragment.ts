@@ -31,8 +31,11 @@ export type VellumMode = 'narrative' | 'kanban' | 'find'
 
 /** Sentinel for an explicit "global" scope in the URL — distinct from
  *  "scope inherits from focused city" (which is encoded by omitting the
- *  scope param). The user reaches this via Find's ⊕ Global / global
- *  kanban / opening Find with no focused city. */
+ *  scope param). The user reaches this state via the thumb-index `← index`
+ *  escalation (city root → global Vellum index), the chrome bar's K / F
+ *  chips when no focused city is set, the `/` hotkey ladder's global rung,
+ *  or by typing the URL directly. The eyebrow ⊕ Global affordances retired
+ *  with the thumb-index global-navigation constitution. */
 export const SCOPE_GLOBAL = 'global' as const
 
 export interface UrlState {
