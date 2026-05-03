@@ -518,39 +518,65 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // the user clicked through *to* a fiber, so land on its prose.
       onOpenFiberInCity: openFiberInCityFromKanban,
       onClose: handleWorkspaceClosed,
-      // Thumb-index `← index` from the city's root fiber escalates one
-      // scope level → global Vellum index. See
+      // Thumb-index `← index` escalates one scope level upward,
+      // preserving the active modal mode (kanban/find/narrative). See
+      // `escalateToGlobalScope` and
       // [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]].
-      onIndexEscalate: escalateToGlobalVellumIndex,
+      onIndexEscalate: escalateToGlobalScope,
     })
     activeWorkspaceHandle = handle
   })
 }
 
 /**
- * Escalate the active modal one scope level upward — close the current
- * city-scoped modal and open the global Vellum index in its place. Wired
- * as `onIndexEscalate` on every city-scoped modal so the thumb-index
- * `← index` button promotes city-root → global narrative without leaving
- * a transient "vellum closed" history entry between the two states.
+ * Escalate the active modal one scope level upward, **preserving the
+ * active mode**. Wired as `onIndexEscalate` on every city-scoped modal
+ * so the thumb-index `← index` button promotes city → global without
+ * a mode switch:
+ *
+ *   - city kanban    → global kanban
+ *   - city find      → global find
+ *   - city narrative → global narrative IndexView (the "loom" view)
+ *   - city delta     → global narrative IndexView (delta has no global)
+ *
+ * The user's mental scope ladder is mode-stable: pressing `← index`
+ * from kanban shouldn't dump them into narrative. Each mode owns its
+ * own scope-up control by reading the modal's current tab at click
+ * time and dispatching to the matching global opener.
  *
  * Mirrors the close-then-reopen guard used in `escalateFindScope`: the
  * `modalReopenInProgress` flag suppresses `handleWorkspaceClosed`'s URL
- * push during the in-flight close so only the final
- * `openGlobalVellumIndex` URL state lands in history.
+ * push during the in-flight close so only the final URL state lands in
+ * history.
  */
-function escalateToGlobalVellumIndex(): void {
+function escalateToGlobalScope(): void {
   const handle = activeWorkspaceHandle
   if (!handle) {
+    // No active modal — caller is the chrome bar's launch fallback or a
+    // URL restore. Default to the narrative IndexView, the canonical
+    // "loom" entry point.
     openGlobalVellumIndex()
     return
   }
+  // Read the active mode at click time. The `setMode` exports use
+  // 'kanban' / 'find' / 'narrative' / 'delta' — the mount-side
+  // VellumModalMode union maps these to vellum's internal 'workspace'
+  // for the kanban tab, but `getMode` here returns the host-facing name.
+  const mode = handle.getMode?.()
   modalReopenInProgress = true
   handle.close()
   modalReopenInProgress = false
   activeWorkspaceHandle = null
   activeWorkspaceCityId = null
-  openGlobalVellumIndex()
+  if (mode === 'kanban') {
+    openGlobalKanban()
+  } else if (mode === 'find') {
+    openGlobalFind()
+  } else {
+    // 'narrative' explicitly, plus 'delta' and any future tab without
+    // a dedicated global view fall back to the narrative IndexView.
+    openGlobalVellumIndex()
+  }
 }
 
 /**
@@ -674,6 +700,14 @@ function openGlobalVellumIndex(): void {
       // city nodes' fallback `navigate('')` returns to this same
       // IndexView). Wiring an escalate callback here would create a
       // loop.
+      // Synthetic-node clicks (the `__city__:cityId` city gateways
+      // emitted in /global-graph) remount vellum in the destination
+      // city's scope so its full graph + thumb-index load. Without
+      // this, clicking a city would just `navigate('/__city__:…')`
+      // within the global mount and the user would land on the city's
+      // root narrative with the cities-only graph still attached
+      // (empty children row).
+      onOpenSyntheticNode: openCityFromSyntheticNode,
     })
   })
 }
@@ -724,7 +758,11 @@ function openGlobalKanban(): void {
       // sits on a city root with the button visible. Wire escalation so
       // that subsequent click escapes back to the global Vellum index
       // rather than bouncing through the city's local rootSlug redirect.
-      onIndexEscalate: escalateToGlobalVellumIndex,
+      onIndexEscalate: escalateToGlobalScope,
+      // Synthetic city-node clicks remount in city scope, preserving
+      // the kanban tab so the user sees the city-filtered kanban grid.
+      // See openCityFromSyntheticNode for details.
+      onOpenSyntheticNode: openCityFromSyntheticNode,
     })
   })
 }
@@ -770,7 +808,10 @@ function openGlobalFind(): void {
       // Same rationale as openGlobalKanban: a fiber-click pivot lands on
       // a city root where the thumb-index `← index` button is visible;
       // wire escalation so it returns to the global Vellum index.
-      onIndexEscalate: escalateToGlobalVellumIndex,
+      onIndexEscalate: escalateToGlobalScope,
+      // Synthetic city-node clicks remount in city scope, preserving
+      // the find tab. See openCityFromSyntheticNode.
+      onOpenSyntheticNode: openCityFromSyntheticNode,
     })
   })
 }
@@ -794,6 +835,40 @@ function openFiberInCityFromKanban(cityId: string, slug: string): void {
     return
   }
   openCityWorkspace(city, { initialSlug: slug, initialMode: 'narrative' })
+}
+
+/**
+ * Vellum-side synthetic-node click handler. Wired as `onOpenSyntheticNode`
+ * on the global mount openers (`openGlobalVellumIndex`, `openGlobalKanban`,
+ * `openGlobalFind`). Today the only synthetic kind is `__city__:cityId`,
+ * emitted by the server's `globalGraph()` as a clickable city gateway.
+ *
+ * On click, we remount vellum in that city's scope so the user gets the
+ * city's full graph (parents, siblings, children visible in the
+ * thumb-index) and any tab-level scope behaviours kick in (city kanban
+ * filters cards to that city, etc.). The active modal mode is
+ * preserved — clicking a city from global kanban lands in city kanban,
+ * from global narrative lands in city narrative.
+ *
+ * Anything that doesn't match a known synthetic shape is logged + ignored
+ * rather than fall through to a `navigate` that would 404 in vellum.
+ */
+function openCityFromSyntheticNode(slug: string): void {
+  if (!slug.startsWith('__city__:')) {
+    console.warn('[Vellum] unknown synthetic-node slug:', slug)
+    return
+  }
+  const cityId = slug.slice('__city__:'.length)
+  const city = cities.find(c => c.id === cityId)
+  if (!city) {
+    console.warn('[Vellum] synthetic city node points to unknown cityId:', cityId)
+    return
+  }
+  // Preserve the active mode so the user stays in the same tab on the
+  // remount. Defaults to narrative when no mode can be read (no active
+  // handle, or pre-init).
+  const currentMode = activeWorkspaceHandle?.getMode?.() ?? 'narrative'
+  openCityWorkspace(city, { initialMode: currentMode })
 }
 
 /**

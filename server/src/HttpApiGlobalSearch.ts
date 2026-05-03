@@ -350,9 +350,16 @@ export class HttpApiGlobalSearch {
   }
 
   /**
-   * Build the synthetic global graph: city nodes + their root fiber children.
-   * Each city node uses `__city__:<cityId>` as its slug, which the portolan
-   * adapter intercepts in getFiberContent to route to the correct city.
+   * Build the synthetic global graph: one node per pinned city. Each city
+   * node uses `__city__:<cityId>` as its slug, which the portolan adapter
+   * intercepts in `getFiberContent` to route to that city's root fiber.
+   *
+   * We deliberately do NOT emit per-city root fibers as separate nodes.
+   * IndexView's "top-of-tree" filter is slug-shape based (no `/`), and
+   * cities' root fibers like `portolan` or `cmbx` are themselves slash-
+   * less, so emitting them surfaces ~120 entries that the user has to
+   * scan past to find the cities. The city nodes alone — clickable
+   * gateways to each city's narrative — are the curated loom view.
    */
   async globalGraph(): Promise<{ nodes: GraphNodeWorld[]; links: GraphLinkWorld[] }> {
     const cities = await this.tree();
@@ -365,11 +372,10 @@ export class HttpApiGlobalSearch {
       const cityId = city.cityId ?? city.originId;
       const cityLabel = this.cityNames[cityId] ?? city.hostname ?? cityId;
 
-      // Find the city's root fibers (no parent within the city)
-      const rootFibers = city.fibers.filter((f) => !f.parentId || !city.fibers.some((cf) => cf.id === f.parentId));
-
-      // City node: depth 0 so it appears as a top-level entry like any
-      // root fiber. The `kind` set to '__city__' labels it in the adapter.
+      // City node: depth 0, kind '__city__' so the portolan adapter and
+      // any future surface can distinguish it from a real fiber. Click
+      // routes through `__city__:<cityId>` → city-root-slug → city's
+      // root narrative.
       nodes.push({
         id: citySlug,
         slug: citySlug,
@@ -380,23 +386,6 @@ export class HttpApiGlobalSearch {
         createdAt: now,
         depth: 0,
       });
-
-      // City root fibers: children of the city node. Depth 1 so they
-      // appear indented under the city in the thumb-index tree.
-      for (const fiber of rootFibers) {
-        const node: GraphNodeWorld = {
-          id: fiber.id,
-          slug: fiber.id,
-          label: fiber.name,
-          status: fiber.status,
-          tags: fiber.tags,
-          kind: fiber.kind,
-          createdAt: now,
-          depth: 1,
-        };
-        nodes.push(node);
-        links.push({ source: citySlug, target: fiber.id, kind: 'contains' });
-      }
     }
 
     return { nodes, links };

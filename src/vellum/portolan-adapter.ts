@@ -303,7 +303,8 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     async getAstraGraph(): Promise<AstraGraph> {
       if (!opts.cityId) {
         // Global vellum mode: fetch the synthetic graph from the server.
-        // The response contains city nodes + their root fiber children.
+        // The response contains one node per pinned city (no per-city
+        // root fibers — see HttpApiGlobalSearch.globalGraph for why).
         const res = await fetch(`${API_BASE}/global-graph`).catch(() => null);
         if (!res || !res.ok) return { nodes: [], links: [] };
         const graph = await res.json() as { nodes: GraphNodeWorld[]; links: GraphLinkWorld[] };

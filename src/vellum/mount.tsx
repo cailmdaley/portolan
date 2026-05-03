@@ -1086,6 +1086,18 @@ export interface OpenWorkspaceModalOptions {
    * [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]].
    */
   onIndexEscalate?: () => void
+  /**
+   * Fired when the user clicks any synthetic-slug node (slug starting
+   * with `__`). Used by the global Vellum mount to remount in city
+   * scope when the user clicks a `__city__:cityId` city node, so the
+   * destination city's full graph and thumb-index load instead of the
+   * city's root narrative being shoehorned into the global mount with
+   * the cities-only graph still active. The host receives the raw slug
+   * (e.g. `__city__:portolan`) and is responsible for parsing and
+   * dispatching. Wired only by the global-mount opener; city-scoped
+   * mounts have no synthetic nodes in their local graph.
+   */
+  onOpenSyntheticNode?: (slug: string) => void
 }
 
 /**
@@ -1331,6 +1343,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
             initialSlug={initialSlug}
             eyebrow={opts.cityName}
             onIndexEscalate={opts.onIndexEscalate}
+            onOpenSyntheticNode={opts.onOpenSyntheticNode}
             initialMode={initialVellumMode}
             workspaceSlot={kanbanSlot}
             workspaceLabel="Kanban"
