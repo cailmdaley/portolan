@@ -825,15 +825,23 @@ export class HttpApiKanban {
     //
     // Standing-role review acceptance is a special case: when a kind:standing
     // fiber is in awaitingReview (review.state === 'awaiting') and the user
-    // drags it to inFlight, the right verb is `accept` — it advances the
-    // schedule (sets review.state = scheduled, computes new next_due_at) and
-    // closes the run loop. `resume` would no-op (enabled is already true,
-    // status already active) and the role would stay stuck in awaiting.
+    // drags it to inFlight OR tempered, the right verb is `accept` — it
+    // advances the schedule (sets review.state = scheduled, computes new
+    // next_due_at) and closes the run loop. `resume` would no-op (enabled is
+    // already true, status already active) and the role would stay stuck in
+    // awaiting; the oneshot tempered/closed path would terminate the role
+    // (status=closed → daemon stops dispatching forever), which is wrong for
+    // "I accept this run." `composted` IS allowed to fall through to the
+    // oneshot path because terminating a recurring role is the right
+    // semantics for "I'm done with this canary, retire it."
     //
     // Remote-origin transitions TODO: plumb a "run shuttle-ctl on the remote"
     // instruction through remoteTransitionExecutor once the SSH path supports it.
     const isStandingAccept =
-      (target === 'inFlight' || target === 'queued' || target === 'active') &&
+      (target === 'inFlight' ||
+        target === 'queued' ||
+        target === 'active' ||
+        target === 'tempered') &&
       fiber.shuttleKind === 'standing' &&
       fiber.shuttleReviewState === 'awaiting';
 

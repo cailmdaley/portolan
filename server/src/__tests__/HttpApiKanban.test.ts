@@ -580,6 +580,94 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'oneshot-draft' }]);
     });
 
+    it('standing-role awaitingReview → tempered also calls accept (NOT close/tempered=true)', async () => {
+      // For standing roles, "tempered" of an awaiting run is equivalent to
+      // accepting it — the human is approving this run, but the role itself
+      // continues. The oneshot tempered path (status=closed, tempered=true)
+      // would terminate the role, which is wrong. Only `composted` should
+      // terminate a standing role from the kanban.
+      writeFib('canary-tempered', {
+        name: 'Canary tempered',
+        status: 'active',
+        shuttle: SHUTTLE_STANDING_AWAITING,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'canary-tempered', target: 'tempered' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([{ verb: 'accept', id: 'canary-tempered' }]);
+      // applyTargetToFrontmatter is skipped — file should be unchanged on disk
+      // for the felt-level fields (the test seam stubs out the actual accept
+      // shuttle-ctl call so review.state is not mutated here either, but the
+      // important assertion is that status: closed / tempered: true are NOT
+      // written).
+      const after = readFileSync(join(FELT_DIR, 'canary-tempered', 'canary-tempered.md'), 'utf-8');
+      expect(after).toMatch(/^status: active$/m);
+      expect(after).not.toMatch(/^status: closed$/m);
+      expect(after).not.toMatch(/^tempered: true$/m);
+    });
+
+    it('standing-role awaitingReview → composted DOES terminate the role (status=closed, tempered=false)', async () => {
+      // composted is "I'm done with this recurring thing, retire it." For
+      // standing roles that means falling through to the oneshot terminate
+      // path: status=closed makes the daemon stop dispatching forever.
+      writeFib('canary-retired', {
+        name: 'Canary retired',
+        status: 'active',
+        shuttle: SHUTTLE_STANDING_AWAITING,
+        'created-at': '2026-04-01',
+      });
+      const fixedNow = new Date('2026-05-03T16:00:00Z');
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        now: () => fixedNow,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'canary-retired', target: 'composted' }), res);
+
+      expect(status()).toBe(200);
+      // No shuttle-ctl call — composted falls through to felt-only mutation.
+      expect(shuttleCalls).toEqual([]);
+      const after = readFileSync(join(FELT_DIR, 'canary-retired', 'canary-retired.md'), 'utf-8');
+      expect(after).toMatch(/^status: closed$/m);
+      expect(after).toMatch(/^tempered: false$/m);
+      expect(after).toMatch(/^closed-at: 2026-05-03T16:00:00\.000Z$/m);
+    });
+
+    it('oneshot awaitingReview → tempered still does the oneshot dance (status=closed, tempered=true)', async () => {
+      // Regression check: the standing-accept tempered branch must not steal
+      // the path for plain oneshot acceptance.
+      writeFib('oneshot-accept', {
+        name: 'Oneshot accept',
+        status: 'closed',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+        'closed-at': '2026-04-15',
+      });
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'oneshot-accept', target: 'tempered' }), res);
+
+      expect(status()).toBe(200);
+      // No shuttle-ctl call for oneshot tempered — felt-only mutation.
+      expect(shuttleCalls).toEqual([]);
+      const after = readFileSync(join(FELT_DIR, 'oneshot-accept', 'oneshot-accept.md'), 'utf-8');
+      expect(after).toMatch(/^status: closed$/m);
+      expect(after).toMatch(/^tempered: true$/m);
+    });
+
     it('reopens a closed fiber to in flight, clearing closed-at and tempered', async () => {
       writeFib('reactivate', {
         name: 'Reactivate',
