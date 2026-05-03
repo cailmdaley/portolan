@@ -376,6 +376,100 @@ export class HttpApiTapestry {
   }
 
   /**
+   * GET /fiber-history/<slug>?cityId=X
+   *
+   * Returns the editorial event chain for a fiber as `{ events: HistoryEvent[] }`.
+   * Shells out to `felt history <slug> --json` (local execFile or SSH) and maps
+   * the result to vellum's HistoryEvent shape, with each editorial summary
+   * pre-parsed to mdast so the HistoryCard renders through the same MyST →
+   * React pipeline as the fiber body.
+   *
+   * Only editorial events (event_type === 'editorial') are surfaced; mechanical
+   * mutations (add/edit/rm/external_edit) are excluded at this layer — the card
+   * wants prose summaries, not byte-delta metadata. The toggle for mechanical
+   * events is a client-side concern (constitution stage 4).
+   *
+   * Returns `{ events: [] }` — never 500 — when felt is absent, the fiber has
+   * no history, or the command fails. The HistoryCard silently drops out.
+   */
+  async handleFiberHistory(url: URL, slug: string, res: ServerResponse): Promise<void> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return;
+    }
+    // Same slug validation as readFiberFile — guard against path traversal
+    // before handing the value to the shell.
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
+      this.sendJsonError(res, 400, 'Invalid slug');
+      return;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return;
+    }
+
+    const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
+
+    try {
+      let raw: string;
+      if (!sshHost) {
+        // Local: execFile with cwd — cleaner than a shell command string and
+        // avoids shell-quoting the slug argument (execFile passes args directly
+        // to the OS, no shell expansion). `-j` is the global `--json` shorthand.
+        const { stdout } = await execFileAsync(
+          'felt',
+          ['history', slug, '-j'],
+          { cwd: city.path, maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
+        );
+        raw = stdout.trim();
+      } else {
+        // Remote: SSH with a shell command string. shellEscape guards cityPath
+        // and slug against path traversal/injection. The `|| echo '[]'` fallback
+        // keeps the caller from parsing an error string as JSON when the fiber
+        // has no history or felt isn't on the remote PATH.
+        const command = `cd ${shellEscape(city.path)} && felt history ${shellEscape(slug)} -j 2>/dev/null || echo '[]'`;
+        const { stdout } = await execFileAsync(
+          'ssh',
+          [sshHost, command],
+          { maxBuffer: 2 * 1024 * 1024, timeout: 30_000 },
+        );
+        raw = stdout.trim();
+      }
+
+      // felt history --json returns an array of event objects (see felt/cmd/history.go).
+      // We filter to editorial events only and map to vellum's HistoryEvent shape;
+      // each summary is parsed to mdast so the card renders through MyST → React.
+      const rawEvents = JSON.parse(raw || '[]') as Array<Record<string, unknown>>;
+      const events = rawEvents
+        .filter(
+          (ev) =>
+            ev['event_type'] === 'editorial' &&
+            typeof (ev['payload'] as Record<string, unknown> | undefined)?.['summary'] === 'string',
+        )
+        .map((ev) => {
+          const summary = ((ev['payload'] as Record<string, unknown>)['summary'] as string);
+          return {
+            occurredAt: ev['occurred_at'] as string,
+            actor: ev['actor'] as string,
+            summary,
+            summaryAst: markdownToMdast(summary),
+          };
+        });
+
+      this.sendJsonSuccess(res, { events });
+    } catch (error: any) {
+      // felt unavailable, fiber has no history, or JSON parse failed —
+      // return empty rather than 500 so the HistoryCard silently drops out
+      // rather than surfacing a network error to the reader.
+      console.warn(`[fiber-history] ${slug}: ${error.message}`);
+      this.sendJsonSuccess(res, { events: [] });
+    }
+  }
+
+  /**
    * /fiber-locate?slug=Y — resolve a bare fiber slug to the city that owns
    * it. Scans local cities only (remote scans would fan out SSH calls).
    * First hit wins; ambiguity is rare because slugs are unique per loom

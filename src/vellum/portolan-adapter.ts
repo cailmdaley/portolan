@@ -343,8 +343,13 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       // file-viewer context vellum hands us the file path as `slug`; we forward
       // it as `path=` on the wire. `imageSrc`/`kind` are not portolan concepts
       // today but are preserved in the query string for forward compat.
-      // Fiber-narrative views call us with an empty slug — there's no file
-      // path to query, so short-circuit before the server logs a 400.
+      // Empty slug short-circuits — the canonical caller used to be vellum's
+      // NarrativeView fetching the whole project pool for cross-fiber
+      // text-matching, but that produced pollution (short selections like
+      // "see also" match everywhere) so NarrativeView now scopes per-slug.
+      // Returning [] here keeps any other empty-slug caller from accidentally
+      // pulling the entire project pool; admins who genuinely want project
+      // scope can hit /annotations?all=true directly.
       if (!slug) return [];
       const params = new URLSearchParams({ path: slug, originId: defaultOriginId });
       if (annOpts.kind) params.set('kind', annOpts.kind);
@@ -375,14 +380,27 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getFiberHistory(slug: string): Promise<HistoryEvent[]> {
-      // Portolan's `felt history` editorial events live under
-      // `<.felt>/.history/<slug>.jsonl` in each project; the server
-      // doesn't yet expose them via HTTP. Vellum's HistoryCard renders
-      // empty when this returns [], so the masthead chrome is unaffected
-      // until we wire the endpoint. See portolan/backend for the per-
-      // project history pipeline.
-      void slug;
-      return [];
+      if (!opts.cityId) {
+        // Global vellum mode: locate the owning city first, then fetch.
+        // Mirrors the getFiberContent global-mode path exactly.
+        const locateRes = await fetch(
+          `${API_BASE}/fiber-locate?slug=${encodeURIComponent(slug)}`,
+        ).catch(() => null);
+        if (!locateRes || !locateRes.ok) return [];
+        const locate = await locateRes.json() as { cityId?: string };
+        const cityId = locate.cityId;
+        if (!cityId) return [];
+        const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(cityId)}`;
+        const res = await fetch(url).catch(() => null);
+        if (!res || !res.ok) return [];
+        const data = await res.json() as { events?: HistoryEvent[] };
+        return data.events ?? [];
+      }
+      const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(opts.cityId)}`;
+      const res = await fetch(url).catch(() => null);
+      if (!res || !res.ok) return [];
+      const data = await res.json() as { events?: HistoryEvent[] };
+      return data.events ?? [];
     },
 
     async getAstraBundle(

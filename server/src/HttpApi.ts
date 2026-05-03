@@ -367,6 +367,15 @@ export class HttpApi {
       return true;
     }
 
+    // GET /fiber-history/<slug>?cityId=X — editorial event chain for the
+    // HistoryCard in vellum's Narrative margin. Must precede `/fiber/` so
+    // the `/fiber-history/` prefix doesn't get eaten by that check.
+    if (req.method === 'GET' && url.pathname.startsWith('/fiber-history/')) {
+      const slug = decodeURIComponent(url.pathname.slice('/fiber-history/'.length));
+      await this.tapestryApi.handleFiberHistory(url, slug, res);
+      return true;
+    }
+
     if (url.pathname.startsWith('/fiber/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber/'.length));
       await this.tapestryApi.handleFiberContent(url, slug, res);
