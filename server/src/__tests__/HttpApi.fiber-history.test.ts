@@ -1,11 +1,17 @@
 /**
  * HttpApi /fiber-history/:slug endpoint tests.
  *
- * The endpoint shells out to `felt history <slug> --json` to fetch editorial
- * events. Tests cover the validation paths (400/404) and the graceful-empty
- * fallback — when felt is absent or returns nothing, the endpoint returns
- * `{ events: [] }` rather than 500, so the HistoryCard silently drops out
- * rather than surfacing a network error to the reader.
+ * The endpoint shells out to `felt history <slug> --mechanical --json` to
+ * fetch all events (editorial + mechanical). Tests cover the validation paths
+ * (400/404) and the graceful-empty fallback — when felt is absent or returns
+ * nothing, the endpoint returns `{ events: [] }` rather than 500, so the
+ * HistoryCard silently drops out rather than surfacing a network error.
+ *
+ * Event schema (Stage 4+):
+ * - All events carry `kind`, `occurredAt`, `actor`.
+ * - Editorial events additionally carry `summary` (string) and `summaryAst`.
+ * - Mechanical events additionally carry `sizeChars`, `sizeLines`, and
+ *   optionally `fieldsChanged` (for `edit` events).
  *
  * The happy-path (felt present + fiber has events) is exercised by the
  * running system; integration here would require the test fiber to live in
@@ -91,7 +97,11 @@ describe('HttpApi — /fiber-history/:slug endpoint', () => {
     for (const ev of res.data.events) {
       expect(typeof ev.occurredAt).toBe('string');
       expect(typeof ev.actor).toBe('string');
-      expect(typeof ev.summary).toBe('string');
+      expect(typeof ev.kind).toBe('string');
+      // Editorial events carry summary + summaryAst; mechanical events do not.
+      if (ev.kind === 'editorial' || ev.kind === undefined) {
+        expect(typeof ev.summary).toBe('string');
+      }
     }
   });
 

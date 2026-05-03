@@ -378,16 +378,18 @@ export class HttpApiTapestry {
   /**
    * GET /fiber-history/<slug>?cityId=X
    *
-   * Returns the editorial event chain for a fiber as `{ events: HistoryEvent[] }`.
-   * Shells out to `felt history <slug> --json` (local execFile or SSH) and maps
-   * the result to vellum's HistoryEvent shape, with each editorial summary
-   * pre-parsed to mdast so the HistoryCard renders through the same MyST →
-   * React pipeline as the fiber body.
+   * Returns the full event chain (editorial + mechanical) for a fiber as
+   * `{ events: HistoryEvent[] }`. Shells out to
+   * `felt history <slug> --mechanical --json` so both event classes arrive
+   * in one call. The HistoryCard renders editorial events prominently and
+   * hides mechanical events behind a client-side toggle (Stage 4 of the
+   * history-panel constitution).
    *
-   * Only editorial events (event_type === 'editorial') are surfaced; mechanical
-   * mutations (add/edit/rm/external_edit) are excluded at this layer — the card
-   * wants prose summaries, not byte-delta metadata. The toggle for mechanical
-   * events is a client-side concern (constitution stage 4).
+   * Mapping:
+   * - Editorial events carry `kind: 'editorial'`, `summary` (raw markdown),
+   *   and `summaryAst` (pre-parsed mdast for MyST → React rendering).
+   * - Mechanical events carry `kind` (the raw event_type), plus `sizeChars`,
+   *   `sizeLines`, and `fieldsChanged` (for `edit` events) from the payload.
    *
    * Returns `{ events: [] }` — never 500 — when felt is absent, the fiber has
    * no history, or the command fails. The HistoryCard silently drops out.
@@ -418,10 +420,11 @@ export class HttpApiTapestry {
       if (!sshHost) {
         // Local: execFile with cwd — cleaner than a shell command string and
         // avoids shell-quoting the slug argument (execFile passes args directly
-        // to the OS, no shell expansion). `-j` is the global `--json` shorthand.
+        // to the OS, no shell expansion). `-j` is the global `--json` shorthand;
+        // `--mechanical` includes mechanical mutation events alongside editorial.
         const { stdout } = await execFileAsync(
           'felt',
-          ['history', slug, '-j'],
+          ['history', slug, '--mechanical', '-j'],
           { cwd: city.path, maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
         );
         raw = stdout.trim();
@@ -430,7 +433,7 @@ export class HttpApiTapestry {
         // and slug against path traversal/injection. The `|| echo '[]'` fallback
         // keeps the caller from parsing an error string as JSON when the fiber
         // has no history or felt isn't on the remote PATH.
-        const command = `cd ${shellEscape(city.path)} && felt history ${shellEscape(slug)} -j 2>/dev/null || echo '[]'`;
+        const command = `cd ${shellEscape(city.path)} && felt history ${shellEscape(slug)} --mechanical -j 2>/dev/null || echo '[]'`;
         const { stdout } = await execFileAsync(
           'ssh',
           [sshHost, command],
@@ -439,24 +442,43 @@ export class HttpApiTapestry {
         raw = stdout.trim();
       }
 
-      // felt history --json returns an array of event objects (see felt/cmd/history.go).
-      // We filter to editorial events only and map to vellum's HistoryEvent shape;
-      // each summary is parsed to mdast so the card renders through MyST → React.
+      // felt history --mechanical --json returns an array of event objects
+      // (see felt/cmd/history.go). We map the full set — editorial and
+      // mechanical — to vellum's HistoryEvent shape.
       const rawEvents = JSON.parse(raw || '[]') as Array<Record<string, unknown>>;
       const events = rawEvents
         .filter(
           (ev) =>
-            ev['event_type'] === 'editorial' &&
-            typeof (ev['payload'] as Record<string, unknown> | undefined)?.['summary'] === 'string',
+            typeof ev['occurred_at'] === 'string' &&
+            typeof ev['actor'] === 'string' &&
+            typeof ev['event_type'] === 'string',
         )
         .map((ev) => {
-          const summary = ((ev['payload'] as Record<string, unknown>)['summary'] as string);
-          return {
+          const eventType = ev['event_type'] as string;
+          const payload = (ev['payload'] ?? {}) as Record<string, unknown>;
+
+          if (eventType === 'editorial') {
+            const summary = typeof payload['summary'] === 'string' ? payload['summary'] : '';
+            return {
+              kind: 'editorial' as const,
+              occurredAt: ev['occurred_at'] as string,
+              actor: ev['actor'] as string,
+              summary,
+              summaryAst: markdownToMdast(summary),
+            };
+          }
+
+          // Mechanical event — include size metadata and changed-fields list
+          // so the HistoryCard can render a compact badge without prose.
+          const entry: Record<string, unknown> = {
+            kind: eventType,
             occurredAt: ev['occurred_at'] as string,
             actor: ev['actor'] as string,
-            summary,
-            summaryAst: markdownToMdast(summary),
           };
+          if (typeof payload['size_chars'] === 'number') entry['sizeChars'] = payload['size_chars'];
+          if (typeof payload['size_lines'] === 'number') entry['sizeLines'] = payload['size_lines'];
+          if (Array.isArray(payload['fields_changed'])) entry['fieldsChanged'] = payload['fields_changed'];
+          return entry;
         });
 
       this.sendJsonSuccess(res, { events });
