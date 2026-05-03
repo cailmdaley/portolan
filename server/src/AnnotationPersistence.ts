@@ -7,7 +7,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { homedir } from 'os';
-import { join, resolve } from 'path';
+import { extname, join, resolve } from 'path';
 import { randomUUID } from 'crypto';
 
 // ============================================================================
@@ -197,10 +197,25 @@ export class AnnotationPersistence {
       createdAt: Date.now(),
     };
 
-    // File annotations: resolve path and update history
+    // File annotations: resolve path and update history. Skip resolve()
+    // when the input is clearly a fiber slug (no leading `/` or `.`, and
+    // no file extension): slugs like `loom` or `card-redesign/chrome-
+    // aesthetic-reframe` would otherwise be turned into `/cwd/loom`,
+    // breaking strict-equality lookups against the slug downstream (e.g.
+    // NarrativeAnnotationActionsBar's `a.filePath === currentSlug` filter,
+    // which is why the bulk-action bar fails to appear on fiber pages).
+    // Real paths — absolute (`/...`), relative (`./...`, `../...`), or
+    // any path with a file extension — go through resolve() as before.
+    // makeFileKey also calls resolve() on its inputs, so getByFile
+    // lookups remain consistent regardless of which form is stored.
     const isFileAnnotation = !newAnnotation.isClaimAnnotation && !!newAnnotation.filePath;
     if (isFileAnnotation) {
-      newAnnotation.filePath = resolve(newAnnotation.filePath!);
+      const fp = newAnnotation.filePath!;
+      const looksLikePath =
+        fp.startsWith('/') || fp.startsWith('.') || extname(fp) !== '';
+      if (looksLikePath) {
+        newAnnotation.filePath = resolve(fp);
+      }
 
       const historyKey = this.makeFileKey(newAnnotation.originId, newAnnotation.filePath!);
       this.annotationHistory.set(historyKey, {

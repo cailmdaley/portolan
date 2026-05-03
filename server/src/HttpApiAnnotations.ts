@@ -1,5 +1,8 @@
 import { exec, execFile } from 'child_process';
+import { realpathSync } from 'fs';
 import { IncomingMessage, ServerResponse } from 'http';
+import { homedir } from 'os';
+import { join, relative } from 'path';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
 import type { City } from './CityManager.js';
@@ -10,6 +13,40 @@ import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve a project-local fiber slug to a loom-global fiber id.
+ *
+ * `felt add` emits the slug relative to the current city's `.felt/` (e.g.
+ * `vellum-reader/foo` from inside portolan). Shuttle's CLI resolves fibers
+ * against `LOOM_HOME/.felt/` (default `~/loom/.felt/`), where that same fiber
+ * lives at `ai-futures/portolan/vellum-reader/foo`. To call `shuttle-ctl
+ * install` we need the loom-global id.
+ *
+ * The transform is straight realpath arithmetic: each city's `.felt/` is a
+ * symlink into a subpath of `~/loom/.felt/`. The relative path between them
+ * is the project's "global prefix"; prepend it to the local slug.
+ *
+ * Returns the slug unchanged when the project root is the loom itself
+ * (no prefix). Falls back to the slug when realpath fails so the caller can
+ * try shuttle-ctl directly — its `felt ls -j` fallback may still resolve.
+ */
+function resolveGlobalFiberId(cityPath: string, localSlug: string): string {
+  const loomHome = process.env.LOOM_HOME || join(homedir(), 'loom');
+  const loomFelt = join(loomHome, '.felt');
+  let projectFelt: string;
+  try {
+    projectFelt = realpathSync(join(cityPath, '.felt'));
+  } catch {
+    return localSlug;
+  }
+  const prefix = relative(loomFelt, projectFelt);
+  // Empty (project IS the loom) or starts with `..` (project lives outside
+  // the loom — unusual but possible for non-symlinked .felt setups). In both
+  // cases pass the slug through; shuttle-ctl will fall back to `felt ls -j`.
+  if (!prefix || prefix.startsWith('..')) return localSlug;
+  return `${prefix}/${localSlug}`;
+}
 
 interface CityLookup {
   getCityById(cityId: string): City | null;
@@ -136,10 +173,21 @@ export class HttpApiAnnotations {
     const rawFilePath = url.searchParams.get('path');
     const claimId = url.searchParams.get('claimId');
     const allClaims = url.searchParams.get('claims') === 'true';
+    // `all=true` returns every (non-claim) annotation persisted under the
+    // requested originId. Vellum's NarrativeView calls /annotations with no
+    // path because it wants the whole project pool — its TextAnnotationLayer
+    // re-anchors each one by selectedText + surrounding context, so the slug
+    // a note was first written against doesn't gate where it can render.
+    // Without this branch the no-path call short-circuited at the 400 below
+    // and fiber pages rendered with zero annotations: no margin notes, no
+    // highlights, and the bulk-action bar — which gates on
+    // `fiberAnnotations.length > 0` — never appeared, leaving Send-to-worker
+    // unreachable from fiber narrative mode.
+    const allForOrigin = url.searchParams.get('all') === 'true';
     const originId = url.searchParams.get('originId') || 'local';
 
-    if (!rawFilePath && !claimId && !allClaims) {
-      this.sendJsonError(res, 400, 'Missing path, claimId, or claims parameter');
+    if (!rawFilePath && !claimId && !allClaims && !allForOrigin) {
+      this.sendJsonError(res, 400, 'Missing path, claimId, claims, or all parameter');
       return;
     }
 
@@ -149,7 +197,15 @@ export class HttpApiAnnotations {
     const filePath = rawFilePath ? fiberPathToSlug(rawFilePath) : null;
 
     let annotations: Annotation[];
-    if (allClaims) {
+    if (allForOrigin) {
+      // Exclude claim annotations from the project-wide pool: claims are
+      // dashboard-anchored, not text-anchored, so the narrative layer can't
+      // re-anchor them and they'd just bloat the response. Claim consumers
+      // ask explicitly via `claims=true` or `claimId=...`.
+      annotations = this.annotationPersistence
+        .getAll()
+        .filter((a) => a.originId === originId && !a.isClaimAnnotation);
+    } else if (allClaims) {
       annotations = this.annotationPersistence.getAllClaims();
     } else if (claimId) {
       annotations = this.annotationPersistence.getByClaimId(claimId);
@@ -425,20 +481,31 @@ export class HttpApiAnnotations {
   /**
    * POST /fiber/create — inline stash from vellum's workspace tab.
    *
-   * The GUI counterpart of `felt add <slug> <name> [-t tag] [-b body]`. Mounted
-   * by [[constitution-stash-button]]: a `+` button (or `n` hotkey) inside
-   * KanbanHost opens a small form that POSTs here. No agent in the loop —
-   * this is the *stash* affordance, not conversational authoring.
+   * The GUI counterpart of `felt add <slug> <name> [-t tag] [-b body]` plus
+   * a follow-on `shuttle-ctl install --disabled` that writes the
+   * `shuttle:` block. Mounted by [[constitution-stash-button]]: a `+`
+   * button (or `n` hotkey) inside KanbanHost opens a small form that POSTs
+   * here. No agent in the loop — this is the *stash* affordance, not
+   * conversational authoring.
+   *
+   * Per [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]],
+   * every stash creates a shuttle-managed fiber: the kanban is a UI over
+   * shuttle blocks, not a tag-classification view. The new fiber lands in
+   * the drafts column (`enabled: false`); the user promotes it to inFlight
+   * via the kanban (which calls `shuttle resume`).
    *
    * Differs from `/file-as-fiber` (which exists to file annotation comments
    * as a fiber): no annotation context, no synthesized body header, no
-   * `kind` defaulting. Tags are explicit and repeatable. The slug is
-   * derived from the title via the same kebab-case rule as `/file-as-fiber`
-   * for consistency. Optional `parentSlug` nests the new fiber under an
-   * existing one (felt's slash-joined slug convention).
+   * `kind` defaulting, and no shuttle install (annotation-as-fiber is a
+   * felt-level stash, not a constitution). The slug is derived from the
+   * title via the same kebab-case rule as `/file-as-fiber` for consistency.
+   * Optional `parentSlug` nests the new fiber under an existing one (felt's
+   * slash-joined slug convention).
    *
-   * Returns `{success: true, fiberId}` where `fiberId` is the fully
+   * Returns `{success: true, fiberId, slug}` where `fiberId` is the fully
    * qualified slug (parentSlug + child) the felt CLI emitted on stdout.
+   * `globalFiberId` (loom-relative) is also returned so the frontend can
+   * cross-reference shuttle-ctl output without recomputing the prefix.
    */
   async handleCreateFiber(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const data = await this.parseJsonBody<{
@@ -458,10 +525,17 @@ export class HttpApiAnnotations {
        * with-draft pairing.
        */
       status?: string;
+      /**
+       * Shuttle agent id (e.g. `claude-sonnet`, `claude-opus`, `codex`).
+       * Optional — when omitted, shuttle-ctl uses the registry default.
+       * Validated by shuttle-ctl against `share/agents.json` before the
+       * block is written. See [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]].
+       */
+      agent?: string;
     }>(req, res);
     if (!data) return;
 
-    const { originId, cityPath, title, body, tags, parentSlug, status } = data;
+    const { originId, cityPath, title, body, tags, parentSlug, status, agent } = data;
 
     if (!cityPath || !title) {
       this.sendJsonError(res, 400, 'Missing required fields (cityPath, title)');
@@ -535,12 +609,60 @@ export class HttpApiAnnotations {
         invalidateSshHost = origin.sshHost;
       }
 
+      // Install the shuttle: block. Every stash is a constitution; lands in
+      // drafts (`enabled: false`) so the user can refine it before promoting
+      // to inFlight via the kanban (which flips `enabled: true` via
+      // `shuttle resume`). See
+      // [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]].
+      //
+      // Local origin only for now: shuttle-ctl runs locally and resolves
+      // fibers under LOOM_HOME, which is the local loom. Remote stashes
+      // skip the block install and surface a hint in the response so the
+      // user knows to install manually on the remote host. Wiring shuttle
+      // through the agent SSH path is a follow-up.
+      //
+      // Best-effort: if the install fails we leave the felt fiber in place
+      // and report the error in the response so the user can shuttle-install
+      // manually (the fiber is a real document and worth keeping; rolling
+      // back loses the title/body the user just typed).
+      let globalFiberId: string | undefined;
+      let shuttleInstalled = false;
+      let shuttleError: string | undefined;
+      if (!isRemote) {
+        globalFiberId = resolveGlobalFiberId(cityPath, fiberId);
+        try {
+          const installArgs = ['install', globalFiberId, '--disabled'];
+          if (agent) installArgs.push('--model', agent);
+          await execFileAsync('shuttle-ctl', installArgs, {
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          });
+          shuttleInstalled = true;
+        } catch (err: any) {
+          shuttleError = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+          console.error(
+            `[fiber/create] shuttle install failed for ${globalFiberId}: ${shuttleError}`,
+          );
+        }
+      }
+
       // Invalidate the tapestry's fiber-list cache so /astra/graph and
       // /api/search reflect the new fiber immediately rather than waiting
       // out the 30s TTL. Same hook /file-as-fiber uses.
       this.onFiberCreated?.(cityPath, invalidateSshHost);
 
-      this.sendJsonSuccess(res, { success: true, fiberId, slug });
+      this.sendJsonSuccess(res, {
+        success: true,
+        fiberId,
+        slug,
+        globalFiberId,
+        shuttleInstalled,
+        ...(shuttleError ? { shuttleError } : {}),
+        // Remote stashes skip shuttle install for now; surface a hint so the
+        // frontend can show a "shuttle install on remote not yet wired"
+        // notice instead of silently dropping the new card off the kanban.
+        ...(isRemote ? { shuttleSkipped: 'remote-origin' } : {}),
+      });
     } catch (error: any) {
       console.error('Failed to create fiber:', error.message);
       this.sendJsonError(res, 500, 'Failed to create fiber: ' + error.message);

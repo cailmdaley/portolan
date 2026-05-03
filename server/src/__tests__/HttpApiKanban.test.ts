@@ -68,6 +68,12 @@ function writeFib(slugPath: string, frontmatter: Record<string, unknown>, body =
     } else if (typeof v === 'string' && v.includes('\n')) {
       fmLines.push(`${k}: |`);
       for (const line of v.split('\n')) fmLines.push(`  ${line}`);
+    } else if (typeof v === 'object' && v !== null) {
+      // Simple one-level nested object: shuttle: { enabled: true, kind: 'oneshot' }
+      fmLines.push(`${k}:`);
+      for (const [subK, subV] of Object.entries(v as Record<string, unknown>)) {
+        fmLines.push(`  ${subK}: ${subV}`);
+      }
     } else {
       fmLines.push(`${k}: ${v}`);
     }
@@ -75,6 +81,11 @@ function writeFib(slugPath: string, frontmatter: Record<string, unknown>, body =
   const content = `---\n${fmLines.join('\n')}\n---\n\n${body}`;
   writeFileSync(join(dir, `${basename}.md`), content, 'utf-8');
 }
+
+/** A shuttle block that lands a fiber in inFlight (enabled = true). */
+const SHUTTLE_INFLIGHT = { enabled: true, kind: 'oneshot' } as const;
+/** A shuttle block that lands a fiber in drafts (enabled = false). */
+const SHUTTLE_DRAFT = { enabled: false, kind: 'oneshot' } as const;
 
 describe('HttpApiKanban — /kanban endpoint', () => {
   beforeEach(() => {
@@ -95,36 +106,36 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
   });
 
-  it('skips fibers that are not constitution-tagged', async () => {
+  it('skips fibers that have no shuttle: block', async () => {
     writeFib('regular-task', { name: 'Task', status: 'open', tags: ['task'], 'created-at': '2026-04-01' });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
   });
 
-  it('groups constitution fibers into drafts / in-flight / awaiting-review / tempered', async () => {
+  it('groups shuttle-block fibers into drafts / in-flight / awaiting-review / tempered', async () => {
     writeFib('draft-one', {
       name: 'Draft',
       status: 'open',
-      tags: ['constitution', 'draft'],
+      shuttle: SHUTTLE_DRAFT,
       'created-at': '2026-04-09',
     });
     writeFib('open-one', {
       name: 'Open one',
       status: 'open',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-10',
     });
     writeFib('active-one', {
       name: 'Active one',
       status: 'active',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-11',
     });
     writeFib('awaiting', {
       name: 'Awaiting',
       status: 'closed',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-01',
       'closed-at': '2026-04-12',
     });
@@ -132,7 +143,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       name: 'Tempered',
       status: 'closed',
       tempered: 'true',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-02',
       'closed-at': '2026-04-13',
     });
@@ -148,13 +159,13 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['tempered-one']);
   });
 
-  it('keeps a draft-tagged closed fiber in awaiting/tempered, not drafts', async () => {
-    // The draft tag matters only when the fiber is in-flight; closed fibers
-    // route by status+tempered regardless of the draft tag.
+  it('keeps a paused (enabled=false) closed fiber in awaiting/tempered, not drafts', async () => {
+    // shuttle.enabled=false only routes to drafts for open fibers; closed fibers
+    // route by status+tempered regardless of the shuttle block's enabled field.
     writeFib('closed-draft', {
       name: 'Closed draft',
       status: 'closed',
-      tags: ['constitution', 'draft'],
+      shuttle: SHUTTLE_DRAFT,
       'created-at': '2026-04-01',
       'closed-at': '2026-04-02',
     });
@@ -165,11 +176,11 @@ describe('HttpApiKanban — /kanban endpoint', () => {
   });
 
   it('sorts in-flight by running-worker-first, then createdAt desc', async () => {
-    writeFib('a', { name: 'A', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
-    writeFib('b', { name: 'B', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
-    writeFib('busy', { name: 'Busy', status: 'open', tags: ['constitution'], 'created-at': '2026-04-03' });
-    writeFib('x', { name: 'X', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-04' });
-    writeFib('y', { name: 'Y', status: 'closed', tags: ['constitution'], 'created-at': '2026-04-01', 'closed-at': '2026-04-05' });
+    writeFib('a', { name: 'A', status: 'open', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01' });
+    writeFib('b', { name: 'B', status: 'open', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-02' });
+    writeFib('busy', { name: 'Busy', status: 'open', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-03' });
+    writeFib('x', { name: 'X', status: 'closed', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01', 'closed-at': '2026-04-04' });
+    writeFib('y', { name: 'Y', status: 'closed', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01', 'closed-at': '2026-04-05' });
 
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => ['shuttle-a'] });
     const res = await callKanban(api);
@@ -181,8 +192,8 @@ describe('HttpApiKanban — /kanban endpoint', () => {
   });
 
   it('marks in-flight cards with a running Shuttle worker', async () => {
-    writeFib('busy', { name: 'Busy', status: 'open', tags: ['constitution'], 'created-at': '2026-04-01' });
-    writeFib('idle', { name: 'Idle', status: 'open', tags: ['constitution'], 'created-at': '2026-04-02' });
+    writeFib('busy', { name: 'Busy', status: 'open', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01' });
+    writeFib('idle', { name: 'Idle', status: 'open', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-02' });
 
     const api = new HttpApiKanban({
       feltHost: TEST_DIR,
@@ -200,14 +211,14 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     writeFib('upstream', {
       name: 'Upstream',
       status: 'closed',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-01',
       // not tempered
     });
     writeFib('downstream', {
       name: 'Downstream',
       status: 'open',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-02',
       'depends-on': ['upstream'],
     });
@@ -226,13 +237,13 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       name: 'Upstream',
       status: 'closed',
       tempered: 'true',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-01',
     });
     writeFib('downstream', {
       name: 'Downstream',
       status: 'open',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-02',
       'depends-on': ['upstream'],
     });
@@ -248,7 +259,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     writeFib('parent/child', {
       name: 'Child',
       status: 'open',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-01',
     });
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
@@ -263,7 +274,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     writeFib('parent/child', {
       name: 'Child',
       status: 'open',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-01',
     });
     // Pin TEST_DIR itself as a city — its `.felt` realpath is exactly
@@ -293,7 +304,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     mkdirSync(join(FELT_DIR, 'aliased', 'real-fiber'), { recursive: true });
     writeFileSync(
       join(FELT_DIR, 'aliased', 'real-fiber', 'real-fiber.md'),
-      '---\nname: Real\nstatus: open\ntags:\n  - constitution\ncreated-at: 2026-04-01\n---\nbody\n',
+      '---\nname: Real\nstatus: open\nshuttle:\n  enabled: true\n  kind: oneshot\ncreated-at: 2026-04-01\n---\nbody\n',
       'utf-8',
     );
     // Project city: its `.felt/` is a symlink into loom's `.felt/aliased/`.
@@ -325,7 +336,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     writeFib('orphan-fiber', {
       name: 'Orphan',
       status: 'open',
-      tags: ['constitution'],
+      shuttle: SHUTTLE_INFLIGHT,
       'created-at': '2026-04-01',
     });
     // Pin a totally unrelated city — the fiber's canonical path won't fall
@@ -366,7 +377,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       writeFib('story', {
         name: 'Story',
         status: 'closed',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
@@ -390,7 +401,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         name: 'Approved',
         status: 'closed',
         tempered: 'true',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
@@ -406,58 +417,70 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).not.toMatch(/^tempered:/m);
     });
 
-    it('legacy `queued` target is treated as inFlight (no draft, status=active, clears tempered)', async () => {
+    it('legacy `queued` target is treated as inFlight (status=active, clears tempered)', async () => {
       writeFib('legacy-queued', {
         name: 'Legacy queued',
         status: 'closed',
         tempered: 'true',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_DRAFT,
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'legacy-queued', target: 'queued' }), res);
 
       expect(status()).toBe(200);
       expect(body().card.status).toBe('active');
       expect(body().card.tempered).toBeUndefined();
+      expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'legacy-queued' }]);
     });
 
-    it('moves a fiber to drafts — adds the draft tag, clears closed-at', async () => {
+    it('moves a fiber to drafts — calls shuttle-ctl pause, clears closed-at', async () => {
       writeFib('idea', {
         name: 'Idea',
         status: 'open',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
-      const { res, status, body } = capRes();
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
+      const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'idea', target: 'drafts' }), res);
 
       expect(status()).toBe(200);
-      expect(body().card.tags).toContain('draft');
-      expect(body().card.tags).toContain('constitution');
-
+      // shuttle-ctl pause called with the fiber id
+      expect(shuttleCalls).toEqual([{ verb: 'pause', id: 'idea' }]);
+      // felt-level: status left as-is (open), no tag mutations
       const after = readFileSync(join(FELT_DIR, 'idea', 'idea.md'), 'utf-8');
-      expect(after).toMatch(/- draft$/m);
-      expect(after).toMatch(/- constitution$/m);
+      expect(after).toMatch(/^status: open$/m);
+      expect(after).not.toMatch(/^  - draft$/m);
     });
 
-    it('moves a draft to inFlight — removes the draft tag, status=active', async () => {
+    it('moves a draft to inFlight — calls shuttle-ctl resume, status=active', async () => {
       writeFib('promoted', {
         name: 'Promoted',
         status: 'open',
-        tags: ['constitution', 'draft'],
+        shuttle: SHUTTLE_DRAFT,
         'created-at': '2026-04-01',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'promoted', target: 'inFlight' }), res);
 
       expect(status()).toBe(200);
-      expect(body().card.tags).not.toContain('draft');
-      expect(body().card.tags).toContain('constitution');
+      expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'promoted' }]);
       expect(body().card.status).toBe('active');
     });
 
@@ -466,11 +489,14 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         name: 'Reactivate',
         status: 'closed',
         tempered: 'true',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_DRAFT,
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async () => {},
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'reactivate', target: 'inFlight' }), res);
 
@@ -488,7 +514,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       writeFib('skip-review', {
         name: 'Skip review',
         status: 'open',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
       });
       const fixedNow = new Date('2026-04-28T12:00:00Z');
@@ -502,7 +528,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toMatch(/^tempered: true$/m);
     });
 
-    it('refuses to mutate fibers that are not constitution-tagged', async () => {
+    it('refuses to mutate fibers that have no shuttle: block', async () => {
       writeFib('plain-task', {
         name: 'Plain',
         status: 'open',
@@ -514,7 +540,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       await api.handleTransition(jsonReq({ fiberId: 'plain-task', target: 'tempered' }), res);
 
       expect(status()).toBe(500);
-      expect(body().error).toMatch(/constitution/);
+      expect(body().error).toMatch(/shuttle/);
 
       // File is byte-identical.
       const after = readFileSync(join(FELT_DIR, 'plain-task', 'plain-task.md'), 'utf-8');
@@ -526,7 +552,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       writeFib('moot', {
         name: 'Moot',
         status: 'open',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
       });
       const api = new HttpApiKanban({ feltHost: TEST_DIR });
@@ -547,11 +573,14 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         name: 'Revive',
         status: 'closed',
         tempered: 'false',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_DRAFT,
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async () => {},
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'revive', target: 'inFlight' }), res);
 
@@ -640,7 +669,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         .toThrow(/frontmatter/);
     });
 
-    it('adds a tag and preserves the existing tags block formatting, without forcing tempered', () => {
+    it('drafts target: preserves tags and status, clears closed-at and tempered', () => {
       const original = [
         '---',
         'name: Foo',
@@ -648,36 +677,42 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'tags:',
         '  - constitution',
         '  - alpha',
+        'closed-at: 2026-04-01',
         '---',
         'body',
       ].join('\n');
 
       const after = applyTargetToFrontmatter(original, 'drafts', NOW);
-      expect(after).toMatch(/^tags:\n  - constitution\n  - alpha\n  - draft$/m);
-      // status untouched, tempered absent (not written)
+      // No tag mutations (shuttle.enabled drives column, not tags)
+      expect(after).toMatch(/^tags:\n  - constitution\n  - alpha$/m);
+      expect(after).not.toMatch(/^  - draft$/m);
+      // status left as-is (open), tempered absent, closed-at cleared
       expect(after).toMatch(/^status: open$/m);
       expect(after).not.toMatch(/^tempered:/m);
+      expect(after).not.toMatch(/^closed-at:/m);
     });
 
-    it('removes a tag idempotently when not present', () => {
+    it('inFlight target: sets status=active, no tag mutations', () => {
       const original = [
         '---',
         'name: Foo',
         'status: open',
         'tags:',
         '  - constitution',
+        '  - draft',
         '---',
         'body',
       ].join('\n');
 
       const after = applyTargetToFrontmatter(original, 'inFlight', NOW);
-      // Should not duplicate existing tags or fail on missing draft.
-      const tagMatches = after.match(/^  - constitution$/gm) ?? [];
+      // Status changes to active; draft tag NOT removed (shuttle.enabled drives column)
+      expect(after).toMatch(/^status: active$/m);
+      // tags preserved exactly
+      const tagMatches = after.match(/^  - draft$/gm) ?? [];
       expect(tagMatches.length).toBe(1);
-      expect(after).not.toMatch(/^  - draft$/m);
     });
 
-    it('round-trips drafts → inFlight → drafts cleanly on tag membership', () => {
+    it('round-trips drafts → inFlight → drafts: felt-level fields are consistent', () => {
       const start = [
         '---',
         'name: Foo',
@@ -692,10 +727,12 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       const b = applyTargetToFrontmatter(a, 'inFlight', NOW);
       const c = applyTargetToFrontmatter(b, 'drafts', NOW);
 
-      // All three states should have constitution; only a and c should have draft.
-      expect(a.match(/^  - draft$/m)).not.toBeNull();
+      // No draft tag added/removed — only status changes on the inFlight pass.
+      expect(a.match(/^  - draft$/m)).toBeNull();
       expect(b.match(/^  - draft$/m)).toBeNull();
-      expect(c.match(/^  - draft$/m)).not.toBeNull();
+      expect(c.match(/^  - draft$/m)).toBeNull();
+      expect(b.match(/^status: active$/m)).not.toBeNull();
+      // Tags (constitution) preserved through all transitions.
       expect(a.match(/^  - constitution$/m)).not.toBeNull();
       expect(b.match(/^  - constitution$/m)).not.toBeNull();
       expect(c.match(/^  - constitution$/m)).not.toBeNull();
@@ -729,14 +766,15 @@ describe('HttpApiKanban — /kanban endpoint', () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   describe('remote-origin snapshots (Stage 3a)', () => {
-    /** Build a constitution fiber's md content for a snapshot file. */
+    /** Build a shuttle-managed fiber's md content for a snapshot file. */
     function fiberContent(name: string, status = 'active'): string {
       return [
         '---',
         `name: ${name}`,
         `status: ${status}`,
-        'tags:',
-        '  - constitution',
+        'shuttle:',
+        '  enabled: true',
+        '  kind: oneshot',
         'created-at: 2026-04-15T00:00:00Z',
         '---',
         '',
@@ -766,7 +804,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       writeFib('shared-id', {
         name: 'Local copy',
         status: 'active',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-15T00:00:00Z',
       });
       const store = new FiberTreeSnapshotStore();
@@ -796,7 +834,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       writeFib('local-only', {
         name: 'Local',
         status: 'active',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-15T00:00:00Z',
       });
       const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
@@ -978,10 +1016,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(seen).toEqual(['loom.md', 'ai-futures/portolan/portolan.md']);
     });
 
-    it('non-constitution remote fibers are excluded', async () => {
+    it('remote fibers without a shuttle: block are excluded', async () => {
       const store = new FiberTreeSnapshotStore();
-      // Strip the constitution tag from the content.
-      const noTag = [
+      // No shuttle: block → excluded from kanban.
+      const noBlock = [
         '---',
         'name: Untagged',
         'status: active',
@@ -989,7 +1027,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         '---',
       ].join('\n');
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'untagged/untagged.md', content: noTag },
+        { path: 'untagged/untagged.md', content: noBlock },
       ]);
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
@@ -1007,7 +1045,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         name: `T${i}`,
         status: 'closed',
         tempered: 'true',
-        tags: ['constitution'],
+        shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
         'closed-at': `2026-04-${String(10 + i).padStart(2, '0')}`,
       });

@@ -20,6 +20,13 @@ export interface Fiber {
   tempered?: boolean;   // human-acceptance signal — agent never sets this itself; Shuttle reads it as the dependency-satisfied edge
   /** True when the fiber has a `shuttle:` frontmatter block. The dispatch signal lives here. */
   hasShuttleBlock?: boolean;
+  /**
+   * Whether shuttle dispatch is enabled for this fiber (`shuttle.enabled`).
+   * Present only when `hasShuttleBlock` is true. `false` means the fiber is
+   * in the drafts column (installed but paused); `true` means in-flight
+   * (eligible for dispatch). Absence means the fiber has no shuttle block.
+   */
+  shuttleEnabled?: boolean;
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -237,6 +244,11 @@ export function parseFiber(id: string, content: string): Fiber {
   // constitution/draft tag predicate). Non-null object means the block is present.
   const shuttleRaw = fm['shuttle'];
   const hasShuttleBlock = shuttleRaw !== null && shuttleRaw !== undefined && typeof shuttleRaw === 'object' && !Array.isArray(shuttleRaw);
+  // shuttleEnabled: the `shuttle.enabled` field. Drives drafts vs inFlight split:
+  // false = drafts (installed, not yet queued for dispatch); true = inFlight.
+  const shuttleEnabled: boolean | undefined = hasShuttleBlock
+    ? (shuttleRaw as Record<string, unknown>)['enabled'] === false ? false : true
+    : undefined;
 
   return {
     id,
@@ -252,5 +264,6 @@ export function parseFiber(id: string, content: string): Fiber {
     dependsOn: dependsOn,
     tempered: tempered,
     hasShuttleBlock: hasShuttleBlock || undefined,
+    shuttleEnabled,
   };
 }

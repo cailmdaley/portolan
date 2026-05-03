@@ -138,6 +138,23 @@ describe('AnnotationPersistence', () => {
       expect(ann.filePath).not.toContain('./');
     });
 
+    it('preserves fiber slug as-is (no path resolution)', () => {
+      // A fiber slug like "loom" or "card-redesign/chrome-aesthetic-reframe"
+      // is not a file path. Resolving it would turn "loom" into "/cwd/loom",
+      // breaking strict-equality lookups against the slug downstream — most
+      // visibly NarrativeAnnotationActionsBar's `a.filePath === currentSlug`
+      // filter, which is the gate that decides whether the bulk-action
+      // (Send/Clear sent/Fiber) bar appears on a fiber page.
+      persistence.load();
+      const slugAnn = persistence.add(fileAnnotation({ filePath: 'loom' }));
+      expect(slugAnn.filePath).toBe('loom');
+
+      const nestedAnn = persistence.add(
+        fileAnnotation({ filePath: 'card-redesign/chrome-aesthetic-reframe' }),
+      );
+      expect(nestedAnn.filePath).toBe('card-redesign/chrome-aesthetic-reframe');
+    });
+
     it('persists to disk', () => {
       persistence.load();
       persistence.add(fileAnnotation());

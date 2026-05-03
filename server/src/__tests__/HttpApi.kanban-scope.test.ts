@@ -32,7 +32,7 @@ const CITY_A = join(TEST_DIR, 'city-a');
 const CITY_B = join(TEST_DIR, 'city-b');
 const CITY_REMOTE = join(TEST_DIR, 'city-remote');
 
-/** Write a directory-shaped constitution fiber under <cityRoot>/.felt/<slug>/<slug>.md. */
+/** Write a directory-shaped shuttle-managed fiber under <cityRoot>/.felt/<slug>/<slug>.md. */
 function writeConstitutionFiber(
   cityRoot: string,
   slug: string,
@@ -41,8 +41,9 @@ function writeConstitutionFiber(
   const dir = join(cityRoot, '.felt', slug);
   mkdirSync(dir, { recursive: true });
   const fmLines = [
-    'tags:',
-    '  - constitution',
+    'shuttle:',
+    '  enabled: true',
+    '  kind: oneshot',
     ...Object.entries(fields).map(([k, v]) => `${k}: ${v}`),
   ];
   const content = `---\n${fmLines.join('\n')}\n---\n\nbody\n`;
@@ -185,8 +186,9 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
         '---',
         'name: Shuttle work',
         'status: active',
-        'tags:',
-        '  - constitution',
+        'shuttle:',
+        '  enabled: true',
+        '  kind: oneshot',
         'created-at: 2026-05-01T00:00:00Z',
         '---',
         '',

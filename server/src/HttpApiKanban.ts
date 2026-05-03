@@ -3,9 +3,8 @@
  *
  * Reads fibers from a felt host (defaults to ~/loom — the loom monorepo,
  * which symlinks every project's `.felt/`), filters to shuttle-managed fibers
- * (those with a `shuttle:` frontmatter block, or legacy `constitution`-tagged
- * fibers for backward-compatibility during migration), and groups by lifecycle
- * stage. `tempered` is a tristate verdict field — absent (no verdict yet),
+ * (those with a `shuttle:` frontmatter block), and groups by lifecycle stage.
+ * `tempered` is a tristate verdict field — absent (no verdict yet),
  * `true` (accepted), `false` (composted: mooted / superseded / did not survive
  * review). The classifier reads all three:
  *
@@ -39,13 +38,39 @@ import type { URL } from 'url';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { execFile } from 'child_process';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { promisify } from 'util';
 import { getAllFibers, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve a project-local fiber id to a loom-global id for shuttle-ctl calls.
+ *
+ * shuttle-ctl resolves fibers relative to LOOM_HOME/.felt/ (the global loom).
+ * City .felt/ directories are symlinks into subpaths of the loom, so the
+ * global id is the prefix (relative path from loom/.felt to city/.felt)
+ * prepended to the project-local slug. When the host IS the loom, prefix is
+ * empty and the id is returned unchanged.
+ *
+ * Falls back to the local slug when realpath fails (shuttle-ctl's felt-ls
+ * fallback may still resolve it). Shared with HttpApiAnnotations.ts.
+ */
+function resolveGlobalFiberId(cityPath: string, localSlug: string): string {
+  const loomHome = process.env.LOOM_HOME || join(homedir(), 'loom');
+  const loomFelt = join(loomHome, '.felt');
+  let projectFelt: string;
+  try {
+    projectFelt = realpathSync(join(cityPath, '.felt'));
+  } catch {
+    return localSlug;
+  }
+  const prefix = relative(loomFelt, projectFelt);
+  if (!prefix || prefix.startsWith('..')) return localSlug;
+  return `${prefix}/${localSlug}`;
+}
 
 export interface KanbanCard {
   id: string;
@@ -101,11 +126,11 @@ export interface KanbanCard {
 }
 
 export interface KanbanColumns {
-  /** Constitution-tagged AND draft-tagged. Brainstorming, hidden from Shuttle. */
+  /** shuttle.enabled === false (paused / not yet queued). Hidden from Shuttle dispatch. */
   drafts: KanbanCard[];
-  /** Constitution-tagged, NOT draft, status != closed. Queue + active are one bucket. */
+  /** shuttle.enabled !== false, status != closed. Queue + active are one bucket. */
   inFlight: KanbanCard[];
-  /** Constitution-tagged, status=closed && tempered absent (the human-tempering queue). */
+  /** Shuttle-block fiber, status=closed && tempered absent (the human-tempering queue). */
   awaitingReview: KanbanCard[];
   /** Constitution-tagged, status=closed && tempered:true (recent N). */
   tempered: KanbanCard[];
@@ -257,13 +282,20 @@ interface HttpApiKanbanOptions {
    * repeated Kanban reads don't re-walk every felt host.
    */
   cacheTtlMs?: number;
+  /**
+   * Test seam: override the shuttle-ctl spawn for drafts/inFlight transitions.
+   * When provided, called instead of `execFileAsync('shuttle-ctl', ...)`.
+   * Receives the verb ('pause' | 'resume') and the loom-global fiber id.
+   * Should throw on failure (same contract as the real execFileAsync call).
+   */
+  shuttleCtlFn?: (verb: 'pause' | 'resume', fiberId: string) => Promise<void>;
 }
 
 /**
  * Where a transition can land a card.
  *
- *   drafts          → adds the `draft` tag, clears `tempered`, parks in drafts column
- *   inFlight        → removes `draft` tag, status=active, clears `tempered`, clears closed-at
+ *   drafts          → shuttle-ctl pause (enabled=false), clears `tempered`, parks in drafts column
+ *   inFlight        → shuttle-ctl resume (enabled=true), status=active, clears `tempered`, clears closed-at
  *   awaitingReview  → status=closed, clears `tempered` (agent-paused handoff)
  *   tempered        → status=closed, tempered=true  (human-accepted)
  *   composted       → status=closed, tempered=false (human-rejected: mooted, superseded)
@@ -325,6 +357,7 @@ export class HttpApiKanban {
   private readonly now: () => Date;
   private readonly listSessions: () => string[];
   private readonly cacheTtlMs: number;
+  private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
 
   /**
    * Per-instance memo: realpath of each pinned city's `.felt` directory,
@@ -349,6 +382,7 @@ export class HttpApiKanban {
     this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
     this.cacheTtlMs = opts.cacheTtlMs ?? 0;
+    this.shuttleCtlFn = opts.shuttleCtlFn;
   }
 
   /**
@@ -557,13 +591,11 @@ export class HttpApiKanban {
       // in the autocomplete dropdown.
       const tagIndex = collectTagIndex(merged);
 
-      // Shuttle-managed fibers: those with a shuttle: block (post-migration)
-      // OR a constitution tag (pre-migration legacy fallback). After running
-      // `shuttle migrate`, every eligible fiber has both, so the union is
-      // identical to the old tag-only filter.
-      const constitutional = merged.filter(({ fiber }) =>
-        fiber.hasShuttleBlock === true || fiber.tags?.includes('constitution'),
-      );
+      // Shuttle-managed fibers: those with a shuttle: block. Post-cutover,
+      // this is the sole eligibility signal. Run `shuttle migrate` once before
+      // deploying to backfill blocks on legacy constitution-tagged fibers
+      // (see [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]]).
+      const constitutional = merged.filter(({ fiber }) => fiber.hasShuttleBlock === true);
 
       // Probe live shuttle workers — drives the running-worker indicator on
       // in-flight cards, and bumps them to the top of the column.
@@ -577,9 +609,11 @@ export class HttpApiKanban {
 
       for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
-        const isDraft = f.tags?.includes('draft') ?? false;
+        // Column split: shuttle.enabled === false → drafts (paused); otherwise → inFlight.
+        // The shuttle block is the source of truth; draft/constitution tags are cosmetic.
+        const isPaused = f.shuttleEnabled === false;
         if (f.status !== 'closed') {
-          if (isDraft) drafts.push(card);
+          if (isPaused) drafts.push(card);
           else inFlight.push(card);
         } else if (f.tempered === true) {
           tempered.push(card);
@@ -721,10 +755,9 @@ export class HttpApiKanban {
     const entry = merged.find(({ fiber }) => fiber.id === fiberId);
     if (!entry) throw new Error(`fiber not found: ${fiberId}`);
     const { fiber, host, originId } = entry;
-    if (!(fiber.hasShuttleBlock === true || fiber.tags?.includes('constitution'))) {
+    if (fiber.hasShuttleBlock !== true) {
       throw new Error(
-        `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block` +
-          (fiber.tags?.length ? ` and no constitution tag (tags: ${fiber.tags.join(', ')})` : ''),
+        `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block`,
       );
     }
     const nowIso = this.now().toISOString();
@@ -771,6 +804,30 @@ export class HttpApiKanban {
     const path = this.fiberPath(host, fiber);
     if (!existsSync(path)) {
       throw new Error(`fiber file missing on disk: ${path}`);
+    }
+
+    // For drafts/inFlight transitions: mutate the shuttle: block via shuttle-ctl
+    // BEFORE reading the file for the felt-level write. This ensures the
+    // applyTargetToFrontmatter pass sees (and preserves) the updated block.
+    // `queued`/`active` are legacy aliases for `inFlight` — treat identically.
+    // Remote-origin transitions TODO: plumb a "run shuttle-ctl on the remote"
+    // instruction through remoteTransitionExecutor once the SSH path supports it.
+    if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
+      const verb: 'pause' | 'resume' = target === 'drafts' ? 'pause' : 'resume';
+      const globalId = resolveGlobalFiberId(host, fiber.id);
+      if (this.shuttleCtlFn) {
+        await this.shuttleCtlFn(verb, globalId);
+      } else {
+        try {
+          await execFileAsync('shuttle-ctl', [verb, globalId], {
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          });
+        } catch (err: any) {
+          const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+          throw new Error(`shuttle-ctl ${verb} failed for ${globalId}: ${msg}`);
+        }
+      }
     }
 
     const raw = readFileSync(path, 'utf-8');
@@ -851,11 +908,11 @@ export class HttpApiKanban {
     const { fiber, host, originId, canonicalPath } = entry;
 
     // Normalize: trim each tag, remove empties, deduplicate while preserving
-    // insertion order. The 'constitution' tag is always kept — removing it
-    // from a kanban-visible card would make the fiber disappear from the
-    // board on the next refresh, which is user-hostile.
+    // insertion order. Post-cutover, kanban visibility is driven by the
+    // shuttle: block — the constitution tag is cosmetic and no longer forcibly
+    // kept. Removing it from a fiber's tags no longer affects board membership.
     const seen = new Set<string>();
-    const normalized: string[] = ['constitution'];
+    const normalized: string[] = [];
     for (const t of tags) {
       const trimmed = t.trim();
       if (!trimmed || seen.has(trimmed)) continue;
@@ -1213,17 +1270,18 @@ export function applyTargetToFrontmatter(
   let status: string | null;  // null = leave untouched
   let tempered: boolean | null;  // null = clear the field
   let closedAtAction: 'set-if-missing' | 'clear';
-  let tagsToAdd: string[] = [];
-  let tagsToRemove: string[] = [];
+  // Post-cutover: drafts/inFlight column membership is driven by shuttle.enabled
+  // (set by shuttle-ctl pause/resume, called by applyTransition before this fn).
+  // This fn handles only the felt-level fields: status, tempered, closed-at.
+  // No tag mutations for drafts/inFlight — constitution/draft tags are cosmetic.
   switch (target) {
     case 'drafts':
       // Don't force a status when filing as draft — preserve whatever shape
-      // the fiber already has (often `open` from felt add). The draft tag is
-      // what matters for kanban classification.
+      // the fiber already has (often `open` from felt add). The shuttle block
+      // (paused by shuttle-ctl before this call) drives the drafts column.
       status = null;
       tempered = null;
       closedAtAction = 'clear';
-      tagsToAdd = ['draft'];
       break;
     case 'inFlight':
     case 'queued':
@@ -1231,7 +1289,6 @@ export function applyTargetToFrontmatter(
       status = 'active';
       tempered = null;
       closedAtAction = 'clear';
-      tagsToRemove = ['draft'];
       break;
     case 'awaitingReview':
       status = 'closed';
@@ -1292,9 +1349,9 @@ export function applyTargetToFrontmatter(
     }
   }
 
-  // Tag mutations come last so the surrounding scalar edits don't disturb the
-  // tags block's line indices.
-  mutateTagsInPlace(fmLines, { add: tagsToAdd, remove: tagsToRemove });
+  // No tag mutations post-cutover: drafts/inFlight column membership is driven
+  // by shuttle.enabled (via shuttle-ctl pause/resume), not by the draft tag.
+  // applyTargetToFrontmatter only handles the felt-level scalar fields.
 
   const newFm = fmLines.join('\n');
   return `---\n${newFm}\n---\n${after}`;

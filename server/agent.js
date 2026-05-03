@@ -784,17 +784,17 @@ export function applyTargetToFrontmatter(raw, target, nowIso) {
     // `tempered === null` here means "remove the field on write." Only the
     // verdict targets (tempered, composted) write a boolean; every other
     // target clears it. See HttpApiKanban.ts for the rationale.
+    // Post-cutover: drafts/inFlight column membership is driven by shuttle.enabled
+    // (set by shuttle-ctl pause/resume on the server side). This fn only handles
+    // felt-level scalar fields; no tag mutations for any target.
     let status;
     let tempered; // boolean | null — null = clear the field
     let closedAtAction;
-    let tagsToAdd = [];
-    let tagsToRemove = [];
     switch (target) {
         case 'drafts':
             status = null;
             tempered = null;
             closedAtAction = 'clear';
-            tagsToAdd = ['draft'];
             break;
         case 'inFlight':
         case 'queued':
@@ -802,7 +802,6 @@ export function applyTargetToFrontmatter(raw, target, nowIso) {
             status = 'active';
             tempered = null;
             closedAtAction = 'clear';
-            tagsToRemove = ['draft'];
             break;
         case 'awaitingReview':
             status = 'closed';
@@ -860,7 +859,7 @@ export function applyTargetToFrontmatter(raw, target, nowIso) {
         }
     }
 
-    mutateTagsInPlace(fmLines, { add: tagsToAdd, remove: tagsToRemove });
+    // No tag mutations post-cutover.
 
     const newFm = fmLines.join('\n');
     return `---\n${newFm}\n---\n${after}`;
