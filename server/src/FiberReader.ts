@@ -27,6 +27,20 @@ export interface Fiber {
    * (eligible for dispatch). Absence means the fiber has no shuttle block.
    */
   shuttleEnabled?: boolean;
+  /**
+   * `shuttle.kind` — `oneshot` (default) or `standing`. Standing roles have
+   * a richer lifecycle (cron schedule + per-run review state). Drives column
+   * placement and transition semantics: a standing role's review acceptance
+   * is `shuttle-ctl accept`, not the oneshot resume+reopen dance.
+   */
+  shuttleKind?: 'oneshot' | 'standing';
+  /**
+   * `shuttle.review.state` for standing roles — `scheduled` | `awaiting` | `accepted`.
+   * `awaiting` after a worker completes a run; the kanban routes the card to
+   * the awaitingReview column even though `status` remains `active`. Cleared
+   * (back to `scheduled`) by `shuttle-ctl accept`.
+   */
+  shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -250,6 +264,27 @@ export function parseFiber(id: string, content: string): Fiber {
     ? (shuttleRaw as Record<string, unknown>)['enabled'] === false ? false : true
     : undefined;
 
+  // shuttleKind: oneshot (default when block present but kind absent) | standing.
+  // Standing roles have richer lifecycle and need different transition semantics.
+  let shuttleKind: 'oneshot' | 'standing' | undefined;
+  if (hasShuttleBlock) {
+    const k = (shuttleRaw as Record<string, unknown>)['kind'];
+    shuttleKind = k === 'standing' ? 'standing' : 'oneshot';
+  }
+
+  // shuttleReviewState: shuttle.review.state — only meaningful for standing roles.
+  // Reads as 'awaiting' between worker exit and human accept.
+  let shuttleReviewState: 'scheduled' | 'awaiting' | 'accepted' | undefined;
+  if (hasShuttleBlock) {
+    const review = (shuttleRaw as Record<string, unknown>)['review'];
+    if (review && typeof review === 'object' && !Array.isArray(review)) {
+      const s = (review as Record<string, unknown>)['state'];
+      if (s === 'scheduled' || s === 'awaiting' || s === 'accepted') {
+        shuttleReviewState = s;
+      }
+    }
+  }
+
   return {
     id,
     name: getField('name') || id,
@@ -265,5 +300,7 @@ export function parseFiber(id: string, content: string): Fiber {
     tempered: tempered,
     hasShuttleBlock: hasShuttleBlock || undefined,
     shuttleEnabled,
+    shuttleKind,
+    shuttleReviewState,
   };
 }

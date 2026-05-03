@@ -285,10 +285,12 @@ interface HttpApiKanbanOptions {
   /**
    * Test seam: override the shuttle-ctl spawn for drafts/inFlight transitions.
    * When provided, called instead of `execFileAsync('shuttle-ctl', ...)`.
-   * Receives the verb ('pause' | 'resume') and the loom-global fiber id.
+   * Receives the verb ('pause' | 'resume' | 'accept') and the loom-global
+   * fiber id. `accept` is used for standing-role review acceptance — see
+   * applyTransition.
    * Should throw on failure (same contract as the real execFileAsync call).
    */
-  shuttleCtlFn?: (verb: 'pause' | 'resume', fiberId: string) => Promise<void>;
+  shuttleCtlFn?: (verb: 'pause' | 'resume' | 'accept', fiberId: string) => Promise<void>;
 }
 
 /**
@@ -609,10 +611,20 @@ export class HttpApiKanban {
 
       for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
-        // Column split: shuttle.enabled === false → drafts (paused); otherwise → inFlight.
-        // The shuttle block is the source of truth; draft/constitution tags are cosmetic.
+        // Column split. Two regimes:
+        //   - oneshot: status drives placement. status !== closed splits on
+        //     shuttle.enabled (drafts vs inFlight); status === closed splits
+        //     on tempered (awaitingReview / tempered / composted).
+        //   - standing: status stays `active` permanently (it means "installed"),
+        //     so column placement keys off shuttle.review.state. After a worker
+        //     completes a run, review.state is `awaiting` until the human runs
+        //     accept — that's the awaitingReview slot for standing roles.
         const isPaused = f.shuttleEnabled === false;
-        if (f.status !== 'closed') {
+        const isStandingAwaiting =
+          f.shuttleKind === 'standing' && f.shuttleReviewState === 'awaiting';
+        if (isStandingAwaiting) {
+          awaitingReview.push(card);
+        } else if (f.status !== 'closed') {
           if (isPaused) drafts.push(card);
           else inFlight.push(card);
         } else if (f.tempered === true) {
@@ -810,9 +822,40 @@ export class HttpApiKanban {
     // BEFORE reading the file for the felt-level write. This ensures the
     // applyTargetToFrontmatter pass sees (and preserves) the updated block.
     // `queued`/`active` are legacy aliases for `inFlight` — treat identically.
+    //
+    // Standing-role review acceptance is a special case: when a kind:standing
+    // fiber is in awaitingReview (review.state === 'awaiting') and the user
+    // drags it to inFlight, the right verb is `accept` — it advances the
+    // schedule (sets review.state = scheduled, computes new next_due_at) and
+    // closes the run loop. `resume` would no-op (enabled is already true,
+    // status already active) and the role would stay stuck in awaiting.
+    //
     // Remote-origin transitions TODO: plumb a "run shuttle-ctl on the remote"
     // instruction through remoteTransitionExecutor once the SSH path supports it.
-    if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
+    const isStandingAccept =
+      (target === 'inFlight' || target === 'queued' || target === 'active') &&
+      fiber.shuttleKind === 'standing' &&
+      fiber.shuttleReviewState === 'awaiting';
+
+    if (isStandingAccept) {
+      const globalId = resolveGlobalFiberId(host, fiber.id);
+      if (this.shuttleCtlFn) {
+        await this.shuttleCtlFn('accept', globalId);
+      } else {
+        try {
+          await execFileAsync('shuttle-ctl', ['accept', globalId], {
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          });
+        } catch (err: any) {
+          const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+          throw new Error(`shuttle-ctl accept failed for ${globalId}: ${msg}`);
+        }
+      }
+      // accept already wrote the file (advancing review + schedule) and
+      // status was already 'active' for a standing role — no felt-level
+      // mutation needed. Skip applyTargetToFrontmatter.
+    } else if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
       const verb: 'pause' | 'resume' = target === 'drafts' ? 'pause' : 'resume';
       const globalId = resolveGlobalFiberId(host, fiber.id);
       if (this.shuttleCtlFn) {
@@ -830,10 +873,12 @@ export class HttpApiKanban {
       }
     }
 
-    const raw = readFileSync(path, 'utf-8');
-    const updated = applyTargetToFrontmatter(raw, target, nowIso);
-    if (updated !== raw) {
-      writeFileSync(path, updated, 'utf-8');
+    if (!isStandingAccept) {
+      const raw = readFileSync(path, 'utf-8');
+      const updated = applyTargetToFrontmatter(raw, target, nowIso);
+      if (updated !== raw) {
+        writeFileSync(path, updated, 'utf-8');
+      }
     }
     this.clearFiberPoolCache();
 

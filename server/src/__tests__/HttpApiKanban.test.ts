@@ -69,10 +69,17 @@ function writeFib(slugPath: string, frontmatter: Record<string, unknown>, body =
       fmLines.push(`${k}: |`);
       for (const line of v.split('\n')) fmLines.push(`  ${line}`);
     } else if (typeof v === 'object' && v !== null) {
-      // Simple one-level nested object: shuttle: { enabled: true, kind: 'oneshot' }
+      // Up-to-two-level nested object: shuttle: { enabled, kind, review: { state } }
       fmLines.push(`${k}:`);
       for (const [subK, subV] of Object.entries(v as Record<string, unknown>)) {
-        fmLines.push(`  ${subK}: ${subV}`);
+        if (typeof subV === 'object' && subV !== null) {
+          fmLines.push(`  ${subK}:`);
+          for (const [k3, v3] of Object.entries(subV as Record<string, unknown>)) {
+            fmLines.push(`    ${k3}: ${v3}`);
+          }
+        } else {
+          fmLines.push(`  ${subK}: ${subV}`);
+        }
       }
     } else {
       fmLines.push(`${k}: ${v}`);
@@ -86,6 +93,18 @@ function writeFib(slugPath: string, frontmatter: Record<string, unknown>, body =
 const SHUTTLE_INFLIGHT = { enabled: true, kind: 'oneshot' } as const;
 /** A shuttle block that lands a fiber in drafts (enabled = false). */
 const SHUTTLE_DRAFT = { enabled: false, kind: 'oneshot' } as const;
+/** A standing-role shuttle block whose worker has finished a run and is awaiting human acceptance. */
+const SHUTTLE_STANDING_AWAITING = {
+  enabled: true,
+  kind: 'standing',
+  review: { state: 'awaiting' },
+} as const;
+/** A standing-role shuttle block scheduled for the next cron tick (no review pending). */
+const SHUTTLE_STANDING_SCHEDULED = {
+  enabled: true,
+  kind: 'standing',
+  review: { state: 'scheduled' },
+} as const;
 
 describe('HttpApiKanban — /kanban endpoint', () => {
   beforeEach(() => {
@@ -157,6 +176,32 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['active-one', 'open-one']);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);
     expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['tempered-one']);
+  });
+
+  it('routes a kind:standing fiber with review.state=awaiting to awaitingReview, even though status is active', async () => {
+    // Standing roles keep status: active permanently (it means "installed").
+    // Per-run review lifecycle is in shuttle.review.state. After a worker
+    // finishes a run, review.state goes to "awaiting" and the role should
+    // surface in the awaitingReview column for human acceptance — not stay
+    // hidden in inFlight where it'd be indistinguishable from a scheduled run.
+    writeFib('canary', {
+      name: 'Canary (review pending)',
+      status: 'active',
+      shuttle: SHUTTLE_STANDING_AWAITING,
+      'created-at': '2026-04-01',
+    });
+    writeFib('canary-scheduled', {
+      name: 'Canary (next run pending)',
+      status: 'active',
+      shuttle: SHUTTLE_STANDING_SCHEDULED,
+      'created-at': '2026-04-02',
+    });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+    const res = await callKanban(api);
+
+    expect(res.status).toBe(200);
+    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['canary']);
+    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['canary-scheduled']);
   });
 
   it('keeps a paused (enabled=false) closed fiber in awaiting/tempered, not drafts', async () => {
@@ -482,6 +527,57 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(status()).toBe(200);
       expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'promoted' }]);
       expect(body().card.status).toBe('active');
+    });
+
+    it('standing-role awaitingReview → inFlight calls shuttle-ctl accept (not resume)', async () => {
+      // The kanban gesture for accepting a standing-role run is to drag the
+      // card from awaitingReview back into inFlight. The right verb is
+      // `accept` (advances review.state + computes next_due_at) — `resume`
+      // would no-op because enabled is already true and status already active.
+      writeFib('canary', {
+        name: 'Canary',
+        status: 'active',
+        shuttle: SHUTTLE_STANDING_AWAITING,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'canary', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([{ verb: 'accept', id: 'canary' }]);
+      // Standing role's status was 'active' before; should remain 'active'.
+      // applyTargetToFrontmatter is skipped on the accept path so the file
+      // contents are untouched here (accept itself wrote review/schedule via
+      // shuttle-ctl, which the test seam stubs out — so the on-disk file
+      // is left as-is for this assertion).
+      const after = readFileSync(join(FELT_DIR, 'canary', 'canary.md'), 'utf-8');
+      expect(after).toMatch(/^status: active$/m);
+    });
+
+    it('oneshot draft → inFlight still calls resume (the standing-accept path is kind-gated)', async () => {
+      // Regression check: the standing-accept branch must not steal the
+      // resume path for plain oneshot drafts.
+      writeFib('oneshot-draft', {
+        name: 'Oneshot draft',
+        status: 'open',
+        shuttle: SHUTTLE_DRAFT,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'oneshot-draft', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'oneshot-draft' }]);
     });
 
     it('reopens a closed fiber to in flight, clearing closed-at and tempered', async () => {
