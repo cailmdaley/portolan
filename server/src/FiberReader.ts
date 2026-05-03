@@ -18,6 +18,8 @@ export interface Fiber {
   tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
   tempered?: boolean;   // human-acceptance signal — agent never sets this itself; Shuttle reads it as the dependency-satisfied edge
+  /** True when the fiber has a `shuttle:` frontmatter block. The dispatch signal lives here. */
+  hasShuttleBlock?: boolean;
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -230,6 +232,12 @@ export function parseFiber(id: string, content: string): Fiber {
     ? undefined
     : /^(true|yes|1)$/i.test(temperedRaw);
 
+  // hasShuttleBlock: true when the fiber carries a shuttle: frontmatter block.
+  // This is the dispatch-eligibility signal post-migration (replaces the
+  // constitution/draft tag predicate). Non-null object means the block is present.
+  const shuttleRaw = fm['shuttle'];
+  const hasShuttleBlock = shuttleRaw !== null && shuttleRaw !== undefined && typeof shuttleRaw === 'object' && !Array.isArray(shuttleRaw);
+
   return {
     id,
     name: getField('name') || id,
@@ -243,5 +251,6 @@ export function parseFiber(id: string, content: string): Fiber {
     tags: tags,
     dependsOn: dependsOn,
     tempered: tempered,
+    hasShuttleBlock: hasShuttleBlock || undefined,
   };
 }

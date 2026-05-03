@@ -1,11 +1,13 @@
 /**
- * HttpApiKanban — global kanban view of constitution-tagged fibers.
+ * HttpApiKanban — global kanban view of shuttle-managed fibers.
  *
  * Reads fibers from a felt host (defaults to ~/loom — the loom monorepo,
- * which symlinks every project's `.felt/`), filters to constitution-tagged,
- * and groups by lifecycle stage. `tempered` is a tristate verdict field —
- * absent (no verdict yet), `true` (accepted), `false` (composted: mooted /
- * superseded / did not survive review). The classifier reads all three:
+ * which symlinks every project's `.felt/`), filters to shuttle-managed fibers
+ * (those with a `shuttle:` frontmatter block, or legacy `constitution`-tagged
+ * fibers for backward-compatibility during migration), and groups by lifecycle
+ * stage. `tempered` is a tristate verdict field — absent (no verdict yet),
+ * `true` (accepted), `false` (composted: mooted / superseded / did not survive
+ * review). The classifier reads all three:
  *
  *   - in-flight       : status != closed (open / active / dispatchable)
  *   - awaiting-review : status == closed && tempered absent (agent-paused handoff)
@@ -21,6 +23,11 @@
  * The "awaiting-review" column is the human-tempering action queue and the
  * primary reason this view exists. See:
  * .felt/ai-futures/portolan/shuttle/constitution-shuttle.
+ *
+ * Card source filter: post-migration, a fiber must have a `shuttle:` block.
+ * Pre-migration (or for legacy fibers), the `constitution` tag is the fallback.
+ * After running `shuttle migrate`, every eligible fiber has both, so the union
+ * produces the same set as the old tag-only filter — byte-identical eligibility.
  *
  * v0 is read-only — clicking a card opens the fiber's md in vellum on the
  * frontend; tempering/un-tempering happens via CLI for now. Will grow to
@@ -537,8 +544,12 @@ export class HttpApiKanban {
       // in the autocomplete dropdown.
       const tagIndex = collectTagIndex(merged);
 
+      // Shuttle-managed fibers: those with a shuttle: block (post-migration)
+      // OR a constitution tag (pre-migration legacy fallback). After running
+      // `shuttle migrate`, every eligible fiber has both, so the union is
+      // identical to the old tag-only filter.
       const constitutional = merged.filter(({ fiber }) =>
-        fiber.tags?.includes('constitution'),
+        fiber.hasShuttleBlock === true || fiber.tags?.includes('constitution'),
       );
 
       // Probe live shuttle workers — drives the running-worker indicator on
@@ -697,9 +708,10 @@ export class HttpApiKanban {
     const entry = merged.find(({ fiber }) => fiber.id === fiberId);
     if (!entry) throw new Error(`fiber not found: ${fiberId}`);
     const { fiber, host, originId } = entry;
-    if (!fiber.tags?.includes('constitution')) {
+    if (!(fiber.hasShuttleBlock === true || fiber.tags?.includes('constitution'))) {
       throw new Error(
-        `kanban only mutates constitution-tagged fibers; ${fiberId} is tagged ${(fiber.tags ?? []).join(', ') || '(none)'}`,
+        `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block` +
+          (fiber.tags?.length ? ` and no constitution tag (tags: ${fiber.tags.join(', ')})` : ''),
       );
     }
     const nowIso = this.now().toISOString();
