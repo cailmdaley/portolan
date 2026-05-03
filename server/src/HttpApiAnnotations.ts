@@ -532,10 +532,28 @@ export class HttpApiAnnotations {
        * block is written. See [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]].
        */
       agent?: string;
+      /**
+       * Shuttle role kind. `oneshot` (default) installs a one-shot block
+       * with `enabled: false` so the card lands in Drafts. `standing`
+       * installs a recurring role via `shuttle-ctl repeat` — enabled by
+       * default (if the user picks standing they're committing to a
+       * schedule). Requires `schedule` when `kind === 'standing'`.
+       */
+      kind?: 'oneshot' | 'standing';
+      /**
+       * Cron expression (5-field standard syntax, e.g. `0 9 * * 1-5`).
+       * Required when `kind === 'standing'`; ignored otherwise.
+       */
+      schedule?: string;
+      /**
+       * IANA timezone name for the schedule (e.g. `Europe/Paris`, `UTC`).
+       * Defaults to `UTC` when omitted. Only meaningful for standing roles.
+       */
+      tz?: string;
     }>(req, res);
     if (!data) return;
 
-    const { originId, cityPath, title, body, tags, parentSlug, status, agent } = data;
+    const { originId, cityPath, title, body, tags, parentSlug, status, agent, kind, schedule, tz } = data;
 
     if (!cityPath || !title) {
       this.sendJsonError(res, 400, 'Missing required fields (cityPath, title)');
@@ -631,8 +649,23 @@ export class HttpApiAnnotations {
       if (!isRemote) {
         globalFiberId = resolveGlobalFiberId(cityPath, fiberId);
         try {
-          const installArgs = ['install', globalFiberId, '--disabled'];
-          if (agent) installArgs.push('--model', agent);
+          let installArgs: string[];
+          if (kind === 'standing') {
+            // Standing role: `shuttle-ctl repeat <id> --schedule <expr> --tz <tz> [--model <agent>]`
+            // Enabled by default (user committed to a schedule). schedule is
+            // required for standing; reject early if missing.
+            if (!schedule) {
+              this.sendJsonError(res, 400, 'schedule is required for kind=standing');
+              return;
+            }
+            installArgs = ['repeat', globalFiberId, '--schedule', schedule, '--tz', tz || 'UTC'];
+            if (agent) installArgs.push('--model', agent);
+          } else {
+            // Oneshot (default): install with --disabled so the card lands in
+            // Drafts. The user promotes to inFlight by dragging in the kanban.
+            installArgs = ['install', globalFiberId, '--disabled'];
+            if (agent) installArgs.push('--model', agent);
+          }
           await execFileAsync('shuttle-ctl', installArgs, {
             timeout: 10000,
             maxBuffer: 1024 * 1024,

@@ -11,6 +11,7 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
 import { realpathSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
@@ -369,6 +370,14 @@ export class HttpApi {
       return true;
     }
 
+    // GET /shuttle/agents — returns the agent registry from shuttle's
+    // share/agents.json. Used by StashForm's agent select dropdown.
+    // Reads from $HOME/Documents/projects/shuttle/shuttle/share/agents.json.
+    if (url.pathname === '/shuttle/agents' && req.method === 'GET') {
+      await this.handleShuttleAgents(res);
+      return true;
+    }
+
     // POST /fiber/create — vellum's stash button (constitution-stash-button).
     // Must precede the `/fiber/` prefix match below; otherwise it routes to
     // handleFiberContent and returns "Missing cityId parameter".
@@ -565,6 +574,42 @@ export class HttpApi {
    *     (Stage 3). See ai-futures/portolan/vellum-reader/constitution-vellum-kanban.
    *   - Unknown `cityId` → 400.
    */
+  // ---------------------------------------------------------------------------
+  // /shuttle/agents — agent registry for StashForm
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /shuttle/agents
+   *
+   * Returns the list of available shuttle agents from
+   * `$HOME/Documents/projects/shuttle/shuttle/share/agents.json`.
+   * Each entry carries `id`, `model`, `cli`, and `default` so the StashForm
+   * can render a meaningful dropdown label (e.g. "claude-sonnet · sonnet").
+   * On read failure (shuttle not installed) returns an empty list rather than
+   * a 500 so the form can degrade gracefully (submit without an agent →
+   * shuttle-ctl uses registry default).
+   */
+  private async handleShuttleAgents(res: ServerResponse): Promise<void> {
+    const agentsPath = join(
+      process.env.HOME ?? '/tmp',
+      'Documents/projects/shuttle/shuttle/share/agents.json',
+    );
+    try {
+      const raw = await readFile(agentsPath, 'utf8');
+      const agents = JSON.parse(raw) as Array<{
+        id: string; model?: string; cli?: string; default?: boolean; [k: string]: unknown
+      }>;
+      // Return only the fields the frontend needs; strip internal flags.
+      const slim = agents.map(({ id, model, cli, default: isDefault }) => ({
+        id, model, cli, default: isDefault ?? false,
+      }));
+      this.sendJsonSuccess(res, { agents: slim } as unknown as Record<string, unknown>);
+    } catch {
+      // shuttle not installed or agents.json missing — degrade gracefully.
+      this.sendJsonSuccess(res, { agents: [] } as unknown as Record<string, unknown>);
+    }
+  }
+
   private resolveKanbanApi(url: URL, res: ServerResponse): HttpApiKanban | null {
     const cityId = url.searchParams.get('cityId');
     // Pinned local cities, threaded into HttpApiKanban so each card carries

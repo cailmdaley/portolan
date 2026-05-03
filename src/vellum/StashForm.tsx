@@ -4,18 +4,16 @@
  * Realizes [[ai-futures/portolan/vellum-reader/constitution-stash-button]]:
  * a `+` button (or `n` hotkey) inside vellum's workspace tab opens this
  * form, the user types a title (and optionally body, tags, parent path),
- * and on save it POSTs `/fiber/create` which shells out to `felt add`.
+ * chooses dispatch settings, and on save it POSTs `/fiber/create` which
+ * shells out to `felt add` + `shuttle-ctl install/repeat`.
  *
- *   - No agent in the loop. This is a stash, not a conversation.
- *   - Two flavours, same form: title-only quick stash, or title-with-body
- *     blab. Body is the only optional-vs-not differentiator; everything
- *     else (tags, parent, constitution toggle) is optional in either case.
- *   - Tags autocomplete from the existing tag set (read from /kanban's
- *     `tagIndex`); typing accepts new tags too.
- *   - "Make this a constitution" checkbox adds `constitution` + `draft`
- *     tags so the new fiber lands in the kanban's Drafts column,
- *     refinable before Shuttle picks it up. Per the constitution's open
- *     question — yes, ergonomic.
+ *   - No agent in the loop during stash. This just files + installs the
+ *     shuttle block. Dispatch is the kanban's job.
+ *   - Every stash is a constitution: a fiber with a shuttle: block that
+ *     lands in the kanban's Drafts column (oneshot, enabled=false) or
+ *     directly in InFlight as a standing role (enabled=true, scheduled).
+ *   - The old "Make this a constitution" toggle is gone — there is no
+ *     other kind of stash.
  *
  * Layout: a centered card over a scrim. The scrim sits inside the kanban
  * host (which already covers the workspace viewport via `position: fixed;
@@ -27,6 +25,17 @@
 import { useEffect, useRef, useState } from 'react'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface AgentEntry {
+  id: string
+  model?: string
+  cli?: string
+  default: boolean
+}
 
 export interface StashFormProps {
   /**
@@ -91,8 +100,16 @@ interface CreateFiberResponse {
   success: boolean
   fiberId?: string
   slug?: string
+  globalFiberId?: string
+  shuttleInstalled?: boolean
+  shuttleSkipped?: string
+  shuttleError?: string
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Slugify preview — mirrors the server's rule (kebab-case, lowercased,
@@ -141,6 +158,15 @@ function validateParentSlug(raw: string): string | null {
   return null
 }
 
+/** Human-readable label for an agent entry. */
+function agentLabel(a: AgentEntry): string {
+  return a.model ? `${a.id} · ${a.model}` : a.id
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function StashForm({
   cityPath,
   originId = 'local',
@@ -151,15 +177,25 @@ export function StashForm({
   onCreated,
   onCancel,
 }: StashFormProps): JSX.Element {
+  // Core stash fields
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState('')
   const [parentSlug, setParentSlug] = useState<string>(defaultParentSlug ?? '')
-  const [makeConstitution, setMakeConstitution] = useState(false)
+
+  // Dispatch fields (shuttle)
+  const [agents, setAgents] = useState<AgentEntry[]>([])
+  const [agentId, setAgentId] = useState<string>('') // '' = registry default
+  const [kind, setKind] = useState<'oneshot' | 'standing'>('oneshot')
+  const [schedule, setSchedule] = useState<string>('')
+  const [scheduleTz, setScheduleTz] = useState<string>('Europe/Paris')
+
+  // Form state
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fetchedTags, setFetchedTags] = useState<string[]>([])
+
   // Loom-root fallback for global stash (when cityPath wasn't threaded
   // *and* no city is selected in the picker). Read from /kanban's
   // `feltHost` field once, on first open.
@@ -207,34 +243,39 @@ export function StashForm({
 
   // Fetch /kanban once on mount to pick up the tagIndex (autocomplete) and
   // the loom feltHost (cityPath fallback when the form is opened from the
-  // global view). Cheap — the kanban response is on the order of single-
-  // digit kB and already cached server-side. Skipped only if the host
-  // pre-threaded both pieces of info.
+  // global view). Also fetch /shuttle/agents for the dispatch dropdown.
+  // Both are best-effort — absence is degraded UX, not a blocker.
   useEffect(() => {
-    if (tagSuggestions && tagSuggestions.length > 0 && cityPath) return
     let cancelled = false
-    fetch(`${API_BASE}/kanban`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { tagIndex?: string[]; feltHost?: string } | null) => {
-        if (cancelled || !data) return
-        if (data.tagIndex) setFetchedTags(data.tagIndex)
-        if (data.feltHost) setFallbackFeltHost(data.feltHost)
-      })
-      .catch(() => {
-        // Autocomplete absence is degraded UX, not a blocker — typed tags
-        // still pass through. Submission absent a cityPath surfaces a real
-        // error to the user.
-      })
-    return () => {
-      cancelled = true
+
+    // Tags + feltHost from /kanban
+    if (!(tagSuggestions && tagSuggestions.length > 0 && cityPath)) {
+      fetch(`${API_BASE}/kanban`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { tagIndex?: string[]; feltHost?: string } | null) => {
+          if (cancelled || !data) return
+          if (data.tagIndex) setFetchedTags(data.tagIndex)
+          if (data.feltHost) setFallbackFeltHost(data.feltHost)
+        })
+        .catch(() => {})
     }
+
+    // Agent registry from shuttle
+    fetch(`${API_BASE}/shuttle/agents`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { agents?: AgentEntry[] } | null) => {
+        if (cancelled || !data?.agents?.length) return
+        setAgents(data.agents)
+        // Pre-select the default agent
+        const def = data.agents.find((a) => a.default)
+        if (def) setAgentId(def.id)
+      })
+      .catch(() => {})
+
+    return () => { cancelled = true }
   }, [tagSuggestions, cityPath])
 
   // Close the city dropdown when the user clicks anywhere outside the picker.
-  // Bound to the document so clicking other form fields, the scrim, etc. all
-  // collapse the menu — same idiom as the tag suggestions, just for a single-
-  // select picker. Mounted only while the dropdown is open so the listener
-  // isn't churning on every paint.
   useEffect(() => {
     if (!cityPickerOpen) return
     const handleDown = (e: MouseEvent): void => {
@@ -249,17 +290,11 @@ export function StashForm({
   }, [cityPickerOpen])
 
   // Sort cities by recent activity, then alphabetically as the tiebreaker.
-  // Cities with a `cityActivityById` entry come first (most-recent first);
-  // the rest fall to the bottom in name order. Mirrors the default-
-  // selection logic above so the city the form lands on is always at the
-  // top of the dropdown when the user opens it.
   const sortedCities = [...availableCities].sort((a, b) => {
     const recencyDelta = (cityActivityById[b.id] ?? 0) - (cityActivityById[a.id] ?? 0)
     if (recencyDelta !== 0) return recencyDelta
     return (a.name ?? a.id).localeCompare(b.name ?? b.id, undefined, { sensitivity: 'base' })
   })
-  // Filter by typed cityFilter (substring match against name/id). Empty
-  // filter = full list. Keeps the dropdown manageable as cities accumulate.
   const cityFilterLower = cityFilter.trim().toLowerCase()
   const filteredCities = cityFilterLower
     ? sortedCities.filter((c) =>
@@ -268,12 +303,6 @@ export function StashForm({
       )
     : sortedCities
 
-  // Label rendered in the picker's collapsed state. The default initializer
-  // always picks a city when `availableCities` is non-empty, so the empty-
-  // selection case only fires when no cities are connected — in which case
-  // the picker isn't rendered at all and the form falls through to
-  // `cityPath`/`fallbackFeltHost`. The placeholder stays empty to keep the
-  // input's natural `placeholder="search projects…"` visible.
   const selectedCityLabel = (() => {
     if (selectedCityId === null) return ''
     const c = availableCities.find((x) => x.id === selectedCityId)
@@ -283,10 +312,6 @@ export function StashForm({
   })()
 
   const allSuggestions = (tagSuggestions && tagSuggestions.length > 0 ? tagSuggestions : fetchedTags) ?? []
-
-  // Filter suggestions: prefix-match the current input, exclude already-
-  // selected, cap at a sensible dropdown size. Empty input still shows
-  // the top of the alphabet so the user can browse.
   const tagInputLower = tagInput.trim().toLowerCase()
   const filteredSuggestions = allSuggestions
     .filter((t) => !tags.includes(t))
@@ -310,7 +335,6 @@ export function StashForm({
       e.preventDefault()
       addTag(tagInput)
     } else if (e.key === 'Backspace' && tagInput === '' && tags.length > 0) {
-      // Backspace at empty input pops the last chip — standard chip-input UX.
       removeTag(tags[tags.length - 1])
     }
   }
@@ -328,13 +352,11 @@ export function StashForm({
       setError(parentError)
       return
     }
-    // Resolve the destination from the picker. Selected city → its own
-    // path + originId. Loom root → fall through to the kanban's `feltHost`
-    // (or the explicit `cityPath` prop if the host threaded one without
-    // matching an entry in `availableCities`). The picker is the source
-    // of truth for both location *and* origin: a remote city carries its
-    // own `originId` so /fiber/create routes through the right
-    // portolan-agent without the form needing to mix and match.
+    if (kind === 'standing' && !schedule.trim()) {
+      setError('Schedule (cron expression) is required for standing roles.')
+      return
+    }
+
     const selectedCity =
       selectedCityId !== null
         ? availableCities.find((c) => c.id === selectedCityId) ?? null
@@ -342,34 +364,36 @@ export function StashForm({
     const effectiveCityPath = selectedCity?.path ?? cityPath ?? fallbackFeltHost
     const effectiveOriginId = selectedCity?.originId ?? originId
     if (!effectiveCityPath) {
-      setError(
-        'Loom path not yet resolved — try again in a moment, or pick a city.',
-      )
+      setError('Loom path not yet resolved — try again in a moment, or pick a city.')
       return
     }
+
     setSubmitting(true)
     setError(null)
-    // Constitution toggle adds `constitution` + `draft` tags. The fiber
-    // lands in the kanban's Drafts column — promotable to active by
-    // dragging out of Drafts (which removes the `draft` tag and clears
-    // closed-at).
+
+    // Tags are purely cosmetic — no constitution/draft synthesis.
     const finalTags = [...tags]
-    if (makeConstitution) {
-      if (!finalTags.includes('constitution')) finalTags.push('constitution')
-      if (!finalTags.includes('draft')) finalTags.push('draft')
-    }
+
     try {
+      const body_obj: Record<string, unknown> = {
+        originId: effectiveOriginId,
+        cityPath: effectiveCityPath,
+        title: trimmedTitle,
+        body: body.length > 0 ? body : undefined,
+        tags: finalTags.length > 0 ? finalTags : undefined,
+        parentSlug: parentSlug.trim() || undefined,
+        agent: agentId || undefined,
+        kind,
+      }
+      if (kind === 'standing') {
+        body_obj.schedule = schedule.trim()
+        body_obj.tz = scheduleTz.trim() || 'UTC'
+      }
+
       const res = await fetch(`${API_BASE}/fiber/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          originId: effectiveOriginId,
-          cityPath: effectiveCityPath,
-          title: trimmedTitle,
-          body: body.length > 0 ? body : undefined,
-          tags: finalTags.length > 0 ? finalTags : undefined,
-          parentSlug: parentSlug.trim() || undefined,
-        }),
+        body: JSON.stringify(body_obj),
       })
       const data = (await res.json().catch(() => ({}))) as CreateFiberResponse
       if (!res.ok || !data.success) {
@@ -383,7 +407,6 @@ export function StashForm({
     }
   }
 
-  // Modal-level keydown: Esc closes; Cmd/Ctrl+Enter submits.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     if (e.key === 'Escape') {
       e.preventDefault()
@@ -395,11 +418,14 @@ export function StashForm({
     }
   }
 
+  // Default agent label for the select placeholder
+  const defaultAgentEntry = agents.find((a) => a.default)
+  const defaultAgentLabel = defaultAgentEntry ? agentLabel(defaultAgentEntry) : 'default'
+
   return (
     <div
       className="stash-scrim"
       onClick={(e) => {
-        // Click on the scrim (not on the card) cancels.
         if (e.target === e.currentTarget) onCancel()
       }}
       onKeyDown={handleKeyDown}
@@ -411,20 +437,18 @@ export function StashForm({
         aria-label="Stash a new fiber"
       >
         <div className="stash-header">
-          <h2 className="stash-title">Stash a fiber</h2>
+          <h2 className="stash-title">Stash a constitution</h2>
           <div className="stash-subtitle">
-            Drop an idea. No agent — this just files.
+            Drop an idea. Lands in Drafts — promote to dispatch via the kanban.
           </div>
         </div>
 
         <div className="stash-body">
+          {/* ── Project picker ── */}
           {availableCities.length > 0 && (
             <div className="stash-field">
               <span className="stash-label">Project</span>
-              <div
-                className="stash-city-picker"
-                ref={cityPickerRef}
-              >
+              <div className="stash-city-picker" ref={cityPickerRef}>
                 <input
                   type="text"
                   className="stash-input"
@@ -432,10 +456,6 @@ export function StashForm({
                   onFocus={() => setCityPickerOpen(true)}
                   onClick={() => setCityPickerOpen(true)}
                   onChange={(e) => setCityFilter(e.target.value)}
-                  // readOnly when collapsed: the input shows the selection
-                  // label as a button-like display. On focus, switches to the
-                  // editable filter so type-to-search works without a mode
-                  // toggle. Click anywhere on the row opens the menu.
                   readOnly={!cityPickerOpen}
                   placeholder="search projects…"
                   aria-haspopup="listbox"
@@ -474,12 +494,11 @@ export function StashForm({
                   </div>
                 )}
               </div>
-              <div className="stash-hint">
-                Project the new fiber lands in.
-              </div>
+              <div className="stash-hint">Project the new fiber lands in.</div>
             </div>
           )}
 
+          {/* ── Title ── */}
           <label className="stash-field">
             <span className="stash-label">Title</span>
             <input
@@ -499,6 +518,7 @@ export function StashForm({
             )}
           </label>
 
+          {/* ── Body ── */}
           <label className="stash-field">
             <span className="stash-label">
               Body <span className="stash-optional">(optional)</span>
@@ -512,6 +532,7 @@ export function StashForm({
             />
           </label>
 
+          {/* ── Tags ── */}
           <div className="stash-field">
             <span className="stash-label">
               Tags <span className="stash-optional">(optional)</span>
@@ -557,6 +578,7 @@ export function StashForm({
             )}
           </div>
 
+          {/* ── Parent fiber ── */}
           <label className="stash-field">
             <span className="stash-label">
               Parent fiber <span className="stash-optional">(optional)</span>
@@ -580,17 +602,99 @@ export function StashForm({
             )}
           </label>
 
-          <label className="stash-checkbox-row">
-            <input
-              type="checkbox"
-              checked={makeConstitution}
-              onChange={(e) => setMakeConstitution(e.target.checked)}
-            />
-            <span>
-              Make this a <strong>constitution</strong> (lands in Drafts)
-            </span>
-          </label>
+          {/* ── Dispatch: Agent ── */}
+          <div className="stash-field">
+            <span className="stash-label">Agent</span>
+            {agents.length > 0 ? (
+              <select
+                className="stash-select"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+              >
+                <option value="">Default ({defaultAgentLabel})</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {agentLabel(a)}{a.default ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                className="stash-input"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+                placeholder="claude-sonnet (default)"
+              />
+            )}
+            <div className="stash-hint">
+              Which agent Shuttle dispatches on this constitution.
+            </div>
+          </div>
 
+          {/* ── Dispatch: Kind ── */}
+          <div className="stash-field">
+            <span className="stash-label">Kind</span>
+            <div className="stash-radio-group">
+              <label className="stash-radio-option">
+                <input
+                  type="radio"
+                  name="stash-kind"
+                  value="oneshot"
+                  checked={kind === 'oneshot'}
+                  onChange={() => setKind('oneshot')}
+                />
+                <span className="stash-radio-label">
+                  <strong>One-shot</strong>
+                  <span className="stash-radio-hint"> — dispatch once, lands in Drafts</span>
+                </span>
+              </label>
+              <label className="stash-radio-option">
+                <input
+                  type="radio"
+                  name="stash-kind"
+                  value="standing"
+                  checked={kind === 'standing'}
+                  onChange={() => setKind('standing')}
+                />
+                <span className="stash-radio-label">
+                  <strong>Standing</strong>
+                  <span className="stash-radio-hint"> — recurring cron role</span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {/* ── Dispatch: Schedule (standing only) ── */}
+          {kind === 'standing' && (
+            <div className="stash-field">
+              <span className="stash-label">Schedule</span>
+              <input
+                type="text"
+                className="stash-input stash-input-mono"
+                value={schedule}
+                onChange={(e) => setSchedule(e.target.value)}
+                placeholder="0 9 * * 1-5"
+                required
+              />
+              <div className="stash-hint">
+                5-field cron (minute hour dom month dow). Example: <code>0 9 * * 1-5</code> = weekdays 09:00.
+              </div>
+              <span className="stash-label" style={{ marginTop: '8px' }}>Timezone</span>
+              <input
+                type="text"
+                className="stash-input"
+                value={scheduleTz}
+                onChange={(e) => setScheduleTz(e.target.value)}
+                placeholder="Europe/Paris"
+              />
+              <div className="stash-hint">
+                IANA timezone name (e.g. <code>Europe/Paris</code>, <code>UTC</code>).
+              </div>
+            </div>
+          )}
+
+          {/* ── Error ── */}
           {error && (
             <div className="stash-error" role="alert">
               {error}
@@ -717,7 +821,8 @@ export function injectStashFormStyles(): void {
     }
     .stash-input,
     .stash-textarea,
-    .stash-tag-input {
+    .stash-tag-input,
+    .stash-select {
       font-family: var(--font-main, 'EB Garamond', serif);
       font-size: 15px;
       color: #2E2A26;
@@ -727,6 +832,18 @@ export function injectStashFormStyles(): void {
       padding: 7px 9px;
       transition: border-color 120ms ease-out, box-shadow 120ms ease-out;
     }
+    .stash-select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%237A7068'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+      cursor: pointer;
+    }
+    .stash-input-mono {
+      font-family: var(--font-mono, 'JetBrains Mono', monospace);
+      font-size: 13px;
+    }
     .stash-textarea {
       resize: vertical;
       min-height: 96px;
@@ -735,7 +852,8 @@ export function injectStashFormStyles(): void {
     }
     .stash-input:focus,
     .stash-textarea:focus,
-    .stash-tag-input:focus {
+    .stash-tag-input:focus,
+    .stash-select:focus {
       outline: none;
       border-color: #9A7B35;
       box-shadow: 0 0 0 2px rgba(154, 123, 53, 0.18);
@@ -753,9 +871,6 @@ export function injectStashFormStyles(): void {
       padding: 1px 5px;
       border-radius: 2px;
     }
-    /* Warn variant: surfaced live by validateParentSlug() for path-shaped or
-       otherwise malformed parent slugs. Same size as the regular hint so the
-       row doesn't jump on transition; just shifts to a warning hue. */
     .stash-hint-warn {
       color: #8C5A1A;
       font-style: normal;
@@ -832,12 +947,7 @@ export function injectStashFormStyles(): void {
       background: rgba(154, 123, 53, 0.18);
       border-color: rgba(154, 123, 53, 0.42);
     }
-    /* City picker — single-select combobox over availableCities. The input
-       acts as both display and filter (readOnly collapses it to a button-
-       like surface). The list is absolutely-positioned beneath the input,
-       elevation matches the form card so it visually hovers over the
-       fields below. Z-index 10 keeps it above sibling fields without
-       fighting the scrim (z 200). */
+    /* City picker */
     .stash-city-picker {
       position: relative;
     }
@@ -895,15 +1005,32 @@ export function injectStashFormStyles(): void {
       color: #7A7068;
       font-style: italic;
     }
-    .stash-checkbox-row {
+    /* Radio group for kind picker */
+    .stash-radio-group {
       display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      color: #4C453F;
+      flex-direction: column;
+      gap: 6px;
     }
-    .stash-checkbox-row input {
+    .stash-radio-option {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 14px;
+      color: #2E2A26;
       cursor: pointer;
+    }
+    .stash-radio-option input[type="radio"] {
+      cursor: pointer;
+      accent-color: #9A7B35;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .stash-radio-label {
+      line-height: 1.4;
+    }
+    .stash-radio-hint {
+      color: #7A7068;
+      font-style: italic;
     }
     .stash-error {
       padding: 8px 10px;
