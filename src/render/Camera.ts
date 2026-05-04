@@ -120,9 +120,11 @@ export class Camera {
       const target = e.target as HTMLElement
       // Stage I — `#city-panel` and `.hud-pane` retired with the CityHUD
       // overlay; the surviving scrollable surfaces are vellum's modal
-      // (workspace + scrim) and the kanban modal.
+      // (workspace + scrim), the kanban modal, and the kanban
+      // fiber-detail overlay (`.kbn-detail-overlay`) which floats above
+      // the kanban and isn't a descendant of `.kbn-modal`.
       if (target.closest(
-        '.vellum-modal-scrim, .vellum-workspace-modal-container, .kbn-modal'
+        '.vellum-modal-scrim, .vellum-workspace-modal-container, .kbn-modal, .kbn-detail-overlay'
       )) return
       e.preventDefault()
       e.stopPropagation()

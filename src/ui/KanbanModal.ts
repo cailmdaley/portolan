@@ -835,7 +835,7 @@ export class KanbanModal {
     name.textContent = card.name
     name.addEventListener('click', (e) => {
       e.stopPropagation()
-      this.detailModal?.open(card)
+      this.detailModal?.open(card, this.cityScope?.cityId)
     })
 
     const pill = document.createElement('span')
@@ -957,7 +957,7 @@ export class KanbanModal {
     // Click outside any button → open fiber detail modal.
     el.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('button, textarea')) return
-      this.detailModal?.open(card)
+      this.detailModal?.open(card, this.cityScope?.cityId)
     })
 
     return el
@@ -3046,7 +3046,18 @@ class FiberDetailModal {
     this.onSaved = onSaved
   }
 
-  open(card: KanbanCard): void {
+  /**
+   * @param card the card the user clicked
+   * @param scopeCityId  the cityId the parent kanban view is scoped to
+   *   (`undefined` for the global kanban). Drives URL routing for the
+   *   modal's three endpoints (history, search, patch). Card ids are
+   *   *project-relative* under city scope and *loom-relative* under
+   *   global scope, so the request must reach the same kanbanApi
+   *   that produced the card — `card.cityId` is the wrong axis here
+   *   (a global card carries the cityId for vellum nav, but its id is
+   *   loom-relative and must NOT route through the city-scoped API).
+   */
+  open(card: KanbanCard, scopeCityId?: string | null): void {
     // Tear down any existing open modal first (rapid re-click).
     this.close()
 
@@ -3147,7 +3158,10 @@ class FiberDetailModal {
     historyLoading.textContent = 'Loading…'
     historyList.append(historyLoading)
     historySec.append(historyList)
-    void this.loadHistory(card.id, historyList)
+    // Routing scope: parent kanban's view scope (NOT card.cityId).
+    // See open()'s docstring for why these differ on the global kanban.
+    const scope = scopeCityId ?? undefined
+    void this.loadHistory(card.id, scope, historyList)
 
     // ── Dispatch (shuttle options) ────────────────────────────────────────────
     // Console-style editor for the fiber's shuttle frontmatter block. Lets the
@@ -3363,7 +3377,7 @@ class FiberDetailModal {
       const q = parentInput.value.trim()
       if (this.searchDebounce !== null) window.clearTimeout(this.searchDebounce)
       this.searchDebounce = window.setTimeout(() => {
-        void this.searchParents(q, card.id, parentDropdown, (result) => {
+        void this.searchParents(q, card.id, scope, parentDropdown, (result) => {
           selectedParentId = result.id
           currentParentEl.textContent = `↳ ${result.id} (pending)`
           currentParentEl.classList.add('kbn-detail-pending-change')
@@ -3377,7 +3391,7 @@ class FiberDetailModal {
     // Show top-level results on focus if empty.
     parentInput.addEventListener('focus', () => {
       if (!parentInput.value.trim()) {
-        void this.searchParents('', card.id, parentDropdown, (result) => {
+        void this.searchParents('', card.id, scope, parentDropdown, (result) => {
           selectedParentId = result.id
           currentParentEl.textContent = `↳ ${result.id} (pending)`
           currentParentEl.classList.add('kbn-detail-pending-change')
@@ -3485,7 +3499,7 @@ class FiberDetailModal {
       saveBtn.textContent = 'Saving…'
       errorEl.style.display = 'none'
 
-      void this.save(card.id, changes, saveBtn, errorEl)
+      void this.save(card.id, scope, changes, saveBtn, errorEl)
     })
 
     const footerRight = document.createElement('div')
@@ -3584,10 +3598,21 @@ class FiberDetailModal {
    * history is informational, not load-bearing for the modal's primary
    * actions.
    */
-  private async loadHistory(fiberId: string, container: HTMLElement): Promise<void> {
+  private async loadHistory(
+    fiberId: string,
+    cityId: string | undefined,
+    container: HTMLElement,
+  ): Promise<void> {
     try {
+      // City-scoped kanban cards carry project-relative ids; threading
+      // cityId routes the request to the same kanbanApi that produced the
+      // card so the merged collection finds the fiber by its local id.
+      // Without this, history loaded fine on the global kanban but came
+      // back empty on city-scoped views.
+      const params = new URLSearchParams({ fiberId, limit: '20' })
+      if (cityId) params.set('cityId', cityId)
       const res = await fetch(
-        `${this.apiBase}/kanban/fiber-history?fiberId=${encodeURIComponent(fiberId)}&limit=20`,
+        `${this.apiBase}/kanban/fiber-history?${params}`,
       )
       if (!res.ok) throw new Error(`${res.status}`)
       const data = (await res.json()) as {
@@ -3717,12 +3742,18 @@ class FiberDetailModal {
   private async searchParents(
     q: string,
     excludeId: string,
+    cityId: string | undefined,
     dropdown: HTMLElement,
     onSelect: (result: FiberSearchResult) => void,
   ): Promise<void> {
     try {
       const params = new URLSearchParams({ excludeId })
       if (q) params.set('q', q)
+      // Same scope-routing as loadHistory: a city-scoped kanban needs
+      // fiber-search to consult the same merged collection that owns the
+      // card, otherwise excludeId (a project-relative id) doesn't match
+      // any fiber and the project-prefix derivation falls apart.
+      if (cityId) params.set('cityId', cityId)
       const res = await fetch(`${this.apiBase}/kanban/fiber-search?${params}`)
       if (!res.ok) return
       const data = (await res.json()) as { fibers: FiberSearchResult[] }
@@ -3767,6 +3798,7 @@ class FiberDetailModal {
 
   private async save(
     fiberId: string,
+    cityId: string | undefined,
     changes: {
       outcome?: string
       shuttleAgent?: string
@@ -3779,7 +3811,14 @@ class FiberDetailModal {
     errorEl: HTMLElement,
   ): Promise<void> {
     try {
-      const res = await fetch(`${this.apiBase}/kanban/fiber-patch`, {
+      // cityId rides the URL because resolveKanbanApi reads from
+      // url.searchParams (not the body). Without it, fiber-patch on a
+      // city-scoped card lands on the global kanbanApi and fails to find
+      // the project-relative fiberId.
+      const url = cityId
+        ? `${this.apiBase}/kanban/fiber-patch?cityId=${encodeURIComponent(cityId)}`
+        : `${this.apiBase}/kanban/fiber-patch`
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fiberId, ...changes }),
