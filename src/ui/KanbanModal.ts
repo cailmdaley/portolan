@@ -1210,10 +1210,14 @@ export class KanbanModal {
    *   [Requeue fresh ▸] [Resume previous ▸]
    *   [temper]  [compost]   ← secondary, smaller
    *
-   * "Requeue fresh" is disabled until the textarea has non-empty content.
+   * "Requeue fresh" is always enabled — directive is optional. With an
+   *   empty textarea, the worker is requeued without a new directive
+   *   (the latest review-comment, if any, still applies via the dispatch
+   *   prompt's directive block).
    * "Resume previous" is enabled when the fiber has a stored session UUID
-   *   (shuttle.session.id ≠ null), disabled otherwise with an explanatory
-   *   tooltip. Both buttons require a non-empty directive.
+   *   (shuttle.session.id ≠ null); directive is also optional. With an
+   *   empty textarea, the resumed worker just gets a "you've been resumed"
+   *   nudge without a new directive.
    * "Temper" and "Compost" are secondary conveniences; drag is primary.
    */
   private renderReviewCluster(card: KanbanCard): HTMLElement {
@@ -1238,11 +1242,12 @@ export class KanbanModal {
     requeueBtn.type = 'button'
     requeueBtn.className = 'kbn-action kbn-action-inFlight kbn-review-btn'
     requeueBtn.textContent = 'Requeue fresh ▸'
-    requeueBtn.disabled = true
-    requeueBtn.setAttribute('aria-label', 'Requeue fiber with directive (fresh worker)')
-    requeueBtn.title = 'Type a directive above to enable'
+    requeueBtn.disabled = false
+    requeueBtn.setAttribute('aria-label', 'Requeue fiber as fresh worker (directive optional)')
+    requeueBtn.title = 'Requeue as in-flight (fresh worker; directive optional)'
 
     // "Resume previous" is enabled only when the fiber has a stored session UUID.
+    // Directive is optional — empty textarea just nudges the resumed worker.
     const hasSession = !!card.sessionId
     const resumeBtn = document.createElement('button')
     resumeBtn.type = 'button'
@@ -1250,12 +1255,12 @@ export class KanbanModal {
       ? 'kbn-action kbn-review-btn'
       : 'kbn-action kbn-review-btn kbn-review-btn--disabled'
     resumeBtn.textContent = 'Resume previous ▸'
-    resumeBtn.disabled = true  // also requires non-empty directive; see input handler
+    resumeBtn.disabled = !hasSession
     resumeBtn.setAttribute('aria-label', hasSession
-      ? 'Resume previous worker session with directive'
+      ? 'Resume previous worker session (directive optional)'
       : 'Resume previous worker session (no session available)')
     resumeBtn.title = hasSession
-      ? 'Type a directive above to enable'
+      ? 'Resume previous worker session (directive optional)'
       : 'No prior session stored — dispatch a fresh worker first'
 
     primaryRow.append(requeueBtn, resumeBtn)
@@ -1286,26 +1291,20 @@ export class KanbanModal {
 
     secondaryRow.append(temperBtn, compostBtn)
 
-    // Wire: enable action buttons only when textarea has content.
-    // Requeue fresh: always available when textarea non-empty.
-    // Resume previous: available when textarea non-empty AND session exists.
+    // Tooltip nuance: when the textarea has content, hint that the
+    // directive will be recorded; when empty, hint that the action still
+    // works without one. Buttons themselves remain enabled regardless of
+    // textarea content (resume still gated on hasSession).
     textarea.addEventListener('input', () => {
       const hasContent = textarea.value.trim().length > 0
-      requeueBtn.disabled = !hasContent
-      if (hasContent) {
-        requeueBtn.title = 'Record directive and requeue as in-flight (fresh worker)'
-      } else {
-        requeueBtn.title = 'Type a directive above to enable'
-      }
+      requeueBtn.title = hasContent
+        ? 'Record directive and requeue as in-flight (fresh worker)'
+        : 'Requeue as in-flight (fresh worker; directive optional)'
       if (hasSession) {
-        resumeBtn.disabled = !hasContent
-        if (hasContent) {
-          resumeBtn.title = 'Record directive and resume previous worker session'
-        } else {
-          resumeBtn.title = 'Type a directive above to enable'
-        }
+        resumeBtn.title = hasContent
+          ? 'Record directive and resume previous worker session'
+          : 'Resume previous worker session (directive optional)'
       }
-      // If !hasSession, resumeBtn stays disabled regardless of textarea.
     })
 
     // Wire: "Requeue fresh" click.
@@ -1317,7 +1316,7 @@ export class KanbanModal {
     // Wire: "Resume previous" click.
     resumeBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      if (hasSession && textarea.value.trim()) {
+      if (hasSession) {
         void this.resumePrevious(card, textarea.value.trim(), requeueBtn, resumeBtn)
       }
     })
@@ -1340,7 +1339,6 @@ export class KanbanModal {
     requeueBtn: HTMLButtonElement,
     resumeBtn: HTMLButtonElement,
   ): Promise<void> {
-    if (!directive) return
     requeueBtn.disabled = true
     resumeBtn.disabled = true
     requeueBtn.textContent = 'Requeueing…'
@@ -1368,14 +1366,16 @@ export class KanbanModal {
         throw new Error(errBody.error || `Transition failed: ${transRes.status}`)
       }
 
-      this.announce(`Requeued "${card.name}" with directive.`)
+      this.announce(directive
+        ? `Requeued "${card.name}" with directive.`
+        : `Requeued "${card.name}".`)
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err)
       this.showBanner(`Couldn't requeue "${card.name}": ${msg}`, 'error')
       // Restore buttons.
       requeueBtn.textContent = 'Requeue fresh ▸'
       requeueBtn.disabled = false
-      resumeBtn.disabled = !card.sessionId || directive.length === 0
+      resumeBtn.disabled = !card.sessionId
       return
     }
 
@@ -1398,7 +1398,7 @@ export class KanbanModal {
     requeueBtn: HTMLButtonElement,
     resumeBtn: HTMLButtonElement,
   ): Promise<void> {
-    if (!directive || !card.sessionId) return
+    if (!card.sessionId) return
     requeueBtn.disabled = true
     resumeBtn.disabled = true
     resumeBtn.textContent = 'Resuming…'
@@ -1426,14 +1426,16 @@ export class KanbanModal {
         throw new Error(errBody.error || `Transition failed: ${transRes.status}`)
       }
 
-      this.announce(`Resuming previous session for "${card.name}" with directive.`)
+      this.announce(directive
+        ? `Resuming previous session for "${card.name}" with directive.`
+        : `Resuming previous session for "${card.name}".`)
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err)
       this.showBanner(`Couldn't resume "${card.name}": ${msg}`, 'error')
       // Restore buttons on failure.
       resumeBtn.textContent = 'Resume previous ▸'
       resumeBtn.disabled = false
-      requeueBtn.disabled = directive.length === 0
+      requeueBtn.disabled = false
       return
     }
 

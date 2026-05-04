@@ -1137,11 +1137,14 @@ export class HttpApiKanban {
    * the worker reads the editorial chain alongside the directive and
    * decides whether it's still in play.
    *
-   * `resumeMode` is preserved on the API surface for the future
-   * "Resume previous worker session" affordance, but isn't plumbed into
-   * felt today — the only mode used is 'fresh' and there's no consumer
-   * downstream. We don't bake it into the summary because that would be
-   * noise that shows up in every shuttle prompt.
+   * `resumeMode` lands in the event payload as `resume_mode` via felt's
+   * `--field key=value` flag. Shuttle's dispatcher reads it from the
+   * latest review-comment to choose between fresh and resume-previous
+   * dispatch — so we always write the event (even with empty directive)
+   * to keep the latest review-comment's `resume_mode` aligned with what
+   * Cail just clicked. An empty directive is filed with an empty summary;
+   * the dispatcher's directive-block renderer suppresses empty summaries
+   * so the prompt stays clean.
    *
    * The caller is expected to follow up with POST /kanban/transition to
    * move the card back to inFlight; this endpoint only records the
@@ -1164,11 +1167,13 @@ export class HttpApiKanban {
       this.json(res, 400, { error: `resumeMode must be 'fresh' or 'previous'` });
       return;
     }
+    // Empty directive is allowed — the user may want to requeue/resume
+    // without filing a new comment. We still write the review-comment
+    // event so its `resume_mode` field reflects the latest user intent
+    // (otherwise an old `resume_mode=previous` event would still trigger
+    // resume on a "Requeue fresh" click). The dispatcher suppresses
+    // empty-summary directive blocks.
     const directive = body.directive.trim();
-    if (!directive) {
-      this.json(res, 400, { error: 'directive must not be empty' });
-      return;
-    }
 
     // Resolve the fiber so we can compute its global (loom-relative) id.
     // The frontend's `card.id` is project-local in city-scoped kanban
