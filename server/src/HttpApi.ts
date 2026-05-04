@@ -42,6 +42,9 @@ interface CityLookup {
   getCityById(cityId: string): City | null;
   /** All known cities (used by /fiber-locate to scan for a slug). */
   getCities(): City[];
+  /** True iff this cityId is pinned (i.e. surfaces on the kanban / map).
+   *  Used by /astra/graph's cross-city augmentation. */
+  isPinned(cityId: string): boolean;
 }
 
 interface OriginLookup {
@@ -323,11 +326,33 @@ export class HttpApi {
       return true;
     }
 
-    // /global-graph — synthetic vellum AstraGraph for global Vellum mode.
-    // Returns city nodes + their root fiber children so the IndexView can
-    // render the global synthetic index without a cityId. Built per-request
-    // so newly-pinned cities appear without restart.
+    // /global-graph — vellum AstraGraph for "global Vellum" mode.
+    //
+    // We treat the loom city as the canonical global view: top-level loom
+    // sub-folders (cities like portolan, ai-futures, plus loom-only
+    // entries like pure_eb) ARE the entries the user navigates. The
+    // pinned-cities list and the loom tree describe the same world via
+    // symlinks (`~/Documents/projects/portolan/.felt → ~/loom/.felt/portolan/`),
+    // so emitting a synthetic city-node graph alongside the loom tree
+    // double-counts: portolan would appear once as a city gateway and
+    // once as a loom sub-fiber. By delegating to the loom city's own
+    // augmented graph (HttpApiTapestry.handleAstraGraph), we get one
+    // source of truth — the loom directory — with the existing
+    // city-as-parent augmentation providing cross-city navigation.
+    //
+    // Falls back to the synthetic city-only graph when no loom city is
+    // pinned (e.g. a fresh portolan install or a tester running without
+    // the loom monorepo).
     if (url.pathname === '/global-graph' && req.method === 'GET') {
+      const loomCity = this.cityLookup
+        .getCities()
+        .find((c) => c.originId === 'local' && c.name === 'loom');
+      if (loomCity) {
+        const loomUrl = new URL(url.toString());
+        loomUrl.searchParams.set('cityId', loomCity.id);
+        await this.tapestryApi.handleAstraGraph(loomUrl, res);
+        return true;
+      }
       const searchApi = this.resolveGlobalSearchApi();
       await searchApi.handleGlobalGraph(url, res);
       return true;
@@ -386,6 +411,17 @@ export class HttpApi {
       const kanbanApi = this.resolveKanbanApi(url, res);
       if (!kanbanApi) return true;
       await kanbanApi.handleFiberPatch(req, res);
+      return true;
+    }
+
+    // GET /kanban/fiber-history?fiberId=<id>&limit=<n> — editorial event chain
+    // for the fiber-detail modal's right-column history panel. Resolves the
+    // global id and reads against the owning shuttle felt host so the modal
+    // sees the same chain Shuttle dispatcher does.
+    if (url.pathname === '/kanban/fiber-history' && req.method === 'GET') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleFiberHistory(url, res);
       return true;
     }
 

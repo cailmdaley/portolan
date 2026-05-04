@@ -2279,8 +2279,10 @@ export class KanbanModal {
         border: 1px solid rgba(46, 42, 38, 0.18);
         border-radius: 4px;
         box-shadow: 0 8px 32px rgba(46, 42, 38, 0.25), 0 2px 8px rgba(46, 42, 38, 0.12);
-        width: 100%;
-        max-width: 520px;
+        /* Big landscape modal — most of the screen, wider than tall.
+           90vw caps at 1280px; 80vh keeps a generous landscape ratio. */
+        width: min(90vw, 1280px);
+        height: min(80vh, 800px);
         max-height: calc(100vh - 48px);
         display: flex;
         flex-direction: column;
@@ -2292,16 +2294,41 @@ export class KanbanModal {
         display: flex;
         align-items: flex-start;
         gap: 10px;
-        padding: 16px 16px 12px;
+        padding: 16px 20px 12px;
         background: #E5DED2;
         border-bottom: 1px solid rgba(46, 42, 38, 0.12);
         flex-shrink: 0;
       }
       .kbn-detail-title {
         flex: 1;
-        font-size: 17px;
+        font-size: 19px;
         font-weight: 600;
         line-height: 1.3;
+        cursor: pointer;
+        text-decoration: underline;
+        text-decoration-color: transparent;
+        text-underline-offset: 3px;
+        transition: color 120ms ease, text-decoration-color 120ms ease;
+      }
+      .kbn-detail-title:hover,
+      .kbn-detail-title:focus-visible {
+        color: #6B5520;
+        text-decoration-color: rgba(154, 123, 53, 0.5);
+        outline: none;
+      }
+      .kbn-detail-title-hint {
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 12px;
+        font-style: italic;
+        color: #B8AC9E;
+        margin-left: 6px;
+        font-weight: 400;
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+      .kbn-detail-title:hover .kbn-detail-title-hint,
+      .kbn-detail-title:focus-visible .kbn-detail-title-hint {
+        opacity: 1;
       }
       .kbn-detail-close {
         flex-shrink: 0;
@@ -2328,26 +2355,184 @@ export class KanbanModal {
         outline: none;
       }
       .kbn-detail-id {
-        padding: 6px 16px 10px;
+        padding: 6px 20px 10px;
         font-family: var(--font-mono, 'JetBrains Mono', monospace);
-        font-size: 10.5px;
+        font-size: 11px;
         color: #B8AC9E;
         letter-spacing: 0.01em;
         background: #E5DED2;
         border-bottom: 1px solid rgba(46, 42, 38, 0.12);
         flex-shrink: 0;
+        cursor: pointer;
+        transition: color 120ms ease;
       }
-      /* Scrollable body — sections inside this container */
+      .kbn-detail-id:hover,
+      .kbn-detail-id:focus-visible {
+        color: #6B5520;
+        outline: none;
+      }
+      /* Body is a two-tier layout: top row (outcome | history) above a
+         horizontal controls strip (dispatch + parent). Outcome and history
+         share the bulk of the height; the controls strip auto-sizes to its
+         content. */
       .kbn-detail-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+      /* Top tier: two columns, outcome (left) and history (right). */
+      .kbn-detail-top {
+        flex: 1;
+        display: flex;
+        flex-direction: row;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .kbn-detail-col-outcome {
+        flex: 1 1 58%;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        border-right: 1px solid rgba(46, 42, 38, 0.10);
+      }
+      .kbn-detail-col-history {
+        flex: 1 1 42%;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        background: rgba(229, 222, 210, 0.35);
+      }
+      /* Bottom strip: horizontal controls (dispatch + parent). Each control
+         block has a fixed-width label + content pair, separated by gentle
+         dividers. Auto-grows in a pinch but never above its content's needs. */
+      .kbn-detail-strip {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: row;
+        gap: 0;
+        background: #E8E1D5;
+        border-top: 1px solid rgba(46, 42, 38, 0.12);
+      }
+      .kbn-detail-strip-block {
+        flex: 1 1 0;
+        padding: 12px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+      }
+      .kbn-detail-strip-block + .kbn-detail-strip-block {
+        border-left: 1px solid rgba(46, 42, 38, 0.10);
+      }
+      .kbn-detail-strip-heading {
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #9A9088;
+      }
+      .kbn-detail-section {
+        padding: 14px 20px;
+        border-bottom: 1px solid rgba(46, 42, 38, 0.08);
+      }
+      /* Outcome section grows to fill its column so the textarea can fill height. */
+      .kbn-detail-col-outcome .kbn-detail-section {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        border-bottom: none;
+        min-height: 0;
+      }
+      /* History section: heading + scrolling list. */
+      .kbn-detail-col-history .kbn-detail-section {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        border-bottom: none;
+        min-height: 0;
+      }
+      /* The scrolling list of history events. */
+      .kbn-detail-history-list {
         flex: 1;
         overflow-y: auto;
         min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding-right: 4px;
       }
-      .kbn-detail-section {
-        padding: 12px 16px;
-        border-bottom: 1px solid rgba(46, 42, 38, 0.08);
+      .kbn-detail-history-event {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        padding: 8px 10px;
+        background: rgba(255, 255, 255, 0.55);
+        border: 1px solid rgba(122, 112, 104, 0.16);
+        border-radius: 3px;
       }
-      .kbn-detail-section:last-child { border-bottom: none; }
+      .kbn-detail-history-event-meta {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10.5px;
+        color: #B8AC9E;
+        flex-wrap: wrap;
+      }
+      .kbn-detail-history-event-time {
+        color: #9A9088;
+      }
+      .kbn-detail-history-event-kind {
+        font-size: 9.5px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        padding: 1px 6px;
+        border-radius: 8px;
+        background: rgba(154, 123, 53, 0.10);
+        color: #9A7B35;
+      }
+      .kbn-detail-history-event-kind.kbn-detail-history-event-kind-editorial {
+        background: rgba(122, 112, 104, 0.12);
+        color: #7A7068;
+      }
+      .kbn-detail-history-event-summary {
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: #2E2A26;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 9em;
+        overflow: hidden;
+        position: relative;
+      }
+      .kbn-detail-history-event-summary.expanded {
+        max-height: none;
+      }
+      .kbn-detail-history-event-toggle {
+        align-self: flex-start;
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 11.5px;
+        font-style: italic;
+        color: #9A7B35;
+        background: transparent;
+        border: none;
+        padding: 0;
+        margin-top: 2px;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        text-decoration-color: rgba(154, 123, 53, 0.4);
+      }
+      .kbn-detail-history-event-toggle:hover { color: #6B5520; }
+      .kbn-detail-history-empty {
+        font-size: 12.5px;
+        color: #B8AC9E;
+        font-style: italic;
+        padding: 8px 0;
+      }
       .kbn-detail-section-heading {
         font-size: 11px;
         font-weight: 600;
@@ -2355,19 +2540,21 @@ export class KanbanModal {
         text-transform: uppercase;
         color: #9A9088;
         margin-bottom: 8px;
+        flex-shrink: 0;
       }
       .kbn-detail-textarea {
         width: 100%;
         box-sizing: border-box;
-        resize: vertical;
-        min-height: 72px;
-        padding: 7px 10px;
+        resize: none;
+        flex: 1;
+        min-height: 0;
+        padding: 10px 12px;
         border: 1px solid rgba(122, 112, 104, 0.28);
         border-radius: 2px;
         background: rgba(255, 255, 255, 0.65);
         font-family: var(--font-main, 'EB Garamond', serif);
-        font-size: 13.5px;
-        line-height: 1.45;
+        font-size: 14px;
+        line-height: 1.5;
         color: #2E2A26;
         outline: none;
         transition: border-color 120ms ease, background 120ms ease;
@@ -2384,7 +2571,7 @@ export class KanbanModal {
         display: flex;
         align-items: center;
         gap: 10px;
-        margin-bottom: 8px;
+        margin-bottom: 0;
       }
       .kbn-detail-field-row:last-child { margin-bottom: 0; }
       .kbn-detail-label {
@@ -2392,6 +2579,16 @@ export class KanbanModal {
         color: #7A7068;
         width: 56px;
         flex-shrink: 0;
+      }
+      /* In the strip, controls span the full width and the parent dropdown
+         anchors above the input rather than below (no room beneath). */
+      .kbn-detail-strip .kbn-detail-parent-dropdown {
+        top: auto;
+        bottom: calc(100% + 2px);
+        max-height: 280px;
+      }
+      .kbn-detail-strip .kbn-detail-current-parent {
+        margin-bottom: 4px;
       }
       .kbn-detail-select {
         flex: 1;
@@ -2522,8 +2719,8 @@ export class KanbanModal {
       .kbn-detail-footer {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 12px 16px;
+        gap: 10px;
+        padding: 12px 20px;
         border-top: 1px solid rgba(46, 42, 38, 0.12);
         background: #E5DED2;
         flex-shrink: 0;
@@ -2638,12 +2835,33 @@ class FiberDetailModal {
     dialog.className = 'kbn-detail-dialog'
 
     // ── Header ──────────────────────────────────────────────────────────────
+    // The title and the id are both vellum entry points — click either to
+    // close the modal and open the fiber's full editor. Hover reveals the
+    // affordance ("→ vellum" hint on the title).
     const header = document.createElement('div')
     header.className = 'kbn-detail-header'
 
     const title = document.createElement('div')
     title.className = 'kbn-detail-title'
-    title.textContent = card.name
+    title.setAttribute('role', 'button')
+    title.setAttribute('tabindex', '0')
+    title.setAttribute('aria-label', `Open ${card.name} in vellum`)
+    title.title = 'Click to open in vellum'
+    const titleText = document.createElement('span')
+    titleText.textContent = card.name
+    const titleHint = document.createElement('span')
+    titleHint.className = 'kbn-detail-title-hint'
+    titleHint.textContent = '→ vellum'
+    title.append(titleText, titleHint)
+    const openInVellum = (e: Event) => {
+      e.stopPropagation()
+      this.close()
+      this.onOpenFiber(card)
+    }
+    title.addEventListener('click', openInVellum)
+    title.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') openInVellum(e)
+    })
 
     const pill = document.createElement('span')
     pill.className = `kbn-pill kbn-pill-${card.status === 'closed' ? 'closed' : card.status === 'active' ? 'active' : 'open'}`
@@ -2659,15 +2877,26 @@ class FiberDetailModal {
     header.append(title, pill, closeBtn)
 
     // ── ID breadcrumb ────────────────────────────────────────────────────────
+    // Also clickable; same vellum entry path as the title.
     const idEl = document.createElement('div')
     idEl.className = 'kbn-detail-id'
+    idEl.setAttribute('role', 'button')
+    idEl.setAttribute('tabindex', '0')
+    idEl.setAttribute('aria-label', `Open ${card.id} in vellum`)
+    idEl.title = 'Click to open in vellum'
     idEl.textContent = card.id
+    idEl.addEventListener('click', openInVellum)
+    idEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') openInVellum(e)
+    })
 
     // ── Outcome ──────────────────────────────────────────────────────────────
+    // Lives in the left column; the section flex-grows so the textarea fills
+    // the available height. Internal scrolling within the textarea handles
+    // long outcomes — no `rows` attribute needed.
     const outcomeSec = this.buildSection('Outcome')
     const outcomeTextarea = document.createElement('textarea')
     outcomeTextarea.className = 'kbn-detail-textarea'
-    outcomeTextarea.rows = 4
     outcomeTextarea.placeholder = 'What was decided or learned…'
     outcomeTextarea.value = card.outcome ?? ''
     outcomeTextarea.addEventListener('mousedown', (e) => e.stopPropagation())
@@ -2677,15 +2906,27 @@ class FiberDetailModal {
     // Track the *original* outcome to detect changes on save.
     const originalOutcome = card.outcome ?? ''
 
+    // ── History panel (right column, top tier) ──────────────────────────────
+    // Read-only event chain for the fiber. Shown alongside the outcome so the
+    // user can see "what happened so far" without leaving the modal.
+    const historySec = this.buildSection('History')
+    const historyList = document.createElement('div')
+    historyList.className = 'kbn-detail-history-list'
+    const historyLoading = document.createElement('div')
+    historyLoading.className = 'kbn-detail-history-empty'
+    historyLoading.textContent = 'Loading…'
+    historyList.append(historyLoading)
+    historySec.append(historyList)
+    void this.loadHistory(card.id, historyList)
+
     // ── Dispatch (shuttle options) ────────────────────────────────────────────
     // Shown when the fiber has a shuttle block. Lets the user change the agent
-    // without opening vellum or the terminal.
+    // without opening vellum or the terminal. In the new layout this lives in
+    // the bottom strip as a horizontal control block.
     let agentSelect: HTMLSelectElement | null = null
     const originalAgent = card.shuttleAgent ?? ''
 
-    const dispatchSec = this.buildSection('Dispatch')
-    // All kanban fibers have a shuttle block (post-cutover). Show the agent
-    // selector so the user can change dispatch agent without opening vellum.
+    const dispatchSec = this.buildStripBlock('Dispatch')
     const agentRow = document.createElement('div')
     agentRow.className = 'kbn-detail-field-row'
 
@@ -2712,8 +2953,8 @@ class FiberDetailModal {
 
     // ── Parent fiber ──────────────────────────────────────────────────────────
     // Shows the current parent (derived from the id path) and an autocomplete
-    // field for selecting a new one.
-    const parentSec = this.buildSection('Parent fiber')
+    // field for selecting a new one. Lives in the bottom strip too.
+    const parentSec = this.buildStripBlock('Parent fiber')
 
     // Derive current parent from id segments.
     const idSegments = card.id.split('/')
@@ -2874,11 +3115,35 @@ class FiberDetailModal {
     footer.append(vellumBtn, errorEl, footerRight)
 
     // ── Assemble ─────────────────────────────────────────────────────────────
-    // Wrap the editable sections in a scrollable body div.
-    const scrollBody = document.createElement('div')
-    scrollBody.className = 'kbn-detail-body'
-    scrollBody.append(outcomeSec, dispatchSec, parentSec)
-    dialog.append(header, idEl, scrollBody, footer)
+    // Body has two tiers:
+    //   • Top tier: outcome (left) | history (right). Both fill the height
+    //     of the tier; outcome via internal textarea scroll, history via
+    //     overflow-y on its event list.
+    //   • Bottom strip: dispatch + parent as side-by-side control blocks.
+    //     The parent dropdown anchors above its input so it doesn't get
+    //     clipped by the strip's bottom edge.
+    const body = document.createElement('div')
+    body.className = 'kbn-detail-body'
+
+    const top = document.createElement('div')
+    top.className = 'kbn-detail-top'
+
+    const colOutcome = document.createElement('div')
+    colOutcome.className = 'kbn-detail-col-outcome'
+    colOutcome.append(outcomeSec)
+
+    const colHistory = document.createElement('div')
+    colHistory.className = 'kbn-detail-col-history'
+    colHistory.append(historySec)
+
+    top.append(colOutcome, colHistory)
+
+    const strip = document.createElement('div')
+    strip.className = 'kbn-detail-strip'
+    strip.append(dispatchSec, parentSec)
+
+    body.append(top, strip)
+    dialog.append(header, idEl, body, footer)
     overlay.append(dialog)
     document.body.append(overlay)
     this.overlay = overlay
@@ -2916,6 +3181,121 @@ class FiberDetailModal {
     heading.textContent = label
     sec.append(heading)
     return sec
+  }
+
+  /**
+   * Build a control block for the bottom strip. Same heading idiom as a
+   * regular section but with horizontal-strip styling: padded vertically,
+   * separated by left-borders rather than top-borders, and sized by content.
+   */
+  private buildStripBlock(label: string): HTMLElement {
+    const block = document.createElement('div')
+    block.className = 'kbn-detail-strip-block'
+    const heading = document.createElement('div')
+    heading.className = 'kbn-detail-strip-heading'
+    heading.textContent = label
+    block.append(heading)
+    return block
+  }
+
+  /**
+   * Fetch the fiber's recent editorial events and render them into the
+   * given container. Failures degrade quietly to an empty-state message —
+   * history is informational, not load-bearing for the modal's primary
+   * actions.
+   */
+  private async loadHistory(fiberId: string, container: HTMLElement): Promise<void> {
+    try {
+      const res = await fetch(
+        `${this.apiBase}/kanban/fiber-history?fiberId=${encodeURIComponent(fiberId)}&limit=20`,
+      )
+      if (!res.ok) throw new Error(`${res.status}`)
+      const data = (await res.json()) as {
+        events: Array<{ occurredAt: string; actor: string; kind: string; summary: string }>
+      }
+      container.innerHTML = ''
+      if (data.events.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'kbn-detail-history-empty'
+        empty.textContent = 'No history yet.'
+        container.append(empty)
+        return
+      }
+      for (const ev of data.events) {
+        container.append(this.renderHistoryEvent(ev))
+      }
+    } catch {
+      container.innerHTML = ''
+      const empty = document.createElement('div')
+      empty.className = 'kbn-detail-history-empty'
+      empty.textContent = 'History unavailable.'
+      container.append(empty)
+    }
+  }
+
+  /**
+   * Render a single editorial event with a meta line (relative time + actor +
+   * typed-kind pill if non-default) and a clamped summary that expands on
+   * "Show more" click. Long events stay scannable; the user opts in to depth.
+   */
+  private renderHistoryEvent(ev: {
+    occurredAt: string
+    actor: string
+    kind: string
+    summary: string
+  }): HTMLElement {
+    const wrap = document.createElement('div')
+    wrap.className = 'kbn-detail-history-event'
+
+    const meta = document.createElement('div')
+    meta.className = 'kbn-detail-history-event-meta'
+
+    const time = document.createElement('span')
+    time.className = 'kbn-detail-history-event-time'
+    time.textContent = formatRelative(ev.occurredAt)
+    time.title = new Date(ev.occurredAt).toLocaleString()
+    meta.append(time)
+
+    if (ev.kind && ev.kind !== 'editorial') {
+      const kindPill = document.createElement('span')
+      kindPill.className = `kbn-detail-history-event-kind kbn-detail-history-event-kind-${ev.kind}`
+      kindPill.textContent = ev.kind
+      meta.append(kindPill)
+    } else {
+      const kindPill = document.createElement('span')
+      kindPill.className = 'kbn-detail-history-event-kind kbn-detail-history-event-kind-editorial'
+      kindPill.textContent = 'editorial'
+      meta.append(kindPill)
+    }
+
+    const actor = document.createElement('span')
+    actor.textContent = ev.actor
+    meta.append(actor)
+
+    wrap.append(meta)
+
+    const summary = document.createElement('div')
+    summary.className = 'kbn-detail-history-event-summary'
+    summary.textContent = ev.summary || '(no summary)'
+    wrap.append(summary)
+
+    // Add a "Show more" toggle if the summary is long enough that the clamp
+    // is likely to be hiding content. Use a character heuristic — pixel-
+    // measuring overflow is complicated and the heuristic is good enough.
+    if (ev.summary && ev.summary.length > 240) {
+      const toggle = document.createElement('button')
+      toggle.type = 'button'
+      toggle.className = 'kbn-detail-history-event-toggle'
+      toggle.textContent = 'Show more'
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const expanded = summary.classList.toggle('expanded')
+        toggle.textContent = expanded ? 'Show less' : 'Show more'
+      })
+      wrap.append(toggle)
+    }
+
+    return wrap
   }
 
   private async loadAgents(

@@ -1266,6 +1266,92 @@ export class HttpApiKanban {
   }
 
   /**
+   * GET /kanban/fiber-history?fiberId=<id>&limit=<n>
+   *
+   * Returns the editorial event chain for a fiber by reading
+   * `felt -C <feltHost> history <globalId> --json --last <limit>`.
+   * Used by the fiber-detail modal's history panel — the human's "what
+   * happened so far" surface beside the live outcome textarea.
+   *
+   * Resolution mirrors `/kanban/review-comment`: kanban card ids may be
+   * project-local under city-scoped views, so we resolve to the global
+   * id via `resolveGlobalFiberId` before invoking felt against the
+   * owning shuttle felt host. This guarantees we read from the same
+   * felt index Shuttle's dispatcher reads, not a stale project-local one.
+   *
+   * Default limit is 20; clamped to [1, 200]. Response shape:
+   *   `{ events: Array<{ occurredAt, actor, kind, summary }> }`
+   *
+   * Mechanical events (add/edit/rm/external_edit) are excluded — the
+   * panel surfaces editorial / typed events only. The endpoint never
+   * 500s on felt absence; it returns an empty events array so the
+   * panel quietly shows "No history yet" rather than blocking the modal.
+   */
+  async handleFiberHistory(url: URL, res: ServerResponse): Promise<void> {
+    const fiberId = url.searchParams.get('fiberId');
+    if (!fiberId) {
+      this.json(res, 400, { error: 'fiberId is required' });
+      return;
+    }
+    const limitRaw = parseInt(url.searchParams.get('limit') ?? '20', 10);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.max(1, Math.min(200, limitRaw))
+      : 20;
+
+    try {
+      const { merged } = await this.collectFibers();
+      const entry = merged.find(({ fiber }) => fiber.id === fiberId);
+      if (!entry) {
+        // Fiber not found in any merged host — return empty rather than 404
+        // so the modal degrades gracefully when the kanban id mapping
+        // hasn't caught up yet.
+        this.json(res, 200, { events: [] });
+        return;
+      }
+      const { fiber, host } = entry;
+      const globalId = resolveGlobalFiberId(host, fiber.id);
+      const feltHost = await this.resolveShuttleFeltHost(globalId);
+
+      const { stdout } = await execFileAsync(
+        'felt',
+        ['-C', feltHost, 'history', globalId, '--last', String(limit), '-j'],
+        { maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
+      );
+
+      const rawEvents = JSON.parse((stdout ?? '').trim() || '[]') as Array<
+        Record<string, unknown>
+      >;
+
+      const events = rawEvents
+        .filter(
+          (ev) =>
+            typeof ev['occurred_at'] === 'string' &&
+            typeof ev['actor'] === 'string' &&
+            typeof ev['event_type'] === 'string',
+        )
+        .map((ev) => {
+          const payload = (ev['payload'] ?? {}) as Record<string, unknown>;
+          const summary =
+            typeof payload['summary'] === 'string' ? payload['summary'] : '';
+          return {
+            occurredAt: ev['occurred_at'] as string,
+            actor: ev['actor'] as string,
+            kind: ev['event_type'] as string,
+            summary,
+          };
+        });
+
+      this.json(res, 200, { events });
+    } catch (err: unknown) {
+      // Quietly degrade — the modal renders "No history yet". A loud 500
+      // would block the modal from opening for a non-essential panel.
+      const msg = (err as { message?: string })?.message ?? String(err);
+      console.warn('[Kanban] fiber-history failed (returning empty):', msg);
+      this.json(res, 200, { events: [] });
+    }
+  }
+
+  /**
    * POST /kanban/fiber-patch
    *
    * Patch a fiber's editable fields from the fiber-detail modal. Supports:
