@@ -121,15 +121,15 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.status).toBe(200);
-    expect(res.body.columns).toEqual({ drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] });
-    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
+    expect(res.body.columns).toEqual({ ideas: [], drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] });
+    expect(res.body.totals).toEqual({ ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
   });
 
   it('skips fibers that have no shuttle: block', async () => {
     writeFib('regular-task', { name: 'Task', status: 'open', tags: ['task'], 'created-at': '2026-04-01' });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-    expect(res.body.totals).toEqual({ drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
+    expect(res.body.totals).toEqual({ ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
   });
 
   it('groups shuttle-block fibers into drafts / in-flight / awaiting-review / tempered', async () => {
@@ -171,7 +171,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.totals).toEqual({ drafts: 1, inFlight: 2, awaitingReview: 1, tempered: 1, composted: 0 });
+    expect(res.body.totals).toEqual({ ideas: 0, drafts: 1, inFlight: 2, awaitingReview: 1, tempered: 1, composted: 0 });
     expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['draft-one']);
     expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['active-one', 'open-one']);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);

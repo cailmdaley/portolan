@@ -59,6 +59,13 @@ export interface Fiber {
    * doesn't specify an agent (daemon uses its default).
    */
   shuttleAgent?: string;
+  /**
+   * `shuttle.schedule` — cron expression + IANA timezone for standing roles.
+   * Present only when `hasShuttleBlock` is true and `kind === 'standing'`.
+   * Read by the kanban fiber-detail modal so the human can tune the cadence
+   * without dropping into vellum.
+   */
+  shuttleSchedule?: { expr: string; tz: string };
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -172,6 +179,7 @@ function mapFeltJsonToFiber(item: unknown): Fiber | null {
   let shuttleReviewState: 'scheduled' | 'awaiting' | 'accepted' | undefined;
   let shuttleSessionId: string | undefined;
   let shuttleAgent: string | undefined;
+  let shuttleSchedule: { expr: string; tz: string } | undefined;
 
   if (hasShuttleBlock) {
     const s = shuttleRaw as Record<string, unknown>;
@@ -193,6 +201,22 @@ function mapFeltJsonToFiber(item: unknown): Fiber | null {
     }
 
     if (typeof s.agent === 'string' && s.agent) shuttleAgent = s.agent;
+
+    // shuttle.schedule = { expr, tz } for standing roles. Pre-CLI fibers may
+    // carry the legacy `timezone` key; the daemon reads either, so we mirror
+    // both here for backward-compat. Absent fields fall back to UTC for tz.
+    const sched = s.schedule;
+    if (sched && typeof sched === 'object' && !Array.isArray(sched)) {
+      const m = sched as Record<string, unknown>;
+      const expr = typeof m.expr === 'string' ? m.expr.trim() : '';
+      const tzRaw = typeof m.tz === 'string'
+        ? m.tz
+        : typeof m.timezone === 'string'
+          ? m.timezone
+          : '';
+      const tz = tzRaw.trim() || 'UTC';
+      if (expr) shuttleSchedule = { expr, tz };
+    }
   }
 
   // entry_point (felt) → isRoot (Portolan). Felt only emits this when true
@@ -238,6 +262,7 @@ function mapFeltJsonToFiber(item: unknown): Fiber | null {
     shuttleReviewState,
     shuttleSessionId,
     shuttleAgent,
+    shuttleSchedule,
     parentId,
     isRoot,
   };
@@ -438,6 +463,24 @@ export function parseFiber(id: string, content: string): Fiber {
     if (typeof a === 'string' && a) shuttleAgent = a;
   }
 
+  // shuttleSchedule: shuttle.schedule.{expr,tz} — for standing roles.
+  // Pre-CLI fibers may carry the legacy `timezone` key; mirror both.
+  let shuttleSchedule: { expr: string; tz: string } | undefined;
+  if (hasShuttleBlock) {
+    const sched = (shuttleRaw as Record<string, unknown>)['schedule'];
+    if (sched && typeof sched === 'object' && !Array.isArray(sched)) {
+      const m = sched as Record<string, unknown>;
+      const expr = typeof m['expr'] === 'string' ? (m['expr'] as string).trim() : '';
+      const tzRaw = typeof m['tz'] === 'string'
+        ? (m['tz'] as string)
+        : typeof m['timezone'] === 'string'
+          ? (m['timezone'] as string)
+          : '';
+      const tz = tzRaw.trim() || 'UTC';
+      if (expr) shuttleSchedule = { expr, tz };
+    }
+  }
+
   return {
     id,
     name: getField('name') || id,
@@ -457,5 +500,6 @@ export function parseFiber(id: string, content: string): Fiber {
     shuttleReviewState,
     shuttleSessionId,
     shuttleAgent,
+    shuttleSchedule,
   };
 }

@@ -1,27 +1,33 @@
 /**
  * KanbanModal — global view of constitution-tagged fibers grouped by lifecycle.
  *
- * Five flat columns: Drafts → Open → Awaiting → Tempered → Composted.
- * Each column scrolls vertically; the body scrolls horizontally when 5 columns
- * don't all fit. About 3 columns are visible at typical widths, hinting at more.
+ * Six flat columns: Ideas → Drafts → In flight → Awaiting → Tempered → Composted.
+ * Each column scrolls vertically; the body scrolls horizontally when six columns
+ * don't all fit. About 3 columns are visible at typical widths.
+ *
+ * Ideas (off-screen left at rest) and Tempered/Composted (off-screen right at
+ * rest) are the speculative + verdict edges; the central three columns
+ * (Drafts → In flight → Awaiting) carry the active constitution lifecycle.
  *
  * Interaction: drag a card to any column (HTML5 DnD). Both surfaces POST to
  * /kanban/transition with {fiberId, target}. Click a card body to open in vellum.
  */
 
 /** Column identifier — also doubles as the API target. */
-type ColumnKind = 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
+type ColumnKind = 'ideas' | 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
 
 const COLUMN_TITLES: Record<ColumnKind, string> = {
+  ideas: 'Ideas',
   drafts: 'Drafts',
-  inFlight: 'Open',
+  inFlight: 'In flight',
   awaitingReview: 'Awaiting review',
   tempered: 'Tempered',
   composted: 'Composted',
 }
 
 const COLUMN_BLURBS: Record<ColumnKind, string> = {
-  drafts: 'Brainstorming. Tagged constitution+draft. Refine until ready, then promote.',
+  ideas: 'Speculative — sketches and brainstorms tagged `idea`. Off-screen left; promote to drafts when ready to write a real constitution.',
+  drafts: 'Tagged constitution+draft. Refine until ready, then promote.',
   inFlight: 'Constitution-tagged, not closed. Workers running show ▸; otherwise queued.',
   awaitingReview: 'Your move — agent flipped the fiber to closed.',
   tempered: 'Recent — accepted by Cail.',
@@ -81,6 +87,22 @@ interface KanbanCard {
    * has a shuttle block and the block specifies an agent.
    */
   shuttleAgent?: string
+  /**
+   * `shuttle.kind` — `oneshot` (default) or `standing`. Present iff the
+   * fiber has a shuttle block. Drives the kind segmented control in the
+   * fiber-detail modal and reveals the schedule/tz row when standing.
+   */
+  shuttleKind?: 'oneshot' | 'standing'
+  /**
+   * `shuttle.schedule.expr` — 5-field cron expression for standing roles.
+   * Absent on one-shot fibers and on fibers without a shuttle block.
+   */
+  shuttleSchedule?: string
+  /**
+   * `shuttle.schedule.tz` — IANA timezone name paired with `shuttleSchedule`.
+   * Absent when `shuttleSchedule` is absent.
+   */
+  shuttleTz?: string
 }
 
 /**
@@ -103,13 +125,14 @@ interface KanbanOriginStaleness {
 interface KanbanResponse {
   feltHost: string
   columns: {
+    ideas: KanbanCard[]
     drafts: KanbanCard[]
     inFlight: KanbanCard[]
     awaitingReview: KanbanCard[]
     tempered: KanbanCard[]
     composted: KanbanCard[]
   }
-  totals: { drafts: number; inFlight: number; awaitingReview: number; tempered: number; composted: number }
+  totals: { ideas: number; drafts: number; inFlight: number; awaitingReview: number; tempered: number; composted: number }
   temperedTotal: number
   /**
    * Per-origin freshness, keyed by `originId`. Always includes `local` and
@@ -157,6 +180,18 @@ interface KanbanScrollSnapshot {
   columns: Partial<Record<ColumnKind, number>>
 }
 
+/**
+ * Snapshot of a single per-card directive textarea. Captured before each
+ * re-render so the polling-driven DOM rebuild doesn't drop user-typed
+ * directive text on the floor.
+ */
+interface ReviewDirectiveSnapshot {
+  value: string
+  selectionStart: number
+  selectionEnd: number
+  isFocused: boolean
+}
+
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
@@ -171,6 +206,13 @@ export class KanbanModal {
   private liveEl: HTMLDivElement | null = null
   private bannerEl: HTMLDivElement | null = null
   private inflightFetchToken = 0
+  /**
+   * Whether the initial Ideas-off-screen-left scroll has been applied yet.
+   * Distinct from `hasClaimedInitialFocus` (focus tracker) and from
+   * `lastResponse === null` (which gets set in fetchAndRender *before* render
+   * runs, so it can't gate first-render behavior).
+   */
+  private hasInitialScrollApplied = false
   private dragSourceId: string | null = null
   private dragAutoScrollFrame: number | null = null
   private dragAutoScrollVelocity = 0
@@ -350,6 +392,7 @@ export class KanbanModal {
     this.bannerEl = null
     this.dragSourceId = null
     this.hasClaimedInitialFocus = false
+    this.hasInitialScrollApplied = false
     this.stopDragAutoScroll()
     // Reset scope on every teardown so the next mount lands at default
     // global scope; a follow-on `mount(...{cityScope})` with a scope
@@ -448,16 +491,21 @@ export class KanbanModal {
     if (!this.body || !this.statusEl) return
 
     const scrollSnapshot = this.captureScrollSnapshot()
+    // Capture the typed text in any per-card directive textareas so the
+    // poll-driven re-render doesn't blow away the user's mid-flight input.
+    // The corresponding restore happens after the column rebuild.
+    const directives = this.captureReviewDirectives()
     const { columns, totals, temperedTotal, staleness } = data
     this.statusEl.textContent =
-      `${totals.drafts} drafts · ${totals.inFlight} open · ` +
+      (totals.ideas > 0 ? `${totals.ideas} ideas · ` : '') +
+      `${totals.drafts} drafts · ${totals.inFlight} in flight · ` +
       `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered` +
       (totals.composted > 0 ? ` · ${totals.composted} composted` : '')
 
     this.body.innerHTML = ''
     this.body.classList.remove('kbn-body-zoomed')
 
-    const colOrder: ColumnKind[] = ['drafts', 'inFlight', 'awaitingReview', 'tempered', 'composted']
+    const colOrder: ColumnKind[] = ['ideas', 'drafts', 'inFlight', 'awaitingReview', 'tempered', 'composted']
     for (const kind of colOrder) {
       this.body.append(
         this.renderColumn(kind, columns[kind], staleness, kind === 'tempered' ? temperedTotal : undefined),
@@ -465,10 +513,114 @@ export class KanbanModal {
     }
 
     this.restoreScrollSnapshot(scrollSnapshot)
+    this.restoreReviewDirectives(directives)
+    // First render only: scroll Ideas off-screen left so In Flight sits in
+    // the center of the viewport (with Drafts left-of-center and Awaiting
+    // review right-of-center). Mirrors how Tempered/Composted live off-
+    // screen right — the speculative + verdict edges flank the active
+    // lifecycle. Gated on `hasInitialScrollApplied` rather than
+    // `lastResponse === null` because lastResponse is set in
+    // fetchAndRender BEFORE render runs, so it can't be used to detect
+    // the first call.
+    if (!this.hasInitialScrollApplied) this.scrollIdeasOffscreenLeft()
     this.claimInitialFocus()
     this.updateBodyScrollAffordance()
     window.requestAnimationFrame(() => this.updateBodyScrollAffordance())
     this.lastResponse = data
+  }
+
+  /**
+   * On first render, scroll the body so Ideas (the leftmost column) sits
+   * just off the left edge — Drafts becomes the first visible column.
+   * Subsequent renders preserve user scroll via captureScrollSnapshot/
+   * restoreScrollSnapshot, so this only fires once per modal mount.
+   */
+  private scrollIdeasOffscreenLeft(): void {
+    if (!this.body) return
+    let applied = false
+    const apply = (): void => {
+      if (!this.body) return
+      const ideasCol = this.body.querySelector<HTMLElement>('.kbn-col[data-column="ideas"]')
+      if (!ideasCol) return
+      // Position so Drafts is flush with the left padding (and In Flight
+      // sits centered, given equal column widths). Read the computed
+      // widths after layout settles.
+      const bodyStyle = window.getComputedStyle(this.body)
+      const gap = parseFloat(bodyStyle.gap || '10') || 10
+      this.body.scrollLeft = ideasCol.offsetWidth + gap
+      applied = true
+      this.hasInitialScrollApplied = true
+    }
+    apply()
+    // Defer through multiple frames AND a setTimeout so the scroll lands
+    // after `claimInitialFocus`'s rAF — focusing a column-head inside Ideas
+    // resets scrollLeft to 0 even with `preventScroll: true` (Chromium quirk
+    // observed against off-screen columns). Running last wins.
+    window.requestAnimationFrame(() => {
+      apply()
+      window.requestAnimationFrame(apply)
+      window.setTimeout(apply, 0)
+    })
+    // If the Ideas column wasn't in the DOM yet (race during very-first
+    // render with empty data), `apply` no-ops; leave the flag false so the
+    // next render call retries. The deferred frames above will succeed
+    // in steady state.
+    if (!applied) this.hasInitialScrollApplied = false
+  }
+
+  /**
+   * Capture typed text + selection state from every review-cluster
+   * directive textarea, keyed by the owning card's fiber id. Used to
+   * preserve user input across poll-driven re-renders (which blow away
+   * the DOM via innerHTML = '').
+   *
+   * Empty textareas are omitted so we don't bother re-applying nothing.
+   */
+  private captureReviewDirectives(): Map<string, ReviewDirectiveSnapshot> {
+    const out = new Map<string, ReviewDirectiveSnapshot>()
+    if (!this.body) return out
+    for (const ta of this.body.querySelectorAll<HTMLTextAreaElement>('.kbn-review-textarea')) {
+      const card = ta.closest<HTMLElement>('.kbn-card[data-fiber-id]')
+      const fiberId = card?.dataset.fiberId
+      if (!fiberId) continue
+      const value = ta.value
+      if (!value) continue
+      const isFocused = document.activeElement === ta
+      out.set(fiberId, {
+        value,
+        selectionStart: ta.selectionStart,
+        selectionEnd: ta.selectionEnd,
+        isFocused,
+      })
+    }
+    return out
+  }
+
+  /**
+   * Restore directive text + selection + focus into newly-rendered review
+   * clusters. Also fires an `input` event so the Requeue/Resume buttons
+   * pick up the restored value and update their disabled state.
+   */
+  private restoreReviewDirectives(snap: Map<string, ReviewDirectiveSnapshot>): void {
+    if (!this.body || snap.size === 0) return
+    for (const [fiberId, s] of snap) {
+      const card = this.body.querySelector<HTMLElement>(
+        `.kbn-card[data-fiber-id="${CSS.escape(fiberId)}"]`,
+      )
+      const ta = card?.querySelector<HTMLTextAreaElement>('.kbn-review-textarea')
+      if (!ta) continue
+      ta.value = s.value
+      // Re-fire input so the action buttons re-evaluate their enabled state.
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+      if (s.isFocused) {
+        ta.focus({ preventScroll: true })
+        try {
+          ta.setSelectionRange(s.selectionStart, s.selectionEnd)
+        } catch {
+          /* selection out of bounds — ignore */
+        }
+      }
+    }
   }
 
   private claimInitialFocus(): void {
@@ -2646,6 +2798,82 @@ export class KanbanModal {
         color: #C8BFB3;
         font-style: italic;
       }
+      /* Generic input used by the dispatch strip's cron + tz fields. Mirrors
+         .kbn-detail-parent-input but with tighter padding so it sits flush
+         with the segmented control next to it. */
+      .kbn-detail-input {
+        flex: 1;
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 5px 8px;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.65);
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 13px;
+        color: #2E2A26;
+        outline: none;
+        transition: border-color 120ms ease, background 120ms ease;
+      }
+      .kbn-detail-input:focus {
+        border-color: rgba(154, 123, 53, 0.55);
+        background: #FFFCF6;
+      }
+      .kbn-detail-input::placeholder {
+        color: #C8BFB3;
+        font-style: italic;
+      }
+      .kbn-detail-input-mono {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 12px;
+      }
+      /* Timezone input is narrower than cron — IANA names are short. */
+      .kbn-detail-input-tz {
+        flex: 0 0 140px;
+      }
+      /* Schedule row only matters when kind=standing; show/hide is via
+         inline display:none from the kind toggle handler. Class kept as
+         a marker for future targeted styling. */
+      .kbn-detail-field-row-schedule { /* presentational marker only */ }
+      /* Two-segment radiogroup styled as a pill switch. Used for the
+         dispatch kind (one-shot / standing); reads as a setting, not a
+         button cluster. */
+      .kbn-detail-segmented {
+        display: inline-flex;
+        flex: 1;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.55);
+        overflow: hidden;
+      }
+      .kbn-detail-segment {
+        flex: 1;
+        padding: 5px 10px;
+        background: transparent;
+        border: none;
+        border-right: 1px solid rgba(122, 112, 104, 0.20);
+        cursor: pointer;
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 12.5px;
+        color: #7A7068;
+        transition: background 100ms ease, color 100ms ease;
+      }
+      .kbn-detail-segment:last-child { border-right: none; }
+      .kbn-detail-segment:hover {
+        background: rgba(154, 123, 53, 0.06);
+        color: #2E2A26;
+      }
+      .kbn-detail-segment-active {
+        background: rgba(154, 123, 53, 0.18);
+        color: #2E2A26;
+        font-weight: 600;
+      }
+      .kbn-detail-segment-active:hover {
+        background: rgba(154, 123, 53, 0.22);
+      }
+      .kbn-detail-segment-name {
+        display: inline-block;
+      }
       /* Dropdown that appears below the parent input */
       .kbn-detail-parent-dropdown {
         position: absolute;
@@ -2920,13 +3148,31 @@ class FiberDetailModal {
     void this.loadHistory(card.id, historyList)
 
     // ── Dispatch (shuttle options) ────────────────────────────────────────────
-    // Shown when the fiber has a shuttle block. Lets the user change the agent
-    // without opening vellum or the terminal. In the new layout this lives in
-    // the bottom strip as a horizontal control block.
+    // Console-style editor for the fiber's shuttle frontmatter block. Lets the
+    // human tune the dispatch contract — agent, kind, schedule cadence — from
+    // the kanban without opening vellum or the terminal. Lives in the bottom
+    // strip as a horizontal control block. Three rows:
+    //   1. Agent select (always visible)
+    //   2. Kind segmented control (oneshot / standing)
+    //   3. Schedule + tz inline pair (revealed only when kind=standing)
+    //
+    // Server-side, agent-only changes route through `shuttle-ctl set-model`
+    // (preserves session.id + review history). Kind/schedule/tz changes
+    // trigger a full uninstall + install/repeat — destructive of session
+    // history, but cheap state for drafts.
     let agentSelect: HTMLSelectElement | null = null
     const originalAgent = card.shuttleAgent ?? ''
+    const originalKind: 'oneshot' | 'standing' = card.shuttleKind ?? 'oneshot'
+    const originalSchedule = card.shuttleSchedule ?? ''
+    const originalTz = card.shuttleTz ?? 'Europe/Paris'
+
+    let selectedKind: 'oneshot' | 'standing' = originalKind
+    let selectedSchedule = originalSchedule
+    let selectedTz = originalTz
 
     const dispatchSec = this.buildStripBlock('Dispatch')
+
+    // Row 1: agent
     const agentRow = document.createElement('div')
     agentRow.className = 'kbn-detail-field-row'
 
@@ -2950,6 +3196,112 @@ class FiberDetailModal {
 
     // Load agents from /shuttle/agents async.
     void this.loadAgents(agentSelect, originalAgent)
+
+    // Row 2: kind segmented control
+    const kindRow = document.createElement('div')
+    kindRow.className = 'kbn-detail-field-row'
+
+    const kindLabel = document.createElement('span')
+    kindLabel.className = 'kbn-detail-label'
+    kindLabel.textContent = 'Kind'
+
+    const kindSegmented = document.createElement('div')
+    kindSegmented.className = 'kbn-detail-segmented'
+    kindSegmented.setAttribute('role', 'radiogroup')
+    kindSegmented.setAttribute('aria-label', 'Dispatch kind')
+
+    // Schedule row needs to be defined before the kind buttons can toggle its
+    // visibility — declared up here, populated below.
+    const scheduleRow = document.createElement('div')
+    scheduleRow.className = 'kbn-detail-field-row kbn-detail-field-row-schedule'
+
+    const buildKindBtn = (
+      value: 'oneshot' | 'standing',
+      title: string,
+      hint: string,
+    ): HTMLButtonElement => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'kbn-detail-segment'
+      btn.setAttribute('role', 'radio')
+      btn.setAttribute('aria-checked', value === selectedKind ? 'true' : 'false')
+      btn.dataset.kind = value
+      if (value === selectedKind) btn.classList.add('kbn-detail-segment-active')
+      btn.title = hint
+
+      const name = document.createElement('span')
+      name.className = 'kbn-detail-segment-name'
+      name.textContent = title
+      btn.append(name)
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        if (selectedKind === value) return
+        selectedKind = value
+        for (const sibling of kindSegmented.querySelectorAll<HTMLButtonElement>('button')) {
+          const isActive = sibling.dataset.kind === value
+          sibling.classList.toggle('kbn-detail-segment-active', isActive)
+          sibling.setAttribute('aria-checked', isActive ? 'true' : 'false')
+        }
+        scheduleRow.style.display = value === 'standing' ? '' : 'none'
+        // Surface a sensible cron + tz default when promoting to standing
+        // for the first time so the user has something to edit rather than
+        // an empty input that fails validation on save.
+        if (value === 'standing') {
+          if (!selectedSchedule) {
+            selectedSchedule = '0 9 * * 1-5'
+            scheduleInput.value = selectedSchedule
+          }
+          if (!selectedTz) {
+            selectedTz = 'Europe/Paris'
+            tzInput.value = selectedTz
+          }
+        }
+      })
+      return btn
+    }
+
+    const oneshotBtn = buildKindBtn('oneshot', 'One-shot', 'Single dispatch on enable')
+    const standingBtn = buildKindBtn('standing', 'Standing', 'Recurring cron-scheduled role')
+    kindSegmented.append(oneshotBtn, standingBtn)
+    kindRow.append(kindLabel, kindSegmented)
+    dispatchSec.append(kindRow)
+
+    // Row 3: schedule + tz (visible only when kind=standing)
+    const scheduleLabel = document.createElement('label')
+    scheduleLabel.className = 'kbn-detail-label'
+    scheduleLabel.textContent = 'Cron'
+    scheduleLabel.setAttribute('for', 'kbn-detail-schedule')
+
+    const scheduleInput = document.createElement('input')
+    scheduleInput.type = 'text'
+    scheduleInput.id = 'kbn-detail-schedule'
+    scheduleInput.className = 'kbn-detail-input kbn-detail-input-mono'
+    scheduleInput.placeholder = '0 9 * * 1-5'
+    scheduleInput.value = selectedSchedule
+    scheduleInput.title = '5-field cron · e.g. 0 9 * * 1-5 (weekdays 09:00)'
+    scheduleInput.addEventListener('input', () => {
+      selectedSchedule = scheduleInput.value
+    })
+    scheduleInput.addEventListener('mousedown', (e) => e.stopPropagation())
+    scheduleInput.addEventListener('click', (e) => e.stopPropagation())
+
+    const tzInput = document.createElement('input')
+    tzInput.type = 'text'
+    tzInput.className = 'kbn-detail-input kbn-detail-input-tz'
+    tzInput.placeholder = 'Europe/Paris'
+    tzInput.value = selectedTz
+    tzInput.title = 'IANA timezone name'
+    tzInput.setAttribute('aria-label', 'Timezone (IANA name)')
+    tzInput.addEventListener('input', () => {
+      selectedTz = tzInput.value
+    })
+    tzInput.addEventListener('mousedown', (e) => e.stopPropagation())
+    tzInput.addEventListener('click', (e) => e.stopPropagation())
+
+    scheduleRow.append(scheduleLabel, scheduleInput, tzInput)
+    scheduleRow.style.display = selectedKind === 'standing' ? '' : 'none'
+    dispatchSec.append(scheduleRow)
 
     // ── Parent fiber ──────────────────────────────────────────────────────────
     // Shows the current parent (derived from the id path) and an autocomplete
@@ -3083,6 +3435,9 @@ class FiberDetailModal {
       const changes: {
         outcome?: string
         shuttleAgent?: string
+        shuttleKind?: 'oneshot' | 'standing'
+        shuttleSchedule?: string
+        shuttleTz?: string
         parentId?: string | null
       } = {}
 
@@ -3092,6 +3447,29 @@ class FiberDetailModal {
       if (agentSelect) {
         const newAgent = agentSelect.value
         if (newAgent && newAgent !== originalAgent) changes.shuttleAgent = newAgent
+      }
+
+      // Kind / schedule / tz: a reshape is anything that diverges from the
+      // fiber's current shuttle block. When the kind changes, send all three
+      // (the server uses them to reshape the block); when only schedule/tz
+      // changes within standing, send those plus the (unchanged) kind so the
+      // server's reshape path resolves consistently.
+      const newSchedule = scheduleInput.value.trim()
+      const newTz = tzInput.value.trim()
+      const kindChanged = selectedKind !== originalKind
+      const scheduleChanged = selectedKind === 'standing' &&
+        (newSchedule !== originalSchedule || newTz !== originalTz)
+      if (kindChanged || scheduleChanged) {
+        changes.shuttleKind = selectedKind
+        if (selectedKind === 'standing') {
+          if (!newSchedule) {
+            errorEl.textContent = 'A cron expression is required for standing roles.'
+            errorEl.style.display = ''
+            return
+          }
+          changes.shuttleSchedule = newSchedule
+          changes.shuttleTz = newTz || 'UTC'
+        }
       }
 
       if (selectedParentId !== undefined) changes.parentId = selectedParentId
@@ -3387,7 +3765,14 @@ class FiberDetailModal {
 
   private async save(
     fiberId: string,
-    changes: { outcome?: string; shuttleAgent?: string; parentId?: string | null },
+    changes: {
+      outcome?: string
+      shuttleAgent?: string
+      shuttleKind?: 'oneshot' | 'standing'
+      shuttleSchedule?: string
+      shuttleTz?: string
+      parentId?: string | null
+    },
     saveBtn: HTMLButtonElement,
     errorEl: HTMLElement,
   ): Promise<void> {

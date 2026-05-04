@@ -117,9 +117,33 @@ export interface KanbanCard {
    * fiber-detail modal to show and edit the dispatch agent without opening vellum.
    */
   shuttleAgent?: string;
+  /**
+   * `shuttle.kind` — `oneshot` (default) or `standing`. Surfaced on the card so
+   * the fiber-detail modal can prefill its kind segmented control without an
+   * extra round-trip; `undefined` means the fiber has no shuttle block at all
+   * (in which case the dispatch panel hides).
+   */
+  shuttleKind?: 'oneshot' | 'standing';
+  /**
+   * `shuttle.schedule.expr` — 5-field cron expression for standing roles.
+   * Absent for one-shot fibers and for unblocked fibers; present when
+   * `shuttleKind === 'standing'`.
+   */
+  shuttleSchedule?: string;
+  /**
+   * `shuttle.schedule.tz` — IANA timezone name paired with `shuttleSchedule`.
+   * Absent when `shuttleSchedule` is absent.
+   */
+  shuttleTz?: string;
 }
 
 export interface KanbanColumns {
+  /**
+   * Tagged `idea` — the speculative pre-draft column. Off-screen left at
+   * rest so drafts stay focused on actual constitutions to review.
+   * `idea` takes precedence over `draft` when both are present.
+   */
+  ideas: KanbanCard[];
   /** shuttle.enabled === false (paused / not yet queued). Hidden from Shuttle dispatch. */
   drafts: KanbanCard[];
   /** shuttle.enabled !== false, status != closed. Queue + active are one bucket. */
@@ -158,6 +182,7 @@ export interface KanbanResponse {
   feltHost: string;
   columns: KanbanColumns;
   totals: {
+    ideas: number;
     drafts: number;
     inFlight: number;
     awaitingReview: number;
@@ -597,6 +622,7 @@ export class HttpApiKanban {
       // in-flight cards, and bumps them to the top of the column.
       const liveSessions = new Set(this.listSessions());
 
+      const ideas: KanbanCard[] = [];
       const drafts: KanbanCard[] = [];
       const inFlight: KanbanCard[] = [];
       const awaitingReview: KanbanCard[] = [];
@@ -607,19 +633,27 @@ export class HttpApiKanban {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
         // Column split. Two regimes:
         //   - oneshot: status drives placement. status !== closed splits on
-        //     shuttle.enabled (drafts vs inFlight); status === closed splits
-        //     on tempered (awaitingReview / tempered / composted).
+        //     `idea` tag (ideas), then shuttle.enabled (drafts vs inFlight);
+        //     status === closed splits on tempered (awaitingReview / tempered
+        //     / composted).
         //   - standing: status stays `active` permanently (it means "installed"),
         //     so column placement keys off shuttle.review.state. After a worker
         //     completes a run, review.state is `awaiting` until the human runs
         //     accept — that's the awaitingReview slot for standing roles.
+        //
+        // The `idea` tag takes precedence over draft/inFlight: an idea-tagged
+        // fiber lives in the speculative column regardless of shuttle.enabled,
+        // so users can flip a fiber from idea → draft purely by editing tags
+        // without first having to enable/disable shuttle.
+        const isIdea = f.tags?.includes('idea') === true;
         const isPaused = f.shuttleEnabled === false;
         const isStandingAwaiting =
           f.shuttleKind === 'standing' && f.shuttleReviewState === 'awaiting';
         if (isStandingAwaiting) {
           awaitingReview.push(card);
         } else if (f.status !== 'closed') {
-          if (isPaused) drafts.push(card);
+          if (isIdea) ideas.push(card);
+          else if (isPaused) drafts.push(card);
           else inFlight.push(card);
         } else if (f.tempered === true) {
           tempered.push(card);
@@ -631,11 +665,13 @@ export class HttpApiKanban {
       }
 
       // Sort:
+      //   ideas           : most-recently-created first (sketches, brainstorms)
       //   drafts          : most-recently-created first (these are works-in-progress)
       //   inFlight        : running workers / status:active first, then by createdAt desc
       //   awaitingReview  : most-recently-closed first
       //   tempered        : most-recently-closed first
       //   composted       : most-recently-closed first (the discarded, in reverse chrono)
+      ideas.sort(byCreatedAtDesc);
       drafts.sort(byCreatedAtDesc);
       inFlight.sort((a, b) => {
         const aActive = a.runningWorker || a.status === 'active' ? 0 : 1;
@@ -653,6 +689,7 @@ export class HttpApiKanban {
       this.json(res, 200, {
         feltHost: this.feltHost,
         columns: {
+          ideas,
           drafts,
           inFlight,
           awaitingReview,
@@ -660,6 +697,7 @@ export class HttpApiKanban {
           composted,
         },
         totals: {
+          ideas: ideas.length,
           drafts: drafts.length,
           inFlight: inFlight.length,
           awaitingReview: awaitingReview.length,
@@ -1359,22 +1397,45 @@ export class HttpApiKanban {
    * POST /kanban/fiber-patch
    *
    * Patch a fiber's editable fields from the fiber-detail modal. Supports:
-   *   - `outcome`      : free-text outcome string (replaces existing)
-   *   - `shuttleAgent` : agent id string (calls `shuttle-ctl set-model`)
-   *   - `parentId`     : new parent fiber id (calls `felt nest`) or `null`
-   *                      to promote to top-level (calls `felt unnest`)
+   *   - `outcome`         : free-text outcome string (replaces existing)
+   *   - `shuttleAgent`    : agent id string. Alone → `shuttle-ctl set-model`
+   *                         (cheap, preserves session.id and review state).
+   *                         Bundled with kind/schedule/tz → reshape path.
+   *   - `shuttleKind`     : `oneshot` | `standing`. Triggers a reshape
+   *                         (uninstall + install/repeat) since the writers
+   *                         refuse to clobber an existing block.
+   *   - `shuttleSchedule` : 5-field cron expression (only meaningful when
+   *                         the resolved kind is `standing`).
+   *   - `shuttleTz`       : IANA timezone name (paired with `shuttleSchedule`).
+   *   - `parentId`        : new parent fiber id (`felt nest`) or `null` to
+   *                         promote to top-level (`felt unnest`).
    *
    * Body: `{ fiberId: string, outcome?: string, shuttleAgent?: string,
-   *           parentId?: string | null }`
+   *           shuttleKind?: 'oneshot'|'standing', shuttleSchedule?: string,
+   *           shuttleTz?: string, parentId?: string | null }`
    *
    * Response: `{ ok: true, newFiberId?: string }` — `newFiberId` is set
    * when parentId changes and the fiber's id changes as a result.
+   *
+   * The reshape path goes through `shuttle-ctl uninstall` + `install`/`repeat`
+   * rather than direct YAML editing because shuttle-ctl validates cron
+   * syntax, IANA tz, and agent-registry membership before writing. Direct
+   * frontmatter editing would silently accept invalid blocks the daemon
+   * then refuses on the next poll.
+   *
+   * Reshape is destructive of `session.id`, `review.state`, `last_run_at`,
+   * `accepted_run_id`, and `next_due_at`. Acceptable for drafts; for active
+   * standing roles the human pays this cost knowingly when they edit the
+   * cadence.
    */
   async handleFiberPatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: {
       fiberId: string;
       outcome?: string;
       shuttleAgent?: string;
+      shuttleKind?: 'oneshot' | 'standing';
+      shuttleSchedule?: string;
+      shuttleTz?: string;
       parentId?: string | null;
     };
     try {
@@ -1408,8 +1469,74 @@ export class HttpApiKanban {
         writeFileSync(path, patched, 'utf8');
       }
 
-      // ── Patch shuttle.agent via shuttle-ctl set-model ─────────────────────
-      if (typeof body.shuttleAgent === 'string' && body.shuttleAgent) {
+      // ── Reshape the shuttle block (kind / schedule / tz, optionally agent)
+      // Anything that touches kind/schedule/tz forces a full uninstall + install
+      // /repeat because the shuttle-ctl writers refuse to clobber an existing
+      // block. When *only* agent is changing, the cheaper set-model path below
+      // preserves session.id, review history, and next_due_at.
+      const wantsReshape =
+        body.shuttleKind !== undefined ||
+        typeof body.shuttleSchedule === 'string' ||
+        typeof body.shuttleTz === 'string';
+
+      if (wantsReshape) {
+        const targetKind: 'oneshot' | 'standing' =
+          body.shuttleKind ?? fiber.shuttleKind ?? 'oneshot';
+        const targetAgent =
+          typeof body.shuttleAgent === 'string' && body.shuttleAgent
+            ? body.shuttleAgent
+            : fiber.shuttleAgent;
+
+        // Preserve enabled state across the reshape — a paused draft must
+        // stay paused. shuttle-ctl install defaults to enabled; pass
+        // --disabled when the fiber currently sits in drafts.
+        const wasDisabled = fiber.shuttleEnabled === false;
+
+        let targetSchedule: string | undefined;
+        let targetTz: string | undefined;
+        if (targetKind === 'standing') {
+          const requestedSchedule =
+            typeof body.shuttleSchedule === 'string' ? body.shuttleSchedule.trim() : '';
+          const requestedTz =
+            typeof body.shuttleTz === 'string' ? body.shuttleTz.trim() : '';
+          targetSchedule = requestedSchedule || fiber.shuttleSchedule?.expr;
+          targetTz = requestedTz || fiber.shuttleSchedule?.tz || 'UTC';
+          if (!targetSchedule) {
+            throw new Error(
+              'standing-kind shuttle blocks require a schedule (cron expression)',
+            );
+          }
+        }
+
+        const globalId = resolveGlobalFiberId(host, fiber.id);
+        const feltHost = await this.resolveShuttleFeltHost(globalId);
+        const ctlEnv = {
+          env: { ...process.env, HOME: process.env.HOME ?? '/tmp' },
+          cwd: feltHost,
+        };
+
+        // Uninstall first — install/repeat refuse to clobber. Skip when no
+        // block exists yet (the patch can install fresh).
+        if (fiber.hasShuttleBlock) {
+          await execFileAsync('shuttle-ctl', ['uninstall', globalId], ctlEnv);
+        }
+
+        if (targetKind === 'standing') {
+          const args = [
+            'repeat', globalId,
+            '--schedule', targetSchedule!,
+            '--tz', targetTz!,
+          ];
+          if (targetAgent) args.push('--model', targetAgent);
+          await execFileAsync('shuttle-ctl', args, ctlEnv);
+        } else {
+          const args = ['install', globalId];
+          if (targetAgent) args.push('--model', targetAgent);
+          if (wasDisabled) args.push('--disabled');
+          await execFileAsync('shuttle-ctl', args, ctlEnv);
+        }
+      } else if (typeof body.shuttleAgent === 'string' && body.shuttleAgent) {
+        // Agent-only change → set-model preserves session.id and review state.
         const globalId = resolveGlobalFiberId(host, fiber.id);
         const feltHost = await this.resolveShuttleFeltHost(globalId);
         await execFileAsync('shuttle-ctl', ['set-model', globalId, body.shuttleAgent], {
@@ -1511,14 +1638,17 @@ export class HttpApiKanban {
       projectSlug,
       sessionId: f.shuttleSessionId,
       shuttleAgent: f.shuttleAgent,
+      shuttleKind: f.shuttleKind,
+      shuttleSchedule: f.shuttleSchedule?.expr,
+      shuttleTz: f.shuttleSchedule?.tz,
     };
   }
 
   private emptyResponse(): KanbanResponse {
     return {
       feltHost: this.feltHost,
-      columns: { drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] },
-      totals: { drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 },
+      columns: { ideas: [], drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] },
+      totals: { ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 },
       temperedTotal: 0,
       staleness: this.buildStaleness(),
       tagIndex: [],
