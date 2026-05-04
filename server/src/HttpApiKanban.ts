@@ -1154,16 +1154,20 @@ export class HttpApiKanban {
     const feltHost = await this.resolveShuttleFeltHost(globalId);
 
     try {
-      // resumeMode is preserved on the API surface (validated above) for the
-      // future "Resume previous worker session" affordance, but felt history
-      // append doesn't carry the flag — there's no consumer downstream today.
-      // Passing it produces "unknown flag: --resume-mode" against current
-      // felt; keep the validation, drop the arg.
+      // resumeMode lands in the event payload as `resume_mode` via felt's
+      // generic `--field key=value` flag. Shuttle's dispatcher reads
+      // payload.resume_mode from the latest review-comment to decide
+      // between fresh and resume-previous dispatch (see
+      // shuttle/lib/shuttle/dispatcher.ex#check_resume_intent). Without
+      // this field the dispatcher always falls through to :fresh —
+      // which is what was happening before, breaking the "Resume
+      // previous" button silently.
       await execFileAsync('felt', [
         '-C', feltHost,
         'history', 'append', globalId,
         '--kind', 'review-comment',
         '--summary', directive,
+        '--field', `resume_mode=${body.resumeMode}`,
       ]);
       this.json(res, 200, { ok: true });
     } catch (err: unknown) {
