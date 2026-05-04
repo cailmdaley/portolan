@@ -1,8 +1,5 @@
 import { exec, execFile } from 'child_process';
-import { realpathSync } from 'fs';
 import { IncomingMessage, ServerResponse } from 'http';
-import { homedir } from 'os';
-import { join, relative } from 'path';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
 import type { City } from './CityManager.js';
@@ -10,43 +7,10 @@ import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
 import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
+import { resolveGlobalFiberId } from './loomGlobalId.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
-
-/**
- * Resolve a project-local fiber slug to a loom-global fiber id.
- *
- * `felt add` emits the slug relative to the current city's `.felt/` (e.g.
- * `vellum-reader/foo` from inside portolan). Shuttle's CLI resolves fibers
- * against `LOOM_HOME/.felt/` (default `~/loom/.felt/`), where that same fiber
- * lives at `ai-futures/portolan/vellum-reader/foo`. To call `shuttle-ctl
- * install` we need the loom-global id.
- *
- * The transform is straight realpath arithmetic: each city's `.felt/` is a
- * symlink into a subpath of `~/loom/.felt/`. The relative path between them
- * is the project's "global prefix"; prepend it to the local slug.
- *
- * Returns the slug unchanged when the project root is the loom itself
- * (no prefix). Falls back to the slug when realpath fails so the caller can
- * try shuttle-ctl directly — its `felt ls -j` fallback may still resolve.
- */
-function resolveGlobalFiberId(cityPath: string, localSlug: string): string {
-  const loomHome = process.env.LOOM_HOME || join(homedir(), 'loom');
-  const loomFelt = join(loomHome, '.felt');
-  let projectFelt: string;
-  try {
-    projectFelt = realpathSync(join(cityPath, '.felt'));
-  } catch {
-    return localSlug;
-  }
-  const prefix = relative(loomFelt, projectFelt);
-  // Empty (project IS the loom) or starts with `..` (project lives outside
-  // the loom — unusual but possible for non-symlinked .felt setups). In both
-  // cases pass the slug through; shuttle-ctl will fall back to `felt ls -j`.
-  if (!prefix || prefix.startsWith('..')) return localSlug;
-  return `${prefix}/${localSlug}`;
-}
 
 interface CityLookup {
   getCityById(cityId: string): City | null;
