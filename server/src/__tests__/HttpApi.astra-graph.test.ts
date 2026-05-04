@@ -35,6 +35,21 @@ function writeNestedFiber(feltDir: string, id: string, content: string): void {
   writeFileSync(join(dir, `${basename}.md`), content, 'utf-8');
 }
 
+/**
+ * Strip the cross-city / city-as-parent augmentation
+ * (`__loom__` parent, `__city__:cityId` sibling gateways, and the
+ * loom→root + root→top-level contains-links injected for them) so the
+ * tests can assert on the city's *own* fibers and links. The
+ * augmentation is exercised in its own test below.
+ */
+function stripAugmentation(graph: { nodes: any[]; links: any[] }): { nodes: any[]; links: any[] } {
+  const isSynth = (id: string) => id === '__loom__' || id.startsWith('__city__:');
+  return {
+    nodes: graph.nodes.filter((n) => !isSynth(n.id)),
+    links: graph.links.filter((l) => !isSynth(l.source) && !isSynth(l.target)),
+  };
+}
+
 const TEST_DIR = join(homedir(), '.portolan-test-httpapi-astra-graph');
 
 describe('HttpApi — /astra/graph endpoint', () => {
@@ -73,8 +88,9 @@ describe('HttpApi — /astra/graph endpoint', () => {
   it('returns empty graph when city has no fibers', async () => {
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
     expect(res.status).toBe(200);
-    expect(res.data.nodes).toEqual([]);
-    expect(res.data.links).toEqual([]);
+    const stripped = stripAugmentation(res.data);
+    expect(stripped.nodes).toEqual([]);
+    expect(stripped.links).toEqual([]);
   });
 
   it('emits every fiber as a vellum-shaped node', async () => {
@@ -93,9 +109,10 @@ Alpha body.`);
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
     expect(res.status).toBe(200);
-    expect(res.data.nodes).toHaveLength(1);
+    const stripped = stripAugmentation(res.data);
+    expect(stripped.nodes).toHaveLength(1);
 
-    const node = res.data.nodes[0];
+    const node = stripped.nodes[0];
     expect(node.id).toBe('alpha-abc123');
     expect(node.slug).toBe('alpha-abc123');
     expect(node.label).toBe('Alpha');
@@ -118,8 +135,9 @@ created-at: 2026-01-01T00:00:00Z
 `);
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
-    expect(res.data.nodes).toHaveLength(1);
-    expect(res.data.nodes[0].id).toBe('plain-xyz');
+    const stripped = stripAugmentation(res.data);
+    expect(stripped.nodes).toHaveLength(1);
+    expect(stripped.nodes[0].id).toBe('plain-xyz');
   });
 
   it('emits dependsOn edges with kind "data-flow"', async () => {
@@ -143,7 +161,15 @@ depends-on:
 `);
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
-    expect(res.data.links).toEqual([
+    const stripped = stripAugmentation(res.data);
+    // Filter to data-flow links only — resolveRootSlug's last-resort
+    // fallback elevates `allFibers[0]` (here: `base`) as a virtual root
+    // when nothing else matches the cityName, which then triggers the
+    // city-as-parent augmentation's `rootSlug → other-top-level`
+    // contains-links. That's tested separately; this test cares only
+    // about the dependsOn → data-flow translation.
+    const dataFlowLinks = stripped.links.filter((l: any) => l.kind === 'data-flow');
+    expect(dataFlowLinks).toEqual([
       { source: 'base', target: 'built-on', kind: 'data-flow' },
     ]);
   });
@@ -288,8 +314,9 @@ depends-on:
 `);
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
-    expect(res.data.links).toEqual([]);
-    expect(res.data.nodes).toHaveLength(1);
+    const stripped = stripAugmentation(res.data);
+    expect(stripped.links).toEqual([]);
+    expect(stripped.nodes).toHaveLength(1);
   });
 
   it('emits "contains" edges from the slug-shape parent for nested fibers', async () => {
@@ -323,7 +350,12 @@ created-at: 2026-01-03T00:00:00Z
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
     expect(res.status).toBe(200);
-    const containsLinks = res.data.links.filter((l: any) => l.kind === 'contains');
+    const stripped = stripAugmentation(res.data);
+    // Strip the city-as-parent intra-city links too: with rootSlug='test'
+    // (no such fiber here) the augmentation is silent, but if it ever
+    // fires for this shape we want the assertion to stay focused on the
+    // slug-shape contains-derivation that this test exercises.
+    const containsLinks = stripped.links.filter((l: any) => l.kind === 'contains');
     expect(containsLinks).toEqual(
       expect.arrayContaining([
         { source: 'parent', target: 'parent/child', kind: 'contains' },
@@ -347,7 +379,8 @@ created-at: 2026-01-01T00:00:00Z
 `);
 
     const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
-    expect(res.data.links.filter((l: any) => l.kind === 'contains')).toEqual([]);
+    const stripped = stripAugmentation(res.data);
+    expect(stripped.links.filter((l: any) => l.kind === 'contains')).toEqual([]);
   });
 });
 

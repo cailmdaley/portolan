@@ -1,6 +1,8 @@
 import { execFile } from 'child_process';
 import type { ServerResponse } from 'http';
+import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
+import { join } from 'path';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
@@ -16,6 +18,12 @@ interface CityLookup {
   getCityById(cityId: string): City | null;
   /** All known cities (used by /fiber-locate to scan for a slug). */
   getCities(): City[];
+  /** True iff this cityId is pinned (i.e. surfaces on the kanban / map).
+   *  Used by /astra/graph's cross-city augmentation to limit the
+   *  __city__ sibling gateways to pinned cities — the same set the
+   *  global Vellum index surfaces, so the user navigates a consistent
+   *  loom-wide collection across both surfaces. */
+  isPinned(cityId: string): boolean;
 }
 
 interface HttpApiTapestryOptions {
@@ -214,6 +222,39 @@ export class HttpApiTapestry {
    * Links default to kind 'data-flow' (from dependsOn). ASTRA extras
    * (decisions/findings/inputs/outputs, tempered, nested containment, wikilink
    * cites) are intentionally stubbed — they grow in as mystra-on-fiber lands.
+   *
+   * Cross-city / city-as-parent augmentation
+   * ----------------------------------------
+   * On top of the city's own fibers, we synthesise the city's place in
+   * the loom so the thumb-index nav rail behaves intuitively. Without
+   * this the city's root fiber has no parent and no "city contents" view
+   * — it sits next to its own subdirectories with neither containment
+   * nor cross-city sibling relationships, which surprises any user
+   * navigating from the global Vellum index ("I clicked into ai-futures,
+   * where are its children?").
+   *
+   * The augmentation, all *additive* to the existing graph:
+   *   - A synthetic `__loom__` parent node, so the city's root fiber has
+   *     somewhere to climb upward to. Vellum's parent-row in
+   *     FloatingIsland renders this as `← loom`; portolan intercepts the
+   *     `__` slug click and routes it to `openGlobalVellumIndex`.
+   *   - Contains-link `__loom__` → root fiber, so the root fiber's
+   *     parent-row resolves to loom.
+   *   - One `__city__:otherCityId` node per *other* city, with
+   *     contains-link `__loom__` → that node. They become the root
+   *     fiber's siblings via the shared loom parent. Click routes
+   *     through the same `__` synthetic-node interception in the host
+   *     (remount on the other city in the active mode).
+   *   - Contains-links from the root fiber to each *other* top-level
+   *     intra-city fiber (slug-shape: no `/` and not the rootSlug
+   *     itself). The user's mental model is "the root fiber IS the
+   *     city" — so the city's other top-level fibers should hang off
+   *     the root fiber as its children, not float as parentless peers.
+   *
+   * Cities-only augmentation when there's no rootSlug: skip the
+   * intra-city + parent links (no anchor to attach them to) and just
+   * emit the cross-city nodes so the graph still has cross-city
+   * navigation when present.
    */
   async handleAstraGraph(url: URL, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
@@ -234,7 +275,19 @@ export class HttpApiTapestry {
       const allFibers = await this.getAllCityFibers(city.path, sshHost);
       const fiberIds = new Set(allFibers.map((fiber) => fiber.id));
 
-      const nodes = allFibers.map((fiber) => ({
+      const nodes: Array<{
+        id: string;
+        slug: string;
+        label: string;
+        status: string;
+        tags: string[];
+        kind: string;
+        createdAt: string | undefined;
+        tempered: boolean;
+        hasASTRA: boolean;
+        decisionCount: number;
+        findingCount: number;
+      }> = allFibers.map((fiber) => ({
         id: fiber.id,
         slug: fiber.id,
         label: fiber.name,
@@ -275,6 +328,116 @@ export class HttpApiTapestry {
       }
 
       const rootSlug = resolveRootSlug(city.name, fiberIds, allFibers);
+
+      // Augment with cross-city navigation + city-as-parent. See the
+      // method's doc-comment for the rationale and shape.
+      //
+      // Special-case: when serving the loom city itself (the same city
+      // /global-graph delegates to), skip the synthetic `__loom__`
+      // parent — there's no level above loom to climb to, and adding
+      // a parent that points back to itself would loop. The other
+      // augmentation (cross-city sibling gateways for cities not
+      // already represented in the loom tree, root-fiber-as-parent
+      // for top-level intra-loom fibers) still applies.
+      const isLoomCity = city.name === 'loom';
+      const allCities = this.cityLookup.getCities();
+      const LOOM_ID = '__loom__';
+      const now = new Date().toISOString();
+      if (!isLoomCity) {
+        nodes.push({
+          id: LOOM_ID,
+          slug: LOOM_ID,
+          label: 'loom',
+          status: 'open',
+          tags: [],
+          kind: '__loom__',
+          createdAt: now,
+          tempered: false,
+          hasASTRA: false,
+          decisionCount: 0,
+          findingCount: 0,
+        });
+      }
+
+      // Cross-city sibling gateways. Each non-self pinned city with a
+      // live `.felt/` directory on disk becomes a `__city__:cityId`
+      // node parented by loom; clicking it remounts vellum on that
+      // city via portolan's `onOpenSyntheticNode` interception.
+      //
+      // Three filters layered:
+      //   1. `isPinned` — exclude ad-hoc cities portolan has seen but
+      //      that aren't part of the user's curated kanban / map.
+      //   2. `.felt/` exists at the city path (local cities only) —
+      //      exclude obsolete cities that have been migrated into
+      //      fibers under another loom city, leaving the original path
+      //      empty. Without this, the loom retains stale gateways
+      //      that 404 on click. Remote cities skip the disk check
+      //      since their path is on another host; we trust pinning
+      //      for those.
+      //   3. Name does NOT match a top-level fiber in this city —
+      //      dedup. Symlinks make `~/Documents/projects/portolan/`
+      //      (the pinned portolan city) and `~/loom/.felt/portolan/`
+      //      (the loom's `portolan/` sub-folder) the same content. If
+      //      the current city already exposes "portolan" as a
+      //      top-level fiber, emitting `__city__:portolan` as a
+      //      cross-city sibling double-counts. The user picks
+      //      navigation flavour by clicking the loom-fiber entry
+      //      (loom-scope) vs reaching the city via map / kanban
+      //      (city-scope).
+      // Match on fiber id (slug-shape, the directory basename) since
+      // that's what aligns with `otherCity.name` (also the project's
+      // directory basename). Comparing against `fiber.name` (the
+      // human-readable frontmatter label) would miss nearly everything.
+      const topLevelSlugs = new Set(
+        allFibers
+          .filter((f) => !f.id.includes('/'))
+          .map((f) => f.id),
+      );
+      for (const otherCity of allCities) {
+        if (otherCity.id === city.id) continue;
+        if (!this.cityLookup.isPinned(otherCity.id)) continue;
+        if (otherCity.originId === 'local' && !existsSync(join(otherCity.path, '.felt'))) continue;
+        if (topLevelSlugs.has(otherCity.name)) continue;
+        const otherSlug = `__city__:${otherCity.id}`;
+        nodes.push({
+          id: otherSlug,
+          slug: otherSlug,
+          label: otherCity.name,
+          status: 'open',
+          tags: [],
+          kind: '__city__',
+          createdAt: now,
+          tempered: false,
+          hasASTRA: false,
+          decisionCount: 0,
+          findingCount: 0,
+        });
+        // Parent the gateway under loom for non-loom cities so the
+        // user navigates "up to loom" and finds them as siblings of
+        // the local root. For the loom city itself there's no loom
+        // parent; the gateway sits as a parentless top-level entry,
+        // which IndexView and FloatingIsland surface alongside the
+        // loom's own top-level fibers.
+        if (!isLoomCity) {
+          links.push({ source: LOOM_ID, target: otherSlug, kind: 'contains' });
+        }
+      }
+
+      // Anchor the root fiber under loom (non-loom cities only) and
+      // absorb the city's other top-level fibers as its children.
+      if (rootSlug && fiberIds.has(rootSlug)) {
+        if (!isLoomCity) {
+          links.push({ source: LOOM_ID, target: rootSlug, kind: 'contains' });
+        }
+        for (const fiber of allFibers) {
+          // Top-level intra-city fiber, not the root itself, not nested
+          // (slug has no `/`). Existing nested fibers (`a/b`) already
+          // have correct contains-links from the per-fiber pass above.
+          if (fiber.id === rootSlug) continue;
+          if (fiber.id.includes('/')) continue;
+          links.push({ source: rootSlug, target: fiber.id, kind: 'contains' });
+        }
+      }
 
       this.sendJsonSuccess(res, { nodes, links, rootSlug });
     } catch (error: any) {

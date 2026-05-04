@@ -523,6 +523,12 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // `escalateToGlobalScope` and
       // [[ai-futures/portolan/vellum-reader/constitution-thumb-index-global-navigation]].
       onIndexEscalate: escalateToGlobalScope,
+      // The city graph carries `__loom__` (synthetic parent) and
+      // `__city__:otherCityId` (cross-city sibling gateways) injected
+      // server-side. Both surface as clickable thumb-index entries;
+      // route them through the synthetic-node handler so loom escapes
+      // up and other-city clicks remount on that city.
+      onOpenSyntheticNode: openCityFromSyntheticNode,
     })
     activeWorkspaceHandle = handle
   })
@@ -752,13 +758,13 @@ function openGlobalKanban(): void {
       // card click needs to pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
       onClose: handleWorkspaceClosed,
-      // No fiber graph in this mount, so vellum's thumb-index nav block
-      // doesn't render its `← index` button — but a kanban-card click can
-      // pivot to a city via `onOpenFiberInCity`, after which the user
-      // sits on a city root with the button visible. Wire escalation so
-      // that subsequent click escapes back to the global Vellum index
-      // rather than bouncing through the city's local rootSlug redirect.
-      onIndexEscalate: escalateToGlobalScope,
+      // No `onIndexEscalate` here: this is the top of the ladder for
+      // kanban scope. The button reads as the "you are here" anchor
+      // (red `--at-index` styling in vellum). A kanban-card click
+      // pivots into a fresh city modal via `openFiberInCityFromKanban`,
+      // which has its own onIndexEscalate wiring — the *global*
+      // modal's hook would never fire meaningfully because the city
+      // mount replaces it.
       // Synthetic city-node clicks remount in city scope, preserving
       // the kanban tab so the user sees the city-filtered kanban grid.
       // See openCityFromSyntheticNode for details.
@@ -805,10 +811,10 @@ function openGlobalFind(): void {
       // the (forthcoming Stage B) tree pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,
       onClose: handleWorkspaceClosed,
-      // Same rationale as openGlobalKanban: a fiber-click pivot lands on
-      // a city root where the thumb-index `← index` button is visible;
-      // wire escalation so it returns to the global Vellum index.
-      onIndexEscalate: escalateToGlobalScope,
+      // No `onIndexEscalate`: same rationale as openGlobalKanban. This
+      // is the top of the ladder for find scope; the red anchor styling
+      // marks "you are here." Card-click pivots open a fresh city modal
+      // with its own escalation hook.
       // Synthetic city-node clicks remount in city scope, preserving
       // the find tab. See openCityFromSyntheticNode.
       onOpenSyntheticNode: openCityFromSyntheticNode,
@@ -854,6 +860,15 @@ function openFiberInCityFromKanban(cityId: string, slug: string): void {
  * rather than fall through to a `navigate` that would 404 in vellum.
  */
 function openCityFromSyntheticNode(slug: string): void {
+  // The `__loom__` node is the synthetic loom-wide parent injected by
+  // server-side graph augmentation (see HttpApiTapestry.handleAstraGraph).
+  // It sits above each city's root fiber so the thumb-index parent-row
+  // resolves to "← loom" instead of the no-parent escape-button. Click =
+  // escalate to the global Vellum index, mode-preserving.
+  if (slug === '__loom__') {
+    escalateToGlobalScope()
+    return
+  }
   if (!slug.startsWith('__city__:')) {
     console.warn('[Vellum] unknown synthetic-node slug:', slug)
     return

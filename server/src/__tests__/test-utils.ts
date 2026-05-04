@@ -51,6 +51,7 @@ export function makeCityLookup(cityId: string, cityDir: string, name: string = '
   return {
     getCityById: (id: string) => (id === cityId ? city : null),
     getCities: () => [city],
+    isPinned: (id: string) => id === cityId,
   };
 }
 
@@ -72,6 +73,7 @@ export function makeMultiCityLookup(
   return {
     getCityById: (id: string) => byId.get(id) ?? null,
     getCities: () => cities,
+    isPinned: (id: string) => byId.has(id),
   };
 }
 
