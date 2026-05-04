@@ -14,6 +14,7 @@
  */
 
 import './KanbanModal.css'
+import { renderMarkdown } from './utils.js'
 
 /** Column identifier — also doubles as the API target. */
 type ColumnKind = 'ideas' | 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
@@ -1795,20 +1796,25 @@ class FiberDetailModal {
     })
 
     // ── Outcome ──────────────────────────────────────────────────────────────
-    // Lives in the left column; the section flex-grows so the textarea fills
-    // the available height. Internal scrolling within the textarea handles
-    // long outcomes — no `rows` attribute needed.
+    // Read-only rendered markdown. Outcomes carry tables, links, code blocks,
+    // image embeds — flat <textarea> rendering swallowed the structure and
+    // made even short outcomes hard to scan. Edits go through vellum (the
+    // open-in-vellum action on the modal); the kanban detail view is for
+    // skimming current state, not authoring.
     const outcomeSec = this.buildSection('Outcome')
-    const outcomeTextarea = document.createElement('textarea')
-    outcomeTextarea.className = 'kbn-detail-textarea'
-    outcomeTextarea.placeholder = 'What was decided or learned…'
-    outcomeTextarea.value = card.outcome ?? ''
-    outcomeTextarea.addEventListener('mousedown', (e) => e.stopPropagation())
-    outcomeTextarea.addEventListener('click', (e) => e.stopPropagation())
-    outcomeSec.append(outcomeTextarea)
-
-    // Track the *original* outcome to detect changes on save.
-    const originalOutcome = card.outcome ?? ''
+    const outcomeView = document.createElement('div')
+    outcomeView.className = 'kbn-detail-outcome-view'
+    if (card.outcome && card.outcome.trim().length > 0) {
+      outcomeView.innerHTML = renderMarkdown(card.outcome)
+    } else {
+      outcomeView.classList.add('kbn-detail-outcome-empty')
+      outcomeView.textContent = 'No outcome yet.'
+    }
+    // Don't let clicks inside the outcome bubble up to the modal's drag/close
+    // affordances — same swallow the textarea used to do.
+    outcomeView.addEventListener('mousedown', (e) => e.stopPropagation())
+    outcomeView.addEventListener('click', (e) => e.stopPropagation())
+    outcomeSec.append(outcomeView)
 
     // ── History panel (right column, top tier) ──────────────────────────────
     // Read-only event chain for the fiber. Shown alongside the outcome so the
@@ -2112,16 +2118,12 @@ class FiberDetailModal {
     saveBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       const changes: {
-        outcome?: string
         shuttleAgent?: string
         shuttleKind?: 'oneshot' | 'standing'
         shuttleSchedule?: string
         shuttleTz?: string
         parentId?: string | null
       } = {}
-
-      const newOutcome = outcomeTextarea.value.trim()
-      if (newOutcome !== originalOutcome.trim()) changes.outcome = newOutcome
 
       if (agentSelect) {
         const newAgent = agentSelect.value
@@ -2211,17 +2213,11 @@ class FiberDetailModal {
     }
     document.addEventListener('keydown', this.escapeHandler, true)
 
-    // Focus the outcome textarea after mount, parking the cursor (and
-    // therefore the scroll position) at the start of the content. Without
-    // this, the cursor lands at the end of the multi-paragraph outcome and
-    // the browser auto-scrolls the textarea to the bottom on focus —
-    // making the modal feel "stuck at the end" with no way to scroll
-    // further down. Users land at the top of their outcome and read
-    // forward, with full native wheel/keyboard scroll available.
+    // Park the outcome panel scrolled to the top after mount — for
+    // multi-paragraph outcomes the user lands on the opening line rather
+    // than wherever the browser's default focus would have wandered.
     window.requestAnimationFrame(() => {
-      outcomeTextarea.focus()
-      outcomeTextarea.setSelectionRange(0, 0)
-      outcomeTextarea.scrollTop = 0
+      outcomeView.scrollTop = 0
     })
   }
 
@@ -2275,6 +2271,7 @@ class FiberDetailModal {
     fiberId: string,
     cityId: string | undefined,
     container: HTMLElement,
+    attempt = 0,
   ): Promise<void> {
     try {
       // City-scoped kanban cards carry project-relative ids; threading
@@ -2290,12 +2287,32 @@ class FiberDetailModal {
       if (!res.ok) throw new Error(`${res.status}`)
       const data = (await res.json()) as {
         events: Array<{ occurredAt: string; actor: string; kind: string; summary: string }>
+        busy?: boolean
+      }
+      // Felt's SQLite index is busy this poll (another writer holds the
+      // lock). Empty events here doesn't mean "no history" — it means
+      // "couldn't read this time." Show a transient state and retry a
+      // couple of times before giving up. Cap attempts so a stuck-busy
+      // index doesn't wedge the modal.
+      if (data.busy && attempt < 3) {
+        container.innerHTML = ''
+        const refreshing = document.createElement('div')
+        refreshing.className = 'kbn-detail-history-empty'
+        refreshing.textContent = 'Refreshing…'
+        container.append(refreshing)
+        const backoff = 250 * (attempt + 1)
+        window.setTimeout(() => {
+          void this.loadHistory(fiberId, cityId, container, attempt + 1)
+        }, backoff)
+        return
       }
       container.innerHTML = ''
       if (data.events.length === 0) {
         const empty = document.createElement('div')
         empty.className = 'kbn-detail-history-empty'
-        empty.textContent = 'No history yet.'
+        empty.textContent = data.busy
+          ? 'History unavailable — felt index is busy. Retry shortly.'
+          : 'No history yet.'
         container.append(empty)
         return
       }

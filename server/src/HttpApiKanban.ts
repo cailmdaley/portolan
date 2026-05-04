@@ -1390,15 +1390,25 @@ export class HttpApiKanban {
       const globalId = resolveGlobalFiberId(host, fiber.id);
       const feltHost = await this.resolveShuttleFeltHost(globalId);
 
-      const { stdout } = await execFileAsync(
+      const { stdout, stderr } = await execFileAsync(
         'felt',
         ['-C', feltHost, 'history', globalId, '--last', String(limit), '-j'],
         { maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
       );
 
-      const rawEvents = JSON.parse((stdout ?? '').trim() || '[]') as Array<
-        Record<string, unknown>
-      >;
+      // felt emits `warning: index busy — history unavailable` to stderr and
+      // an empty array to stdout when the SQLite index is locked by another
+      // writer. Distinguishing this from "fiber genuinely has no events"
+      // lets the frontend show a transient "refreshing" state and retry,
+      // instead of the misleading "no history yet" message.
+      const indexBusy = typeof stderr === 'string' && /index busy/i.test(stderr);
+
+      // felt returns `null` (rather than `[]`) on some empty-history paths;
+      // tolerate either shape.
+      const parsed = JSON.parse((stdout ?? '').trim() || '[]') as unknown;
+      const rawEvents: Array<Record<string, unknown>> = Array.isArray(parsed)
+        ? (parsed as Array<Record<string, unknown>>)
+        : [];
 
       const events = rawEvents
         .filter(
@@ -1419,7 +1429,7 @@ export class HttpApiKanban {
           };
         });
 
-      this.json(res, 200, { events });
+      this.json(res, 200, { events, busy: indexBusy && events.length === 0 });
     } catch (err: unknown) {
       // Quietly degrade — the modal renders "No history yet". A loud 500
       // would block the modal from opening for a non-essential panel.

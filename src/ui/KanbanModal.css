@@ -1094,6 +1094,90 @@
   color: #C8BFB3;
   font-style: italic;
 }
+/* Read-only rendered-markdown view for the outcome panel. Matches the
+   textarea's frame so the section's height & scroll behaviour don't
+   shift when the modal opens onto a fiber that has vs. doesn't have
+   an outcome. */
+.kbn-detail-outcome-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 14px;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 14px;
+  line-height: 1.55;
+  color: #2E2A26;
+}
+.kbn-detail-outcome-view.kbn-detail-outcome-empty {
+  color: #C8BFB3;
+  font-style: italic;
+}
+.kbn-detail-outcome-view > :first-child { margin-top: 0; }
+.kbn-detail-outcome-view > :last-child { margin-bottom: 0; }
+.kbn-detail-outcome-view p { margin: 0.5em 0; }
+.kbn-detail-outcome-view h1,
+.kbn-detail-outcome-view h2,
+.kbn-detail-outcome-view h3,
+.kbn-detail-outcome-view h4 {
+  margin: 0.8em 0 0.3em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.kbn-detail-outcome-view h1 { font-size: 1.15em; }
+.kbn-detail-outcome-view h2 { font-size: 1.08em; }
+.kbn-detail-outcome-view h3 { font-size: 1.0em; color: #5A4F40; }
+.kbn-detail-outcome-view code {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 0.88em;
+  padding: 1px 4px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 2px;
+}
+.kbn-detail-outcome-view pre {
+  margin: 0.6em 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 3px;
+  overflow-x: auto;
+}
+.kbn-detail-outcome-view pre code { background: transparent; padding: 0; }
+.kbn-detail-outcome-view ul, .kbn-detail-outcome-view ol {
+  margin: 0.4em 0;
+  padding-left: 1.6em;
+}
+.kbn-detail-outcome-view li { margin: 0.2em 0; }
+.kbn-detail-outcome-view a {
+  color: #9A7B35;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+.kbn-detail-outcome-view blockquote {
+  margin: 0.6em 0;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid rgba(154, 123, 53, 0.45);
+  color: #5A4F40;
+  font-style: italic;
+}
+.kbn-detail-outcome-view img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0.6em 0;
+}
+.kbn-detail-outcome-view table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.95em;
+}
+.kbn-detail-outcome-view th, .kbn-detail-outcome-view td {
+  padding: 4px 8px;
+  border: 1px solid rgba(122, 112, 104, 0.3);
+}
+.kbn-detail-outcome-view th { background: rgba(0, 0, 0, 0.04); font-weight: 600; }
 .kbn-detail-field-row {
   display: flex;
   align-items: center;
