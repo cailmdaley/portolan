@@ -2607,10 +2607,14 @@ export class KanbanModal {
         border-bottom: none;
         min-height: 0;
       }
-      /* The scrolling list of history events. */
+      /* The scrolling list of history events. overscroll-behavior: contain
+         keeps wheel events at the boundary inside the list — they never
+         chain up to the kanban or document and surprise the user with
+         page-level motion. */
       .kbn-detail-history-list {
         flex: 1;
         overflow-y: auto;
+        overscroll-behavior: contain;
         min-height: 0;
         display: flex;
         flex-direction: column;
@@ -2702,6 +2706,7 @@ export class KanbanModal {
         resize: none;
         flex: 1;
         min-height: 0;
+        overscroll-behavior: contain;
         padding: 10px 12px;
         border: 1px solid rgba(122, 112, 104, 0.28);
         border-radius: 2px;
@@ -3548,8 +3553,18 @@ class FiberDetailModal {
     }
     document.addEventListener('keydown', this.escapeHandler, true)
 
-    // Focus the outcome textarea after mount.
-    window.requestAnimationFrame(() => outcomeTextarea.focus())
+    // Focus the outcome textarea after mount, parking the cursor (and
+    // therefore the scroll position) at the start of the content. Without
+    // this, the cursor lands at the end of the multi-paragraph outcome and
+    // the browser auto-scrolls the textarea to the bottom on focus —
+    // making the modal feel "stuck at the end" with no way to scroll
+    // further down. Users land at the top of their outcome and read
+    // forward, with full native wheel/keyboard scroll available.
+    window.requestAnimationFrame(() => {
+      outcomeTextarea.focus()
+      outcomeTextarea.setSelectionRange(0, 0)
+      outcomeTextarea.scrollTop = 0
+    })
   }
 
   close(): void {
