@@ -82,7 +82,15 @@ kind: task
       expect(count).toBe(1);
     });
 
-    it('should count fibers without frontmatter as open', async () => {
+    it('should skip fibers without frontmatter (felt semantics)', async () => {
+      // Pre felt-mediated reads, FiberReader's permissive walker included
+      // bare markdown files as fibers with empty status. felt-mediated
+      // reads now apply felt's stricter rule: a fiber file must start
+      // with `---` frontmatter, otherwise felt warns and excludes it. The
+      // reader inherits this — there's no longer a path that surfaces
+      // partially-formed fibers, which is the right contract: anything
+      // that doesn't parse cleanly should be visible to felt check, not
+      // silently included in counts.
       const feltDir = join(testDir, '.felt');
       mkdirSync(feltDir);
 
@@ -90,7 +98,7 @@ kind: task
 `);
 
       const count = await countOpenFibers(testDir);
-      expect(count).toBe(1);
+      expect(count).toBe(0);
     });
 
     it('should ignore non-fiber directories and loose files', async () => {
