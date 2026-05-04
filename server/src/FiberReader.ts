@@ -74,39 +74,37 @@ export interface Fiber {
 
 /**
  * Read and parse all fibers in a city's .felt/ directory by shelling out
- * to `felt -C <city> ls -s all -j --body`.
+ * to `felt -C <city> ls -s all -j` (with `--body` when bodies are needed).
  *
- * Why felt-mediated rather than disk-walking: felt v1.0.4+ emits the full
+ * Why felt-mediated rather than disk-walking: felt emits the full
  * frontmatter (including tool-owned namespaces like `shuttle:`) as flat
- * top-level JSON keys. Walking the disk ourselves duplicates felt's
- * parsing logic in TS — and that duplication has bitten us before
- * (sibling: ai-futures/shuttle/finding-dispatcher-felt-show-json-misses-
- * shuttle-block in the loom — felt's lossy JSON forced the shuttle
- * dispatcher into per-key --field workarounds, since fixed at the felt
- * layer). The rule we now enforce: **felt owns reading; tools own
- * write/orchestration.** Each fiber consumer stays thin.
+ * top-level JSON keys, so consumers don't reimplement felt's parsing.
+ * The rule we enforce: **felt owns reading; tools own write/orchestration.**
  *
- * Body is included via `--body` so existing search/tapestry callers see
- * the same Fiber shape they did under the disk-walking implementation.
- * The cost is ~3-4× larger JSON than metadata-only; acceptable for a
- * single subprocess per refresh and far cheaper than the equivalent
- * disk-walk-and-yaml-parse-in-Node loop.
+ * `withBody` is opt-in. Bodies inflate the JSON payload ~80× (8.6 MB vs
+ * ~100 KB on a 325-fiber loom) and force felt to read every file's body
+ * off disk; metadata-only callers (kanban, fiber-count probes) should
+ * keep the default `false`. Search/tapestry callers that score against
+ * body content pass `true`.
  */
-async function readAllFibers(cityPath: string): Promise<Fiber[]> {
+async function readAllFibers(cityPath: string, opts: { withBody?: boolean } = {}): Promise<Fiber[]> {
   const feltPath = join(cityPath, '.felt');
 
   if (!existsSync(feltPath)) {
     return [];
   }
 
+  const args = ['-C', cityPath, 'ls', '-s', 'all', '-j'];
+  if (opts.withBody) args.push('--body');
+
   let stdout: string;
   try {
     const result = await execFileAsync(
       'felt',
-      ['-C', cityPath, 'ls', '-s', 'all', '-j', '--body'],
-      // The loom carries thousands of fibers; a comfortable ceiling for the
-      // JSON payload is needed so node doesn't truncate. Empirically ~10MB
-      // for a 3000-fiber loom with bodies; allow 64MB for headroom.
+      args,
+      // Body-bearing payloads on a multi-thousand-fiber store can run into
+      // double-digit MBs; allow 64MB for headroom even though metadata-only
+      // calls stay under 1MB.
       { maxBuffer: 64 * 1024 * 1024 },
     );
     stdout = result.stdout;
@@ -344,10 +342,16 @@ export async function getFibersByTag(cityPath: string, tagPrefix: string): Promi
 }
 
 /**
- * Gets all fibers for a city regardless of status.
+ * Gets all fibers for a city regardless of status. `withBody` is off by
+ * default — pass `{ withBody: true }` only when the caller actually scores
+ * or renders against fiber bodies (search, tapestry). Most consumers
+ * (kanban, count probes, fiber list) only need metadata.
  */
-export async function getAllFibers(cityPath: string): Promise<Fiber[]> {
-  return readAllFibers(cityPath);
+export async function getAllFibers(
+  cityPath: string,
+  opts: { withBody?: boolean } = {},
+): Promise<Fiber[]> {
+  return readAllFibers(cityPath, opts);
 }
 
 // ── Parser ─────────────────────────────────────────────────────────

@@ -1,0 +1,1369 @@
+/* Fills the host element supplied by vellum's workspace slot
+   (KanbanHost in src/vellum/mount.tsx). The host gives us a fixed-
+   viewport positioning context; the kanban stretches to inset:0
+   inside it. No border or shadow — vellum's outer modal already
+   provides the chrome boundary, and a nested border reads as
+   tile-in-tile.
+
+   Header padding-left clears 44px for vellum's modal close button
+   (24px wide at left:8px — see vellum/mount.tsx:openVellumWorkspaceModal). */
+.kbn-modal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #EDE8E0;
+  display: flex; flex-direction: column;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  color: #2E2A26;
+  overflow: hidden;
+}
+/* Header band aligns with vellum's thumb-index: bottom edge meets
+   --thumb-index-bottom (so the kanban grid below starts on the same
+   horizontal line as the thumb-index ends), right edge clears
+   --canvas-width (so the band's content doesn't sit under the
+   thumb-index in the top-right corner). The thumb-index visually
+   extends the band's right portion — same chrome layer, two pieces.
+   The min-height falls back to the natural header height when the
+   var isn't published yet (initial paint, before FloatingIsland's
+   ResizeObserver fires). */
+.kbn-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 20px 14px 44px;
+  padding-right: calc(20px + var(--canvas-width, 360px));
+  min-height: var(--thumb-index-bottom, auto);
+  border-bottom: 1px solid rgba(46, 42, 38, 0.12);
+  background: #E5DED2;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.kbn-title-wrap {
+  display: flex; align-items: baseline; gap: 8px;
+}
+.kbn-title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.kbn-subtitle {
+  font-style: italic;
+  font-size: 14px;
+  color: #7A7068;
+}
+.kbn-status {
+  flex: 1;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: #7A7068;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+/* Stash trigger: gold + at the header's right edge. Pairs with the
+   "n" hotkey owned by KanbanHost; semantically belongs in the kanban's
+   own chrome rather than floated over from the React host (the floating
+   version was getting hidden behind FloatingIsland and offset wrong by
+   vellum's chrome assumptions). */
+.kbn-stash-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #9A7B35;
+  color: #FFFFFF;
+  border: 1px solid #7A6028;
+  box-shadow: 0 2px 4px rgba(46, 42, 38, 0.18);
+  font-size: 18px;
+  line-height: 1;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease-out, transform 120ms ease-out;
+}
+.kbn-stash-btn:hover,
+.kbn-stash-btn:focus-visible {
+  background: #B08D3D;
+  transform: scale(1.06);
+  outline: none;
+}
+.kbn-stash-btn:focus-visible {
+  box-shadow: 0 0 0 3px rgba(154, 123, 53, 0.36);
+}
+/* Refresh ↻ button in the header. Faded, low-prominence. */
+.kbn-refresh-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(122, 112, 104, 0.55);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.kbn-refresh-btn:hover,
+.kbn-refresh-btn:focus-visible {
+  color: #7A7068;
+  border-color: rgba(122, 112, 104, 0.22);
+  outline: none;
+}
+.kbn-refresh-btn:focus-visible {
+  outline: 1px dashed #7A7068;
+  outline-offset: 2px;
+}
+/* aria-live region — invisible but observable in the a11y tree. */
+.kbn-live {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+.kbn-banner {
+  margin: 0 20px;
+  padding: 8px 12px;
+  background: rgba(154, 123, 53, 0.12);
+  border: 1px solid rgba(154, 123, 53, 0.4);
+  color: #6B5520;
+  font-size: 13px;
+  border-radius: 2px;
+  margin-top: 8px;
+}
+.kbn-banner-error {
+  background: rgba(178, 78, 60, 0.12);
+  border-color: rgba(178, 78, 60, 0.5);
+  color: #8B3A28;
+}
+/* Five-column track with a three-column viewport. Drafts/Open/Awaiting
+   are visible at rest; horizontal scroll reveals Tempered and
+   Composted without clone-loop carousel state. Vertical scroll is
+   native/per-column; Shift+vertical wheel pans horizontally. Deliberately
+   no scroll-snap: trackpad deltas are small, and snap makes side-to-side
+   gestures feel stuck. */
+.kbn-body {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  min-height: 0;
+}
+.kbn-body.kbn-can-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+}
+.kbn-body.kbn-can-scroll-left {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px);
+  mask-image: linear-gradient(to right, transparent 0, #000 28px);
+}
+.kbn-body.kbn-can-scroll-left.kbn-can-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+}
+.kbn-col {
+  flex: 0 0 max(260px, calc((100% - 20px) / 3));
+  display: flex; flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  background: #F4F0E8;
+  border: 1px solid rgba(46, 42, 38, 0.10);
+  border-radius: 3px;
+  overflow: hidden;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+/* When zoomed, the body becomes a single-column view. */
+.kbn-body.kbn-body-zoomed {
+  overflow-x: hidden;
+}
+.kbn-body.kbn-body-zoomed .kbn-col:not(.kbn-col-zoomed) {
+  display: none;
+}
+.kbn-body.kbn-body-zoomed .kbn-col-zoomed {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* When zoomed, tile cards as a CSS grid filling the available width. */
+.kbn-col-zoomed .kbn-col-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  align-content: start;
+  gap: 12px;
+}
+.kbn-col-head {
+  cursor: zoom-in;
+}
+.kbn-col-zoomed .kbn-col-head {
+  cursor: zoom-out;
+}
+.kbn-col {
+  display: flex; flex-direction: column;
+  min-height: 0;
+  background: #F4F0E8;
+  border: 1px solid rgba(46, 42, 38, 0.10);
+  border-radius: 3px;
+  overflow: hidden;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.kbn-col-awaitingReview {
+  border-color: rgba(154, 123, 53, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(154, 123, 53, 0.18);
+}
+.kbn-col-drafts {
+  background: #F0EDE6;
+  border-style: dashed;
+  opacity: 0.92;
+}
+.kbn-col-drafts .kbn-col-title { color: #7A7068; font-style: italic; }
+/* Composted column: desaturated Earth tone, visually sits at the
+   boundary between Tempered and "the unbuilt" (Drafts on wrap). */
+.kbn-col-composted {
+  background: #EAE6DE;
+  border-color: rgba(122, 112, 104, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(122, 112, 104, 0.12);
+}
+.kbn-col-composted .kbn-col-title { color: #7A7068; font-style: italic; }
+.kbn-col-tempered {
+  background: #EFEBE3;
+}
+/* Active drop target while a drag is in progress. */
+.kbn-col-drop {
+  background: rgba(154, 123, 53, 0.10);
+  border-color: rgba(154, 123, 53, 0.55);
+  box-shadow: inset 0 0 0 2px rgba(154, 123, 53, 0.45);
+}
+.kbn-col-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 10px 14px 4px;
+}
+.kbn-col-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.kbn-col-awaiting .kbn-col-title { color: #9A7B35; }
+.kbn-col-tempered .kbn-col-title { color: #5A7B7B; }
+.kbn-col-count {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  color: #7A7068;
+}
+.kbn-col-blurb {
+  padding: 0 14px 8px;
+  font-size: 12px;
+  font-style: italic;
+  color: #7A7068;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.08);
+}
+.kbn-col-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex; flex-direction: column;
+  gap: 8px;
+}
+.kbn-empty {
+  text-align: center;
+  color: #B8AC9E;
+  font-style: italic;
+  padding: 24px 8px;
+  font-size: 13px;
+}
+.kbn-card {
+  background: #FBF7F0;
+  border: 1px solid rgba(46, 42, 38, 0.12);
+  border-radius: 3px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: grab;
+  font-family: inherit;
+  color: inherit;
+  display: flex; flex-direction: column;
+  gap: 6px;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
+}
+.kbn-card:hover {
+  background: #FFFCF6;
+  border-color: rgba(46, 42, 38, 0.22);
+  transform: translateY(-1px);
+}
+.kbn-card:active { cursor: grabbing; }
+.kbn-card-dragging {
+  opacity: 0.45;
+  transform: scale(0.98);
+  cursor: grabbing;
+}
+.kbn-card-awaitingReview {
+  border-color: rgba(154, 123, 53, 0.45);
+}
+.kbn-card-composted {
+  padding: 6px 10px;
+  gap: 4px;
+  background: #F2EEE6;
+  border-style: dashed;
+}
+.kbn-card-composted .kbn-card-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.kbn-card-composted .kbn-card-outcome {
+  font-size: 11.5px;
+  -webkit-line-clamp: 2;
+  color: #6A645E;
+}
+/* Tempered cards are smaller — they're for the record, not the focus. */
+.kbn-card-tempered {
+  padding: 6px 10px;
+  gap: 4px;
+  background: #F7F3EA;
+}
+.kbn-card-header {
+  display: flex; align-items: flex-start; gap: 6px;
+}
+.kbn-card-handle {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: #B8AC9E;
+  line-height: 1.3;
+  letter-spacing: -1px;
+  user-select: none;
+  cursor: grab;
+  flex-shrink: 0;
+  padding: 1px 0;
+}
+.kbn-card:active .kbn-card-handle { cursor: grabbing; }
+.kbn-card-name {
+  flex: 1;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font-family: inherit;
+}
+.kbn-card-tempered .kbn-card-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.kbn-card-name:hover { text-decoration: underline; }
+.kbn-card-name:focus { outline: none; }
+.kbn-card-name:focus-visible {
+  outline: 1px dashed #7A7068;
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+.kbn-pill {
+  display: inline-block;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.kbn-pill-open {
+  background: rgba(154, 123, 53, 0.12);
+  color: #9A7B35;
+  border: 1px solid rgba(154, 123, 53, 0.3);
+}
+.kbn-pill-active {
+  background: rgba(154, 123, 53, 0.25);
+  color: #6B5520;
+  border: 1px solid rgba(154, 123, 53, 0.45);
+}
+.kbn-pill-closed {
+  background: rgba(122, 112, 104, 0.15);
+  color: #7A7068;
+  border: 1px solid rgba(122, 112, 104, 0.35);
+}
+.kbn-pill-tempered {
+  background: rgba(90, 123, 123, 0.18);
+  color: #4A6868;
+  border: 1px solid rgba(90, 123, 123, 0.4);
+}
+.kbn-pill-composted {
+  background: rgba(122, 112, 104, 0.12);
+  color: #8A7E72;
+  border: 1px solid rgba(122, 112, 104, 0.3);
+}
+.kbn-card-id {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  color: #B8AC9E;
+  letter-spacing: 0.01em;
+  word-break: break-all;
+}
+.kbn-card-outcome {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #4A4540;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.kbn-card-tempered .kbn-card-outcome {
+  font-size: 11.5px;
+  -webkit-line-clamp: 2;
+  color: #6A645E;
+}
+.kbn-card-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.kbn-card-actions {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px dashed rgba(46, 42, 38, 0.10);
+}
+.kbn-card-tempered .kbn-card-actions {
+  padding-top: 4px;
+  gap: 4px;
+}
+.kbn-action {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(46, 42, 38, 0.04);
+  border: 1px solid rgba(46, 42, 38, 0.18);
+  color: #4A4540;
+  padding: 3px 8px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.kbn-action:hover {
+  background: rgba(46, 42, 38, 0.10);
+  color: #2E2A26;
+  border-color: rgba(46, 42, 38, 0.30);
+}
+.kbn-action:focus { outline: none; }
+.kbn-action:focus-visible {
+  outline: 1px dashed #7A7068;
+  outline-offset: 1px;
+}
+.kbn-action-tempered {
+  background: rgba(90, 123, 123, 0.10);
+  color: #4A6868;
+  border-color: rgba(90, 123, 123, 0.40);
+}
+.kbn-action-tempered:hover {
+  background: rgba(90, 123, 123, 0.20);
+  color: #2E4848;
+}
+.kbn-action-awaitingReview {
+  background: rgba(154, 123, 53, 0.10);
+  color: #6B5520;
+  border-color: rgba(154, 123, 53, 0.45);
+}
+.kbn-action-awaitingReview:hover {
+  background: rgba(154, 123, 53, 0.20);
+  color: #4A3810;
+}
+.kbn-action-inFlight {
+  background: rgba(90, 123, 123, 0.08);
+  color: #4A6868;
+  border-color: rgba(90, 123, 123, 0.35);
+}
+.kbn-action-inFlight:hover {
+  background: rgba(90, 123, 123, 0.18);
+}
+.kbn-action-drafts {
+  background: rgba(122, 112, 104, 0.08);
+  color: #7A7068;
+  border-color: rgba(122, 112, 104, 0.30);
+  font-style: italic;
+}
+.kbn-action-drafts:hover {
+  background: rgba(122, 112, 104, 0.18);
+  color: #2E2A26;
+}
+/* Subtler card style inside the drafts column. */
+.kbn-card-drafts {
+  background: #F8F4EC;
+  border-style: dashed;
+}
+.kbn-card-tags {
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.kbn-tag {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 9.5px;
+  color: #7A7068;
+  background: rgba(46, 42, 38, 0.05);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+/* Feature 4: tag edit affordance — ✎ button next to tags */
+.kbn-tag-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1;
+  color: #C8BFB3;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  flex-shrink: 0;
+}
+.kbn-tag-edit-btn:hover,
+.kbn-tag-edit-btn:focus-visible {
+  color: #7A7068;
+  background: rgba(46, 42, 38, 0.08);
+  border-color: rgba(122, 112, 104, 0.3);
+  outline: none;
+}
+.kbn-tag-edit-btn:focus-visible {
+  outline: 1px dashed #7A7068;
+  outline-offset: 1px;
+}
+/* Tag editor: inline card-level editor for adding/removing tags */
+.kbn-tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.kbn-tag-editor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.kbn-tag-editable {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(46, 42, 38, 0.07);
+  padding: 1px 2px 1px 5px;
+}
+.kbn-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: #9A7068;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.kbn-tag-remove:hover,
+.kbn-tag-remove:focus-visible {
+  color: #A03030;
+  background: rgba(160, 48, 48, 0.10);
+  outline: none;
+}
+.kbn-tag-add-input {
+  flex: 0 1 80px;
+  min-width: 60px;
+  max-width: 120px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid rgba(122, 112, 104, 0.22);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.6);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: #2E2A26;
+  outline: none;
+}
+.kbn-tag-add-input:focus {
+  border-color: rgba(122, 112, 104, 0.5);
+  background: #FFFFFF;
+}
+.kbn-tag-add-input::placeholder {
+  color: #C8BFB3;
+}
+.kbn-tag-editor-actions {
+  display: flex;
+  gap: 6px;
+}
+.kbn-card-date {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  color: #B8AC9E;
+  flex-shrink: 0;
+}
+.kbn-card-blocked {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  color: #9A7B35;
+  background: rgba(154, 123, 53, 0.10);
+  padding: 4px 6px;
+  border-radius: 2px;
+  margin-top: 2px;
+}
+.kbn-card-worker {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  color: #4A6868;
+  background: rgba(90, 123, 123, 0.10);
+  padding: 4px 6px;
+  border-radius: 2px;
+  margin-top: 2px;
+  animation: kbn-pulse 2s ease-in-out infinite;
+  /* Button reset */
+  border: 1px solid transparent;
+  text-align: left;
+  font-weight: inherit;
+  cursor: pointer;
+  width: 100%;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.kbn-card-worker:hover {
+  color: #2E4848;
+  border-color: rgba(90, 123, 123, 0.55);
+}
+.kbn-card-worker:focus { outline: none; }
+.kbn-card-worker:focus-visible {
+  outline: 1px dashed #4A6868;
+  outline-offset: 2px;
+}
+@keyframes kbn-pulse {
+  0%, 100% { background: rgba(90, 123, 123, 0.10); }
+  50% { background: rgba(90, 123, 123, 0.22); }
+}
+/* Stale-origin card: the originating agent is disconnected. The
+   snapshot is preserved (last-known-good) so the card still reads
+   and clicks through to vellum, but drag is disabled because
+   mutation has nowhere to land until reconnect. Visual signal
+   is a desaturated dim plus a not-allowed cursor on the drag
+   handle. */
+.kbn-card--stale {
+  opacity: 0.62;
+  background: #F4F0E8;
+  border-style: dashed;
+  cursor: default;
+}
+.kbn-card--stale:hover {
+  background: #F4F0E8;
+  border-color: rgba(46, 42, 38, 0.18);
+  transform: none;
+}
+.kbn-card--stale:active { cursor: default; }
+.kbn-card--stale .kbn-card-handle {
+  cursor: not-allowed;
+  color: #C8BFB3;
+}
+.kbn-card--stale .kbn-card-name { color: #6A645E; }
+/* The waiting badge sits in the same band as kbn-card-blocked /
+   kbn-card-worker — runtime-state info that depends on connection,
+   not on fiber content. Cool grey-blue distinguishes "stale" from
+   the warm gold of "blocked on dep" and the teal of "worker
+   running." */
+.kbn-card-waiting {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  color: #5A6A78;
+  background: rgba(90, 110, 130, 0.10);
+  border: 1px dashed rgba(90, 110, 130, 0.35);
+  padding: 4px 6px;
+  border-radius: 2px;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+.kbn-error {
+  margin: 24px;
+  padding: 16px;
+  border: 1px solid rgba(154, 123, 53, 0.4);
+  background: rgba(154, 123, 53, 0.08);
+  color: #6B5520;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 13px;
+}
+
+/* ── Review action cluster (awaiting-review cards only) ─────────────── */
+/* Appended below the card body. Delimited from content by a top border.
+   Primary row: textarea + Requeue fresh + Resume previous (disabled).
+   Secondary row: temper + compost (drag alternatives, smaller). */
+.kbn-review-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  margin-top: 4px;
+  border-top: 1px dashed rgba(154, 123, 53, 0.28);
+}
+.kbn-review-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 44px;
+  padding: 5px 8px;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #2E2A26;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.kbn-review-textarea:focus {
+  border-color: rgba(154, 123, 53, 0.55);
+  background: #FFFFFF;
+}
+.kbn-review-textarea::placeholder {
+  color: #C8BFB3;
+  font-style: italic;
+}
+.kbn-review-primary {
+  display: flex;
+  gap: 6px;
+}
+.kbn-review-btn {
+  flex: 1;
+  font-size: 10px;
+  padding: 3px 6px;
+  white-space: nowrap;
+}
+/* Disabled "Resume previous" uses a distinct muted style. */
+.kbn-review-btn--disabled {
+  background: rgba(46, 42, 38, 0.03);
+  border-color: rgba(46, 42, 38, 0.12);
+  color: #C8BFB3;
+  cursor: not-allowed;
+}
+.kbn-review-btn--disabled:hover {
+  background: rgba(46, 42, 38, 0.03);
+  color: #C8BFB3;
+}
+.kbn-review-secondary {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.kbn-review-secondary-btn {
+  font-size: 9.5px;
+  padding: 2px 7px;
+  opacity: 0.75;
+}
+.kbn-review-secondary-btn:hover {
+  opacity: 1;
+}
+
+@media (max-width: 1100px) {
+  .kbn-col {
+    flex: 0 0 85%;
+    min-width: 0;
+  }
+}
+
+/* ── Fiber Detail Modal ──────────────────────────────────────────────── */
+/* Fixed-position overlay with a centered dialog. Opens on card click as
+   a lightweight alternative to full vellum. Styled to match the kanban's
+   warm-paper palette: #EDE8E0 body, #E5DED2 header, gold accents. */
+.kbn-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(46, 42, 38, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.kbn-detail-dialog {
+  background: #EDE8E0;
+  border: 1px solid rgba(46, 42, 38, 0.18);
+  border-radius: 4px;
+  box-shadow: 0 8px 32px rgba(46, 42, 38, 0.25), 0 2px 8px rgba(46, 42, 38, 0.12);
+  /* Big landscape modal — most of the screen, wider than tall.
+     90vw caps at 1280px; 80vh keeps a generous landscape ratio. */
+  width: min(90vw, 1280px);
+  height: min(80vh, 800px);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  color: #2E2A26;
+  overflow: hidden;
+}
+.kbn-detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px 20px 12px;
+  background: #E5DED2;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.12);
+  flex-shrink: 0;
+}
+.kbn-detail-title {
+  flex: 1;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color 120ms ease, text-decoration-color 120ms ease;
+}
+.kbn-detail-title:hover,
+.kbn-detail-title:focus-visible {
+  color: #6B5520;
+  text-decoration-color: rgba(154, 123, 53, 0.5);
+  outline: none;
+}
+.kbn-detail-title-hint {
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 12px;
+  font-style: italic;
+  color: #B8AC9E;
+  margin-left: 6px;
+  font-weight: 400;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.kbn-detail-title:hover .kbn-detail-title-hint,
+.kbn-detail-title:focus-visible .kbn-detail-title-hint {
+  opacity: 1;
+}
+.kbn-detail-close {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 16px;
+  line-height: 1;
+  color: #9A9088;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kbn-detail-close:hover,
+.kbn-detail-close:focus-visible {
+  color: #2E2A26;
+  background: rgba(46, 42, 38, 0.10);
+  border-color: rgba(46, 42, 38, 0.20);
+  outline: none;
+}
+.kbn-detail-id {
+  padding: 6px 20px 10px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: #B8AC9E;
+  letter-spacing: 0.01em;
+  background: #E5DED2;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.12);
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+.kbn-detail-id:hover,
+.kbn-detail-id:focus-visible {
+  color: #6B5520;
+  outline: none;
+}
+/* Body is a two-tier layout: top row (outcome | history) above a
+   horizontal controls strip (dispatch + parent). Outcome and history
+   share the bulk of the height; the controls strip auto-sizes to its
+   content. */
+.kbn-detail-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Top tier: two columns, outcome (left) and history (right). */
+.kbn-detail-top {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+.kbn-detail-col-outcome {
+  flex: 1 1 58%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid rgba(46, 42, 38, 0.10);
+}
+.kbn-detail-col-history {
+  flex: 1 1 42%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: rgba(229, 222, 210, 0.35);
+}
+/* Bottom strip: horizontal controls (dispatch + parent). Each control
+   block has a fixed-width label + content pair, separated by gentle
+   dividers. Auto-grows in a pinch but never above its content's needs. */
+.kbn-detail-strip {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+  background: #E8E1D5;
+  border-top: 1px solid rgba(46, 42, 38, 0.12);
+}
+.kbn-detail-strip-block {
+  flex: 1 1 0;
+  padding: 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.kbn-detail-strip-block + .kbn-detail-strip-block {
+  border-left: 1px solid rgba(46, 42, 38, 0.10);
+}
+.kbn-detail-strip-heading {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9A9088;
+}
+.kbn-detail-section {
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.08);
+}
+/* Outcome section grows to fill its column so the textarea can fill height. */
+.kbn-detail-col-outcome .kbn-detail-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-bottom: none;
+  min-height: 0;
+}
+/* History section: heading + scrolling list. */
+.kbn-detail-col-history .kbn-detail-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-bottom: none;
+  min-height: 0;
+}
+/* The scrolling list of history events. overscroll-behavior: contain
+   keeps wheel events at the boundary inside the list — they never
+   chain up to the kanban or document and surprise the user with
+   page-level motion. */
+.kbn-detail-history-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
+}
+.kbn-detail-history-event {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(122, 112, 104, 0.16);
+  border-radius: 3px;
+}
+.kbn-detail-history-event-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  color: #B8AC9E;
+  flex-wrap: wrap;
+}
+.kbn-detail-history-event-time {
+  color: #9A9088;
+}
+.kbn-detail-history-event-kind {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(154, 123, 53, 0.10);
+  color: #9A7B35;
+}
+.kbn-detail-history-event-kind.kbn-detail-history-event-kind-editorial {
+  background: rgba(122, 112, 104, 0.12);
+  color: #7A7068;
+}
+.kbn-detail-history-event-summary {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #2E2A26;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 9em;
+  overflow: hidden;
+  position: relative;
+}
+.kbn-detail-history-event-summary.expanded {
+  max-height: none;
+}
+.kbn-detail-history-event-toggle {
+  align-self: flex-start;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 11.5px;
+  font-style: italic;
+  color: #9A7B35;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-top: 2px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(154, 123, 53, 0.4);
+}
+.kbn-detail-history-event-toggle:hover { color: #6B5520; }
+.kbn-detail-history-empty {
+  font-size: 12.5px;
+  color: #B8AC9E;
+  font-style: italic;
+  padding: 8px 0;
+}
+.kbn-detail-section-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9A9088;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.kbn-detail-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 14px;
+  line-height: 1.5;
+  color: #2E2A26;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.kbn-detail-textarea:focus {
+  border-color: rgba(154, 123, 53, 0.55);
+  background: #FFFCF6;
+}
+.kbn-detail-textarea::placeholder {
+  color: #C8BFB3;
+  font-style: italic;
+}
+.kbn-detail-field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 0;
+}
+.kbn-detail-field-row:last-child { margin-bottom: 0; }
+.kbn-detail-label {
+  font-size: 12px;
+  color: #7A7068;
+  width: 56px;
+  flex-shrink: 0;
+}
+/* In the strip, controls span the full width and the parent dropdown
+   anchors above the input rather than below (no room beneath). */
+.kbn-detail-strip .kbn-detail-parent-dropdown {
+  top: auto;
+  bottom: calc(100% + 2px);
+  max-height: 280px;
+}
+.kbn-detail-strip .kbn-detail-current-parent {
+  margin-bottom: 4px;
+}
+.kbn-detail-select {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 13px;
+  color: #2E2A26;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+.kbn-detail-select:focus {
+  border-color: rgba(154, 123, 53, 0.55);
+}
+.kbn-detail-muted {
+  font-size: 12.5px;
+  color: #9A9088;
+  font-style: italic;
+}
+.kbn-detail-current-parent {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: #7A7068;
+  margin-bottom: 8px;
+}
+.kbn-detail-current-parent.kbn-detail-pending-change {
+  color: #9A7B35;
+  font-weight: 600;
+}
+.kbn-detail-parent-wrap {
+  position: relative;
+  margin-bottom: 6px;
+}
+.kbn-detail-parent-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 13px;
+  color: #2E2A26;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+.kbn-detail-parent-input:focus {
+  border-color: rgba(154, 123, 53, 0.55);
+  background: #FFFCF6;
+}
+.kbn-detail-parent-input::placeholder {
+  color: #C8BFB3;
+  font-style: italic;
+}
+/* Generic input used by the dispatch strip's cron + tz fields. Mirrors
+   .kbn-detail-parent-input but with tighter padding so it sits flush
+   with the segmented control next to it. */
+.kbn-detail-input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 13px;
+  color: #2E2A26;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.kbn-detail-input:focus {
+  border-color: rgba(154, 123, 53, 0.55);
+  background: #FFFCF6;
+}
+.kbn-detail-input::placeholder {
+  color: #C8BFB3;
+  font-style: italic;
+}
+.kbn-detail-input-mono {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+}
+/* Timezone input is narrower than cron — IANA names are short. */
+.kbn-detail-input-tz {
+  flex: 0 0 140px;
+}
+/* Schedule row only matters when kind=standing; show/hide is via
+   inline display:none from the kind toggle handler. Class kept as
+   a marker for future targeted styling. */
+.kbn-detail-field-row-schedule { /* presentational marker only */ }
+/* Two-segment radiogroup styled as a pill switch. Used for the
+   dispatch kind (one-shot / standing); reads as a setting, not a
+   button cluster. */
+.kbn-detail-segmented {
+  display: inline-flex;
+  flex: 1;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.55);
+  overflow: hidden;
+}
+.kbn-detail-segment {
+  flex: 1;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid rgba(122, 112, 104, 0.20);
+  cursor: pointer;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 12.5px;
+  color: #7A7068;
+  transition: background 100ms ease, color 100ms ease;
+}
+.kbn-detail-segment:last-child { border-right: none; }
+.kbn-detail-segment:hover {
+  background: rgba(154, 123, 53, 0.06);
+  color: #2E2A26;
+}
+.kbn-detail-segment-active {
+  background: rgba(154, 123, 53, 0.18);
+  color: #2E2A26;
+  font-weight: 600;
+}
+.kbn-detail-segment-active:hover {
+  background: rgba(154, 123, 53, 0.22);
+}
+.kbn-detail-segment-name {
+  display: inline-block;
+}
+/* Dropdown that appears below the parent input */
+.kbn-detail-parent-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  background: #FAF8F5;
+  border: 1px solid rgba(122, 112, 104, 0.28);
+  border-radius: 2px;
+  box-shadow: 0 4px 12px rgba(46, 42, 38, 0.14);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 10000;
+}
+.kbn-detail-parent-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.06);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 80ms ease;
+}
+.kbn-detail-parent-option:last-child { border-bottom: none; }
+.kbn-detail-parent-option:hover,
+.kbn-detail-parent-option:focus {
+  background: rgba(154, 123, 53, 0.08);
+  outline: none;
+}
+.kbn-detail-parent-option[data-depth="1"] .kbn-detail-parent-option-name {
+  font-weight: 600;
+}
+.kbn-detail-parent-option-name {
+  font-size: 13px;
+  color: #2E2A26;
+}
+.kbn-detail-parent-option-id {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: #B8AC9E;
+}
+.kbn-detail-parent-empty {
+  font-size: 12.5px;
+  color: #B8AC9E;
+  font-style: italic;
+  cursor: default;
+}
+.kbn-detail-parent-empty:hover { background: transparent; }
+.kbn-detail-clear-parent {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: #9A9088;
+  background: transparent;
+  border: 1px solid rgba(122, 112, 104, 0.22);
+  border-radius: 2px;
+  padding: 2px 7px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: color 120ms ease, background 120ms ease;
+}
+.kbn-detail-clear-parent:hover {
+  color: #2E2A26;
+  background: rgba(46, 42, 38, 0.06);
+}
+/* Footer row: vellum link (left) + error + cancel/save (right) */
+.kbn-detail-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid rgba(46, 42, 38, 0.12);
+  background: #E5DED2;
+  flex-shrink: 0;
+}
+.kbn-detail-vellum-btn {
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 13px;
+  font-style: italic;
+  color: #9A7B35;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 120ms ease;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(154, 123, 53, 0.4);
+}
+.kbn-detail-vellum-btn:hover {
+  color: #6B5520;
+}
+.kbn-detail-vellum-btn:focus { outline: none; }
+.kbn-detail-vellum-btn:focus-visible {
+  outline: 1px dashed #9A7B35;
+  outline-offset: 2px;
+}
+.kbn-detail-error {
+  flex: 1;
+  font-size: 12px;
+  color: #8B3A28;
+  background: rgba(178, 78, 60, 0.10);
+  border: 1px solid rgba(178, 78, 60, 0.30);
+  padding: 3px 8px;
+  border-radius: 2px;
+}
+.kbn-detail-footer-right {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.kbn-detail-save-btn {
+  min-width: 56px;
+}

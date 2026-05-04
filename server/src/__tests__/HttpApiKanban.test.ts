@@ -15,7 +15,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
-import { HttpApiKanban, applyTargetToFrontmatter, mutateTagsInPlace } from '../HttpApiKanban.js';
+import { HttpApiKanban, applyTargetToFrontmatter, canonicalStoreRelativeId, classifyFiber, mutateTagsInPlace } from '../HttpApiKanban.js';
+import type { Fiber } from '../FiberReader.js';
 import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-kanban');
@@ -250,6 +251,43 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(cards.map((c: any) => c.id)).toEqual(['busy', 'idle']); // running first
     expect(cards.find((c: any) => c.id === 'busy').runningWorker).toBe('shuttle-busy');
     expect(cards.find((c: any) => c.id === 'idle').runningWorker).toBeUndefined();
+  });
+
+  it('matches a Shuttle worker dispatched from a foreign canonical store via symlink', async () => {
+    // Mirrors the loom→lightcone topology: the kanban view enumerates the
+    // fiber under a prefixed id (`futures/foreign/<inner>`), but Shuttle
+    // dispatched it from its canonical store, so the tmux session carries
+    // only the canonical-store id (`<inner>`). The matcher must key off
+    // canonical identity (derived from canonicalPath), not the kanban view's
+    // prefixed id, otherwise the running-worker indicator goes missing.
+    const foreignDir = join(TEST_DIR, 'foreign');
+    const foreignFelt = join(foreignDir, '.felt');
+    mkdirSync(foreignFelt, { recursive: true });
+    const innerDir = join(foreignFelt, 'inner-fiber');
+    mkdirSync(innerDir, { recursive: true });
+    writeFileSync(
+      join(innerDir, 'inner-fiber.md'),
+      `---\nname: Inner\nstatus: open\nshuttle:\n  enabled: true\n  kind: oneshot\ncreated-at: 2026-04-01\n---\n\nbody\n`,
+      'utf-8',
+    );
+    // Mount the foreign store under our outer felt host via a symlink — the
+    // exact shape `~/loom/.felt/ai-futures/lightcone -> ~/lightcone/.felt`.
+    const mountDir = join(FELT_DIR, 'futures');
+    mkdirSync(mountDir, { recursive: true });
+    require('fs').symlinkSync(foreignFelt, join(mountDir, 'foreign'));
+
+    const api = new HttpApiKanban({
+      feltHost: TEST_DIR,
+      // Session name uses the canonical-store id, not the kanban-view id.
+      listSessions: () => ['shuttle-inner-fiber'],
+    });
+    const res = await callKanban(api);
+
+    const card = res.body.columns.inFlight.find((c: any) =>
+      c.id.endsWith('inner-fiber'),
+    );
+    expect(card).toBeDefined();
+    expect(card.runningWorker).toBe('shuttle-inner-fiber');
   });
 
   it('marks dependsOnSatisfied=false when a depends_on target is not tempered', async () => {
@@ -1242,5 +1280,138 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(res.body.columns.tempered).toHaveLength(3);
     // Most recent first.
     expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['t4', 't3', 't2']);
+  });
+});
+
+describe('classifyFiber', () => {
+  // Minimal fiber factory: only id/name/status/kind/priority/createdAt are
+  // required by the type; everything else is optional. Pass overrides to
+  // shape the case under test.
+  function fib(overrides: Partial<Fiber> = {}): Fiber {
+    return {
+      id: 'x',
+      name: 'X',
+      status: 'open',
+      kind: 'task',
+      priority: 2,
+      createdAt: '2026-04-01',
+      hasShuttleBlock: true,
+      ...overrides,
+    };
+  }
+
+  describe('open lifecycle', () => {
+    it("`idea` tag wins over shuttle.enabled", () => {
+      // Tag-driven: even with shuttle.enabled=true (which would put the
+      // fiber in inFlight), the idea tag pulls it back to ideas. This is
+      // load-bearing — flipping idea→draft is a tag edit, no need to also
+      // toggle shuttle.enabled.
+      expect(classifyFiber(fib({ tags: ['idea'], shuttleEnabled: true }))).toBe('ideas');
+      expect(classifyFiber(fib({ tags: ['idea'], shuttleEnabled: false }))).toBe('ideas');
+    });
+
+    it('paused (shuttle.enabled=false) → drafts', () => {
+      expect(classifyFiber(fib({ shuttleEnabled: false }))).toBe('drafts');
+    });
+
+    it('enabled and not idea → inFlight', () => {
+      expect(classifyFiber(fib({ shuttleEnabled: true }))).toBe('inFlight');
+    });
+
+    it('"draft" tag does NOT influence placement (cosmetic only)', () => {
+      // The draft tag is vestigial — pre-cutover convention. Column
+      // membership is driven by shuttle.enabled. Locking this in so a
+      // future reader doesn't bring back tag-based classification.
+      expect(classifyFiber(fib({ tags: ['draft'], shuttleEnabled: true }))).toBe('inFlight');
+      expect(classifyFiber(fib({ tags: ['draft'], shuttleEnabled: false }))).toBe('drafts');
+    });
+  });
+
+  describe('closed lifecycle', () => {
+    it('tempered=true → tempered', () => {
+      expect(classifyFiber(fib({ status: 'closed', tempered: true }))).toBe('tempered');
+    });
+
+    it('tempered=false → composted', () => {
+      expect(classifyFiber(fib({ status: 'closed', tempered: false }))).toBe('composted');
+    });
+
+    it('tempered absent → awaitingReview', () => {
+      // Agent-handed-off: status flipped to closed, tempered not yet set.
+      expect(classifyFiber(fib({ status: 'closed' }))).toBe('awaitingReview');
+    });
+  });
+
+  describe('standing roles', () => {
+    it("review.state=`awaiting` → awaitingReview, regardless of status", () => {
+      // Standing roles stay status:active permanently; review.state is the
+      // post-run lifecycle signal.
+      expect(
+        classifyFiber(
+          fib({
+            status: 'active',
+            shuttleKind: 'standing',
+            shuttleReviewState: 'awaiting',
+            shuttleEnabled: true,
+          }),
+        ),
+      ).toBe('awaitingReview');
+    });
+
+    it('review.state=`scheduled` → inFlight (between runs)', () => {
+      expect(
+        classifyFiber(
+          fib({
+            status: 'active',
+            shuttleKind: 'standing',
+            shuttleReviewState: 'scheduled',
+            shuttleEnabled: true,
+          }),
+        ),
+      ).toBe('inFlight');
+    });
+
+    it('paused standing role → drafts', () => {
+      expect(
+        classifyFiber(
+          fib({
+            status: 'active',
+            shuttleKind: 'standing',
+            shuttleEnabled: false,
+          }),
+        ),
+      ).toBe('drafts');
+    });
+  });
+});
+
+describe('canonicalStoreRelativeId', () => {
+  it('returns the directory-form id for a nested fiber', () => {
+    expect(
+      canonicalStoreRelativeId(
+        '/Users/x/.felt/lightcone-ui/myst-as-ast-layer-for-lightcone-ui/foo/foo.md',
+      ),
+    ).toBe('lightcone-ui/myst-as-ast-layer-for-lightcone-ui/foo');
+  });
+
+  it('returns the bare-form id for a fiber at the store root', () => {
+    expect(canonicalStoreRelativeId('/Users/x/.felt/lightcone.md')).toBe('lightcone');
+  });
+
+  it('returns undefined for a path with no .felt segment', () => {
+    expect(canonicalStoreRelativeId('/tmp/random/foo.md')).toBeUndefined();
+  });
+
+  it('returns undefined when the directory shape does not match the slug', () => {
+    // Layout `<.felt>/parent/child.md` where parent != child — not a fiber.
+    expect(canonicalStoreRelativeId('/Users/x/.felt/parent/child.md')).toBeUndefined();
+  });
+
+  it('uses the deepest .felt segment when nested .felt dirs occur', () => {
+    // A canonical path that crossed a symlink between two felt stores ends up
+    // under the *inner* store; the matcher must key off that one.
+    expect(
+      canonicalStoreRelativeId('/Users/x/.felt/.felt/inner/inner.md'),
+    ).toBe('inner');
   });
 });

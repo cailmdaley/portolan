@@ -39,6 +39,22 @@ Server polls tmux → builds state → broadcasts. File touches flow via hooks (
 
 **File viewer = vellum.** Main app opens files via `openVellumWorkspaceModal({ initialFilePath })` in `src/vellum/mount.tsx` → `WorkspaceMount` → `FiberPage`'s `FileModeView` → vellum's `FileViewerPage` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Files and fibers share one workspace shell (the standalone `openVellumFileModal()` retired 2026-04-25 — see `card-redesign/file-modal-absorbs-into-workspace`). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js.
 
+## Kanban
+
+The kanban is a **view** over fiber state, not a state of its own. Three layers feed it, each owned differently:
+
+| Layer | Owner | Fields | Affects dispatch? | Affects view? |
+|---|---|---|---|---|
+| `shuttle:` block | shuttle-ctl | `enabled`, `kind`, `schedule`, `review.state`, `agent`, `session.id` | ✓ | ✓ |
+| Universal lifecycle | felt | `status`, `tempered`, `depends_on` | ✓ | ✓ |
+| Tags | user (free-form) | e.g. `idea` | ✗ | only `idea` |
+
+**Column placement is one named function**: `classifyFiber(f) → KanbanColumn` in `server/src/HttpApiKanban.ts`. The full rule (standing-role precedence over status, idea-tag precedence over enabled, status×tempered for closed lifecycle) lives there with a plain-English doc comment and pinned by tests under `describe('classifyFiber')`. Don't re-derive column placement anywhere else.
+
+**Frontend never reclassifies.** The kanban response groups cards by column server-side; the frontend reads the bucket via `findCardColumn(response, id)`. Adding a new classification dimension = editing `classifyFiber`, no frontend change. (Two implementations of the same rule used to drift — see `gotcha-kanban-frontend-classifier-drift`.)
+
+**Tag conventions:** `idea` is the only tag that affects column placement (routes to the speculative ideas column, regardless of `shuttle.enabled`). The `draft` tag is vestigial — many older fibers carry it, no code reads or writes it; it's pinned-as-cosmetic by a test. New tags should not be made load-bearing for classification — promote the signal into the `shuttle:` block or universal lifecycle if it needs to gate dispatch.
+
 ## Visual Language
 
 **Porch Morning** — warm, antiquarian, cartographic.

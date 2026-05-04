@@ -907,10 +907,9 @@ export class HttpApiTapestry {
     let fibers: Fiber[];
     if (!sshHost) {
       // Local FiberReader always parses the body — local FS reads are cheap
-      // enough that the metadata/body distinction doesn't pay off the
-      // complexity. Cache regardless so repeated handlers within one
-      // workspace open coalesce.
-      fibers = await getAllFibers(cityPath);
+      // Honor `withBody` so tapestry's body-snippet/needle scoring path
+      // gets bodies while the metadata-only callers don't pay for them.
+      fibers = await getAllFibers(cityPath, { withBody });
     } else {
       const bodyFlag = withBody ? ' --body' : '';
       const command = `cd ${shellEscape(cityPath)} && felt ls -s all --json${bodyFlag} 2>/dev/null || echo '[]'`;

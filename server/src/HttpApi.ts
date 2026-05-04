@@ -157,7 +157,7 @@ export class HttpApi {
     this.kanbanApi = new HttpApiKanban({
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
       remoteTransitionExecutor: this.remoteTransitionExecutor,
-      cacheTtlMs: 1000,
+      cacheTtlMs: 5000,
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
@@ -427,7 +427,7 @@ export class HttpApi {
 
     // GET /shuttle/agents — returns the agent registry from shuttle's
     // share/agents.json. Used by StashForm's agent select dropdown.
-    // Reads from $HOME/Documents/projects/shuttle/shuttle/share/agents.json.
+    // Reads from $HOME/Documents/projects/shuttle/share/agents.json.
     if (url.pathname === '/shuttle/agents' && req.method === 'GET') {
       await this.handleShuttleAgents(res);
       return true;
@@ -637,7 +637,7 @@ export class HttpApi {
    * GET /shuttle/agents
    *
    * Returns the list of available shuttle agents from
-   * `$HOME/Documents/projects/shuttle/shuttle/share/agents.json`.
+   * `$HOME/Documents/projects/shuttle/share/agents.json`.
    * Each entry carries `id`, `model`, `cli`, and `default` so the StashForm
    * can render a meaningful dropdown label (e.g. "claude-sonnet · sonnet").
    * On read failure (shuttle not installed) returns an empty list rather than
@@ -647,7 +647,7 @@ export class HttpApi {
   private async handleShuttleAgents(res: ServerResponse): Promise<void> {
     const agentsPath = join(
       process.env.HOME ?? '/tmp',
-      'Documents/projects/shuttle/shuttle/share/agents.json',
+      'Documents/projects/shuttle/share/agents.json',
     );
     try {
       const raw = await readFile(agentsPath, 'utf8');
@@ -695,7 +695,7 @@ export class HttpApi {
         cities: localCities,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
         remoteTransitionExecutor: this.remoteTransitionExecutor,
-        cacheTtlMs: 1000,
+        cacheTtlMs: 5000,
       });
       this.globalKanbanApiCache = { key: cacheKey, api };
       return api;
@@ -724,7 +724,7 @@ export class HttpApi {
     const cacheKey = `${city.path}\u0000${localCityPinsKey(localCities)}`;
     const cached = this.scopedKanbanApiCache.get(cityId);
     if (cached?.key === cacheKey) return cached.api;
-    const api = new HttpApiKanban({ feltHost: city.path, cities: localCities, cacheTtlMs: 1000 });
+    const api = new HttpApiKanban({ feltHost: city.path, cities: localCities, cacheTtlMs: 5000 });
     this.scopedKanbanApiCache.set(cityId, { key: cacheKey, api });
     return api;
   }
@@ -758,7 +758,7 @@ export class HttpApi {
       cities: localCities,
       cityNames,
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
-      cacheTtlMs: 1000,
+      cacheTtlMs: 5000,
     });
     this.globalSearchApiCache = { key: cacheKey, api };
     return api;

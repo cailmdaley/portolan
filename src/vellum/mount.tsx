@@ -273,9 +273,8 @@ function KanbanHost({
               const host = hostRef.current
               if (host) k.mount(host, { cityScope })
             }
-            window.setTimeout(refresh, 100)
-            // Second refresh slightly later — covers cases where the first
-            // walk raced the disk; cheap belt-and-braces.
+            // One refresh after enough lag for felt's index sync to settle;
+            // the kanban's own poll loop covers anything that races past it.
             window.setTimeout(refresh, 600)
             showToast(`Stashed: ${fiberId}`, 'success', 2500)
           }}

@@ -516,7 +516,8 @@ export class HttpApiGlobalSearch {
       this.resolveHosts().map(async (host) => {
         if (!existsSync(join(host, '.felt'))) return { host, fibers: [] as Fiber[] };
         try {
-          return { host, fibers: await getAllFibers(host) };
+          // Bodies needed: search scores against body content + emits snippets.
+          return { host, fibers: await getAllFibers(host, { withBody: true }) };
         } catch (err) {
           console.error(`[GlobalSearch] getAllFibers failed for host ${host}:`, err);
           return { host, fibers: [] as Fiber[] };

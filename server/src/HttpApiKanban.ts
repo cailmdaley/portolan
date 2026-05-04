@@ -40,7 +40,7 @@ import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
-import { getAllFibers, type Fiber } from './FiberReader.js';
+import { getAllFibers, parseFiber, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
 import { resolveGlobalFiberId } from './loomGlobalId.js';
@@ -339,6 +339,61 @@ export type KanbanTarget =
   | 'queued'
   | 'active';
 
+/**
+ * The set of columns the kanban renders. Differs from KanbanTarget in that
+ * `ideas` is read-only here (you classify *into* ideas via the `idea` tag,
+ * not via a transition target) and KanbanTarget's legacy aliases are absent.
+ */
+export type KanbanColumn =
+  | 'ideas'
+  | 'drafts'
+  | 'inFlight'
+  | 'awaitingReview'
+  | 'tempered'
+  | 'composted';
+
+/**
+ * Classify a fiber into the kanban column it belongs in. The single source
+ * of truth for "what column is this?". The rule, in plain English:
+ *
+ *   1. A standing-role fiber whose worker has finished a run (review.state
+ *      = `awaiting`) sits in awaitingReview until the human accepts —
+ *      regardless of `status` (standing roles stay `active` permanently;
+ *      review.state replaces status as the lifecycle signal).
+ *
+ *   2. Otherwise, status drives the open/closed split:
+ *
+ *      open (status !== `closed`):
+ *        - `idea` tag         → ideas      (speculative, pre-formal)
+ *        - shuttle.enabled=false → drafts  (paused — has thinking, not yet
+ *                                           ready to dispatch)
+ *        - else              → inFlight   (dispatch-eligible)
+ *
+ *      closed (status === `closed`):
+ *        - tempered=true     → tempered   (human-accepted)
+ *        - tempered=false    → composted  (human-rejected — see
+ *                                           [[ai-futures/shuttle/constitution-kanban-compost]])
+ *        - tempered absent   → awaitingReview (agent handed off, awaiting
+ *                                              human verdict)
+ *
+ * The `idea` tag takes precedence over the enabled split so flipping a
+ * fiber idea→draft is a tag edit alone — no need to also touch
+ * shuttle.enabled.
+ */
+export function classifyFiber(f: Fiber): KanbanColumn {
+  if (f.shuttleKind === 'standing' && f.shuttleReviewState === 'awaiting') {
+    return 'awaitingReview';
+  }
+  if (f.status !== 'closed') {
+    if (f.tags?.includes('idea')) return 'ideas';
+    if (f.shuttleEnabled === false) return 'drafts';
+    return 'inFlight';
+  }
+  if (f.tempered === true) return 'tempered';
+  if (f.tempered === false) return 'composted';
+  return 'awaitingReview';
+}
+
 type KanbanFiberEntry = {
   fiber: Fiber;
   host: string;
@@ -379,6 +434,32 @@ export class HttpApiKanban {
   private readonly listSessions: () => string[];
   private readonly cacheTtlMs: number;
   private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
+
+  /**
+   * Run a shuttle-ctl verb (pause/resume/accept) against a global fiber id.
+   * Honors the test seam (`shuttleCtlFn`) when set; otherwise spawns
+   * `shuttle-ctl` with the standard timeout + buffer and reformats stderr
+   * into a meaningful error. Centralized so the three call sites in
+   * `applyTransition` don't drift from each other.
+   */
+  private async runShuttleCtl(
+    verb: 'pause' | 'resume' | 'accept',
+    globalId: string,
+  ): Promise<void> {
+    if (this.shuttleCtlFn) {
+      await this.shuttleCtlFn(verb, globalId);
+      return;
+    }
+    try {
+      await execFileAsync('shuttle-ctl', [verb, globalId], {
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err: any) {
+      const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+      throw new Error(`shuttle-ctl ${verb} failed for ${globalId}: ${msg}`);
+    }
+  }
 
   /**
    * Per-instance memo: realpath of each pinned city's `.felt` directory,
@@ -547,7 +628,9 @@ export class HttpApiKanban {
       this.resolveHosts().map(async (host) => {
         if (!existsSync(join(host, '.felt'))) return { host, fibers: [] as Fiber[] };
         try {
-          return { host, fibers: await getAllFibers(host) };
+          // No bodies — the kanban card surface doesn't ship body content,
+          // and `--body` would inflate the felt subprocess output ~80×.
+          return { host, fibers: await getAllFibers(host, { withBody: false }) };
         } catch (err) {
           console.error(`[Kanban] getAllFibers failed for host ${host}:`, err);
           return { host, fibers: [] as Fiber[] };
@@ -629,39 +712,12 @@ export class HttpApiKanban {
       const tempered: KanbanCard[] = [];
       const composted: KanbanCard[] = [];
 
+      const buckets: Record<KanbanColumn, KanbanCard[]> = {
+        ideas, drafts, inFlight, awaitingReview, tempered, composted,
+      };
       for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
-        // Column split. Two regimes:
-        //   - oneshot: status drives placement. status !== closed splits on
-        //     `idea` tag (ideas), then shuttle.enabled (drafts vs inFlight);
-        //     status === closed splits on tempered (awaitingReview / tempered
-        //     / composted).
-        //   - standing: status stays `active` permanently (it means "installed"),
-        //     so column placement keys off shuttle.review.state. After a worker
-        //     completes a run, review.state is `awaiting` until the human runs
-        //     accept — that's the awaitingReview slot for standing roles.
-        //
-        // The `idea` tag takes precedence over draft/inFlight: an idea-tagged
-        // fiber lives in the speculative column regardless of shuttle.enabled,
-        // so users can flip a fiber from idea → draft purely by editing tags
-        // without first having to enable/disable shuttle.
-        const isIdea = f.tags?.includes('idea') === true;
-        const isPaused = f.shuttleEnabled === false;
-        const isStandingAwaiting =
-          f.shuttleKind === 'standing' && f.shuttleReviewState === 'awaiting';
-        if (isStandingAwaiting) {
-          awaitingReview.push(card);
-        } else if (f.status !== 'closed') {
-          if (isIdea) ideas.push(card);
-          else if (isPaused) drafts.push(card);
-          else inFlight.push(card);
-        } else if (f.tempered === true) {
-          tempered.push(card);
-        } else if (f.tempered === false) {
-          composted.push(card);
-        } else {
-          awaitingReview.push(card);
-        }
+        buckets[classifyFiber(f)].push(card);
       }
 
       // Sort:
@@ -888,20 +944,7 @@ export class HttpApiKanban {
       fiber.shuttleReviewState === 'awaiting';
 
     if (isStandingAccept) {
-      const globalId = resolveGlobalFiberId(host, fiber.id);
-      if (this.shuttleCtlFn) {
-        await this.shuttleCtlFn('accept', globalId);
-      } else {
-        try {
-          await execFileAsync('shuttle-ctl', ['accept', globalId], {
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          });
-        } catch (err: any) {
-          const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
-          throw new Error(`shuttle-ctl accept failed for ${globalId}: ${msg}`);
-        }
-      }
+      await this.runShuttleCtl('accept', resolveGlobalFiberId(host, fiber.id));
       // accept already wrote the file (advancing review + schedule) and
       // status was already 'active' for a standing role — no felt-level
       // mutation needed. Skip applyTargetToFrontmatter.
@@ -918,36 +961,22 @@ export class HttpApiKanban {
       // Step 2: shuttle-ctl mutates the `shuttle:` block (enabled).
       if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
         const verb: 'pause' | 'resume' = target === 'drafts' ? 'pause' : 'resume';
-        const globalId = resolveGlobalFiberId(host, fiber.id);
-        if (this.shuttleCtlFn) {
-          await this.shuttleCtlFn(verb, globalId);
-        } else {
-          try {
-            await execFileAsync('shuttle-ctl', [verb, globalId], {
-              timeout: 10000,
-              maxBuffer: 1024 * 1024,
-            });
-          } catch (err: any) {
-            const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
-            throw new Error(`shuttle-ctl ${verb} failed for ${globalId}: ${msg}`);
-          }
-        }
+        await this.runShuttleCtl(verb, resolveGlobalFiberId(host, fiber.id));
       }
     }
     this.clearFiberPoolCache();
 
-    // Re-read this host so the returned card reflects the new state.
-    const after = await getAllFibers(host);
-    const refreshedById = new Map(after.map(f => [f.id, f]));
-    const refreshed = refreshedById.get(fiberId);
-    if (!refreshed) throw new Error(`fiber disappeared after write: ${fiberId}`);
-    // Recompute the canonical path so the refreshed card carries the same
-    // cityId/projectSlug fields that /kanban GET emits — without it, an
-    // immediate optimistic-rerender after a transition would lose the
-    // click-to-open routing for the moved card.
+    // Re-parse just the file we wrote — the rest of the host's fibers are
+    // unchanged, so a full `getAllFibers` re-walk would just shell out to
+    // felt for ~hundreds of unchanged files. Reuse the existing merged set
+    // for the byId dependency-satisfied lookup, overriding only the
+    // refreshed fiber's entry.
+    const refreshed = parseFiber(fiberId, readFileSync(path, 'utf-8'));
+    const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
+    refreshedById.set(fiberId, refreshed);
     let canonicalAfter: string | undefined;
     try {
-      canonicalAfter = realpathSync(this.fiberPath(host, refreshed));
+      canonicalAfter = realpathSync(path);
     } catch {
       canonicalAfter = undefined;
     }
@@ -1071,14 +1100,16 @@ export class HttpApiKanban {
     }
     this.clearFiberPoolCache();
 
-    // Re-read this host so the returned card reflects the new tags.
-    const afterFibers = await getAllFibers(host);
-    const refreshedById = new Map(afterFibers.map(f => [f.id, f]));
-    const refreshed = refreshedById.get(fiberId);
-    if (!refreshed) throw new Error(`fiber disappeared after write: ${fiberId}`);
+    // Re-parse just the file we wrote — the rest of the host's fibers
+    // are unchanged, so a full `getAllFibers` re-walk would re-shell
+    // felt for hundreds of unchanged files. Reuse the existing merged
+    // set for byId lookups, overriding only the refreshed fiber.
+    const refreshed = parseFiber(fiberId, readFileSync(path, 'utf-8'));
+    const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
+    refreshedById.set(fiberId, refreshed);
     let canonicalAfter: string | undefined;
     try {
-      canonicalAfter = realpathSync(this.fiberPath(host, refreshed));
+      canonicalAfter = realpathSync(path);
     } catch {
       canonicalAfter = undefined;
     }
@@ -1606,7 +1637,7 @@ export class HttpApiKanban {
     // remote clickthrough wires up via the agent in Stages 5/6).
     const path = this.fiberPath(host, f);
 
-    const runningWorker = resolveRunningWorker(f.id, liveSessions);
+    const runningWorker = resolveRunningWorker(f.id, liveSessions, canonicalPath);
 
     // Resolve which pinned local city physically owns this fiber so the
     // frontend can pivot vellum to that city and navigate to the project-
@@ -1730,17 +1761,69 @@ function byClosedAtDesc(a: KanbanCard, b: KanbanCard): number {
   return bT.localeCompare(aT);
 }
 
-function resolveRunningWorker(fiberId: string, liveSessions: Set<string>): string | undefined {
+/**
+ * Derive a fiber's canonical-store id from its realpath'd md file path.
+ * Walks up to the nearest enclosing `.felt/` directory and returns the
+ * fiber-shaped id within that store — i.e. the same id `felt ls` reports
+ * when run from inside the canonical store. Returns undefined when the
+ * path doesn't sit under a `.felt/` directory or has an unexpected
+ * `<slug>/<slug>.md` shape.
+ *
+ * This is the identity shuttle uses for tmux session names: shuttle's
+ * poller dispatches each fiber from its canonical felt host (per
+ * [[ai-futures/shuttle/finding-multi-felt-host-tmux-name-dedup]]), so the
+ * session name always carries the canonical-store id, regardless of
+ * whichever view the kanban happens to enumerate the fiber through (loom
+ * for portolan, a foreign canonical store for lightcone, etc.).
+ */
+export function canonicalStoreRelativeId(canonicalPath: string): string | undefined {
+  const segments = canonicalPath.split('/');
+  const feltIdx = segments.lastIndexOf('.felt');
+  if (feltIdx === -1) return undefined;
+  const tail = segments.slice(feltIdx + 1);
+  if (tail.length === 0) return undefined;
+  const file = tail[tail.length - 1];
+  if (!file.endsWith('.md')) return undefined;
+  const slug = file.slice(0, -'.md'.length);
+  if (tail.length === 1) return slug; // bare form at the store root
+  const parent = tail[tail.length - 2];
+  if (parent !== slug) return undefined; // unexpected layout — fall back to caller default
+  return tail.slice(0, -1).join('/');
+}
+
+function resolveRunningWorker(
+  fiberId: string,
+  liveSessions: Set<string>,
+  canonicalPath?: string,
+): string | undefined {
+  // Prefer the canonical-store id when we have one — shuttle's session names
+  // are keyed off it, so this is an exact-match probe with no namespace
+  // ambiguity. Only present for local fibers (canonicalPath set in
+  // collectFibersFresh); remote-origin fibers fall through to the fiber-id
+  // path below.
+  if (canonicalPath !== undefined) {
+    const canonicalId = canonicalStoreRelativeId(canonicalPath);
+    if (canonicalId !== undefined) {
+      const session = shuttleSessionName(canonicalId);
+      if (liveSessions.has(session)) return session;
+    }
+  }
+
+  // No canonical path (remote fibers): exact match against the fiber id as
+  // the kanban view sees it. Then fall back to a slash-boundary suffix
+  // probe in either direction so a worker dispatched under a more- or
+  // less-qualified namespace still surfaces in scoped/global views.
   const exact = shuttleSessionName(fiberId);
   if (liveSessions.has(exact)) return exact;
-
-  // Scoped kanban cards are project-relative (`constitution-x`) while the
-  // daemon may have dispatched from the global loom host
-  // (`ai-futures/shuttle/constitution-x`). Preserve exact-match priority,
-  // then allow a slash-boundary suffix match so city-scoped views show the
-  // same worker indicator as the global view.
-  const suffix = `/${fiberId}`;
-  return [...liveSessions].sort().find(session => session.endsWith(suffix));
+  const fiberIdSuffix = `/${fiberId}`;
+  for (const session of [...liveSessions].sort()) {
+    if (session.endsWith(fiberIdSuffix)) return session;
+    const tail = session.startsWith('shuttle-')
+      ? session.slice('shuttle-'.length)
+      : null;
+    if (tail !== null && fiberId.endsWith(`/${tail}`)) return session;
+  }
+  return undefined;
 }
 
 /**
