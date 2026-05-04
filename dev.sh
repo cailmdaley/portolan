@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SHUTTLE="$HOME/Documents/projects/shuttle/shuttle/bin/shuttle"
+SHUTTLE="$HOME/Documents/projects/shuttle/bin/shuttle"
 
 # Ports
 FRONTEND_PORT=5173

@@ -2,7 +2,7 @@
  * Shuttle — tmux probe utilities for the kanban running-worker indicator.
  *
  * The engine lives in the standalone Elixir application
- * (~/Documents/projects/shuttle/shuttle/). Portolan no longer dispatches
+ * (~/Documents/projects/shuttle/). Portolan no longer dispatches
  * workers; it only needs to detect live tmux sessions for UI badging.
  *
  * See constitution-shuttle-standalone Stage 6.

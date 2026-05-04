@@ -621,8 +621,8 @@ server.listen(PORT, () => {
 // ============================================================================
 //
 // The local dispatch engine now lives in the standalone Elixir application
-// at ~/Documents/projects/shuttle/shuttle/. Start it with:
-//   cd ~/Documents/projects/shuttle/shuttle && mix run --no-halt
+// at ~/Documents/projects/shuttle/. Start it with:
+//   cd ~/Documents/projects/shuttle && make start
 // or (once released):
 //   shuttle start
 //
