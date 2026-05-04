@@ -76,6 +76,11 @@ interface KanbanCard {
    * daemon via `shuttle-ctl session-set` after a successful worker spawn).
    */
   sessionId?: string
+  /**
+   * `shuttle.agent` — the agent to dispatch with. Present when the fiber
+   * has a shuttle block and the block specifies an agent.
+   */
+  shuttleAgent?: string
 }
 
 /**
@@ -177,6 +182,8 @@ export class KanbanModal {
   /** Bug 3: lightweight auto-poll while mounted. 15s default. */
   private pollTimer: number | null = null
   private readonly pollIntervalMs = 15_000
+  /** Intermediate fiber-detail modal — one instance, re-used across opens. */
+  private detailModal: FiberDetailModal | null = null
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
@@ -184,6 +191,11 @@ export class KanbanModal {
     this.onStashClick = options.onStashClick
     this.apiBase = options.apiBase ?? `http://${window.location.hostname}:4004`
     this.injectStyles()
+    this.detailModal = new FiberDetailModal(
+      this.apiBase,
+      this.onOpenFiber,
+      () => { void this.fetchAndRender() },
+    )
   }
 
   /**
@@ -667,11 +679,11 @@ export class KanbanModal {
     const name = document.createElement('button')
     name.type = 'button'
     name.className = 'kbn-card-name'
-    name.setAttribute('aria-label', `Open fiber ${card.name} in vellum`)
+    name.setAttribute('aria-label', `View details for fiber ${card.name}`)
     name.textContent = card.name
     name.addEventListener('click', (e) => {
       e.stopPropagation()
-      this.onOpenFiber(card)
+      this.detailModal?.open(card)
     })
 
     const pill = document.createElement('span')
@@ -790,10 +802,10 @@ export class KanbanModal {
       el.append(this.renderReviewCluster(card))
     }
 
-    // Click outside any button → open in vellum (delegated catch-all).
+    // Click outside any button → open fiber detail modal.
     el.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('button, textarea')) return
-      this.onOpenFiber(card)
+      this.detailModal?.open(card)
     })
 
     return el
@@ -2246,8 +2258,778 @@ export class KanbanModal {
           min-width: 0;
         }
       }
+
+      /* ── Fiber Detail Modal ──────────────────────────────────────────────── */
+      /* Fixed-position overlay with a centered dialog. Opens on card click as
+         a lightweight alternative to full vellum. Styled to match the kanban's
+         warm-paper palette: #EDE8E0 body, #E5DED2 header, gold accents. */
+      .kbn-detail-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(46, 42, 38, 0.38);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      .kbn-detail-dialog {
+        background: #EDE8E0;
+        border: 1px solid rgba(46, 42, 38, 0.18);
+        border-radius: 4px;
+        box-shadow: 0 8px 32px rgba(46, 42, 38, 0.25), 0 2px 8px rgba(46, 42, 38, 0.12);
+        width: 100%;
+        max-width: 520px;
+        max-height: calc(100vh - 48px);
+        display: flex;
+        flex-direction: column;
+        font-family: var(--font-main, 'EB Garamond', serif);
+        color: #2E2A26;
+        overflow: hidden;
+      }
+      .kbn-detail-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 16px 16px 12px;
+        background: #E5DED2;
+        border-bottom: 1px solid rgba(46, 42, 38, 0.12);
+        flex-shrink: 0;
+      }
+      .kbn-detail-title {
+        flex: 1;
+        font-size: 17px;
+        font-weight: 600;
+        line-height: 1.3;
+      }
+      .kbn-detail-close {
+        flex-shrink: 0;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        font-size: 16px;
+        line-height: 1;
+        color: #9A9088;
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .kbn-detail-close:hover,
+      .kbn-detail-close:focus-visible {
+        color: #2E2A26;
+        background: rgba(46, 42, 38, 0.10);
+        border-color: rgba(46, 42, 38, 0.20);
+        outline: none;
+      }
+      .kbn-detail-id {
+        padding: 6px 16px 10px;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10.5px;
+        color: #B8AC9E;
+        letter-spacing: 0.01em;
+        background: #E5DED2;
+        border-bottom: 1px solid rgba(46, 42, 38, 0.12);
+        flex-shrink: 0;
+      }
+      /* Scrollable body — sections inside this container */
+      .kbn-detail-body {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      .kbn-detail-section {
+        padding: 12px 16px;
+        border-bottom: 1px solid rgba(46, 42, 38, 0.08);
+      }
+      .kbn-detail-section:last-child { border-bottom: none; }
+      .kbn-detail-section-heading {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #9A9088;
+        margin-bottom: 8px;
+      }
+      .kbn-detail-textarea {
+        width: 100%;
+        box-sizing: border-box;
+        resize: vertical;
+        min-height: 72px;
+        padding: 7px 10px;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.65);
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 13.5px;
+        line-height: 1.45;
+        color: #2E2A26;
+        outline: none;
+        transition: border-color 120ms ease, background 120ms ease;
+      }
+      .kbn-detail-textarea:focus {
+        border-color: rgba(154, 123, 53, 0.55);
+        background: #FFFCF6;
+      }
+      .kbn-detail-textarea::placeholder {
+        color: #C8BFB3;
+        font-style: italic;
+      }
+      .kbn-detail-field-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .kbn-detail-field-row:last-child { margin-bottom: 0; }
+      .kbn-detail-label {
+        font-size: 12px;
+        color: #7A7068;
+        width: 56px;
+        flex-shrink: 0;
+      }
+      .kbn-detail-select {
+        flex: 1;
+        padding: 5px 8px;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.65);
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 13px;
+        color: #2E2A26;
+        outline: none;
+        cursor: pointer;
+        transition: border-color 120ms ease;
+      }
+      .kbn-detail-select:focus {
+        border-color: rgba(154, 123, 53, 0.55);
+      }
+      .kbn-detail-muted {
+        font-size: 12.5px;
+        color: #9A9088;
+        font-style: italic;
+      }
+      .kbn-detail-current-parent {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 11px;
+        color: #7A7068;
+        margin-bottom: 8px;
+      }
+      .kbn-detail-current-parent.kbn-detail-pending-change {
+        color: #9A7B35;
+        font-weight: 600;
+      }
+      .kbn-detail-parent-wrap {
+        position: relative;
+        margin-bottom: 6px;
+      }
+      .kbn-detail-parent-input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 10px;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.65);
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 13px;
+        color: #2E2A26;
+        outline: none;
+        transition: border-color 120ms ease;
+      }
+      .kbn-detail-parent-input:focus {
+        border-color: rgba(154, 123, 53, 0.55);
+        background: #FFFCF6;
+      }
+      .kbn-detail-parent-input::placeholder {
+        color: #C8BFB3;
+        font-style: italic;
+      }
+      /* Dropdown that appears below the parent input */
+      .kbn-detail-parent-dropdown {
+        position: absolute;
+        top: calc(100% + 2px);
+        left: 0;
+        right: 0;
+        background: #FAF8F5;
+        border: 1px solid rgba(122, 112, 104, 0.28);
+        border-radius: 2px;
+        box-shadow: 0 4px 12px rgba(46, 42, 38, 0.14);
+        max-height: 200px;
+        overflow-y: auto;
+        z-index: 10000;
+      }
+      .kbn-detail-parent-option {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        width: 100%;
+        text-align: left;
+        padding: 7px 10px;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid rgba(46, 42, 38, 0.06);
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 80ms ease;
+      }
+      .kbn-detail-parent-option:last-child { border-bottom: none; }
+      .kbn-detail-parent-option:hover,
+      .kbn-detail-parent-option:focus {
+        background: rgba(154, 123, 53, 0.08);
+        outline: none;
+      }
+      .kbn-detail-parent-option[data-depth="1"] .kbn-detail-parent-option-name {
+        font-weight: 600;
+      }
+      .kbn-detail-parent-option-name {
+        font-size: 13px;
+        color: #2E2A26;
+      }
+      .kbn-detail-parent-option-id {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10px;
+        color: #B8AC9E;
+      }
+      .kbn-detail-parent-empty {
+        font-size: 12.5px;
+        color: #B8AC9E;
+        font-style: italic;
+        cursor: default;
+      }
+      .kbn-detail-parent-empty:hover { background: transparent; }
+      .kbn-detail-clear-parent {
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 10px;
+        color: #9A9088;
+        background: transparent;
+        border: 1px solid rgba(122, 112, 104, 0.22);
+        border-radius: 2px;
+        padding: 2px 7px;
+        cursor: pointer;
+        letter-spacing: 0.02em;
+        transition: color 120ms ease, background 120ms ease;
+      }
+      .kbn-detail-clear-parent:hover {
+        color: #2E2A26;
+        background: rgba(46, 42, 38, 0.06);
+      }
+      /* Footer row: vellum link (left) + error + cancel/save (right) */
+      .kbn-detail-footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid rgba(46, 42, 38, 0.12);
+        background: #E5DED2;
+        flex-shrink: 0;
+      }
+      .kbn-detail-vellum-btn {
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 13px;
+        font-style: italic;
+        color: #9A7B35;
+        background: transparent;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        transition: color 120ms ease;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        text-decoration-color: rgba(154, 123, 53, 0.4);
+      }
+      .kbn-detail-vellum-btn:hover {
+        color: #6B5520;
+      }
+      .kbn-detail-vellum-btn:focus { outline: none; }
+      .kbn-detail-vellum-btn:focus-visible {
+        outline: 1px dashed #9A7B35;
+        outline-offset: 2px;
+      }
+      .kbn-detail-error {
+        flex: 1;
+        font-size: 12px;
+        color: #8B3A28;
+        background: rgba(178, 78, 60, 0.10);
+        border: 1px solid rgba(178, 78, 60, 0.30);
+        padding: 3px 8px;
+        border-radius: 2px;
+      }
+      .kbn-detail-footer-right {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+      }
+      .kbn-detail-save-btn {
+        min-width: 56px;
+      }
     `
     document.head.append(style)
+  }
+}
+
+// ── Fiber Detail Modal ───────────────────────────────────────────────────────
+//
+// Intermediate console-style modal for editing a kanban card without opening
+// full vellum. Opens on card click; provides editable outcome, shuttle agent
+// selector, and parent-fiber autocomplete. "Open in vellum" deep-links to
+// the fiber's full editor for more advanced changes.
+
+interface FiberSearchResult {
+  id: string
+  name: string
+  depth: number
+}
+
+/**
+ * FiberDetailModal — lightweight overlay for inline fiber editing.
+ *
+ * Lifecycle: `open(card)` mounts the overlay; `close()` tears it down.
+ * Only one instance is open at a time — opening while already open closes
+ * the previous modal first (avoids stacked overlays from rapid clicking).
+ *
+ * Three editable fields:
+ *   - `outcome`      : free-text textarea, replaces the fiber's outcome field
+ *   - `shuttleAgent` : dropdown of available agents (loaded from /shuttle/agents)
+ *   - `parentId`     : autocomplete search against /kanban/fiber-search;
+ *                      `null` means top-level (felt unnest)
+ *
+ * The host kanban's `fetchAndRender()` is called on successful save so the
+ * card updates in place without requiring a full page reload.
+ */
+class FiberDetailModal {
+  private overlay: HTMLElement | null = null
+  private escapeHandler: ((e: KeyboardEvent) => void) | null = null
+  private searchDebounce: number | null = null
+  private readonly apiBase: string
+  private readonly onOpenFiber: (card: KanbanCard) => void
+  private readonly onSaved: () => void
+
+  constructor(
+    apiBase: string,
+    onOpenFiber: (card: KanbanCard) => void,
+    onSaved: () => void,
+  ) {
+    this.apiBase = apiBase
+    this.onOpenFiber = onOpenFiber
+    this.onSaved = onSaved
+  }
+
+  open(card: KanbanCard): void {
+    // Tear down any existing open modal first (rapid re-click).
+    this.close()
+
+    const overlay = document.createElement('div')
+    overlay.className = 'kbn-detail-overlay'
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+    overlay.setAttribute('aria-label', `Fiber: ${card.name}`)
+
+    // Close on backdrop click.
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) this.close()
+    })
+
+    const dialog = document.createElement('div')
+    dialog.className = 'kbn-detail-dialog'
+
+    // ── Header ──────────────────────────────────────────────────────────────
+    const header = document.createElement('div')
+    header.className = 'kbn-detail-header'
+
+    const title = document.createElement('div')
+    title.className = 'kbn-detail-title'
+    title.textContent = card.name
+
+    const pill = document.createElement('span')
+    pill.className = `kbn-pill kbn-pill-${card.status === 'closed' ? 'closed' : card.status === 'active' ? 'active' : 'open'}`
+    pill.textContent = card.status || 'open'
+
+    const closeBtn = document.createElement('button')
+    closeBtn.type = 'button'
+    closeBtn.className = 'kbn-detail-close'
+    closeBtn.setAttribute('aria-label', 'Close fiber detail')
+    closeBtn.textContent = '×'
+    closeBtn.addEventListener('click', () => this.close())
+
+    header.append(title, pill, closeBtn)
+
+    // ── ID breadcrumb ────────────────────────────────────────────────────────
+    const idEl = document.createElement('div')
+    idEl.className = 'kbn-detail-id'
+    idEl.textContent = card.id
+
+    // ── Outcome ──────────────────────────────────────────────────────────────
+    const outcomeSec = this.buildSection('Outcome')
+    const outcomeTextarea = document.createElement('textarea')
+    outcomeTextarea.className = 'kbn-detail-textarea'
+    outcomeTextarea.rows = 4
+    outcomeTextarea.placeholder = 'What was decided or learned…'
+    outcomeTextarea.value = card.outcome ?? ''
+    outcomeTextarea.addEventListener('mousedown', (e) => e.stopPropagation())
+    outcomeTextarea.addEventListener('click', (e) => e.stopPropagation())
+    outcomeSec.append(outcomeTextarea)
+
+    // Track the *original* outcome to detect changes on save.
+    const originalOutcome = card.outcome ?? ''
+
+    // ── Dispatch (shuttle options) ────────────────────────────────────────────
+    // Shown when the fiber has a shuttle block. Lets the user change the agent
+    // without opening vellum or the terminal.
+    let agentSelect: HTMLSelectElement | null = null
+    const originalAgent = card.shuttleAgent ?? ''
+
+    const dispatchSec = this.buildSection('Dispatch')
+    // All kanban fibers have a shuttle block (post-cutover). Show the agent
+    // selector so the user can change dispatch agent without opening vellum.
+    const agentRow = document.createElement('div')
+    agentRow.className = 'kbn-detail-field-row'
+
+    const agentLabel = document.createElement('label')
+    agentLabel.className = 'kbn-detail-label'
+    agentLabel.textContent = 'Agent'
+
+    agentSelect = document.createElement('select')
+    agentSelect.className = 'kbn-detail-select'
+
+    // Placeholder while loading.
+    const loadingOpt = document.createElement('option')
+    loadingOpt.value = ''
+    loadingOpt.textContent = 'Loading agents…'
+    agentSelect.append(loadingOpt)
+
+    agentLabel.setAttribute('for', 'kbn-detail-agent')
+    agentSelect.id = 'kbn-detail-agent'
+    agentRow.append(agentLabel, agentSelect)
+    dispatchSec.append(agentRow)
+
+    // Load agents from /shuttle/agents async.
+    void this.loadAgents(agentSelect, originalAgent)
+
+    // ── Parent fiber ──────────────────────────────────────────────────────────
+    // Shows the current parent (derived from the id path) and an autocomplete
+    // field for selecting a new one.
+    const parentSec = this.buildSection('Parent fiber')
+
+    // Derive current parent from id segments.
+    const idSegments = card.id.split('/')
+    const currentParentId = idSegments.length > 1
+      ? idSegments.slice(0, -1).join('/')
+      : null
+
+    // State for the selected parent (null = top-level; undefined = no change).
+    let selectedParentId: string | null | undefined = undefined
+
+    const currentParentEl = document.createElement('div')
+    currentParentEl.className = 'kbn-detail-current-parent'
+    currentParentEl.textContent = currentParentId
+      ? `↳ ${currentParentId}`
+      : '↳ top-level (no parent)'
+
+    const parentSearchWrap = document.createElement('div')
+    parentSearchWrap.className = 'kbn-detail-parent-wrap'
+
+    const parentInput = document.createElement('input')
+    parentInput.type = 'text'
+    parentInput.className = 'kbn-detail-parent-input'
+    parentInput.placeholder = 'Search for a new parent…'
+    parentInput.setAttribute('aria-label', 'Search parent fiber')
+    parentInput.setAttribute('autocomplete', 'off')
+    // Stop card-level clicks propagating (there's no card here, but be defensive).
+    parentInput.addEventListener('mousedown', (e) => e.stopPropagation())
+    parentInput.addEventListener('click', (e) => e.stopPropagation())
+
+    const parentDropdown = document.createElement('div')
+    parentDropdown.className = 'kbn-detail-parent-dropdown'
+    parentDropdown.style.display = 'none'
+
+    const clearParentBtn = document.createElement('button')
+    clearParentBtn.type = 'button'
+    clearParentBtn.className = 'kbn-detail-clear-parent'
+    clearParentBtn.textContent = 'Make top-level'
+    clearParentBtn.setAttribute('aria-label', 'Remove parent (make top-level)')
+    clearParentBtn.style.display = currentParentId ? '' : 'none'
+    clearParentBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      selectedParentId = null
+      currentParentEl.textContent = '↳ top-level (will be moved)'
+      currentParentEl.classList.add('kbn-detail-pending-change')
+      parentInput.value = ''
+      parentDropdown.style.display = 'none'
+      clearParentBtn.style.display = 'none'
+    })
+
+    // Search on input with debounce.
+    parentInput.addEventListener('input', () => {
+      const q = parentInput.value.trim()
+      if (this.searchDebounce !== null) window.clearTimeout(this.searchDebounce)
+      this.searchDebounce = window.setTimeout(() => {
+        void this.searchParents(q, card.id, parentDropdown, (result) => {
+          selectedParentId = result.id
+          currentParentEl.textContent = `↳ ${result.id} (pending)`
+          currentParentEl.classList.add('kbn-detail-pending-change')
+          parentInput.value = result.name
+          parentDropdown.style.display = 'none'
+          clearParentBtn.style.display = ''
+        })
+      }, 200)
+    })
+
+    // Show top-level results on focus if empty.
+    parentInput.addEventListener('focus', () => {
+      if (!parentInput.value.trim()) {
+        void this.searchParents('', card.id, parentDropdown, (result) => {
+          selectedParentId = result.id
+          currentParentEl.textContent = `↳ ${result.id} (pending)`
+          currentParentEl.classList.add('kbn-detail-pending-change')
+          parentInput.value = result.name
+          parentDropdown.style.display = 'none'
+          clearParentBtn.style.display = ''
+        })
+      }
+    })
+
+    // Hide dropdown on blur (with delay to allow click on option).
+    parentInput.addEventListener('blur', () => {
+      window.setTimeout(() => {
+        if (!parentDropdown.matches(':focus-within')) {
+          parentDropdown.style.display = 'none'
+        }
+      }, 150)
+    })
+
+    parentSearchWrap.append(parentInput, parentDropdown)
+    parentSec.append(currentParentEl, parentSearchWrap, clearParentBtn)
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    const footer = document.createElement('div')
+    footer.className = 'kbn-detail-footer'
+
+    const vellumBtn = document.createElement('button')
+    vellumBtn.type = 'button'
+    vellumBtn.className = 'kbn-detail-vellum-btn'
+    vellumBtn.textContent = 'Open in vellum →'
+    vellumBtn.setAttribute('aria-label', `Open ${card.name} in vellum`)
+    vellumBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.close()
+      this.onOpenFiber(card)
+    })
+
+    const cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.className = 'kbn-action kbn-action-drafts'
+    cancelBtn.textContent = 'Cancel'
+    cancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.close()
+    })
+
+    const errorEl = document.createElement('div')
+    errorEl.className = 'kbn-detail-error'
+    errorEl.style.display = 'none'
+
+    const saveBtn = document.createElement('button')
+    saveBtn.type = 'button'
+    saveBtn.className = 'kbn-action kbn-action-inFlight kbn-detail-save-btn'
+    saveBtn.textContent = 'Save'
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const changes: {
+        outcome?: string
+        shuttleAgent?: string
+        parentId?: string | null
+      } = {}
+
+      const newOutcome = outcomeTextarea.value.trim()
+      if (newOutcome !== originalOutcome.trim()) changes.outcome = newOutcome
+
+      if (agentSelect) {
+        const newAgent = agentSelect.value
+        if (newAgent && newAgent !== originalAgent) changes.shuttleAgent = newAgent
+      }
+
+      if (selectedParentId !== undefined) changes.parentId = selectedParentId
+
+      if (Object.keys(changes).length === 0) {
+        this.close()
+        return
+      }
+
+      saveBtn.disabled = true
+      saveBtn.textContent = 'Saving…'
+      errorEl.style.display = 'none'
+
+      void this.save(card.id, changes, saveBtn, errorEl)
+    })
+
+    const footerRight = document.createElement('div')
+    footerRight.className = 'kbn-detail-footer-right'
+    footerRight.append(cancelBtn, saveBtn)
+
+    footer.append(vellumBtn, errorEl, footerRight)
+
+    // ── Assemble ─────────────────────────────────────────────────────────────
+    // Wrap the editable sections in a scrollable body div.
+    const scrollBody = document.createElement('div')
+    scrollBody.className = 'kbn-detail-body'
+    scrollBody.append(outcomeSec, dispatchSec, parentSec)
+    dialog.append(header, idEl, scrollBody, footer)
+    overlay.append(dialog)
+    document.body.append(overlay)
+    this.overlay = overlay
+
+    // Escape to close.
+    this.escapeHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.close()
+    }
+    document.addEventListener('keydown', this.escapeHandler, true)
+
+    // Focus the outcome textarea after mount.
+    window.requestAnimationFrame(() => outcomeTextarea.focus())
+  }
+
+  close(): void {
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler, true)
+      this.escapeHandler = null
+    }
+    if (this.searchDebounce !== null) {
+      window.clearTimeout(this.searchDebounce)
+      this.searchDebounce = null
+    }
+    this.overlay?.remove()
+    this.overlay = null
+  }
+
+  // ── Private helpers ─────────────────────────────────────────────────────────
+
+  private buildSection(label: string): HTMLElement {
+    const sec = document.createElement('div')
+    sec.className = 'kbn-detail-section'
+    const heading = document.createElement('div')
+    heading.className = 'kbn-detail-section-heading'
+    heading.textContent = label
+    sec.append(heading)
+    return sec
+  }
+
+  private async loadAgents(
+    select: HTMLSelectElement,
+    currentAgent: string,
+  ): Promise<void> {
+    try {
+      const res = await fetch(`${this.apiBase}/shuttle/agents`)
+      if (!res.ok) throw new Error(`${res.status}`)
+      const data = (await res.json()) as { agents: Array<{ id: string; model?: string; default?: boolean }> }
+      select.innerHTML = ''
+      if (data.agents.length === 0) {
+        const opt = document.createElement('option')
+        opt.value = ''
+        opt.textContent = 'No agents available'
+        select.append(opt)
+        return
+      }
+      for (const agent of data.agents) {
+        const opt = document.createElement('option')
+        opt.value = agent.id
+        opt.textContent = agent.model ? `${agent.id} (${agent.model})` : agent.id
+        if (agent.id === currentAgent) opt.selected = true
+        select.append(opt)
+      }
+      // If no match, try to keep current agent as a custom entry.
+      if (currentAgent && !data.agents.some(a => a.id === currentAgent)) {
+        const opt = document.createElement('option')
+        opt.value = currentAgent
+        opt.textContent = `${currentAgent} (custom)`
+        opt.selected = true
+        select.prepend(opt)
+      }
+    } catch {
+      select.innerHTML = '<option value="">Failed to load agents</option>'
+    }
+  }
+
+  private async searchParents(
+    q: string,
+    excludeId: string,
+    dropdown: HTMLElement,
+    onSelect: (result: FiberSearchResult) => void,
+  ): Promise<void> {
+    try {
+      const params = new URLSearchParams({ excludeId })
+      if (q) params.set('q', q)
+      const res = await fetch(`${this.apiBase}/kanban/fiber-search?${params}`)
+      if (!res.ok) return
+      const data = (await res.json()) as { fibers: FiberSearchResult[] }
+
+      dropdown.innerHTML = ''
+      if (data.fibers.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'kbn-detail-parent-option kbn-detail-parent-empty'
+        empty.textContent = q ? 'No matches' : 'No fibers available'
+        dropdown.append(empty)
+        dropdown.style.display = ''
+        return
+      }
+
+      for (const fiber of data.fibers) {
+        const opt = document.createElement('button')
+        opt.type = 'button'
+        opt.className = 'kbn-detail-parent-option'
+        opt.dataset.depth = String(fiber.depth)
+
+        const nameSpan = document.createElement('span')
+        nameSpan.className = 'kbn-detail-parent-option-name'
+        nameSpan.textContent = fiber.name
+
+        const idSpan = document.createElement('span')
+        idSpan.className = 'kbn-detail-parent-option-id'
+        idSpan.textContent = fiber.id
+
+        opt.append(nameSpan, idSpan)
+        opt.addEventListener('click', (e) => {
+          e.stopPropagation()
+          onSelect(fiber)
+        })
+        dropdown.append(opt)
+      }
+      dropdown.style.display = ''
+    } catch {
+      dropdown.innerHTML = '<div class="kbn-detail-parent-option kbn-detail-parent-empty">Search failed</div>'
+      dropdown.style.display = ''
+    }
+  }
+
+  private async save(
+    fiberId: string,
+    changes: { outcome?: string; shuttleAgent?: string; parentId?: string | null },
+    saveBtn: HTMLButtonElement,
+    errorEl: HTMLElement,
+  ): Promise<void> {
+    try {
+      const res = await fetch(`${this.apiBase}/kanban/fiber-patch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId, ...changes }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
+        throw new Error(err.error || `Save failed: ${res.status}`)
+      }
+      this.close()
+      this.onSaved()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      errorEl.textContent = msg
+      errorEl.style.display = ''
+      saveBtn.disabled = false
+      saveBtn.textContent = 'Save'
+    }
   }
 }
 

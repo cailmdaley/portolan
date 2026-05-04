@@ -111,6 +111,12 @@ export interface KanbanCard {
    * `codex resume <id>`, `pi --session <id>`).
    */
   sessionId?: string;
+  /**
+   * `shuttle.agent` — the agent identifier to dispatch with (e.g. `claude-opus`).
+   * Present only when the shuttle block specifies an agent. Used by the
+   * fiber-detail modal to show and edit the dispatch agent without opening vellum.
+   */
+  shuttleAgent?: string;
 }
 
 export interface KanbanColumns {
@@ -1171,6 +1177,189 @@ export class HttpApiKanban {
   }
 
   // ---------------------------------------------------------------------------
+  // Fiber detail modal endpoints
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /kanban/fiber-search?q=<query>&excludeId=<fiberId>
+   *
+   * Returns fibers from the same felt host for use as parent-fiber candidates
+   * in the fiber-detail modal's autocomplete. Excludes `excludeId` and its
+   * descendants (a fiber can't be its own parent or a parent of an ancestor).
+   *
+   * When `q` is empty: returns top-level fibers (depth 1 within the host)
+   * from the same project prefix as `excludeId`. When `q` is non-empty:
+   * returns all matching fibers ordered by name, up to 30 results.
+   *
+   * Response: `{ fibers: Array<{ id, name, depth }> }` where `depth` is the
+   * number of `/`-separated segments in the id. Depth=1 means top-level
+   * within the felt host.
+   */
+  async handleFiberSearch(url: URL, res: ServerResponse): Promise<void> {
+    const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+    const excludeId = url.searchParams.get('excludeId') ?? '';
+
+    try {
+      const { merged } = await this.collectFibers();
+      const allFibers = merged.map(({ fiber }) => fiber);
+
+      // Derive project prefix from excludeId. A fiber in `ai-futures/portolan/foo`
+      // has project prefix `ai-futures/portolan`. A top-level fiber has no prefix.
+      // We scope results to the same project (same first two path segments for
+      // nested projects, or same first segment for top-level projects).
+      const excludeSegments = excludeId ? excludeId.split('/') : [];
+      const projectPrefix = excludeSegments.length >= 2
+        ? excludeSegments.slice(0, -1).join('/')
+        : excludeSegments[0] ?? '';
+
+      // Filter: same project (id starts with prefix), not excluded, not a
+      // descendant of the excluded fiber.
+      const candidateFilter = (f: Fiber): boolean => {
+        if (!f.id) return false;
+        // Exclude self and descendants.
+        if (f.id === excludeId) return false;
+        if (excludeId && (f.id.startsWith(excludeId + '/'))) return false;
+        // Same project prefix.
+        if (projectPrefix && !f.id.startsWith(projectPrefix)) return false;
+        return true;
+      };
+
+      let results: Fiber[];
+      if (!q) {
+        // No query: return top-level items within the project (direct children
+        // of the project prefix). These are the structural anchors the user
+        // needs to navigate the parent hierarchy.
+        const prefixDepth = projectPrefix ? projectPrefix.split('/').length : 0;
+        results = allFibers
+          .filter(candidateFilter)
+          .filter(f => f.id.split('/').length === prefixDepth + 1);
+      } else {
+        // Query: search across all project fibers by name or id.
+        results = allFibers
+          .filter(candidateFilter)
+          .filter(f =>
+            f.name.toLowerCase().includes(q) ||
+            f.id.toLowerCase().includes(q),
+          )
+          .slice(0, 30);
+      }
+
+      // Sort: top-level first, then alphabetically by name.
+      results.sort((a, b) => {
+        const da = a.id.split('/').length;
+        const db = b.id.split('/').length;
+        if (da !== db) return da - db;
+        return a.name.localeCompare(b.name);
+      });
+
+      this.json(res, 200, {
+        fibers: results.map(f => ({
+          id: f.id,
+          name: f.name,
+          depth: f.id.split('/').length,
+        })),
+      });
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  /**
+   * POST /kanban/fiber-patch
+   *
+   * Patch a fiber's editable fields from the fiber-detail modal. Supports:
+   *   - `outcome`      : free-text outcome string (replaces existing)
+   *   - `shuttleAgent` : agent id string (calls `shuttle-ctl set-model`)
+   *   - `parentId`     : new parent fiber id (calls `felt nest`) or `null`
+   *                      to promote to top-level (calls `felt unnest`)
+   *
+   * Body: `{ fiberId: string, outcome?: string, shuttleAgent?: string,
+   *           parentId?: string | null }`
+   *
+   * Response: `{ ok: true, newFiberId?: string }` — `newFiberId` is set
+   * when parentId changes and the fiber's id changes as a result.
+   */
+  async handleFiberPatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: {
+      fiberId: string;
+      outcome?: string;
+      shuttleAgent?: string;
+      parentId?: string | null;
+    };
+    try {
+      body = await readJsonBody(req);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 400, { error: `bad request body: ${msg}` });
+      return;
+    }
+    if (!body || typeof body.fiberId !== 'string') {
+      this.json(res, 400, { error: 'fiberId is required' });
+      return;
+    }
+
+    try {
+      const { merged } = await this.collectFibers();
+      const entry = merged.find(({ fiber }) => fiber.id === body.fiberId);
+      if (!entry) {
+        this.json(res, 404, { error: `fiber not found: ${body.fiberId}` });
+        return;
+      }
+      const { fiber, host } = entry;
+
+      let newFiberId: string | undefined;
+
+      // ── Patch outcome in the fiber file ───────────────────────────────────
+      if (typeof body.outcome === 'string') {
+        const path = this.fiberPath(host, fiber);
+        const raw = readFileSync(path, 'utf8');
+        const patched = patchOutcomeInFrontmatter(raw, body.outcome.trim());
+        writeFileSync(path, patched, 'utf8');
+      }
+
+      // ── Patch shuttle.agent via shuttle-ctl set-model ─────────────────────
+      if (typeof body.shuttleAgent === 'string' && body.shuttleAgent) {
+        const globalId = resolveGlobalFiberId(host, fiber.id);
+        const feltHost = await this.resolveShuttleFeltHost(globalId);
+        await execFileAsync('shuttle-ctl', ['set-model', globalId, body.shuttleAgent], {
+          env: { ...process.env, HOME: process.env.HOME ?? '/tmp' },
+          cwd: feltHost,
+        });
+      }
+
+      // ── Reparent via felt nest / felt unnest ──────────────────────────────
+      if ('parentId' in body) {
+        const globalId = resolveGlobalFiberId(host, fiber.id);
+        const feltHost = await this.resolveShuttleFeltHost(globalId);
+        if (body.parentId === null || body.parentId === '') {
+          // Promote to top-level.
+          await execFileAsync('felt', ['-C', feltHost, 'unnest', globalId]);
+          // New id: last segment of globalId.
+          const segments = globalId.split('/');
+          newFiberId = segments[segments.length - 1];
+        } else {
+          const parentGlobalId = resolveGlobalFiberId(host, body.parentId as string);
+          await execFileAsync('felt', ['-C', feltHost, 'nest', globalId, parentGlobalId]);
+          // New id: parentGlobalId / last segment of globalId.
+          const segments = globalId.split('/');
+          newFiberId = `${parentGlobalId}/${segments[segments.length - 1]}`;
+        }
+      }
+
+      this.clearFiberPoolCache();
+      this.json(res, 200, { ok: true, ...(newFiberId ? { newFiberId } : {}) });
+    } catch (err: unknown) {
+      const msg =
+        (err as { stderr?: string })?.stderr?.trim() ||
+        (err as { message?: string })?.message ||
+        String(err);
+      console.error('[Kanban] fiber-patch failed:', msg);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
 
   private toCard(
     f: Fiber,
@@ -1231,6 +1420,7 @@ export class HttpApiKanban {
       cityId,
       projectSlug,
       sessionId: f.shuttleSessionId,
+      shuttleAgent: f.shuttleAgent,
     };
   }
 
@@ -1597,4 +1787,49 @@ export function mutateTagsInPlace(
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ── Fiber patch helpers ───────────────────────────────────────────────────────
+
+/**
+ * Replace or insert the `outcome:` field in a fiber's frontmatter.
+ *
+ * Handles three existing forms:
+ *   - No outcome field: appends `outcome: <value>` (or block scalar).
+ *   - Single-line: `outcome: existing` → `outcome: new`.
+ *   - Block scalar: `outcome: |-\n  existing\n  lines` → replaced entirely.
+ *
+ * Multi-line values are written as `outcome: |-` block scalars; single-line
+ * values are written inline. The rest of the file is preserved byte-identical.
+ */
+export function patchOutcomeInFrontmatter(raw: string, outcome: string): string {
+  const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!fmMatch) throw new Error('file has no YAML frontmatter');
+
+  const fmBlock = fmMatch[1];
+  const after = raw.slice(fmMatch[0].length);
+  const fmLines = fmBlock.split(/\r?\n/);
+
+  // Remove existing outcome field (single-line or block scalar).
+  for (let i = 0; i < fmLines.length; i++) {
+    if (/^outcome:/.test(fmLines[i])) {
+      let end = i + 1;
+      // Block scalar continuation: indented lines after `outcome: |-` / `outcome: |`.
+      if (/^outcome:\s*\|/.test(fmLines[i])) {
+        while (end < fmLines.length && /^\s/.test(fmLines[end])) end++;
+      }
+      fmLines.splice(i, end - i);
+      break;
+    }
+  }
+
+  // Insert new outcome value.
+  if (outcome.includes('\n')) {
+    const indented = outcome.split('\n').map(l => `  ${l}`);
+    fmLines.push('outcome: |-', ...indented);
+  } else {
+    fmLines.push(`outcome: ${outcome}`);
+  }
+
+  return `---\n${fmLines.join('\n')}\n---\n${after}`;
 }

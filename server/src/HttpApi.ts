@@ -370,6 +370,25 @@ export class HttpApi {
       return true;
     }
 
+    // GET /kanban/fiber-search?q=<query>&excludeId=<fiberId> — autocomplete
+    // candidates for the fiber-detail modal's parent-fiber selector. Returns
+    // fibers from the same project as excludeId, scoped per cityId when present.
+    if (url.pathname === '/kanban/fiber-search' && req.method === 'GET') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleFiberSearch(url, res);
+      return true;
+    }
+
+    // POST /kanban/fiber-patch — edit a fiber's metadata (outcome, shuttle
+    // agent, parent) from the fiber-detail modal without opening full vellum.
+    if (url.pathname === '/kanban/fiber-patch' && req.method === 'POST') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleFiberPatch(req, res);
+      return true;
+    }
+
     // GET /shuttle/agents — returns the agent registry from shuttle's
     // share/agents.json. Used by StashForm's agent select dropdown.
     // Reads from $HOME/Documents/projects/shuttle/shuttle/share/agents.json.

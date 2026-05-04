@@ -49,6 +49,12 @@ export interface Fiber {
    * or after `shuttle-ctl session-clear`.
    */
   shuttleSessionId?: string;
+  /**
+   * `shuttle.agent` — the agent identifier to dispatch with (e.g. `claude-opus`).
+   * Present only when `hasShuttleBlock` is true. Absent when the shuttle block
+   * doesn't specify an agent (daemon uses its default).
+   */
+  shuttleAgent?: string;
   parentId?: string | null; // parent fiber id (derived from slug path); null for top-level
   isRoot?: boolean;  // entry-point fiber: bare `.felt/<slug>.md` (appears via loom symlink)
 }
@@ -305,6 +311,13 @@ export function parseFiber(id: string, content: string): Fiber {
     }
   }
 
+  // shuttleAgent: shuttle.agent — the agent id to dispatch with.
+  let shuttleAgent: string | undefined;
+  if (hasShuttleBlock) {
+    const a = (shuttleRaw as Record<string, unknown>)['agent'];
+    if (typeof a === 'string' && a) shuttleAgent = a;
+  }
+
   return {
     id,
     name: getField('name') || id,
@@ -323,5 +336,6 @@ export function parseFiber(id: string, content: string): Fiber {
     shuttleKind,
     shuttleReviewState,
     shuttleSessionId,
+    shuttleAgent,
   };
 }
