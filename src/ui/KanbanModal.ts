@@ -1845,6 +1845,128 @@ class FiberDetailModal {
     const scope = scopeCityId ?? undefined
     void this.loadHistory(card.id, scope, historyList)
 
+    // ── Action cluster (directive + lifecycle buttons) ────────────────────────
+    // Brings the kanban grid card's review cluster into the modal, available
+    // for any state (not just awaitingReview). The directive text is
+    // recorded as a review-comment event before the lifecycle transition
+    // fires, so a "resubmit with directive" lands as one atomic gesture from
+    // the user's perspective.
+    const actionsSec = this.buildSection('Next dispatch')
+    const actionsErr = document.createElement('div')
+    actionsErr.className = 'kbn-detail-error'
+    actionsErr.style.display = 'none'
+
+    const directiveTa = document.createElement('textarea')
+    directiveTa.className = 'kbn-detail-directive'
+    directiveTa.placeholder = 'Add a directive for the next worker (optional)…'
+    directiveTa.rows = 3
+    directiveTa.setAttribute('aria-label', 'Directive for next worker')
+    directiveTa.addEventListener('mousedown', (e) => e.stopPropagation())
+    directiveTa.addEventListener('click', (e) => e.stopPropagation())
+
+    const actionsRow = document.createElement('div')
+    actionsRow.className = 'kbn-detail-actions-row'
+
+    const requeueBtn = this.buildActionBtn('Resubmit ▸', 'primary')
+    requeueBtn.title = 'Record directive and requeue as in-flight (fresh worker)'
+
+    const hasSession = !!card.sessionId
+    const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
+    resumeBtn.disabled = !hasSession
+    resumeBtn.title = hasSession
+      ? 'Record directive and resume previous worker session'
+      : 'No prior session stored — dispatch a fresh worker first'
+
+    const temperBtn = this.buildActionBtn('Temper', 'tempered')
+    temperBtn.title = 'Close as tempered (human-accepted)'
+
+    const compostBtn = this.buildActionBtn('Compost', 'composted')
+    compostBtn.title = 'Close as composted (human-rejected)'
+
+    actionsRow.append(requeueBtn, resumeBtn, temperBtn, compostBtn)
+
+    requeueBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void this.runRequeue(card, directiveTa.value.trim(), 'fresh', scope, requeueBtn, actionsErr)
+    })
+    resumeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (!hasSession) return
+      void this.runRequeue(card, directiveTa.value.trim(), 'previous', scope, resumeBtn, actionsErr)
+    })
+    temperBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void this.runTransition(card, 'tempered', scope, temperBtn, actionsErr)
+    })
+    compostBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void this.runTransition(card, 'composted', scope, compostBtn, actionsErr)
+    })
+
+    actionsSec.append(directiveTa, actionsRow, actionsErr)
+
+    // ── Tags ────────────────────────────────────────────────────────────────
+    // Chip editor matching the kanban grid card's inline tag editor. Adding
+    // a tag commits to /kanban/tags immediately on Enter; removing via the ×
+    // chip button does the same. No Save/Cancel — chips reflect server
+    // state, edits are atomic.
+    const tagsSec = this.buildSection('Tags')
+    const tagsErr = document.createElement('div')
+    tagsErr.className = 'kbn-detail-error'
+    tagsErr.style.display = 'none'
+
+    const tagsRow = document.createElement('div')
+    tagsRow.className = 'kbn-detail-tags-row'
+    const tagsState: { current: string[] } = {
+      current: (card.tags ?? []).filter((t) => t !== 'constitution'),
+    }
+    const tagInput = document.createElement('input')
+    tagInput.type = 'text'
+    tagInput.className = 'kbn-detail-tag-input'
+    tagInput.placeholder = 'add tag…'
+    tagInput.setAttribute('aria-label', 'Add a tag')
+    tagInput.addEventListener('mousedown', (e) => e.stopPropagation())
+    tagInput.addEventListener('click', (e) => e.stopPropagation())
+    tagInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return
+      e.preventDefault()
+      const val = tagInput.value.trim()
+      if (!val || tagsState.current.includes(val)) {
+        tagInput.value = ''
+        return
+      }
+      const next = [...tagsState.current, val]
+      void this.runTagsSave(card, next, scope, tagsState, tagsRow, tagInput, tagsErr)
+    })
+
+    const renderTags = (): void => {
+      // Remove existing chip nodes (everything except the input).
+      Array.from(tagsRow.querySelectorAll('.kbn-detail-tag-chip')).forEach((n) => n.remove())
+      for (const t of tagsState.current) {
+        const chip = document.createElement('span')
+        chip.className = 'kbn-detail-tag-chip'
+        const lbl = document.createElement('span')
+        lbl.textContent = t
+        const rm = document.createElement('button')
+        rm.type = 'button'
+        rm.className = 'kbn-detail-tag-remove'
+        rm.textContent = '×'
+        rm.setAttribute('aria-label', `Remove tag ${t}`)
+        rm.addEventListener('click', (e) => {
+          e.stopPropagation()
+          const next = tagsState.current.filter((x) => x !== t)
+          void this.runTagsSave(card, next, scope, tagsState, tagsRow, tagInput, tagsErr)
+        })
+        chip.append(lbl, rm)
+        tagsRow.insertBefore(chip, tagInput)
+      }
+    }
+    tagsRow.append(tagInput)
+    renderTags()
+    // Cache the renderer on the row so runTagsSave can re-render after success.
+    ;(tagsRow as unknown as { _renderTags: () => void })._renderTags = renderTags
+    tagsSec.append(tagsRow, tagsErr)
+
     // ── Dispatch (shuttle options) ────────────────────────────────────────────
     // Console-style editor for the fiber's shuttle frontmatter block. Lets the
     // human tune the dispatch contract — agent, kind, schedule cadence — from
@@ -1868,7 +1990,7 @@ class FiberDetailModal {
     let selectedSchedule = originalSchedule
     let selectedTz = originalTz
 
-    const dispatchSec = this.buildSection('Dispatch')
+    const dispatchSec = this.buildSection('Worker')
 
     // Row 1: agent
     const agentRow = document.createElement('div')
@@ -2038,22 +2160,6 @@ class FiberDetailModal {
     parentDropdown.className = 'kbn-detail-parent-dropdown'
     parentDropdown.style.display = 'none'
 
-    const clearParentBtn = document.createElement('button')
-    clearParentBtn.type = 'button'
-    clearParentBtn.className = 'kbn-detail-clear-parent'
-    clearParentBtn.textContent = 'Make top-level'
-    clearParentBtn.setAttribute('aria-label', 'Remove parent (make top-level)')
-    clearParentBtn.style.display = currentParentId ? '' : 'none'
-    clearParentBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      selectedParentId = null
-      currentParentEl.textContent = '↳ top-level (will be moved)'
-      currentParentEl.classList.add('kbn-detail-pending-change')
-      parentInput.value = ''
-      parentDropdown.style.display = 'none'
-      clearParentBtn.style.display = 'none'
-    })
-
     // Search on input with debounce.
     parentInput.addEventListener('input', () => {
       const q = parentInput.value.trim()
@@ -2065,7 +2171,6 @@ class FiberDetailModal {
           currentParentEl.classList.add('kbn-detail-pending-change')
           parentInput.value = result.name
           parentDropdown.style.display = 'none'
-          clearParentBtn.style.display = ''
         })
       }, 200)
     })
@@ -2079,7 +2184,6 @@ class FiberDetailModal {
           currentParentEl.classList.add('kbn-detail-pending-change')
           parentInput.value = result.name
           parentDropdown.style.display = 'none'
-          clearParentBtn.style.display = ''
         })
       }
     })
@@ -2094,7 +2198,7 @@ class FiberDetailModal {
     })
 
     parentSearchWrap.append(parentInput, parentDropdown)
-    parentSec.append(currentParentEl, parentSearchWrap, clearParentBtn)
+    parentSec.append(currentParentEl, parentSearchWrap)
 
     // ── Footer ────────────────────────────────────────────────────────────────
     const footer = document.createElement('div')
@@ -2188,7 +2292,15 @@ class FiberDetailModal {
 
     const rightCol = document.createElement('div')
     rightCol.className = 'kbn-detail-col kbn-detail-col-right'
-    rightCol.append(dispatchSec, parentSec, this.buildRule(), historySec)
+    rightCol.append(
+      actionsSec,
+      tagsSec,
+      this.buildRule(),
+      dispatchSec,
+      parentSec,
+      this.buildRule(),
+      historySec,
+    )
 
     body.append(leftCol, rightCol)
 
@@ -2246,6 +2358,175 @@ class FiberDetailModal {
     rule.className = 'kbn-detail-rule'
     rule.setAttribute('aria-hidden', 'true')
     return rule
+  }
+
+  /**
+   * Build a button for the action cluster. Variants tint the button to
+   * match the kanban grid's `kbn-action-*` palette (gold for primary
+   * requeue/resume, teal for tempered, muted gray for composted).
+   */
+  private buildActionBtn(
+    label: string,
+    variant: 'primary' | 'tempered' | 'composted',
+  ): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = `kbn-detail-action-btn kbn-detail-action-${variant}`
+    btn.textContent = label
+    return btn
+  }
+
+  /** URL helper for /kanban/transition with cityScope. */
+  private transitionUrl(cityId: string | undefined): string {
+    return cityId
+      ? `${this.apiBase}/kanban/transition?cityId=${encodeURIComponent(cityId)}`
+      : `${this.apiBase}/kanban/transition`
+  }
+
+  /** URL helper for /kanban/review-comment with cityScope. */
+  private reviewCommentUrl(cityId: string | undefined): string {
+    return cityId
+      ? `${this.apiBase}/kanban/review-comment?cityId=${encodeURIComponent(cityId)}`
+      : `${this.apiBase}/kanban/review-comment`
+  }
+
+  /** URL helper for /kanban/tags with cityScope. */
+  private tagsUrl(cityId: string | undefined): string {
+    return cityId
+      ? `${this.apiBase}/kanban/tags?cityId=${encodeURIComponent(cityId)}`
+      : `${this.apiBase}/kanban/tags`
+  }
+
+  /**
+   * Two-step requeue: record a directive event (review-comment), then
+   * transition to inFlight. Mirrors KanbanModal.requeueFresh /
+   * resumePrevious — the directive is what the next dispatched worker
+   * reads, the transition is what wakes the dispatcher up.
+   */
+  private async runRequeue(
+    card: KanbanCard,
+    directive: string,
+    mode: 'fresh' | 'previous',
+    cityId: string | undefined,
+    btn: HTMLButtonElement,
+    errorEl: HTMLElement,
+  ): Promise<void> {
+    const original = btn.textContent ?? ''
+    btn.disabled = true
+    btn.textContent = mode === 'fresh' ? 'Resubmitting…' : 'Resuming…'
+    errorEl.style.display = 'none'
+    try {
+      const commentRes = await fetch(this.reviewCommentUrl(cityId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: mode }),
+      })
+      if (!commentRes.ok) {
+        const e = (await commentRes.json().catch(() => ({}))) as { error?: string }
+        throw new Error(e.error || `review-comment ${commentRes.status}`)
+      }
+      const transRes = await fetch(this.transitionUrl(cityId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
+      })
+      if (!transRes.ok) {
+        const e = (await transRes.json().catch(() => ({}))) as { error?: string }
+        throw new Error(e.error || `transition ${transRes.status}`)
+      }
+      this.close()
+      this.onSaved()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      errorEl.textContent = msg
+      errorEl.style.display = ''
+      btn.disabled = false
+      btn.textContent = original
+    }
+  }
+
+  /**
+   * Single-step transition (no directive). Used for Temper / Compost
+   * buttons — those are terminal moves where a directive is moot.
+   */
+  private async runTransition(
+    card: KanbanCard,
+    target: string,
+    cityId: string | undefined,
+    btn: HTMLButtonElement,
+    errorEl: HTMLElement,
+  ): Promise<void> {
+    const original = btn.textContent ?? ''
+    btn.disabled = true
+    btn.textContent = '…'
+    errorEl.style.display = 'none'
+    try {
+      const res = await fetch(this.transitionUrl(cityId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, target }),
+      })
+      if (!res.ok) {
+        const e = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(e.error || `transition ${res.status}`)
+      }
+      this.close()
+      this.onSaved()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      errorEl.textContent = msg
+      errorEl.style.display = ''
+      btn.disabled = false
+      btn.textContent = original
+    }
+  }
+
+  /**
+   * Persist the new tag set via /kanban/tags and re-render the chip row
+   * on success. Stays open — tags are an inline edit, not a final
+   * gesture, so the modal doesn't close.
+   */
+  private async runTagsSave(
+    card: KanbanCard,
+    tags: string[],
+    cityId: string | undefined,
+    state: { current: string[] },
+    _row: HTMLElement,
+    input: HTMLInputElement,
+    errorEl: HTMLElement,
+  ): Promise<void> {
+    errorEl.style.display = 'none'
+    // Tags sent to the server include `constitution` if the fiber had
+    // it (the chip editor filters constitution out of the visible chips
+    // because it's not user-editable, but the server expects the full set).
+    const fullTags = (card.tags ?? []).includes('constitution')
+      ? ['constitution', ...tags.filter((t) => t !== 'constitution')]
+      : tags
+    try {
+      const res = await fetch(this.tagsUrl(cityId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, tags: fullTags }),
+      })
+      if (!res.ok) {
+        const e = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(e.error || `tags ${res.status}`)
+      }
+      // Mirror server state into local; clear input; re-render chips.
+      state.current = tags.filter((t) => t !== 'constitution')
+      // Update the card object so future reads of card.tags see the new set
+      // (e.g. if other parts of the modal read it later).
+      card.tags = fullTags
+      input.value = ''
+      const ren = (_row as unknown as { _renderTags?: () => void })._renderTags
+      if (typeof ren === 'function') ren()
+      // Inform parent kanban so the grid card refreshes with the new tags.
+      this.onSaved()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      errorEl.textContent = msg
+      errorEl.style.display = ''
+    }
   }
 
   /**

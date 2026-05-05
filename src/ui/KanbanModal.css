@@ -947,16 +947,31 @@
 }
 /* Outcome column has a hard ceiling on reading measure — beyond
    ~720px serif body lines feel sprawling regardless of how wide the
-   modal is. The right column absorbs whatever extra width the modal
-   has, giving history a generous chronology rather than a peephole. */
+   modal is. Right column fills whatever's left of the modal width;
+   inputs inside the right column carry their own max-widths so they
+   don't sprawl across the column on wide viewports.
+
+   `flex: 0 0 720px` on left + `flex: 1 1 0` on right locks the left
+   at 720 and lets the right take the remainder — content inside the
+   right column won't push back against the left column's basis. */
 .kbn-detail-col-left {
-  flex: 0 1 720px;
+  flex: 0 0 720px;
   border-right: 1px solid rgba(46, 42, 38, 0.10);
 }
 .kbn-detail-col-right {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 360px;
   background: rgba(232, 225, 213, 0.35);
+}
+/* Cap content widths inside the right column so wide viewports don't
+   create comically-stretched textareas and selects. The right
+   column's section padding gives the cap room to breathe. */
+.kbn-detail-col-right .kbn-detail-directive,
+.kbn-detail-col-right .kbn-detail-tags-row,
+.kbn-detail-col-right .kbn-detail-field-row,
+.kbn-detail-col-right .kbn-detail-current-parent,
+.kbn-detail-col-right .kbn-detail-parent-wrap {
+  max-width: 600px;
 }
 /* Horizontal hairline rule used inside the right column to separate
    controls from history. */
@@ -1404,26 +1419,150 @@
   cursor: default;
 }
 .kbn-detail-parent-empty:hover { background: transparent; }
-/* "Make top-level" reads as a small italic note, not a button. */
-.kbn-detail-clear-parent {
+/* ── Action cluster: directive textarea + lifecycle buttons ─────────────── */
+.kbn-detail-directive {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid rgba(122, 112, 104, 0.30);
+  border-radius: 1px;
+  background: rgba(255, 252, 246, 0.55);
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 12px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #2E2A26;
+  outline: none;
+  resize: vertical;
+  margin-bottom: 10px;
+  transition: border-color 200ms ease, background 200ms ease;
+}
+.kbn-detail-directive:focus {
+  border-color: rgba(154, 123, 53, 0.55);
+  background: #FFFCF6;
+}
+.kbn-detail-directive::placeholder {
+  color: #B8AC9E;
   font-style: italic;
+}
+.kbn-detail-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Action buttons share a letterpress-stamped look — small caps with
+   letterspacing, hairline border, parchment tone slightly darker than
+   the column. Variant tints follow the kanban-grid action palette so
+   the modal and grid feel like the same vocabulary. */
+.kbn-detail-action-btn {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 5px 12px 4px;
+  border-radius: 1px;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease,
+              transform 80ms ease;
+  box-shadow:
+    0 1px 0 rgba(255, 252, 246, 0.6) inset,
+    0 -1px 0 rgba(46, 42, 38, 0.04) inset;
+}
+.kbn-detail-action-btn:active {
+  transform: translateY(0.5px);
+  box-shadow: 0 1px 0 rgba(46, 42, 38, 0.08) inset;
+}
+.kbn-detail-action-btn:focus { outline: none; }
+.kbn-detail-action-btn:focus-visible {
+  outline: 1px dashed #9A7B35;
+  outline-offset: 2px;
+}
+.kbn-detail-action-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.kbn-detail-action-primary {
+  color: #4A3810;
+  background: rgba(154, 123, 53, 0.12);
+  border: 1px solid rgba(154, 123, 53, 0.50);
+}
+.kbn-detail-action-primary:hover:not(:disabled) {
+  background: rgba(154, 123, 53, 0.22);
+  border-color: rgba(154, 123, 53, 0.70);
+  color: #2E2410;
+}
+.kbn-detail-action-tempered {
+  color: #2E4848;
+  background: rgba(90, 123, 123, 0.10);
+  border: 1px solid rgba(90, 123, 123, 0.45);
+}
+.kbn-detail-action-tempered:hover:not(:disabled) {
+  background: rgba(90, 123, 123, 0.22);
+  border-color: rgba(90, 123, 123, 0.65);
+}
+.kbn-detail-action-composted {
+  color: #5A4F40;
+  background: rgba(122, 112, 104, 0.08);
+  border: 1px solid rgba(122, 112, 104, 0.40);
+}
+.kbn-detail-action-composted:hover:not(:disabled) {
+  background: rgba(122, 112, 104, 0.18);
+  border-color: rgba(122, 112, 104, 0.60);
+  color: #2E2A26;
+}
+
+/* ── Tags chip editor ────────────────────────────────────────────────────── */
+.kbn-detail-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.kbn-detail-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: #5A4F40;
+  background: rgba(154, 123, 53, 0.08);
+  border: 1px solid rgba(154, 123, 53, 0.28);
+  border-radius: 1px;
+  padding: 2px 4px 2px 8px;
+}
+.kbn-detail-tag-remove {
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 14px;
+  line-height: 1;
   color: #A89E91;
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 0 4px;
   cursor: pointer;
-  letter-spacing: 0;
   transition: color 160ms ease;
-  text-decoration: underline;
-  text-decoration-color: rgba(168, 158, 145, 0.4);
-  text-underline-offset: 2px;
-  align-self: flex-start;
 }
-.kbn-detail-clear-parent:hover {
-  color: #6B5520;
-  text-decoration-color: rgba(154, 123, 53, 0.5);
+.kbn-detail-tag-remove:hover { color: #8B3A28; }
+.kbn-detail-tag-input {
+  flex: 1;
+  min-width: 100px;
+  padding: 3px 4px 3px 0;
+  border: none;
+  border-bottom: 1px solid rgba(122, 112, 104, 0.30);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 13px;
+  color: #2E2A26;
+  outline: none;
+  transition: border-color 200ms ease;
+}
+.kbn-detail-tag-input:focus {
+  border-bottom-color: rgba(154, 123, 53, 0.65);
+}
+.kbn-detail-tag-input::placeholder {
+  color: #C8BFB3;
+  font-style: italic;
 }
 /* Footer: hairline-separated, parchment-toned. Vellum link on the left,
    save on the right. The X handles dismissal — no Cancel button. */
