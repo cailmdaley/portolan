@@ -15,7 +15,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
-import { HttpApiKanban, applyTargetToFrontmatter, canonicalStoreRelativeId, classifyFiber, mutateTagsInPlace } from '../HttpApiKanban.js';
+import { HttpApiKanban, applyTargetToFrontmatter, canonicalStoreRelativeId, classifyFiber, mutateTagsInPlace, type ShuttleCtlInvocation } from '../HttpApiKanban.js';
 import type { Fiber } from '../FiberReader.js';
 import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 
@@ -53,6 +53,60 @@ function relativeFeltPathFromId(id: string, isRoot: boolean): string {
   const segments = id.split('/');
   const basename = segments[segments.length - 1];
   return isRoot ? `${basename}.md` : `${id}/${basename}.md`;
+}
+
+function mdPathForFiberId(fiberId: string): string {
+  const segments = fiberId.split('/');
+  const basename = segments[segments.length - 1];
+  return join(FELT_DIR, ...segments, `${basename}.md`);
+}
+
+function replaceTopLevelScalar(raw: string, key: string, value: string): string {
+  const re = new RegExp(`^([\\t ]*${key}:[\\t ]*).*$`, 'm');
+  return re.test(raw) ? raw.replace(re, `$1${value}`) : raw;
+}
+
+function applyShuttleCtlInvocation(invocation: ShuttleCtlInvocation, nowIso = '2026-05-03T16:00:00.000Z'): void {
+  const path = mdPathForFiberId(invocation.fiberId);
+  const raw = readFileSync(path, 'utf-8');
+  let updated = raw;
+
+  switch (invocation.verb) {
+    case 'pause': {
+      updated = applyTargetToFrontmatter(updated, 'drafts', nowIso);
+      if (/^status: closed$/m.test(raw)) updated = replaceTopLevelScalar(updated, 'status', 'active');
+      updated = updated.replace(/^(\s*enabled:\s*)(true|false)$/m, '$1false');
+      break;
+    }
+    case 'reopen': {
+      updated = applyTargetToFrontmatter(updated, 'inFlight', nowIso);
+      updated = updated.replace(/^(\s*enabled:\s*)(true|false)$/m, '$1true');
+      break;
+    }
+    case 'close': {
+      const target = invocation.tempered === true
+        ? 'tempered'
+        : invocation.tempered === false
+          ? 'composted'
+          : 'awaitingReview';
+      updated = applyTargetToFrontmatter(updated, target, nowIso);
+      break;
+    }
+    case 'accept': {
+      updated = replaceTopLevelScalar(updated, 'state', 'scheduled');
+      updated = updated.replace(/^(\s*enabled:\s*)(true|false)$/m, '$1true');
+      break;
+    }
+  }
+
+  writeFileSync(path, updated, 'utf-8');
+}
+
+function makeShuttleCtlStub(calls: ShuttleCtlInvocation[], nowIso = '2026-05-03T16:00:00.000Z') {
+  return async (invocation: ShuttleCtlInvocation): Promise<void> => {
+    calls.push(invocation);
+    applyShuttleCtlInvocation(invocation, nowIso);
+  };
 }
 
 /** Write a directory-based fiber under FELT_DIR. */
@@ -464,13 +518,18 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'story', target: 'tempered' }), res);
 
       expect(status()).toBe(200);
       expect(body().ok).toBe(true);
       expect(body().card.tempered).toBe(true);
+      expect(shuttleCalls).toEqual([{ verb: 'close', fiberId: 'story', tempered: true }]);
 
       // Verify the file actually changed and closed-at was preserved.
       const after = readFileSync(join(FELT_DIR, 'story', 'story.md'), 'utf-8');
@@ -488,13 +547,18 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'approved', target: 'awaitingReview' }), res);
 
       expect(status()).toBe(200);
       expect(body().card.tempered).toBeUndefined();
       expect(body().card.status).toBe('closed');
+      expect(shuttleCalls).toEqual([{ verb: 'close', fiberId: 'approved' }]);
 
       const after = readFileSync(join(FELT_DIR, 'approved', 'approved.md'), 'utf-8');
       expect(after).not.toMatch(/^tempered:/m);
@@ -509,10 +573,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'legacy-queued', target: 'queued' }), res);
@@ -520,7 +584,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(status()).toBe(200);
       expect(body().card.status).toBe('active');
       expect(body().card.tempered).toBeUndefined();
-      expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'legacy-queued' }]);
+      expect(shuttleCalls).toEqual([{ verb: 'reopen', fiberId: 'legacy-queued' }]);
     });
 
     it('moves a fiber to drafts — calls shuttle-ctl pause, clears closed-at', async () => {
@@ -530,131 +594,122 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'idea', target: 'drafts' }), res);
 
       expect(status()).toBe(200);
-      // shuttle-ctl pause called with the fiber id
-      expect(shuttleCalls).toEqual([{ verb: 'pause', id: 'idea' }]);
+      expect(shuttleCalls).toEqual([{ verb: 'pause', fiberId: 'idea' }]);
       // felt-level: status left as-is (open), no tag mutations
       const after = readFileSync(join(FELT_DIR, 'idea', 'idea.md'), 'utf-8');
       expect(after).toMatch(/^status: open$/m);
       expect(after).not.toMatch(/^  - draft$/m);
     });
 
-    it('moves a draft to inFlight — calls shuttle-ctl resume, status=active', async () => {
+    it('moves a draft to inFlight — calls shuttle-ctl reopen, status=active', async () => {
       writeFib('promoted', {
         name: 'Promoted',
         status: 'open',
         shuttle: SHUTTLE_DRAFT,
         'created-at': '2026-04-01',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'promoted', target: 'inFlight' }), res);
 
       expect(status()).toBe(200);
-      expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'promoted' }]);
+      expect(shuttleCalls).toEqual([{ verb: 'reopen', fiberId: 'promoted' }]);
       expect(body().card.status).toBe('active');
     });
 
-    it('standing-role awaitingReview → inFlight calls shuttle-ctl accept (not resume)', async () => {
+    it('standing-role awaitingReview → inFlight calls shuttle-ctl accept (not reopen)', async () => {
       // The kanban gesture for accepting a standing-role run is to drag the
       // card from awaitingReview back into inFlight. The right verb is
-      // `accept` (advances review.state + computes next_due_at) — `resume`
-      // would no-op because enabled is already true and status already active.
+      // `accept` (advances review.state + computes next_due_at) — `reopen`
+      // would incorrectly treat the standing run like a oneshot requeue.
       writeFib('canary', {
         name: 'Canary',
         status: 'active',
         shuttle: SHUTTLE_STANDING_AWAITING,
         'created-at': '2026-04-01',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
-      const { res, status } = capRes();
+      const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'canary', target: 'inFlight' }), res);
 
       expect(status()).toBe(200);
-      expect(shuttleCalls).toEqual([{ verb: 'accept', id: 'canary' }]);
-      // Standing role's status was 'active' before; should remain 'active'.
-      // applyTargetToFrontmatter is skipped on the accept path so the file
-      // contents are untouched here (accept itself wrote review/schedule via
-      // shuttle-ctl, which the test seam stubs out — so the on-disk file
-      // is left as-is for this assertion).
+      expect(shuttleCalls).toEqual([{ verb: 'accept', fiberId: 'canary' }]);
+      expect(body().card.status).toBe('active');
       const after = readFileSync(join(FELT_DIR, 'canary', 'canary.md'), 'utf-8');
       expect(after).toMatch(/^status: active$/m);
+      expect(after).toMatch(/^    state: scheduled$/m);
     });
 
-    it('oneshot draft → inFlight still calls resume (the standing-accept path is kind-gated)', async () => {
+    it('oneshot draft → inFlight still calls reopen (the standing-accept path is kind-gated)', async () => {
       // Regression check: the standing-accept branch must not steal the
-      // resume path for plain oneshot drafts.
+      // reopen path for plain oneshot drafts.
       writeFib('oneshot-draft', {
         name: 'Oneshot draft',
         status: 'open',
         shuttle: SHUTTLE_DRAFT,
         'created-at': '2026-04-01',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'oneshot-draft', target: 'inFlight' }), res);
 
       expect(status()).toBe(200);
-      expect(shuttleCalls).toEqual([{ verb: 'resume', id: 'oneshot-draft' }]);
+      expect(shuttleCalls).toEqual([{ verb: 'reopen', fiberId: 'oneshot-draft' }]);
     });
 
     it('standing-role awaitingReview → tempered also calls accept (NOT close/tempered=true)', async () => {
       // For standing roles, "tempered" of an awaiting run is equivalent to
       // accepting it — the human is approving this run, but the role itself
-      // continues. The oneshot tempered path (status=closed, tempered=true)
-      // would terminate the role, which is wrong. Only `composted` should
-      // terminate a standing role from the kanban.
+      // continues. The oneshot close/tempered path would terminate the role,
+      // which is wrong. Only `composted` should retire a standing role.
       writeFib('canary-tempered', {
         name: 'Canary tempered',
         status: 'active',
         shuttle: SHUTTLE_STANDING_AWAITING,
         'created-at': '2026-04-01',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
-      const { res, status } = capRes();
+      const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'canary-tempered', target: 'tempered' }), res);
 
       expect(status()).toBe(200);
-      expect(shuttleCalls).toEqual([{ verb: 'accept', id: 'canary-tempered' }]);
-      // applyTargetToFrontmatter is skipped — file should be unchanged on disk
-      // for the felt-level fields (the test seam stubs out the actual accept
-      // shuttle-ctl call so review.state is not mutated here either, but the
-      // important assertion is that status: closed / tempered: true are NOT
-      // written).
+      expect(shuttleCalls).toEqual([{ verb: 'accept', fiberId: 'canary-tempered' }]);
+      expect(body().card.status).toBe('active');
       const after = readFileSync(join(FELT_DIR, 'canary-tempered', 'canary-tempered.md'), 'utf-8');
       expect(after).toMatch(/^status: active$/m);
-      expect(after).not.toMatch(/^status: closed$/m);
+      expect(after).toMatch(/^    state: scheduled$/m);
       expect(after).not.toMatch(/^tempered: true$/m);
     });
 
     it('standing-role awaitingReview → composted DOES terminate the role (status=closed, tempered=false)', async () => {
       // composted is "I'm done with this recurring thing, retire it." For
-      // standing roles that means falling through to the oneshot terminate
-      // path: status=closed makes the daemon stop dispatching forever.
+      // standing roles that means closing the fiber so the daemon stops
+      // dispatching it forever.
       writeFib('canary-retired', {
         name: 'Canary retired',
         status: 'active',
@@ -662,25 +717,24 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
       });
       const fixedNow = new Date('2026-05-03T16:00:00Z');
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
         now: () => fixedNow,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls, fixedNow.toISOString()),
       });
       const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'canary-retired', target: 'composted' }), res);
 
       expect(status()).toBe(200);
-      // No shuttle-ctl call — composted falls through to felt-only mutation.
-      expect(shuttleCalls).toEqual([]);
+      expect(shuttleCalls).toEqual([{ verb: 'close', fiberId: 'canary-retired', tempered: false }]);
       const after = readFileSync(join(FELT_DIR, 'canary-retired', 'canary-retired.md'), 'utf-8');
       expect(after).toMatch(/^status: closed$/m);
       expect(after).toMatch(/^tempered: false$/m);
       expect(after).toMatch(/^closed-at: 2026-05-03T16:00:00\.000Z$/m);
     });
 
-    it('oneshot awaitingReview → tempered still does the oneshot dance (status=closed, tempered=true)', async () => {
+    it('oneshot awaitingReview → tempered still closes with tempered=true', async () => {
       // Regression check: the standing-accept tempered branch must not steal
       // the path for plain oneshot acceptance.
       writeFib('oneshot-accept', {
@@ -690,17 +744,16 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
-      const shuttleCalls: Array<{ verb: string; id: string }> = [];
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async (verb, id) => { shuttleCalls.push({ verb, id }); },
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'oneshot-accept', target: 'tempered' }), res);
 
       expect(status()).toBe(200);
-      // No shuttle-ctl call for oneshot tempered — felt-only mutation.
-      expect(shuttleCalls).toEqual([]);
+      expect(shuttleCalls).toEqual([{ verb: 'close', fiberId: 'oneshot-accept', tempered: true }]);
       const after = readFileSync(join(FELT_DIR, 'oneshot-accept', 'oneshot-accept.md'), 'utf-8');
       expect(after).toMatch(/^status: closed$/m);
       expect(after).toMatch(/^tempered: true$/m);
@@ -715,9 +768,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async () => {},
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'reactivate', target: 'inFlight' }), res);
@@ -725,6 +779,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(status()).toBe(200);
       expect(body().card.status).toBe('active');
       expect(body().card.tempered).toBeUndefined();
+      expect(shuttleCalls).toEqual([{ verb: 'reopen', fiberId: 'reactivate' }]);
 
       const after = readFileSync(join(FELT_DIR, 'reactivate', 'reactivate.md'), 'utf-8');
       expect(after).toMatch(/^status: active$/m);
@@ -740,11 +795,17 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
       });
       const fixedNow = new Date('2026-04-28T12:00:00Z');
-      const api = new HttpApiKanban({ feltHost: TEST_DIR, now: () => fixedNow });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        now: () => fixedNow,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls, fixedNow.toISOString()),
+      });
       const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'skip-review', target: 'tempered' }), res);
 
       expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([{ verb: 'close', fiberId: 'skip-review', tempered: true }]);
       const after = readFileSync(join(FELT_DIR, 'skip-review', 'skip-review.md'), 'utf-8');
       expect(after).toMatch(/^closed-at: 2026-04-28T12:00:00\.000Z$/m);
       expect(after).toMatch(/^tempered: true$/m);
@@ -777,13 +838,18 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         shuttle: SHUTTLE_INFLIGHT,
         'created-at': '2026-04-01',
       });
-      const api = new HttpApiKanban({ feltHost: TEST_DIR });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'moot', target: 'composted' }), res);
 
       expect(status()).toBe(200);
       expect(body().card.status).toBe('closed');
       expect(body().card.tempered).toBe(false);
+      expect(shuttleCalls).toEqual([{ verb: 'close', fiberId: 'moot', tempered: false }]);
 
       const after = readFileSync(join(FELT_DIR, 'moot', 'moot.md'), 'utf-8');
       expect(after).toMatch(/^status: closed$/m);
@@ -799,9 +865,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
         'closed-at': '2026-04-15',
       });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: async () => {},
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
       });
       const { res, status, body } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'revive', target: 'inFlight' }), res);
@@ -809,6 +876,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(status()).toBe(200);
       expect(body().card.status).toBe('active');
       expect(body().card.tempered).toBeUndefined();
+      expect(shuttleCalls).toEqual([{ verb: 'reopen', fiberId: 'revive' }]);
 
       const after = readFileSync(join(FELT_DIR, 'revive', 'revive.md'), 'utf-8');
       expect(after).not.toMatch(/^tempered:/m);

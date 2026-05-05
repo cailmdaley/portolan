@@ -302,24 +302,27 @@ interface HttpApiKanbanOptions {
    */
   cacheTtlMs?: number;
   /**
-   * Test seam: override the shuttle-ctl spawn for drafts/inFlight transitions.
+   * Test seam: override the shuttle-ctl spawn for local lifecycle transitions.
    * When provided, called instead of `execFileAsync('shuttle-ctl', ...)`.
-   * Receives the verb ('pause' | 'resume' | 'accept') and the loom-global
-   * fiber id. `accept` is used for standing-role review acceptance — see
-   * applyTransition.
+   * Receives the exact semantic invocation the server would shell out:
+   * pause / reopen / close / accept against the loom-global fiber id.
    * Should throw on failure (same contract as the real execFileAsync call).
    */
-  shuttleCtlFn?: (verb: 'pause' | 'resume' | 'accept', fiberId: string) => Promise<void>;
+  shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
 }
+
+export type ShuttleCtlInvocation =
+  | { verb: 'pause' | 'reopen' | 'accept'; fiberId: string }
+  | { verb: 'close'; fiberId: string; tempered?: boolean };
 
 /**
  * Where a transition can land a card.
  *
- *   drafts          → shuttle-ctl pause (enabled=false), clears `tempered`, parks in drafts column
- *   inFlight        → shuttle-ctl resume (enabled=true), status=active, clears `tempered`, clears closed-at
- *   awaitingReview  → status=closed, clears `tempered` (agent-paused handoff)
- *   tempered        → status=closed, tempered=true  (human-accepted)
- *   composted       → status=closed, tempered=false (human-rejected: mooted, superseded)
+ *   drafts          → shuttle-ctl pause (enabled=false; clears verdict/closed-at, reopens if needed)
+ *   inFlight        → shuttle-ctl reopen (enabled=true; status=active; clears verdict/closed-at)
+ *   awaitingReview  → shuttle-ctl close                    (status=closed; clears `tempered`)
+ *   tempered        → shuttle-ctl close --tempered=true    (human-accepted)
+ *   composted       → shuttle-ctl close --tempered=false   (human-rejected: mooted, superseded)
  *
  * `tempered` is tristate. Only the verdict targets (`tempered`, `composted`)
  * write the field; every other target *clears* it so the absent state means
@@ -436,28 +439,31 @@ export class HttpApiKanban {
   private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
 
   /**
-   * Run a shuttle-ctl verb (pause/resume/accept) against a global fiber id.
+   * Run a shuttle-ctl lifecycle invocation against a global fiber id.
    * Honors the test seam (`shuttleCtlFn`) when set; otherwise spawns
    * `shuttle-ctl` with the standard timeout + buffer and reformats stderr
-   * into a meaningful error. Centralized so the three call sites in
-   * `applyTransition` don't drift from each other.
+   * into a meaningful error. Centralized so every local transition routes
+   * through the same single-writer boundary.
    */
-  private async runShuttleCtl(
-    verb: 'pause' | 'resume' | 'accept',
-    globalId: string,
-  ): Promise<void> {
+  private async runShuttleCtl(invocation: ShuttleCtlInvocation): Promise<void> {
     if (this.shuttleCtlFn) {
-      await this.shuttleCtlFn(verb, globalId);
+      await this.shuttleCtlFn(invocation);
       return;
     }
+
+    const args = [invocation.verb, invocation.fiberId];
+    if (invocation.verb === 'close' && invocation.tempered !== undefined) {
+      args.push(`--tempered=${invocation.tempered ? 'true' : 'false'}`);
+    }
+
     try {
-      await execFileAsync('shuttle-ctl', [verb, globalId], {
+      await execFileAsync('shuttle-ctl', args, {
         timeout: 10000,
         maxBuffer: 1024 * 1024,
       });
     } catch (err: any) {
       const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
-      throw new Error(`shuttle-ctl ${verb} failed for ${globalId}: ${msg}`);
+      throw new Error(`shuttle-ctl ${args.join(' ')} failed: ${msg}`);
     }
   }
 
@@ -777,10 +783,12 @@ export class HttpApiKanban {
    *
    * Body: { fiberId, target: 'inFlight' | 'awaitingReview' | 'tempered' }.
    *
-   * Maps target → frontmatter mutation:
-   *   inFlight        : status=active, tempered=false, clear closed-at
-   *   awaitingReview  : status=closed, tempered=false, set closed-at if missing
-   *   tempered        : status=closed, tempered=true,  set closed-at if missing
+   * Maps target → shuttle-ctl lifecycle verb:
+   *   drafts          : pause
+   *   inFlight        : reopen
+   *   awaitingReview  : close
+   *   tempered        : close --tempered=true
+   *   composted       : close --tempered=false
    *
    * The agent's "I'm done" handoff is `awaitingReview` (status flip), per the
    * Path B protocol in constitution-shuttle. Setting `tempered: true` is the
@@ -788,10 +796,9 @@ export class HttpApiKanban {
    * is driving every transition here, so any direction is allowed (including
    * in-flight → tempered to skip review for trusted work).
    *
-   * Frontmatter editing is line-based to preserve unrelated formatting (block
-   * scalars, comments, ordering). The frontmatter must parse as YAML for the
-   * sanity check, but the YAML parser's output is *not* re-stringified back
-   * into the file — only the targeted lines change.
+   * Local writes now go through shuttle-ctl exclusively so status / tempered /
+   * closed-at / shuttle.enabled live behind one YAML writer instead of a regex
+   * pass racing the shuttle block AST writer.
    */
   async handleTransition(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: KanbanTransitionRequest;
@@ -906,32 +913,17 @@ export class HttpApiKanban {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
 
-    // Order of operations for non-standing transitions:
-    //   1. applyTargetToFrontmatter — writes felt-level scalars
-    //      (status, tempered, closed-at).
-    //   2. shuttle-ctl pause/resume — mutates the `shuttle:` block
-    //      (specifically `enabled`).
-    //
-    // The two passes touch *orthogonal* frontmatter (scalar fields vs the
-    // `shuttle:` mapping) so the order doesn't affect what either writes.
-    // The reason it must be felt-first: `shuttle-ctl resume` refuses
-    // status:closed fibers ("reopen it before resuming"). When the user
-    // requeues an awaiting-review card back to inFlight, the fiber on disk
-    // is status:closed (set when the worker exited via awaitingReview);
-    // calling resume first would fail. applyTargetToFrontmatter reopens
-    // (status:active) first, then resume succeeds.
-    //
-    // Standing-role review acceptance is a separate path: when a
-    // kind:standing fiber in awaitingReview (review.state === 'awaiting')
-    // is dragged to inFlight OR tempered, the right verb is `accept` — it
+    // Local transitions now route entirely through shuttle-ctl so one YAML
+    // writer owns both the shuttle block and the felt-native lifecycle fields.
+    // Standing-role review acceptance remains its own path: when a
+    // kind:standing fiber in awaitingReview (review.state === 'awaiting') is
+    // dragged to inFlight OR tempered, the right verb is `accept` — it
     // advances the schedule (review.state → scheduled, recomputes
-    // next_due_at) and closes the run loop. `resume` would no-op (enabled
-    // is already true, status already active) and the role would stay
-    // stuck in awaiting; the oneshot tempered/closed path would terminate
-    // the role (status=closed → daemon stops dispatching forever), which
-    // is wrong for "I accept this run." `composted` falls through to the
-    // oneshot path because terminating a recurring role is the right
-    // semantics for "I'm done with this canary, retire it."
+    // next_due_at) and closes the run loop. `reopen` would incorrectly treat
+    // the standing run like a oneshot requeue, and `close --tempered=true`
+    // would terminate the role outright. `composted` still falls through to
+    // the close path because retiring a recurring role is the right semantics
+    // for "I'm done with this canary, retire it."
     //
     // Remote-origin transitions TODO: plumb a "run shuttle-ctl on the remote"
     // instruction through remoteTransitionExecutor once the SSH path supports it.
@@ -943,26 +935,19 @@ export class HttpApiKanban {
       fiber.shuttleKind === 'standing' &&
       fiber.shuttleReviewState === 'awaiting';
 
+    const globalId = resolveGlobalFiberId(host, fiber.id);
     if (isStandingAccept) {
-      await this.runShuttleCtl('accept', resolveGlobalFiberId(host, fiber.id));
-      // accept already wrote the file (advancing review + schedule) and
-      // status was already 'active' for a standing role — no felt-level
-      // mutation needed. Skip applyTargetToFrontmatter.
-    } else {
-      // Step 1: felt-level scalars first (status / tempered / closed-at).
-      // Reopens status:closed → active for inFlight requeues so the
-      // subsequent shuttle-ctl resume passes its status precondition.
-      const raw = readFileSync(path, 'utf-8');
-      const updated = applyTargetToFrontmatter(raw, target, nowIso);
-      if (updated !== raw) {
-        writeFileSync(path, updated, 'utf-8');
-      }
-
-      // Step 2: shuttle-ctl mutates the `shuttle:` block (enabled).
-      if (target === 'drafts' || target === 'inFlight' || target === 'queued' || target === 'active') {
-        const verb: 'pause' | 'resume' = target === 'drafts' ? 'pause' : 'resume';
-        await this.runShuttleCtl(verb, resolveGlobalFiberId(host, fiber.id));
-      }
+      await this.runShuttleCtl({ verb: 'accept', fiberId: globalId });
+    } else if (target === 'drafts') {
+      await this.runShuttleCtl({ verb: 'pause', fiberId: globalId });
+    } else if (target === 'inFlight' || target === 'queued' || target === 'active') {
+      await this.runShuttleCtl({ verb: 'reopen', fiberId: globalId });
+    } else if (target === 'awaitingReview') {
+      await this.runShuttleCtl({ verb: 'close', fiberId: globalId });
+    } else if (target === 'tempered') {
+      await this.runShuttleCtl({ verb: 'close', fiberId: globalId, tempered: true });
+    } else if (target === 'composted') {
+      await this.runShuttleCtl({ verb: 'close', fiberId: globalId, tempered: false });
     }
     this.clearFiberPoolCache();
 
@@ -1907,15 +1892,15 @@ export function applyTargetToFrontmatter(
   let status: string | null;  // null = leave untouched
   let tempered: boolean | null;  // null = clear the field
   let closedAtAction: 'set-if-missing' | 'clear';
-  // Post-cutover: drafts/inFlight column membership is driven by shuttle.enabled
-  // (set by shuttle-ctl pause/resume, called by applyTransition before this fn).
-  // This fn handles only the felt-level fields: status, tempered, closed-at.
+  // Drafts/inFlight column membership is driven by shuttle.enabled (typically
+  // set by shuttle-ctl pause/reopen). This helper only models the felt-level
+  // fields: status, tempered, closed-at.
   // No tag mutations for drafts/inFlight — constitution/draft tags are cosmetic.
   switch (target) {
     case 'drafts':
       // Don't force a status when filing as draft — preserve whatever shape
       // the fiber already has (often `open` from felt add). The shuttle block
-      // (paused by shuttle-ctl before this call) drives the drafts column.
+      // (paused elsewhere) drives the drafts column.
       status = null;
       tempered = null;
       closedAtAction = 'clear';
@@ -1987,7 +1972,7 @@ export function applyTargetToFrontmatter(
   }
 
   // No tag mutations post-cutover: drafts/inFlight column membership is driven
-  // by shuttle.enabled (via shuttle-ctl pause/resume), not by the draft tag.
+  // by shuttle.enabled (via shuttle-ctl pause/reopen), not by the draft tag.
   // applyTargetToFrontmatter only handles the felt-level scalar fields.
 
   const newFm = fmLines.join('\n');
