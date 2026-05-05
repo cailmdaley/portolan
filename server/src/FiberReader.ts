@@ -158,7 +158,13 @@ export function mapFeltJsonToFiber(item: unknown): Fiber | null {
   const closedAt = pickIsoString(f, ['closed_at', 'closed']);
 
   const tags = stringList(f.tags);
-  const dependsOn = stringList(f.depends_on) ?? stringList(f['depends-on']);
+  // depends_on ships from felt as `[{id: "..."}]` for fibers using
+  // wikilink-style references (the common case post 2026-04 cleanup),
+  // and as bare-string arrays for legacy / hand-edited fibers. Accept
+  // both shapes — `stringList` alone silently drops the object form.
+  // See [[ai-futures/portolan/gotchas/gotcha-fiber-reader-depends-on-object-shape]].
+  const dependsOn =
+    fiberRefList(f.depends_on) ?? fiberRefList(f['depends-on']);
 
   const tempered = typeof f.tempered === 'boolean' ? f.tempered : undefined;
 
@@ -282,6 +288,30 @@ function stringList(v: unknown): string[] | undefined {
     if (typeof item === 'string') {
       const trimmed = item.trim();
       if (trimmed) out.push(trimmed);
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Like `stringList`, but also accepts items shaped as `{id: "..."}` so
+ * felt's object-form depends_on round-trips correctly. Tolerates mixed
+ * arrays (some entries strings, some objects) — felt has shipped both
+ * shapes in different fiber generations.
+ */
+function fiberRefList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: string[] = [];
+  for (const item of v) {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed) out.push(trimmed);
+    } else if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const id = (item as Record<string, unknown>).id;
+      if (typeof id === 'string') {
+        const trimmed = id.trim();
+        if (trimmed) out.push(trimmed);
+      }
     }
   }
   return out.length > 0 ? out : undefined;

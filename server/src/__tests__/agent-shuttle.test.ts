@@ -1,15 +1,17 @@
 /**
- * Agent-side Shuttle: parser + eligibility predicate.
+ * Agent-side Shuttle: felt-JSON projection + eligibility predicate.
  *
  * Constitution shuttle-remote-dispatch. The agent inlines a minimal port
- * of `Shuttle.computeEligibility` (server/src/Shuttle.ts) plus a YAML-ish
- * frontmatter parser scoped to the four fields Shuttle actually reads
+ * of `Shuttle.computeEligibility` (server/src/Shuttle.ts) and a projection
+ * from felt's JSON output onto the four fields Shuttle actually reads
  * (status, tags, depends_on, tempered). Both helpers live in agent.js so
- * the agent stays single-file scp-able.
+ * the agent stays single-file scp-able. Per Phase 1 of
+ * constitution-four-package-cleanup, the agent reads felt JSON rather than
+ * re-parsing fiber YAML in TypeScript.
  *
- * This test covers the parser directly; the eligibility predicate is small
- * enough to test in place without round-tripping through the server's
- * `computeEligibility`.
+ * This test covers the projection directly; the eligibility predicate is
+ * small enough to test in place without round-tripping through the
+ * server's `computeEligibility`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -29,72 +31,67 @@ beforeAll(async () => {
 
 import { beforeAll } from 'vitest';
 
-describe('agent: parseFiberFrontmatter', () => {
-  it('reads inline-list tags', () => {
-    const fm = agentMod.parseFiberFrontmatter(
-      `---\nname: x\ntags: [constitution, draft]\nstatus: active\n---\nbody\n`,
-    );
-    expect(fm.tags).toEqual(['constitution', 'draft']);
-    expect(fm.status).toBe('active');
+describe('agent: shuttleFiberFromFeltJson', () => {
+  it('projects a fully-populated felt fiber JSON onto the eligibility shape', () => {
+    const projected = agentMod.shuttleFiberFromFeltJson({
+      id: 'cmbx',
+      name: 'CMBx',
+      status: 'active',
+      tags: ['constitution', 'cmbx'],
+      depends_on: [{ id: 'cmbx/setup' }],
+      tempered: true,
+    });
+    expect(projected).toEqual({
+      id: 'cmbx',
+      status: 'active',
+      tags: ['constitution', 'cmbx'],
+      dependsOn: ['cmbx/setup'],
+      tempered: true,
+    });
   });
 
-  it('reads block-list tags', () => {
-    const fm = agentMod.parseFiberFrontmatter(
-      [
-        '---',
-        'name: x',
-        'tags:',
-        '  - constitution',
-        '  - portolan',
-        'status: active',
-        '---',
-        '',
-      ].join('\n'),
-    );
-    expect(fm.tags).toEqual(['constitution', 'portolan']);
+  it('extracts .id from depends_on objects (felt JSON shape)', () => {
+    // felt JSON ships depends_on as `[{id: "..."}]` — see CLAUDE.md
+    // "depends_on is objects, extract .id".
+    const projected = agentMod.shuttleFiberFromFeltJson({
+      id: 'work',
+      tags: ['constitution'],
+      depends_on: [{ id: 'a' }, { id: 'b/with/path' }],
+    });
+    expect(projected.dependsOn).toEqual(['a', 'b/with/path']);
   });
 
-  it('reads inline depends_on and parses tempered as boolean', () => {
-    const fm = agentMod.parseFiberFrontmatter(
-      [
-        '---',
-        'name: x',
-        'tags: [constitution]',
-        'depends_on: [a, b]',
-        'tempered: true',
-        '---',
-      ].join('\n'),
-    );
-    expect(fm.dependsOn).toEqual(['a', 'b']);
-    expect(fm.tempered).toBe(true);
+  it('also accepts bare-string depends_on for legacy fibers', () => {
+    const projected = agentMod.shuttleFiberFromFeltJson({
+      id: 'work',
+      tags: ['constitution'],
+      depends_on: ['a', 'b'],
+    });
+    expect(projected.dependsOn).toEqual(['a', 'b']);
   });
 
-  it('reads block-list depends_on', () => {
-    const fm = agentMod.parseFiberFrontmatter(
-      [
-        '---',
-        'tags: [constitution]',
-        'depends_on:',
-        '  - a',
-        '  - "b/with/path"',
-        '---',
-      ].join('\n'),
-    );
-    expect(fm.dependsOn).toEqual(['a', 'b/with/path']);
+  it('returns null when fiber has no id', () => {
+    expect(agentMod.shuttleFiberFromFeltJson({ name: 'x' })).toBeNull();
+    expect(agentMod.shuttleFiberFromFeltJson(null)).toBeNull();
+    expect(agentMod.shuttleFiberFromFeltJson([])).toBeNull();
   });
 
-  it('returns null when there is no frontmatter', () => {
-    expect(agentMod.parseFiberFrontmatter('# just markdown\n\n')).toBeNull();
-  });
-
-  it('returns sane defaults for fibers missing fields', () => {
-    const fm = agentMod.parseFiberFrontmatter(`---\nname: x\n---\nbody\n`);
-    expect(fm).toEqual({
+  it('returns sane defaults for sparse fibers', () => {
+    expect(agentMod.shuttleFiberFromFeltJson({ id: 'x' })).toEqual({
+      id: 'x',
+      status: undefined,
       tags: [],
       dependsOn: [],
-      status: undefined,
       tempered: undefined,
     });
+  });
+
+  it('preserves boolean false on tempered (not undefined)', () => {
+    const projected = agentMod.shuttleFiberFromFeltJson({
+      id: 'x',
+      tempered: false,
+    });
+    expect(projected.tempered).toBe(false);
   });
 });
 

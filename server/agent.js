@@ -808,7 +808,10 @@ async function runKanbanMutation(payload, fullPath) {
         if (!Array.isArray(payload.tags)) {
             throw new Error('missing tags payload');
         }
-        const current = normalizeTagList(parseFiberFrontmatter(readFileSync(fullPath, 'utf-8'))?.tags ?? []);
+        const fiberJson = await readFeltFiberJson(payload.fiberId);
+        const current = normalizeTagList(
+            Array.isArray(fiberJson?.tags) ? fiberJson.tags.filter((t) => typeof t === 'string') : [],
+        );
         const next = normalizeTagList(payload.tags);
         const { add, remove } = diffTags(current, next);
         if (add.length === 0 && remove.length === 0) return;
@@ -883,88 +886,43 @@ async function handleKanbanTransition(message) {
 // SOURCE OF TRUTH for the eligibility predicate is server/src/Shuttle.ts
 // `computeEligibility`. The agent inlines a minimal port — same shape, no
 // queuePrefixes-API surface (we read SHUTTLE_PREFIXES once at startup) and
-// no sub-fiber resolution beyond what idFromPath surfaces. The
-// parser has its own vitest coverage; the predicate is small enough to stay
-// in human-eyeballed sync.
+// no sub-fiber resolution beyond what idFromPath surfaces. The predicate is
+// small enough to stay in human-eyeballed sync.
 //
-// The path: on each tick, walk FELT_DIR for .md files (we already do it
-// for the dump), translate path → fiber id, parse frontmatter for
-// {status, tags, depends_on, tempered}, then run the predicate and
+// The path: on each tick, ask felt for the fiber tree as JSON (felt is the
+// sole reader since Phase 1 of constitution-four-package-cleanup), project
+// onto {id, status, tags, dependsOn, tempered}, then run the predicate and
 // dispatch. tmux is probed by `tmux ls` filtered to `shuttle-*`.
 
 /**
- * Tiny YAML-ish frontmatter parser scoped to the fields Shuttle needs.
- * Robust against scalar `tags: [a, b]`, block `tags:\n  - a\n  - b`, and
- * the common `depends_on: [x, y]` / block list shapes felt fibers use.
- *
- * We don't pull a YAML lib in — agent.js ships as a single file and this
- * parser only needs a tiny YAML-ish slice of the fiber schema.
- *
- * Returns `null` when no frontmatter block opens the file; otherwise an
- * object with possibly-undefined fields. Missing fields read as
- * untagged / unstatused / no deps (i.e. the fiber is *not* a constitution
- * and falls out of eligibility).
+ * Project a felt fiber JSON object onto the minimal shape `computeShuttleEligibility`
+ * reads. `depends_on` ships from felt as `[{id: "..."}]`, occasionally as bare
+ * strings on legacy fibers — accept either. Returns null when the fiber lacks
+ * an id.
  */
-export function parseFiberFrontmatter(raw) {
-    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-    if (!fmMatch) return null;
-    const lines = fmMatch[1].split(/\r?\n/);
-
-    const out = { tags: [], dependsOn: [], status: undefined, tempered: undefined };
-
-    const stripQuotes = s => s.trim().replace(/^["']|["']$/g, '').trim();
-    const parseInlineList = body => body
-        .split(',')
-        .map(s => stripQuotes(s))
-        .filter(Boolean);
-
-    const readBlockListFrom = (startIdx) => {
-        const items = [];
-        let j = startIdx + 1;
-        while (j < lines.length && /^[ \t]+- /.test(lines[j])) {
-            const m = lines[j].match(/^[ \t]+- (.+)$/);
-            if (m) items.push(stripQuotes(m[1]));
-            j++;
-        }
-        return items;
+export function shuttleFiberFromFeltJson(fiber) {
+    if (!fiber || typeof fiber !== 'object' || Array.isArray(fiber)) return null;
+    const id = typeof fiber.id === 'string' ? fiber.id : '';
+    if (!id) return null;
+    const tags = Array.isArray(fiber.tags)
+        ? fiber.tags.filter((t) => typeof t === 'string')
+        : [];
+    const dependsOn = Array.isArray(fiber.depends_on)
+        ? fiber.depends_on
+              .map((d) => {
+                  if (typeof d === 'string') return d;
+                  if (d && typeof d === 'object' && typeof d.id === 'string') return d.id;
+                  return null;
+              })
+              .filter((s) => typeof s === 'string' && s.length > 0)
+        : [];
+    return {
+        id,
+        status: typeof fiber.status === 'string' ? fiber.status : undefined,
+        tags,
+        dependsOn,
+        tempered: fiber.tempered === true ? true : fiber.tempered === false ? false : undefined,
     };
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        // tags
-        if (/^tags:\s*$/.test(line)) {
-            out.tags = readBlockListFrom(i);
-            continue;
-        }
-        const tagsInline = line.match(/^tags:\s*\[(.*)\]\s*$/);
-        if (tagsInline) {
-            out.tags = parseInlineList(tagsInline[1]);
-            continue;
-        }
-        // depends_on
-        if (/^depends_on:\s*$/.test(line)) {
-            out.dependsOn = readBlockListFrom(i);
-            continue;
-        }
-        const depsInline = line.match(/^depends_on:\s*\[(.*)\]\s*$/);
-        if (depsInline) {
-            out.dependsOn = parseInlineList(depsInline[1]);
-            continue;
-        }
-        // status
-        const statusMatch = line.match(/^status:\s*(.*)$/);
-        if (statusMatch) {
-            out.status = stripQuotes(statusMatch[1]);
-            continue;
-        }
-        // tempered
-        const temperedMatch = line.match(/^tempered:\s*(.*)$/);
-        if (temperedMatch) {
-            const v = stripQuotes(temperedMatch[1]).toLowerCase();
-            out.tempered = v === 'true' ? true : v === 'false' ? false : undefined;
-        }
-    }
-    return out;
 }
 
 /**
@@ -989,47 +947,32 @@ export function shuttleIdFromPath(filePath) {
 }
 
 /**
- * Read FELT_DIR and produce `[{ id, status, tags, dependsOn, tempered }]`
- * for every container fiber file. Cheap enough to run every tick on
- * realistic loom sizes; if not, we'll add caching later.
+ * Ask felt for `[{ id, status, tags, dependsOn, tempered }]` for every
+ * container fiber on FELT_HOST. One `felt ls -s all -j` shellout per tick;
+ * felt's index is fast and avoids re-implementing fiber parsing in the
+ * agent. On felt errors (e.g. felt unavailable) returns an empty list so
+ * the poller no-ops rather than crashing.
  */
-function collectShuttleFibers() {
+async function collectShuttleFibers() {
     if (!existsSync(FELT_DIR)) return [];
+    let raw;
+    try {
+        const { stdout } = await execFileAsync(
+            'felt',
+            ['-C', FELT_HOST, 'ls', '-s', 'all', '-j'],
+            { timeout: 20_000, maxBuffer: 32 * 1024 * 1024 },
+        );
+        raw = JSON.parse(stdout.trim() || '[]');
+    } catch (err) {
+        debug(`collectShuttleFibers: felt ls failed (${err?.message ?? err})`);
+        return [];
+    }
+    if (!Array.isArray(raw)) return [];
     const out = [];
-    const walk = (currentDir) => {
-        let entries;
-        try {
-            entries = readdirSync(currentDir, { withFileTypes: true });
-        } catch {
-            return;
-        }
-        for (const entry of entries) {
-            const full = join(currentDir, entry.name);
-            if (entry.isDirectory()) {
-                walk(full);
-            } else if (entry.isFile() && entry.name.endsWith('.md')) {
-                const relPath = relative(FELT_DIR, full).split(sep).join('/');
-                const id = shuttleIdFromPath(relPath);
-                if (!id) continue;
-                let raw;
-                try {
-                    raw = readFileSync(full, 'utf-8');
-                } catch {
-                    continue;
-                }
-                const fm = parseFiberFrontmatter(raw);
-                if (!fm) continue;
-                out.push({
-                    id,
-                    status: fm.status,
-                    tags: fm.tags,
-                    dependsOn: fm.dependsOn,
-                    tempered: fm.tempered,
-                });
-            }
-        }
-    };
-    walk(FELT_DIR);
+    for (const fiber of raw) {
+        const projected = shuttleFiberFromFeltJson(fiber);
+        if (projected) out.push(projected);
+    }
     return out;
 }
 
@@ -1146,7 +1089,7 @@ function spawnShuttleWorker(fiberId, agent) {
  * is still eligible on the next tick, we redispatch.
  */
 async function pollShuttle() {
-    const fibers = collectShuttleFibers();
+    const fibers = await collectShuttleFibers();
     const { eligible: eligibleFibers, blocked } = computeShuttleEligibility(fibers, SHUTTLE_PREFIXES);
     const liveSessions = new Set(await listShuttleSessions());
     const eligibleIds = new Set(eligibleFibers.map(f => f.id));

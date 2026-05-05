@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { countOpenFibers } from '../FiberReader.js';
+import { countOpenFibers, mapFeltJsonToFiber } from '../FiberReader.js';
 import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -219,6 +219,45 @@ Not frontmatter
 
       const count = await countOpenFibers(testDir);
       expect(count).toBe(1);
+    });
+  });
+
+  describe('mapFeltJsonToFiber', () => {
+    it('reads bare-string depends_on (legacy fiber shape)', () => {
+      const fiber = mapFeltJsonToFiber({
+        id: 'work',
+        status: 'open',
+        depends_on: ['upstream-a', 'upstream-b'],
+      });
+      expect(fiber?.dependsOn).toEqual(['upstream-a', 'upstream-b']);
+    });
+
+    it('extracts .id from object-shape depends_on (felt JSON shape)', () => {
+      // felt ships depends_on as `[{id: "..."}]` for fibers built from
+      // wikilink references. The reader must accept this shape;
+      // dropping it silently broke kanban dependsOnSatisfied.
+      const fiber = mapFeltJsonToFiber({
+        id: 'work',
+        status: 'open',
+        depends_on: [{ id: 'upstream-a' }, { id: 'upstream-b' }],
+      });
+      expect(fiber?.dependsOn).toEqual(['upstream-a', 'upstream-b']);
+    });
+
+    it('tolerates mixed string + object depends_on', () => {
+      const fiber = mapFeltJsonToFiber({
+        id: 'work',
+        status: 'open',
+        depends_on: ['plain', { id: 'objectified' }],
+      });
+      expect(fiber?.dependsOn).toEqual(['plain', 'objectified']);
+    });
+
+    it('returns dependsOn=undefined when depends_on is empty or missing', () => {
+      expect(mapFeltJsonToFiber({ id: 'a', status: 'open' })?.dependsOn).toBeUndefined();
+      expect(
+        mapFeltJsonToFiber({ id: 'a', status: 'open', depends_on: [] })?.dependsOn,
+      ).toBeUndefined();
     });
   });
 });
