@@ -835,10 +835,13 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   color: #2E2A26;
   overflow: hidden;
-  /* Subtle "paper" grain — perceptible without being decorative noise. */
+  /* Soft tonal mottling instead of a regular dot grid — large, low-
+     contrast radial pools at the corners give the parchment uneven
+     warmth like aged paper without creating a moiré against the type. */
   background-image:
-    radial-gradient(rgba(46, 42, 38, 0.018) 1px, transparent 1px);
-  background-size: 3px 3px;
+    radial-gradient(ellipse 800px 500px at 18% 12%, rgba(255, 252, 246, 0.55), transparent 65%),
+    radial-gradient(ellipse 700px 500px at 88% 88%, rgba(46, 42, 38, 0.035), transparent 60%),
+    radial-gradient(ellipse 600px 400px at 70% 25%, rgba(154, 123, 53, 0.025), transparent 60%);
 }
 .kbn-detail-header {
   display: flex;
@@ -1103,18 +1106,18 @@
   font-style: italic;
   padding: 8px 0;
 }
-/* Section headings as EB Garamond small caps — reads as type set in
-   a hand-bound book rather than a form-field caption. The letterspace
-   is slight; small caps already carry presence. */
+/* Section headings as EB Garamond small caps — type set in a
+   hand-bound book. Sized up and darkened so the section labels read
+   as architecture, not as marginalia. */
 .kbn-detail-section-heading {
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 13px;
+  font-size: 17px;
   font-variant-caps: all-small-caps;
   font-feature-settings: "smcp", "c2sc";
   font-weight: 500;
-  letter-spacing: 0.08em;
-  color: #7A7068;
-  margin-bottom: 12px;
+  letter-spacing: 0.06em;
+  color: #2E2A26;
+  margin-bottom: 14px;
   flex-shrink: 0;
 }
 /* Outcome reads as prose on parchment — no border, no fill, just
