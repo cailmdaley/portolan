@@ -2573,7 +2573,13 @@ class FiberDetailModal {
         return
       }
       container.innerHTML = ''
-      if (data.events.length === 0) {
+      // Drop summary-less events — the time/actor/kind metadata alone
+      // doesn't tell the reader anything they can act on, and rows of
+      // "(no summary)" just add visual noise. The underlying events
+      // still exist in the felt index for tooling that wants them; the
+      // modal is for human reading.
+      const events = data.events.filter((ev) => (ev.summary ?? '').trim().length > 0)
+      if (events.length === 0) {
         const empty = document.createElement('div')
         empty.className = 'kbn-detail-history-empty'
         empty.textContent = data.busy
@@ -2582,7 +2588,7 @@ class FiberDetailModal {
         container.append(empty)
         return
       }
-      for (const ev of data.events) {
+      for (const ev of events) {
         container.append(this.renderHistoryEvent(ev))
       }
     } catch {
