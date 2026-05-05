@@ -1002,9 +1002,11 @@
 .kbn-detail-section[data-section="outcome"] .kbn-detail-section-heading {
   display: none;
 }
-/* Right column's history section grows to fill remaining space and
-   scrolls internally. */
-.kbn-detail-col-right .kbn-detail-section[data-section="history"] {
+/* History section grows to fill remaining vertical space wherever it
+   lives (left or right column) and scrolls internally. The
+   left-column outcome and history split that column's height as flex
+   children of the left-col section rule above. */
+.kbn-detail-section[data-section="history"] {
   flex: 1;
   display: flex;
   flex-direction: column;

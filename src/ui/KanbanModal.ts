@@ -2288,7 +2288,7 @@ class FiberDetailModal {
 
     const leftCol = document.createElement('div')
     leftCol.className = 'kbn-detail-col kbn-detail-col-left'
-    leftCol.append(outcomeSec)
+    leftCol.append(outcomeSec, this.buildRule(), historySec)
 
     const rightCol = document.createElement('div')
     rightCol.className = 'kbn-detail-col kbn-detail-col-right'
@@ -2298,8 +2298,6 @@ class FiberDetailModal {
       this.buildRule(),
       dispatchSec,
       parentSec,
-      this.buildRule(),
-      historySec,
     )
 
     body.append(leftCol, rightCol)
