@@ -11,7 +11,6 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { URL } from 'url';
 import { realpathSync } from 'fs';
-import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
@@ -636,22 +635,27 @@ export class HttpApi {
   /**
    * GET /shuttle/agents
    *
-   * Returns the list of available shuttle agents from
-   * `$HOME/Documents/projects/shuttle/share/agents.json`.
-   * Each entry carries `id`, `model`, `cli`, and `default` so the StashForm
-   * can render a meaningful dropdown label (e.g. "claude-sonnet · sonnet").
-   * On read failure (shuttle not installed) returns an empty list rather than
+   * Proxies the agent registry from shuttle's Phoenix daemon at
+   * `http://127.0.0.1:4000/api/v1/agents`. Each entry carries `id`, `model`,
+   * `cli`, and `default` so the StashForm can render a meaningful dropdown
+   * label (e.g. "claude-sonnet · sonnet").
+   *
+   * Going via shuttle's HTTP API rather than reading `share/agents.json` off
+   * disk decouples portolan from shuttle's filesystem layout — see
+   * `[[ai-futures/shuttle/constitution-http-agent-registry-endpoint]]`.
+   *
+   * On fetch failure (shuttle not running) returns an empty list rather than
    * a 500 so the form can degrade gracefully (submit without an agent →
    * shuttle-ctl uses registry default).
    */
   private async handleShuttleAgents(res: ServerResponse): Promise<void> {
-    const agentsPath = join(
-      process.env.HOME ?? '/tmp',
-      'Documents/projects/shuttle/share/agents.json',
-    );
     try {
-      const raw = await readFile(agentsPath, 'utf8');
-      const agents = JSON.parse(raw) as Array<{
+      const response = await fetch('http://127.0.0.1:4000/api/v1/agents');
+      if (!response.ok) {
+        this.sendJsonSuccess(res, { agents: [] } as unknown as Record<string, unknown>);
+        return;
+      }
+      const agents = (await response.json()) as Array<{
         id: string; model?: string; cli?: string; default?: boolean; [k: string]: unknown
       }>;
       // Return only the fields the frontend needs; strip internal flags.
@@ -660,7 +664,7 @@ export class HttpApi {
       }));
       this.sendJsonSuccess(res, { agents: slim } as unknown as Record<string, unknown>);
     } catch {
-      // shuttle not installed or agents.json missing — degrade gracefully.
+      // Shuttle daemon not running — degrade gracefully.
       this.sendJsonSuccess(res, { agents: [] } as unknown as Record<string, unknown>);
     }
   }
