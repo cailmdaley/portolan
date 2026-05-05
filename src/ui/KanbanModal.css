@@ -944,6 +944,8 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 /* Outcome column has a hard ceiling on reading measure — beyond
    ~720px serif body lines feel sprawling regardless of how wide the
@@ -988,29 +990,16 @@
   padding: 14px 22px 14px;
   flex-shrink: 0;
 }
-/* Left column's outcome section fills the column height and scrolls
-   internally. */
+/* Left-column sections take natural height — the column itself
+   scrolls (single scroll surface), so neither outcome nor history
+   needs internal flex sizing or its own overflow. */
 .kbn-detail-col-left .kbn-detail-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
   padding: 16px 26px 18px;
-  min-height: 0;
 }
 /* Outcome's heading is implicit — drop the "OUTCOME" label and let
    the prose stand alone as the card's content. */
 .kbn-detail-section[data-section="outcome"] .kbn-detail-section-heading {
   display: none;
-}
-/* History section grows to fill remaining vertical space wherever it
-   lives (left or right column) and scrolls internally. The
-   left-column outcome and history split that column's height as flex
-   children of the left-col section rule above. */
-.kbn-detail-section[data-section="history"] {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 /* The scrolling list of history events. overscroll-behavior: contain
    keeps wheel events at the boundary inside the list — they never
@@ -1022,14 +1011,9 @@
    would read. Limit visible height so long histories scroll inside
    their own region rather than stretching the modal. */
 .kbn-detail-history-list {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 6px;
 }
 .kbn-detail-history-event {
   display: flex;
@@ -1142,19 +1126,15 @@
 }
 /* Outcome reads as prose on parchment — no border, no fill, just
    typography. EB Garamond at a comfortable reading size, generous
-   leading. Scrolls internally for long outcomes; outer frame stays. */
+   leading. Renders at natural height; the left column handles scroll. */
 .kbn-detail-outcome-view {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 15px;
   line-height: 1.6;
   color: #2E2A26;
   background: transparent;
   border: none;
-  padding: 0 4px 0 0;
+  padding: 0;
 }
 .kbn-detail-outcome-view.kbn-detail-outcome-empty {
   color: #B8AC9E;
