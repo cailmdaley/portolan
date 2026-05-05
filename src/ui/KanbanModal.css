@@ -996,11 +996,8 @@
 .kbn-detail-col-left .kbn-detail-section {
   padding: 16px 26px 18px;
 }
-/* Outcome's heading is implicit — drop the "OUTCOME" label and let
-   the prose stand alone as the card's content. */
-.kbn-detail-section[data-section="outcome"] .kbn-detail-section-heading {
-  display: none;
-}
+/* Outcome and history both labelled — the small caps headings carry
+   the demarcation along with the hairline rule between them. */
 /* The scrolling list of history events. overscroll-behavior: contain
    keeps wheel events at the boundary inside the list — they never
    chain up to the kanban or document and surprise the user with
@@ -1106,23 +1103,19 @@
   font-style: italic;
   padding: 8px 0;
 }
-/* Quiet section headings — small, italic, lower-case. Reads as a
-   note-taker's marginal label rather than a form-field caption. */
+/* Section headings as EB Garamond small caps — reads as type set in
+   a hand-bound book rather than a form-field caption. The letterspace
+   is slight; small caps already carry presence. */
 .kbn-detail-section-heading {
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 11.5px;
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  color: #A89E91;
-  margin-bottom: 10px;
+  font-size: 13px;
+  font-variant-caps: all-small-caps;
+  font-feature-settings: "smcp", "c2sc";
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: #7A7068;
+  margin-bottom: 12px;
   flex-shrink: 0;
-}
-/* Pilcrow ornament before history's heading — a small editorial nod. */
-.kbn-detail-section[data-section="history"] .kbn-detail-section-heading::before {
-  content: '❡  ';
-  font-style: normal;
-  color: #C8BFB3;
 }
 /* Outcome reads as prose on parchment — no border, no fill, just
    typography. EB Garamond at a comfortable reading size, generous
