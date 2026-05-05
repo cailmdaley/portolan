@@ -859,14 +859,20 @@ export class KanbanModal {
     dragHandle.title = isStale ? 'Drag disabled — origin offline' : 'Drag to move'
     dragHandle.textContent = '⋮⋮'
 
+    // Title text is the direct-to-vellum gesture: clicking the name
+    // skips the detail modal and opens the fiber in the reader. This
+    // mirrors the existing "→ vellum" affordance inside the detail modal
+    // so the same gesture works at both levels (card and modal). Click
+    // the rest of the card body to get the detail-view modal.
     const name = document.createElement('button')
     name.type = 'button'
     name.className = 'kbn-card-name'
-    name.setAttribute('aria-label', `View details for fiber ${card.name}`)
+    name.setAttribute('aria-label', `Open ${card.name} in vellum`)
+    name.title = 'Click to open in vellum'
     name.textContent = card.name
     name.addEventListener('click', (e) => {
       e.stopPropagation()
-      this.detailModal?.open(card, this.cityScope?.cityId)
+      this.onOpenFiber(card)
     })
 
     const pill = document.createElement('span')
