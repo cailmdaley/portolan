@@ -825,11 +825,10 @@
     0 1px 0 rgba(255, 252, 246, 0.6) inset,
     0 14px 38px rgba(46, 42, 38, 0.22),
     0 3px 10px rgba(46, 42, 38, 0.10);
-  /* Two-column card. Wide enough to hold a ~480px outcome column plus
-     a ~340px controls+history column without crowding; tall enough for
-     the right column's history to feel like a real chronology rather
-     than a peephole. */
-  width: min(94vw, 860px);
+  /* Two-column card. Generous on width — outcome gets a long
+     reading measure, history gets room to breathe — backgrounded by
+     the rest of the kanban only as a thin border around the card. */
+  width: min(94vw, 1720px);
   height: min(86vh, 780px);
   display: flex;
   flex-direction: column;
@@ -946,12 +945,17 @@
   min-height: 0;
   min-width: 0;
 }
+/* Outcome column has a hard ceiling on reading measure — beyond
+   ~720px serif body lines feel sprawling regardless of how wide the
+   modal is. The right column absorbs whatever extra width the modal
+   has, giving history a generous chronology rather than a peephole. */
 .kbn-detail-col-left {
-  flex: 1 1 56%;
+  flex: 0 1 720px;
   border-right: 1px solid rgba(46, 42, 38, 0.10);
 }
 .kbn-detail-col-right {
-  flex: 1 1 44%;
+  flex: 1 1 auto;
+  min-width: 360px;
   background: rgba(232, 225, 213, 0.35);
 }
 /* Horizontal hairline rule used inside the right column to separate
