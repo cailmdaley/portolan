@@ -24,7 +24,7 @@ import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiRecents } from './HttpApiRecents.js';
-import { HttpApiKanban, type KanbanTarget } from './HttpApiKanban.js';
+import { HttpApiKanban, type KanbanTarget, type ShuttleCtlInvocation } from './HttpApiKanban.js';
 import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
 import { HttpApiFilesSearch } from './HttpApiFilesSearch.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
@@ -99,6 +99,15 @@ export interface HttpApiOptions {
    * to `<projectRoot>/.felt`; tests inject an isolated tmpdir.
    */
   feltRoot?: string;
+  /**
+   * Test seam: override the shuttle-ctl spawn used by every per-request
+   * `HttpApiKanban` this `HttpApi` instantiates. Plumbed through to
+   * `HttpApiKanbanOptions.shuttleCtlFn` so HttpApi-level tests
+   * (kanban-scope, integration smoke) can drive transitions without
+   * shelling out to the real binary against a fixture fiber that doesn't
+   * exist in the user's loom.
+   */
+  shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
 }
 
 // ============================================================================
@@ -121,6 +130,7 @@ export class HttpApi {
   private tapestryApi: HttpApiTapestry;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
+  private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
   private globalKanbanApiCache: CachedApi<HttpApiKanban> | null = null;
   private scopedKanbanApiCache = new Map<string, CachedApi<HttpApiKanban>>();
   private globalSearchApiCache: CachedApi<HttpApiGlobalSearch> | null = null;
@@ -137,6 +147,7 @@ export class HttpApi {
     this.persistenceLookup = persistenceLookup;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
+    this.shuttleCtlFn = options.shuttleCtlFn;
     this.annotationsApi = new HttpApiAnnotations({
       cityLookup,
       originLookup,
@@ -157,6 +168,7 @@ export class HttpApi {
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
       remoteTransitionExecutor: this.remoteTransitionExecutor,
       cacheTtlMs: 5000,
+      shuttleCtlFn: this.shuttleCtlFn,
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
@@ -700,6 +712,7 @@ export class HttpApi {
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
         remoteTransitionExecutor: this.remoteTransitionExecutor,
         cacheTtlMs: 5000,
+        shuttleCtlFn: this.shuttleCtlFn,
       });
       this.globalKanbanApiCache = { key: cacheKey, api };
       return api;
@@ -728,7 +741,12 @@ export class HttpApi {
     const cacheKey = `${city.path}\u0000${localCityPinsKey(localCities)}`;
     const cached = this.scopedKanbanApiCache.get(cityId);
     if (cached?.key === cacheKey) return cached.api;
-    const api = new HttpApiKanban({ feltHost: city.path, cities: localCities, cacheTtlMs: 5000 });
+    const api = new HttpApiKanban({
+      feltHost: city.path,
+      cities: localCities,
+      cacheTtlMs: 5000,
+      shuttleCtlFn: this.shuttleCtlFn,
+    });
     this.scopedKanbanApiCache.set(cityId, { key: cacheKey, api });
     return api;
   }

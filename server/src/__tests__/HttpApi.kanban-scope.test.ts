@@ -16,10 +16,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { HttpApi } from '../HttpApi.js';
+import type { ShuttleCtlInvocation } from '../HttpApiKanban.js';
 import {
   httpRequest,
   makeMultiCityLookup,
@@ -48,6 +49,70 @@ function writeConstitutionFiber(
   ];
   const content = `---\n${fmLines.join('\n')}\n---\n\nbody\n`;
   writeFileSync(join(dir, `${slug}.md`), content, 'utf-8');
+}
+
+/**
+ * Test-only shuttle-ctl stub. The HttpApi-level path now routes every local
+ * transition through `shuttle-ctl` (refactor 62733fe — single YAML writer
+ * for the shuttle block + felt scalars). The test fixtures live outside
+ * loom, so the real binary's `felt ls`-based id resolution can't find them;
+ * we substitute a minimal in-process writer that mutates the same fields
+ * shuttle-ctl would. Mirrors the canonical version in HttpApiKanban.test.ts.
+ */
+function applyShuttleCtlStub(
+  invocation: ShuttleCtlInvocation,
+  cityRoots: string[],
+  nowIso = '2026-05-05T00:00:00.000Z',
+): void {
+  // The fixtures live outside loom, so resolveGlobalFiberId falls back to
+  // the bare slug. Search each city root for the matching file.
+  const slug = invocation.fiberId;
+  const segments = slug.split('/');
+  const basename = segments[segments.length - 1];
+  let path: string | null = null;
+  for (const root of cityRoots) {
+    const candidate = join(root, '.felt', ...segments, `${basename}.md`);
+    if (existsSync(candidate)) { path = candidate; break; }
+  }
+  if (!path) throw new Error(`shuttle-ctl stub: fiber not found in any city root: ${slug}`);
+
+  let raw = readFileSync(path, 'utf-8');
+  const setScalar = (key: string, value: string): void => {
+    const re = new RegExp(`^([\\t ]*${key}:[\\t ]*).*$`, 'm');
+    raw = re.test(raw) ? raw.replace(re, `$1${value}`) : raw + `\n${key}: ${value}`;
+  };
+  const setEnabled = (val: 'true' | 'false'): void => {
+    raw = raw.replace(/^(\s*enabled:\s*)(true|false)$/m, `$1${val}`);
+  };
+  switch (invocation.verb) {
+    case 'pause': {
+      setEnabled('false');
+      break;
+    }
+    case 'reopen': {
+      setScalar('status', 'active');
+      setEnabled('true');
+      // Clear closed-at + tempered fields if present.
+      raw = raw.replace(/^closed-at:.*$\n?/m, '');
+      raw = raw.replace(/^tempered:.*$\n?/m, '');
+      break;
+    }
+    case 'close': {
+      setScalar('status', 'closed');
+      if (!/^closed-at:/m.test(raw)) raw = raw.replace(/^---\n/, `---\nclosed-at: ${nowIso}\n`);
+      if (invocation.tempered === undefined) {
+        raw = raw.replace(/^tempered:.*$\n?/m, '');
+      } else {
+        setScalar('tempered', invocation.tempered ? 'true' : 'false');
+      }
+      break;
+    }
+    case 'accept': {
+      setEnabled('true');
+      break;
+    }
+  }
+  writeFileSync(path, raw, 'utf-8');
 }
 
 describe('HttpApi — /kanban ?cityId= scope', () => {
@@ -81,10 +146,14 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
       { id: 'b', path: CITY_B, name: 'CityB' },
       { id: 'r', path: CITY_REMOTE, name: 'CityRemote', originId: 'remote-elsewhere' },
     ]);
+    const cityRoots = [CITY_A, CITY_B, CITY_REMOTE];
     api = new HttpApi(
       cityLookup as any,
       stubOriginLookup as any,
       stubPersistenceLookup as any,
+      {
+        shuttleCtlFn: async (invocation) => applyShuttleCtlStub(invocation, cityRoots),
+      },
     );
   });
 
