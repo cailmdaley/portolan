@@ -1011,6 +1011,91 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       ]);
     });
 
+    it('drafts → ideas adds the idea tag (no shuttle-ctl call)', async () => {
+      // Column placement for `ideas` is governed by the `idea` tag, not by
+      // a lifecycle verb. Dragging into ideas must be a tag mutation; if
+      // it shells shuttle-ctl, the kanban view diverges from disk state.
+      writeFib('sketch', {
+        name: 'Sketch',
+        status: 'open',
+        shuttle: SHUTTLE_DRAFT,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const feltCalls: FeltTagEditInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+        feltEditFn: makeFeltEditStub(feltCalls),
+      });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'sketch', target: 'ideas' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([]);
+      expect(feltCalls).toEqual([
+        { host: TEST_DIR, fiberId: 'sketch', add: ['idea'], remove: [] },
+      ]);
+      expect(body().card.tags).toContain('idea');
+      const after = readFileSync(join(FELT_DIR, 'sketch', 'sketch.md'), 'utf-8');
+      expect(after).toMatch(/^  - idea$/m);
+    });
+
+    it('ideas → drafts strips the idea tag and pauses', async () => {
+      // Drag-out-of-ideas chains a tag-strip into the lifecycle verb so the
+      // fiber lands in the requested column under classifyFiber's rules
+      // (idea-tag precedence over enabled).
+      writeFib('thought', {
+        name: 'Thought',
+        status: 'open',
+        tags: ['idea'],
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const feltCalls: FeltTagEditInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+        feltEditFn: makeFeltEditStub(feltCalls),
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'thought', target: 'drafts' }), res);
+
+      expect(status()).toBe(200);
+      expect(feltCalls).toEqual([
+        { host: TEST_DIR, fiberId: 'thought', add: [], remove: ['idea'] },
+      ]);
+      expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'pause', fiberId: 'thought' }]);
+      const after = readFileSync(join(FELT_DIR, 'thought', 'thought.md'), 'utf-8');
+      expect(after).not.toMatch(/^  - idea$/m);
+    });
+
+    it('ideas → inFlight strips the idea tag and reopens', async () => {
+      writeFib('promote', {
+        name: 'Promote',
+        status: 'open',
+        tags: ['idea'],
+        shuttle: SHUTTLE_DRAFT,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const feltCalls: FeltTagEditInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+        feltEditFn: makeFeltEditStub(feltCalls),
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'promote', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(feltCalls).toEqual([
+        { host: TEST_DIR, fiberId: 'promote', add: [], remove: ['idea'] },
+      ]);
+      expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'reopen', fiberId: 'promote' }]);
+    });
+
     it('rejects unknown target values with 400', async () => {
       const api = new HttpApiKanban({ feltHost: TEST_DIR });
       const { res, status, body } = capRes();

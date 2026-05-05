@@ -347,6 +347,7 @@ export type FeltTagEditInvocation = {
  * `inFlight` (the queued vs active split was decoration, not workflow).
  */
 export type KanbanTarget =
+  | 'ideas'
   | 'drafts'
   | 'inFlight'
   | 'awaitingReview'
@@ -861,6 +862,7 @@ export class HttpApiKanban {
       return;
     }
     const validTargets: KanbanTarget[] = [
+      'ideas',
       'drafts',
       'inFlight',
       'queued',
@@ -912,6 +914,37 @@ export class HttpApiKanban {
     if (fiber.hasShuttleBlock !== true) {
       throw new Error(
         `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block`,
+      );
+    }
+
+    // Ideas column placement is governed by the `idea` tag, not by a
+    // shuttle-ctl lifecycle verb (see classifyFiber: `idea` tag takes
+    // precedence over the enabled split). So drags into/out of ideas are
+    // tag mutations: add `idea` for `→ ideas`, remove `idea` for any
+    // other column when the fiber currently lives in ideas. The latter
+    // chains into the regular lifecycle path so e.g. `ideas → drafts`
+    // strips the tag and pauses in one operation.
+    const currentTags = normalizeTagList(fiber.tags ?? []);
+    const wasIdea = currentTags.includes('idea');
+
+    if (target === 'ideas') {
+      if (wasIdea) {
+        // Already in ideas — return a refreshed card without touching disk.
+        return this.applyTags(fiberId, currentTags);
+      }
+      return this.applyTags(fiberId, [...currentTags, 'idea']);
+    }
+
+    if (wasIdea) {
+      // Drag out of ideas: strip the tag first, then fall through to the
+      // lifecycle verb so `ideas → drafts` pauses, `ideas → inFlight`
+      // reopens, etc. The downstream lifecycle path doesn't read tags
+      // (only shuttle-block / status / kind fields, which are unchanged
+      // by a tag edit), and the trailing `getFiber` refresh after
+      // shuttle-ctl will surface the final post-strip-and-verb state.
+      await this.applyTags(
+        fiberId,
+        currentTags.filter((t) => t !== 'idea'),
       );
     }
 
