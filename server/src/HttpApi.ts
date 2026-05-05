@@ -24,7 +24,12 @@ import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiRecents } from './HttpApiRecents.js';
-import { HttpApiKanban, type KanbanTarget, type ShuttleCtlInvocation } from './HttpApiKanban.js';
+import {
+  HttpApiKanban,
+  type FeltTagEditInvocation,
+  type RemoteKanbanMutationRequest,
+  type ShuttleCtlInvocation,
+} from './HttpApiKanban.js';
 import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
 import { HttpApiFilesSearch } from './HttpApiFilesSearch.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
@@ -79,21 +84,15 @@ interface CachedApi<T> {
  * Cross-cutting deps that don't fit the lookup-shaped interfaces above.
  * Stage 3a of the vellum-kanban constitution adds the fiber-tree snapshot
  * provider here — the kanban folds remote-origin snapshots into the global
- * view alongside local-host walks. Stage 4 adds the remote-transition
- * executor — `kanban/transition` against a remote-origin card flows through
- * this callback (correlation-ID layer + snapshot-store delta apply) instead
- * of writing the file directly. Both optional so existing tests continue to
- * construct HttpApi without wiring an agent.
+ * view alongside local-host walks. Stage 4 adds the remote mutation
+ * executor — remote-origin kanban writes flow through this callback
+ * (correlation-ID layer + snapshot-store delta apply) instead of writing
+ * the file directly. Both optional so existing tests continue to construct
+ * HttpApi without wiring an agent.
  */
 export interface HttpApiOptions {
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
-  remoteTransitionExecutor?: (args: {
-    originId: string;
-    fiberId: string;
-    path: string;
-    target: KanbanTarget;
-    nowIso: string;
-  }) => Promise<void>;
+  remoteTransitionExecutor?: (args: RemoteKanbanMutationRequest) => Promise<void>;
   /**
    * Override felt root for the `/static/.felt/<rest>` asset route. Defaults
    * to `<projectRoot>/.felt`; tests inject an isolated tmpdir.
@@ -108,6 +107,7 @@ export interface HttpApiOptions {
    * exist in the user's loom.
    */
   shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
+  feltEditFn?: (invocation: FeltTagEditInvocation) => Promise<void>;
 }
 
 // ============================================================================
@@ -131,6 +131,7 @@ export class HttpApi {
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
+  private feltEditFn: HttpApiOptions['feltEditFn'];
   private globalKanbanApiCache: CachedApi<HttpApiKanban> | null = null;
   private scopedKanbanApiCache = new Map<string, CachedApi<HttpApiKanban>>();
   private globalSearchApiCache: CachedApi<HttpApiGlobalSearch> | null = null;
@@ -148,6 +149,7 @@ export class HttpApi {
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
+    this.feltEditFn = options.feltEditFn;
     this.annotationsApi = new HttpApiAnnotations({
       cityLookup,
       originLookup,
@@ -169,6 +171,7 @@ export class HttpApi {
       remoteTransitionExecutor: this.remoteTransitionExecutor,
       cacheTtlMs: 5000,
       shuttleCtlFn: this.shuttleCtlFn,
+      feltEditFn: this.feltEditFn,
     });
     this.hooksRuntimeApi = new HttpApiHooksRuntime({
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
@@ -713,6 +716,7 @@ export class HttpApi {
         remoteTransitionExecutor: this.remoteTransitionExecutor,
         cacheTtlMs: 5000,
         shuttleCtlFn: this.shuttleCtlFn,
+        feltEditFn: this.feltEditFn,
       });
       this.globalKanbanApiCache = { key: cacheKey, api };
       return api;
@@ -746,6 +750,7 @@ export class HttpApi {
       cities: localCities,
       cacheTtlMs: 5000,
       shuttleCtlFn: this.shuttleCtlFn,
+      feltEditFn: this.feltEditFn,
     });
     this.scopedKanbanApiCache.set(cityId, { key: cacheKey, api });
     return api;

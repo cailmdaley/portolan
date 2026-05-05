@@ -126,22 +126,22 @@ const cityLookup = {
 
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
   remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
-  // Stage 4 — remote-origin /kanban/transition routes through this executor.
-  // Sends a `kanban-transition` over the agent's WebSocket via the
+  // Stage 4 — remote-origin kanban mutations route through this executor.
+  // Sends a `kanban-transition` payload over the agent's WebSocket via the
   // correlation-ID layer, applies the agent's reply content as a
   // `fiber_tree_delta` so the snapshot reflects the new state immediately,
   // and resolves so HttpApiKanban can build the refreshed card. The
   // agent-side fs.watch will fire its own delta moments later; double-apply
   // is idempotent because the second copy carries identical content.
-  remoteTransitionExecutor: async ({ originId, path, target, nowIso }) => {
+  remoteTransitionExecutor: async ({ originId, ...payload }) => {
     const result = await agentRequestCoordinator.send<{ content?: string }>(
       originId,
       'kanban-transition',
-      { path, target, nowIso },
+      payload,
     );
     if (typeof result.content === 'string') {
       fiberTreeSnapshotStore.applyDelta(originId, [
-        { path, op: 'upsert', content: result.content },
+        { path: payload.path, op: 'upsert', content: result.content },
       ]);
     }
   },

@@ -16,8 +16,8 @@
  * The write side rescues `false` for actual composting: every non-verdict
  * transition (drafts, inFlight, awaitingReview) *clears* `tempered` rather
  * than stamping `false`. Only `tempered` and `composted` targets write the
- * field. See `applyTargetToFrontmatter` for the line-based writer and
- * [[ai-futures/shuttle/constitution-kanban-compost]] for the rationale.
+ * field. See [[ai-futures/shuttle/constitution-kanban-compost]] for the
+ * rationale.
  *
  * The "awaiting-review" column is the human-tempering action queue and the
  * primary reason this view exists. See:
@@ -35,7 +35,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { URL } from 'url';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -261,34 +261,24 @@ interface HttpApiKanbanOptions {
    */
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   /**
-   * Stage 4 — executor for remote-origin transitions. When a card's origin
-   * isn't `local`, `applyTransition` ships the mutation through this
-   * callback instead of writing the file directly. The callback owns the
-   * agent round-trip (correlation-ID send + reply wait) and the
-   * snapshot-store delta apply, so by the time it resolves the snapshot
-   * for `originId` already reflects the new state and the kanban can
+   * Executor for remote-origin kanban mutations. When a card's origin isn't
+   * `local`, the server computes the semantic shuttle/felt edit locally and
+   * ships it through this callback instead of mutating the file directly.
+   *
+   * The callback owns the agent round-trip (correlation-ID send + reply wait)
+   * plus the snapshot-store delta apply, so by the time it resolves the
+   * snapshot for `originId` already reflects the new state and the kanban can
    * re-read the refreshed fiber via `remoteSnapshotsProvider`.
    *
    * `path` is relative to the agent's `feltHost/.felt/` (e.g.
-   * `cmbx/cmbx.md`); the agent reconstructs the absolute path. `nowIso`
-   * is the timestamp to stamp into `closed-at` when the target asks for
-   * one — passed through so the server's clock wins in case of skew.
+   * `cmbx/cmbx.md`); the agent reconstructs the absolute path.
    *
-   * If undefined, remote-origin transitions throw the Stage-4 boundary
-   * error (preserves Stage 3a behaviour for tests that don't wire an
-   * executor).
+   * If undefined, remote-origin mutations throw a boundary error (preserves
+   * Stage 3a behaviour for tests that don't wire an executor).
    */
-  remoteTransitionExecutor?: (args: {
-    originId: string;
-    fiberId: string;
-    path: string;
-    target: KanbanTarget;
-    nowIso: string;
-  }) => Promise<void>;
+  remoteTransitionExecutor?: (args: RemoteKanbanMutationRequest) => Promise<void>;
   /** Max tempered cards to return. Defaults to 30. */
   temperedLimit?: number;
-  /** Override clock for transitions (testing). */
-  now?: () => Date;
   /**
    * Test seam: list of currently-running shuttle session names
    * (`shuttle-<fiber-id>`). Defaults to a real `tmux ls` probe via
@@ -305,15 +295,36 @@ interface HttpApiKanbanOptions {
    * Test seam: override the shuttle-ctl spawn for local lifecycle transitions.
    * When provided, called instead of `execFileAsync('shuttle-ctl', ...)`.
    * Receives the exact semantic invocation the server would shell out:
-   * pause / reopen / close / accept against the loom-global fiber id.
-   * Should throw on failure (same contract as the real execFileAsync call).
+   * pause / reopen / close / accept / set-outcome against the loom-global
+   * fiber id. Should throw on failure (same contract as the real
+   * execFileAsync call).
    */
   shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
+  /**
+   * Test seam: override the local `felt edit` spawn for tag replacement.
+   * Receives the exact add/remove diff the server would shell out.
+   */
+  feltEditFn?: (invocation: FeltTagEditInvocation) => Promise<void>;
 }
 
 export type ShuttleCtlInvocation =
   | { verb: 'pause' | 'reopen' | 'accept'; fiberId: string }
-  | { verb: 'close'; fiberId: string; tempered?: boolean };
+  | { verb: 'close'; fiberId: string; tempered?: boolean }
+  | { verb: 'set-outcome'; fiberId: string; outcome: string };
+
+export type RemoteKanbanMutationInvocation =
+  | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
+  | { kind: 'felt-tags'; fiberId: string; path: string; tags: string[] };
+
+export type RemoteKanbanMutationRequest =
+  RemoteKanbanMutationInvocation & { originId: string };
+
+export type FeltTagEditInvocation = {
+  host: string;
+  fiberId: string;
+  add: string[];
+  remove: string[];
+};
 
 /**
  * Where a transition can land a card.
@@ -433,10 +444,10 @@ export class HttpApiKanban {
     | HttpApiKanbanOptions['remoteTransitionExecutor']
     | undefined;
   private readonly temperedLimit: number;
-  private readonly now: () => Date;
   private readonly listSessions: () => string[];
   private readonly cacheTtlMs: number;
   private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
+  private readonly feltEditFn: HttpApiKanbanOptions['feltEditFn'];
 
   /**
    * Run a shuttle-ctl lifecycle invocation against a global fiber id.
@@ -455,6 +466,9 @@ export class HttpApiKanban {
     if (invocation.verb === 'close' && invocation.tempered !== undefined) {
       args.push(`--tempered=${invocation.tempered ? 'true' : 'false'}`);
     }
+    if (invocation.verb === 'set-outcome') {
+      args.push('--outcome', invocation.outcome);
+    }
 
     try {
       await execFileAsync('shuttle-ctl', args, {
@@ -464,6 +478,28 @@ export class HttpApiKanban {
     } catch (err: any) {
       const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
       throw new Error(`shuttle-ctl ${args.join(' ')} failed: ${msg}`);
+    }
+  }
+
+  private async runFeltTagEdit(invocation: FeltTagEditInvocation): Promise<void> {
+    if (invocation.add.length === 0 && invocation.remove.length === 0) return;
+    if (this.feltEditFn) {
+      await this.feltEditFn(invocation);
+      return;
+    }
+
+    const args = ['-C', invocation.host, 'edit', invocation.fiberId];
+    for (const tag of invocation.remove) args.push('--untag', tag);
+    for (const tag of invocation.add) args.push('--tag', tag);
+
+    try {
+      await execFileAsync('felt', args, {
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err: any) {
+      const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+      throw new Error(`felt ${args.join(' ')} failed: ${msg}`);
     }
   }
 
@@ -487,10 +523,10 @@ export class HttpApiKanban {
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
     this.remoteTransitionExecutor = opts.remoteTransitionExecutor;
     this.temperedLimit = opts.temperedLimit ?? 30;
-    this.now = opts.now ?? (() => new Date());
     this.listSessions = opts.listSessions ?? listShuttleSessions;
     this.cacheTtlMs = opts.cacheTtlMs ?? 0;
     this.shuttleCtlFn = opts.shuttleCtlFn;
+    this.feltEditFn = opts.feltEditFn;
   }
 
   /**
@@ -867,31 +903,21 @@ export class HttpApiKanban {
         `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block`,
       );
     }
-    const nowIso = this.now().toISOString();
 
     if (originId !== 'local') {
-      // Stage 4 — route through the agent over the correlation-ID layer.
-      // The executor owns the round-trip and the snapshot-store delta apply
-      // so by the time it resolves, the remote snapshot for this origin
-      // already reflects the new state and the refreshed card we return
-      // matches what the next /kanban GET will show.
       if (!this.remoteTransitionExecutor) {
         throw new Error(
           `remote-origin transitions require remoteTransitionExecutor wiring ` +
             `(fiber ${fiberId} is on origin '${originId}')`,
         );
       }
-      const relPath = relativeFeltPath(fiber);
       await this.remoteTransitionExecutor({
         originId,
-        fiberId,
-        path: relPath,
-        target,
-        nowIso,
+        path: relativeFeltPath(fiber),
+        kind: 'shuttle',
+        ...transitionInvocationForTarget(fiber, fiber.id, target),
       });
       this.clearFiberPoolCache();
-      // Re-read the snapshot via the provider — the executor has applied the
-      // delta, so byId for this origin carries the post-write fiber.
       const refreshedById = new Map<string, Fiber>();
       if (this.remoteSnapshotsProvider) {
         for (const snap of this.remoteSnapshotsProvider()) {
@@ -913,49 +939,11 @@ export class HttpApiKanban {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
 
-    // Local transitions now route entirely through shuttle-ctl so one YAML
-    // writer owns both the shuttle block and the felt-native lifecycle fields.
-    // Standing-role review acceptance remains its own path: when a
-    // kind:standing fiber in awaitingReview (review.state === 'awaiting') is
-    // dragged to inFlight OR tempered, the right verb is `accept` — it
-    // advances the schedule (review.state → scheduled, recomputes
-    // next_due_at) and closes the run loop. `reopen` would incorrectly treat
-    // the standing run like a oneshot requeue, and `close --tempered=true`
-    // would terminate the role outright. `composted` still falls through to
-    // the close path because retiring a recurring role is the right semantics
-    // for "I'm done with this canary, retire it."
-    //
-    // Remote-origin transitions TODO: plumb a "run shuttle-ctl on the remote"
-    // instruction through remoteTransitionExecutor once the SSH path supports it.
-    const isStandingAccept =
-      (target === 'inFlight' ||
-        target === 'queued' ||
-        target === 'active' ||
-        target === 'tempered') &&
-      fiber.shuttleKind === 'standing' &&
-      fiber.shuttleReviewState === 'awaiting';
-
-    const globalId = resolveGlobalFiberId(host, fiber.id);
-    if (isStandingAccept) {
-      await this.runShuttleCtl({ verb: 'accept', fiberId: globalId });
-    } else if (target === 'drafts') {
-      await this.runShuttleCtl({ verb: 'pause', fiberId: globalId });
-    } else if (target === 'inFlight' || target === 'queued' || target === 'active') {
-      await this.runShuttleCtl({ verb: 'reopen', fiberId: globalId });
-    } else if (target === 'awaitingReview') {
-      await this.runShuttleCtl({ verb: 'close', fiberId: globalId });
-    } else if (target === 'tempered') {
-      await this.runShuttleCtl({ verb: 'close', fiberId: globalId, tempered: true });
-    } else if (target === 'composted') {
-      await this.runShuttleCtl({ verb: 'close', fiberId: globalId, tempered: false });
-    }
+    await this.runShuttleCtl(
+      transitionInvocationForTarget(fiber, resolveGlobalFiberId(host, fiber.id), target),
+    );
     this.clearFiberPoolCache();
 
-    // Re-parse just the file we wrote — the rest of the host's fibers are
-    // unchanged, so a full `getAllFibers` re-walk would just shell out to
-    // felt for ~hundreds of unchanged files. Reuse the existing merged set
-    // for the byId dependency-satisfied lookup, overriding only the
-    // refreshed fiber's entry.
     const refreshed = parseFiber(fiberId, readFileSync(path, 'utf-8'));
     const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
     refreshedById.set(fiberId, refreshed);
@@ -1004,54 +992,32 @@ export class HttpApiKanban {
   }
 
   /**
-   * Resolve a fiber by id, replace its tags in the frontmatter, and return
-   * the refreshed card. Follows the same multi-host / remote-origin routing
-   * as applyTransition:
-   *
-   *   - Local origin: read the file, apply tag replacement via
-   *     mutateTagsInPlace({ replace }), write back, clear cache, re-read.
-   *   - Remote origin: route through remoteTransitionExecutor if wired
-   *     (the executor\'s `target` is unused for tags but the path goes
-   *     through the same correlation-ID layer), or throw a clear error.
+   * Resolve a fiber by id, replace its tags through `felt edit`, and return
+   * the refreshed card. Tags are felt-level qualitative noticings, so this
+   * stays outside shuttle-ctl even for shuttle-managed fibers.
    */
   async applyTags(fiberId: string, tags: string[]): Promise<KanbanCard> {
     const { merged } = await this.collectFibers();
     const entry = merged.find(({ fiber }) => fiber.id === fiberId);
     if (!entry) throw new Error(`fiber not found: ${fiberId}`);
-    const { fiber, host, originId, canonicalPath } = entry;
+    const { fiber, host, originId } = entry;
 
-    // Normalize: trim each tag, remove empties, deduplicate while preserving
-    // insertion order. Post-cutover, kanban visibility is driven by the
-    // shuttle: block — the constitution tag is cosmetic and no longer forcibly
-    // kept. Removing it from a fiber's tags no longer affects board membership.
-    const seen = new Set<string>();
-    const normalized: string[] = [];
-    for (const t of tags) {
-      const trimmed = t.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      normalized.push(trimmed);
-    }
+    const normalized = normalizeTagList(tags);
+    const { add, remove } = diffTags(normalizeTagList(fiber.tags ?? []), normalized);
 
     if (originId !== 'local') {
-      // Remote origin: try to route through the executor. The executor\'s
-      // `target` field is unused for tags but the path goes through the
-      // same correlation-ID layer so the remote agent can apply the change.
       if (!this.remoteTransitionExecutor) {
         throw new Error(
           `remote-origin tag edits require remoteTransitionExecutor wiring ` +
             `(fiber ${fiberId} is on origin '${originId}')`,
         );
       }
-      const relPath = relativeFeltPath(fiber);
-      // Ship the full tag set as a JSON payload on the `target` field;
-      // the remote executor interprets it as a tag-replace command.
       await this.remoteTransitionExecutor({
         originId,
         fiberId,
-        path: relPath,
-        target: `__tags__${JSON.stringify(normalized)}` as KanbanTarget,
-        nowIso: '',
+        path: relativeFeltPath(fiber),
+        kind: 'felt-tags',
+        tags: normalized,
       });
       this.clearFiberPoolCache();
       const refreshedById = new Map<string, Fiber>();
@@ -1066,29 +1032,12 @@ export class HttpApiKanban {
       return this.toCard(refreshed, host, originId, refreshedById);
     }
 
-    // Local origin: read file, mutate tags, write back.
     const path = this.fiberPath(host, fiber);
     if (!existsSync(path)) throw new Error(`fiber file missing: ${path}`);
 
-    const raw = readFileSync(path, 'utf-8');
-    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-    if (!fmMatch) throw new Error('file has no YAML frontmatter; refusing to mutate');
-
-    const fmBlock = fmMatch[1];
-    const after = raw.slice(fmMatch[0].length);
-    const fmLines = fmBlock.split(/\r?\n/);
-    mutateTagsInPlace(fmLines, { replace: normalized });
-    const updated = `---\n${fmLines.join('\n')}\n---\n${after}`;
-
-    if (updated !== raw) {
-      writeFileSync(path, updated, 'utf-8');
-    }
+    await this.runFeltTagEdit({ host, fiberId, add, remove });
     this.clearFiberPoolCache();
 
-    // Re-parse just the file we wrote — the rest of the host's fibers
-    // are unchanged, so a full `getAllFibers` re-walk would re-shell
-    // felt for hundreds of unchanged files. Reuse the existing merged
-    // set for byId lookups, overriding only the refreshed fiber.
     const refreshed = parseFiber(fiberId, readFileSync(path, 'utf-8'));
     const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
     refreshedById.set(fiberId, refreshed);
@@ -1488,16 +1437,35 @@ export class HttpApiKanban {
         this.json(res, 404, { error: `fiber not found: ${body.fiberId}` });
         return;
       }
-      const { fiber, host } = entry;
+      const { fiber, host, originId } = entry;
 
       let newFiberId: string | undefined;
 
-      // ── Patch outcome in the fiber file ───────────────────────────────────
+      // ── Patch outcome via shuttle-ctl (or the remote agent wrapper) ──────
       if (typeof body.outcome === 'string') {
-        const path = this.fiberPath(host, fiber);
-        const raw = readFileSync(path, 'utf8');
-        const patched = patchOutcomeInFrontmatter(raw, body.outcome.trim());
-        writeFileSync(path, patched, 'utf8');
+        const outcome = body.outcome.trim();
+        if (originId !== 'local') {
+          if (!this.remoteTransitionExecutor) {
+            throw new Error(
+              `remote-origin outcome edits require remoteTransitionExecutor wiring ` +
+                `(fiber ${body.fiberId} is on origin '${originId}')`,
+            );
+          }
+          await this.remoteTransitionExecutor({
+            originId,
+            fiberId: fiber.id,
+            path: relativeFeltPath(fiber),
+            kind: 'shuttle',
+            verb: 'set-outcome',
+            outcome,
+          });
+        } else {
+          await this.runShuttleCtl({
+            verb: 'set-outcome',
+            fiberId: resolveGlobalFiberId(host, fiber.id),
+            outcome,
+          });
+        }
       }
 
       // ── Reshape the shuttle block (kind / schedule / tz, optionally agent)
@@ -1850,289 +1818,48 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   return JSON.parse(raw) as T;
 }
 
-// ── Frontmatter line editor ──────────────────────────────────────────────────
+// ── Mutation helpers ─────────────────────────────────────────────────────────
 
-/**
- * Mutate the YAML frontmatter section of a fiber's md content to match the
- * target column. Returns the new full file contents.
- *
- * Line-based: only the `status:`, `tempered:`, and `closed-at:` lines are
- * touched. Everything else (other fields, comments, body, block scalars) is
- * preserved byte-identical. New fields are inserted at the end of the
- * frontmatter block, preserving its trailing `---` delimiter.
- */
-export function applyTargetToFrontmatter(
-  raw: string,
+function transitionInvocationForTarget(
+  fiber: Fiber,
+  fiberId: string,
   target: KanbanTarget,
-  nowIso: string,
-): string {
-  const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!fmMatch) {
-    // No frontmatter to mutate — refuse, the file isn't a fiber by our
-    // contract. Caller should not have routed us here.
-    throw new Error('file has no YAML frontmatter; refusing to mutate');
+): ShuttleCtlInvocation {
+  const isStandingAccept =
+    (target === 'inFlight' ||
+      target === 'queued' ||
+      target === 'active' ||
+      target === 'tempered') &&
+    fiber.shuttleKind === 'standing' &&
+    fiber.shuttleReviewState === 'awaiting';
+
+  if (isStandingAccept) return { verb: 'accept', fiberId };
+  if (target === 'drafts') return { verb: 'pause', fiberId };
+  if (target === 'inFlight' || target === 'queued' || target === 'active') {
+    return { verb: 'reopen', fiberId };
   }
+  if (target === 'awaitingReview') return { verb: 'close', fiberId };
+  if (target === 'tempered') return { verb: 'close', fiberId, tempered: true };
+  return { verb: 'close', fiberId, tempered: false };
+}
 
-  const fmBlock = fmMatch[1];
-  const after = raw.slice(fmMatch[0].length);
-  const fmLines = fmBlock.split(/\r?\n/);
-
-  // Compute desired values per target.
-  //   drafts          → keep status (or default active), add 'draft' tag, clear tempered, clear closed-at
-  //   inFlight        → status=active, remove 'draft' tag, clear tempered, clear closed-at
-  //   queued/active   → legacy aliases for inFlight (queued vs active was decoration)
-  //   awaitingReview  → status=closed, clear tempered (agent-paused handoff)
-  //   tempered        → status=closed, tempered=true  (human-accepted)
-  //   composted       → status=closed, tempered=false (human-rejected verdict)
-  //
-  // `tempered === null` here means "remove the field on write." Only the
-  // verdict targets (tempered, composted) write a boolean; every other
-  // target clears it. This rescues `tempered: false` for actual composting
-  // — see [[ai-futures/shuttle/constitution-kanban-compost]].
-  let status: string | null;  // null = leave untouched
-  let tempered: boolean | null;  // null = clear the field
-  let closedAtAction: 'set-if-missing' | 'clear';
-  // Drafts/inFlight column membership is driven by shuttle.enabled (typically
-  // set by shuttle-ctl pause/reopen). This helper only models the felt-level
-  // fields: status, tempered, closed-at.
-  // No tag mutations for drafts/inFlight — constitution/draft tags are cosmetic.
-  switch (target) {
-    case 'drafts':
-      // Don't force a status when filing as draft — preserve whatever shape
-      // the fiber already has (often `open` from felt add). The shuttle block
-      // (paused elsewhere) drives the drafts column.
-      status = null;
-      tempered = null;
-      closedAtAction = 'clear';
-      break;
-    case 'inFlight':
-    case 'queued':
-    case 'active':
-      status = 'active';
-      tempered = null;
-      closedAtAction = 'clear';
-      break;
-    case 'awaitingReview':
-      status = 'closed';
-      tempered = null;
-      closedAtAction = 'set-if-missing';
-      break;
-    case 'tempered':
-      status = 'closed';
-      tempered = true;
-      closedAtAction = 'set-if-missing';
-      break;
-    case 'composted':
-      status = 'closed';
-      tempered = false;
-      closedAtAction = 'set-if-missing';
-      break;
+function normalizeTagList(tags: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const tag of tags) {
+    const trimmed = tag.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
   }
+  return normalized;
+}
 
-  // Top-level scalar field replacement: matches "<key>: <value>" at indent 0.
-  // Doesn't touch lines that are part of a list, indented child, or block
-  // scalar — those have non-zero indent or start with "-".
-  const setOrInsertScalar = (key: string, value: string): void => {
-    const re = new RegExp(`^${escapeRegex(key)}:[\\t ]*.*$`);
-    let replaced = false;
-    for (let i = 0; i < fmLines.length; i++) {
-      if (re.test(fmLines[i])) {
-        fmLines[i] = `${key}: ${value}`;
-        replaced = true;
-        break;
-      }
-    }
-    if (!replaced) fmLines.push(`${key}: ${value}`);
+function diffTags(current: string[], next: string[]): { add: string[]; remove: string[] } {
+  const currentSet = new Set(current);
+  const nextSet = new Set(next);
+  return {
+    add: next.filter((tag) => !currentSet.has(tag)),
+    remove: current.filter((tag) => !nextSet.has(tag)),
   };
-
-  const clearScalar = (key: string): void => {
-    const re = new RegExp(`^${escapeRegex(key)}:[\\t ]*.*$`);
-    for (let i = fmLines.length - 1; i >= 0; i--) {
-      if (re.test(fmLines[i])) fmLines.splice(i, 1);
-    }
-  };
-
-  if (status !== null) setOrInsertScalar('status', status);
-  if (tempered === null) {
-    clearScalar('tempered');
-  } else {
-    setOrInsertScalar('tempered', tempered ? 'true' : 'false');
-  }
-
-  if (closedAtAction === 'clear') {
-    clearScalar('closed-at');
-  } else {
-    // Set only if no existing value. We probe with a regex against the lines
-    // (post status/tempered edits, but those don't share a key with closed-at).
-    const closedRe = /^closed-at:[\t ]*(.+)$/;
-    const hasClosedAt = fmLines.some(l => closedRe.test(l));
-    if (!hasClosedAt) {
-      fmLines.push(`closed-at: ${nowIso}`);
-    }
-  }
-
-  // No tag mutations post-cutover: drafts/inFlight column membership is driven
-  // by shuttle.enabled (via shuttle-ctl pause/reopen), not by the draft tag.
-  // applyTargetToFrontmatter only handles the felt-level scalar fields.
-
-  const newFm = fmLines.join('\n');
-  return `---\n${newFm}\n---\n${after}`;
-}
-
-/**
- * In-place mutation of the `tags:` block within a frontmatter line array.
- *
- * Recognized shapes:
- *   tags:
- *     - foo
- *     - bar
- *
- *   tags: [foo, bar]
- *
- * Both are normalized to the indented-list form on write. If `tags:` doesn't
- * exist, a fresh block is appended at the end of the frontmatter.
- *
- * Safe for round-trips: if no add/remove changes membership, the existing
- * lines are left untouched (no reformatting drift).
- */
-export function mutateTagsInPlace(
-  fmLines: string[],
-  opts: { add?: string[]; remove?: string[]; replace?: string[] },
-): void {
-  // Full replace mode: set the tag list to exactly `replace`, normalized.
-  // Ignored when `add` or `remove` are set so diff-style callers still work.
-  if (opts.replace !== undefined && opts.add === undefined && opts.remove === undefined) {
-    const newTags = [...new Set(opts.replace.map(t => t.trim()).filter(Boolean))];
-
-    // Find and replace the existing tags block.
-    for (let i = 0; i < fmLines.length; i++) {
-      if (/^tags:\s*$/.test(fmLines[i])) {
-        // Block-list form — collect existing tags and see if unchanged.
-        const existing: string[] = [];
-        let j = i + 1;
-        while (j < fmLines.length && /^[ \t]+- /.test(fmLines[j])) {
-          const m = fmLines[j].match(/^[ \t]+- (.+)$/);
-          if (m) existing.push(m[1].trim().replace(/^["']|["']$/g, '').trim());
-          j++;
-        }
-        if (newTags.length === existing.length && newTags.every((t, ix) => t === existing[ix])) return;
-        fmLines.splice(i + 1, j - i - 1, ...newTags.map(t => `  - ${t}`));
-        return;
-      }
-      // Inline form: `tags: [a, b]`
-      const inline = fmLines[i].match(/^tags:\s*\[(.*)\]\s*$/);
-      if (inline) {
-        const existing = inline[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '').trim()).filter(Boolean);
-        if (newTags.length === existing.length && newTags.every((t, ix) => t === existing[ix])) return;
-        fmLines.splice(i, 1, 'tags:', ...newTags.map(t => `  - ${t}`));
-        return;
-      }
-    }
-    // No tags block at all — append fresh.
-    fmLines.push('tags:', ...newTags.map(t => `  - ${t}`));
-    return;
-  }
-
-  const add = opts.add ?? [];
-  const remove = opts.remove ?? [];
-  if (add.length === 0 && remove.length === 0) return;
-
-  // Locate the existing tags block.
-  let blockStart = -1;
-  let blockEnd = -1;
-  let existing: string[] = [];
-
-  for (let i = 0; i < fmLines.length; i++) {
-    // Block-list form: `tags:` on its own line, then indented `- item` lines.
-    if (/^tags:\s*$/.test(fmLines[i])) {
-      blockStart = i;
-      let j = i + 1;
-      while (j < fmLines.length && /^[ \t]+- /.test(fmLines[j])) {
-        const m = fmLines[j].match(/^[ \t]+- (.+)$/);
-        if (m) existing.push(m[1].trim().replace(/^["']|["']$/g, '').trim());
-        j++;
-      }
-      blockEnd = j;
-      break;
-    }
-    // Inline form: `tags: [a, b]`
-    const inline = fmLines[i].match(/^tags:\s*\[(.*)\]\s*$/);
-    if (inline) {
-      blockStart = i;
-      blockEnd = i + 1;
-      existing = inline[1]
-        .split(',')
-        .map(s => s.trim().replace(/^["']|["']$/g, '').trim())
-        .filter(Boolean);
-      break;
-    }
-  }
-
-  // Compute new tag set, preserving relative order of existing tags.
-  const removeSet = new Set(remove);
-  const out: string[] = existing.filter(t => !removeSet.has(t));
-  for (const t of add) if (!out.includes(t)) out.push(t);
-
-  // No-op if membership didn't change.
-  if (
-    blockStart !== -1 &&
-    out.length === existing.length &&
-    out.every((t, i) => t === existing[i])
-  ) return;
-
-  const newBlock = ['tags:', ...out.map(t => `  - ${t}`)];
-  if (blockStart === -1) {
-    fmLines.push(...newBlock);
-  } else {
-    fmLines.splice(blockStart, blockEnd - blockStart, ...newBlock);
-  }
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// ── Fiber patch helpers ───────────────────────────────────────────────────────
-
-/**
- * Replace or insert the `outcome:` field in a fiber's frontmatter.
- *
- * Handles three existing forms:
- *   - No outcome field: appends `outcome: <value>` (or block scalar).
- *   - Single-line: `outcome: existing` → `outcome: new`.
- *   - Block scalar: `outcome: |-\n  existing\n  lines` → replaced entirely.
- *
- * Multi-line values are written as `outcome: |-` block scalars; single-line
- * values are written inline. The rest of the file is preserved byte-identical.
- */
-export function patchOutcomeInFrontmatter(raw: string, outcome: string): string {
-  const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!fmMatch) throw new Error('file has no YAML frontmatter');
-
-  const fmBlock = fmMatch[1];
-  const after = raw.slice(fmMatch[0].length);
-  const fmLines = fmBlock.split(/\r?\n/);
-
-  // Remove existing outcome field (single-line or block scalar).
-  for (let i = 0; i < fmLines.length; i++) {
-    if (/^outcome:/.test(fmLines[i])) {
-      let end = i + 1;
-      // Block scalar continuation: indented lines after `outcome: |-` / `outcome: |`.
-      if (/^outcome:\s*\|/.test(fmLines[i])) {
-        while (end < fmLines.length && /^\s/.test(fmLines[end])) end++;
-      }
-      fmLines.splice(i, end - i);
-      break;
-    }
-  }
-
-  // Insert new outcome value.
-  if (outcome.includes('\n')) {
-    const indented = outcome.split('\n').map(l => `  ${l}`);
-    fmLines.push('outcome: |-', ...indented);
-  } else {
-    fmLines.push(`outcome: ${outcome}`);
-  }
-
-  return `---\n${fmLines.join('\n')}\n---\n${after}`;
 }

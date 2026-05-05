@@ -15,7 +15,15 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
-import { HttpApiKanban, applyTargetToFrontmatter, canonicalStoreRelativeId, classifyFiber, mutateTagsInPlace, type ShuttleCtlInvocation } from '../HttpApiKanban.js';
+import YAML from 'yaml';
+import {
+  HttpApiKanban,
+  canonicalStoreRelativeId,
+  classifyFiber,
+  type FeltTagEditInvocation,
+  type RemoteKanbanMutationRequest,
+  type ShuttleCtlInvocation,
+} from '../HttpApiKanban.js';
 import type { Fiber } from '../FiberReader.js';
 import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 
@@ -61,51 +69,131 @@ function mdPathForFiberId(fiberId: string): string {
   return join(FELT_DIR, ...segments, `${basename}.md`);
 }
 
-function replaceTopLevelScalar(raw: string, key: string, value: string): string {
-  const re = new RegExp(`^([\\t ]*${key}:[\\t ]*).*$`, 'm');
-  return re.test(raw) ? raw.replace(re, `$1${value}`) : raw;
+function rewriteFrontmatter(raw: string, mutate: (doc: Record<string, any>) => void): string {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) throw new Error('file has no YAML frontmatter');
+  const doc = (YAML.parse(match[1]) ?? {}) as Record<string, any>;
+  mutate(doc);
+  const after = raw.slice(match[0].length);
+  return `---\n${YAML.stringify(doc).trimEnd()}\n---\n${after}`;
+}
+
+function normalizeTags(tags: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const tag of tags) {
+    const trimmed = tag.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
 }
 
 function applyShuttleCtlInvocation(invocation: ShuttleCtlInvocation, nowIso = '2026-05-03T16:00:00.000Z'): void {
   const path = mdPathForFiberId(invocation.fiberId);
   const raw = readFileSync(path, 'utf-8');
-  let updated = raw;
-
-  switch (invocation.verb) {
-    case 'pause': {
-      updated = applyTargetToFrontmatter(updated, 'drafts', nowIso);
-      if (/^status: closed$/m.test(raw)) updated = replaceTopLevelScalar(updated, 'status', 'active');
-      updated = updated.replace(/^(\s*enabled:\s*)(true|false)$/m, '$1false');
-      break;
+  const updated = rewriteFrontmatter(raw, (doc) => {
+    switch (invocation.verb) {
+      case 'pause':
+        if (doc.status === 'closed') doc.status = 'active';
+        delete doc.tempered;
+        delete doc['closed-at'];
+        doc.shuttle = { ...(doc.shuttle ?? {}), enabled: false };
+        break;
+      case 'reopen':
+        doc.status = 'active';
+        delete doc.tempered;
+        delete doc['closed-at'];
+        doc.shuttle = { ...(doc.shuttle ?? {}), enabled: true };
+        break;
+      case 'close':
+        doc.status = 'closed';
+        if (invocation.tempered === undefined) delete doc.tempered;
+        else doc.tempered = invocation.tempered;
+        if (doc['closed-at'] === undefined) doc['closed-at'] = nowIso;
+        break;
+      case 'accept':
+        doc.shuttle = {
+          ...(doc.shuttle ?? {}),
+          enabled: true,
+          review: { ...(doc.shuttle?.review ?? {}), state: 'scheduled' },
+        };
+        break;
+      case 'set-outcome':
+        doc.outcome = invocation.outcome;
+        break;
     }
-    case 'reopen': {
-      updated = applyTargetToFrontmatter(updated, 'inFlight', nowIso);
-      updated = updated.replace(/^(\s*enabled:\s*)(true|false)$/m, '$1true');
-      break;
-    }
-    case 'close': {
-      const target = invocation.tempered === true
-        ? 'tempered'
-        : invocation.tempered === false
-          ? 'composted'
-          : 'awaitingReview';
-      updated = applyTargetToFrontmatter(updated, target, nowIso);
-      break;
-    }
-    case 'accept': {
-      updated = replaceTopLevelScalar(updated, 'state', 'scheduled');
-      updated = updated.replace(/^(\s*enabled:\s*)(true|false)$/m, '$1true');
-      break;
-    }
-  }
-
+  });
   writeFileSync(path, updated, 'utf-8');
+}
+
+function applyFeltTagEditInvocation(invocation: FeltTagEditInvocation): void {
+  const path = mdPathForFiberId(invocation.fiberId);
+  const raw = readFileSync(path, 'utf-8');
+  const updated = rewriteFrontmatter(raw, (doc) => {
+    const current = normalizeTags(Array.isArray(doc.tags) ? doc.tags.map((tag) => String(tag)) : []);
+    const removeSet = new Set(invocation.remove);
+    const next = current.filter((tag) => !removeSet.has(tag));
+    for (const tag of invocation.add) if (!next.includes(tag)) next.push(tag);
+    if (next.length === 0) delete doc.tags;
+    else doc.tags = next;
+  });
+  writeFileSync(path, updated, 'utf-8');
+}
+
+function applyRemoteMutation(content: string, mutation: RemoteKanbanMutationRequest, nowIso = '2026-05-03T16:00:00.000Z'): string {
+  return rewriteFrontmatter(content, (doc) => {
+    if (mutation.kind === 'felt-tags') {
+      doc.tags = normalizeTags(mutation.tags);
+      if (doc.tags.length === 0) delete doc.tags;
+      return;
+    }
+
+    switch (mutation.verb) {
+      case 'pause':
+        if (doc.status === 'closed') doc.status = 'active';
+        delete doc.tempered;
+        delete doc['closed-at'];
+        doc.shuttle = { ...(doc.shuttle ?? {}), enabled: false };
+        break;
+      case 'reopen':
+        doc.status = 'active';
+        delete doc.tempered;
+        delete doc['closed-at'];
+        doc.shuttle = { ...(doc.shuttle ?? {}), enabled: true };
+        break;
+      case 'close':
+        doc.status = 'closed';
+        if (mutation.tempered === undefined) delete doc.tempered;
+        else doc.tempered = mutation.tempered;
+        if (doc['closed-at'] === undefined) doc['closed-at'] = nowIso;
+        break;
+      case 'accept':
+        doc.shuttle = {
+          ...(doc.shuttle ?? {}),
+          enabled: true,
+          review: { ...(doc.shuttle?.review ?? {}), state: 'scheduled' },
+        };
+        break;
+      case 'set-outcome':
+        doc.outcome = mutation.outcome;
+        break;
+    }
+  });
 }
 
 function makeShuttleCtlStub(calls: ShuttleCtlInvocation[], nowIso = '2026-05-03T16:00:00.000Z') {
   return async (invocation: ShuttleCtlInvocation): Promise<void> => {
     calls.push(invocation);
     applyShuttleCtlInvocation(invocation, nowIso);
+  };
+}
+
+function makeFeltEditStub(calls: FeltTagEditInvocation[]) {
+  return async (invocation: FeltTagEditInvocation): Promise<void> => {
+    calls.push(invocation);
+    applyFeltTagEditInvocation(invocation);
   };
 }
 
@@ -720,7 +808,6 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        now: () => fixedNow,
         shuttleCtlFn: makeShuttleCtlStub(shuttleCalls, fixedNow.toISOString()),
       });
       const { res, status } = capRes();
@@ -798,7 +885,6 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        now: () => fixedNow,
         shuttleCtlFn: makeShuttleCtlStub(shuttleCalls, fixedNow.toISOString()),
       });
       const { res, status } = capRes();
@@ -901,162 +987,139 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
   });
 
-  // ── Pure helper: applyTargetToFrontmatter ──────────────────────────────────
+  describe('handleTags', () => {
+    function jsonReq(body: unknown): IncomingMessage {
+      return Readable.from([Buffer.from(JSON.stringify(body), 'utf-8')]) as unknown as IncomingMessage;
+    }
 
-  describe('applyTargetToFrontmatter', () => {
-    const NOW = '2026-04-28T12:00:00.000Z';
+    function capRes(): { res: ServerResponse; status: () => number; body: () => any } {
+      let status = 0;
+      const chunks: string[] = [];
+      const res = {
+        writeHead(s: number) { status = s; },
+        end(c?: string) { if (c) chunks.push(c); },
+      } as unknown as ServerResponse;
+      return { res, status: () => status, body: () => (chunks.length ? JSON.parse(chunks.join('')) : null) };
+    }
 
-    it('preserves unrelated frontmatter and body byte-identical', () => {
-      const original = [
+    it('replaces local tags through felt edit diffs', async () => {
+      writeFib('taggy', {
+        name: 'Taggy',
+        status: 'active',
+        tags: ['constitution', 'old'],
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+      });
+      const feltCalls: FeltTagEditInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        feltEditFn: makeFeltEditStub(feltCalls),
+      });
+      const { res, status, body } = capRes();
+      await api.handleTags(jsonReq({ fiberId: 'taggy', tags: ['new', 'old', 'new'] }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.tags).toEqual(['old', 'new']);
+      expect(feltCalls).toEqual([
+        { host: TEST_DIR, fiberId: 'taggy', add: ['new'], remove: ['constitution'] },
+      ]);
+
+      const after = readFileSync(join(FELT_DIR, 'taggy', 'taggy.md'), 'utf-8');
+      expect(after).toContain('- old');
+      expect(after).toContain('- new');
+      expect(after).not.toContain('constitution');
+    });
+
+    it('routes remote tag edits through remoteTransitionExecutor', async () => {
+      const store = new FiberTreeSnapshotStore();
+      const content = [
         '---',
-        'name: Foo',
-        'status: open',
+        'name: cmbx',
+        'status: active',
         'tags:',
         '  - constitution',
-        '  - alpha',
-        'priority: 2',
-        'outcome: |',
-        '  multi-line',
-        '  outcome',
+        '  - old',
+        'shuttle:',
+        '  enabled: true',
+        '  kind: oneshot',
+        'created-at: 2026-04-15T00:00:00Z',
         '---',
         '',
-        '# Body',
-        '',
-        'paragraph with status: open in prose',
-        '',
-      ].join('\n');
-
-      const after = applyTargetToFrontmatter(original, 'tempered', NOW);
-      expect(after).toContain('name: Foo');
-      expect(after).toContain('tags:\n  - constitution\n  - alpha');
-      expect(after).toContain('priority: 2');
-      expect(after).toContain('outcome: |\n  multi-line\n  outcome');
-      expect(after).toMatch(/^status: closed$/m);
-      expect(after).toMatch(/^tempered: true$/m);
-      expect(after).toMatch(/^closed-at: 2026-04-28T12:00:00\.000Z$/m);
-      // Body is preserved verbatim.
-      expect(after).toContain('paragraph with status: open in prose');
-    });
-
-    it('updates an existing tempered field by clearing it on awaitingReview', () => {
-      const original = [
-        '---',
-        'name: Foo',
-        'status: closed',
-        'tempered: true',
-        'tags:',
-        '  - constitution',
-        '---',
         'body',
       ].join('\n');
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content },
+      ]);
+      const calls: RemoteKanbanMutationRequest[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async (args) => {
+          calls.push(args);
+          store.applyDelta(args.originId, [
+            { path: args.path, op: 'upsert', content: applyRemoteMutation(content, args) },
+          ]);
+        },
+        listSessions: () => [],
+      });
 
-      const after = applyTargetToFrontmatter(original, 'awaitingReview', NOW);
-      expect(after).not.toMatch(/^tempered:/m);
-    });
-
-    it('throws when no frontmatter exists', () => {
-      expect(() => applyTargetToFrontmatter('# just a body', 'tempered', NOW))
-        .toThrow(/frontmatter/);
-    });
-
-    it('drafts target: preserves tags and status, clears closed-at and tempered', () => {
-      const original = [
-        '---',
-        'name: Foo',
-        'status: open',
-        'tags:',
-        '  - constitution',
-        '  - alpha',
-        'closed-at: 2026-04-01',
-        '---',
-        'body',
-      ].join('\n');
-
-      const after = applyTargetToFrontmatter(original, 'drafts', NOW);
-      // No tag mutations (shuttle.enabled drives column, not tags)
-      expect(after).toMatch(/^tags:\n  - constitution\n  - alpha$/m);
-      expect(after).not.toMatch(/^  - draft$/m);
-      // status left as-is (open), tempered absent, closed-at cleared
-      expect(after).toMatch(/^status: open$/m);
-      expect(after).not.toMatch(/^tempered:/m);
-      expect(after).not.toMatch(/^closed-at:/m);
-    });
-
-    it('inFlight target: sets status=active, no tag mutations', () => {
-      const original = [
-        '---',
-        'name: Foo',
-        'status: open',
-        'tags:',
-        '  - constitution',
-        '  - draft',
-        '---',
-        'body',
-      ].join('\n');
-
-      const after = applyTargetToFrontmatter(original, 'inFlight', NOW);
-      // Status changes to active; draft tag NOT removed (shuttle.enabled drives column)
-      expect(after).toMatch(/^status: active$/m);
-      // tags preserved exactly
-      const tagMatches = after.match(/^  - draft$/gm) ?? [];
-      expect(tagMatches.length).toBe(1);
-    });
-
-    it('round-trips drafts → inFlight → drafts: felt-level fields are consistent', () => {
-      const start = [
-        '---',
-        'name: Foo',
-        'status: open',
-        'tags:',
-        '  - constitution',
-        '---',
-        'body',
-      ].join('\n');
-
-      const a = applyTargetToFrontmatter(start, 'drafts', NOW);
-      const b = applyTargetToFrontmatter(a, 'inFlight', NOW);
-      const c = applyTargetToFrontmatter(b, 'drafts', NOW);
-
-      // No draft tag added/removed — only status changes on the inFlight pass.
-      expect(a.match(/^  - draft$/m)).toBeNull();
-      expect(b.match(/^  - draft$/m)).toBeNull();
-      expect(c.match(/^  - draft$/m)).toBeNull();
-      expect(b.match(/^status: active$/m)).not.toBeNull();
-      // Tags (constitution) preserved through all transitions.
-      expect(a.match(/^  - constitution$/m)).not.toBeNull();
-      expect(b.match(/^  - constitution$/m)).not.toBeNull();
-      expect(c.match(/^  - constitution$/m)).not.toBeNull();
-    });
-
-    it('does not match status: substrings inside the body', () => {
-      // The launcher-grep self-match family: prose mentioning "status: open"
-      // shouldn't be touched. Frontmatter-only edits are essential.
-      const original = [
-        '---',
-        'name: Foo',
-        'status: open',
-        'tags:',
-        '  - constitution',
-        '---',
-        '',
-        'The body explains "status: open" semantics in prose.',
-      ].join('\n');
-
-      const after = applyTargetToFrontmatter(original, 'tempered', NOW);
-      // Frontmatter status updated to closed.
-      const fmStatusLines = after.split(/\n---/)[0].match(/^status:.*$/gm) ?? [];
-      expect(fmStatusLines).toEqual(['status: closed']);
-      // Body unchanged.
-      expect(after).toContain('The body explains "status: open" semantics in prose.');
+      const card = await api.applyTags('cmbx', ['new']);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        originId: 'remote-cineca',
+        fiberId: 'cmbx',
+        path: 'cmbx/cmbx.md',
+        kind: 'felt-tags',
+        tags: ['new'],
+      });
+      expect(card.tags).toEqual(['new']);
     });
   });
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Stage 3a — remote-origin snapshots fold into the merged set
-  // ──────────────────────────────────────────────────────────────────────────
+  describe('handleFiberPatch', () => {
+    function jsonReq(body: unknown): IncomingMessage {
+      return Readable.from([Buffer.from(JSON.stringify(body), 'utf-8')]) as unknown as IncomingMessage;
+    }
+
+    function capRes(): { res: ServerResponse; status: () => number; body: () => any } {
+      let status = 0;
+      const chunks: string[] = [];
+      const res = {
+        writeHead(s: number) { status = s; },
+        end(c?: string) { if (c) chunks.push(c); },
+      } as unknown as ServerResponse;
+      return { res, status: () => status, body: () => (chunks.length ? JSON.parse(chunks.join('')) : null) };
+    }
+
+    it('routes outcome edits through shuttle-ctl set-outcome', async () => {
+      writeFib('story', {
+        name: 'Story',
+        status: 'active',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
+      const { res, status, body } = capRes();
+      await api.handleFiberPatch(jsonReq({ fiberId: 'story', outcome: 'First line\nSecond line' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().ok).toBe(true);
+      expect(shuttleCalls).toEqual([
+        { verb: 'set-outcome', fiberId: 'story', outcome: 'First line\nSecond line' },
+      ]);
+
+      const after = readFileSync(join(FELT_DIR, 'story', 'story.md'), 'utf-8');
+      expect(after).toContain('outcome: |-');
+      expect(after).toContain('  First line');
+      expect(after).toContain('  Second line');
+    });
+  });
 
   describe('remote-origin snapshots (Stage 3a)', () => {
-    /** Build a shuttle-managed fiber's md content for a snapshot file. */
     function fiberContent(name: string, status = 'active'): string {
       return [
         '---',
@@ -1114,7 +1177,6 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(shared).toBeDefined();
       expect(shared.name).toBe('Local copy');
       expect(shared.originId).toBe('local');
-      // Remote-only fiber appears via the snapshot.
       const remoteOnly = cards.find((c: any) => c.id === 'remote-only');
       expect(remoteOnly).toBeDefined();
       expect(remoteOnly.originId).toBe('remote-cineca');
@@ -1147,17 +1209,13 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const res = await callKanban(api);
       const byId = new Map<string, string>(
-        (res.body.columns.inFlight as Array<{ id: string; originId: string }>)
-          .map(c => [c.id, c.originId]),
+        (res.body.columns.inFlight as Array<{ id: string; originId: string }>).map(c => [c.id, c.originId]),
       );
       expect(byId.get('cmbx')).toBe('remote-cineca');
       expect(byId.get('pure_eb')).toBe('remote-candide');
     });
 
     it('applyTransition without a remoteTransitionExecutor still refuses remote fibers', async () => {
-      // Stage 4 wires the executor; absent it, behaviour falls back to the
-      // Stage-3a boundary so test harnesses that don't plumb an agent see
-      // an honest error instead of silent failure.
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
         { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
@@ -1180,7 +1238,6 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
         { path: 'pure_eb/pure_eb.md', content: fiberContent('pure_eb') },
       ]);
-      // Mark candide stale to verify the staleSince flows through.
       store.markStale('remote-candide', '2026-04-29T00:00:00Z');
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
@@ -1205,35 +1262,19 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(res.body.staleness).toEqual({ local: { status: 'fresh' } });
     });
 
-    // ────────────────────────────────────────────────────────────────────────
-    // Stage 4 — applyTransition routes remote-origin writes through the executor
-    // ────────────────────────────────────────────────────────────────────────
-
     it('applyTransition routes remote-origin writes through remoteTransitionExecutor', async () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
         { path: 'cmbx/cmbx.md', content: fiberContent('cmbx') },
       ]);
-      const calls: Array<{
-        originId: string;
-        fiberId: string;
-        path: string;
-        target: string;
-        nowIso: string;
-      }> = [];
+      const calls: RemoteKanbanMutationRequest[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
         remoteSnapshotsProvider: () => store.getAllSnapshots(),
         remoteTransitionExecutor: async (args) => {
           calls.push(args);
-          // Simulate the agent reply: apply the mutation server-side to the
-          // snapshot. (In production the index.ts executor does this from
-          // the agent's result.content.) Use the same applyTargetToFrontmatter
-          // export the agent inlines, so this mirrors the round-trip shape.
-          const original = fiberContent('cmbx');
-          const updated = applyTargetToFrontmatter(original, args.target as any, args.nowIso);
           store.applyDelta(args.originId, [
-            { path: args.path, op: 'upsert', content: updated },
+            { path: args.path, op: 'upsert', content: applyRemoteMutation(fiberContent('cmbx'), args) },
           ]);
         },
         listSessions: () => [],
@@ -1245,9 +1286,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         originId: 'remote-cineca',
         fiberId: 'cmbx',
         path: 'cmbx/cmbx.md',
-        target: 'tempered',
+        kind: 'shuttle',
+        verb: 'close',
+        tempered: true,
       });
-      // Reflects the new state pulled from the snapshot post-delta.
       expect(card.id).toBe('cmbx');
       expect(card.originId).toBe('remote-cineca');
       expect(card.tempered).toBe(true);
@@ -1267,36 +1309,28 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         },
         listSessions: () => [],
       });
-      await expect(api.applyTransition('cmbx', 'tempered')).rejects.toThrow(
-        /didn't acknowledge/,
-      );
+      await expect(api.applyTransition('cmbx', 'tempered')).rejects.toThrow(/didn't acknowledge/);
     });
 
     it('relativeFeltPath round-trips both root-shaped and dir-shaped fibers', async () => {
-      // Fiber id semantics differ for entry-point (.felt/<slug>.md) vs.
-      // directory-shaped (.felt/<dir>/<dir>.md). The path the executor
-      // gets must match what the agent expects under FELT_DIR.
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        // Entry-point root fiber: .felt/loom.md
         { path: 'loom.md', content: fiberContent('loom') },
-        // Nested container: .felt/ai-futures/portolan/portolan.md
         { path: 'ai-futures/portolan/portolan.md', content: fiberContent('portolan') },
       ]);
       const seen: string[] = [];
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
         remoteSnapshotsProvider: () => store.getAllSnapshots(),
-        remoteTransitionExecutor: async ({ path, target, nowIso, originId }) => {
-          seen.push(path);
-          // Apply locally so the post-call collectFibers reads new state.
-          const before = store.getSnapshot(originId)?.fibers.find(
-            f => relativeFeltPathFromId(f.id, f.isRoot) === path,
+        remoteTransitionExecutor: async (args) => {
+          seen.push(args.path);
+          const before = store.getSnapshot(args.originId)?.fibers.find(
+            f => relativeFeltPathFromId(f.id, f.isRoot) === args.path,
           );
-          if (!before) throw new Error(`no fiber for path ${path}`);
-          const original = fiberContent(before.name);
-          const updated = applyTargetToFrontmatter(original, target as any, nowIso);
-          store.applyDelta(originId, [{ path, op: 'upsert', content: updated }]);
+          if (!before) throw new Error(`no fiber for path ${args.path}`);
+          store.applyDelta(args.originId, [
+            { path: args.path, op: 'upsert', content: applyRemoteMutation(fiberContent(before.name), args) },
+          ]);
         },
         listSessions: () => [],
       });
@@ -1308,7 +1342,6 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
     it('remote fibers without a shuttle: block are excluded', async () => {
       const store = new FiberTreeSnapshotStore();
-      // No shuttle: block → excluded from kanban.
       const noBlock = [
         '---',
         'name: Untagged',
@@ -1346,7 +1379,6 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(res.body.totals.tempered).toBe(3);
     expect(res.body.temperedTotal).toBe(5);
     expect(res.body.columns.tempered).toHaveLength(3);
-    // Most recent first.
     expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['t4', 't3', 't2']);
   });
 });

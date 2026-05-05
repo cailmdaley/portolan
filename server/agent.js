@@ -21,13 +21,14 @@
  */
 
 import WebSocket from 'ws';
-import { exec, spawn } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync, watch, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, watch } from 'fs';
 import { resolve, join, relative, sep } from 'path';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ============================================================================
 // Configuration
@@ -687,192 +688,111 @@ function stopFiberTreeWatcher() {
 // ============================================================================
 //
 // The server ships `kanban-transition` over the agent WebSocket via the
-// AgentRequestCoordinator's correlation-ID layer. The agent reads the fiber
-// file, applies the same frontmatter mutation the server applies for local
-// origins, writes back, and replies with `kanban-transition-result`. The
-// reply carries the new file content so the server applies a snapshot delta
-// eagerly — fs.watch will fire its own delta moments later, but we don't
-// want the HTTP caller to race with it.
-//
-// `applyTargetToFrontmatter` and `mutateTagsInPlace` are inlined here for the
-// same reason `extractSummary`/`extractActivityDetails` are: agent.js ships
-// as a single scp'd file, so a separate import would mean shipping two
-// files. Per the locked decision in [[constitution-vellum-kanban]] §Scope,
-// the helper bundles into agent.js; the trade-off is manual sync.
-//
-// SOURCE OF TRUTH: server/src/HttpApiKanban.ts
-//   `applyTargetToFrontmatter`, `mutateTagsInPlace`, `escapeRegex`
-// A vitest parity suite (`__tests__/agent-frontmatter-parity.test.ts`)
-// imports both copies and asserts byte-equality across a corpus, so drift
-// fails CI rather than the kanban round-trip.
+// AgentRequestCoordinator's correlation-ID layer. The payload is already the
+// semantic mutation: shuttle lifecycle/outcome verbs or a felt tag-replace.
+// The agent shells out to the canonical CLI writer on the remote host,
+// re-reads the fiber file, and replies with `kanban-transition-result`.
+// The reply carries the new file content so the server applies a snapshot
+// delta eagerly — fs.watch will fire its own delta moments later, but we
+// don't want the HTTP caller to race with it.
 
-const KANBAN_VALID_TARGETS = new Set([
-    'drafts',
-    'inFlight',
-    'queued',
-    'active',
-    'awaitingReview',
-    'tempered',
-    'composted',
-]);
-
-function escapeRegex(s) {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function normalizeTagList(tags) {
+    const seen = new Set();
+    const normalized = [];
+    for (const tag of tags) {
+        const trimmed = typeof tag === 'string' ? tag.trim() : '';
+        if (!trimmed || seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        normalized.push(trimmed);
+    }
+    return normalized;
 }
 
-export function mutateTagsInPlace(fmLines, opts) {
-    const add = opts.add ?? [];
-    const remove = opts.remove ?? [];
-    if (add.length === 0 && remove.length === 0) return;
-
-    let blockStart = -1;
-    let blockEnd = -1;
-    let existing = [];
-
-    for (let i = 0; i < fmLines.length; i++) {
-        if (/^tags:\s*$/.test(fmLines[i])) {
-            blockStart = i;
-            let j = i + 1;
-            while (j < fmLines.length && /^[ \t]+- /.test(fmLines[j])) {
-                const m = fmLines[j].match(/^[ \t]+- (.+)$/);
-                if (m) existing.push(m[1].trim().replace(/^["']|["']$/g, '').trim());
-                j++;
-            }
-            blockEnd = j;
-            break;
-        }
-        const inline = fmLines[i].match(/^tags:\s*\[(.*)\]\s*$/);
-        if (inline) {
-            blockStart = i;
-            blockEnd = i + 1;
-            existing = inline[1]
-                .split(',')
-                .map(s => s.trim().replace(/^["']|["']$/g, '').trim())
-                .filter(Boolean);
-            break;
-        }
-    }
-
-    const removeSet = new Set(remove);
-    const out = existing.filter(t => !removeSet.has(t));
-    for (const t of add) if (!out.includes(t)) out.push(t);
-
-    if (
-        blockStart !== -1 &&
-        out.length === existing.length &&
-        out.every((t, i) => t === existing[i])
-    ) return;
-
-    const newBlock = ['tags:', ...out.map(t => `  - ${t}`)];
-    if (blockStart === -1) {
-        fmLines.push(...newBlock);
-    } else {
-        fmLines.splice(blockStart, blockEnd - blockStart, ...newBlock);
-    }
+function diffTags(current, next) {
+    const currentSet = new Set(current);
+    const nextSet = new Set(next);
+    return {
+        add: next.filter(tag => !currentSet.has(tag)),
+        remove: current.filter(tag => !nextSet.has(tag)),
+    };
 }
 
-export function applyTargetToFrontmatter(raw, target, nowIso) {
-    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-    if (!fmMatch) {
-        throw new Error('file has no YAML frontmatter; refusing to mutate');
-    }
+async function runKanbanMutation(payload, fullPath) {
+    const env = {
+        ...process.env,
+        LOOM_HOME: FELT_HOST,
+        HOME: process.env.HOME ?? homedir(),
+    };
 
-    const fmBlock = fmMatch[1];
-    const after = raw.slice(fmMatch[0].length);
-    const fmLines = fmBlock.split(/\r?\n/);
-
-    // `tempered === null` here means "remove the field on write." Only the
-    // verdict targets (tempered, composted) write a boolean; every other
-    // target clears it. See HttpApiKanban.ts for the rationale.
-    // Post-cutover: drafts/inFlight column membership is driven by shuttle.enabled
-    // (set by shuttle-ctl pause/resume on the server side). This fn only handles
-    // felt-level scalar fields; no tag mutations for any target.
-    let status;
-    let tempered; // boolean | null — null = clear the field
-    let closedAtAction;
-    switch (target) {
-        case 'drafts':
-            status = null;
-            tempered = null;
-            closedAtAction = 'clear';
-            break;
-        case 'inFlight':
-        case 'queued':
-        case 'active':
-            status = 'active';
-            tempered = null;
-            closedAtAction = 'clear';
-            break;
-        case 'awaitingReview':
-            status = 'closed';
-            tempered = null;
-            closedAtAction = 'set-if-missing';
-            break;
-        case 'tempered':
-            status = 'closed';
-            tempered = true;
-            closedAtAction = 'set-if-missing';
-            break;
-        case 'composted':
-            status = 'closed';
-            tempered = false;
-            closedAtAction = 'set-if-missing';
-            break;
-        default:
-            throw new Error(`unknown kanban target: ${target}`);
-    }
-
-    const setOrInsertScalar = (key, value) => {
-        const re = new RegExp(`^${escapeRegex(key)}:[\\t ]*.*$`);
-        let replaced = false;
-        for (let i = 0; i < fmLines.length; i++) {
-            if (re.test(fmLines[i])) {
-                fmLines[i] = `${key}: ${value}`;
-                replaced = true;
+    if (payload.kind === 'shuttle') {
+        if (typeof payload.fiberId !== 'string' || payload.fiberId.length === 0) {
+            throw new Error('missing shuttle fiberId');
+        }
+        const args = [payload.verb, payload.fiberId];
+        switch (payload.verb) {
+            case 'pause':
+            case 'reopen':
+            case 'accept':
                 break;
-            }
+            case 'close':
+                if (payload.tempered !== undefined) {
+                    args.push(`--tempered=${payload.tempered ? 'true' : 'false'}`);
+                }
+                break;
+            case 'set-outcome':
+                if (typeof payload.outcome !== 'string') {
+                    throw new Error('missing outcome for set-outcome');
+                }
+                args.push('--outcome', payload.outcome);
+                break;
+            default:
+                throw new Error(`unknown shuttle verb: ${payload.verb}`);
         }
-        if (!replaced) fmLines.push(`${key}: ${value}`);
-    };
-
-    const clearScalar = (key) => {
-        const re = new RegExp(`^${escapeRegex(key)}:[\\t ]*.*$`);
-        for (let i = fmLines.length - 1; i >= 0; i--) {
-            if (re.test(fmLines[i])) fmLines.splice(i, 1);
-        }
-    };
-
-    if (status !== null) setOrInsertScalar('status', status);
-    if (tempered === null) {
-        clearScalar('tempered');
-    } else {
-        setOrInsertScalar('tempered', tempered ? 'true' : 'false');
+        await execFileAsync('shuttle-ctl', args, {
+            cwd: FELT_HOST,
+            env,
+            timeout: 10_000,
+            maxBuffer: 1024 * 1024,
+        });
+        return;
     }
 
-    if (closedAtAction === 'clear') {
-        clearScalar('closed-at');
-    } else {
-        const closedRe = /^closed-at:[\t ]*(.+)$/;
-        const hasClosedAt = fmLines.some(l => closedRe.test(l));
-        if (!hasClosedAt) {
-            fmLines.push(`closed-at: ${nowIso}`);
+    if (payload.kind === 'felt-tags') {
+        if (typeof payload.fiberId !== 'string' || payload.fiberId.length === 0) {
+            throw new Error('missing felt fiberId');
         }
+        if (!Array.isArray(payload.tags)) {
+            throw new Error('missing tags payload');
+        }
+        const current = normalizeTagList(parseFiberFrontmatter(readFileSync(fullPath, 'utf-8'))?.tags ?? []);
+        const next = normalizeTagList(payload.tags);
+        const { add, remove } = diffTags(current, next);
+        if (add.length === 0 && remove.length === 0) return;
+
+        const args = ['-C', FELT_HOST, 'edit', payload.fiberId];
+        for (const tag of remove) args.push('--untag', tag);
+        for (const tag of add) args.push('--tag', tag);
+        await execFileAsync('felt', args, {
+            cwd: FELT_HOST,
+            env,
+            timeout: 10_000,
+            maxBuffer: 1024 * 1024,
+        });
+        return;
     }
 
-    // No tag mutations post-cutover.
-
-    const newFm = fmLines.join('\n');
-    return `---\n${newFm}\n---\n${after}`;
+    throw new Error(`unknown mutation kind: ${payload.kind}`);
 }
 
 /**
  * Handle a `kanban-transition` request from the server. Reads
- * `<FELT_DIR>/<path>`, applies the frontmatter mutation, writes back,
- * replies with `{correlationId, ok: true, content}` so the server can
+ * `<FELT_DIR>/<path>`, applies the semantic CLI mutation, re-reads the file,
+ * and replies with `{correlationId, ok: true, content}` so the server can
  * apply a snapshot delta eagerly. Errors come back as `{ok: false, error}`.
  */
-function handleKanbanTransition(message) {
-    const { correlationId, path: relPath, target, nowIso } = message.payload || {};
+async function handleKanbanTransition(message) {
+    const payload = message.payload || {};
+    const { correlationId, path: relPath } = payload;
     if (!correlationId) {
         debug('kanban-transition without correlationId; ignoring');
         return;
@@ -888,20 +808,15 @@ function handleKanbanTransition(message) {
         if (typeof relPath !== 'string' || relPath.includes('..') || relPath.startsWith('/')) {
             throw new Error(`invalid path: ${relPath}`);
         }
-        if (!KANBAN_VALID_TARGETS.has(target)) {
-            throw new Error(`unknown target: ${target}`);
-        }
         const fullPath = join(FELT_DIR, relPath);
         if (!existsSync(fullPath)) {
             throw new Error(`fiber file missing: ${relPath}`);
         }
-        const raw = readFileSync(fullPath, 'utf-8');
-        const updated = applyTargetToFrontmatter(raw, target, nowIso || new Date().toISOString());
-        if (updated !== raw) {
-            writeFileSync(fullPath, updated, 'utf-8');
-        }
+        await runKanbanMutation(payload, fullPath);
+        const updated = readFileSync(fullPath, 'utf-8');
         reply({ ok: true, content: updated });
-        debug(`kanban-transition ok: ${relPath} → ${target}`);
+        const label = payload.kind === 'shuttle' ? payload.verb : payload.kind;
+        debug(`kanban-transition ok: ${relPath} → ${label}`);
     } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         log(`kanban-transition failed (${relPath}): ${msg}`);
@@ -917,8 +832,8 @@ function handleKanbanTransition(message) {
 // `computeEligibility`. The agent inlines a minimal port — same shape, no
 // queuePrefixes-API surface (we read SHUTTLE_PREFIXES once at startup) and
 // no sub-fiber resolution beyond what idFromPath surfaces. The
-// agent-frontmatter-parity vitest covers the parser, not the predicate;
-// the predicate is small enough to stay in human-eyeballed sync.
+// parser has its own vitest coverage; the predicate is small enough to stay
+// in human-eyeballed sync.
 //
 // The path: on each tick, walk FELT_DIR for .md files (we already do it
 // for the dump), translate path → fiber id, parse frontmatter for
@@ -930,9 +845,8 @@ function handleKanbanTransition(message) {
  * Robust against scalar `tags: [a, b]`, block `tags:\n  - a\n  - b`, and
  * the common `depends_on: [x, y]` / block list shapes felt fibers use.
  *
- * We don't pull a YAML lib in — agent.js ships as a single file and
- * mutateTagsInPlace / applyTargetToFrontmatter already proves the
- * regex-on-frontmatter idiom is good enough for the fiber shapes we see.
+ * We don't pull a YAML lib in — agent.js ships as a single file and this
+ * parser only needs a tiny YAML-ish slice of the fiber schema.
  *
  * Returns `null` when no frontmatter block opens the file; otherwise an
  * object with possibly-undefined fields. Missing fields read as

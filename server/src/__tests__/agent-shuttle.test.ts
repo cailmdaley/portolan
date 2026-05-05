@@ -7,11 +7,9 @@
  * (status, tags, depends_on, tempered). Both helpers live in agent.js so
  * the agent stays single-file scp-able.
  *
- * This test is the parser's parity check — same idiom as
- * agent-frontmatter-parity.test.ts: import both implementations, run them
- * on a shared corpus, fail CI on divergence. The eligibility predicate
- * is small enough to test directly without round-tripping through the
- * server's `computeEligibility`.
+ * This test covers the parser directly; the eligibility predicate is small
+ * enough to test in place without round-tripping through the server's
+ * `computeEligibility`.
  */
 
 import { describe, it, expect } from 'vitest';
