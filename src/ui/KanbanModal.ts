@@ -1785,9 +1785,7 @@ class FiberDetailModal {
     closeBtn.textContent = '×'
     closeBtn.addEventListener('click', () => this.close())
 
-    header.append(title, pill, closeBtn)
-
-    // ── ID breadcrumb ────────────────────────────────────────────────────────
+    // ── ID breadcrumb (stacked under the title) ───────────────────────────
     // Also clickable; same vellum entry path as the title.
     const idEl = document.createElement('div')
     idEl.className = 'kbn-detail-id'
@@ -1800,6 +1798,14 @@ class FiberDetailModal {
     idEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') openInVellum(e)
     })
+
+    // Title + id stacked on the left; pill + close on the right of the
+    // header. The stack flexes so wrapping titles don't displace the pill.
+    const titleStack = document.createElement('div')
+    titleStack.className = 'kbn-detail-title-stack'
+    titleStack.append(title, idEl)
+
+    header.append(titleStack, pill, closeBtn)
 
     // ── Outcome ──────────────────────────────────────────────────────────────
     // Read-only rendered markdown. Outcomes carry tables, links, code blocks,
@@ -1861,7 +1867,7 @@ class FiberDetailModal {
     let selectedSchedule = originalSchedule
     let selectedTz = originalTz
 
-    const dispatchSec = this.buildStripBlock('Dispatch')
+    const dispatchSec = this.buildSection('Dispatch')
 
     // Row 1: agent
     const agentRow = document.createElement('div')
@@ -1997,7 +2003,7 @@ class FiberDetailModal {
     // ── Parent fiber ──────────────────────────────────────────────────────────
     // Shows the current parent (derived from the id path) and an autocomplete
     // field for selecting a new one. Lives in the bottom strip too.
-    const parentSec = this.buildStripBlock('Parent fiber')
+    const parentSec = this.buildSection('Parent fiber')
 
     // Derive current parent from id segments.
     const idSegments = card.id.split('/')
@@ -2104,22 +2110,13 @@ class FiberDetailModal {
       this.onOpenFiber(card)
     })
 
-    const cancelBtn = document.createElement('button')
-    cancelBtn.type = 'button'
-    cancelBtn.className = 'kbn-action kbn-action-drafts'
-    cancelBtn.textContent = 'Cancel'
-    cancelBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      this.close()
-    })
-
     const errorEl = document.createElement('div')
     errorEl.className = 'kbn-detail-error'
     errorEl.style.display = 'none'
 
     const saveBtn = document.createElement('button')
     saveBtn.type = 'button'
-    saveBtn.className = 'kbn-action kbn-action-inFlight kbn-detail-save-btn'
+    saveBtn.className = 'kbn-detail-save-btn'
     saveBtn.textContent = 'Save'
     saveBtn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -2173,42 +2170,27 @@ class FiberDetailModal {
       void this.save(card.id, scope, changes, saveBtn, errorEl)
     })
 
-    const footerRight = document.createElement('div')
-    footerRight.className = 'kbn-detail-footer-right'
-    footerRight.append(cancelBtn, saveBtn)
-
-    footer.append(vellumBtn, errorEl, footerRight)
+    footer.append(vellumBtn, errorEl, saveBtn)
 
     // ── Assemble ─────────────────────────────────────────────────────────────
-    // Body has two tiers:
-    //   • Top tier: outcome (left) | history (right). Both fill the height
-    //     of the tier; outcome via internal textarea scroll, history via
-    //     overflow-y on its event list.
-    //   • Bottom strip: dispatch + parent as side-by-side control blocks.
-    //     The parent dropdown anchors above its input so it doesn't get
-    //     clipped by the strip's bottom edge.
+    // Single vertical flow on parchment:
+    //   header → id → outcome (prose) → history → dispatch+parent controls
+    // Sections separated by hairline printer's rules; no section headings on
+    // outcome (its position is its label). The body scrolls as a whole when
+    // outcomes or history grow long — the modal frame stays put.
     const body = document.createElement('div')
     body.className = 'kbn-detail-body'
 
-    const top = document.createElement('div')
-    top.className = 'kbn-detail-top'
+    body.append(
+      outcomeSec,
+      this.buildRule(),
+      historySec,
+      this.buildRule(),
+      dispatchSec,
+      parentSec,
+    )
 
-    const colOutcome = document.createElement('div')
-    colOutcome.className = 'kbn-detail-col-outcome'
-    colOutcome.append(outcomeSec)
-
-    const colHistory = document.createElement('div')
-    colHistory.className = 'kbn-detail-col-history'
-    colHistory.append(historySec)
-
-    top.append(colOutcome, colHistory)
-
-    const strip = document.createElement('div')
-    strip.className = 'kbn-detail-strip'
-    strip.append(dispatchSec, parentSec)
-
-    body.append(top, strip)
-    dialog.append(header, idEl, body, footer)
+    dialog.append(header, body, footer)
     overlay.append(dialog)
     document.body.append(overlay)
     this.overlay = overlay
@@ -2245,6 +2227,7 @@ class FiberDetailModal {
   private buildSection(label: string): HTMLElement {
     const sec = document.createElement('div')
     sec.className = 'kbn-detail-section'
+    sec.dataset.section = label.toLowerCase()
     const heading = document.createElement('div')
     heading.className = 'kbn-detail-section-heading'
     heading.textContent = label
@@ -2253,18 +2236,14 @@ class FiberDetailModal {
   }
 
   /**
-   * Build a control block for the bottom strip. Same heading idiom as a
-   * regular section but with horizontal-strip styling: padded vertically,
-   * separated by left-borders rather than top-borders, and sized by content.
+   * Hairline printer's rule used to separate sections in the body. Pure
+   * presentational element — no semantic role.
    */
-  private buildStripBlock(label: string): HTMLElement {
-    const block = document.createElement('div')
-    block.className = 'kbn-detail-strip-block'
-    const heading = document.createElement('div')
-    heading.className = 'kbn-detail-strip-heading'
-    heading.textContent = label
-    block.append(heading)
-    return block
+  private buildRule(): HTMLElement {
+    const rule = document.createElement('div')
+    rule.className = 'kbn-detail-rule'
+    rule.setAttribute('aria-hidden', 'true')
+    return rule
   }
 
   /**

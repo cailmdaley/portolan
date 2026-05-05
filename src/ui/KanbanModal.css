@@ -785,6 +785,11 @@
 /* Fixed-position overlay with a centered dialog. Opens on card click as
    a lightweight alternative to full vellum. Styled to match the kanban's
    warm-paper palette: #EDE8E0 body, #E5DED2 header, gold accents. */
+/* ── Detail modal ─────────────────────────────────────────────────────────
+   An editorial card pulled from a curator's filing drawer. Outcome reads as
+   prose on parchment (no frame, no fill); sections separated by hairline
+   printer's rules; controls in a quiet bottom register. Dimensions sized
+   to the card, not the viewport — vellum is the primary editing surface. */
 .kbn-detail-overlay {
   position: fixed;
   inset: 0;
@@ -798,73 +803,108 @@
 }
 .kbn-detail-dialog {
   background: #EDE8E0;
-  border: 1px solid rgba(46, 42, 38, 0.18);
-  border-radius: 4px;
-  box-shadow: 0 8px 32px rgba(46, 42, 38, 0.25), 0 2px 8px rgba(46, 42, 38, 0.12);
-  /* Big landscape modal — most of the screen, wider than tall.
-     90vw caps at 1280px; 80vh keeps a generous landscape ratio. */
-  width: min(90vw, 1280px);
-  height: min(80vh, 800px);
-  max-height: calc(100vh - 48px);
+  border: 1px solid rgba(46, 42, 38, 0.16);
+  border-radius: 2px;
+  box-shadow:
+    0 1px 0 rgba(255, 252, 246, 0.6) inset,
+    0 14px 38px rgba(46, 42, 38, 0.22),
+    0 3px 10px rgba(46, 42, 38, 0.10);
+  /* Card-shaped, not viewport-shaped. Tall enough for ~10 lines of
+     outcome + 4 history entries without scroll; scrolls past that. */
+  width: min(94vw, 720px);
+  max-height: min(88vh, 660px);
   display: flex;
   flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
   color: #2E2A26;
   overflow: hidden;
+  /* Subtle "paper" grain — perceptible without being decorative noise. */
+  background-image:
+    radial-gradient(rgba(46, 42, 38, 0.018) 1px, transparent 1px);
+  background-size: 3px 3px;
 }
 .kbn-detail-header {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 16px 20px 12px;
-  background: #E5DED2;
-  border-bottom: 1px solid rgba(46, 42, 38, 0.12);
+  gap: 14px;
+  padding: 24px 28px 4px;
   flex-shrink: 0;
+}
+/* Title + id stacked on the left; pill + close on the right. The
+   title-stack flexes to fill, so wrapping titles don't displace the
+   pill. */
+.kbn-detail-title-stack {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 .kbn-detail-title {
   flex: 1;
-  font-size: 19px;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 22px;
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.22;
+  letter-spacing: -0.005em;
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: transparent;
-  text-underline-offset: 3px;
-  transition: color 120ms ease, text-decoration-color 120ms ease;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: color 160ms ease, text-decoration-color 160ms ease;
+  color: #2E2A26;
 }
 .kbn-detail-title:hover,
 .kbn-detail-title:focus-visible {
   color: #6B5520;
-  text-decoration-color: rgba(154, 123, 53, 0.5);
+  text-decoration-color: rgba(154, 123, 53, 0.55);
   outline: none;
 }
 .kbn-detail-title-hint {
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 12px;
+  font-size: 12.5px;
   font-style: italic;
   color: #B8AC9E;
-  margin-left: 6px;
+  margin-left: 8px;
   font-weight: 400;
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity 160ms ease;
 }
 .kbn-detail-title:hover .kbn-detail-title-hint,
 .kbn-detail-title:focus-visible .kbn-detail-title-hint {
   opacity: 1;
 }
+/* Status as an ink-stamped mark — slight letterpress, hairline border,
+   small rotation gives it the "applied by hand" feel of a curator's
+   stamp on a filing card. */
+.kbn-detail-header .kbn-pill {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 8px 2px;
+  border-radius: 1px;
+  flex-shrink: 0;
+  margin-top: 6px;
+  transform: rotate(-1.5deg);
+  box-shadow: 0 0 0 0.5px rgba(154, 123, 53, 0.18) inset;
+}
 .kbn-detail-close {
   flex-shrink: 0;
   width: 22px;
   height: 22px;
+  margin-top: 2px;
   padding: 0;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  font-size: 16px;
+  border: none;
+  border-radius: 50%;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 18px;
   line-height: 1;
-  color: #9A9088;
+  color: #B8AC9E;
   cursor: pointer;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  transition: color 160ms ease, background 160ms ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -872,156 +912,136 @@
 .kbn-detail-close:hover,
 .kbn-detail-close:focus-visible {
   color: #2E2A26;
-  background: rgba(46, 42, 38, 0.10);
-  border-color: rgba(46, 42, 38, 0.20);
+  background: rgba(46, 42, 38, 0.06);
   outline: none;
 }
 .kbn-detail-id {
-  padding: 6px 20px 10px;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 11px;
-  color: #B8AC9E;
-  letter-spacing: 0.01em;
-  background: #E5DED2;
-  border-bottom: 1px solid rgba(46, 42, 38, 0.12);
-  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #A89E91;
+  letter-spacing: 0.02em;
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color 160ms ease;
+  word-break: break-all;
+  align-self: flex-start;
 }
 .kbn-detail-id:hover,
 .kbn-detail-id:focus-visible {
   color: #6B5520;
   outline: none;
 }
-/* Body is a two-tier layout: top row (outcome | history) above a
-   horizontal controls strip (dispatch + parent). Outcome and history
-   share the bulk of the height; the controls strip auto-sizes to its
-   content. */
+/* Header bottom-padding pulls the body away from the id breadcrumb;
+   the rule below the header is provided by the section's own padding,
+   not a separate hairline. */
+.kbn-detail-header + .kbn-detail-body {
+  padding-top: 6px;
+}
+/* Body: vertical flow of sections separated by hairline rules. The whole
+   body scrolls when content exceeds the modal height — the frame stays. */
 .kbn-detail-body {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 0 8px;
 }
-/* Top tier: two columns, outcome (left) and history (right). */
-.kbn-detail-top {
-  flex: 1;
-  display: flex;
-  flex-direction: row;
-  min-height: 0;
-  overflow: hidden;
-}
-.kbn-detail-col-outcome {
-  flex: 1 1 58%;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  border-right: 1px solid rgba(46, 42, 38, 0.10);
-}
-.kbn-detail-col-history {
-  flex: 1 1 42%;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  background: rgba(229, 222, 210, 0.35);
-}
-/* Bottom strip: horizontal controls (dispatch + parent). Each control
-   block has a fixed-width label + content pair, separated by gentle
-   dividers. Auto-grows in a pinch but never above its content's needs. */
-.kbn-detail-strip {
+/* Hairline printer's rule between sections. Subtle, the way a paper
+   card has impressed-line dividers on it. */
+.kbn-detail-rule {
+  height: 1px;
+  margin: 0 28px;
+  background: rgba(46, 42, 38, 0.10);
   flex-shrink: 0;
-  display: flex;
-  flex-direction: row;
-  gap: 0;
-  background: #E8E1D5;
-  border-top: 1px solid rgba(46, 42, 38, 0.12);
 }
-.kbn-detail-strip-block {
-  flex: 1 1 0;
-  padding: 12px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.kbn-detail-strip-block + .kbn-detail-strip-block {
-  border-left: 1px solid rgba(46, 42, 38, 0.10);
-}
-.kbn-detail-strip-heading {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #9A9088;
-}
+/* Section: a labeled vertical block with breathable padding. The label
+   itself is hidden for the outcome (its position is its label) and
+   styled subtly for everything else. */
 .kbn-detail-section {
-  padding: 14px 20px;
-  border-bottom: 1px solid rgba(46, 42, 38, 0.08);
+  padding: 14px 28px 16px;
+  flex-shrink: 0;
 }
-/* Outcome section grows to fill its column so the textarea can fill height. */
-.kbn-detail-col-outcome .kbn-detail-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  border-bottom: none;
-  min-height: 0;
+/* Outcome's heading is implicit — drop the "OUTCOME" label and let
+   the prose stand alone as the card's content. */
+.kbn-detail-section[data-section="outcome"] .kbn-detail-section-heading {
+  display: none;
 }
-/* History section: heading + scrolling list. */
-.kbn-detail-col-history .kbn-detail-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  border-bottom: none;
-  min-height: 0;
+.kbn-detail-section[data-section="outcome"] {
+  padding-top: 8px;
 }
 /* The scrolling list of history events. overscroll-behavior: contain
    keeps wheel events at the boundary inside the list — they never
    chain up to the kanban or document and surprise the user with
    page-level motion. */
+/* History as a chronology of marks — no chip backgrounds, no boxes.
+   Each event is a date-prefixed line plus the editorial summary as
+   prose, the way handwritten log entries on the back of a filing card
+   would read. Limit visible height so long histories scroll inside
+   their own region rather than stretching the modal. */
 .kbn-detail-history-list {
-  flex: 1;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-right: 4px;
+  gap: 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
 }
 .kbn-detail-history-event {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(122, 112, 104, 0.16);
-  border-radius: 3px;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  position: relative;
+  padding-left: 14px;
+}
+/* Marker dot — like a printer's ornament before each entry. */
+.kbn-detail-history-event::before {
+  content: '·';
+  position: absolute;
+  left: 2px;
+  top: -2px;
+  font-size: 16px;
+  color: #B8AC9E;
+  line-height: 1;
 }
 .kbn-detail-history-event-meta {
   display: flex;
   align-items: baseline;
   gap: 8px;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 10.5px;
-  color: #B8AC9E;
+  font-size: 10px;
+  color: #A89E91;
   flex-wrap: wrap;
+  letter-spacing: 0.02em;
 }
 .kbn-detail-history-event-time {
-  color: #9A9088;
+  color: #8A7E72;
 }
 .kbn-detail-history-event-kind {
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: rgba(154, 123, 53, 0.10);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   color: #9A7B35;
+  position: relative;
+  padding-left: 8px;
+}
+.kbn-detail-history-event-kind::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  color: #C8BFB3;
 }
 .kbn-detail-history-event-kind.kbn-detail-history-event-kind-editorial {
-  background: rgba(122, 112, 104, 0.12);
+  background: transparent;
   color: #7A7068;
 }
 .kbn-detail-history-event-summary {
@@ -1059,62 +1079,41 @@
   font-style: italic;
   padding: 8px 0;
 }
+/* Quiet section headings — small, italic, lower-case. Reads as a
+   note-taker's marginal label rather than a form-field caption. */
 .kbn-detail-section-heading {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #9A9088;
-  margin-bottom: 8px;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 11.5px;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: #A89E91;
+  margin-bottom: 10px;
   flex-shrink: 0;
 }
-.kbn-detail-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  resize: none;
-  flex: 1;
-  min-height: 0;
-  overscroll-behavior: contain;
-  padding: 10px 12px;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
-  font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 14px;
-  line-height: 1.5;
-  color: #2E2A26;
-  outline: none;
-  transition: border-color 120ms ease, background 120ms ease;
-}
-.kbn-detail-textarea:focus {
-  border-color: rgba(154, 123, 53, 0.55);
-  background: #FFFCF6;
-}
-.kbn-detail-textarea::placeholder {
+/* Pilcrow ornament before history's heading — a small editorial nod. */
+.kbn-detail-section[data-section="history"] .kbn-detail-section-heading::before {
+  content: '❡  ';
+  font-style: normal;
   color: #C8BFB3;
-  font-style: italic;
 }
-/* Read-only rendered-markdown view for the outcome panel. Matches the
-   textarea's frame so the section's height & scroll behaviour don't
-   shift when the modal opens onto a fiber that has vs. doesn't have
-   an outcome. */
+/* Outcome reads as prose on parchment — no border, no fill, just
+   typography. EB Garamond at a comfortable reading size, generous
+   leading. The first paragraph gets a small print-shop initial via
+   ::first-letter, lifted from the section. */
 .kbn-detail-outcome-view {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 10px 14px;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.6;
   color: #2E2A26;
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 .kbn-detail-outcome-view.kbn-detail-outcome-empty {
-  color: #C8BFB3;
+  color: #B8AC9E;
   font-style: italic;
+  font-size: 13.5px;
 }
 .kbn-detail-outcome-view > :first-child { margin-top: 0; }
 .kbn-detail-outcome-view > :last-child { margin-bottom: 0; }
@@ -1178,106 +1177,90 @@
   border: 1px solid rgba(122, 112, 104, 0.3);
 }
 .kbn-detail-outcome-view th { background: rgba(0, 0, 0, 0.04); font-weight: 600; }
+/* Control rows — label-on-the-left + control. Tighter row gap, smaller
+   label, line-art style: labels italic and muted, controls quiet. */
 .kbn-detail-field-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 0;
+  gap: 14px;
+  margin-bottom: 8px;
 }
 .kbn-detail-field-row:last-child { margin-bottom: 0; }
 .kbn-detail-label {
-  font-size: 12px;
-  color: #7A7068;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 12.5px;
+  font-style: italic;
+  color: #8A7E72;
   width: 56px;
   flex-shrink: 0;
 }
-/* In the strip, controls span the full width and the parent dropdown
-   anchors above the input rather than below (no room beneath). */
-.kbn-detail-strip .kbn-detail-parent-dropdown {
-  top: auto;
-  bottom: calc(100% + 2px);
-  max-height: 280px;
-}
-.kbn-detail-strip .kbn-detail-current-parent {
-  margin-bottom: 4px;
-}
+/* Native select restyled — drops the chrome beveling, keeps a hairline
+   underline that draws on focus. The chevron is the browser default
+   (small, dark on parchment) which actually fits. */
 .kbn-detail-select {
   flex: 1;
-  padding: 5px 8px;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
+  padding: 4px 4px 4px 0;
+  border: none;
+  border-bottom: 1px solid rgba(122, 112, 104, 0.30);
+  border-radius: 0;
+  background: transparent;
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 13px;
+  font-size: 13.5px;
   color: #2E2A26;
   outline: none;
   cursor: pointer;
-  transition: border-color 120ms ease;
+  transition: border-color 200ms ease;
+  appearance: none;
+  -webkit-appearance: none;
+  /* Chevron drawn as inline SVG so it matches the type tone exactly. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%237A7068' stroke-width='1.2' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  padding-right: 18px;
 }
-.kbn-detail-select:focus {
-  border-color: rgba(154, 123, 53, 0.55);
-}
-.kbn-detail-muted {
-  font-size: 12.5px;
-  color: #9A9088;
-  font-style: italic;
+.kbn-detail-select:focus,
+.kbn-detail-select:hover {
+  border-bottom-color: rgba(154, 123, 53, 0.65);
 }
 .kbn-detail-current-parent {
-  font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 11px;
-  color: #7A7068;
-  margin-bottom: 8px;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 13.5px;
+  color: #5A4F40;
+  margin-bottom: 6px;
+  letter-spacing: 0.01em;
 }
 .kbn-detail-current-parent.kbn-detail-pending-change {
   color: #9A7B35;
-  font-weight: 600;
+  font-style: italic;
 }
 .kbn-detail-parent-wrap {
   position: relative;
   margin-bottom: 6px;
 }
-.kbn-detail-parent-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 6px 10px;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
-  font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 13px;
-  color: #2E2A26;
-  outline: none;
-  transition: border-color 120ms ease;
-}
-.kbn-detail-parent-input:focus {
-  border-color: rgba(154, 123, 53, 0.55);
-  background: #FFFCF6;
-}
-.kbn-detail-parent-input::placeholder {
-  color: #C8BFB3;
-  font-style: italic;
-}
-/* Generic input used by the dispatch strip's cron + tz fields. Mirrors
-   .kbn-detail-parent-input but with tighter padding so it sits flush
-   with the segmented control next to it. */
+/* Inputs — hairline-underlined, no box. Same chrome-free treatment as
+   the select; consistent across all controls. */
+.kbn-detail-parent-input,
 .kbn-detail-input {
+  width: 100%;
   flex: 1;
   min-width: 0;
   box-sizing: border-box;
-  padding: 5px 8px;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
+  padding: 4px 4px 4px 0;
+  border: none;
+  border-bottom: 1px solid rgba(122, 112, 104, 0.30);
+  border-radius: 0;
+  background: transparent;
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 13px;
+  font-size: 13.5px;
   color: #2E2A26;
   outline: none;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: border-color 200ms ease;
 }
+.kbn-detail-parent-input:focus,
 .kbn-detail-input:focus {
-  border-color: rgba(154, 123, 53, 0.55);
-  background: #FFFCF6;
+  border-bottom-color: rgba(154, 123, 53, 0.65);
 }
+.kbn-detail-parent-input::placeholder,
 .kbn-detail-input::placeholder {
   color: #C8BFB3;
   font-style: italic;
@@ -1294,41 +1277,47 @@
    inline display:none from the kind toggle handler. Class kept as
    a marker for future targeted styling. */
 .kbn-detail-field-row-schedule { /* presentational marker only */ }
-/* Two-segment radiogroup styled as a pill switch. Used for the
-   dispatch kind (one-shot / standing); reads as a setting, not a
+/* Kind toggle as small letterspaced labels separated by · — one is
+   underlined (selected), the other isn't. Reads as type, not as a
    button cluster. */
 .kbn-detail-segmented {
   display: inline-flex;
-  flex: 1;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.55);
-  overflow: hidden;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  gap: 0;
+  align-items: baseline;
 }
 .kbn-detail-segment {
-  flex: 1;
-  padding: 5px 10px;
+  padding: 2px 10px;
   background: transparent;
   border: none;
-  border-right: 1px solid rgba(122, 112, 104, 0.20);
   cursor: pointer;
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 12.5px;
-  color: #7A7068;
-  transition: background 100ms ease, color 100ms ease;
+  letter-spacing: 0.04em;
+  color: #A89E91;
+  transition: color 200ms ease;
+  position: relative;
 }
-.kbn-detail-segment:last-child { border-right: none; }
-.kbn-detail-segment:hover {
-  background: rgba(154, 123, 53, 0.06);
-  color: #2E2A26;
+.kbn-detail-segment + .kbn-detail-segment::before {
+  content: '·';
+  position: absolute;
+  left: -2px;
+  color: #C8BFB3;
 }
+.kbn-detail-segment:hover { color: #2E2A26; }
 .kbn-detail-segment-active {
-  background: rgba(154, 123, 53, 0.18);
-  color: #2E2A26;
+  color: #6B5520;
   font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(154, 123, 53, 0.5);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
 }
 .kbn-detail-segment-active:hover {
-  background: rgba(154, 123, 53, 0.22);
+  color: #4A3810;
 }
 .kbn-detail-segment-name {
   display: inline-block;
@@ -1386,68 +1375,109 @@
   cursor: default;
 }
 .kbn-detail-parent-empty:hover { background: transparent; }
+/* "Make top-level" reads as a small italic note, not a button. */
 .kbn-detail-clear-parent {
-  font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 10px;
-  color: #9A9088;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 12px;
+  font-style: italic;
+  color: #A89E91;
   background: transparent;
-  border: 1px solid rgba(122, 112, 104, 0.22);
-  border-radius: 2px;
-  padding: 2px 7px;
+  border: none;
+  padding: 0;
   cursor: pointer;
-  letter-spacing: 0.02em;
-  transition: color 120ms ease, background 120ms ease;
+  letter-spacing: 0;
+  transition: color 160ms ease;
+  text-decoration: underline;
+  text-decoration-color: rgba(168, 158, 145, 0.4);
+  text-underline-offset: 2px;
+  align-self: flex-start;
 }
 .kbn-detail-clear-parent:hover {
-  color: #2E2A26;
-  background: rgba(46, 42, 38, 0.06);
+  color: #6B5520;
+  text-decoration-color: rgba(154, 123, 53, 0.5);
 }
-/* Footer row: vellum link (left) + error + cancel/save (right) */
+/* Footer: hairline-separated, parchment-toned. Vellum link on the left,
+   save on the right. The X handles dismissal — no Cancel button. */
 .kbn-detail-footer {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 20px;
-  border-top: 1px solid rgba(46, 42, 38, 0.12);
-  background: #E5DED2;
+  gap: 16px;
+  padding: 14px 28px 18px;
+  border-top: 1px solid rgba(46, 42, 38, 0.10);
+  background: transparent;
   flex-shrink: 0;
 }
 .kbn-detail-vellum-btn {
   font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 13px;
+  font-size: 14px;
   font-style: italic;
   color: #9A7B35;
   background: transparent;
   border: none;
   padding: 0;
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color 160ms ease, letter-spacing 200ms ease;
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: 3px;
   text-decoration-color: rgba(154, 123, 53, 0.4);
 }
 .kbn-detail-vellum-btn:hover {
   color: #6B5520;
+  letter-spacing: 0.012em;
 }
 .kbn-detail-vellum-btn:focus { outline: none; }
 .kbn-detail-vellum-btn:focus-visible {
   outline: 1px dashed #9A7B35;
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
 .kbn-detail-error {
   flex: 1;
-  font-size: 12px;
+  font-family: var(--font-main, 'EB Garamond', serif);
+  font-size: 12.5px;
+  font-style: italic;
   color: #8B3A28;
-  background: rgba(178, 78, 60, 0.10);
-  border: 1px solid rgba(178, 78, 60, 0.30);
-  padding: 3px 8px;
-  border-radius: 2px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
 }
-.kbn-detail-footer-right {
-  display: flex;
-  gap: 6px;
-  margin-left: auto;
-}
+/* Save button — letterpress-stamped feel: small caps with letterspace,
+   hairline border, parchment tone slightly darker than the modal so it
+   reads as pressed-into-paper. Hover dims; active sinks. */
 .kbn-detail-save-btn {
-  min-width: 56px;
+  margin-left: auto;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #4A3810;
+  background: rgba(154, 123, 53, 0.10);
+  border: 1px solid rgba(154, 123, 53, 0.45);
+  border-radius: 1px;
+  padding: 6px 18px 5px;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease,
+              transform 80ms ease;
+  box-shadow:
+    0 1px 0 rgba(255, 252, 246, 0.6) inset,
+    0 -1px 0 rgba(46, 42, 38, 0.04) inset;
+}
+.kbn-detail-save-btn:hover {
+  background: rgba(154, 123, 53, 0.18);
+  border-color: rgba(154, 123, 53, 0.65);
+  color: #2E2410;
+}
+.kbn-detail-save-btn:active {
+  transform: translateY(0.5px);
+  box-shadow: 0 1px 0 rgba(46, 42, 38, 0.08) inset;
+}
+.kbn-detail-save-btn:focus { outline: none; }
+.kbn-detail-save-btn:focus-visible {
+  outline: 1px dashed #9A7B35;
+  outline-offset: 2px;
+}
+.kbn-detail-save-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
