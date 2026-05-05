@@ -61,20 +61,16 @@ function writeConstitutionFiber(
  */
 function applyShuttleCtlStub(
   invocation: ShuttleCtlInvocation,
-  cityRoots: string[],
+  _cityRoots: string[],
   nowIso = '2026-05-05T00:00:00.000Z',
 ): void {
-  // The fixtures live outside loom, so resolveGlobalFiberId falls back to
-  // the bare slug. Search each city root for the matching file.
   const slug = invocation.fiberId;
   const segments = slug.split('/');
   const basename = segments[segments.length - 1];
-  let path: string | null = null;
-  for (const root of cityRoots) {
-    const candidate = join(root, '.felt', ...segments, `${basename}.md`);
-    if (existsSync(candidate)) { path = candidate; break; }
+  const path = join(invocation.host, '.felt', ...segments, `${basename}.md`);
+  if (!existsSync(path)) {
+    throw new Error(`shuttle-ctl stub: fiber not found at ${path}`);
   }
-  if (!path) throw new Error(`shuttle-ctl stub: fiber not found in any city root: ${slug}`);
 
   let raw = readFileSync(path, 'utf-8');
   const setScalar = (key: string, value: string): void => {

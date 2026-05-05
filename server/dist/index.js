@@ -28,6 +28,7 @@ import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
+import { publishShuttleFeltHosts } from './ShuttleFeltHostsPublisher.js';
 // ============================================================================
 // Constants
 // ============================================================================
@@ -543,6 +544,7 @@ server.on('error', (err) => {
 server.listen(PORT, () => {
     console.log(`Portolan server running on port ${PORT}`);
     console.log(`WebSocket: ws://localhost:${PORT}`);
+    void publishShuttleFeltHosts(cityPersistence.getCities());
 });
 // ============================================================================
 // Shuttle — retired in-process engine (Stage 6 cutover)

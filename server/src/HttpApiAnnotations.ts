@@ -1,13 +1,15 @@
 import { exec, execFile } from 'child_process';
+import { existsSync, realpathSync } from 'fs';
 import { IncomingMessage, ServerResponse } from 'http';
+import { join } from 'path';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
+import { canonicalFiberRefFromPath } from './canonicalFiberRef.js';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
 import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
-import { resolveGlobalFiberId } from './loomGlobalId.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -57,6 +59,21 @@ function fiberPathToSlug(filePath: string): string {
     parts.pop();
   }
   return parts.join('/');
+}
+
+function resolveLocalShuttleRef(cityPath: string, fiberId: string): { host: string; fiberId: string } {
+  const segments = fiberId.split('/');
+  const basename = segments[segments.length - 1];
+  const bare = join(cityPath, '.felt', `${basename}.md`);
+  const dir = join(cityPath, '.felt', ...segments, `${basename}.md`);
+  const mdPath = (!fiberId.includes('/') && existsSync(bare)) ? bare : dir;
+
+  try {
+    const canonicalPath = realpathSync(mdPath);
+    return canonicalFiberRefFromPath(canonicalPath) ?? { host: cityPath, fiberId };
+  } catch {
+    return { host: cityPath, fiberId };
+  }
 }
 
 interface HttpApiAnnotationsOptions {
@@ -468,8 +485,6 @@ export class HttpApiAnnotations {
    *
    * Returns `{success: true, fiberId, slug}` where `fiberId` is the fully
    * qualified slug (parentSlug + child) the felt CLI emitted on stdout.
-   * `globalFiberId` (loom-relative) is also returned so the frontend can
-   * cross-reference shuttle-ctl output without recomputing the prefix.
    */
   async handleCreateFiber(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const data = await this.parseJsonBody<{
@@ -597,40 +612,41 @@ export class HttpApiAnnotations {
       // `shuttle resume`). See
       // [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]].
       //
-      // Local origin only for now: shuttle-ctl runs locally and resolves
-      // fibers under LOOM_HOME, which is the local loom. Remote stashes
-      // skip the block install and surface a hint in the response so the
-      // user knows to install manually on the remote host. Wiring shuttle
-      // through the agent SSH path is a follow-up.
+      // Local origin only for now: shuttle-ctl runs locally against an
+      // explicit `--host` boundary derived from the created fiber's
+      // canonical store. Remote stashes skip the block install and surface
+      // a hint in the response so the user knows to install manually on the
+      // remote host. Wiring shuttle through the agent SSH path is a
+      // follow-up.
       //
       // Best-effort: if the install fails we leave the felt fiber in place
       // and report the error in the response so the user can shuttle-install
       // manually (the fiber is a real document and worth keeping; rolling
       // back loses the title/body the user just typed).
-      let globalFiberId: string | undefined;
       let shuttleInstalled = false;
       let shuttleError: string | undefined;
       if (!isRemote) {
-        globalFiberId = resolveGlobalFiberId(cityPath, fiberId);
+        const shuttleRef = resolveLocalShuttleRef(cityPath, fiberId);
         try {
           let installArgs: string[];
           if (kind === 'standing') {
-            // Standing role: `shuttle-ctl repeat <id> --schedule <expr> --tz <tz> [--model <agent>]`
+            // Standing role: `shuttle-ctl --host <host> repeat <id> --schedule <expr> --tz <tz> [--model <agent>]`
             // Enabled by default (user committed to a schedule). schedule is
             // required for standing; reject early if missing.
             if (!schedule) {
               this.sendJsonError(res, 400, 'schedule is required for kind=standing');
               return;
             }
-            installArgs = ['repeat', globalFiberId, '--schedule', schedule, '--tz', tz || 'UTC'];
+            installArgs = ['--host', shuttleRef.host, 'repeat', shuttleRef.fiberId, '--schedule', schedule, '--tz', tz || 'UTC'];
             if (agent) installArgs.push('--model', agent);
           } else {
             // Oneshot (default): install with --disabled so the card lands in
             // Drafts. The user promotes to inFlight by dragging in the kanban.
-            installArgs = ['install', globalFiberId, '--disabled'];
+            installArgs = ['--host', shuttleRef.host, 'install', shuttleRef.fiberId, '--disabled'];
             if (agent) installArgs.push('--model', agent);
           }
           await execFileAsync('shuttle-ctl', installArgs, {
+            cwd: shuttleRef.host,
             timeout: 10000,
             maxBuffer: 1024 * 1024,
           });
@@ -638,7 +654,7 @@ export class HttpApiAnnotations {
         } catch (err: any) {
           shuttleError = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
           console.error(
-            `[fiber/create] shuttle install failed for ${globalFiberId}: ${shuttleError}`,
+            `[fiber/create] shuttle install failed for ${fiberId}: ${shuttleError}`,
           );
         }
       }
@@ -652,7 +668,6 @@ export class HttpApiAnnotations {
         success: true,
         fiberId,
         slug,
-        globalFiberId,
         shuttleInstalled,
         ...(shuttleError ? { shuttleError } : {}),
         // Remote stashes skip shuttle install for now; surface a hint so the

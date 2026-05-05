@@ -112,7 +112,6 @@ interface CreateFiberResponse {
   success: boolean
   fiberId?: string
   slug?: string
-  globalFiberId?: string
   shuttleInstalled?: boolean
   shuttleSkipped?: string
   shuttleError?: string

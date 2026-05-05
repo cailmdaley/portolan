@@ -430,8 +430,8 @@ export class HttpApi {
 
     // GET /kanban/fiber-history?fiberId=<id>&limit=<n> — editorial event chain
     // for the fiber-detail modal's right-column history panel. Resolves the
-    // global id and reads against the owning shuttle felt host so the modal
-    // sees the same chain Shuttle dispatcher does.
+    // canonical `(felt host, fiber id)` pair from the fiber's realpath'd md
+    // file so the modal sees the same chain Shuttle dispatcher does.
     if (url.pathname === '/kanban/fiber-history' && req.method === 'GET') {
       const kanbanApi = this.resolveKanbanApi(url, res);
       if (!kanbanApi) return true;

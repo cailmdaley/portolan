@@ -43,7 +43,10 @@ import { promisify } from 'util';
 import { getAllFibers, getFiber, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
-import { resolveGlobalFiberId } from './loomGlobalId.js';
+import {
+  canonicalFiberRefFromPath,
+  canonicalStoreRelativeId,
+} from './canonicalFiberRef.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -295,9 +298,9 @@ interface HttpApiKanbanOptions {
    * Test seam: override the shuttle-ctl spawn for local lifecycle transitions.
    * When provided, called instead of `execFileAsync('shuttle-ctl', ...)`.
    * Receives the exact semantic invocation the server would shell out:
-   * pause / reopen / close / accept / set-outcome against the loom-global
-   * fiber id. Should throw on failure (same contract as the real
-   * execFileAsync call).
+   * pause / reopen / close / accept / set-outcome against an explicit
+   * `(host, fiberId)` pair. Should throw on failure (same contract as the
+   * real execFileAsync call).
    */
   shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
   /**
@@ -308,9 +311,9 @@ interface HttpApiKanbanOptions {
 }
 
 export type ShuttleCtlInvocation =
-  | { verb: 'pause' | 'reopen' | 'accept'; fiberId: string }
-  | { verb: 'close'; fiberId: string; tempered?: boolean }
-  | { verb: 'set-outcome'; fiberId: string; outcome: string };
+  | { host: string; verb: 'pause' | 'reopen' | 'accept'; fiberId: string }
+  | { host: string; verb: 'close'; fiberId: string; tempered?: boolean }
+  | { host: string; verb: 'set-outcome'; fiberId: string; outcome: string };
 
 export type RemoteKanbanMutationInvocation =
   | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
@@ -420,6 +423,14 @@ interface KanbanFiberPool {
   byId: Map<string, Fiber>;
 }
 
+function canonicalRefForEntry(entry: KanbanFiberEntry): { host: string; fiberId: string } {
+  if (entry.canonicalPath !== undefined) {
+    const ref = canonicalFiberRefFromPath(entry.canonicalPath);
+    if (ref !== undefined) return ref;
+  }
+  return { host: entry.host, fiberId: entry.fiber.id };
+}
+
 /** What POST /kanban/transition expects in the body. */
 export interface KanbanTransitionRequest {
   fiberId: string;
@@ -450,11 +461,11 @@ export class HttpApiKanban {
   private readonly feltEditFn: HttpApiKanbanOptions['feltEditFn'];
 
   /**
-   * Run a shuttle-ctl lifecycle invocation against a global fiber id.
-   * Honors the test seam (`shuttleCtlFn`) when set; otherwise spawns
-   * `shuttle-ctl` with the standard timeout + buffer and reformats stderr
-   * into a meaningful error. Centralized so every local transition routes
-   * through the same single-writer boundary.
+   * Run a shuttle-ctl lifecycle invocation against an explicit
+   * `(felt host, fiber id)` pair. Honors the test seam (`shuttleCtlFn`)
+   * when set; otherwise spawns `shuttle-ctl` with the standard timeout +
+   * buffer and reformats stderr into a meaningful error. Centralized so
+   * every local transition routes through the same single-writer boundary.
    */
   private async runShuttleCtl(invocation: ShuttleCtlInvocation): Promise<void> {
     if (this.shuttleCtlFn) {
@@ -462,7 +473,7 @@ export class HttpApiKanban {
       return;
     }
 
-    const args = [invocation.verb, invocation.fiberId];
+    const args = ['--host', invocation.host, invocation.verb, invocation.fiberId];
     if (invocation.verb === 'close' && invocation.tempered !== undefined) {
       args.push(`--tempered=${invocation.tempered ? 'true' : 'false'}`);
     }
@@ -915,7 +926,7 @@ export class HttpApiKanban {
         originId,
         path: relativeFeltPath(fiber),
         kind: 'shuttle',
-        ...transitionInvocationForTarget(fiber, fiber.id, target),
+        ...transitionInvocationForTarget(fiber, { host, fiberId: fiber.id }, target),
       });
       this.clearFiberPoolCache();
       const refreshedById = new Map<string, Fiber>();
@@ -940,7 +951,7 @@ export class HttpApiKanban {
     }
 
     await this.runShuttleCtl(
-      transitionInvocationForTarget(fiber, resolveGlobalFiberId(host, fiber.id), target),
+      transitionInvocationForTarget(fiber, canonicalRefForEntry(entry), target),
     );
     this.clearFiberPoolCache();
 
@@ -1053,47 +1064,21 @@ export class HttpApiKanban {
   }
 
   /**
-   * Resolve the felt host for a fiber via the shuttle daemon's HTTP API.
-   *
-   * Calls `GET http://localhost:4000/api/v1/fiber/host?id=<fiberId>` and
-   * returns the `felt_host` field. Falls back to `LOOM_HOME || ~/loom` if
-   * the daemon is unreachable or returns a non-200 response, so single-host
-   * setups that don't run the daemon continue to work.
-   */
-  private async resolveShuttleFeltHost(fiberId: string): Promise<string> {
-    const fallback = process.env.LOOM_HOME || join(homedir(), 'loom');
-    try {
-      const url = `http://localhost:4000/api/v1/fiber/host?id=${encodeURIComponent(fiberId)}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      if (!res.ok) return fallback;
-      const data = await res.json() as { felt_host?: string };
-      return data.felt_host ?? fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
-  /**
    * POST /kanban/review-comment — file a review directive as a typed
    * `review-comment` event on a fiber's felt history.
    *
    * Body: { fiberId, directive, resumeMode: 'fresh' | 'previous' }
    *
    * Shells out to:
-   *   felt -C <feltHost> history append <globalFiberId>
+   *   felt -C <canonicalHost> history append <canonicalId>
    *        --kind review-comment --summary <directive>
    *
    * **Index-scope correctness:** felt has one index per `.felt/` directory;
    * a fiber that lives under both `~/loom/.felt/ai-futures/portolan/...`
-   * (via symlink) and `<portolan>/.felt/...` (the physical project) has
-   * separate event streams in each index. The felt host is resolved via
-   * the shuttle daemon's `GET /api/v1/fiber/host?id=<id>` endpoint, which
-   * returns the owning host from the daemon's per-fiber cache. A city-scoped
-   * kanban (`?cityId=X`) has `this.feltHost = city.path` — using that here
-   * would file the event in the project's own index under a project-local id,
-   * which shuttle never reads. We deliberately bypass `this.feltHost` for this
-   * endpoint and resolve the global id via the same helper the transition
-   * path uses (`resolveGlobalFiberId`).
+   * (via symlink) and `<portolan>/.felt/...` (the project view) must write
+   * history into the canonical store Shuttle dispatches from. We derive that
+   * `(host, id)` pair from the fiber's realpath'd md path (`canonicalPath`)
+   * rather than re-implementing loom-global slug arithmetic.
    *
    * The directive lands as a separately-queryable typed event. Shuttle's
    * dispatcher reads the latest review-comment via
@@ -1142,11 +1127,7 @@ export class HttpApiKanban {
     // empty-summary directive blocks.
     const directive = body.directive.trim();
 
-    // Resolve the fiber so we can compute its global (loom-relative) id.
-    // The frontend's `card.id` is project-local in city-scoped kanban
-    // views, so we can't pass body.fiberId straight through — felt would
-    // file under whichever index `-C` points at, with that local id.
-    let globalId: string;
+    let ref: { host: string; fiberId: string };
     try {
       const { merged } = await this.collectFibers();
       const entry = merged.find(({ fiber }) => fiber.id === body.fiberId);
@@ -1154,14 +1135,12 @@ export class HttpApiKanban {
         this.json(res, 404, { error: `fiber not found: ${body.fiberId}` });
         return;
       }
-      globalId = resolveGlobalFiberId(entry.host, entry.fiber.id);
+      ref = canonicalRefForEntry(entry);
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err);
       this.json(res, 500, { error: `fiber resolution failed: ${msg}` });
       return;
     }
-
-    const feltHost = await this.resolveShuttleFeltHost(globalId);
 
     try {
       // resumeMode lands in the event payload as `resume_mode` via felt's
@@ -1173,8 +1152,8 @@ export class HttpApiKanban {
       // which is what was happening before, breaking the "Resume
       // previous" button silently.
       await execFileAsync('felt', [
-        '-C', feltHost,
-        'history', 'append', globalId,
+        '-C', ref.host,
+        'history', 'append', ref.fiberId,
         '--kind', 'review-comment',
         '--summary', directive,
         '--field', `resume_mode=${body.resumeMode}`,
@@ -1283,15 +1262,15 @@ export class HttpApiKanban {
    * GET /kanban/fiber-history?fiberId=<id>&limit=<n>
    *
    * Returns the editorial event chain for a fiber by reading
-   * `felt -C <feltHost> history <globalId> --json --last <limit>`.
+   * `felt -C <canonicalHost> history <canonicalId> --json --last <limit>`.
    * Used by the fiber-detail modal's history panel — the human's "what
    * happened so far" surface beside the live outcome textarea.
    *
    * Resolution mirrors `/kanban/review-comment`: kanban card ids may be
-   * project-local under city-scoped views, so we resolve to the global
-   * id via `resolveGlobalFiberId` before invoking felt against the
-   * owning shuttle felt host. This guarantees we read from the same
-   * felt index Shuttle's dispatcher reads, not a stale project-local one.
+   * project-local under city-scoped views, so we derive the canonical
+   * `(host, id)` pair from the fiber's realpath'd md file before invoking
+   * felt. That guarantees we read from the same felt index Shuttle's
+   * dispatcher reads, not a stale project-local one.
    *
    * Default limit is 20; clamped to [1, 200]. Response shape:
    *   `{ events: Array<{ occurredAt, actor, kind, summary }> }`
@@ -1322,13 +1301,11 @@ export class HttpApiKanban {
         this.json(res, 200, { events: [] });
         return;
       }
-      const { fiber, host } = entry;
-      const globalId = resolveGlobalFiberId(host, fiber.id);
-      const feltHost = await this.resolveShuttleFeltHost(globalId);
+      const ref = canonicalRefForEntry(entry);
 
       const { stdout, stderr } = await execFileAsync(
         'felt',
-        ['-C', feltHost, 'history', globalId, '--last', String(limit), '-j'],
+        ['-C', ref.host, 'history', ref.fiberId, '--last', String(limit), '-j'],
         { maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
       );
 
@@ -1440,6 +1417,7 @@ export class HttpApiKanban {
         return;
       }
       const { fiber, host, originId } = entry;
+      const localRef = canonicalRefForEntry(entry);
 
       let newFiberId: string | undefined;
 
@@ -1455,6 +1433,7 @@ export class HttpApiKanban {
           }
           await this.remoteTransitionExecutor({
             originId,
+            host,
             fiberId: fiber.id,
             path: relativeFeltPath(fiber),
             kind: 'shuttle',
@@ -1463,8 +1442,9 @@ export class HttpApiKanban {
           });
         } else {
           await this.runShuttleCtl({
+            host: localRef.host,
             verb: 'set-outcome',
-            fiberId: resolveGlobalFiberId(host, fiber.id),
+            fiberId: localRef.fiberId,
             outcome,
           });
         }
@@ -1509,59 +1489,61 @@ export class HttpApiKanban {
           }
         }
 
-        const globalId = resolveGlobalFiberId(host, fiber.id);
-        const feltHost = await this.resolveShuttleFeltHost(globalId);
         const ctlEnv = {
           env: { ...process.env, HOME: process.env.HOME ?? '/tmp' },
-          cwd: feltHost,
+          cwd: localRef.host,
         };
 
         // Uninstall first — install/repeat refuse to clobber. Skip when no
         // block exists yet (the patch can install fresh).
         if (fiber.hasShuttleBlock) {
-          await execFileAsync('shuttle-ctl', ['uninstall', globalId], ctlEnv);
+          await execFileAsync('shuttle-ctl', ['--host', localRef.host, 'uninstall', localRef.fiberId], ctlEnv);
         }
 
         if (targetKind === 'standing') {
           const args = [
-            'repeat', globalId,
+            '--host', localRef.host,
+            'repeat', localRef.fiberId,
             '--schedule', targetSchedule!,
             '--tz', targetTz!,
           ];
           if (targetAgent) args.push('--model', targetAgent);
           await execFileAsync('shuttle-ctl', args, ctlEnv);
         } else {
-          const args = ['install', globalId];
+          const args = ['--host', localRef.host, 'install', localRef.fiberId];
           if (targetAgent) args.push('--model', targetAgent);
           if (wasDisabled) args.push('--disabled');
           await execFileAsync('shuttle-ctl', args, ctlEnv);
         }
       } else if (typeof body.shuttleAgent === 'string' && body.shuttleAgent) {
         // Agent-only change → set-model preserves session.id and review state.
-        const globalId = resolveGlobalFiberId(host, fiber.id);
-        const feltHost = await this.resolveShuttleFeltHost(globalId);
-        await execFileAsync('shuttle-ctl', ['set-model', globalId, body.shuttleAgent], {
+        await execFileAsync('shuttle-ctl', ['--host', localRef.host, 'set-model', localRef.fiberId, body.shuttleAgent], {
           env: { ...process.env, HOME: process.env.HOME ?? '/tmp' },
-          cwd: feltHost,
+          cwd: localRef.host,
         });
       }
 
       // ── Reparent via felt nest / felt unnest ──────────────────────────────
       if ('parentId' in body) {
-        const globalId = resolveGlobalFiberId(host, fiber.id);
-        const feltHost = await this.resolveShuttleFeltHost(globalId);
         if (body.parentId === null || body.parentId === '') {
           // Promote to top-level.
-          await execFileAsync('felt', ['-C', feltHost, 'unnest', globalId]);
-          // New id: last segment of globalId.
-          const segments = globalId.split('/');
+          await execFileAsync('felt', ['-C', localRef.host, 'unnest', localRef.fiberId]);
+          const segments = localRef.fiberId.split('/');
           newFiberId = segments[segments.length - 1];
         } else {
-          const parentGlobalId = resolveGlobalFiberId(host, body.parentId as string);
-          await execFileAsync('felt', ['-C', feltHost, 'nest', globalId, parentGlobalId]);
-          // New id: parentGlobalId / last segment of globalId.
-          const segments = globalId.split('/');
-          newFiberId = `${parentGlobalId}/${segments[segments.length - 1]}`;
+          const parentEntry = merged.find(({ fiber: candidate }) => candidate.id === body.parentId);
+          if (!parentEntry) {
+            throw new Error(`parent fiber not found: ${body.parentId}`);
+          }
+          const parentRef = canonicalRefForEntry(parentEntry);
+          if (parentRef.host !== localRef.host) {
+            throw new Error(
+              `cannot reparent across felt hosts (${localRef.host} → ${parentRef.host})`,
+            );
+          }
+          await execFileAsync('felt', ['-C', localRef.host, 'nest', localRef.fiberId, parentRef.fiberId]);
+          const segments = localRef.fiberId.split('/');
+          newFiberId = `${parentRef.fiberId}/${segments[segments.length - 1]}`;
         }
       }
 
@@ -1726,36 +1708,6 @@ function byClosedAtDesc(a: KanbanCard, b: KanbanCard): number {
   return bT.localeCompare(aT);
 }
 
-/**
- * Derive a fiber's canonical-store id from its realpath'd md file path.
- * Walks up to the nearest enclosing `.felt/` directory and returns the
- * fiber-shaped id within that store — i.e. the same id `felt ls` reports
- * when run from inside the canonical store. Returns undefined when the
- * path doesn't sit under a `.felt/` directory or has an unexpected
- * `<slug>/<slug>.md` shape.
- *
- * This is the identity shuttle uses for tmux session names: shuttle's
- * poller dispatches each fiber from its canonical felt host (per
- * [[ai-futures/shuttle/finding-multi-felt-host-tmux-name-dedup]]), so the
- * session name always carries the canonical-store id, regardless of
- * whichever view the kanban happens to enumerate the fiber through (loom
- * for portolan, a foreign canonical store for lightcone, etc.).
- */
-export function canonicalStoreRelativeId(canonicalPath: string): string | undefined {
-  const segments = canonicalPath.split('/');
-  const feltIdx = segments.lastIndexOf('.felt');
-  if (feltIdx === -1) return undefined;
-  const tail = segments.slice(feltIdx + 1);
-  if (tail.length === 0) return undefined;
-  const file = tail[tail.length - 1];
-  if (!file.endsWith('.md')) return undefined;
-  const slug = file.slice(0, -'.md'.length);
-  if (tail.length === 1) return slug; // bare form at the store root
-  const parent = tail[tail.length - 2];
-  if (parent !== slug) return undefined; // unexpected layout — fall back to caller default
-  return tail.slice(0, -1).join('/');
-}
-
 function resolveRunningWorker(
   fiberId: string,
   liveSessions: Set<string>,
@@ -1824,7 +1776,7 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 
 function transitionInvocationForTarget(
   fiber: Fiber,
-  fiberId: string,
+  ref: { host: string; fiberId: string },
   target: KanbanTarget,
 ): ShuttleCtlInvocation {
   const isStandingAccept =
@@ -1835,14 +1787,14 @@ function transitionInvocationForTarget(
     fiber.shuttleKind === 'standing' &&
     fiber.shuttleReviewState === 'awaiting';
 
-  if (isStandingAccept) return { verb: 'accept', fiberId };
-  if (target === 'drafts') return { verb: 'pause', fiberId };
+  if (isStandingAccept) return { host: ref.host, verb: 'accept', fiberId: ref.fiberId };
+  if (target === 'drafts') return { host: ref.host, verb: 'pause', fiberId: ref.fiberId };
   if (target === 'inFlight' || target === 'queued' || target === 'active') {
-    return { verb: 'reopen', fiberId };
+    return { host: ref.host, verb: 'reopen', fiberId: ref.fiberId };
   }
-  if (target === 'awaitingReview') return { verb: 'close', fiberId };
-  if (target === 'tempered') return { verb: 'close', fiberId, tempered: true };
-  return { verb: 'close', fiberId, tempered: false };
+  if (target === 'awaitingReview') return { host: ref.host, verb: 'close', fiberId: ref.fiberId };
+  if (target === 'tempered') return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: true };
+  return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: false };
 }
 
 function normalizeTagList(tags: string[]): string[] {
