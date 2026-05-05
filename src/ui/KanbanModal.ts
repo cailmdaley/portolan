@@ -882,10 +882,20 @@ export class KanbanModal {
     headerRow.append(dragHandle, name, pill)
     el.append(headerRow)
 
-    // Fiber id (small, breadcrumb-ish)
-    const idEl = document.createElement('div')
+    // Fiber id (small, breadcrumb-ish) — also a click-to-vellum target.
+    // Slugs are recognisable fiber identifiers across the app, so they
+    // consistently link to the reader. Title and id both work; the id
+    // is the canonical surface (the modal's title is read-only).
+    const idEl = document.createElement('button')
+    idEl.type = 'button'
     idEl.className = 'kbn-card-id'
     idEl.textContent = card.id
+    idEl.setAttribute('aria-label', `Open ${card.id} in vellum`)
+    idEl.title = 'Click to open in vellum'
+    idEl.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.onOpenFiber(card)
+    })
     el.append(idEl)
 
     // Outcome (truncated; CSS line-clamp)
@@ -1752,27 +1762,18 @@ class FiberDetailModal {
     const header = document.createElement('div')
     header.className = 'kbn-detail-header'
 
+    // Title is read-only here. The id slug below is the canonical
+    // click-to-vellum target — slugs are the recognisable fiber
+    // identifiers across the app, so they're consistently the link.
     const title = document.createElement('div')
     title.className = 'kbn-detail-title'
-    title.setAttribute('role', 'button')
-    title.setAttribute('tabindex', '0')
-    title.setAttribute('aria-label', `Open ${card.name} in vellum`)
-    title.title = 'Click to open in vellum'
-    const titleText = document.createElement('span')
-    titleText.textContent = card.name
-    const titleHint = document.createElement('span')
-    titleHint.className = 'kbn-detail-title-hint'
-    titleHint.textContent = '→ vellum'
-    title.append(titleText, titleHint)
+    title.textContent = card.name
+
     const openInVellum = (e: Event) => {
       e.stopPropagation()
       this.close()
       this.onOpenFiber(card)
     }
-    title.addEventListener('click', openInVellum)
-    title.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') openInVellum(e)
-    })
 
     const pill = document.createElement('span')
     pill.className = `kbn-pill kbn-pill-${card.status === 'closed' ? 'closed' : card.status === 'active' ? 'active' : 'open'}`
@@ -2173,22 +2174,23 @@ class FiberDetailModal {
     footer.append(vellumBtn, errorEl, saveBtn)
 
     // ── Assemble ─────────────────────────────────────────────────────────────
-    // Single vertical flow on parchment:
-    //   header → id → outcome (prose) → history → dispatch+parent controls
-    // Sections separated by hairline printer's rules; no section headings on
-    // outcome (its position is its label). The body scrolls as a whole when
-    // outcomes or history grow long — the modal frame stays put.
+    // Two columns side by side on parchment:
+    //   left  → outcome (prose, scrolls internally for long outcomes)
+    //   right → dispatch + parent controls (top), then history (scrolls)
+    // A vertical hairline divides the columns; a horizontal hairline in the
+    // right column separates controls from history.
     const body = document.createElement('div')
     body.className = 'kbn-detail-body'
 
-    body.append(
-      outcomeSec,
-      this.buildRule(),
-      historySec,
-      this.buildRule(),
-      dispatchSec,
-      parentSec,
-    )
+    const leftCol = document.createElement('div')
+    leftCol.className = 'kbn-detail-col kbn-detail-col-left'
+    leftCol.append(outcomeSec)
+
+    const rightCol = document.createElement('div')
+    rightCol.className = 'kbn-detail-col kbn-detail-col-right'
+    rightCol.append(dispatchSec, parentSec, this.buildRule(), historySec)
+
+    body.append(leftCol, rightCol)
 
     dialog.append(header, body, footer)
     overlay.append(dialog)

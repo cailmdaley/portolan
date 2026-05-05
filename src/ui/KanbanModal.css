@@ -406,6 +406,22 @@
   color: #B8AC9E;
   letter-spacing: 0.01em;
   word-break: break-all;
+  /* Also a button — strip the chrome and let the type carry it. */
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  transition: color 160ms ease;
+}
+.kbn-card-id:hover { color: #6B5520; }
+.kbn-card-id:focus { outline: none; }
+.kbn-card-id:focus-visible {
+  outline: 1px dashed #9A7B35;
+  outline-offset: 2px;
 }
 .kbn-card-outcome {
   font-size: 12.5px;
@@ -809,10 +825,12 @@
     0 1px 0 rgba(255, 252, 246, 0.6) inset,
     0 14px 38px rgba(46, 42, 38, 0.22),
     0 3px 10px rgba(46, 42, 38, 0.10);
-  /* Card-shaped, not viewport-shaped. Tall enough for ~10 lines of
-     outcome + 4 history entries without scroll; scrolls past that. */
-  width: min(94vw, 720px);
-  max-height: min(88vh, 660px);
+  /* Two-column card. Wide enough to hold a ~480px outcome column plus
+     a ~340px controls+history column without crowding; tall enough for
+     the right column's history to feel like a real chronology rather
+     than a peephole. */
+  width: min(94vw, 860px);
+  height: min(86vh, 780px);
   display: flex;
   flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
@@ -840,6 +858,8 @@
   gap: 4px;
   min-width: 0;
 }
+/* Title is read-only here — the slug below is the canonical
+   click-to-vellum target. No cursor, no underline. Just type. */
 .kbn-detail-title {
   flex: 1;
   font-family: var(--font-main, 'EB Garamond', serif);
@@ -847,33 +867,7 @@
   font-weight: 600;
   line-height: 1.22;
   letter-spacing: -0.005em;
-  cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 4px;
-  transition: color 160ms ease, text-decoration-color 160ms ease;
   color: #2E2A26;
-}
-.kbn-detail-title:hover,
-.kbn-detail-title:focus-visible {
-  color: #6B5520;
-  text-decoration-color: rgba(154, 123, 53, 0.55);
-  outline: none;
-}
-.kbn-detail-title-hint {
-  font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 12.5px;
-  font-style: italic;
-  color: #B8AC9E;
-  margin-left: 8px;
-  font-weight: 400;
-  opacity: 0;
-  transition: opacity 160ms ease;
-}
-.kbn-detail-title:hover .kbn-detail-title-hint,
-.kbn-detail-title:focus-visible .kbn-detail-title-hint {
-  opacity: 1;
 }
 /* Status as an ink-stamped mark — slight letterpress, hairline border,
    small rotation gives it the "applied by hand" feel of a curator's
@@ -936,39 +930,66 @@
 .kbn-detail-header + .kbn-detail-body {
   padding-top: 6px;
 }
-/* Body: vertical flow of sections separated by hairline rules. The whole
-   body scrolls when content exceeds the modal height — the frame stays. */
+/* Body: two columns side by side. Outcome left, controls+history right.
+   Each column manages its own internal scroll — the modal frame stays
+   put. A vertical hairline divides them. */
 .kbn-detail-body {
   flex: 1;
   display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+.kbn-detail-col {
+  display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 4px 0 8px;
+  min-width: 0;
 }
-/* Hairline printer's rule between sections. Subtle, the way a paper
-   card has impressed-line dividers on it. */
+.kbn-detail-col-left {
+  flex: 1 1 56%;
+  border-right: 1px solid rgba(46, 42, 38, 0.10);
+}
+.kbn-detail-col-right {
+  flex: 1 1 44%;
+  background: rgba(232, 225, 213, 0.35);
+}
+/* Horizontal hairline rule used inside the right column to separate
+   controls from history. */
 .kbn-detail-rule {
   height: 1px;
-  margin: 0 28px;
+  margin: 0 22px;
   background: rgba(46, 42, 38, 0.10);
   flex-shrink: 0;
 }
-/* Section: a labeled vertical block with breathable padding. The label
-   itself is hidden for the outcome (its position is its label) and
-   styled subtly for everything else. */
+/* Section: a labelled block with breathable padding. The label itself
+   is hidden for the outcome (its position is its label) and styled
+   subtly for everything else. */
 .kbn-detail-section {
-  padding: 14px 28px 16px;
+  padding: 14px 22px 14px;
   flex-shrink: 0;
+}
+/* Left column's outcome section fills the column height and scrolls
+   internally. */
+.kbn-detail-col-left .kbn-detail-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 26px 18px;
+  min-height: 0;
 }
 /* Outcome's heading is implicit — drop the "OUTCOME" label and let
    the prose stand alone as the card's content. */
 .kbn-detail-section[data-section="outcome"] .kbn-detail-section-heading {
   display: none;
 }
-.kbn-detail-section[data-section="outcome"] {
-  padding-top: 8px;
+/* Right column's history section grows to fill remaining space and
+   scrolls internally. */
+.kbn-detail-col-right .kbn-detail-section[data-section="history"] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 /* The scrolling list of history events. overscroll-behavior: contain
    keeps wheel events at the boundary inside the list — they never
@@ -980,10 +1001,11 @@
    would read. Limit visible height so long histories scroll inside
    their own region rather than stretching the modal. */
 .kbn-detail-history-list {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 180px;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 6px;
@@ -1099,16 +1121,19 @@
 }
 /* Outcome reads as prose on parchment — no border, no fill, just
    typography. EB Garamond at a comfortable reading size, generous
-   leading. The first paragraph gets a small print-shop initial via
-   ::first-letter, lifted from the section. */
+   leading. Scrolls internally for long outcomes; outer frame stays. */
 .kbn-detail-outcome-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 15px;
   line-height: 1.6;
   color: #2E2A26;
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 0 4px 0 0;
 }
 .kbn-detail-outcome-view.kbn-detail-outcome-empty {
   color: #B8AC9E;
