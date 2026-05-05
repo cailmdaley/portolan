@@ -11,20 +11,14 @@
 import { describe, it, expect } from 'vitest';
 import { FiberTreeSnapshotStore, idFromPath } from '../FiberTreeSnapshotStore.js';
 
-const baseFm = (extras: Record<string, string> = {}) => {
-  const fields: Record<string, string> = {
-    name: 'A fiber',
-    status: 'active',
-    'created-at': '2026-04-15T00:00:00Z',
-    ...extras,
-  };
-  const lines = [
-    'tags:',
-    '  - constitution',
-    ...Object.entries(fields).map(([k, v]) => `${k}: ${v}`),
-  ];
-  return `---\n${lines.join('\n')}\n---\n\nbody\n`;
-};
+const baseFiber = (extras: Record<string, unknown> = {}) => ({
+  name: 'A fiber',
+  status: 'active',
+  created_at: '2026-04-15T00:00:00Z',
+  tags: ['constitution'],
+  body: 'body\n',
+  ...extras,
+});
 
 describe('FiberTreeSnapshotStore', () => {
   describe('idFromPath', () => {
@@ -71,9 +65,9 @@ describe('FiberTreeSnapshotStore', () => {
     it('replaces the snapshot wholesale and skips non-container files', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
-        { path: 'cmbx/notes.md', content: '# stray markdown' },
-        { path: 'pure_eb/pure_eb.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
+        { path: 'cmbx/notes.md', fiber: baseFiber({ name: 'Stray note' }) },
+        { path: 'pure_eb/pure_eb.md', fiber: baseFiber() },
       ]);
       const snap = store.getSnapshot('remote-cineca');
       expect(snap).not.toBeNull();
@@ -86,11 +80,11 @@ describe('FiberTreeSnapshotStore', () => {
     it('a second dump replaces; previously-present fibers vanish', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
-        { path: 'pure_eb/pure_eb.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
+        { path: 'pure_eb/pure_eb.md', fiber: baseFiber() },
       ]);
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       expect(store.getSnapshot('remote-cineca')!.fibers.map(f => f.id)).toEqual(['cmbx']);
     });
@@ -100,10 +94,10 @@ describe('FiberTreeSnapshotStore', () => {
     it('upsert mutates a fiber in place', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm({ status: 'active' }) },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber({ status: 'active' }) },
       ]);
       store.applyDelta('remote-cineca', [
-        { path: 'cmbx/cmbx.md', op: 'upsert', content: baseFm({ status: 'closed' }) },
+        { path: 'cmbx/cmbx.md', op: 'upsert', fiber: baseFiber({ status: 'closed' }) },
       ]);
       expect(store.getSnapshot('remote-cineca')!.byId.get('cmbx')?.status).toBe('closed');
     });
@@ -112,7 +106,7 @@ describe('FiberTreeSnapshotStore', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', []);
       store.applyDelta('remote-cineca', [
-        { path: 'cmbx/cmbx.md', op: 'upsert', content: baseFm() },
+        { path: 'cmbx/cmbx.md', op: 'upsert', fiber: baseFiber() },
       ]);
       expect(store.getSnapshot('remote-cineca')!.byId.has('cmbx')).toBe(true);
     });
@@ -120,8 +114,8 @@ describe('FiberTreeSnapshotStore', () => {
     it('delete removes a fiber', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
-        { path: 'pure_eb/pure_eb.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
+        { path: 'pure_eb/pure_eb.md', fiber: baseFiber() },
       ]);
       store.applyDelta('remote-cineca', [
         { path: 'cmbx/cmbx.md', op: 'delete' },
@@ -134,8 +128,8 @@ describe('FiberTreeSnapshotStore', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', []);
       store.applyDelta('remote-cineca', [
-        { path: 'cmbx/notes.md', op: 'upsert', content: 'stray' },
-        { path: 'cmbx/cmbx.md', op: 'upsert', content: baseFm() },
+        { path: 'cmbx/notes.md', op: 'upsert', fiber: baseFiber({ name: 'stray' }) },
+        { path: 'cmbx/cmbx.md', op: 'upsert', fiber: baseFiber() },
       ]);
       expect(store.getSnapshot('remote-cineca')!.fibers.map(f => f.id)).toEqual(['cmbx']);
     });
@@ -143,7 +137,7 @@ describe('FiberTreeSnapshotStore', () => {
     it('drops a delta batch if no snapshot exists yet', () => {
       const store = new FiberTreeSnapshotStore();
       store.applyDelta('remote-cineca', [
-        { path: 'cmbx/cmbx.md', op: 'upsert', content: baseFm() },
+        { path: 'cmbx/cmbx.md', op: 'upsert', fiber: baseFiber() },
       ]);
       expect(store.getSnapshot('remote-cineca')).toBeNull();
     });
@@ -151,12 +145,12 @@ describe('FiberTreeSnapshotStore', () => {
     it('a delta after staleness flips back to fresh', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       expect(store.getSnapshot('remote-cineca')!.status).toBe('stale');
       store.applyDelta('remote-cineca', [
-        { path: 'cmbx/cmbx.md', op: 'upsert', content: baseFm() },
+        { path: 'cmbx/cmbx.md', op: 'upsert', fiber: baseFiber() },
       ]);
       expect(store.getSnapshot('remote-cineca')!.status).toBe('fresh');
       expect(store.getSnapshot('remote-cineca')!.staleSince).toBeUndefined();
@@ -167,7 +161,7 @@ describe('FiberTreeSnapshotStore', () => {
     it('markStale flips status, snapshot is preserved', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       const snap = store.getSnapshot('remote-cineca');
@@ -192,10 +186,10 @@ describe('FiberTreeSnapshotStore', () => {
     it('returns every origin’s snapshot', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
-        { path: 'pure_eb/pure_eb.md', content: baseFm() },
+        { path: 'pure_eb/pure_eb.md', fiber: baseFiber() },
       ]);
       const all = store.getAllSnapshots();
       expect(all.map(s => s.originId).sort()).toEqual(['remote-candide', 'remote-cineca']);
@@ -211,7 +205,7 @@ describe('FiberTreeSnapshotStore', () => {
     it('returns [] for fresh-only snapshots', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       expect(store.getStaleOriginsForFiber('cmbx')).toEqual([]);
     });
@@ -219,8 +213,8 @@ describe('FiberTreeSnapshotStore', () => {
     it('returns the originId when a stale snapshot owns the fiber', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
-        { path: 'pure_eb/pure_eb.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
+        { path: 'pure_eb/pure_eb.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       expect(store.getStaleOriginsForFiber('cmbx')).toEqual(['remote-cineca']);
@@ -230,7 +224,7 @@ describe('FiberTreeSnapshotStore', () => {
     it('returns [] for fibers not in any stale snapshot', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       expect(store.getStaleOriginsForFiber('unrelated')).toEqual([]);
@@ -239,10 +233,10 @@ describe('FiberTreeSnapshotStore', () => {
     it('lists every stale origin that owns the fiber', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       store.markStale('remote-candide', '2026-04-29T00:00:00Z');
@@ -255,7 +249,7 @@ describe('FiberTreeSnapshotStore', () => {
     it('a snapshot that flips back to fresh stops gating dispatch', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       expect(store.getStaleOriginsForFiber('cmbx')).toEqual(['remote-cineca']);
@@ -266,10 +260,10 @@ describe('FiberTreeSnapshotStore', () => {
     it('mixed fresh + stale: only stale origin appears in the result', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.upsertFullDump('remote-candide', '/automnt/candide/loom', [
-        { path: 'cmbx/cmbx.md', content: baseFm() },
+        { path: 'cmbx/cmbx.md', fiber: baseFiber() },
       ]);
       store.markStale('remote-cineca', '2026-04-29T00:00:00Z');
       // candide stays fresh

@@ -4,7 +4,7 @@ import { promisify } from 'util';
 
 import { WebSocket } from 'ws';
 
-import { countOpenFibers, getAllFibers, parseFiber } from './FiberReader.js';
+import { countOpenFibers, getAllFibers, mapFeltJsonToFiber } from './FiberReader.js';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
 import type { MeetingBridgeState } from './MeetingBridge.js';
@@ -462,15 +462,14 @@ export class BrowserStateCoordinator {
   }> {
     const escapedPath = shellEscape(cityPath);
 
-    // One SSH round-trip yields both the felt-indexed fibers and the raw
-    // root-fiber files. The roots are concatenated after a sentinel; we
-    // splice them in if `felt ls` missed them — current felt CLI sometimes
-    // doesn't index the bare `.felt/<slug>.md` entry-point on remote hosts
-    // (regression of gotcha-remote-felt-misses-root). Parsing roots locally
-    // with the same parseFiber the local FiberReader uses keeps semantics
-    // identical to a local city. Using `;` (not `&&`) inside the for-loop
-    // matters: bash can't parse `for ...; do && body` — see
-    // gotcha-ssh-shell-loop-amp-amp.
+    // One SSH round-trip yields both the felt-indexed fibers and JSON
+    // `felt show -j` payloads for bare root files. We splice the roots in if
+    // `felt ls` missed them — current felt CLI sometimes doesn't index the
+    // bare `.felt/<slug>.md` entry-point on remote hosts (regression of
+    // gotcha-remote-felt-misses-root). Using `felt show` for the fallback keeps
+    // felt as the sole reader while preserving the old one-round-trip shape.
+    // Using `;` (not `&&`) inside the for-loop matters: bash can't parse
+    // `for ...; do && body` — see gotcha-ssh-shell-loop-amp-amp.
     const ROOT_SENTINEL = '@@@PORTOLAN_ROOTS@@@';
     const FILE_SENTINEL = '@@@PORTOLAN_FILE@@@';
     const command =
@@ -479,8 +478,9 @@ export class BrowserStateCoordinator {
       `echo; echo '${ROOT_SENTINEL}'; ` +
       `for f in .felt/*.md; do ` +
       `  [ -f "$f" ] || continue; ` +
-      `  echo "${FILE_SENTINEL}:$(basename "$f" .md)"; ` +
-      `  cat "$f"; ` +
+      `  slug=$(basename "$f" .md); ` +
+      `  echo "${FILE_SENTINEL}:$slug"; ` +
+      `  felt show "$slug" -j 2>/dev/null || echo '{}'; ` +
       `done`;
 
     try {
@@ -495,7 +495,11 @@ export class BrowserStateCoordinator {
       const rootsPart = splitIdx >= 0 ? stdout.slice(splitIdx + ROOT_SENTINEL.length) : '';
 
       const raw = JSON.parse(jsonPart.trim() || '[]');
-      const fibers: RemoteFiber[] = raw.map((fiber: any): RemoteFiber => mapRawFiber(fiber));
+      const fibers: RemoteFiber[] = Array.isArray(raw)
+        ? raw
+            .map((fiber: unknown) => mapRawFiber(fiber))
+            .filter((fiber): fiber is RemoteFiber => fiber !== null)
+        : [];
 
       // Workaround for missing root fibers: parse any .felt/<slug>.md file
       // not already represented in the felt-indexed set, mark isRoot=true.
@@ -516,32 +520,28 @@ export class BrowserStateCoordinator {
   }
 }
 
-function mapRawFiber(fiber: any): RemoteFiber {
+function mapRawFiber(raw: unknown): RemoteFiber | null {
   // `felt ls --json` emits slash-joined IDs for nested fibers and sets
   // `entry_point: true` on the bare `.felt/<slug>.md` root fiber.
-  const id = fiber.id as string;
-  const lastSlash = id.lastIndexOf('/');
+  const fiber = mapFeltJsonToFiber(raw);
+  if (!fiber) return null;
   return {
-    id,
-    name: fiber.name || id,
+    id: fiber.id,
+    name: fiber.name || fiber.id,
     kind: fiber.kind || 'task',
     status: fiber.status || '',
     body: fiber.body || undefined,
     outcome: fiber.outcome || undefined,
-    tags: Array.isArray(fiber.tags)
-      ? fiber.tags.flatMap((tag: string) =>
-          tag.includes(',') ? tag.split(',').map((t: string) => t.trim()).filter(Boolean) : [tag],
-        )
-      : undefined,
-    closedAt: fiber.closed_at || undefined,
-    parentId: lastSlash >= 0 ? id.slice(0, lastSlash) : null,
-    isRoot: !!fiber.entry_point,
+    tags: fiber.tags,
+    closedAt: fiber.closedAt,
+    parentId: fiber.parentId ?? null,
+    isRoot: !!fiber.isRoot,
   };
 }
 
 function parseRootFibers(rootsPart: string, fileSentinel: string): RemoteFiber[] {
   const out: RemoteFiber[] = [];
-  // Each chunk: `${FILE_SENTINEL}:<slug>\n<file contents>`. Split keeps
+  // Each chunk: `${FILE_SENTINEL}:<slug>\n<felt show -j output>`. Split keeps
   // the leading empty string, which we skip.
   const chunks = rootsPart.split(`${fileSentinel}:`);
   for (let i = 1; i < chunks.length; i++) {
@@ -549,21 +549,15 @@ function parseRootFibers(rootsPart: string, fileSentinel: string): RemoteFiber[]
     const newlineIdx = chunk.indexOf('\n');
     if (newlineIdx < 0) continue;
     const slug = chunk.slice(0, newlineIdx).trim();
-    const content = chunk.slice(newlineIdx + 1);
-    if (!slug) continue;
-    const parsed = parseFiber(slug, content);
-    out.push({
-      id: parsed.id,
-      name: parsed.name,
-      kind: parsed.kind,
-      status: parsed.status,
-      body: parsed.body,
-      outcome: parsed.outcome,
-      tags: parsed.tags,
-      closedAt: parsed.closedAt,
-      parentId: null,
-      isRoot: true,
-    });
+    const jsonText = chunk.slice(newlineIdx + 1).trim();
+    if (!slug || !jsonText) continue;
+    try {
+      const parsed = mapRawFiber(JSON.parse(jsonText));
+      if (!parsed) continue;
+      out.push({ ...parsed, parentId: null, isRoot: true });
+    } catch {
+      // Ignore malformed root fallback payloads.
+    }
   }
   return out;
 }

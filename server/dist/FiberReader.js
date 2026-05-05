@@ -2,7 +2,6 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { parse as parseYaml } from 'yaml';
 const execFileAsync = promisify(execFile);
 // ── Internal ───────────────────────────────────────────────────────
 /**
@@ -61,18 +60,16 @@ async function readAllFibers(cityPath, opts = {}) {
     return fibers;
 }
 /**
- * Map one entry from `felt ls -j` JSON output onto the Portolan Fiber
- * interface. Mirrors what `parseFiber` does for raw markdown — same shape
- * out, different shape in. Tool-owned namespaces (`shuttle:`, `tempered:`,
- * `depends_on:`) arrive as native JSON values (felt v1.0.4+) so we read
- * them directly rather than re-parsing YAML.
+ * Map one entry from felt's JSON output onto the Portolan Fiber interface.
+ * Tool-owned namespaces (`shuttle:`, `tempered:`, `depends_on:`) arrive as
+ * native JSON values (felt v1.0.4+) so we read them directly rather than
+ * re-parsing YAML.
  *
  * `kind` and `priority` are not part of felt's serialized model — they're
- * Portolan/ASTRA conventions felt does not interpret. We default them to
- * what `parseFiber` falls back to so downstream consumers see a uniform
- * shape regardless of source.
+ * Portolan/ASTRA conventions felt does not interpret. We default them so
+ * downstream consumers see a uniform shape regardless of source.
  */
-function mapFeltJsonToFiber(item) {
+export function mapFeltJsonToFiber(item) {
     if (!item || typeof item !== 'object' || Array.isArray(item))
         return null;
     const f = item;
@@ -148,8 +145,8 @@ function mapFeltJsonToFiber(item) {
             : null;
     // kind / priority are Portolan/ASTRA conventions felt does not interpret.
     // They land in ExtraFields and surface as flat top-level JSON keys
-    // (felt v1.0.4+); we read them here with the same defaults `parseFiber`
-    // falls back to, so downstream consumers see a uniform shape.
+    // (felt v1.0.4+); we read them here with stable defaults so downstream
+    // consumers see a uniform shape.
     const kind = typeof f.kind === 'string' && f.kind ? f.kind : 'task';
     const priorityRaw = f.priority;
     const priority = typeof priorityRaw === 'number'
@@ -252,6 +249,21 @@ export async function getFibersByTag(cityPath, tagPrefix) {
     return fibers.filter(f => f.tags?.some(t => t.startsWith(tagPrefix)));
 }
 /**
+ * Read one fiber through `felt show -j` and map it onto the Portolan Fiber
+ * interface. Used when a caller needs a single authoritative post-write read
+ * without reparsing raw markdown on the Node side.
+ */
+export async function getFiber(cityPath, fiberId) {
+    try {
+        const { stdout } = await execFileAsync('felt', ['-C', cityPath, 'show', fiberId, '-j'], { maxBuffer: 8 * 1024 * 1024 });
+        return mapFeltJsonToFiber(JSON.parse(stdout));
+    }
+    catch (err) {
+        console.warn(`felt show failed for ${cityPath}:${fiberId}:`, err);
+        return null;
+    }
+}
+/**
  * Gets all fibers for a city regardless of status. `withBody` is off by
  * default — pass `{ withBody: true }` only when the caller actually scores
  * or renders against fiber bodies (search, tapestry). Most consumers
@@ -259,151 +271,5 @@ export async function getFibersByTag(cityPath, tagPrefix) {
  */
 export async function getAllFibers(cityPath, opts = {}) {
     return readAllFibers(cityPath, opts);
-}
-// ── Parser ─────────────────────────────────────────────────────────
-/**
- * Parse a fiber file into a Fiber object.
- *
- * @param id The fiber ID (slug, e.g., "my-fiber")
- * @param content File content with YAML frontmatter
- */
-export function parseFiber(id, content) {
-    // Extract frontmatter
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    const frontmatter = fmMatch ? fmMatch[1] : '';
-    const body = fmMatch ? content.slice(fmMatch[0].length).trim() : content.trim();
-    // Parse the frontmatter once with a real YAML parser so we get block
-    // scalars (`|`, `|-`, `>`), multi-line flow strings, and proper unquoting
-    // for free. The previous regex-based approach treated `outcome: |-`
-    // as a literal string `"|-"` and silently corrupted any multi-line
-    // outcome — see ai-futures/portolan/gotchas/constitution-draft-prefix-in-title
-    // for the surfacing.
-    let fm = {};
-    try {
-        const parsed = parseYaml(frontmatter);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            fm = parsed;
-        }
-    }
-    catch {
-        // Bad YAML → empty frontmatter. The fiber still gets included with
-        // defaults (matches the old regex parser's silent-skip behavior).
-    }
-    // Single-value field. Coerces Date (from ISO timestamps in YAML) back
-    // to ISO string so downstream consumers see strings consistently.
-    const getField = (name) => {
-        const v = fm[name];
-        if (v === null || v === undefined)
-            return undefined;
-        if (v instanceof Date)
-            return v.toISOString();
-        return String(v).trim();
-    };
-    // List field (YAML sequence). Strings get trimmed; other types are
-    // coerced via String().
-    const getListField = (name) => {
-        const v = fm[name];
-        if (!Array.isArray(v))
-            return undefined;
-        return v.map(item => String(item).trim());
-    };
-    // Normalize tags: split comma-separated values within a single YAML list item
-    // into individual tags. Handles "claim, tapestry:foo" → ["claim", "tapestry:foo"]
-    const rawTags = getListField('tags');
-    const tags = rawTags?.flatMap(t => t.includes(',') ? t.split(',').map(s => s.trim()).filter(Boolean) : [t]);
-    const dependsOn = getListField('depends-on') ?? getListField('depends_on');
-    // tempered: human-acceptance signal. Parsed permissively — frontmatter
-    // convention is `tempered: true` but YAML truthiness is forgiving.
-    const temperedRaw = getField('tempered');
-    const tempered = temperedRaw === undefined
-        ? undefined
-        : /^(true|yes|1)$/i.test(temperedRaw);
-    // hasShuttleBlock: true when the fiber carries a shuttle: frontmatter block.
-    // This is the dispatch-eligibility signal post-migration (replaces the
-    // constitution/draft tag predicate). Non-null object means the block is present.
-    const shuttleRaw = fm['shuttle'];
-    const hasShuttleBlock = shuttleRaw !== null && shuttleRaw !== undefined && typeof shuttleRaw === 'object' && !Array.isArray(shuttleRaw);
-    // shuttleEnabled: the `shuttle.enabled` field. Drives drafts vs inFlight split:
-    // false = drafts (installed, not yet queued for dispatch); true = inFlight.
-    const shuttleEnabled = hasShuttleBlock
-        ? shuttleRaw['enabled'] === false ? false : true
-        : undefined;
-    // shuttleKind: oneshot (default when block present but kind absent) | standing.
-    // Standing roles have richer lifecycle and need different transition semantics.
-    let shuttleKind;
-    if (hasShuttleBlock) {
-        const k = shuttleRaw['kind'];
-        shuttleKind = k === 'standing' ? 'standing' : 'oneshot';
-    }
-    // shuttleReviewState: shuttle.review.state — only meaningful for standing roles.
-    // Reads as 'awaiting' between worker exit and human accept.
-    let shuttleReviewState;
-    if (hasShuttleBlock) {
-        const review = shuttleRaw['review'];
-        if (review && typeof review === 'object' && !Array.isArray(review)) {
-            const s = review['state'];
-            if (s === 'scheduled' || s === 'awaiting' || s === 'accepted') {
-                shuttleReviewState = s;
-            }
-        }
-    }
-    // shuttleSessionId: shuttle.session.id — the harness-native session UUID from
-    // the most recent dispatch. Written by the Shuttle daemon via `shuttle-ctl
-    // session-set`; used to enable "Resume previous" on awaiting-review cards.
-    let shuttleSessionId;
-    if (hasShuttleBlock) {
-        const session = shuttleRaw['session'];
-        if (session && typeof session === 'object' && !Array.isArray(session)) {
-            const id = session['id'];
-            if (typeof id === 'string' && id)
-                shuttleSessionId = id;
-        }
-    }
-    // shuttleAgent: shuttle.agent — the agent id to dispatch with.
-    let shuttleAgent;
-    if (hasShuttleBlock) {
-        const a = shuttleRaw['agent'];
-        if (typeof a === 'string' && a)
-            shuttleAgent = a;
-    }
-    // shuttleSchedule: shuttle.schedule.{expr,tz} — for standing roles.
-    // Pre-CLI fibers may carry the legacy `timezone` key; mirror both.
-    let shuttleSchedule;
-    if (hasShuttleBlock) {
-        const sched = shuttleRaw['schedule'];
-        if (sched && typeof sched === 'object' && !Array.isArray(sched)) {
-            const m = sched;
-            const expr = typeof m['expr'] === 'string' ? m['expr'].trim() : '';
-            const tzRaw = typeof m['tz'] === 'string'
-                ? m['tz']
-                : typeof m['timezone'] === 'string'
-                    ? m['timezone']
-                    : '';
-            const tz = tzRaw.trim() || 'UTC';
-            if (expr)
-                shuttleSchedule = { expr, tz };
-        }
-    }
-    return {
-        id,
-        name: getField('name') || id,
-        status: getField('status') || '',
-        kind: getField('kind') || 'task',
-        priority: parseInt(getField('priority') || '2', 10),
-        createdAt: getField('created-at') || getField('created') || '',
-        closedAt: getField('closed-at') || getField('closed') || undefined,
-        outcome: getField('outcome') || undefined,
-        body: body || undefined,
-        tags: tags,
-        dependsOn: dependsOn,
-        tempered: tempered,
-        hasShuttleBlock: hasShuttleBlock || undefined,
-        shuttleEnabled,
-        shuttleKind,
-        shuttleReviewState,
-        shuttleSessionId,
-        shuttleAgent,
-        shuttleSchedule,
-    };
 }
 //# sourceMappingURL=FiberReader.js.map

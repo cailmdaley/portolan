@@ -11,7 +11,7 @@ import { HttpApi } from '../HttpApi.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { parseFiber } from '../FiberReader.js';
+import { mapFeltJsonToFiber } from '../FiberReader.js';
 import { readEvidence, getSpecName, computeStaleness } from '../EvidenceReader.js';
 import {
   httpRequest,
@@ -435,102 +435,81 @@ describe('HttpApi — /tapestry-asset endpoint', () => {
   });
 });
 
-// ── FiberReader parseFiber tests ─────────────────────────────────
+// ── FiberReader felt-JSON mapping tests ──────────────────────────
 
-describe('FiberReader — parseFiber with tags and dependsOn', () => {
-  it('parses tags from YAML list', () => {
-    const content = `---
-name: Test fiber
-status: open
-kind: claim
-tags:
-    - tapestry:cosebis
-    - ralph:1
-priority: 2
-created-at: 2026-01-01T00:00:00Z
----
+describe('FiberReader — mapFeltJsonToFiber', () => {
+  it('maps tags and depends_on from felt JSON', () => {
+    const fiber = mapFeltJsonToFiber({
+      id: 'test-abc123',
+      name: 'Test fiber',
+      status: 'open',
+      kind: 'claim',
+      tags: ['tapestry:cosebis', 'ralph:1'],
+      depends_on: ['upstream-abc123', 'foundation-def456'],
+      priority: 2,
+      created_at: '2026-01-01T00:00:00Z',
+    });
 
-Body text.`;
-
-    const fiber = parseFiber('test-abc123.md', content);
-
-    expect(fiber.tags).toEqual(['tapestry:cosebis', 'ralph:1']);
-  });
-
-  it('parses depends-on from YAML list', () => {
-    const content = `---
-name: Downstream fiber
-status: open
-kind: claim
-depends-on:
-    - upstream-abc123
-    - foundation-def456
-priority: 2
-created-at: 2026-01-01T00:00:00Z
----`;
-
-    const fiber = parseFiber('downstream-ghi789.md', content);
-
-    expect(fiber.dependsOn).toEqual(['upstream-abc123', 'foundation-def456']);
+    expect(fiber?.tags).toEqual(['tapestry:cosebis', 'ralph:1']);
+    expect(fiber?.dependsOn).toEqual(['upstream-abc123', 'foundation-def456']);
   });
 
   it('returns undefined for missing tags/dependsOn', () => {
-    const content = `---
-name: Plain fiber
-status: open
-kind: task
-priority: 2
-created-at: 2026-01-01T00:00:00Z
----`;
+    const fiber = mapFeltJsonToFiber({
+      id: 'plain-abc123',
+      name: 'Plain fiber',
+      status: 'open',
+      kind: 'task',
+      priority: 2,
+      created_at: '2026-01-01T00:00:00Z',
+    });
 
-    const fiber = parseFiber('plain-abc123.md', content);
-
-    expect(fiber.tags).toBeUndefined();
-    expect(fiber.dependsOn).toBeUndefined();
+    expect(fiber?.tags).toBeUndefined();
+    expect(fiber?.dependsOn).toBeUndefined();
   });
 
-  it('parses created-at and closed-at correctly', () => {
-    const content = `---
-name: Complete fiber
-status: closed
-kind: claim
-priority: 2
-created-at: 2026-01-01T00:00:00Z
-closed-at: 2026-01-15T12:00:00Z
-outcome: Analysis complete
----`;
+  it('maps created_at, closed_at, outcome, and body', () => {
+    const fiber = mapFeltJsonToFiber({
+      id: 'complete-abc123',
+      name: 'Complete fiber',
+      status: 'closed',
+      kind: 'claim',
+      priority: 2,
+      created_at: '2026-01-01T00:00:00Z',
+      closed_at: '2026-01-15T12:00:00Z',
+      outcome: 'Analysis complete',
+      body: '## Method\n\nUse weak lensing cross-correlation.',
+    });
 
-    const fiber = parseFiber('complete-abc123.md', content);
-
-    expect(fiber.createdAt).toBe('2026-01-01T00:00:00Z');
-    expect(fiber.closedAt).toBe('2026-01-15T12:00:00Z');
-    expect(fiber.outcome).toBe('Analysis complete');
+    expect(fiber?.createdAt).toBe('2026-01-01T00:00:00Z');
+    expect(fiber?.closedAt).toBe('2026-01-15T12:00:00Z');
+    expect(fiber?.outcome).toBe('Analysis complete');
+    expect(fiber?.body).toContain('weak lensing');
   });
 
-  it('extracts body text after frontmatter', () => {
-    const content = `---
-name: With body
-status: open
-kind: claim
-tags:
-    - tapestry:test
-priority: 2
-created-at: 2026-01-01T00:00:00Z
----
+  it('maps shuttle block state from felt JSON', () => {
+    const fiber = mapFeltJsonToFiber({
+      id: 'standing-role',
+      name: 'Standing role',
+      status: 'active',
+      created_at: '2026-01-01T00:00:00Z',
+      shuttle: {
+        enabled: true,
+        kind: 'standing',
+        agent: 'claude-sonnet',
+        review: { state: 'awaiting' },
+        session: { id: 'sess-123' },
+        schedule: { expr: '0 9 * * 1-5', tz: 'Europe/Paris' },
+      },
+    });
 
-## Method
-
-Use weak lensing cross-correlation.
-
-## Context
-
-Follow standard pipeline.`;
-
-    const fiber = parseFiber('body-abc123.md', content);
-
-    expect(fiber.body).toContain('## Method');
-    expect(fiber.body).toContain('weak lensing');
-    expect(fiber.body).toContain('## Context');
+    expect(fiber?.hasShuttleBlock).toBe(true);
+    expect(fiber?.shuttleEnabled).toBe(true);
+    expect(fiber?.shuttleKind).toBe('standing');
+    expect(fiber?.shuttleReviewState).toBe('awaiting');
+    expect(fiber?.shuttleSessionId).toBe('sess-123');
+    expect(fiber?.shuttleAgent).toBe('claude-sonnet');
+    expect(fiber?.shuttleSchedule).toEqual({ expr: '0 9 * * 1-5', tz: 'Europe/Paris' });
   });
 });
 

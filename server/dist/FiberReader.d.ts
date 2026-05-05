@@ -62,6 +62,17 @@ export interface Fiber {
     isRoot?: boolean;
 }
 /**
+ * Map one entry from felt's JSON output onto the Portolan Fiber interface.
+ * Tool-owned namespaces (`shuttle:`, `tempered:`, `depends_on:`) arrive as
+ * native JSON values (felt v1.0.4+) so we read them directly rather than
+ * re-parsing YAML.
+ *
+ * `kind` and `priority` are not part of felt's serialized model — they're
+ * Portolan/ASTRA conventions felt does not interpret. We default them so
+ * downstream consumers see a uniform shape regardless of source.
+ */
+export declare function mapFeltJsonToFiber(item: unknown): Fiber | null;
+/**
  * Counts open fibers for a city by reading its .felt/ directory.
  */
 export declare function countOpenFibers(cityPath: string): Promise<number>;
@@ -79,6 +90,12 @@ export declare function getRecentlyClosed(cityPath: string, limit: number): Prom
  */
 export declare function getFibersByTag(cityPath: string, tagPrefix: string): Promise<Fiber[]>;
 /**
+ * Read one fiber through `felt show -j` and map it onto the Portolan Fiber
+ * interface. Used when a caller needs a single authoritative post-write read
+ * without reparsing raw markdown on the Node side.
+ */
+export declare function getFiber(cityPath: string, fiberId: string): Promise<Fiber | null>;
+/**
  * Gets all fibers for a city regardless of status. `withBody` is off by
  * default — pass `{ withBody: true }` only when the caller actually scores
  * or renders against fiber bodies (search, tapestry). Most consumers
@@ -87,11 +104,4 @@ export declare function getFibersByTag(cityPath: string, tagPrefix: string): Pro
 export declare function getAllFibers(cityPath: string, opts?: {
     withBody?: boolean;
 }): Promise<Fiber[]>;
-/**
- * Parse a fiber file into a Fiber object.
- *
- * @param id The fiber ID (slug, e.g., "my-fiber")
- * @param content File content with YAML frontmatter
- */
-export declare function parseFiber(id: string, content: string): Fiber;
 //# sourceMappingURL=FiberReader.d.ts.map

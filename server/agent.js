@@ -539,16 +539,11 @@ function processEvent(event) {
 // ============================================================================
 
 /**
- * Recursively collect every `.md` file under FELT_DIR. Returns an array of
- * `{path, content}` objects with `path` relative to FELT_DIR (e.g.
- * `cmbx/cmbx.md`, `ai-futures/portolan/portolan.md`).
- *
- * The agent ships every .md file unfiltered; the server's
- * FiberTreeSnapshotStore drops non-container .md files (sibling notes that
- * aren't fibers) via `idFromPath`. Keeping the agent simple — no YAML
- * parsing, no fiber-shape awareness — keeps deployment footprint minimal.
+ * Recursively collect every container-fiber path under FELT_DIR. Returns
+ * `.felt/`-relative paths (e.g. `cmbx/cmbx.md`, `ai-futures/portolan/portolan.md`).
+ * Non-container markdown files are skipped via `shuttleIdFromPath`.
  */
-function collectFeltMdFiles(dir) {
+function collectFeltFiberPaths(dir) {
     const out = [];
     function walk(currentDir) {
         let entries;
@@ -562,14 +557,8 @@ function collectFeltMdFiles(dir) {
             if (entry.isDirectory()) {
                 walk(full);
             } else if (entry.isFile() && entry.name.endsWith('.md')) {
-                let content;
-                try {
-                    content = readFileSync(full, 'utf-8');
-                } catch {
-                    continue; // skip unreadable
-                }
                 const relPath = relative(dir, full).split(sep).join('/');
-                out.push({ path: relPath, content });
+                if (shuttleIdFromPath(relPath)) out.push(relPath);
             }
         }
     }
@@ -577,24 +566,71 @@ function collectFeltMdFiles(dir) {
     return out;
 }
 
+async function readFeltFiberJson(fiberId) {
+    try {
+        const { stdout } = await execFileAsync(
+            'felt',
+            ['-C', FELT_HOST, 'show', fiberId, '-j'],
+            { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 },
+        );
+        const parsed = JSON.parse(stdout);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+async function collectFiberTreeFiles() {
+    const paths = collectFeltFiberPaths(FELT_DIR);
+    const indexed = new Map();
+
+    try {
+        const { stdout } = await execFileAsync(
+            'felt',
+            ['-C', FELT_HOST, 'ls', '-s', 'all', '-j', '--body'],
+            { timeout: 20_000, maxBuffer: 32 * 1024 * 1024 },
+        );
+        const raw = JSON.parse(stdout.trim() || '[]');
+        if (Array.isArray(raw)) {
+            for (const fiber of raw) {
+                if (!fiber || typeof fiber !== 'object' || Array.isArray(fiber)) continue;
+                const id = fiber.id;
+                if (typeof id === 'string' && id) indexed.set(id, fiber);
+            }
+        }
+    } catch {
+        // Fall back to per-fiber `felt show -j` reads below.
+    }
+
+    const files = [];
+    for (const path of paths) {
+        const id = shuttleIdFromPath(path);
+        if (!id) continue;
+        const fiber = indexed.get(id) ?? await readFeltFiberJson(id);
+        if (!fiber) continue;
+        files.push({ path, fiber });
+    }
+    return files;
+}
+
 /**
  * Send a full fiber-tree dump for FELT_DIR. Called after the agent
  * registers with the server (initial connect, and on every reconnect — the
  * server replaces the snapshot wholesale, no reconciliation needed).
  */
-function sendFiberTreeDump() {
+async function sendFiberTreeDump() {
     if (!existsSync(FELT_DIR)) {
         log(`Fiber-tree dump skipped: ${FELT_DIR} does not exist`);
         return;
     }
     const t0 = Date.now();
-    const files = collectFeltMdFiles(FELT_DIR);
+    const files = await collectFiberTreeFiles();
     if (connected && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'fiber_tree_dump',
             payload: { feltHost: FELT_HOST, files },
         }));
-        log(`Sent fiber_tree_dump: ${files.length} files (walk ${Date.now() - t0}ms) from ${FELT_DIR}`);
+        log(`Sent fiber_tree_dump: ${files.length} fibers (walk ${Date.now() - t0}ms) from ${FELT_DIR}`);
     }
 }
 
@@ -639,22 +675,30 @@ function startFiberTreeWatcher() {
 
 function scheduleFiberTreeFlush() {
     if (fiberTreeFlushTimer) clearTimeout(fiberTreeFlushTimer);
-    fiberTreeFlushTimer = setTimeout(flushFiberTreeDeltas, FELT_WATCH_DEBOUNCE_MS);
+    fiberTreeFlushTimer = setTimeout(() => {
+        void flushFiberTreeDeltas();
+    }, FELT_WATCH_DEBOUNCE_MS);
 }
 
-function flushFiberTreeDeltas() {
+async function flushFiberTreeDeltas() {
     fiberTreeFlushTimer = null;
     if (fiberTreePending.size === 0) return;
     const deltas = [];
     for (const [path, op] of fiberTreePending) {
         const fullPath = join(FELT_DIR, path);
         if (op === 'upsert') {
-            try {
-                const content = readFileSync(fullPath, 'utf-8');
-                deltas.push({ path, op: 'upsert', content });
-            } catch {
-                // File vanished between watch and read — emit delete.
+            if (!existsSync(fullPath)) {
                 deltas.push({ path, op: 'delete' });
+                continue;
+            }
+            const id = shuttleIdFromPath(path);
+            const fiber = id ? await readFeltFiberJson(id) : null;
+            if (fiber) {
+                deltas.push({ path, op: 'upsert', fiber });
+            } else {
+                // If felt can't read the file yet, let the next reconnect dump
+                // recover it rather than shipping a half-parsed fallback.
+                debug(`Skipping fiber_tree_delta upsert for ${path}: felt show failed`);
             }
         } else {
             deltas.push({ path, op: 'delete' });
@@ -691,10 +735,10 @@ function stopFiberTreeWatcher() {
 // AgentRequestCoordinator's correlation-ID layer. The payload is already the
 // semantic mutation: shuttle lifecycle/outcome verbs or a felt tag-replace.
 // The agent shells out to the canonical CLI writer on the remote host,
-// re-reads the fiber file, and replies with `kanban-transition-result`.
-// The reply carries the new file content so the server applies a snapshot
-// delta eagerly — fs.watch will fire its own delta moments later, but we
-// don't want the HTTP caller to race with it.
+// re-reads the fiber through `felt show -j`, and replies with
+// `kanban-transition-result`. The reply carries the new felt JSON payload so
+// the server applies a snapshot delta eagerly — fs.watch will fire its own
+// delta moments later, but we don't want the HTTP caller to race with it.
 
 function normalizeTagList(tags) {
     const seen = new Set();
@@ -786,9 +830,10 @@ async function runKanbanMutation(payload, fullPath) {
 
 /**
  * Handle a `kanban-transition` request from the server. Reads
- * `<FELT_DIR>/<path>`, applies the semantic CLI mutation, re-reads the file,
- * and replies with `{correlationId, ok: true, content}` so the server can
- * apply a snapshot delta eagerly. Errors come back as `{ok: false, error}`.
+ * `<FELT_DIR>/<path>`, applies the semantic CLI mutation, re-reads the fiber
+ * through felt, and replies with `{correlationId, ok: true, fiber}` so the
+ * server can apply a snapshot delta eagerly. Errors come back as
+ * `{ok: false, error}`.
  */
 async function handleKanbanTransition(message) {
     const payload = message.payload || {};
@@ -813,8 +858,15 @@ async function handleKanbanTransition(message) {
             throw new Error(`fiber file missing: ${relPath}`);
         }
         await runKanbanMutation(payload, fullPath);
-        const updated = readFileSync(fullPath, 'utf-8');
-        reply({ ok: true, content: updated });
+        const fiberId = shuttleIdFromPath(relPath);
+        if (!fiberId) {
+            throw new Error(`path is not a fiber: ${relPath}`);
+        }
+        const updated = await readFeltFiberJson(fiberId);
+        if (!updated) {
+            throw new Error(`felt show failed after mutation: ${fiberId}`);
+        }
+        reply({ ok: true, fiber: updated });
         const label = payload.kind === 'shuttle' ? payload.verb : payload.kind;
         debug(`kanban-transition ok: ${relPath} → ${label}`);
     } catch (err) {
@@ -1266,7 +1318,7 @@ function connect(serverUrl, sshHost) {
         // any prior snapshot wholesale — reconnects don't need state-diff
         // coordination because the agent is the sole writer to its
         // host's `.felt/`.
-        sendFiberTreeDump();
+        void sendFiberTreeDump();
 
         // Constitution shuttle-remote-dispatch: ship the most recent
         // shuttle snapshot if we have one. Lets the server pick up the

@@ -35,12 +35,12 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { URL } from 'url';
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
-import { getAllFibers, parseFiber, type Fiber } from './FiberReader.js';
+import { getAllFibers, getFiber, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
 import { resolveGlobalFiberId } from './loomGlobalId.js';
@@ -944,7 +944,8 @@ export class HttpApiKanban {
     );
     this.clearFiberPoolCache();
 
-    const refreshed = parseFiber(fiberId, readFileSync(path, 'utf-8'));
+    const refreshed = await getFiber(host, fiberId);
+    if (!refreshed) throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
     const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
     refreshedById.set(fiberId, refreshed);
     let canonicalAfter: string | undefined;
@@ -1038,7 +1039,8 @@ export class HttpApiKanban {
     await this.runFeltTagEdit({ host, fiberId, add, remove });
     this.clearFiberPoolCache();
 
-    const refreshed = parseFiber(fiberId, readFileSync(path, 'utf-8'));
+    const refreshed = await getFiber(host, fiberId);
+    if (!refreshed) throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
     const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
     refreshedById.set(fiberId, refreshed);
     let canonicalAfter: string | undefined;

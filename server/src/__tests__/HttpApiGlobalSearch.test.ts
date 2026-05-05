@@ -13,8 +13,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { HttpApiGlobalSearch } from '../HttpApiGlobalSearch.js';
 import type { FiberTreeSnapshot } from '../FiberTreeSnapshotStore.js';
+import type { Fiber } from '../FiberReader.js';
 import { writeFiber } from './test-utils.js';
-import { parseFiber } from '../FiberReader.js';
 
 /** Like writeFiber but supports nested slugs (e.g. `design/foo` → `design/foo/foo.md`). */
 function writeNestedFiber(feltDir: string, slug: string, content: string): void {
@@ -25,6 +25,18 @@ function writeNestedFiber(feltDir: string, slug: string, content: string): void 
 }
 
 const TEST_ROOT = join(homedir(), '.portolan-test-global-search');
+
+function mockFiber(id: string, overrides: Partial<Fiber> = {}): Fiber {
+  return {
+    id,
+    name: id,
+    status: 'open',
+    kind: 'task',
+    priority: 2,
+    createdAt: '',
+    ...overrides,
+  };
+}
 
 describe('HttpApiGlobalSearch', () => {
   beforeEach(() => {
@@ -127,11 +139,8 @@ describe('HttpApiGlobalSearch', () => {
       '---\nname: Local only\nstatus: active\n---\n',
     );
 
-    const remoteOnly = parseFiber('remote-only', '---\nname: Remote only\nstatus: open\n---\n');
-    const collidingId = parseFiber(
-      'local-only',
-      '---\nname: Stale remote mirror\nstatus: closed\n---\n',
-    );
+    const remoteOnly = mockFiber('remote-only', { name: 'Remote only', status: 'open' });
+    const collidingId = mockFiber('local-only', { name: 'Stale remote mirror', status: 'closed' });
     const snapshot: FiberTreeSnapshot = {
       originId: 'remote-cineca',
       feltHost: '/home/cd/loom',
@@ -320,10 +329,7 @@ describe('HttpApiGlobalSearch', () => {
       '---\nname: Local fiber\nstatus: open\n---\n',
     );
 
-    const remoteFiber = parseFiber(
-      'remote-fiber',
-      '---\nname: Remote fiber\nstatus: active\n---\n',
-    );
+    const remoteFiber = mockFiber('remote-fiber', { name: 'Remote fiber', status: 'active' });
     const staleSnap: FiberTreeSnapshot = {
       originId: 'remote-cineca',
       feltHost: '/home/cd/loom',

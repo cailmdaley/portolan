@@ -128,20 +128,20 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
   remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
   // Stage 4 — remote-origin kanban mutations route through this executor.
   // Sends a `kanban-transition` payload over the agent's WebSocket via the
-  // correlation-ID layer, applies the agent's reply content as a
+  // correlation-ID layer, applies the agent's reply fiber JSON as a
   // `fiber_tree_delta` so the snapshot reflects the new state immediately,
   // and resolves so HttpApiKanban can build the refreshed card. The
   // agent-side fs.watch will fire its own delta moments later; double-apply
-  // is idempotent because the second copy carries identical content.
+  // is idempotent because the second copy carries identical felt JSON.
   remoteTransitionExecutor: async ({ originId, ...payload }) => {
-    const result = await agentRequestCoordinator.send<{ content?: string }>(
+    const result = await agentRequestCoordinator.send<{ fiber?: unknown }>(
       originId,
       'kanban-transition',
       payload,
     );
-    if (typeof result.content === 'string') {
+    if (result.fiber !== undefined) {
       fiberTreeSnapshotStore.applyDelta(originId, [
-        { path: payload.path, op: 'upsert', content: result.content },
+        { path: payload.path, op: 'upsert', fiber: result.fiber },
       ]);
     }
   },
@@ -426,7 +426,7 @@ wss.on('connection', async (ws, req) => {
           // reconciliation to do. See [[constitution-vellum-kanban]].
           const { feltHost, files } = message.payload as {
             feltHost: string;
-            files: Array<{ path: string; content: string }>;
+            files: Array<{ path: string; fiber: unknown }>;
           };
           fiberTreeSnapshotStore.upsertFullDump(origin.id, feltHost, files ?? []);
           console.log(
@@ -436,7 +436,7 @@ wss.on('connection', async (ws, req) => {
           // browsers polling /kanban will pick up the new state on next read.
         } else if (message.type === 'fiber_tree_delta') {
           const { deltas } = message.payload as {
-            deltas: Array<{ path: string; op: 'upsert' | 'delete'; content?: string }>;
+            deltas: Array<{ path: string; op: 'upsert' | 'delete'; fiber?: unknown }>;
           };
           fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
         } else if (message.type === 'kanban-transition-result') {
@@ -444,16 +444,16 @@ wss.on('connection', async (ws, req) => {
           // Resolves or rejects the matching pending entry in the
           // coordinator; the executor in HttpApi then applies the delta
           // and HttpApiKanban builds the refreshed card.
-          const { correlationId, ok, error, content } = message.payload as {
+          const { correlationId, ok, error, fiber } = message.payload as {
             correlationId: string;
             ok: boolean;
             error?: string;
-            content?: string;
+            fiber?: unknown;
           };
           agentRequestCoordinator.handleResult(
             correlationId,
             !!ok,
-            content !== undefined ? { content } : {},
+            fiber !== undefined ? { fiber } : {},
             error,
           );
         }

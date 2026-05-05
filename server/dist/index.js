@@ -114,16 +114,16 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
     // Stage 4 — remote-origin kanban mutations route through this executor.
     // Sends a `kanban-transition` payload over the agent's WebSocket via the
-    // correlation-ID layer, applies the agent's reply content as a
+    // correlation-ID layer, applies the agent's reply fiber JSON as a
     // `fiber_tree_delta` so the snapshot reflects the new state immediately,
     // and resolves so HttpApiKanban can build the refreshed card. The
     // agent-side fs.watch will fire its own delta moments later; double-apply
-    // is idempotent because the second copy carries identical content.
+    // is idempotent because the second copy carries identical felt JSON.
     remoteTransitionExecutor: async ({ originId, ...payload }) => {
         const result = await agentRequestCoordinator.send(originId, 'kanban-transition', payload);
-        if (typeof result.content === 'string') {
+        if (result.fiber !== undefined) {
             fiberTreeSnapshotStore.applyDelta(originId, [
-                { path: payload.path, op: 'upsert', content: result.content },
+                { path: payload.path, op: 'upsert', fiber: result.fiber },
             ]);
         }
     },
@@ -402,8 +402,8 @@ wss.on('connection', async (ws, req) => {
                     // Resolves or rejects the matching pending entry in the
                     // coordinator; the executor in HttpApi then applies the delta
                     // and HttpApiKanban builds the refreshed card.
-                    const { correlationId, ok, error, content } = message.payload;
-                    agentRequestCoordinator.handleResult(correlationId, !!ok, content !== undefined ? { content } : {}, error);
+                    const { correlationId, ok, error, fiber } = message.payload;
+                    agentRequestCoordinator.handleResult(correlationId, !!ok, fiber !== undefined ? { fiber } : {}, error);
                 }
             }
             catch (error) {

@@ -6,11 +6,10 @@ import { join } from 'path';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
-import { getAllFibers, type Fiber } from './FiberReader.js';
+import { getAllFibers, mapFeltJsonToFiber, type Fiber } from './FiberReader.js';
 import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
 import { markdownToMdast } from './MarkdownToMdast.js';
 import { shellEscape } from './ShellPathUtils.js';
-import { parse as parseYaml } from 'yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -511,19 +510,18 @@ export class HttpApiTapestry {
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
     try {
-      const raw = await this.readFiberFile(city.path, slug, sshHost);
-      if (raw === null) {
+      const fiber = sshHost
+        ? await this.readRemoteFiberJson(city.path, slug, sshHost)
+        : await this.readLocalFiberJson(city.path, slug);
+      if (!fiber) {
         this.sendJsonError(res, 404, `Fiber "${slug}" not found in city`);
         return;
       }
 
-      const { frontmatter, body } = splitFrontmatter(raw);
+      const body = typeof fiber.body === 'string' ? fiber.body : '';
+      const frontmatter = frontmatterFromFeltJson(fiber);
       const mdast = body.trim() ? markdownToMdast(body) : undefined;
-      const dependsOn: string[] = Array.isArray(frontmatter['depends-on'])
-        ? frontmatter['depends-on']
-            .map((dep: any) => (typeof dep === 'string' ? dep : dep?.id))
-            .filter((dep: unknown): dep is string => typeof dep === 'string')
-        : [];
+      const dependsOn = dependencyIdsFromValue(fiber.depends_on ?? fiber['depends-on']);
 
       this.sendJsonSuccess(res, {
         slug,
@@ -812,6 +810,54 @@ export class HttpApiTapestry {
     await this.serveTapestryAsset(cityId, assetPath, res);
   }
 
+  private async readLocalFiberJson(
+    cityPath: string,
+    slug: string,
+  ): Promise<Record<string, unknown> | null> {
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
+      return null;
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        'felt',
+        ['show', slug, '-j'],
+        { cwd: cityPath, maxBuffer: 8 * 1024 * 1024, timeout: 15000 },
+      );
+      const parsed = JSON.parse(stdout);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readRemoteFiberJson(
+    cityPath: string,
+    slug: string,
+    sshHost: string,
+  ): Promise<Record<string, unknown> | null> {
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
+      return null;
+    }
+    try {
+      const command = `cd ${shellEscape(cityPath)} && felt show ${shellEscape(slug)} -j 2>/dev/null || echo ''`;
+      const { stdout } = await execFileAsync(
+        'ssh',
+        [sshHost, command],
+        { maxBuffer: 8 * 1024 * 1024, timeout: 30000 },
+      );
+      const trimmed = stdout.trim();
+      if (!trimmed) return null;
+      const parsed = JSON.parse(trimmed);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async readFiberFile(
     cityPath: string,
     slug: string,
@@ -920,23 +966,11 @@ export class HttpApiTapestry {
       );
 
       const raw = JSON.parse(stdout.trim() || '[]');
-      fibers = raw.map((fiber: any): Fiber => ({
-        id: fiber.id,
-        name: fiber.name || fiber.id,
-        status: fiber.status || 'open',
-        kind: fiber.kind || 'task',
-        priority: fiber.priority || 2,
-        createdAt: fiber.created_at || '',
-        closedAt: fiber.closed_at,
-        outcome: fiber.outcome,
-        body: fiber.body,
-        tags: fiber.tags?.flatMap((tag: string) =>
-          tag.includes(',') ? tag.split(',').map((value: string) => value.trim()).filter(Boolean) : [tag]
-        ),
-        dependsOn: fiber.depends_on?.map((dependency: any) =>
-          typeof dependency === 'string' ? dependency : dependency.id
-        ),
-      }));
+      fibers = Array.isArray(raw)
+        ? raw
+            .map((fiber: unknown) => mapFeltJsonToFiber(fiber))
+            .filter((fiber): fiber is Fiber => fiber !== null)
+        : [];
     }
 
     this.fiberListCache.set(cacheKey, {
@@ -1185,21 +1219,22 @@ function resolveRootSlug(
   return allFibers[0]?.id ?? null;
 }
 
-const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+function frontmatterFromFeltJson(fiber: Record<string, unknown>): Record<string, unknown> {
+  const frontmatter: Record<string, unknown> = { ...fiber };
+  delete frontmatter.body;
+  delete frontmatter.id;
+  delete frontmatter.modified_at;
 
-function splitFrontmatter(raw: string): { frontmatter: Record<string, any>; body: string } {
-  const match = raw.match(FRONTMATTER_RE);
-  if (!match) {
-    return { frontmatter: {}, body: raw };
+  if (typeof frontmatter.created_at === 'string' && frontmatter.created_at.startsWith('0001-')) {
+    delete frontmatter.created_at;
   }
-  let frontmatter: Record<string, any> = {};
-  try {
-    const parsed = parseYaml(match[1]);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      frontmatter = parsed as Record<string, any>;
-    }
-  } catch {
-    frontmatter = {};
-  }
-  return { frontmatter, body: raw.slice(match[0].length) };
+
+  return frontmatter;
+}
+
+function dependencyIdsFromValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((dep) => (typeof dep === 'string' ? dep : typeof dep === 'object' && dep !== null ? (dep as Record<string, unknown>).id : undefined))
+    .filter((dep): dep is string => typeof dep === 'string' && dep.length > 0);
 }

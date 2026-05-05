@@ -8,12 +8,12 @@
  * different machine, so the agent ships fiber-tree state over the WebSocket.
  *
  * Lifecycle:
- *   - Agent connects → ships `fiber_tree_dump` (one .md file per fiber).
- *     `upsertFullDump` replaces the prior snapshot wholesale and flips
- *     status to 'fresh'.
+ *   - Agent connects → ships `fiber_tree_dump` (one felt-JSON payload per
+ *     fiber, plus the `.felt/`-relative path it came from). `upsertFullDump`
+ *     replaces the prior snapshot wholesale and flips status to 'fresh'.
  *   - File events on the agent side → debounced+batched
- *     `fiber_tree_delta` (per-file upsert/delete). `applyDelta` mutates
- *     the existing snapshot in place.
+ *     `fiber_tree_delta` (per-file upsert/delete carrying felt JSON on
+ *     upsert). `applyDelta` mutates the existing snapshot in place.
  *   - Agent disconnects → `markStale` flips status; the snapshot is
  *     *kept* (last-known-good) so the kanban can still render the cards
  *     with a "waiting on <hostname>" badge until reconnect (the badge
@@ -27,17 +27,21 @@
  * HttpApiKanban's job. See [[finding-restaged-implementation-plan]] §3a.
  */
 
-import { parseFiber, type Fiber } from './FiberReader.js';
+import { parse as parseYaml } from 'yaml';
+import { mapFeltJsonToFiber, type Fiber } from './FiberReader.js';
 
 // ============================================================================
 // Wire types
 // ============================================================================
 
-/** A single .md file shipped from agent to server, path relative to .felt/. */
+/** One felt JSON payload shipped from agent to server, keyed by .felt path. */
 export interface FiberTreeFile {
   /** Path relative to the agent's feltHost `.felt/` dir. e.g. `cmbx/cmbx.md`. */
   path: string;
-  content: string;
+  /** Parsed `felt show -j` / `felt ls -j --body` payload for this fiber. */
+  fiber?: unknown;
+  /** Legacy fallback for pre-Phase-1 tests / agents; active code paths use `fiber`. */
+  content?: string;
 }
 
 /** A delta op shipped after the initial dump. */
@@ -45,6 +49,8 @@ export interface FiberTreeDelta {
   path: string;
   op: 'upsert' | 'delete';
   /** Required for `upsert`; ignored for `delete`. */
+  fiber?: unknown;
+  /** Legacy fallback for pre-Phase-1 tests / agents; active code paths use `fiber`. */
   content?: string;
 }
 
@@ -84,12 +90,13 @@ export class FiberTreeSnapshotStore {
   /**
    * Replace the snapshot for an origin wholesale. Files whose path doesn't
    * resolve to a fiber id (non-container .md files, junk) are silently
-   * skipped — the agent ships every .md under .felt/ and the server filters.
+   * skipped — the agent ships felt JSON for every candidate under .felt/
+   * and the server filters by container shape.
    */
   upsertFullDump(originId: string, feltHost: string, files: FiberTreeFile[]): void {
     const byId = new Map<string, Fiber>();
     for (const file of files) {
-      const fiber = parseFileToFiber(file.path, file.content);
+      const fiber = coerceWireFiber(file.path, file.fiber ?? file.content);
       if (fiber) byId.set(fiber.id, fiber);
     }
     this.snapshots.set(originId, {
@@ -122,10 +129,9 @@ export class FiberTreeSnapshotStore {
       if (!idInfo) continue; // not a container fiber file
       if (delta.op === 'delete') {
         if (snap.byId.delete(idInfo.id)) mutated = true;
-      } else if (delta.op === 'upsert' && delta.content !== undefined) {
-        const fiber = parseFiber(idInfo.id, delta.content);
-        fiber.isRoot = idInfo.isRoot;
-        fiber.parentId = idInfo.parentId;
+      } else if (delta.op === 'upsert') {
+        const fiber = coerceWireFiber(delta.path, delta.fiber ?? delta.content);
+        if (!fiber) continue;
         snap.byId.set(idInfo.id, fiber);
         mutated = true;
       }
@@ -264,11 +270,44 @@ export function idFromPath(filePath: string): {
   return { id, isRoot: false, parentId };
 }
 
-function parseFileToFiber(path: string, content: string): Fiber | null {
+function coerceWireFiber(path: string, raw: unknown): Fiber | null {
   const idInfo = idFromPath(path);
   if (!idInfo) return null;
-  const fiber = parseFiber(idInfo.id, content);
+
+  const normalized =
+    typeof raw === 'string'
+      ? legacyContentToFeltJson(raw)
+      : raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : null;
+  if (!normalized) return null;
+
+  const seeded = {
+    ...normalized,
+    id: idInfo.id,
+    entry_point: idInfo.isRoot,
+  };
+  const fiber = mapFeltJsonToFiber(seeded);
+  if (!fiber) return null;
   fiber.isRoot = idInfo.isRoot;
   fiber.parentId = idInfo.parentId;
   return fiber;
+}
+
+function legacyContentToFeltJson(content: string): Record<string, unknown> | null {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  const frontmatter = match ? match[1] : '';
+  const body = match ? content.slice(match[0].length) : content;
+
+  try {
+    const parsed = parseYaml(frontmatter);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const fm = { ...(parsed as Record<string, unknown>) };
+    if ('created-at' in fm) fm.created_at = fm['created-at'];
+    if ('closed-at' in fm) fm.closed_at = fm['closed-at'];
+    if ('depends-on' in fm) fm.depends_on = fm['depends-on'];
+    return { ...fm, body };
+  } catch {
+    return null;
+  }
 }
