@@ -945,7 +945,7 @@ export function mountVellumFileViewer(options: MountFileViewerOptions): VellumMo
 
   const render = (opts: Omit<MountFileViewerOptions, 'container'>) => {
     const adapter = createPortolanAdapter({
-      cityId: opts.cityId,
+      collectionId: opts.cityId,
       defaultOriginId: opts.originId,
     })
     root.render(
@@ -1214,7 +1214,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   container.appendChild(closeBtn)
 
   const adapter = createPortolanAdapter({
-    cityId: opts.cityId,
+    collectionId: opts.cityId,
     defaultOriginId: opts.originId,
   })
 

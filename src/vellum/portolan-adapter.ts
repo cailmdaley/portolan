@@ -209,14 +209,17 @@ interface GraphLinkWorld {
 }
 
 export interface PortolanAdapterOptions {
-  /** City ID for graph-scoped queries. Optional because many calls are city-agnostic. */
-  cityId?: string;
+  /** Opaque vellum collection id. Portolan translates it to the server's
+   *  `cityId` query param at the HTTP boundary. Optional because many calls
+   *  are collection-agnostic. */
+  collectionId?: string;
   /** Default origin for file fetches when caller omits it. */
   defaultOriginId?: string;
 }
 
 export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapter {
   const defaultOriginId = opts.defaultOriginId ?? 'local';
+  const collectionId = opts.collectionId;
 
   return {
     async getFile(path: string, options: GetFileOptions = {}): Promise<FileContent | null> {
@@ -256,7 +259,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getFiberContent(slug: string): Promise<FiberContent | null> {
-      if (!opts.cityId) {
+      if (!collectionId) {
         // Global vellum mode: resolve the slug via /fiber-locate, then fetch
         // the fiber content from that city's graph.
 
@@ -294,14 +297,14 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         if (!res || res.status === 404 || !res.ok) return null;
         return res.json() as Promise<FiberContent>;
       }
-      const url = `${API_BASE}/fiber/${encodeSlug(slug)}?cityId=${encodeURIComponent(opts.cityId)}`;
+      const url = `${API_BASE}/fiber/${encodeSlug(slug)}?cityId=${encodeURIComponent(collectionId)}`;
       const res = await fetch(url).catch(() => null);
       if (!res || res.status === 404 || !res.ok) return null;
       return res.json() as Promise<FiberContent>;
     },
 
     async getAstraGraph(): Promise<AstraGraph> {
-      if (!opts.cityId) {
+      if (!collectionId) {
         // Global vellum mode: fetch the synthetic graph from the server.
         // The response contains one node per pinned city (no per-city
         // root fibers — see HttpApiGlobalSearch.globalGraph for why).
@@ -328,7 +331,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
           })),
         };
       }
-      const res = await fetch(`${API_BASE}/astra/graph?cityId=${encodeURIComponent(opts.cityId)}`).catch(
+      const res = await fetch(`${API_BASE}/astra/graph?cityId=${encodeURIComponent(collectionId)}`).catch(
         () => null,
       );
       if (!res || !res.ok) return { nodes: [], links: [] };
@@ -368,8 +371,8 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
 
     async searchFibers(query: string): Promise<SearchHit[]> {
       const q = query.trim();
-      if (!q || !opts.cityId) return [];
-      const url = `${API_BASE}/api/search?cityId=${encodeURIComponent(opts.cityId)}&q=${encodeURIComponent(q)}`;
+      if (!q || !collectionId) return [];
+      const url = `${API_BASE}/api/search?cityId=${encodeURIComponent(collectionId)}&q=${encodeURIComponent(q)}`;
       const res = await fetch(url).catch(() => null);
       if (!res || !res.ok) return [];
       const data = await res.json();
@@ -381,7 +384,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
     },
 
     async getFiberHistory(slug: string): Promise<HistoryEvent[]> {
-      if (!opts.cityId) {
+      if (!collectionId) {
         // Global vellum mode: locate the owning city first, then fetch.
         // Mirrors the getFiberContent global-mode path exactly.
         const locateRes = await fetch(
@@ -397,7 +400,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         const data = await res.json() as { events?: HistoryEvent[] };
         return data.events ?? [];
       }
-      const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(opts.cityId)}`;
+      const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(collectionId)}`;
       const res = await fetch(url).catch(() => null);
       if (!res || !res.ok) return [];
       const data = await res.json() as { events?: HistoryEvent[] };
