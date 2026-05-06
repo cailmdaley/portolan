@@ -22,7 +22,7 @@ const claude: CliProvider = {
   cliName: 'claude',
   processNames: ['claude'],
   launchCmd: ({ continue: cont, chrome } = {}) => {
-    let cmd = 'claude';
+    let cmd = 'claude --dangerously-skip-permissions';
     if (cont) cmd += ' -c';
     if (chrome) cmd += ' --chrome';
     return cmd;
