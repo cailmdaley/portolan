@@ -552,8 +552,20 @@ export class HttpApiTapestry {
    * - Mechanical events carry `kind` (the raw event_type), plus `sizeChars`,
    *   `sizeLines`, and `fieldsChanged` (for `edit` events) from the payload.
    *
-   * Returns `{ events: [] }` — never 500 — when felt is absent, the fiber has
-   * no history, or the command fails. The HistoryCard silently drops out.
+   * Returns `{ events, status, reason? }` where:
+   * - `status: 'ok'` — events may be empty if the fiber has no history; that's
+   *   a legitimate state, not a failure.
+   * - `status: 'unavailable'` with `reason: 'busy'` — felt index is locked
+   *   (typically by a concurrent writer; common during shuttle activity). The
+   *   client should retry. We retry transparently up to 3x with backoff
+   *   before surfacing this; if you see it client-side, the index has been
+   *   busy for ~1s already.
+   * - `status: 'unavailable'` with `reason: 'error'` — felt is missing,
+   *   crashed, or returned unparseable output.
+   *
+   * Never 500. The catch path always responds 200 so client UX can stay
+   * inside the page; clients distinguish empty-but-ok from unavailable via
+   * the status field.
    */
   async handleFiberHistory(url: URL, slug: string, res: ServerResponse): Promise<void> {
     const cityId = url.searchParams.get('cityId');
@@ -576,87 +588,139 @@ export class HttpApiTapestry {
 
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
-    try {
-      let raw: string;
-      if (!sshHost) {
-        // Local: execFile with cwd — cleaner than a shell command string and
-        // avoids shell-quoting the slug argument (execFile passes args directly
-        // to the OS, no shell expansion). `-j` is the global `--json` shorthand;
-        // `--mechanical` includes mechanical mutation events alongside editorial.
-        const { stdout } = await execFileAsync(
-          'felt',
-          ['history', slug, '--mechanical', '-j'],
-          { cwd: city.path, maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
-        );
-        raw = stdout.trim();
-      } else {
-        // Remote: SSH with a shell command string. shellEscape guards cityPath
-        // and slug against path traversal/injection. The `|| echo '[]'` fallback
-        // keeps the caller from parsing an error string as JSON when the fiber
-        // has no history or felt isn't on the remote PATH.
-        const command = `cd ${shellEscape(city.path)} && felt history ${shellEscape(slug)} --mechanical -j 2>/dev/null || echo '[]'`;
-        const { stdout } = await execFileAsync(
-          'ssh',
-          [sshHost, command],
-          { maxBuffer: 2 * 1024 * 1024, timeout: 30_000 },
-        );
-        raw = stdout.trim();
+    // Retry on felt-index-busy. felt prints `warning: index busy` to stderr
+    // when a writer holds the lock (common during shuttle worker activity);
+    // the read either errors with non-zero exit or succeeds with stale-ish
+    // output. We retry up to 3x with 100/300/700ms backoff before giving
+    // up; total worst-case latency ~1.1s, which is well within the user's
+    // page-load budget.
+    const BACKOFFS_MS = [100, 300, 700];
+    let lastError: any = null;
+    let lastStderr = '';
+
+    for (let attempt = 0; attempt <= BACKOFFS_MS.length; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, BACKOFFS_MS[attempt - 1]));
       }
+      try {
+        let raw: string;
+        let stderr: string;
+        if (!sshHost) {
+          // Local: execFile with cwd — cleaner than a shell command string and
+          // avoids shell-quoting the slug argument (execFile passes args
+          // directly to the OS, no shell expansion).
+          const result = await execFileAsync(
+            'felt',
+            ['history', slug, '--mechanical', '-j'],
+            { cwd: city.path, maxBuffer: 2 * 1024 * 1024, timeout: 15_000 },
+          );
+          raw = result.stdout.trim();
+          stderr = result.stderr?.toString() ?? '';
+        } else {
+          // Remote: SSH with a shell command string. shellEscape guards
+          // cityPath and slug against path traversal/injection. We capture
+          // stderr separately (no `2>/dev/null`) so we can detect busy.
+          const command = `cd ${shellEscape(city.path)} && felt history ${shellEscape(slug)} --mechanical -j`;
+          const result = await execFileAsync(
+            'ssh',
+            [sshHost, command],
+            { maxBuffer: 2 * 1024 * 1024, timeout: 30_000 },
+          );
+          raw = result.stdout.trim();
+          stderr = result.stderr?.toString() ?? '';
+        }
 
-      // felt history --mechanical --json returns an array of event objects
-      // (see felt/cmd/history.go). We map the full set — editorial and
-      // mechanical — to vellum's HistoryEvent shape.
-      const rawEvents = JSON.parse(raw || '[]') as Array<Record<string, unknown>>;
-      const events = rawEvents
-        .filter(
-          (ev) =>
-            typeof ev['occurred_at'] === 'string' &&
-            typeof ev['actor'] === 'string' &&
-            typeof ev['event_type'] === 'string',
-        )
-        .map((ev) => {
-          const eventType = ev['event_type'] as string;
-          const payload = (ev['payload'] ?? {}) as Record<string, unknown>;
+        // Even if stdout returned, felt may have warned about index busy and
+        // emitted a stale or partial chain. Treat that as a retry signal —
+        // we want a clean read, not a best-effort one — *unless* this was
+        // the last attempt.
+        if (/index busy/i.test(stderr) && attempt < BACKOFFS_MS.length) {
+          lastStderr = stderr;
+          continue;
+        }
 
-          if (eventType === 'editorial') {
-            // felt renamed the editorial body key from `summary` →
-            // `text` (see felt/cmd/history.go). New events ship under
-            // `payload.text`; older ones still use `payload.summary`.
-            // Fall back through both so post-rename events render.
-            const summary =
-              typeof payload['text'] === 'string' ? payload['text']
-              : typeof payload['summary'] === 'string' ? payload['summary']
-              : '';
-            return {
-              kind: 'editorial' as const,
+        // felt history --mechanical --json returns an array of event
+        // objects (see felt/cmd/history.go). Map editorial and mechanical
+        // to vellum's HistoryEvent shape.
+        const rawEvents = JSON.parse(raw || '[]') as Array<Record<string, unknown>>;
+        const events = rawEvents
+          .filter(
+            (ev) =>
+              typeof ev['occurred_at'] === 'string' &&
+              typeof ev['actor'] === 'string' &&
+              typeof ev['event_type'] === 'string',
+          )
+          .map((ev) => {
+            const eventType = ev['event_type'] as string;
+            const payload = (ev['payload'] ?? {}) as Record<string, unknown>;
+
+            if (eventType === 'editorial') {
+              // felt renamed the editorial body key from `summary` → `text`
+              // (see felt/cmd/history.go). New events ship under
+              // `payload.text`; older ones still use `payload.summary`. Fall
+              // back through both so post-rename events render.
+              const summary =
+                typeof payload['text'] === 'string' ? payload['text']
+                : typeof payload['summary'] === 'string' ? payload['summary']
+                : '';
+              return {
+                kind: 'editorial' as const,
+                occurredAt: ev['occurred_at'] as string,
+                actor: ev['actor'] as string,
+                summary,
+                summaryAst: markdownToMdast(summary),
+              };
+            }
+
+            // Mechanical event — include size metadata and changed-fields
+            // list so the HistoryCard can render a compact badge.
+            const entry: Record<string, unknown> = {
+              kind: eventType,
               occurredAt: ev['occurred_at'] as string,
               actor: ev['actor'] as string,
-              summary,
-              summaryAst: markdownToMdast(summary),
             };
-          }
+            if (typeof payload['size_chars'] === 'number') entry['sizeChars'] = payload['size_chars'];
+            if (typeof payload['size_lines'] === 'number') entry['sizeLines'] = payload['size_lines'];
+            if (Array.isArray(payload['fields_changed'])) entry['fieldsChanged'] = payload['fields_changed'];
+            return entry;
+          });
 
-          // Mechanical event — include size metadata and changed-fields list
-          // so the HistoryCard can render a compact badge without prose.
-          const entry: Record<string, unknown> = {
-            kind: eventType,
-            occurredAt: ev['occurred_at'] as string,
-            actor: ev['actor'] as string,
-          };
-          if (typeof payload['size_chars'] === 'number') entry['sizeChars'] = payload['size_chars'];
-          if (typeof payload['size_lines'] === 'number') entry['sizeLines'] = payload['size_lines'];
-          if (Array.isArray(payload['fields_changed'])) entry['fieldsChanged'] = payload['fields_changed'];
-          return entry;
-        });
-
-      this.sendJsonSuccess(res, { events });
-    } catch (error: any) {
-      // felt unavailable, fiber has no history, or JSON parse failed —
-      // return empty rather than 500 so the HistoryCard silently drops out
-      // rather than surfacing a network error to the reader.
-      console.warn(`[fiber-history] ${slug}: ${error.message}`);
-      this.sendJsonSuccess(res, { events: [], _debug_error: error.message, _debug_stderr: (error as any).stderr?.toString().slice(0, 400), _debug_stdout: (error as any).stdout?.toString().slice(0, 400), _debug_code: (error as any).code });
+        this.sendJsonSuccess(res, { events, status: 'ok' });
+        return;
+      } catch (error: any) {
+        lastError = error;
+        const stderr = error.stderr?.toString() ?? '';
+        lastStderr = stderr;
+        // Retry on felt-busy; bail immediately on other errors (felt missing,
+        // timeout, etc) — those won't get better with another shot.
+        if (/index busy/i.test(stderr) && attempt < BACKOFFS_MS.length) {
+          continue;
+        }
+        break;
+      }
     }
+
+    // All retries exhausted (or non-busy error). Distinguish three cases:
+    // - busy: client renders "index busy, retry shortly" affordance.
+    // - not-found: fiber doesn't exist or has never had any events. Treat as
+    //   ok-but-empty (felt prints `Error: no felt found matching ...` to
+    //   stderr, exits non-zero — but semantically that's "no history" not
+    //   "system unavailable").
+    // - error: felt missing, crashed, or returned unparseable output.
+    const stderrStr = lastStderr.toString();
+    const message = lastError?.message ?? 'unknown';
+    if (/no felt found matching/i.test(stderrStr) || /no felt found matching/i.test(message)) {
+      this.sendJsonSuccess(res, { events: [], status: 'ok' });
+      return;
+    }
+    const reason = /index busy/i.test(stderrStr) ? 'busy' : 'error';
+    console.warn(`[fiber-history] ${slug}: unavailable (${reason}) — ${message} stderr=${stderrStr.slice(0, 200)}`);
+    this.sendJsonSuccess(res, {
+      events: [],
+      status: 'unavailable',
+      reason,
+      message: reason === 'busy' ? 'felt index busy' : message,
+    });
   }
 
   /**

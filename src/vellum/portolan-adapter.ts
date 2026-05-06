@@ -36,6 +36,7 @@ import type {
   FiberContent,
   FileContent,
   HistoryEvent,
+  HistoryResponse,
   LogResponse,
   RawFiber,
   SearchHit,
@@ -383,28 +384,39 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       return { since, count: 0, events: [] };
     },
 
-    async getFiberHistory(slug: string): Promise<HistoryEvent[]> {
-      if (!collectionId) {
-        // Global vellum mode: locate the owning city first, then fetch.
-        // Mirrors the getFiberContent global-mode path exactly.
+    async getFiberHistory(slug: string): Promise<HistoryResponse> {
+      // Resolve cityId. Global vellum mode (no collectionId) locates the
+      // owning city first; scoped mode uses collectionId directly. The
+      // portolan endpoint returns { events, status, reason? } — we pass
+      // status through so the HistoryCard can distinguish "no events"
+      // from "felt index busy" instead of conflating them.
+      let resolvedCityId = collectionId;
+      if (!resolvedCityId) {
         const locateRes = await fetch(
           `${API_BASE}/fiber-locate?slug=${encodeURIComponent(slug)}`,
         ).catch(() => null);
-        if (!locateRes || !locateRes.ok) return [];
+        if (!locateRes || !locateRes.ok) {
+          return { events: [], status: 'unavailable', reason: 'error' };
+        }
         const locate = await locateRes.json() as { cityId?: string };
-        const cityId = locate.cityId;
-        if (!cityId) return [];
-        const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(cityId)}`;
-        const res = await fetch(url).catch(() => null);
-        if (!res || !res.ok) return [];
-        const data = await res.json() as { events?: HistoryEvent[] };
-        return data.events ?? [];
+        resolvedCityId = locate.cityId;
+        if (!resolvedCityId) return { events: [], status: 'ok' };
       }
-      const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(collectionId)}`;
+      const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(resolvedCityId)}`;
       const res = await fetch(url).catch(() => null);
-      if (!res || !res.ok) return [];
-      const data = await res.json() as { events?: HistoryEvent[] };
-      return data.events ?? [];
+      if (!res || !res.ok) {
+        return { events: [], status: 'unavailable', reason: 'error' };
+      }
+      const data = await res.json() as {
+        events?: HistoryEvent[];
+        status?: 'ok' | 'unavailable';
+        reason?: 'busy' | 'error';
+      };
+      return {
+        events: data.events ?? [],
+        status: data.status ?? 'ok',
+        reason: data.reason,
+      };
     },
 
     async getAstraBundle(
