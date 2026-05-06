@@ -1364,14 +1364,21 @@ export class HttpApiKanban {
             typeof ev['event_type'] === 'string',
         )
         .map((ev) => {
+          // felt renamed the editorial body key from `summary` → `text`
+          // (the event IS the summary; naming its body "summary" was
+          // recursive — see felt/cmd/history.go). New events ship under
+          // `payload.text`; older ones still use `payload.summary`. Fall
+          // back through both so post-rename events don't render empty.
           const payload = (ev['payload'] ?? {}) as Record<string, unknown>;
-          const summary =
-            typeof payload['summary'] === 'string' ? payload['summary'] : '';
+          const text =
+            typeof payload['text'] === 'string' ? payload['text']
+            : typeof payload['summary'] === 'string' ? payload['summary']
+            : '';
           return {
             occurredAt: ev['occurred_at'] as string,
             actor: ev['actor'] as string,
             kind: ev['event_type'] as string,
-            summary,
+            summary: text,
           };
         });
 

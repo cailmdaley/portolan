@@ -619,7 +619,14 @@ export class HttpApiTapestry {
           const payload = (ev['payload'] ?? {}) as Record<string, unknown>;
 
           if (eventType === 'editorial') {
-            const summary = typeof payload['summary'] === 'string' ? payload['summary'] : '';
+            // felt renamed the editorial body key from `summary` →
+            // `text` (see felt/cmd/history.go). New events ship under
+            // `payload.text`; older ones still use `payload.summary`.
+            // Fall back through both so post-rename events render.
+            const summary =
+              typeof payload['text'] === 'string' ? payload['text']
+              : typeof payload['summary'] === 'string' ? payload['summary']
+              : '';
             return {
               kind: 'editorial' as const,
               occurredAt: ev['occurred_at'] as string,
@@ -648,7 +655,7 @@ export class HttpApiTapestry {
       // return empty rather than 500 so the HistoryCard silently drops out
       // rather than surfacing a network error to the reader.
       console.warn(`[fiber-history] ${slug}: ${error.message}`);
-      this.sendJsonSuccess(res, { events: [] });
+      this.sendJsonSuccess(res, { events: [], _debug_error: error.message, _debug_stderr: (error as any).stderr?.toString().slice(0, 400), _debug_stdout: (error as any).stdout?.toString().slice(0, 400), _debug_code: (error as any).code });
     }
   }
 
