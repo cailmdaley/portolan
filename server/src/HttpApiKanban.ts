@@ -932,6 +932,39 @@ export class HttpApiKanban {
         // Already in ideas — return a refreshed card without touching disk.
         return this.applyTags(fiberId, currentTags);
       }
+
+      // If the fiber is closed (awaiting review), simply adding the
+      // `idea` tag won't move it into Ideas: classification treats `closed`
+      // fibers as awaitingReview/tempered/composted regardless of tags.
+      // To support the direct drag path "awaitingReview → ideas", reopen
+      // the fiber first (pause → drafts) then add the `idea` tag so
+      // classification places it into Ideas (the `idea` tag takes
+      // precedence for open fibers).
+      if (fiber.status === 'closed') {
+        if (originId !== 'local') {
+          if (!this.remoteTransitionExecutor) {
+            throw new Error(
+              `remote-origin transitions require remoteTransitionExecutor wiring ` +
+                `(fiber ${fiberId} is on origin '${originId}')`,
+            );
+          }
+          // Pause on the remote origin via the executor.
+          await this.remoteTransitionExecutor({
+            originId,
+            path: relativeFeltPath(fiber),
+            kind: 'shuttle',
+            ...transitionInvocationForTarget(fiber, { host, fiberId: fiber.id }, 'drafts'),
+          });
+          this.clearFiberPoolCache();
+        } else {
+          await this.runShuttleCtl(
+            transitionInvocationForTarget(fiber, canonicalRefForEntry(entry), 'drafts'),
+          );
+          this.clearFiberPoolCache();
+        }
+      }
+
+      // Now add the idea tag (applyTags handles remote vs local).
       return this.applyTags(fiberId, [...currentTags, 'idea']);
     }
 
