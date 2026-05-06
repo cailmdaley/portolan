@@ -1488,6 +1488,28 @@
   border-color: rgba(122, 112, 104, 0.60);
   color: #2E2A26;
 }
+/* Dispatch now — teal tint, same hue family as the running-worker indicator
+   (kbn-card-worker) so it reads as "live dispatch action." */
+.kbn-detail-action-dispatch {
+  color: #2E4848;
+  background: rgba(90, 123, 123, 0.10);
+  border: 1px solid rgba(90, 123, 123, 0.45);
+}
+.kbn-detail-action-dispatch:hover:not(:disabled) {
+  background: rgba(90, 123, 123, 0.20);
+  border-color: rgba(90, 123, 123, 0.65);
+  color: #1E3030;
+}
+/* Row wrapper for the dispatch-now button — sits below the primary action
+   row with a small top gap so it reads as a secondary tier. */
+.kbn-detail-dispatch-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.kbn-detail-dispatch-row:empty {
+  display: none;
+}
 
 /* ── Tags chip editor ────────────────────────────────────────────────────── */
 .kbn-detail-tags-row {

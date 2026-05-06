@@ -1004,7 +1004,7 @@ export class KanbanModal {
     // Click outside any button → open fiber detail modal.
     el.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('button, textarea')) return
-      this.detailModal?.open(card, this.cityScope?.cityId)
+      this.detailModal?.open(card, this.cityScope?.cityId, kind)
     })
 
     return el
@@ -1736,8 +1736,10 @@ class FiberDetailModal {
    *   that produced the card — `card.cityId` is the wrong axis here
    *   (a global card carries the cityId for vellum nav, but its id is
    *   loom-relative and must NOT route through the city-scoped API).
+   * @param columnKind  the column the card lives in — used to gate the
+   *   "Dispatch now" button (visible only for inFlight, non-running cards).
    */
-  open(card: KanbanCard, scopeCityId?: string | null): void {
+  open(card: KanbanCard, scopeCityId?: string | null, columnKind?: ColumnKind): void {
     // Tear down any existing open modal first (rapid re-click).
     this.close()
 
@@ -1903,7 +1905,28 @@ class FiberDetailModal {
       void this.runTransition(card, 'composted', scope, compostBtn, actionsErr)
     })
 
-    actionsSec.append(directiveTa, actionsRow, actionsErr)
+    // "Dispatch now" — bypasses the poller and tells the Shuttle daemon to
+    // dispatch immediately. Only meaningful when the fiber is enabled and
+    // idle (i.e. in the inFlight column waiting for the next poll tick).
+    // Hidden for fibers that are already running, paused (drafts), or lack
+    // a shuttle block entirely.
+    const showDispatchNow = columnKind === 'inFlight'
+      && !card.runningWorker
+      && card.shuttleKind !== undefined
+    const dispatchRow = document.createElement('div')
+    dispatchRow.className = 'kbn-detail-dispatch-row'
+    if (showDispatchNow) {
+      const dispatchBtn = this.buildActionBtn('Dispatch now ▸', 'dispatch')
+      dispatchBtn.setAttribute('aria-label', `Dispatch ${card.name} immediately`)
+      dispatchBtn.title = 'Trigger immediate dispatch — bypasses the 15-second poll'
+      dispatchBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        void this.runDispatchNow(card, dispatchBtn, actionsErr)
+      })
+      dispatchRow.append(dispatchBtn)
+    }
+
+    actionsSec.append(directiveTa, actionsRow, dispatchRow, actionsErr)
 
     // ── Tags ────────────────────────────────────────────────────────────────
     // Chip editor matching the kanban grid card's inline tag editor. Adding
@@ -2365,7 +2388,7 @@ class FiberDetailModal {
    */
   private buildActionBtn(
     label: string,
-    variant: 'primary' | 'tempered' | 'composted',
+    variant: 'primary' | 'tempered' | 'composted' | 'dispatch',
   ): HTMLButtonElement {
     const btn = document.createElement('button')
     btn.type = 'button'
@@ -2468,6 +2491,79 @@ class FiberDetailModal {
         const e = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(e.error || `transition ${res.status}`)
       }
+      this.close()
+      this.onSaved()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      errorEl.textContent = msg
+      errorEl.style.display = ''
+      btn.disabled = false
+      btn.textContent = original
+    }
+  }
+
+  /**
+   * Trigger immediate dispatch via the Shuttle daemon's
+   * POST /api/v1/dispatch endpoint (port 4000). Bypasses the poller's
+   * 15-second poll cycle so the fiber starts right now.
+   *
+   * Responses:
+   *   200 dispatched:true  → show success, refresh kanban
+   *   409 already_running  → show that as feedback (shouldn't happen since
+   *                          the button is hidden when runningWorker is set,
+   *                          but be defensive)
+   *   422 not_eligible     → fiber disabled or closed; show reason
+   *   500 reason:<text>    → daemon-side error; surface message
+   */
+  private async runDispatchNow(
+    card: KanbanCard,
+    btn: HTMLButtonElement,
+    errorEl: HTMLElement,
+  ): Promise<void> {
+    const original = btn.textContent ?? ''
+    btn.disabled = true
+    btn.textContent = 'Dispatching…'
+    errorEl.style.display = 'none'
+
+    // Derive the shuttle daemon URL (port 4000) from the portolan API base
+    // (port 4004), keeping the same hostname. Falls back to 127.0.0.1 if
+    // the API base hostname can't be parsed.
+    let shuttleBase: string
+    try {
+      const u = new URL(this.apiBase)
+      shuttleBase = `${u.protocol}//${u.hostname}:4000`
+    } catch {
+      shuttleBase = 'http://127.0.0.1:4000'
+    }
+
+    try {
+      const res = await fetch(`${shuttleBase}/api/v1/dispatch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiber_id: card.id }),
+      })
+      const body = await res.json().catch(() => ({})) as {
+        dispatched?: boolean
+        reason?: string
+        tmux_session?: string
+      }
+
+      if (res.status === 409) {
+        // Already running — update button to reflect state.
+        btn.textContent = 'Already running'
+        btn.disabled = true
+        errorEl.textContent = 'A worker is already running for this fiber.'
+        errorEl.style.display = ''
+        return
+      }
+      if (res.status === 422) {
+        throw new Error(`Not eligible: ${body.reason ?? 'fiber disabled or closed'}`)
+      }
+      if (!res.ok) {
+        throw new Error(body.reason ?? `Dispatch failed: ${res.status}`)
+      }
+
+      // Success — close the modal and refresh the kanban board.
       this.close()
       this.onSaved()
     } catch (err: unknown) {
