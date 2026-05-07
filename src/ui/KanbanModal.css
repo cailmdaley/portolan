@@ -402,10 +402,11 @@
   color: #B8AC9E;
   letter-spacing: 0.01em;
   word-break: break-all;
-  /* Pull the slug close to the title — the card-level gap leaves it
-     drifting visually otherwise. Negative top margin shaves the gap
-     below the header without touching the rest of the card's rhythm. */
-  margin-top: -3px;
+  /* Tuck the slug under the title so the breadcrumb reads as part of
+     the title block, not a row of its own. The card-level gap (6px)
+     would otherwise leave it floating. */
+  margin-top: -6px;
+  line-height: 1.2;
 }
 .kbn-card-outcome {
   font-size: 12.5px;
@@ -675,21 +676,28 @@
   border-radius: 2px;
   margin-top: 2px;
 }
+/* Running-worker pill — sits inline in the meta row, right-justified
+   before the date stamp. Mirrors the proportions of .kbn-review-meta-btn
+   (Temper / Compost in awaiting-review cards) so the meta row reads
+   uniformly across columns. Single line, never wraps. */
 .kbn-card-worker {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 10.5px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: #4A6868;
   background: rgba(90, 123, 123, 0.10);
-  padding: 4px 6px;
+  padding: 2px 7px;
   border-radius: 2px;
-  margin-top: 2px;
+  margin-left: auto;
   animation: kbn-pulse 2s ease-in-out infinite;
   /* Button reset */
   border: 1px solid transparent;
   text-align: left;
   font-weight: inherit;
   cursor: pointer;
-  width: 100%;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 .kbn-card-worker:hover {
@@ -700,6 +708,12 @@
 .kbn-card-worker:focus-visible {
   outline: 1px dashed #4A6868;
   outline-offset: 2px;
+}
+/* When .kbn-card-worker is followed by .kbn-card-date, zero the date's
+   own auto-margin so the pill (margin-left:auto) doesn't compete with
+   it for slack — same trick used for review-meta-actions. */
+.kbn-card-worker + .kbn-card-date {
+  margin-left: 0;
 }
 @keyframes kbn-pulse {
   0%, 100% { background: rgba(90, 123, 123, 0.10); }

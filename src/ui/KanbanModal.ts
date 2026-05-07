@@ -633,20 +633,31 @@ export class KanbanModal {
 
       const effectiveN = Math.min(cards.length, maxVisibleCards)
       const totalGapHeight = (effectiveN - 1) * cardGap
-      const targetCardHeight = (list.clientHeight - totalGapHeight) / effectiveN
+      // Subtract a small per-column safety buffer — browser line-height
+      // computation rounds at sub-pixel boundaries, and rounding up by
+      // half a pixel × N cards adds up to a couple pixels of overshoot.
+      // This buffer gives us guaranteed undershoot at the cost of a
+      // hairline of empty space at the column bottom — exactly the
+      // tradeoff the user asked for.
+      const safetyBuffer = 4
+      const targetCardHeight =
+        (list.clientHeight - totalGapHeight - safetyBuffer) / effectiveN
 
-      // Average non-outcome height across cards in this column. Each
-      // card's overhead = its full height minus its outcome's height
-      // (cards without an outcome contribute 0 outcome).
-      let totalNonOutcome = 0
+      // Use the MAX non-outcome height across cards in the column, not
+      // the average. Awaiting-review cards carry [Temper][Compost] in
+      // the meta row which adds a couple pixels over the in-flight
+      // baseline; in-flight cards may carry the worker pill. Sizing to
+      // the average over-allocates outcome space to the chunkier cards,
+      // which is exactly the overshoot symptom. Max is conservative.
+      let maxNonOutcome = 0
       for (const card of cards) {
         const outcome = card.querySelector<HTMLElement>('.kbn-card-outcome')
         const outcomeHeight = outcome ? outcome.offsetHeight : 0
-        totalNonOutcome += card.offsetHeight - outcomeHeight
+        const nonOutcome = card.offsetHeight - outcomeHeight
+        if (nonOutcome > maxNonOutcome) maxNonOutcome = nonOutcome
       }
-      const avgNonOutcome = totalNonOutcome / cards.length
 
-      const targetOutcomeHeight = targetCardHeight - avgNonOutcome
+      const targetOutcomeHeight = targetCardHeight - maxNonOutcome
       if (targetOutcomeHeight <= 0) continue
 
       const targetLines = Math.floor(targetOutcomeHeight / lineHeight)
@@ -1006,6 +1017,28 @@ export class KanbanModal {
       // Insert before date so order is: tags … [Temper][Compost] [date]
       meta.insertBefore(reviewMetaActions, date)
     }
+
+    // Running-worker pill: single-line, right-justified before the date,
+    // sized like the inline review actions. Clickable: focuses the worker's
+    // tmux session in kitty. The slug is already shown above, so the pill
+    // just signals "a worker is up" rather than repeating the tmux session
+    // name. "Aloft" picks up Portolan's bird metaphor (workers render as
+    // bird sprites on the map).
+    if (card.runningWorker) {
+      const tmuxName = card.runningWorker
+      const w = document.createElement('button')
+      w.type = 'button'
+      w.className = 'kbn-card-worker'
+      w.setAttribute('aria-label', `Open worker terminal: ${tmuxName}`)
+      w.title = `Worker aloft — click to open ${tmuxName} in kitty`
+      w.textContent = '▸ aloft'
+      w.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this.onOpenWorker?.(tmuxName)
+      })
+      // Insert before date so order is: tags … ▸ aloft … [date]
+      meta.insertBefore(w, date)
+    }
     el.append(meta)
 
     // Blocked indicator on in-flight cards with unsatisfied deps
@@ -1014,23 +1047,6 @@ export class KanbanModal {
       block.className = 'kbn-card-blocked'
       block.textContent = `blocked on: ${(card.dependsOn ?? []).join(', ')}`
       el.append(block)
-    }
-
-    // Running-worker indicator on active cards. Clickable: focuses the
-    // worker's tmux session in kitty so the operator can watch it live.
-    if (card.runningWorker) {
-      const tmuxName = card.runningWorker
-      const w = document.createElement('button')
-      w.type = 'button'
-      w.className = 'kbn-card-worker'
-      w.setAttribute('aria-label', `Open worker terminal: ${tmuxName}`)
-      w.title = `Click to open ${tmuxName} in kitty`
-      w.textContent = `▸ ${tmuxName}`
-      w.addEventListener('click', (e) => {
-        e.stopPropagation()
-        this.onOpenWorker?.(tmuxName)
-      })
-      el.append(w)
     }
 
     // Stale-origin badge: the originating agent is disconnected. The card
