@@ -1901,11 +1901,16 @@ export class FiberDetailModal {
     requeueBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       const directive = directiveTa.value.trim()
-      if (directive === '') {
-        // Empty directive -> immediate dispatch via the existing runDispatchNow path
+      const needsAcceptFirst =
+        card.shuttleKind === 'standing' && card.shuttleReviewState === 'awaiting'
+      if (directive === '' && !needsAcceptFirst) {
+        // Empty directive + already dispatch-eligible -> immediate dispatch,
+        // no review-comment needed.
         void this.runDispatchNow(card, requeueBtn, actionsErr)
       } else {
-        // Non-empty directive -> record it and requeue as before
+        // Non-empty directive, or standing role in awaiting state (needs
+        // shuttle-ctl accept transition before force-dispatch) -> runRequeue,
+        // which handles the review-comment + optional transition + dispatch.
         void this.runRequeue(card, directive, 'fresh', scope, requeueBtn, actionsErr)
       }
     })

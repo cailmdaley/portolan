@@ -138,6 +138,19 @@ export interface KanbanCard {
    * Absent when `shuttleSchedule` is absent.
    */
   shuttleTz?: string;
+  /**
+   * `shuttle.review.state` — current review state for standing roles.
+   * `'awaiting'` means the worker finished a run and is waiting for human
+   * review; `'scheduled'` / `'accepted'` means the role is in its normal
+   * dispatch-eligible state. Absent for oneshot fibers and fibers with no
+   * shuttle block.
+   *
+   * Surfaced here so the frontend can distinguish "standing role awaiting
+   * review" from "standing role in flight" without a round-trip — in
+   * particular, `runRequeue` needs to know whether to run `accept` first
+   * (awaiting → scheduled) before forcing a dispatch.
+   */
+  shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
 }
 
 export interface KanbanColumns {
@@ -1697,6 +1710,7 @@ export class HttpApiKanban {
       shuttleKind: f.shuttleKind,
       shuttleSchedule: f.shuttleSchedule?.expr,
       shuttleTz: f.shuttleSchedule?.tz,
+      shuttleReviewState: f.shuttleReviewState,
     };
   }
 
