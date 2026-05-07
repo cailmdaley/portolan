@@ -1552,36 +1552,79 @@ export class FiberDetailModal {
     const scope = scopeCityId ?? undefined
     void this.loadHistory(card.id, scope, historyList)
 
-    // ── Action cluster (directive + lifecycle buttons) ────────────────────────
-    // Brings the kanban grid card's review cluster into the modal, available
-    // for any state (not just awaitingReview). The directive text is
-    // recorded as a review-comment event before the lifecycle transition
-    // fires, so a "resubmit with directive" lands as one atomic gesture from
-    // the user's perspective.
+    // ── Next dispatch (message + mode + action buttons) ──────────────────────
+    // One canonical surface for "what happens when this fiber dispatches next."
+    // The message textarea is the optional payload; the Autonomous|Interactive
+    // toggle determines whether the worker exits at the end of its initial
+    // task (autonomous, default) or stays alive for a human to attach
+    // (interactive — shuttle injects a "don't kill PPID" prelude).
     const actionsSec = this.buildSection('Next dispatch')
     const actionsErr = document.createElement('div')
     actionsErr.className = 'kbn-detail-error'
     actionsErr.style.display = 'none'
 
-    const directiveTa = document.createElement('textarea')
-    directiveTa.className = 'kbn-detail-directive'
-    directiveTa.placeholder = 'Add a directive for the next worker (optional)…'
-    directiveTa.rows = 3
-    directiveTa.setAttribute('aria-label', 'Directive for next worker')
-    directiveTa.addEventListener('mousedown', (e) => e.stopPropagation())
-    directiveTa.addEventListener('click', (e) => e.stopPropagation())
+    const messageTa = document.createElement('textarea')
+    messageTa.className = 'kbn-detail-directive'
+    messageTa.placeholder = 'Message for the next worker (optional)…'
+    messageTa.rows = 3
+    messageTa.setAttribute('aria-label', 'Message for next worker')
+    messageTa.addEventListener('mousedown', (e) => e.stopPropagation())
+    messageTa.addEventListener('click', (e) => e.stopPropagation())
+
+    // Autonomous | Interactive segmented control. Default: Autonomous (the
+    // current behavior — worker runs to completion and exits via kill PPID).
+    // Interactive tells shuttle to inject a prelude saying "a human will
+    // attach; do not kill PPID after the initial task." Both Resubmit and
+    // Resume read the toggle.
+    const modeRow = document.createElement('div')
+    modeRow.className = 'kbn-detail-mode-row'
+    modeRow.setAttribute('role', 'radiogroup')
+    modeRow.setAttribute('aria-label', 'Dispatch mode')
+
+    const interactiveState = { value: false }
+    const buildModeBtn = (label: string, isInteractive: boolean, title: string) => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'kbn-detail-mode-btn'
+      btn.textContent = label
+      btn.title = title
+      btn.setAttribute('role', 'radio')
+      btn.setAttribute('aria-checked', String(interactiveState.value === isInteractive))
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        interactiveState.value = isInteractive
+        for (const el of modeRow.querySelectorAll<HTMLButtonElement>('.kbn-detail-mode-btn')) {
+          const onIfInteractive = el.dataset.mode === 'interactive'
+          el.setAttribute('aria-checked', String(interactiveState.value === onIfInteractive))
+        }
+      })
+      btn.dataset.mode = isInteractive ? 'interactive' : 'autonomous'
+      return btn
+    }
+    const autoBtn = buildModeBtn(
+      'Autonomous',
+      false,
+      'Worker runs to completion and exits (kill PPID at the end).',
+    )
+    autoBtn.setAttribute('aria-checked', 'true')
+    const interactiveBtn = buildModeBtn(
+      'Interactive',
+      true,
+      "Worker stays alive after its initial task so you can attach and continue the conversation. Shuttle injects a 'don't kill PPID' prelude.",
+    )
+    modeRow.append(autoBtn, interactiveBtn)
 
     const actionsRow = document.createElement('div')
     actionsRow.className = 'kbn-detail-actions-row'
 
     const requeueBtn = this.buildActionBtn('Resubmit ▸', 'primary')
-    requeueBtn.title = 'Record directive and requeue as in-flight (fresh worker)'
+    requeueBtn.title = 'Dispatch a fresh worker (with message + mode if set)'
 
     const hasSession = !!card.sessionId
     const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
     resumeBtn.disabled = !hasSession
     resumeBtn.title = hasSession
-      ? 'Record directive and resume previous worker session'
+      ? 'Resume previous worker session (with message + mode if set)'
       : 'No prior session stored — dispatch a fresh worker first'
 
     const temperBtn = this.buildActionBtn('Temper', 'tempered')
@@ -1594,24 +1637,35 @@ export class FiberDetailModal {
 
     requeueBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      const directive = directiveTa.value.trim()
+      const message = messageTa.value.trim()
+      const interactive = interactiveState.value
       const needsAcceptFirst =
         card.shuttleKind === 'standing' && card.shuttleReviewState === 'awaiting'
-      if (directive === '' && !needsAcceptFirst) {
-        // Empty directive + already dispatch-eligible -> immediate dispatch,
-        // no review-comment needed.
-        void this.runDispatchNow(card, requeueBtn, actionsErr)
+      if (message === '' && !needsAcceptFirst && !interactive) {
+        // Empty message + autonomous + already dispatch-eligible -> immediate
+        // dispatch, no review-comment needed.
+        void this.runDispatchNow(card, requeueBtn, actionsErr, interactive)
       } else {
-        // Non-empty directive, or standing role in awaiting state (needs
-        // shuttle-ctl accept transition before force-dispatch) -> runRequeue,
-        // which handles the review-comment + optional transition + dispatch.
-        void this.runRequeue(card, directive, 'fresh', scope, requeueBtn, actionsErr)
+        // Non-empty message, interactive mode (we want it persisted on the
+        // review-comment so the worker reads it), or standing role in
+        // awaiting state (needs shuttle-ctl accept transition before
+        // force-dispatch) -> runRequeue, which handles the review-comment +
+        // optional transition + dispatch.
+        void this.runRequeue(card, message, 'fresh', scope, requeueBtn, actionsErr, interactive)
       }
     })
     resumeBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       if (!hasSession) return
-      void this.runRequeue(card, directiveTa.value.trim(), 'previous', scope, resumeBtn, actionsErr)
+      void this.runRequeue(
+        card,
+        messageTa.value.trim(),
+        'previous',
+        scope,
+        resumeBtn,
+        actionsErr,
+        interactiveState.value,
+      )
     })
     temperBtn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -1622,13 +1676,7 @@ export class FiberDetailModal {
       void this.runTransition(card, 'composted', scope, compostBtn, actionsErr)
     })
 
-    // Merged "Dispatch now" into the Resubmit button: when the directive
-    // textarea is empty, the Resubmit action triggers an immediate dispatch
-    // (runDispatchNow). When the directive is non-empty, we record the
-    // directive and requeue (runRequeue) as before. The dedicated dispatch
-    // row/button was removed to simplify the modal UI.
-
-    actionsSec.append(directiveTa, actionsRow, actionsErr)
+    actionsSec.append(messageTa, modeRow, actionsRow, actionsErr)
 
     // ── Tags ────────────────────────────────────────────────────────────────
     // Chip editor matching the kanban grid card's inline tag editor. Adding
@@ -2188,6 +2236,12 @@ export class FiberDetailModal {
    * the worker. One-shot fibers wake by transitioning to inFlight; standing
    * roles wake through immediate daemon dispatch because their next_due_at may
    * be in the future even while the card already sits in the in-flight column.
+   *
+   * `interactive=true` is persisted on the review-comment so the dispatcher
+   * can inject a "don't kill PPID; a human will attach" prelude when the
+   * worker spawns. The same flag is forwarded to runDispatchNow for standing
+   * roles, which dispatch directly via /api/v1/dispatch rather than the
+   * transition-then-poll path.
    */
   private async runRequeue(
     card: KanbanCard,
@@ -2196,6 +2250,7 @@ export class FiberDetailModal {
     cityId: string | undefined,
     btn: HTMLButtonElement,
     errorEl: HTMLElement,
+    interactive: boolean = false,
   ): Promise<void> {
     const original = btn.textContent ?? ''
     btn.disabled = true
@@ -2205,7 +2260,7 @@ export class FiberDetailModal {
       const commentRes = await fetch(this.reviewCommentUrl(cityId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: mode }),
+        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: mode, interactive }),
       })
       if (!commentRes.ok) {
         const e = (await commentRes.json().catch(() => ({}))) as { error?: string }
@@ -2232,7 +2287,7 @@ export class FiberDetailModal {
             throw new Error(e.error || `transition ${transRes.status}`)
           }
         }
-        await this.runDispatchNow(card, btn, errorEl)
+        await this.runDispatchNow(card, btn, errorEl, interactive)
         return
       }
       const transRes = await fetch(this.transitionUrl(cityId), {
@@ -2310,6 +2365,7 @@ export class FiberDetailModal {
     card: KanbanCard,
     btn: HTMLButtonElement,
     errorEl: HTMLElement,
+    interactive: boolean = false,
   ): Promise<void> {
     const original = btn.textContent ?? ''
     btn.disabled = true
@@ -2338,6 +2394,7 @@ export class FiberDetailModal {
         body: JSON.stringify({
           fiber_id: card.id,
           ...(card.shuttleKind === 'standing' ? { force: true } : {}),
+          ...(interactive ? { interactive: true } : {}),
         }),
       })
     } catch (err: unknown) {

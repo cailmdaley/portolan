@@ -311,6 +311,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
         fiberId: 'test/my-constitution',
         directive: 'Please continue this standing role now.',
         resumeMode: 'fresh',
+        interactive: false,
       },
     ])
     expect(dispatchBodies).toEqual([

@@ -458,6 +458,13 @@ export interface KanbanReviewCommentRequest {
   directive: string;
   /** How to requeue: 'fresh' spawns a new worker; 'previous' resumes the prior session. */
   resumeMode: 'fresh' | 'previous';
+  /**
+   * Interactive mode — when true, the dispatcher injects a "don't kill PPID;
+   * a human will attach" prelude into the worker's prompt so the worker
+   * stays alive after its initial task. Defaults to false (autonomous; the
+   * worker exits via kill PPID at the end of its run, current behavior).
+   */
+  interactive?: boolean;
 }
 
 export class HttpApiKanban {
@@ -1230,13 +1237,20 @@ export class HttpApiKanban {
       // this field the dispatcher always falls through to :fresh —
       // which is what was happening before, breaking the "Resume
       // previous" button silently.
-      await execFileAsync('felt', [
+      //
+      // `interactive` lands in the same payload as `interactive`. When true,
+      // the dispatcher injects a "don't kill PPID" prelude so the worker
+      // stays alive for the human to attach mid-conversation.
+      const interactive = body.interactive === true;
+      const feltArgs = [
         '-C', ref.host,
         'history', 'append', ref.fiberId,
         '--kind', 'review-comment',
         '--summary', directive,
         '--field', `resume_mode=${body.resumeMode}`,
-      ]);
+      ];
+      if (interactive) feltArgs.push('--field', 'interactive=true');
+      await execFileAsync('felt', feltArgs);
       this.json(res, 200, { ok: true });
     } catch (err: unknown) {
       const msg =
