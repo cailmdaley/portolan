@@ -15,11 +15,14 @@ Click worker → Kitty focuses that tab. Work happens in terminal, not here.
 ## Running
 
 ```bash
-./dev.sh                    # Frontend + backend (recommended)
+./dev.sh                    # Start/attach shared tmux session (frontend + backend + Shuttle)
+./dev.sh restart            # Bounce the shared tmux session from any terminal/agent
+./dev.sh kill               # Stop session and clear ports 5173, 4004, 4000
 cd server && npm test       # ~282 tests
 ```
 
 Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
+The dev stack lives in tmux session `portolan-dev`; detach with `Ctrl+B`, then `D`.
 
 ## Architecture
 
