@@ -276,6 +276,7 @@
   font-style: italic;
   padding: 24px 8px;
   font-size: 13px;
+  flex-grow: 0;
 }
 .kbn-card {
   background: #FBF7F0;
@@ -288,6 +289,10 @@
   color: inherit;
   display: flex; flex-direction: column;
   gap: 6px;
+  /* Expand to fill available column space when few cards are present.
+     flex-grow has no effect once the list overflows (overflow-y: auto
+     on .kbn-col-list), so cards never shrink below their content height. */
+  flex-grow: 1;
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
 }
 .kbn-card:hover {

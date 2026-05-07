@@ -455,3 +455,390 @@ describe('FiberDetailModal dispatch — network / CORS failure', () => {
     expect(errorEl.textContent).toContain('4000')
   })
 })
+
+// ── Feature 1: card flex-grow ─────────────────────────────────────────────────
+// Cards must have flex-grow:1 so they expand to fill vertical column space
+// when there are few cards. The CSS property is the authoritative source;
+// this test guards against accidental regression.
+
+describe('Feature 1: cards expand to fill column space (flex-grow)', () => {
+  it('KanbanModal.css sets flex-grow:1 on .kbn-card', async () => {
+    // Read the CSS file and verify the property is declared. This is a
+    // static contract test — it catches CSS regressions before they reach
+    // a browser. The regex allows optional whitespace around the colon.
+    const fs = await import('fs')
+    const path = await import('path')
+    const cssPath = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      'KanbanModal.css',
+    )
+    const css = fs.readFileSync(cssPath, 'utf8')
+
+    // Find the .kbn-card rule block and assert flex-grow is declared there.
+    // We look for the property anywhere after the opening .kbn-card { and
+    // before the matching }. A simple indexOf check on the whole file is safe
+    // because the property name is only used inside that rule.
+    expect(css).toMatch(/flex-grow\s*:\s*1/)
+  })
+
+  it('renderCard produces a .kbn-card element (flex-grow is inherited via CSS)', () => {
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+    const card = makeKanbanCard()
+    const el = (modal as unknown as {
+      renderCard: (card: ReturnType<typeof makeKanbanCard>, kind: 'inFlight') => HTMLElement
+    }).renderCard(card, 'inFlight')
+
+    expect(el.classList.contains('kbn-card')).toBe(true)
+    expect(el.classList.contains('kbn-card-inFlight')).toBe(true)
+  })
+
+  it('columns with a single card use .kbn-col-list flex container', () => {
+    // Verifies the layout structure that makes flex-grow meaningful:
+    // .kbn-col-list is a flex column; .kbn-card children with flex-grow:1
+    // distribute any spare space equally.
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+    const col = (modal as unknown as {
+      renderColumn: (
+        kind: 'inFlight',
+        cards: ReturnType<typeof makeKanbanCard>[],
+        staleness: Record<string, never>,
+      ) => HTMLElement
+    }).renderColumn('inFlight', [makeKanbanCard()], {})
+
+    const list = col.querySelector('.kbn-col-list')
+    expect(list).not.toBeNull()
+    const card = list?.querySelector('.kbn-card')
+    expect(card).not.toBeNull()
+  })
+
+  it('.kbn-empty placeholder has flex-grow:0 so it does not balloon in empty columns', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const cssPath = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      'KanbanModal.css',
+    )
+    const css = fs.readFileSync(cssPath, 'utf8')
+    // .kbn-empty must explicitly opt out of growing so an empty column's
+    // placeholder doesn't stretch to full height.
+    expect(css).toMatch(/\.kbn-empty[^}]*flex-grow\s*:\s*0/)
+  })
+})
+
+// ── Feature 2: parent-fiber reactive dropdown ─────────────────────────────────
+// The parent-fiber section in the card modal must:
+//   a) open its dropdown immediately on focus (not only when the input is empty)
+//   b) pass the current input value as the initial search query
+//   c) include cityId and excludeId in every search request
+//   d) update the pending-parent display on option selection
+//   e) support keyboard navigation: ArrowDown (input→first option),
+//      ArrowDown/Up (within options), Escape (close + return focus)
+
+describe('Feature 2: parent-fiber reactive dropdown', () => {
+  /** Open a detail modal for a nested fiber and return handy DOM refs. */
+  async function openParentModal(
+    cardOverrides: Record<string, unknown> = {},
+    scopeCityId?: string,
+  ) {
+    const modal = new FiberDetailModal('http://localhost:4004', vi.fn(), vi.fn())
+    modal.open(makeKanbanCard({ id: 'test/my-fiber', ...cardOverrides }), scopeCityId)
+    await tick()
+    const overlay = document.querySelector<HTMLElement>('.kbn-detail-overlay')!
+    const parentInput = overlay.querySelector<HTMLInputElement>('.kbn-detail-parent-input')!
+    const parentDropdown = overlay.querySelector<HTMLElement>('.kbn-detail-parent-dropdown')!
+    const currentParentEl = overlay.querySelector<HTMLElement>('.kbn-detail-current-parent')!
+    return { modal, overlay, parentInput, parentDropdown, currentParentEl }
+  }
+
+  it('dropdown is hidden before any interaction', async () => {
+    vi.stubGlobal('fetch', mockFetch({}))
+    const { parentDropdown } = await openParentModal()
+    expect(parentDropdown.style.display).toBe('none')
+  })
+
+  it('dropdown opens immediately on focus — reactive (no empty-input guard)', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [
+          { id: 'test', name: 'test root', depth: 1 },
+          { id: 'test/sibling', name: 'Sibling', depth: 2 },
+        ],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    expect(parentDropdown.style.display).not.toBe('none')
+    expect(parentDropdown.querySelectorAll('button')).toHaveLength(2)
+  })
+
+  it('opens dropdown even when input already has a value (old guard removed)', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/other', name: 'Other Fiber', depth: 2 }],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    // Pre-fill with a previously-selected parent name.
+    parentInput.value = 'Some Previously Selected Parent'
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    expect(parentDropdown.style.display).not.toBe('none')
+    expect(parentDropdown.querySelectorAll('button')).toHaveLength(1)
+  })
+
+  it('passes the current input value as the search query on focus', async () => {
+    const searchUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.includes('fiber-search')) searchUrls.push(url)
+      return Promise.resolve(jsonResponse({ fibers: [] }))
+    }))
+    const { parentInput } = await openParentModal()
+
+    parentInput.value = 'partial query'
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    expect(searchUrls.length).toBeGreaterThan(0)
+    expect(searchUrls[0]).toContain('q=partial+query')
+  })
+
+  it('includes excludeId in every fiber-search request', async () => {
+    const searchUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.includes('fiber-search')) searchUrls.push(url)
+      return Promise.resolve(jsonResponse({ fibers: [] }))
+    }))
+    const { parentInput } = await openParentModal({ id: 'test/my-fiber' })
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    expect(searchUrls.length).toBeGreaterThan(0)
+    expect(searchUrls[0]).toContain('excludeId=test%2Fmy-fiber')
+  })
+
+  it('threads cityId into the search URL when the kanban is city-scoped', async () => {
+    const searchUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.includes('fiber-search')) searchUrls.push(url)
+      return Promise.resolve(jsonResponse({ fibers: [] }))
+    }))
+    const { parentInput } = await openParentModal({}, 'city-xyz')
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    expect(searchUrls.length).toBeGreaterThan(0)
+    expect(searchUrls[0]).toContain('cityId=city-xyz')
+  })
+
+  it('does NOT include cityId when the kanban is in global scope', async () => {
+    const searchUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.includes('fiber-search')) searchUrls.push(url)
+      return Promise.resolve(jsonResponse({ fibers: [] }))
+    }))
+    const { parentInput } = await openParentModal({}, undefined)
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    expect(searchUrls.length).toBeGreaterThan(0)
+    expect(searchUrls[0]).not.toContain('cityId')
+  })
+
+  it('clicking an option updates pending parent display and closes dropdown', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/new-parent', name: 'New Parent', depth: 2 }],
+      }),
+    }))
+    const { parentInput, parentDropdown, currentParentEl } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    const opt = parentDropdown.querySelector<HTMLButtonElement>('button')!
+    opt.click()
+
+    expect(currentParentEl.textContent).toContain('test/new-parent')
+    expect(currentParentEl.textContent).toContain('pending')
+    expect(parentInput.value).toBe('New Parent')
+    expect(parentDropdown.style.display).toBe('none')
+  })
+
+  it('Escape on the input closes the dropdown', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/x', name: 'X', depth: 2 }],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+    expect(parentDropdown.style.display).not.toBe('none')
+
+    parentInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+    expect(parentDropdown.style.display).toBe('none')
+  })
+
+  it('ArrowDown on the input focuses the first dropdown option', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/a', name: 'A', depth: 2 }],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    parentInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+
+    const firstOpt = parentDropdown.querySelector<HTMLElement>('button')!
+    expect(document.activeElement).toBe(firstOpt)
+  })
+
+  it('ArrowDown and ArrowUp navigate between dropdown options', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [
+          { id: 'test/a', name: 'A', depth: 2 },
+          { id: 'test/b', name: 'B', depth: 2 },
+          { id: 'test/c', name: 'C', depth: 2 },
+        ],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+
+    // Move into dropdown
+    parentInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+    const [optA, optB, optC] = parentDropdown.querySelectorAll<HTMLElement>('button')
+    expect(document.activeElement).toBe(optA)
+
+    // Down to B
+    optA.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(document.activeElement).toBe(optB)
+
+    // Down to C
+    optB.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(document.activeElement).toBe(optC)
+
+    // ArrowDown at last item stays at last item
+    optC.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(document.activeElement).toBe(optC)
+
+    // Up back to B
+    optC.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(document.activeElement).toBe(optB)
+  })
+
+  it('ArrowUp on the first dropdown option returns focus to the input', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/a', name: 'A', depth: 2 }],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+    parentInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+
+    const firstOpt = parentDropdown.querySelector<HTMLElement>('button')!
+    firstOpt.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+
+    expect(document.activeElement).toBe(parentInput)
+  })
+
+  it('Escape in the dropdown closes it and returns focus to the input', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/a', name: 'A', depth: 2 }],
+      }),
+    }))
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+    parentInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    )
+
+    const firstOpt = parentDropdown.querySelector<HTMLElement>('button')!
+    firstOpt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+
+    expect(parentDropdown.style.display).toBe('none')
+    expect(document.activeElement).toBe(parentInput)
+  })
+
+  it('aria-expanded reflects dropdown visibility', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      'fiber-search': () => jsonResponse({
+        fibers: [{ id: 'test/a', name: 'A', depth: 2 }],
+      }),
+    }))
+    const { parentInput } = await openParentModal()
+    expect(parentInput.getAttribute('aria-expanded')).toBe('false')
+
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+    expect(parentInput.getAttribute('aria-expanded')).toBe('true')
+
+    parentInput.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+    expect(parentInput.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('selected parent id is sent to /kanban/fiber-patch on save', async () => {
+    const patchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes('fiber-search'))
+        return Promise.resolve(jsonResponse({ fibers: [{ id: 'test/new-p', name: 'New P', depth: 2 }] }))
+      if (url.includes('fiber-patch')) {
+        patchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { parentInput, parentDropdown } = await openParentModal()
+
+    // Pick a parent via the dropdown
+    parentInput.dispatchEvent(new FocusEvent('focus'))
+    await tick()
+    parentDropdown.querySelector<HTMLButtonElement>('button')!.click()
+
+    // Click Save
+    const saveBtn = document.querySelector<HTMLButtonElement>('.kbn-detail-save-btn')!
+    saveBtn.click()
+    await tick()
+
+    expect(patchBodies).toHaveLength(1)
+    expect((patchBodies[0] as Record<string, unknown>).parentId).toBe('test/new-p')
+  })
+})

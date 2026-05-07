@@ -106,6 +106,17 @@ interface KanbanCard {
    * Absent when `shuttleSchedule` is absent.
    */
   shuttleTz?: string
+  /**
+   * `shuttle.review.state` — current review state for standing roles.
+   * `'awaiting'` means the worker finished a run and is waiting for human
+   * review. `'scheduled'` / `'accepted'` means the role is dispatch-eligible.
+   * Absent for oneshot fibers and fibers with no shuttle block.
+   *
+   * Used by `runRequeue` to decide whether to run `shuttle-ctl accept` (via
+   * POST /kanban/transition) before forcing a dispatch: the daemon's
+   * force_dispatchable_standing_role? rejects `awaiting` state.
+   */
+  shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted'
 }
 
 /**
@@ -2167,6 +2178,9 @@ export class FiberDetailModal {
     parentInput.placeholder = 'Search for a new parent…'
     parentInput.setAttribute('aria-label', 'Search parent fiber')
     parentInput.setAttribute('autocomplete', 'off')
+    parentInput.setAttribute('role', 'combobox')
+    parentInput.setAttribute('aria-expanded', 'false')
+    parentInput.setAttribute('aria-haspopup', 'listbox')
     // Stop card-level clicks propagating (there's no card here, but be defensive).
     parentInput.addEventListener('mousedown', (e) => e.stopPropagation())
     parentInput.addEventListener('click', (e) => e.stopPropagation())
@@ -2174,40 +2188,92 @@ export class FiberDetailModal {
     const parentDropdown = document.createElement('div')
     parentDropdown.className = 'kbn-detail-parent-dropdown'
     parentDropdown.style.display = 'none'
+    parentDropdown.setAttribute('role', 'listbox')
+
+    // Shared pick-handler referenced by both the search callback and
+    // keyboard Enter on a focused option.
+    const onPickParent = (result: FiberSearchResult) => {
+      selectedParentId = result.id
+      currentParentEl.textContent = `↳ ${result.id} (pending)`
+      currentParentEl.classList.add('kbn-detail-pending-change')
+      parentInput.value = result.name
+      parentInput.setAttribute('aria-expanded', 'false')
+      parentDropdown.style.display = 'none'
+    }
+
+    // Trigger a search (with the current input value) and open the dropdown.
+    // Always called on focus so the dropdown is reactive — shows matching
+    // options immediately regardless of whether the input is empty or has a
+    // previously-selected value.
+    const openDropdown = () => {
+      void this.searchParents(
+        parentInput.value.trim(),
+        card.id,
+        scope,
+        parentDropdown,
+        onPickParent,
+      ).then(() => {
+        if (parentDropdown.style.display !== 'none') {
+          parentInput.setAttribute('aria-expanded', 'true')
+        }
+      })
+    }
 
     // Search on input with debounce.
     parentInput.addEventListener('input', () => {
-      const q = parentInput.value.trim()
       if (this.searchDebounce !== null) window.clearTimeout(this.searchDebounce)
-      this.searchDebounce = window.setTimeout(() => {
-        void this.searchParents(q, card.id, scope, parentDropdown, (result) => {
-          selectedParentId = result.id
-          currentParentEl.textContent = `↳ ${result.id} (pending)`
-          currentParentEl.classList.add('kbn-detail-pending-change')
-          parentInput.value = result.name
-          parentDropdown.style.display = 'none'
-        })
-      }, 200)
+      this.searchDebounce = window.setTimeout(() => openDropdown(), 200)
     })
 
-    // Show top-level results on focus if empty.
-    parentInput.addEventListener('focus', () => {
-      if (!parentInput.value.trim()) {
-        void this.searchParents('', card.id, scope, parentDropdown, (result) => {
-          selectedParentId = result.id
-          currentParentEl.textContent = `↳ ${result.id} (pending)`
-          currentParentEl.classList.add('kbn-detail-pending-change')
-          parentInput.value = result.name
-          parentDropdown.style.display = 'none'
-        })
+    // Reactive: show options immediately on focus regardless of current value.
+    parentInput.addEventListener('focus', () => openDropdown())
+
+    // Keyboard: ArrowDown moves focus into the dropdown; Escape closes it.
+    parentInput.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        const first = parentDropdown.querySelector<HTMLElement>('button')
+        if (first) { e.preventDefault(); first.focus() }
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        parentDropdown.style.display = 'none'
+        parentInput.setAttribute('aria-expanded', 'false')
       }
     })
 
-    // Hide dropdown on blur (with delay to allow click on option).
-    parentInput.addEventListener('blur', () => {
+    // Keyboard navigation inside the dropdown — handles ArrowUp/Down/Enter/Escape
+    // on option buttons without requiring individual listeners per option.
+    parentDropdown.addEventListener('keydown', (e) => {
+      const opts = Array.from(
+        parentDropdown.querySelectorAll<HTMLElement>('button:not(:disabled)'),
+      )
+      const idx = opts.indexOf(document.activeElement as HTMLElement)
+      if (e.key === 'ArrowDown' && idx < opts.length - 1) {
+        e.preventDefault()
+        opts[idx + 1].focus()
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (idx > 0) opts[idx - 1].focus()
+        else parentInput.focus()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        // Focus the input first — calling focus() before setting display:none
+        // avoids the browser/jsdom behaviour where hiding a container that
+        // holds the focused element drops focus to <body> before we can
+        // redirect it to parentInput.
+        parentInput.focus()
+        parentDropdown.style.display = 'none'
+        parentInput.setAttribute('aria-expanded', 'false')
+      }
+    })
+
+    // Close dropdown when focus leaves the entire component (input + dropdown).
+    // Using focusout on the wrapper — fires for any child blur — so the
+    // dropdown stays open while focus moves between the input and the options.
+    parentSearchWrap.addEventListener('focusout', () => {
       window.setTimeout(() => {
-        if (!parentDropdown.matches(':focus-within')) {
+        if (!parentSearchWrap.contains(document.activeElement)) {
           parentDropdown.style.display = 'none'
+          parentInput.setAttribute('aria-expanded', 'false')
         }
       }, 150)
     })
@@ -2322,9 +2388,17 @@ export class FiberDetailModal {
     document.body.append(overlay)
     this.overlay = overlay
 
-    // Escape to close.
+    // Escape to close the modal. When the parent-fiber dropdown is open and
+    // focus is inside it, yield to the dropdown's own keydown listener so it
+    // can close just the dropdown (not the whole modal). The dropdown's
+    // bubble-phase listener runs after this capture-phase handler returns.
     this.escapeHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') this.close()
+      if (e.key !== 'Escape') return
+      // Let the dropdown handle its own Escape: if focus is inside the
+      // parent-fiber dropdown, return without closing the modal so the
+      // dropdown's bubble-phase listener can close just the dropdown.
+      if (document.activeElement?.closest('.kbn-detail-parent-dropdown')) return
+      this.close()
     }
     document.addEventListener('keydown', this.escapeHandler, true)
 
@@ -2439,6 +2513,26 @@ export class FiberDetailModal {
         throw new Error(e.error || `review-comment ${commentRes.status}`)
       }
       if (card.shuttleKind === 'standing') {
+        // Standing roles in awaiting review state need shuttle-ctl accept to
+        // transition review.state → scheduled before the daemon will accept a
+        // force dispatch. The daemon's force_dispatchable_standing_role? only
+        // passes for review.state ∈ {scheduled, accepted, due} — it rejects
+        // awaiting. The kanban transition with target=inFlight detects
+        // standing+awaiting and routes to `shuttle-ctl accept`, which advances
+        // next_due_at and puts the fiber in the scheduled state the daemon
+        // expects. Standing roles not in awaiting state (already scheduled/due)
+        // are force-dispatchable directly.
+        if (card.shuttleReviewState === 'awaiting') {
+          const transRes = await fetch(this.transitionUrl(cityId), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
+          })
+          if (!transRes.ok) {
+            const e = (await transRes.json().catch(() => ({}))) as { error?: string }
+            throw new Error(e.error || `transition ${transRes.status}`)
+          }
+        }
         await this.runDispatchNow(card, btn, errorEl)
         return
       }
