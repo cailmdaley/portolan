@@ -89,8 +89,9 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   // Let async loadAgents / loadHistory settle (they're fire-and-forget voids).
   await tick()
 
-  const dispatchBtn = document.querySelector('.kbn-detail-action-dispatch') as HTMLButtonElement
-  if (!dispatchBtn) throw new Error('Dispatch button not found — card may not be inFlight or shuttleKind is missing')
+  const primaryBtns = document.querySelectorAll('.kbn-detail-action-primary') as NodeListOf<HTMLButtonElement>
+  const dispatchBtn = primaryBtns[0]
+  if (!dispatchBtn) throw new Error('Resubmit button not found — card may not be inFlight or shuttleKind is missing')
 
   // The error element follows the actions section — same actionsErr shared by
   // all action buttons. We pick the first kbn-detail-error in the actions section.

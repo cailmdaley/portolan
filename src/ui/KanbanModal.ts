@@ -1889,7 +1889,14 @@ export class FiberDetailModal {
 
     requeueBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      void this.runRequeue(card, directiveTa.value.trim(), 'fresh', scope, requeueBtn, actionsErr)
+      const directive = directiveTa.value.trim()
+      if (directive === '') {
+        // Empty directive -> immediate dispatch via the existing runDispatchNow path
+        void this.runDispatchNow(card, requeueBtn, actionsErr)
+      } else {
+        // Non-empty directive -> record it and requeue as before
+        void this.runRequeue(card, directive, 'fresh', scope, requeueBtn, actionsErr)
+      }
     })
     resumeBtn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -1905,28 +1912,13 @@ export class FiberDetailModal {
       void this.runTransition(card, 'composted', scope, compostBtn, actionsErr)
     })
 
-    // "Dispatch now" — bypasses the poller and tells the Shuttle daemon to
-    // dispatch immediately. Only meaningful when the fiber is enabled and
-    // idle (i.e. in the inFlight column waiting for the next poll tick).
-    // Hidden for fibers that are already running, paused (drafts), or lack
-    // a shuttle block entirely.
-    const showDispatchNow = columnKind === 'inFlight'
-      && !card.runningWorker
-      && card.shuttleKind !== undefined
-    const dispatchRow = document.createElement('div')
-    dispatchRow.className = 'kbn-detail-dispatch-row'
-    if (showDispatchNow) {
-      const dispatchBtn = this.buildActionBtn('Dispatch now ▸', 'dispatch')
-      dispatchBtn.setAttribute('aria-label', `Dispatch ${card.name} immediately`)
-      dispatchBtn.title = 'Trigger immediate dispatch — bypasses the 15-second poll'
-      dispatchBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        void this.runDispatchNow(card, dispatchBtn, actionsErr)
-      })
-      dispatchRow.append(dispatchBtn)
-    }
+    // Merged "Dispatch now" into the Resubmit button: when the directive
+    // textarea is empty, the Resubmit action triggers an immediate dispatch
+    // (runDispatchNow). When the directive is non-empty, we record the
+    // directive and requeue (runRequeue) as before. The dedicated dispatch
+    // row/button was removed to simplify the modal UI.
 
-    actionsSec.append(directiveTa, actionsRow, dispatchRow, actionsErr)
+    actionsSec.append(directiveTa, actionsRow, actionsErr)
 
     // ── Tags ────────────────────────────────────────────────────────────────
     // Chip editor matching the kanban grid card's inline tag editor. Adding
