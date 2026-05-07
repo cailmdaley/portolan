@@ -2538,7 +2538,10 @@ export class FiberDetailModal {
       res = await fetch(`${shuttleBase}/api/v1/dispatch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiber_id: card.id }),
+        body: JSON.stringify({
+          fiber_id: card.id,
+          ...(card.shuttleKind === 'standing' ? { force: true } : {}),
+        }),
       })
     } catch (err: unknown) {
       // Network / CORS / daemon-unreachable path.

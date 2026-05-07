@@ -171,6 +171,46 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     // Callback notified to refresh the kanban.
     expect(onSaved).toHaveBeenCalledOnce()
   })
+
+  it('asks the daemon to force immediate dispatch for standing roles', async () => {
+    const dispatchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { dispatchBtn } = await openDispatchModal(makeInFlightCard({ shuttleKind: 'standing' }))
+    dispatchBtn.click()
+    await tick()
+
+    expect(dispatchBodies).toEqual([
+      { fiber_id: 'test/my-constitution', force: true },
+    ])
+  })
+
+  it('does not force immediate dispatch for one-shot fibers', async () => {
+    const dispatchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { dispatchBtn } = await openDispatchModal(makeInFlightCard())
+    dispatchBtn.click()
+    await tick()
+
+    expect(dispatchBodies).toEqual([
+      { fiber_id: 'test/my-constitution' },
+    ])
+  })
 })
 
 describe('FiberDetailModal dispatch — 409 already running', () => {
