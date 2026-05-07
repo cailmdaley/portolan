@@ -290,11 +290,11 @@
   display: flex; flex-direction: column;
   gap: 6px;
   /* Expand to fill available column space when few cards are present.
-     flex-grow has no effect once the list overflows (overflow-y: auto
-     on .kbn-col-list), so cards never shrink below their content height. */
+     min-height defaults to auto: card floor = header + name + outcome
+     floor (set on .kbn-card-outcome) + meta. When many cards overflow
+     the column, overflow-y:auto kicks in and cards stay at their floor. */
   flex-grow: 1;
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
-  min-height: 0;
 }
 .kbn-card:hover {
   background: #FFFCF6;
@@ -433,12 +433,13 @@
   line-height: 1.4;
   color: #4A4540;
   overflow: hidden;
-  /* Absorb spare card height without letting natural content height drive
-     card size. min-height:0 lets the flex algorithm shrink the outcome
-     below its text height; overflow:hidden clips the rest. Without this,
-     a long outcome sets the card's min-height and makes the list scroll. */
+  /* Absorb spare card height above the floor. flex-grow:1 fills extra
+     card space; min-height pins the floor to 4 lines (the old clamp:4
+     baseline). An explicit min-height overrides the "use text content
+     height" auto-minimum, so a long outcome doesn't inflate the card's
+     natural floor — text beyond the floor is clipped by overflow:hidden. */
   flex-grow: 1;
-  min-height: 0;
+  min-height: calc(4 * 1.4em);
 }
 .kbn-card-outcome > :first-child { margin-top: 0; }
 .kbn-card-outcome > :last-child { margin-bottom: 0; }
