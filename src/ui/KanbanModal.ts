@@ -578,54 +578,66 @@ export class KanbanModal {
   }
 
   /**
-   * Per-column post-render pass that bumps `--card-line-clamp` when the
-   * column has spare vertical space. The default 4-line clamp is the
-   * floor; if the cards as a group don't fill the column, we extend the
-   * clamp so the outcomes show more text — line-aligned, never overshoot.
+   * Post-render pass that bumps `--card-line-clamp` globally — every
+   * card across every column gets the same clamp value, computed from
+   * the most-constrained column. The default 4-line clamp is the floor;
+   * if every column has spare vertical space at clamp 4, we extend the
+   * clamp by however many lines the tightest column can afford.
    *
-   * Strategy: compute spare = clientHeight - scrollHeight at 4 lines.
-   * extra_lines_per_card = floor(spare / (N_cards × line_height)). Apply
-   * 4 + extra_lines as the clamp on every card in the column. We
-   * deliberately pick a single value per column (not per card) so visual
-   * rhythm stays uniform within the column.
+   * Why global, not per-column: visual rhythm. A card in In Flight that
+   * shows 12 lines of outcome next to a card in Drafts that shows 4
+   * reads as inconsistent. Picking the min across columns means cards
+   * look the same height everywhere, at the cost of leaving spare
+   * space at the bottom of the less-constrained columns. The user
+   * prefers undershoot to overshoot, and uniformity to maximal fill.
    *
-   * The computation underestimates: if the spare space allows 2.7 extra
-   * lines per card, we pick 2. The user prefers undershoot to overshoot.
-   * Cards with shorter outcomes than the new clamp simply show their full
-   * content — line-clamp is a max, not a fixed height.
+   * Algorithm:
+   *   1. Reset --card-line-clamp on all cards (the variable is set on
+   *      .kbn-body so it cascades; clearing per-card overrides too).
+   *   2. For each non-empty column, measure spare = clientHeight -
+   *      scrollHeight at clamp 4. Compute affordable = floor(spare /
+   *      (N_cards × line_height)). Negative if the column already
+   *      overflows.
+   *   3. Take the min of affordable across columns. If that's > 0,
+   *      set --card-line-clamp on .kbn-body to 4 + min. Cards inherit.
    */
   private expandOutcomesToFillSpace(): void {
     if (!this.body) return
-    // The outcome's font-size × line-height = 12.5 × 1.4 = 17.5px per line.
+    // Outcome font-size × line-height = 12.5 × 1.4 = 17.5px per line.
     const lineHeight = 17.5
-    // Cap the extension so a column with two short cards doesn't end up
-    // with 60-line monsters. 16 lines is enough to accommodate most
-    // long outcomes without dominating the column.
-    const maxClamp = 16
+    // Cap the extension so an overall sparse layout doesn't grow cards
+    // into multi-screen-height monsters. 16 lines accommodates most long
+    // outcomes without dominating the column.
+    const maxExtraLines = 12
 
+    // Reset cascade root so the next measurement reflects the 4-line floor,
+    // not whatever was set last time. Per-card overrides aren't used here
+    // (we set the variable on .kbn-body) but clear them defensively so a
+    // stale value from the per-column implementation doesn't bias things.
+    this.body.style.removeProperty('--card-line-clamp')
+    for (const card of this.body.querySelectorAll<HTMLElement>('.kbn-card')) {
+      card.style.removeProperty('--card-line-clamp')
+    }
+
+    let minAffordable = Infinity
     for (const col of this.body.querySelectorAll<HTMLElement>('.kbn-col')) {
       const list = col.querySelector<HTMLElement>('.kbn-col-list')
       if (!list) continue
       const cards = list.querySelectorAll<HTMLElement>('.kbn-card')
       if (cards.length === 0) continue
 
-      // Reset before measuring so a stale --card-line-clamp from a prior
-      // render doesn't bias the spare-space calc.
-      for (const card of cards) card.style.removeProperty('--card-line-clamp')
-
-      // Spare positive when the cards fit with room to spare. If the column
-      // is already overflowing, leave the clamp at 4 (the column scrolls).
       const spare = list.clientHeight - list.scrollHeight
-      if (spare <= lineHeight) continue
-
-      const extraLines = Math.floor(spare / (cards.length * lineHeight))
-      if (extraLines <= 0) continue
-
-      const newClamp = Math.min(4 + extraLines, maxClamp)
-      for (const card of cards) {
-        card.style.setProperty('--card-line-clamp', String(newClamp))
-      }
+      // Negative when the column already overflows at 4 lines: that
+      // column governs the global clamp DOWN, but we don't shrink below
+      // the 4-line floor; treat overflowing columns as 0-affordable.
+      const affordable = Math.max(0, Math.floor(spare / (cards.length * lineHeight)))
+      if (affordable < minAffordable) minAffordable = affordable
     }
+
+    if (!Number.isFinite(minAffordable) || minAffordable <= 0) return
+
+    const newClamp = 4 + Math.min(minAffordable, maxExtraLines)
+    this.body.style.setProperty('--card-line-clamp', String(newClamp))
   }
 
   /**
