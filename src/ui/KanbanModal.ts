@@ -962,6 +962,35 @@ export class KanbanModal {
     date.textContent = stamp ? formatRelative(stamp) : ''
 
     meta.append(tagWrap, date)
+    if (kind === 'awaitingReview' && !isStale) {
+      // Inline temper/compost buttons sit left of the timestamp.
+      const reviewMetaActions = document.createElement('div')
+      reviewMetaActions.className = 'kbn-card-review-meta-actions'
+
+      const temperMetaBtn = document.createElement('button')
+      temperMetaBtn.type = 'button'
+      temperMetaBtn.className = 'kbn-action kbn-action-tempered kbn-review-meta-btn'
+      temperMetaBtn.textContent = 'Temper'
+      temperMetaBtn.setAttribute('aria-label', `Temper fiber: ${card.name}`)
+      temperMetaBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        void this.transition(card, 'tempered')
+      })
+
+      const compostMetaBtn = document.createElement('button')
+      compostMetaBtn.type = 'button'
+      compostMetaBtn.className = 'kbn-action kbn-action-drafts kbn-review-meta-btn'
+      compostMetaBtn.textContent = 'Compost'
+      compostMetaBtn.setAttribute('aria-label', `Compost fiber: ${card.name}`)
+      compostMetaBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        void this.transition(card, 'composted')
+      })
+
+      reviewMetaActions.append(temperMetaBtn, compostMetaBtn)
+      // Insert before date so order is: tags … [Temper][Compost] [date]
+      meta.insertBefore(reviewMetaActions, date)
+    }
     el.append(meta)
 
     // Blocked indicator on in-flight cards with unsatisfied deps
@@ -1330,32 +1359,6 @@ export class KanbanModal {
 
     primaryRow.append(requeueBtn, resumeBtn)
 
-    // Secondary action row: temper / compost (drag alternatives).
-    const secondaryRow = document.createElement('div')
-    secondaryRow.className = 'kbn-review-secondary'
-
-    const temperBtn = document.createElement('button')
-    temperBtn.type = 'button'
-    temperBtn.className = 'kbn-action kbn-action-tempered kbn-review-secondary-btn'
-    temperBtn.textContent = 'Temper'
-    temperBtn.setAttribute('aria-label', `Temper fiber: ${card.name}`)
-    temperBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      void this.transition(card, 'tempered')
-    })
-
-    const compostBtn = document.createElement('button')
-    compostBtn.type = 'button'
-    compostBtn.className = 'kbn-action kbn-action-drafts kbn-review-secondary-btn'
-    compostBtn.textContent = 'Compost'
-    compostBtn.setAttribute('aria-label', `Compost fiber: ${card.name}`)
-    compostBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      void this.transition(card, 'composted')
-    })
-
-    secondaryRow.append(temperBtn, compostBtn)
-
     // Tooltip nuance: when the textarea has content, hint that the
     // directive will be recorded; when empty, hint that the action still
     // works without one. Buttons themselves remain enabled regardless of
@@ -1386,7 +1389,7 @@ export class KanbanModal {
       }
     })
 
-    cluster.append(textarea, primaryRow, secondaryRow)
+    cluster.append(textarea, primaryRow)
     return cluster
   }
 

@@ -321,7 +321,6 @@
 }
 .kbn-card-composted .kbn-card-outcome {
   font-size: 11.5px;
-  -webkit-line-clamp: 2;
   color: #6A645E;
 }
 /* Tempered cards are smaller — they're for the record, not the focus. */
@@ -432,10 +431,10 @@
   font-size: 12.5px;
   line-height: 1.4;
   color: #4A4540;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
   overflow: hidden;
+  /* Absorb spare card height (flex-grow:1 on .kbn-card) so extra space
+     goes into more visible outcome text, not bottom whitespace. */
+  flex-grow: 1;
 }
 .kbn-card-outcome > :first-child { margin-top: 0; }
 .kbn-card-outcome > :last-child { margin-bottom: 0; }
@@ -484,11 +483,10 @@
 }
 .kbn-card-tempered .kbn-card-outcome {
   font-size: 11.5px;
-  -webkit-line-clamp: 2;
   color: #6A645E;
 }
 .kbn-card-meta {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
   gap: 8px;
   margin-top: 2px;
 }
@@ -680,6 +678,7 @@
   font-size: 10.5px;
   color: #B8AC9E;
   flex-shrink: 0;
+  margin-left: auto;
 }
 .kbn-card-blocked {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
@@ -826,17 +825,20 @@
   background: rgba(46, 42, 38, 0.03);
   color: #C8BFB3;
 }
-.kbn-review-secondary {
+/* Temper / Compost inline in the meta row (awaiting-review cards only).
+   Sit directly left of the date stamp; inherit .kbn-action base chrome. */
+.kbn-card-review-meta-actions {
   display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
 }
-.kbn-review-secondary-btn {
+.kbn-review-meta-btn {
   font-size: 9.5px;
   padding: 2px 7px;
   opacity: 0.75;
 }
-.kbn-review-secondary-btn:hover {
+.kbn-review-meta-btn:hover {
   opacity: 1;
 }
 
