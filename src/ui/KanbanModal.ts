@@ -902,7 +902,7 @@ export class KanbanModal {
     if (card.outcome) {
       const outcome = document.createElement('div')
       outcome.className = 'kbn-card-outcome'
-      outcome.textContent = card.outcome
+      outcome.innerHTML = renderMarkdown(card.outcome)
       el.append(outcome)
     }
 
@@ -1003,7 +1003,7 @@ export class KanbanModal {
 
     // Click outside any button → open fiber detail modal.
     el.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('button, textarea')) return
+      if ((e.target as HTMLElement).closest('a, button, textarea')) return
       this.detailModal?.open(card, this.cityScope?.cityId, kind)
     })
 
@@ -1739,7 +1739,7 @@ export class FiberDetailModal {
    * @param columnKind  the column the card lives in — used to gate the
    *   "Dispatch now" button (visible only for inFlight, non-running cards).
    */
-  open(card: KanbanCard, scopeCityId?: string | null, columnKind?: ColumnKind): void {
+  open(card: KanbanCard, scopeCityId?: string | null, _columnKind?: ColumnKind): void {
     // Tear down any existing open modal first (rapid re-click).
     this.close()
 

@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { FiberDetailModal, dispatchIneligibleReason } from './KanbanModal.js'
+import { FiberDetailModal, KanbanModal, dispatchIneligibleReason } from './KanbanModal.js'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,39 @@ function makeInFlightCard(overrides: Partial<{
     tags: ['constitution'],
     ...overrides,
   }
+}
+
+function makeKanbanCard(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'test/my-constitution',
+    name: 'My Constitution',
+    path: 'test/my-constitution',
+    originId: 'local',
+    status: 'open',
+    dependsOnSatisfied: true,
+    createdAt: '2026-01-01T00:00:00Z',
+    tags: ['constitution'],
+    ...overrides,
+  }
+}
+
+function renderGridCard(overrides: Record<string, unknown> = {}): {
+  el: HTMLElement
+  detailOpen: ReturnType<typeof vi.fn>
+} {
+  const modal = new KanbanModal({
+    apiBase: 'http://localhost:4004',
+    onOpenFiber: vi.fn(),
+  })
+  const detailOpen = vi.fn()
+  ;(modal as unknown as { detailModal: { open: ReturnType<typeof vi.fn> } }).detailModal = {
+    open: detailOpen,
+  }
+  const el = (modal as unknown as {
+    renderCard: (card: ReturnType<typeof makeKanbanCard>, kind: 'drafts') => HTMLElement
+  }).renderCard(makeKanbanCard(overrides), 'drafts')
+  document.body.append(el)
+  return { el, detailOpen }
 }
 
 /**
@@ -122,6 +155,37 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+// ── Grid card previews ──────────────────────────────────────────────────────
+
+describe('KanbanModal grid card outcome preview', () => {
+  it('renders outcome markdown instead of showing raw markdown syntax', () => {
+    const { el } = renderGridCard({
+      outcome: 'Review **all three** papers.\n\n- Lisa\n- Paper four\n\nUse `loom`.',
+    })
+
+    const outcome = el.querySelector('.kbn-card-outcome')
+    expect(outcome?.querySelector('strong')?.textContent).toBe('all three')
+    expect(outcome?.querySelectorAll('li')).toHaveLength(2)
+    expect(outcome?.querySelector('code')?.textContent).toBe('loom')
+    expect(outcome?.textContent).not.toContain('**all three**')
+  })
+
+  it('keeps rendered links clickable without opening the detail modal', () => {
+    const { el, detailOpen } = renderGridCard({
+      outcome: 'Read [the notes](https://example.com/notes).',
+    })
+
+    const link = el.querySelector<HTMLAnchorElement>('.kbn-card-outcome a')
+    expect(link?.href).toBe('https://example.com/notes')
+
+    link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(detailOpen).not.toHaveBeenCalled()
+
+    el.querySelector('.kbn-card-outcome')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(detailOpen).toHaveBeenCalledOnce()
+  })
+})
+
 // ── dispatchIneligibleReason unit tests ──────────────────────────────────────
 
 describe('dispatchIneligibleReason', () => {
@@ -166,7 +230,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       '/api/v1/dispatch': () => jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }),
     }))
 
-    const { modal, dispatchBtn, onSaved } = await openDispatchModal(makeInFlightCard())
+    const { dispatchBtn, onSaved } = await openDispatchModal(makeInFlightCard())
     dispatchBtn.click()
     await tick()
 
