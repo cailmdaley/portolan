@@ -294,6 +294,7 @@
      on .kbn-col-list), so cards never shrink below their content height. */
   flex-grow: 1;
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
+  min-height: 0;
 }
 .kbn-card:hover {
   background: #FFFCF6;
@@ -432,9 +433,12 @@
   line-height: 1.4;
   color: #4A4540;
   overflow: hidden;
-  /* Absorb spare card height (flex-grow:1 on .kbn-card) so extra space
-     goes into more visible outcome text, not bottom whitespace. */
+  /* Absorb spare card height without letting natural content height drive
+     card size. min-height:0 lets the flex algorithm shrink the outcome
+     below its text height; overflow:hidden clips the rest. Without this,
+     a long outcome sets the card's min-height and makes the list scroll. */
   flex-grow: 1;
+  min-height: 0;
 }
 .kbn-card-outcome > :first-child { margin-top: 0; }
 .kbn-card-outcome > :last-child { margin-bottom: 0; }
@@ -826,12 +830,18 @@
   color: #C8BFB3;
 }
 /* Temper / Compost inline in the meta row (awaiting-review cards only).
-   Sit directly left of the date stamp; inherit .kbn-action base chrome. */
+   Sit directly left of the date stamp; inherit .kbn-action base chrome.
+   margin-left:auto pushes the whole group right; the adjacent-sibling rule
+   zeroes out the date's own auto-margin so space isn't split between them. */
 .kbn-card-review-meta-actions {
   display: flex;
   gap: 4px;
   align-items: center;
   flex-shrink: 0;
+  margin-left: auto;
+}
+.kbn-card-review-meta-actions + .kbn-card-date {
+  margin-left: 0;
 }
 .kbn-review-meta-btn {
   font-size: 9.5px;
