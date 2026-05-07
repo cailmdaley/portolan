@@ -3,9 +3,6 @@
 
 Spatial map for Claude sessions. Click to go there. **This repo is local-only (no git remote).**
 
-`AGENTS.md` is a symlink to this file so Codex-style agents and
-Claude-style agents read the same local instructions.
-
 ## Core Concepts
 
 - **Cities** = project directories (derived from active sessions, persist when dormant)
