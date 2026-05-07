@@ -76,6 +76,7 @@ function tick(): Promise<void> {
 async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Promise<{
   modal: FiberDetailModal
   dispatchBtn: HTMLButtonElement
+  directiveTa: HTMLTextAreaElement
   errorEl: HTMLElement
   onSaved: ReturnType<typeof vi.fn>
 }> {
@@ -93,6 +94,9 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   const dispatchBtn = primaryBtns[0]
   if (!dispatchBtn) throw new Error('Resubmit button not found — card may not be inFlight or shuttleKind is missing')
 
+  const directiveTa = document.querySelector('.kbn-detail-directive') as HTMLTextAreaElement | null
+  if (!directiveTa) throw new Error('Directive textarea not found')
+
   // The error element follows the actions section — same actionsErr shared by
   // all action buttons. We pick the first kbn-detail-error in the actions section.
   const errors = document.querySelectorAll('.kbn-detail-error')
@@ -100,7 +104,7 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   const errorEl = errors[0] as HTMLElement
   if (!errorEl) throw new Error('Error element not found')
 
-  return { modal, dispatchBtn, errorEl, onSaved }
+  return { modal, dispatchBtn, directiveTa, errorEl, onSaved }
 }
 
 // ── Setup ────────────────────────────────────────────────────────────────────
@@ -210,6 +214,46 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     expect(dispatchBodies).toEqual([
       { fiber_id: 'test/my-constitution' },
     ])
+  })
+
+  it('records a directive then force-dispatches standing roles immediately', async () => {
+    const reviewBodies: unknown[] = []
+    const dispatchBodies: unknown[] = []
+    const transitionBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/review-comment')) {
+        reviewBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+      }
+      if (urlStr.includes('/kanban/transition')) {
+        transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { dispatchBtn, directiveTa, onSaved } = await openDispatchModal(makeInFlightCard({ shuttleKind: 'standing' }))
+    directiveTa.value = 'Please continue this standing role now.'
+    dispatchBtn.click()
+    await tick()
+
+    expect(reviewBodies).toEqual([
+      {
+        fiberId: 'test/my-constitution',
+        directive: 'Please continue this standing role now.',
+        resumeMode: 'fresh',
+      },
+    ])
+    expect(dispatchBodies).toEqual([
+      { fiber_id: 'test/my-constitution', force: true },
+    ])
+    expect(transitionBodies).toEqual([])
+    expect(onSaved).toHaveBeenCalledOnce()
   })
 })
 

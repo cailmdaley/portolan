@@ -2411,10 +2411,10 @@ export class FiberDetailModal {
   }
 
   /**
-   * Two-step requeue: record a directive event (review-comment), then
-   * transition to inFlight. Mirrors KanbanModal.requeueFresh /
-   * resumePrevious — the directive is what the next dispatched worker
-   * reads, the transition is what wakes the dispatcher up.
+   * Two-step requeue: record a directive event (review-comment), then wake
+   * the worker. One-shot fibers wake by transitioning to inFlight; standing
+   * roles wake through immediate daemon dispatch because their next_due_at may
+   * be in the future even while the card already sits in the in-flight column.
    */
   private async runRequeue(
     card: KanbanCard,
@@ -2437,6 +2437,10 @@ export class FiberDetailModal {
       if (!commentRes.ok) {
         const e = (await commentRes.json().catch(() => ({}))) as { error?: string }
         throw new Error(e.error || `review-comment ${commentRes.status}`)
+      }
+      if (card.shuttleKind === 'standing') {
+        await this.runDispatchNow(card, btn, errorEl)
+        return
       }
       const transRes = await fetch(this.transitionUrl(cityId), {
         method: 'POST',
