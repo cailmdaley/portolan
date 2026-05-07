@@ -578,66 +578,83 @@ export class KanbanModal {
   }
 
   /**
-   * Post-render pass that bumps `--card-line-clamp` globally — every
-   * card across every column gets the same clamp value, computed from
-   * the most-constrained column. The default 4-line clamp is the floor;
-   * if every column has spare vertical space at clamp 4, we extend the
-   * clamp by however many lines the tightest column can afford.
+   * Per-column post-render pass that sets `--card-line-clamp` to fill
+   * the column with at most 3 visible cards. The goal: maximize on-
+   * screen space utilization while never showing more than three cards
+   * in a single column at once.
    *
-   * Why global, not per-column: visual rhythm. A card in In Flight that
-   * shows 12 lines of outcome next to a card in Drafts that shows 4
-   * reads as inconsistent. Picking the min across columns means cards
-   * look the same height everywhere, at the cost of leaving spare
-   * space at the bottom of the less-constrained columns. The user
-   * prefers undershoot to overshoot, and uniformity to maximal fill.
+   * Algorithm per column:
+   *   1. effectiveN = min(card_count, 3) — how many cards we want
+   *      visible at once. Beyond 3, the column scrolls and unseen cards
+   *      stay at the same height as the visible ones.
+   *   2. targetCardHeight = (column_height - gaps_between_visible_cards)
+   *      / effectiveN. The height each card should grow toward.
+   *   3. avgNonOutcomeHeight = (sum of non-outcome height across cards
+   *      in the column) / N. The ambient overhead — header + name +
+   *      slug + meta + padding + gaps — varies card-to-card so we
+   *      average it.
+   *   4. targetOutcomeHeight = targetCardHeight - avgNonOutcomeHeight.
+   *   5. targetLines = floor(targetOutcomeHeight / line_height).
+   *   6. Clamp lives in [4, 16]. Apply to .kbn-col so all cards
+   *      inherit via the cascade.
    *
-   * Algorithm:
-   *   1. Reset --card-line-clamp on all cards (the variable is set on
-   *      .kbn-body so it cascades; clearing per-card overrides too).
-   *   2. For each non-empty column, measure spare = clientHeight -
-   *      scrollHeight at clamp 4. Compute affordable = floor(spare /
-   *      (N_cards × line_height)). Negative if the column already
-   *      overflows.
-   *   3. Take the min of affordable across columns. If that's > 0,
-   *      set --card-line-clamp on .kbn-body to 4 + min. Cards inherit.
+   * Floor() biases toward undershoot. The clamp is per-column so
+   * sparser columns can show longer outcomes — each column is sized
+   * to fit its own contents, not a global lowest common denominator.
    */
   private expandOutcomesToFillSpace(): void {
     if (!this.body) return
     // Outcome font-size × line-height = 12.5 × 1.4 = 17.5px per line.
     const lineHeight = 17.5
-    // Cap the extension so an overall sparse layout doesn't grow cards
-    // into multi-screen-height monsters. 16 lines accommodates most long
-    // outcomes without dominating the column.
-    const maxExtraLines = 12
+    // Gap between cards in .kbn-col-list (CSS: gap: 8px).
+    const cardGap = 8
+    const minClamp = 4
+    const maxClamp = 16
+    const maxVisibleCards = 3
 
-    // Reset cascade root so the next measurement reflects the 4-line floor,
-    // not whatever was set last time. Per-card overrides aren't used here
-    // (we set the variable on .kbn-body) but clear them defensively so a
-    // stale value from the per-column implementation doesn't bias things.
+    // Reset cascade roots before measuring so a stale variable from a
+    // prior render doesn't bias offsetHeight readings. Clear at every
+    // level we might have set it (body, col, card).
     this.body.style.removeProperty('--card-line-clamp')
+    for (const col of this.body.querySelectorAll<HTMLElement>('.kbn-col')) {
+      col.style.removeProperty('--card-line-clamp')
+    }
     for (const card of this.body.querySelectorAll<HTMLElement>('.kbn-card')) {
       card.style.removeProperty('--card-line-clamp')
     }
+    // Force layout to settle at the 4-line default before measuring.
+    void this.body.offsetHeight
 
-    let minAffordable = Infinity
     for (const col of this.body.querySelectorAll<HTMLElement>('.kbn-col')) {
       const list = col.querySelector<HTMLElement>('.kbn-col-list')
       if (!list) continue
       const cards = list.querySelectorAll<HTMLElement>('.kbn-card')
       if (cards.length === 0) continue
 
-      const spare = list.clientHeight - list.scrollHeight
-      // Negative when the column already overflows at 4 lines: that
-      // column governs the global clamp DOWN, but we don't shrink below
-      // the 4-line floor; treat overflowing columns as 0-affordable.
-      const affordable = Math.max(0, Math.floor(spare / (cards.length * lineHeight)))
-      if (affordable < minAffordable) minAffordable = affordable
+      const effectiveN = Math.min(cards.length, maxVisibleCards)
+      const totalGapHeight = (effectiveN - 1) * cardGap
+      const targetCardHeight = (list.clientHeight - totalGapHeight) / effectiveN
+
+      // Average non-outcome height across cards in this column. Each
+      // card's overhead = its full height minus its outcome's height
+      // (cards without an outcome contribute 0 outcome).
+      let totalNonOutcome = 0
+      for (const card of cards) {
+        const outcome = card.querySelector<HTMLElement>('.kbn-card-outcome')
+        const outcomeHeight = outcome ? outcome.offsetHeight : 0
+        totalNonOutcome += card.offsetHeight - outcomeHeight
+      }
+      const avgNonOutcome = totalNonOutcome / cards.length
+
+      const targetOutcomeHeight = targetCardHeight - avgNonOutcome
+      if (targetOutcomeHeight <= 0) continue
+
+      const targetLines = Math.floor(targetOutcomeHeight / lineHeight)
+      const clamp = Math.max(minClamp, Math.min(targetLines, maxClamp))
+      if (clamp <= minClamp) continue
+
+      col.style.setProperty('--card-line-clamp', String(clamp))
     }
-
-    if (!Number.isFinite(minAffordable) || minAffordable <= 0) return
-
-    const newClamp = 4 + Math.min(minAffordable, maxExtraLines)
-    this.body.style.setProperty('--card-line-clamp', String(newClamp))
   }
 
   /**
