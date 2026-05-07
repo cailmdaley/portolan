@@ -289,11 +289,14 @@
   color: inherit;
   display: flex; flex-direction: column;
   gap: 6px;
-  /* Expand to fill available column space when few cards are present.
-     min-height defaults to auto: card floor = header + name + outcome
-     floor (set on .kbn-card-outcome) + meta. When many cards overflow
-     the column, overflow-y:auto kicks in and cards stay at their floor. */
-  flex-grow: 1;
+  /* Cards are sized to their natural content. Short outcomes leave the
+     card compact; long outcomes are line-clamped to N lines on the
+     outcome itself, so the card never exceeds the natural height of
+     "header + name + slug + N-line outcome + meta." flex-grow is off
+     intentionally — empty space at the bottom of a partial column is
+     less ugly than a single short-outcome card stretched to full
+     viewport height. */
+  flex-grow: 0;
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
 }
 .kbn-card:hover {
@@ -331,20 +334,8 @@
   background: #F7F3EA;
 }
 .kbn-card-header {
-  display: flex; align-items: flex-start; gap: 6px;
+  display: flex; align-items: baseline; gap: 6px;
 }
-.kbn-card-handle {
-  font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 11px;
-  color: #B8AC9E;
-  line-height: 1.3;
-  letter-spacing: -1px;
-  user-select: none;
-  cursor: grab;
-  flex-shrink: 0;
-  padding: 1px 0;
-}
-.kbn-card:active .kbn-card-handle { cursor: grabbing; }
 .kbn-card-name {
   flex: 1;
   font-size: 14.5px;
@@ -411,35 +402,24 @@
   color: #B8AC9E;
   letter-spacing: 0.01em;
   word-break: break-all;
-  /* Also a button — strip the chrome and let the type carry it. */
-  background: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
-  text-align: left;
-  cursor: pointer;
-  display: block;
-  width: 100%;
-  transition: color 160ms ease;
-}
-.kbn-card-id:hover { color: #6B5520; }
-.kbn-card-id:focus { outline: none; }
-.kbn-card-id:focus-visible {
-  outline: 1px dashed #9A7B35;
-  outline-offset: 2px;
+  /* Pull the slug close to the title — the card-level gap leaves it
+     drifting visually otherwise. Negative top margin shaves the gap
+     below the header without touching the rest of the card's rhythm. */
+  margin-top: -3px;
 }
 .kbn-card-outcome {
   font-size: 12.5px;
   line-height: 1.4;
   color: #4A4540;
+  /* Truncate at 4 lines with an ellipsis. Aligns the cutoff to a line
+     boundary (no half-cropped letters) and signals truncation explicitly.
+     Short outcomes show fully — display:-webkit-box with line-clamp acts
+     as a max-lines, not a fixed height. The card sizes to its natural
+     content; no flex-grow gymnastics needed. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  /* Absorb spare card height above the floor. flex-grow:1 fills extra
-     card space; min-height pins the floor to 4 lines (the old clamp:4
-     baseline). An explicit min-height overrides the "use text content
-     height" auto-minimum, so a long outcome doesn't inflate the card's
-     natural floor — text beyond the floor is clipped by overflow:hidden. */
-  flex-grow: 1;
-  min-height: calc(4 * 1.4em);
 }
 .kbn-card-outcome > :first-child { margin-top: 0; }
 .kbn-card-outcome > :last-child { margin-bottom: 0; }
@@ -742,10 +722,6 @@
   transform: none;
 }
 .kbn-card--stale:active { cursor: default; }
-.kbn-card--stale .kbn-card-handle {
-  cursor: not-allowed;
-  color: #C8BFB3;
-}
 .kbn-card--stale .kbn-card-name { color: #6A645E; }
 /* The waiting badge sits in the same band as kbn-card-blocked /
    kbn-card-worker — runtime-state info that depends on connection,
@@ -773,63 +749,6 @@
   font-size: 13px;
 }
 
-/* ── Review action cluster (awaiting-review cards only) ─────────────── */
-/* Appended below the card body. Delimited from content by a top border.
-   Primary row: textarea + Requeue fresh + Resume previous (disabled).
-   Secondary row: temper + compost (drag alternatives, smaller). */
-.kbn-review-cluster {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 8px;
-  margin-top: 4px;
-  border-top: 1px dashed rgba(154, 123, 53, 0.28);
-}
-.kbn-review-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  min-height: 44px;
-  padding: 5px 8px;
-  border: 1px solid rgba(122, 112, 104, 0.28);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
-  font-family: var(--font-main, 'EB Garamond', serif);
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: #2E2A26;
-  outline: none;
-  transition: border-color 120ms ease, background 120ms ease;
-}
-.kbn-review-textarea:focus {
-  border-color: rgba(154, 123, 53, 0.55);
-  background: #FFFFFF;
-}
-.kbn-review-textarea::placeholder {
-  color: #C8BFB3;
-  font-style: italic;
-}
-.kbn-review-primary {
-  display: flex;
-  gap: 6px;
-}
-.kbn-review-btn {
-  flex: 1;
-  font-size: 10px;
-  padding: 3px 6px;
-  white-space: nowrap;
-}
-/* Disabled "Resume previous" uses a distinct muted style. */
-.kbn-review-btn--disabled {
-  background: rgba(46, 42, 38, 0.03);
-  border-color: rgba(46, 42, 38, 0.12);
-  color: #C8BFB3;
-  cursor: not-allowed;
-}
-.kbn-review-btn--disabled:hover {
-  background: rgba(46, 42, 38, 0.03);
-  color: #C8BFB3;
-}
 /* Temper / Compost inline in the meta row (awaiting-review cards only).
    Sit directly left of the date stamp; inherit .kbn-action base chrome.
    margin-left:auto pushes the whole group right; the adjacent-sibling rule

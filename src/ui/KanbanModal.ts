@@ -194,18 +194,6 @@ interface KanbanScrollSnapshot {
   columns: Partial<Record<ColumnKind, number>>
 }
 
-/**
- * Snapshot of a single per-card directive textarea. Captured before each
- * re-render so the polling-driven DOM rebuild doesn't drop user-typed
- * directive text on the floor.
- */
-interface ReviewDirectiveSnapshot {
-  value: string
-  selectionStart: number
-  selectionEnd: number
-  isFocused: boolean
-}
-
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
@@ -533,10 +521,6 @@ export class KanbanModal {
     if (!this.body || !this.statusEl) return
 
     const scrollSnapshot = this.captureScrollSnapshot()
-    // Capture the typed text in any per-card directive textareas so the
-    // poll-driven re-render doesn't blow away the user's mid-flight input.
-    // The corresponding restore happens after the column rebuild.
-    const directives = this.captureReviewDirectives()
     const { columns, totals, temperedTotal, staleness } = data
     this.statusEl.textContent =
       (totals.ideas > 0 ? `${totals.ideas} ideas · ` : '') +
@@ -555,7 +539,6 @@ export class KanbanModal {
     }
 
     this.restoreScrollSnapshot(scrollSnapshot)
-    this.restoreReviewDirectives(directives)
     // First render only: scroll Ideas off-screen left so In Flight sits in
     // the center of the viewport (with Drafts left-of-center and Awaiting
     // review right-of-center). Mirrors how Tempered/Composted live off-
@@ -608,61 +591,6 @@ export class KanbanModal {
     // next render call retries. The deferred frames above will succeed
     // in steady state.
     if (!applied) this.hasInitialScrollApplied = false
-  }
-
-  /**
-   * Capture typed text + selection state from every review-cluster
-   * directive textarea, keyed by the owning card's fiber id. Used to
-   * preserve user input across poll-driven re-renders (which blow away
-   * the DOM via innerHTML = '').
-   *
-   * Empty textareas are omitted so we don't bother re-applying nothing.
-   */
-  private captureReviewDirectives(): Map<string, ReviewDirectiveSnapshot> {
-    const out = new Map<string, ReviewDirectiveSnapshot>()
-    if (!this.body) return out
-    for (const ta of this.body.querySelectorAll<HTMLTextAreaElement>('.kbn-review-textarea')) {
-      const card = ta.closest<HTMLElement>('.kbn-card[data-fiber-id]')
-      const fiberId = card?.dataset.fiberId
-      if (!fiberId) continue
-      const value = ta.value
-      if (!value) continue
-      const isFocused = document.activeElement === ta
-      out.set(fiberId, {
-        value,
-        selectionStart: ta.selectionStart,
-        selectionEnd: ta.selectionEnd,
-        isFocused,
-      })
-    }
-    return out
-  }
-
-  /**
-   * Restore directive text + selection + focus into newly-rendered review
-   * clusters. Also fires an `input` event so the Requeue/Resume buttons
-   * pick up the restored value and update their disabled state.
-   */
-  private restoreReviewDirectives(snap: Map<string, ReviewDirectiveSnapshot>): void {
-    if (!this.body || snap.size === 0) return
-    for (const [fiberId, s] of snap) {
-      const card = this.body.querySelector<HTMLElement>(
-        `.kbn-card[data-fiber-id="${CSS.escape(fiberId)}"]`,
-      )
-      const ta = card?.querySelector<HTMLTextAreaElement>('.kbn-review-textarea')
-      if (!ta) continue
-      ta.value = s.value
-      // Re-fire input so the action buttons re-evaluate their enabled state.
-      ta.dispatchEvent(new Event('input', { bubbles: true }))
-      if (s.isFocused) {
-        ta.focus({ preventScroll: true })
-        try {
-          ta.setSelectionRange(s.selectionStart, s.selectionEnd)
-        } catch {
-          /* selection out of bounds — ignore */
-        }
-      }
-    }
   }
 
   private claimInitialFocus(): void {
@@ -860,53 +788,37 @@ export class KanbanModal {
       })
     }
 
-    // Header row: name + status pill (+ drag-handle hint)
+    // Header row: title (opens detail modal) + status pill.
+    // Drag handle retired — the whole card is the drag surface. Title is
+    // the only explicit click target; clicks elsewhere on the card body
+    // also open the detail modal (see card-level click handler below).
+    // Vellum is reachable via the modal's "→ vellum" affordance.
     const headerRow = document.createElement('div')
     headerRow.className = 'kbn-card-header'
 
-    const dragHandle = document.createElement('span')
-    dragHandle.className = 'kbn-card-handle'
-    dragHandle.setAttribute('aria-hidden', 'true')
-    dragHandle.title = isStale ? 'Drag disabled — origin offline' : 'Drag to move'
-    dragHandle.textContent = '⋮⋮'
-
-    // Title text is the direct-to-vellum gesture: clicking the name
-    // skips the detail modal and opens the fiber in the reader. This
-    // mirrors the existing "→ vellum" affordance inside the detail modal
-    // so the same gesture works at both levels (card and modal). Click
-    // the rest of the card body to get the detail-view modal.
     const name = document.createElement('button')
     name.type = 'button'
     name.className = 'kbn-card-name'
-    name.setAttribute('aria-label', `Open ${card.name} in vellum`)
-    name.title = 'Click to open in vellum'
+    name.setAttribute('aria-label', `Open ${card.name} details`)
+    name.title = 'Click to open details'
     name.textContent = card.name
     name.addEventListener('click', (e) => {
       e.stopPropagation()
-      this.onOpenFiber(card)
+      this.detailModal?.open(card, this.cityScope?.cityId, kind)
     })
 
     const pill = document.createElement('span')
     pill.className = `kbn-pill kbn-pill-${this.pillKind(card)}`
     pill.textContent = this.pillLabel(card)
 
-    headerRow.append(dragHandle, name, pill)
+    headerRow.append(name, pill)
     el.append(headerRow)
 
-    // Fiber id (small, breadcrumb-ish) — also a click-to-vellum target.
-    // Slugs are recognisable fiber identifiers across the app, so they
-    // consistently link to the reader. Title and id both work; the id
-    // is the canonical surface (the modal's title is read-only).
-    const idEl = document.createElement('button')
-    idEl.type = 'button'
+    // Fiber id (small, breadcrumb-ish). Plain text — no click target so
+    // the rest of the card body funnels cleanly to the detail modal.
+    const idEl = document.createElement('div')
     idEl.className = 'kbn-card-id'
     idEl.textContent = card.id
-    idEl.setAttribute('aria-label', `Open ${card.id} in vellum`)
-    idEl.title = 'Click to open in vellum'
-    idEl.addEventListener('click', (e) => {
-      e.stopPropagation()
-      this.onOpenFiber(card)
-    })
     el.append(idEl)
 
     // Outcome (truncated; CSS line-clamp)
@@ -1035,11 +947,10 @@ export class KanbanModal {
       el.append(waiting)
     }
 
-    // Review action cluster on awaiting-review cards. Non-stale only —
-    // stale-origin cards have nowhere to land for mutations.
-    if (kind === 'awaitingReview' && !isStale) {
-      el.append(this.renderReviewCluster(card))
-    }
+    // The directive textbox + Requeue/Resume buttons retired from the
+    // grid card on 2026-05-08; they live in the detail modal now (one
+    // canonical surface for "next dispatch"). Inline Temper/Compost
+    // remain in the meta row for the awaiting-review one-click path.
 
     // Click outside any button → open fiber detail modal.
     el.addEventListener('click', (e) => {
@@ -1100,13 +1011,6 @@ export class KanbanModal {
   /** POST endpoint for tag edits, with `?cityId=` when scoped. */
   private kanbanTagsUrl(): string {
     const base = `${this.apiBase}/kanban/tags`
-    if (!this.cityScope) return base
-    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
-  }
-
-  /** POST endpoint for review-comment directives, with `?cityId=` when scoped. */
-  private reviewCommentUrl(): string {
-    const base = `${this.apiBase}/kanban/review-comment`
     if (!this.cityScope) return base
     return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
   }
@@ -1296,219 +1200,6 @@ export class KanbanModal {
     tagWrap.append(editBtn)
   }
 
-  /**
-   * Render the review action cluster appended to awaiting-review cards.
-   *
-   * Layout:
-   *   [textarea — directive input, compact 2-row]
-   *   [Requeue fresh ▸] [Resume previous ▸]
-   *   [temper]  [compost]   ← secondary, smaller
-   *
-   * "Requeue fresh" is always enabled — directive is optional. With an
-   *   empty textarea, the worker is requeued without a new directive
-   *   (the latest review-comment, if any, still applies via the dispatch
-   *   prompt's directive block).
-   * "Resume previous" is enabled when the fiber has a stored session UUID
-   *   (shuttle.session.id ≠ null); directive is also optional. With an
-   *   empty textarea, the resumed worker just gets a "you've been resumed"
-   *   nudge without a new directive.
-   * "Temper" and "Compost" are secondary conveniences; drag is primary.
-   */
-  private renderReviewCluster(card: KanbanCard): HTMLElement {
-    const cluster = document.createElement('div')
-    cluster.className = 'kbn-review-cluster'
-
-    // Textarea for the directive.
-    const textarea = document.createElement('textarea')
-    textarea.className = 'kbn-review-textarea'
-    textarea.placeholder = 'Add a directive for the next worker…'
-    textarea.rows = 2
-    textarea.setAttribute('aria-label', 'Review directive')
-    // Stop card-level click from triggering open-in-vellum while editing.
-    textarea.addEventListener('mousedown', (e) => e.stopPropagation())
-    textarea.addEventListener('click', (e) => e.stopPropagation())
-
-    // Primary action row.
-    const primaryRow = document.createElement('div')
-    primaryRow.className = 'kbn-review-primary'
-
-    const requeueBtn = document.createElement('button')
-    requeueBtn.type = 'button'
-    requeueBtn.className = 'kbn-action kbn-action-inFlight kbn-review-btn'
-    requeueBtn.textContent = 'Requeue fresh ▸'
-    requeueBtn.disabled = false
-    requeueBtn.setAttribute('aria-label', 'Requeue fiber as fresh worker (directive optional)')
-    requeueBtn.title = 'Requeue as in-flight (fresh worker; directive optional)'
-
-    // "Resume previous" is enabled only when the fiber has a stored session UUID.
-    // Directive is optional — empty textarea just nudges the resumed worker.
-    const hasSession = !!card.sessionId
-    const resumeBtn = document.createElement('button')
-    resumeBtn.type = 'button'
-    resumeBtn.className = hasSession
-      ? 'kbn-action kbn-review-btn'
-      : 'kbn-action kbn-review-btn kbn-review-btn--disabled'
-    resumeBtn.textContent = 'Resume previous ▸'
-    resumeBtn.disabled = !hasSession
-    resumeBtn.setAttribute('aria-label', hasSession
-      ? 'Resume previous worker session (directive optional)'
-      : 'Resume previous worker session (no session available)')
-    resumeBtn.title = hasSession
-      ? 'Resume previous worker session (directive optional)'
-      : 'No prior session stored — dispatch a fresh worker first'
-
-    primaryRow.append(requeueBtn, resumeBtn)
-
-    // Tooltip nuance: when the textarea has content, hint that the
-    // directive will be recorded; when empty, hint that the action still
-    // works without one. Buttons themselves remain enabled regardless of
-    // textarea content (resume still gated on hasSession).
-    textarea.addEventListener('input', () => {
-      const hasContent = textarea.value.trim().length > 0
-      requeueBtn.title = hasContent
-        ? 'Record directive and requeue as in-flight (fresh worker)'
-        : 'Requeue as in-flight (fresh worker; directive optional)'
-      if (hasSession) {
-        resumeBtn.title = hasContent
-          ? 'Record directive and resume previous worker session'
-          : 'Resume previous worker session (directive optional)'
-      }
-    })
-
-    // Wire: "Requeue fresh" click.
-    requeueBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      void this.requeueFresh(card, textarea.value.trim(), requeueBtn, resumeBtn)
-    })
-
-    // Wire: "Resume previous" click.
-    resumeBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (hasSession) {
-        void this.resumePrevious(card, textarea.value.trim(), requeueBtn, resumeBtn)
-      }
-    })
-
-    cluster.append(textarea, primaryRow)
-    return cluster
-  }
-
-  /**
-   * Record a review directive and requeue the fiber as in-flight (fresh worker).
-   *
-   * Two-step: POST /kanban/review-comment to record the directive, then
-   * POST /kanban/transition {target: 'inFlight'} to move the card. Both must
-   * succeed; if the directive write fails the transition is skipped and the
-   * card stays in awaiting-review.
-   */
-  private async requeueFresh(
-    card: KanbanCard,
-    directive: string,
-    requeueBtn: HTMLButtonElement,
-    resumeBtn: HTMLButtonElement,
-  ): Promise<void> {
-    requeueBtn.disabled = true
-    resumeBtn.disabled = true
-    requeueBtn.textContent = 'Requeueing…'
-
-    try {
-      // Step 1: record the directive.
-      const commentRes = await fetch(this.reviewCommentUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: 'fresh' }),
-      })
-      if (!commentRes.ok) {
-        const errBody = await commentRes.json().catch(() => ({ error: `${commentRes.status}` })) as { error?: string }
-        throw new Error(errBody.error || `Review comment failed: ${commentRes.status}`)
-      }
-
-      // Step 2: move to inFlight.
-      const transRes = await fetch(this.transitionUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
-      })
-      if (!transRes.ok) {
-        const errBody = await transRes.json().catch(() => ({ error: `${transRes.status}` })) as { error?: string }
-        throw new Error(errBody.error || `Transition failed: ${transRes.status}`)
-      }
-
-      this.announce(directive
-        ? `Requeued "${card.name}" with directive.`
-        : `Requeued "${card.name}".`)
-    } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? String(err)
-      this.showBanner(`Couldn't requeue "${card.name}": ${msg}`, 'error')
-      // Restore buttons.
-      requeueBtn.textContent = 'Requeue fresh ▸'
-      requeueBtn.disabled = false
-      resumeBtn.disabled = !card.sessionId
-      return
-    }
-
-    await this.fetchAndRender()
-  }
-
-  /**
-   * Record a review directive and requeue the fiber requesting resume of the
-   * previous worker session.
-   *
-   * Same two-step as requeueFresh, but POSTs `resumeMode: 'previous'`. The
-   * Shuttle dispatcher reads the resume_mode from the review-comment event
-   * and invokes the harness-appropriate resume command (e.g.
-   * `claude --resume <session-id>`). Only callable when `card.sessionId` is
-   * set (button is disabled otherwise by renderReviewCluster).
-   */
-  private async resumePrevious(
-    card: KanbanCard,
-    directive: string,
-    requeueBtn: HTMLButtonElement,
-    resumeBtn: HTMLButtonElement,
-  ): Promise<void> {
-    if (!card.sessionId) return
-    requeueBtn.disabled = true
-    resumeBtn.disabled = true
-    resumeBtn.textContent = 'Resuming…'
-
-    try {
-      // Step 1: record the directive with resume intent.
-      const commentRes = await fetch(this.reviewCommentUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, directive, resumeMode: 'previous' }),
-      })
-      if (!commentRes.ok) {
-        const errBody = await commentRes.json().catch(() => ({ error: `${commentRes.status}` })) as { error?: string }
-        throw new Error(errBody.error || `Review comment failed: ${commentRes.status}`)
-      }
-
-      // Step 2: move to inFlight — Shuttle picks it up and resumes the session.
-      const transRes = await fetch(this.transitionUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
-      })
-      if (!transRes.ok) {
-        const errBody = await transRes.json().catch(() => ({ error: `${transRes.status}` })) as { error?: string }
-        throw new Error(errBody.error || `Transition failed: ${transRes.status}`)
-      }
-
-      this.announce(directive
-        ? `Resuming previous session for "${card.name}" with directive.`
-        : `Resuming previous session for "${card.name}".`)
-    } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? String(err)
-      this.showBanner(`Couldn't resume "${card.name}": ${msg}`, 'error')
-      // Restore buttons on failure.
-      resumeBtn.textContent = 'Resume previous ▸'
-      resumeBtn.disabled = false
-      requeueBtn.disabled = false
-      return
-    }
-
-    await this.fetchAndRender()
-  }
 
   /** Update DOM that depends on `cityScope` after a scope swap. */
   private updateScopeChrome(): void {

@@ -456,16 +456,17 @@ describe('FiberDetailModal dispatch — network / CORS failure', () => {
   })
 })
 
-// ── Feature 1: card flex-grow ─────────────────────────────────────────────────
-// Cards must have flex-grow:1 so they expand to fill vertical column space
-// when there are few cards. The CSS property is the authoritative source;
-// this test guards against accidental regression.
+// ── Feature 1: card sizing ────────────────────────────────────────────────────
+// Cards are sized to their natural content. flex-grow is intentionally off so
+// a single short-outcome card doesn't stretch to full viewport height; long
+// outcomes are line-clamped on .kbn-card-outcome itself, so the card never
+// exceeds "header + name + slug + N-line outcome + meta."
 
-describe('Feature 1: cards expand to fill column space (flex-grow)', () => {
-  it('KanbanModal.css sets flex-grow:1 on .kbn-card', async () => {
-    // Read the CSS file and verify the property is declared. This is a
-    // static contract test — it catches CSS regressions before they reach
-    // a browser. The regex allows optional whitespace around the colon.
+describe('Feature 1: cards sized to natural content', () => {
+  it('KanbanModal.css sets flex-grow:0 on .kbn-card', async () => {
+    // Static contract test: the .kbn-card rule must set flex-grow:0 so cards
+    // don't balloon in partial columns. Empty space at the column bottom is
+    // less ugly than a stretched card with a short outcome.
     const fs = await import('fs')
     const path = await import('path')
     const cssPath = path.join(
@@ -474,11 +475,24 @@ describe('Feature 1: cards expand to fill column space (flex-grow)', () => {
     )
     const css = fs.readFileSync(cssPath, 'utf8')
 
-    // Find the .kbn-card rule block and assert flex-grow is declared there.
-    // We look for the property anywhere after the opening .kbn-card { and
-    // before the matching }. A simple indexOf check on the whole file is safe
-    // because the property name is only used inside that rule.
-    expect(css).toMatch(/flex-grow\s*:\s*1/)
+    // Match within the .kbn-card { … } block specifically.
+    const match = css.match(/\.kbn-card\s*\{[^}]*flex-grow\s*:\s*0[^}]*\}/)
+    expect(match, '.kbn-card must declare flex-grow:0').not.toBeNull()
+  })
+
+  it('KanbanModal.css line-clamps the outcome at 4 lines', async () => {
+    // The outcome carries the truncation: -webkit-line-clamp:4 cuts at a line
+    // boundary with an ellipsis (better than overflow:hidden's mid-letter
+    // clip). Card height = sum of children's natural sizes.
+    const fs = await import('fs')
+    const path = await import('path')
+    const cssPath = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      'KanbanModal.css',
+    )
+    const css = fs.readFileSync(cssPath, 'utf8')
+
+    expect(css).toMatch(/-webkit-line-clamp\s*:\s*4/)
   })
 
   it('renderCard produces a .kbn-card element (flex-grow is inherited via CSS)', () => {
