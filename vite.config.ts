@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 import { realpathSync } from 'node:fs'
@@ -60,4 +60,8 @@ export default defineConfig({
   },
   // Make .portolan accessible as static files
   publicDir: 'public',
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+  },
 })

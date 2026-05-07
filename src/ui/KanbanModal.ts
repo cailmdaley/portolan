@@ -1708,7 +1708,7 @@ interface FiberSearchResult {
  * The host kanban's `fetchAndRender()` is called on successful save so the
  * card updates in place without requiring a full page reload.
  */
-class FiberDetailModal {
+export class FiberDetailModal {
   private overlay: HTMLElement | null = null
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private searchDebounce: number | null = null
@@ -2936,7 +2936,7 @@ class FiberDetailModal {
  * as a single-value reason; this function is future-proof for when the
  * daemon starts returning richer codes ("not_due", "disabled", "closed").
  */
-function dispatchIneligibleReason(reason: string | undefined): string {
+export function dispatchIneligibleReason(reason: string | undefined): string {
   switch (reason) {
     case 'not_eligible':
       return 'Not currently eligible — the fiber may be disabled, not yet due, or already closed.'
