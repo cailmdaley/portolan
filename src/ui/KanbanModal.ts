@@ -2507,13 +2507,15 @@ class FiberDetailModal {
    * POST /api/v1/dispatch endpoint (port 4000). Bypasses the poller's
    * 15-second poll cycle so the fiber starts right now.
    *
-   * Responses:
-   *   200 dispatched:true  → show success, refresh kanban
-   *   409 already_running  → show that as feedback (shouldn't happen since
-   *                          the button is hidden when runningWorker is set,
-   *                          but be defensive)
-   *   422 not_eligible     → fiber disabled or closed; show reason
-   *   500 reason:<text>    → daemon-side error; surface message
+   * Response contract (mirrors DispatchController):
+   *   200  dispatched:true        → success; close modal, refresh kanban.
+   *   409  reason:already_running → "Already running" on button; neutral info.
+   *   422  reason:not_eligible    → not currently due, disabled, or closed;
+   *                                 show human-readable explanation.
+   *   500  reason:<text>          → daemon-side error; surface the message.
+   *   network / CORS              → fetch throws TypeError; show "couldn't
+   *                                 reach daemon" rather than a generic browser
+   *                                 error string like "Load failed".
    */
   private async runDispatchNow(
     card: KanbanCard,
@@ -2536,43 +2538,72 @@ class FiberDetailModal {
       shuttleBase = 'http://127.0.0.1:4000'
     }
 
+    // Distinguish network failures (fetch never completed) from HTTP errors
+    // (server responded). A TypeError from fetch means no response arrived —
+    // CORS block, daemon not running, or network partition.
+    let res: Response
     try {
-      const res = await fetch(`${shuttleBase}/api/v1/dispatch`, {
+      res = await fetch(`${shuttleBase}/api/v1/dispatch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fiber_id: card.id }),
       })
-      const body = await res.json().catch(() => ({})) as {
-        dispatched?: boolean
-        reason?: string
-        tmux_session?: string
-      }
-
-      if (res.status === 409) {
-        // Already running — update button to reflect state.
-        btn.textContent = 'Already running'
-        btn.disabled = true
-        errorEl.textContent = 'A worker is already running for this fiber.'
-        errorEl.style.display = ''
-        return
-      }
-      if (res.status === 422) {
-        throw new Error(`Not eligible: ${body.reason ?? 'fiber disabled or closed'}`)
-      }
-      if (!res.ok) {
-        throw new Error(body.reason ?? `Dispatch failed: ${res.status}`)
-      }
-
-      // Success — close the modal and refresh the kanban board.
-      this.close()
-      this.onSaved()
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? String(err)
-      errorEl.textContent = msg
-      errorEl.style.display = ''
-      btn.disabled = false
-      btn.textContent = original
+      // Network / CORS / daemon-unreachable path.
+      const detail = (err as { message?: string })?.message ?? String(err)
+      this.showDispatchError(
+        errorEl,
+        btn,
+        original,
+        `Couldn't reach the Shuttle daemon (${shuttleBase}). Is it running? ${detail}`,
+      )
+      return
     }
+
+    const body = await res.json().catch(() => ({})) as {
+      dispatched?: boolean
+      reason?: string
+      tmux_session?: string
+    }
+
+    if (res.status === 409) {
+      // Already running — update button to reflect state neutrally.
+      btn.textContent = 'Already running'
+      btn.disabled = true
+      errorEl.textContent = 'A worker is already running for this fiber.'
+      errorEl.style.display = ''
+      return
+    }
+
+    if (res.status === 422) {
+      // not_eligible: the daemon knows why — not yet due, disabled, or closed.
+      const humanReason = dispatchIneligibleReason(body.reason)
+      this.showDispatchError(errorEl, btn, original, humanReason)
+      return
+    }
+
+    if (!res.ok) {
+      // Daemon-side error (500 etc.) — surface whatever reason the body carries.
+      const msg = body.reason ?? `Dispatch failed (${res.status})`
+      this.showDispatchError(errorEl, btn, original, msg)
+      return
+    }
+
+    // 200 success — close the modal and refresh the kanban board.
+    this.close()
+    this.onSaved()
+  }
+
+  private showDispatchError(
+    errorEl: HTMLElement,
+    btn: HTMLButtonElement,
+    originalBtnText: string,
+    message: string,
+  ): void {
+    errorEl.textContent = message
+    errorEl.style.display = ''
+    btn.disabled = false
+    btn.textContent = originalBtnText
   }
 
   /**
@@ -2898,6 +2929,29 @@ class FiberDetailModal {
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Map the daemon's `reason` field from a 422 not_eligible response to a
+ * message readable by a human. The daemon currently returns "not_eligible"
+ * as a single-value reason; this function is future-proof for when the
+ * daemon starts returning richer codes ("not_due", "disabled", "closed").
+ */
+function dispatchIneligibleReason(reason: string | undefined): string {
+  switch (reason) {
+    case 'not_eligible':
+      return 'Not currently eligible — the fiber may be disabled, not yet due, or already closed.'
+    case 'not_due':
+      return 'Not yet due — the next scheduled run hasn\'t arrived yet.'
+    case 'disabled':
+      return 'Disabled — set shuttle.enabled: true to allow dispatch.'
+    case 'closed':
+      return 'Fiber is closed — reopen it before dispatching.'
+    default:
+      return reason
+        ? `Not eligible: ${reason}`
+        : 'Not currently eligible — fiber may be disabled, not yet due, or closed.'
+  }
+}
 
 /**
  * Find which column the server has placed a card in, per the last response.
