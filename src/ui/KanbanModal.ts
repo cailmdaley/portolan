@@ -28,15 +28,6 @@ const COLUMN_TITLES: Record<ColumnKind, string> = {
   composted: 'Composted',
 }
 
-const COLUMN_BLURBS: Record<ColumnKind, string> = {
-  ideas: 'Speculative — sketches and brainstorms tagged `idea`. Off-screen left; promote to drafts when ready to write a real constitution.',
-  drafts: 'Tagged constitution+draft. Refine until ready, then promote.',
-  inFlight: 'Constitution-tagged, not closed. Workers running show ▸; otherwise queued.',
-  awaitingReview: 'Your move — agent flipped the fiber to closed.',
-  tempered: 'Recent — accepted by Cail.',
-  composted: 'Discarded — mooted, superseded, or did not survive review.',
-}
-
 // (Action-button helpers removed — drag is the only transition surface for
 // now. The DnD drop handler reads `target` from the column the card lands
 // on, no per-card mapping needed. Re-introduce TRANSITIONS_FROM if a
@@ -795,10 +786,6 @@ export class KanbanModal {
       }
     })
 
-    const blurbEl = document.createElement('div')
-    blurbEl.className = 'kbn-col-blurb'
-    blurbEl.textContent = COLUMN_BLURBS[kind]
-
     const list = document.createElement('div')
     list.className = 'kbn-col-list'
     list.setAttribute('role', 'list')
@@ -842,7 +829,7 @@ export class KanbanModal {
       }
     }
 
-    col.append(head, blurbEl, list)
+    col.append(head, list)
     return col
   }
 

@@ -256,13 +256,6 @@
   font-size: 12px;
   color: #7A7068;
 }
-.kbn-col-blurb {
-  padding: 0 14px 8px;
-  font-size: 12px;
-  font-style: italic;
-  color: #7A7068;
-  border-bottom: 1px solid rgba(46, 42, 38, 0.08);
-}
 .kbn-col-list {
   flex: 1;
   overflow-y: auto;
