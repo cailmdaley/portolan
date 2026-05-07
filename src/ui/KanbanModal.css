@@ -411,13 +411,14 @@
   font-size: 12.5px;
   line-height: 1.4;
   color: #4A4540;
-  /* Truncate at 4 lines with an ellipsis. Aligns the cutoff to a line
+  /* Truncate at N lines with an ellipsis. Aligns the cutoff to a line
      boundary (no half-cropped letters) and signals truncation explicitly.
-     Short outcomes show fully — display:-webkit-box with line-clamp acts
-     as a max-lines, not a fixed height. The card sizes to its natural
-     content; no flex-grow gymnastics needed. */
+     N defaults to 4 but JS expands it post-render when a column has
+     spare vertical space — see `expandOutcomesToFillSpace` for the
+     calculation. CSS variable + var() cascades cleanly through the
+     -webkit-line-clamp property in modern browsers. */
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: var(--card-line-clamp, 4);
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

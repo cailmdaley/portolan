@@ -270,6 +270,7 @@ export class KanbanModal {
     this.assembleChrome()
     host.append(this.container!)
     document.addEventListener('keydown', this.handleDocumentKeyDown, true)
+    window.addEventListener('resize', this.handleResize)
     void this.fetchAndRender()
     this.startPolling()
   }
@@ -282,9 +283,24 @@ export class KanbanModal {
   unmount(): void {
     if (this.container === null) return
     document.removeEventListener('keydown', this.handleDocumentKeyDown, true)
+    window.removeEventListener('resize', this.handleResize)
+    if (this.resizeRaf !== null) {
+      window.cancelAnimationFrame(this.resizeRaf)
+      this.resizeRaf = null
+    }
     this.stopPolling()
     this.container.remove()
     this.teardownState()
+  }
+
+  private resizeRaf: number | null = null
+  private readonly handleResize = (): void => {
+    // Debounce via RAF — resize fires rapidly during a drag.
+    if (this.resizeRaf !== null) return
+    this.resizeRaf = window.requestAnimationFrame(() => {
+      this.resizeRaf = null
+      this.expandOutcomesToFillSpace()
+    })
   }
 
   // ---------------------------------------------------------------------------
@@ -551,7 +567,65 @@ export class KanbanModal {
     this.claimInitialFocus()
     this.updateBodyScrollAffordance()
     window.requestAnimationFrame(() => this.updateBodyScrollAffordance())
+    // Expand line-clamp on outcomes in columns with spare vertical space.
+    // Two RAFs: the first lets layout settle so scrollHeight reflects the
+    // initial 4-line clamp; the second applies the bump and we let the
+    // browser re-layout from there.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => this.expandOutcomesToFillSpace())
+    })
     this.lastResponse = data
+  }
+
+  /**
+   * Per-column post-render pass that bumps `--card-line-clamp` when the
+   * column has spare vertical space. The default 4-line clamp is the
+   * floor; if the cards as a group don't fill the column, we extend the
+   * clamp so the outcomes show more text — line-aligned, never overshoot.
+   *
+   * Strategy: compute spare = clientHeight - scrollHeight at 4 lines.
+   * extra_lines_per_card = floor(spare / (N_cards × line_height)). Apply
+   * 4 + extra_lines as the clamp on every card in the column. We
+   * deliberately pick a single value per column (not per card) so visual
+   * rhythm stays uniform within the column.
+   *
+   * The computation underestimates: if the spare space allows 2.7 extra
+   * lines per card, we pick 2. The user prefers undershoot to overshoot.
+   * Cards with shorter outcomes than the new clamp simply show their full
+   * content — line-clamp is a max, not a fixed height.
+   */
+  private expandOutcomesToFillSpace(): void {
+    if (!this.body) return
+    // The outcome's font-size × line-height = 12.5 × 1.4 = 17.5px per line.
+    const lineHeight = 17.5
+    // Cap the extension so a column with two short cards doesn't end up
+    // with 60-line monsters. 16 lines is enough to accommodate most
+    // long outcomes without dominating the column.
+    const maxClamp = 16
+
+    for (const col of this.body.querySelectorAll<HTMLElement>('.kbn-col')) {
+      const list = col.querySelector<HTMLElement>('.kbn-col-list')
+      if (!list) continue
+      const cards = list.querySelectorAll<HTMLElement>('.kbn-card')
+      if (cards.length === 0) continue
+
+      // Reset before measuring so a stale --card-line-clamp from a prior
+      // render doesn't bias the spare-space calc.
+      for (const card of cards) card.style.removeProperty('--card-line-clamp')
+
+      // Spare positive when the cards fit with room to spare. If the column
+      // is already overflowing, leave the clamp at 4 (the column scrolls).
+      const spare = list.clientHeight - list.scrollHeight
+      if (spare <= lineHeight) continue
+
+      const extraLines = Math.floor(spare / (cards.length * lineHeight))
+      if (extraLines <= 0) continue
+
+      const newClamp = Math.min(4 + extraLines, maxClamp)
+      for (const card of cards) {
+        card.style.setProperty('--card-line-clamp', String(newClamp))
+      }
+    }
   }
 
   /**

@@ -481,10 +481,10 @@ describe('Feature 1: cards sized to natural content', () => {
     expect(match, '.kbn-card must declare flex-grow:0').not.toBeNull()
   })
 
-  it('KanbanModal.css line-clamps the outcome at 4 lines', async () => {
-    // The outcome carries the truncation: -webkit-line-clamp:4 cuts at a line
-    // boundary with an ellipsis (better than overflow:hidden's mid-letter
-    // clip). Card height = sum of children's natural sizes.
+  it('KanbanModal.css line-clamps the outcome via --card-line-clamp (default 4)', async () => {
+    // The outcome carries the truncation: -webkit-line-clamp via a CSS
+    // custom property whose default is 4. JS bumps the variable per column
+    // when there's spare vertical space (see expandOutcomesToFillSpace).
     const fs = await import('fs')
     const path = await import('path')
     const cssPath = path.join(
@@ -493,7 +493,7 @@ describe('Feature 1: cards sized to natural content', () => {
     )
     const css = fs.readFileSync(cssPath, 'utf8')
 
-    expect(css).toMatch(/-webkit-line-clamp\s*:\s*4/)
+    expect(css).toMatch(/-webkit-line-clamp\s*:\s*var\(--card-line-clamp,\s*4\)/)
   })
 
   it('renderCard produces a .kbn-card element (flex-grow is inherited via CSS)', () => {
