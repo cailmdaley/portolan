@@ -17,7 +17,14 @@ output="$(
     .cities // []
     | map(select(.name and .path))
     | sort_by(.name | ascii_downcase)
-    | map("• \(.name): \(.path)")
+    | map(
+        "• \(.name): \(.path)"
+        + (if (.originId // "local") != "local"
+          then " (" + ((.sshHost // .originId // "remote")) + ")"
+          else ""
+          end
+        )
+      )
     | if length == 0 then
         empty
       else
