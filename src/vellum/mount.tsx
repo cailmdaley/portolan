@@ -68,14 +68,12 @@ const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostn
  */
 function KanbanHost({
   cityId: propCityId,
-  originId: propOriginId,
   cityName: propCityName,
   onOpenWorker,
   onOpenFiberInCity,
   kanbanInitialScope: propInitialScope,
 }: {
   cityId?: string
-  originId?: string
   cityName?: string
   /** Click-handler for a card's running-worker indicator. Threaded down from
    *  `openVellumWorkspaceModal({ onOpenWorker })` — main.ts owns the camera
@@ -116,10 +114,7 @@ function KanbanHost({
   // the ⊕ Global button retired with the thumb-index global-navigation
   // constitution — scope flips happen by closing+reopening the modal,
   // so a single derivation is enough.
-  const cityId =
-    propInitialScope === 'global' || propOriginId !== 'local'
-      ? undefined
-      : propCityId
+  const cityId = propInitialScope === 'global' ? undefined : propCityId
   const cityName = cityId === propCityId ? propCityName : undefined
 
   useEffect(() => {
@@ -1315,7 +1310,6 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   const kanbanSlot = (
     <KanbanHost
       cityId={opts.cityId}
-      originId={opts.originId}
       cityName={opts.cityName}
       onOpenWorker={opts.onOpenWorker}
       onOpenFiberInCity={opts.onOpenFiberInCity}

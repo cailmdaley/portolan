@@ -660,10 +660,10 @@ export class HttpApi {
    *     cities still produce a fresh instance.
    *   - `cityId` resolves to a local-origin city → cached HttpApiKanban
    *     scoped to that city's path, keyed by city path + local-pin signature.
-   *   - `cityId` resolves to a remote-origin city → 400. Stage 1 of the
-   *     vellum-kanban constitution is local-origin only; remote-origin
-   *     scoping unlocks once the agent fiber-tree push protocol lands
-   *     (Stage 3). See ai-futures/portolan/vellum-reader/constitution-vellum-kanban.
+   *   - `cityId` resolves to a remote-origin city → origin-scoped view over
+   *     that agent's pushed fiber-tree snapshot. The remote snapshot is
+   *     origin-wide today; project-exact remote subscoping can refine this
+   *     without changing the client contract.
    *   - Unknown `cityId` → 400.
    */
   // ---------------------------------------------------------------------------
@@ -750,20 +750,21 @@ export class HttpApi {
       return null;
     }
     if (city.originId !== 'local') {
-      // Stage 3a lands the *global* view for remote origins. Per-city
-      // remote scoping needs the agent to walk multiple feltHosts and
-      // ship per-city snapshots (or the server to filter by city.path
-      // → id-prefix), neither of which is in the Stage 3a ambit.
-      // See [[finding-restaged-implementation-plan]] §3a — the protocol
-      // is the unblock; per-city remote scoping is a follow-up.
-      this.sendJsonError(
-        res,
-        400,
-        `cityId=${cityId} resolves to remote origin '${city.originId}'; ` +
-          `per-city remote scoping is a Stage 3a follow-up — the global view ` +
-          `(no cityId) already aggregates remote origins via agent push`,
-      );
-      return null;
+      const cacheKey = `${city.originId}\u0000${city.path}`;
+      const cached = this.scopedKanbanApiCache.get(cityId);
+      if (cached?.key === cacheKey) return cached.api;
+      const api = new HttpApiKanban({
+        feltHost: city.path,
+        remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+        remoteOriginFilter: city.originId,
+        remoteTransitionExecutor: this.remoteTransitionExecutor,
+        includeLocalFibers: false,
+        cacheTtlMs: 5000,
+        shuttleCtlFn: this.shuttleCtlFn,
+        feltEditFn: this.feltEditFn,
+      });
+      this.scopedKanbanApiCache.set(cityId, { key: cacheKey, api });
+      return api;
     }
     const cacheKey = `${city.path}\u0000${localCityPinsKey(localCities)}`;
     const cached = this.scopedKanbanApiCache.get(cityId);

@@ -145,6 +145,10 @@ interface KanbanResponse {
    * badge and to disable drag for stale-origin cards.
    */
   staleness: Record<string, KanbanOriginStaleness>
+  remoteScope?: {
+    originId: string
+    hostname: string
+  }
   generatedAt: number
 }
 
@@ -528,7 +532,14 @@ export class KanbanModal {
 
     const scrollSnapshot = this.captureScrollSnapshot()
     const { columns, totals, temperedTotal, staleness } = data
+    const remoteState = data.remoteScope
+      ? staleness[data.remoteScope.originId]
+      : undefined
+    const remotePrefix = data.remoteScope && remoteState?.status === 'stale'
+      ? remoteDisconnectedText(data, remoteState)
+      : ''
     this.statusEl.textContent =
+      remotePrefix +
       (totals.ideas > 0 ? `${totals.ideas} ideas · ` : '') +
       `${totals.drafts} drafts · ${totals.inFlight} in flight · ` +
       `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered` +
@@ -2984,6 +2995,20 @@ function findCardById(resp: KanbanResponse | null, id: string): KanbanCard | nul
     if (hit) return hit
   }
   return null
+}
+
+function remoteDisconnectedText(
+  data: KanbanResponse,
+  state: KanbanOriginStaleness,
+): string {
+  const hostname = data.remoteScope?.hostname ?? state.hostname ?? 'remote'
+  const totals = data.totals
+  const hasCards =
+    totals.ideas + totals.drafts + totals.inFlight +
+    totals.awaitingReview + totals.tempered + totals.composted > 0
+  return hasCards
+    ? `Remote city ${hostname} disconnected; showing last snapshot · `
+    : `Remote city ${hostname} disconnected; no Kanban snapshot yet · `
 }
 
 /**

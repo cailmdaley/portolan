@@ -8,7 +8,7 @@
  *     unit-level kanban behaviour is covered by HttpApiKanban.test.ts).
  *   - cityId resolves to a local-origin city → per-request HttpApiKanban
  *     scoped to city.path. Reads only that city's fibers.
- *   - cityId resolves to a remote-origin city → 400 with a Stage-3 hint.
+ *   - cityId resolves to a remote-origin city → origin-scoped snapshot view.
  *   - Unknown cityId → 400.
  *
  * The fixtures put one fiber under each city's `.felt/` so we can verify
@@ -21,6 +21,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { HttpApi } from '../HttpApi.js';
 import type { ShuttleCtlInvocation } from '../HttpApiKanban.js';
+import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 import {
   httpRequest,
   makeMultiCityLookup,
@@ -113,6 +114,7 @@ function applyShuttleCtlStub(
 
 describe('HttpApi — /kanban ?cityId= scope', () => {
   let api: HttpApi;
+  let remoteStore: FiberTreeSnapshotStore;
 
   beforeEach(() => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
@@ -137,6 +139,20 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
       'created-at': '2026-04-17T00:00:00Z',
     });
 
+    remoteStore = new FiberTreeSnapshotStore();
+    remoteStore.upsertFullDump('remote-elsewhere', '/remote/loom', [
+      {
+        path: 'remote-snapshot-fiber/remote-snapshot-fiber.md',
+        fiber: {
+          id: 'remote-snapshot-fiber',
+          name: 'Remote snapshot',
+          status: 'active',
+          shuttle: { enabled: true, kind: 'oneshot' },
+          created_at: '2026-04-18T00:00:00Z',
+        },
+      },
+    ]);
+
     const cityLookup = makeMultiCityLookup([
       { id: 'a', path: CITY_A, name: 'CityA' },
       { id: 'b', path: CITY_B, name: 'CityB' },
@@ -148,6 +164,7 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
       stubOriginLookup as any,
       stubPersistenceLookup as any,
       {
+        remoteSnapshotsProvider: () => remoteStore.getAllSnapshots(),
         shuttleCtlFn: async (invocation) => applyShuttleCtlStub(invocation, cityRoots),
       },
     );
@@ -182,11 +199,30 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     expect(res.data.error).toMatch(/unknown cityId/);
   });
 
-  it('GET /kanban?cityId=<remote> returns 400 with Stage-3 hint', async () => {
+  it('GET /kanban?cityId=<remote> returns that remote origin snapshot', async () => {
     const res = await httpRequest(api, 'GET', '/kanban?cityId=r');
-    expect(res.status).toBe(400);
-    expect(res.data.error).toMatch(/remote origin/);
-    expect(res.data.error).toMatch(/Stage 3/);
+    expect(res.status).toBe(200);
+    expect(res.data.remoteScope).toEqual({
+      originId: 'remote-elsewhere',
+      hostname: 'elsewhere',
+    });
+    const ids = (res.data.columns.inFlight as Array<{ id: string; originId: string }>).map((c) => [c.id, c.originId]);
+    expect(ids).toEqual([['remote-snapshot-fiber', 'remote-elsewhere']]);
+  });
+
+  it('GET /kanban?cityId=<remote> reports disconnected when no snapshot has arrived', async () => {
+    remoteStore = new FiberTreeSnapshotStore();
+    const res = await httpRequest(api, 'GET', '/kanban?cityId=r');
+    expect(res.status).toBe(200);
+    expect(res.data.remoteScope).toEqual({
+      originId: 'remote-elsewhere',
+      hostname: 'elsewhere',
+    });
+    expect(res.data.staleness['remote-elsewhere']).toEqual({
+      status: 'stale',
+      hostname: 'elsewhere',
+    });
+    expect(res.data.totals.inFlight).toBe(0);
   });
 
   it('POST /kanban/transition?cityId=<unknown> returns 400 (does not mutate)', async () => {
@@ -200,15 +236,15 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     expect(res.data.error).toMatch(/unknown cityId/);
   });
 
-  it('POST /kanban/transition?cityId=<remote> returns 400 (Stage-3 boundary)', async () => {
+  it('POST /kanban/transition?cityId=<remote> reaches the remote snapshot boundary', async () => {
     const res = await httpRequest(
       api,
       'POST',
       '/kanban/transition?cityId=r',
-      { fiberId: 'remote-only-fiber', target: 'awaitingReview' },
+      { fiberId: 'remote-snapshot-fiber', target: 'awaitingReview' },
     );
-    expect(res.status).toBe(400);
-    expect(res.data.error).toMatch(/remote origin/);
+    expect(res.status).toBe(500);
+    expect(res.data.error).toMatch(/remoteTransitionExecutor/);
   });
 
   it('POST /kanban/transition?cityId=a mutates the city-A fiber, not loom', async () => {

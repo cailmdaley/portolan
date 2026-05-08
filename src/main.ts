@@ -976,14 +976,8 @@ const mapChromeBar = new MapChromeBar({
   // while a focused city opens a city-scoped kanban, so the badge and the
   // visible cards disagree.
   getKanbanBadgeCityId: () => {
-    if (activeWorkspaceHandle) {
-      const activeCity = activeWorkspaceCityId
-        ? cities.find(c => c.id === activeWorkspaceCityId)
-        : null
-      return activeCity?.originId === 'local' ? activeCity.id : null
-    }
-    const city = resolveFocusedCity()
-    return city?.originId === 'local' ? city.id : null
+    if (activeWorkspaceHandle) return activeWorkspaceCityId
+    return resolveFocusedCity()?.id ?? null
   },
 })
 refreshKanbanBadgeSoon = () => mapChromeBar.refreshSoon()
@@ -1665,7 +1659,7 @@ const handleKanbanHotkey = (event: KeyboardEvent): void => {
   const handle = activeWorkspaceHandle
   if (!handle) {
     const focusedCity = resolveFocusedCity()
-    if (focusedCity?.originId === 'local') {
+    if (focusedCity) {
       openCityWorkspace(focusedCity, { initialMode: 'kanban' })
     } else {
       openGlobalKanban()

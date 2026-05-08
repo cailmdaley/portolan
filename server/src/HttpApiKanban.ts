@@ -211,6 +211,15 @@ export interface KanbanResponse {
    */
   staleness: Record<string, KanbanOriginStaleness>;
   /**
+   * Present for a scoped remote-origin Kanban view. The current remote
+   * snapshot protocol is origin-scoped, so this tells the frontend when an
+   * apparently-empty board actually means "waiting for that remote agent".
+   */
+  remoteScope?: {
+    originId: string;
+    hostname: string;
+  };
+  /**
    * Sorted unique tag set across **all** fibers in the resolved hosts,
    * not just constitution-tagged ones. Powers the stash-button form's
    * tag autocomplete (constitution-stash-button) without forcing a
@@ -270,6 +279,19 @@ interface HttpApiKanbanOptions {
    * local. Pure remote-only-no-mirror fibers appear once via the agent.
    */
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  /**
+   * Optional origin filter for snapshot-backed Kanban views. Used by
+   * `?cityId=<remote-city>`: the remote agent currently pushes one
+   * snapshot per origin, so the scoped view is origin-scoped rather than
+   * global-local-plus-all-remotes.
+   */
+  remoteOriginFilter?: string;
+  /**
+   * Include local filesystem walks in this view. Defaults to true. Remote
+   * city-scoped views set this false so `/kanban?cityId=<remote>` is not
+   * polluted by local cards.
+   */
+  includeLocalFibers?: boolean;
   /**
    * Executor for remote-origin kanban mutations. When a card's origin isn't
    * `local`, the server computes the semantic shuttle/felt edit locally and
@@ -529,6 +551,8 @@ export class HttpApiKanban {
   private readonly feltHosts: string[] | undefined;
   private readonly cities: Array<{ id: string; path: string }> | undefined;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private readonly remoteOriginFilter: string | undefined;
+  private readonly includeLocalFibers: boolean;
   private readonly remoteTransitionExecutor:
     | HttpApiKanbanOptions['remoteTransitionExecutor']
     | undefined;
@@ -659,6 +683,8 @@ export class HttpApiKanban {
     this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
     this.cities = opts.cities && opts.cities.length > 0 ? opts.cities : undefined;
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
+    this.remoteOriginFilter = opts.remoteOriginFilter;
+    this.includeLocalFibers = opts.includeLocalFibers ?? true;
     this.remoteTransitionExecutor = opts.remoteTransitionExecutor;
     this.temperedLimit = opts.temperedLimit ?? 30;
     this.listSessions = opts.listSessions ?? listShuttleSessions;
@@ -805,19 +831,21 @@ export class HttpApiKanban {
     const seen = new Map<string, KanbanFiberEntry>();
     const seenIds = new Set<string>();
 
-    const hostResults = await Promise.all(
-      this.resolveHosts().map(async (host) => {
-        if (!existsSync(join(host, '.felt'))) return { host, fibers: [] as Fiber[] };
-        try {
-          // No bodies — the kanban card surface doesn't ship body content,
-          // and `--body` would inflate the felt subprocess output ~80×.
-          return { host, fibers: await getAllFibers(host, { withBody: false }) };
-        } catch (err) {
-          console.error(`[Kanban] getAllFibers failed for host ${host}:`, err);
-          return { host, fibers: [] as Fiber[] };
-        }
-      }),
-    );
+    const hostResults = this.includeLocalFibers
+      ? await Promise.all(
+        this.resolveHosts().map(async (host) => {
+          if (!existsSync(join(host, '.felt'))) return { host, fibers: [] as Fiber[] };
+          try {
+            // No bodies — the kanban card surface doesn't ship body content,
+            // and `--body` would inflate the felt subprocess output ~80×.
+            return { host, fibers: await getAllFibers(host, { withBody: false }) };
+          } catch (err) {
+            console.error(`[Kanban] getAllFibers failed for host ${host}:`, err);
+            return { host, fibers: [] as Fiber[] };
+          }
+        }),
+      )
+      : [];
 
     for (const { host, fibers } of hostResults) {
       for (const f of fibers) {
@@ -841,6 +869,7 @@ export class HttpApiKanban {
     // file path locally, and city resolution doesn't apply across machines.
     if (this.remoteSnapshotsProvider) {
       for (const snapshot of this.remoteSnapshotsProvider()) {
+        if (this.remoteOriginFilter && snapshot.originId !== this.remoteOriginFilter) continue;
         for (const f of snapshot.fibers) {
           if (seenIds.has(f.id)) continue;
           const key = `${snapshot.originId}::${f.id}`;
@@ -952,6 +981,12 @@ export class HttpApiKanban {
         },
         temperedTotal,
         staleness: this.buildStaleness(),
+        remoteScope: this.remoteOriginFilter
+          ? {
+            originId: this.remoteOriginFilter,
+            hostname: this.remoteOriginFilter.replace(/^remote-/, ''),
+          }
+          : undefined,
         tagIndex,
         generatedAt: Date.now(),
       } satisfies KanbanResponse);
@@ -1913,6 +1948,12 @@ export class HttpApiKanban {
       totals: { ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 },
       temperedTotal: 0,
       staleness: this.buildStaleness(),
+      remoteScope: this.remoteOriginFilter
+        ? {
+          originId: this.remoteOriginFilter,
+          hostname: this.remoteOriginFilter.replace(/^remote-/, ''),
+        }
+        : undefined,
       tagIndex: [],
       generatedAt: Date.now(),
     };
@@ -1935,11 +1976,18 @@ export class HttpApiKanban {
     };
     if (!this.remoteSnapshotsProvider) return out;
     for (const snap of this.remoteSnapshotsProvider()) {
+      if (this.remoteOriginFilter && snap.originId !== this.remoteOriginFilter) continue;
       const hostname = snap.originId.replace(/^remote-/, '');
       out[snap.originId] = {
         status: snap.status,
         hostname,
         staleSince: snap.staleSince,
+      };
+    }
+    if (this.remoteOriginFilter && !out[this.remoteOriginFilter]) {
+      out[this.remoteOriginFilter] = {
+        status: 'stale',
+        hostname: this.remoteOriginFilter.replace(/^remote-/, ''),
       };
     }
     return out;
