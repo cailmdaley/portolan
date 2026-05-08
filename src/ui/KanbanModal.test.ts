@@ -240,7 +240,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     expect(onSaved).toHaveBeenCalledOnce()
   })
 
-  it('asks the daemon to force immediate dispatch for standing roles', async () => {
+  it('asks the daemon for ad-hoc immediate dispatch for standing roles', async () => {
     const dispatchBodies: unknown[] = []
     vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
       const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
@@ -256,11 +256,11 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     await tick()
 
     expect(dispatchBodies).toEqual([
-      { fiber_id: 'test/my-constitution', force: true },
+      { fiber_id: 'test/my-constitution', ad_hoc: true },
     ])
   })
 
-  it('does not force immediate dispatch for one-shot fibers', async () => {
+  it('does not mark one-shot immediate dispatch as ad-hoc', async () => {
     const dispatchBodies: unknown[] = []
     vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
       const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
@@ -280,7 +280,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     ])
   })
 
-  it('records a directive then force-dispatches standing roles immediately', async () => {
+  it('records a directive then ad-hoc dispatches standing roles immediately', async () => {
     const reviewBodies: unknown[] = []
     const dispatchBodies: unknown[] = []
     const transitionBodies: unknown[] = []
@@ -315,7 +315,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       },
     ])
     expect(dispatchBodies).toEqual([
-      { fiber_id: 'test/my-constitution', force: true },
+      { fiber_id: 'test/my-constitution', ad_hoc: true },
     ])
     expect(transitionBodies).toEqual([])
     expect(onSaved).toHaveBeenCalledOnce()

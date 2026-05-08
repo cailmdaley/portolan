@@ -104,8 +104,8 @@ interface KanbanCard {
    * Absent for oneshot fibers and fibers with no shuttle block.
    *
    * Used by `runRequeue` to decide whether to run `shuttle-ctl accept` (via
-   * POST /kanban/transition) before forcing a dispatch: the daemon's
-   * force_dispatchable_standing_role? rejects `awaiting` state.
+   * POST /kanban/transition) before an ad-hoc dispatch: the daemon rejects
+   * `awaiting` state until the pending review is resolved.
    */
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted'
 }
@@ -1758,8 +1758,8 @@ export class FiberDetailModal {
       } else {
         // Non-empty message, interactive mode (we want it persisted on the
         // review-comment so the worker reads it), or standing role in
-        // awaiting state (needs shuttle-ctl accept transition before
-        // force-dispatch) -> runRequeue, which handles the review-comment +
+        // awaiting state (needs shuttle-ctl accept transition before ad-hoc
+        // dispatch) -> runRequeue, which handles the review-comment +
         // optional transition + dispatch.
         void this.runRequeue(card, message, 'fresh', scope, requeueBtn, actionsErr, interactive)
       }
@@ -2378,14 +2378,12 @@ export class FiberDetailModal {
       }
       if (card.shuttleKind === 'standing') {
         // Standing roles in awaiting review state need shuttle-ctl accept to
-        // transition review.state → scheduled before the daemon will accept a
-        // force dispatch. The daemon's force_dispatchable_standing_role? only
-        // passes for review.state ∈ {scheduled, accepted, due} — it rejects
-        // awaiting. The kanban transition with target=inFlight detects
-        // standing+awaiting and routes to `shuttle-ctl accept`, which advances
-        // next_due_at and puts the fiber in the scheduled state the daemon
-        // expects. Standing roles not in awaiting state (already scheduled/due)
-        // are force-dispatchable directly.
+        // transition review.state → scheduled before the daemon will accept an
+        // ad-hoc dispatch. The kanban transition with target=inFlight detects
+        // standing+awaiting and routes to `shuttle-ctl accept`, which resolves
+        // the pending review and returns the fiber to the scheduled state the
+        // daemon expects. Standing roles not in awaiting state are ad-hoc
+        // dispatchable directly.
         if (card.shuttleReviewState === 'awaiting') {
           const transRes = await fetch(this.transitionUrl(cityId), {
             method: 'POST',
@@ -2503,7 +2501,7 @@ export class FiberDetailModal {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fiber_id: card.id,
-          ...(card.shuttleKind === 'standing' ? { force: true } : {}),
+          ...(card.shuttleKind === 'standing' ? { ad_hoc: true } : {}),
           ...(interactive ? { interactive: true } : {}),
         }),
       })
