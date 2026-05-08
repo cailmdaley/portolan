@@ -16,7 +16,7 @@ import { CitySpritesManager } from './CitySpritesManager'
 import { ZoneRendererEntities } from './ZoneRendererEntities'
 import type { ZoneRendererActivity } from './ZoneRendererEntities'
 import { ZoneRendererLabelInteractions } from './ZoneRendererLabelInteractions'
-import { ZoneRendererWorkerTooltip } from './ZoneRendererWorkerTooltip'
+import { ZoneRendererWorkerTooltip, type WorkerFileOpenOptions } from './ZoneRendererWorkerTooltip'
 import type { City, Session, HexCoord } from '../state/types'
 
 export class ZoneRenderer {
@@ -438,8 +438,23 @@ export class ZoneRenderer {
     }
   }
 
-  setWorkerFileClickHandler(handler: (fullPath: string, originId: string, workerId: string) => void): void {
+  setWorkerFileClickHandler(handler: (
+    fullPath: string,
+    originId: string,
+    workerId: string,
+    options?: WorkerFileOpenOptions,
+  ) => void): void {
     this.workerTooltip.setWorkerFileClickHandler(handler)
+  }
+
+  setWorkerFileContextMenuHandler(handler: (
+    fullPath: string,
+    originId: string,
+    workerId: string,
+    clientX: number,
+    clientY: number,
+  ) => void): void {
+    this.workerTooltip.setWorkerFileContextMenuHandler(handler)
   }
 
   /**

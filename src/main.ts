@@ -30,6 +30,7 @@ import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { UrlFragmentSync, SCOPE_GLOBAL, type UrlState, type VellumMode } from './runtime/UrlFragment'
+import { buildVellumFileUrl } from './runtime/vellumFileLink'
 import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
@@ -378,6 +379,15 @@ function openFile(args: OpenFileArgs): void {
     })
     activeWorkspaceHandle = handle
   })
+}
+
+function openFileInNewTab(args: OpenFileArgs): void {
+  const url = buildVellumFileUrl({
+    baseUrl: window.location.href,
+    path: args.path,
+    cityId: args.cityId,
+  })
+  window.open(url, '_blank', 'noopener')
 }
 
 // Vellum workspace modal for a city — narrative / workspace / delta / map modes
@@ -923,9 +933,24 @@ if (debugPath) {
 }
 
 // Wire up file click from worker hover tooltip to vellum.
-zoneRenderer.setWorkerFileClickHandler((fullPath, originId, _workerId) => {
+zoneRenderer.setWorkerFileClickHandler((fullPath, originId, _workerId, options) => {
   const city = findBestMatchingCity(cities, originId, fullPath)
-  openFile({ path: fullPath, originId, cityId: city?.id })
+  const args = { path: fullPath, originId, cityId: city?.id }
+  if (options?.openInNewTab) {
+    openFileInNewTab(args)
+    return
+  }
+  openFile(args)
+})
+
+zoneRenderer.setWorkerFileContextMenuHandler((fullPath, originId, _workerId, clientX, clientY) => {
+  const city = findBestMatchingCity(cities, originId, fullPath)
+  contextMenu.show(clientX, clientY, [
+    {
+      label: 'Open in New Tab',
+      action: () => openFileInNewTab({ path: fullPath, originId, cityId: city?.id }),
+    },
+  ])
 })
 
 // Setup context menu

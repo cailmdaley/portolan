@@ -7,8 +7,24 @@ interface RecentFileTooltipEntry {
   timestamp: number
 }
 
+export interface WorkerFileOpenOptions {
+  openInNewTab?: boolean
+}
+
 export class ZoneRendererWorkerTooltip {
-  private onWorkerFileClick: ((fullPath: string, originId: string, workerId: string) => void) | null = null
+  private onWorkerFileClick: ((
+    fullPath: string,
+    originId: string,
+    workerId: string,
+    options?: WorkerFileOpenOptions,
+  ) => void) | null = null
+  private onWorkerFileContextMenu: ((
+    fullPath: string,
+    originId: string,
+    workerId: string,
+    clientX: number,
+    clientY: number,
+  ) => void) | null = null
   private readonly tooltipEl: HTMLDivElement
   private hoverTimerId: number | null = null
   private hideTimerId: number | null = null
@@ -33,8 +49,23 @@ export class ZoneRendererWorkerTooltip {
     document.body.appendChild(this.tooltipEl)
   }
 
-  setWorkerFileClickHandler(handler: (fullPath: string, originId: string, workerId: string) => void): void {
+  setWorkerFileClickHandler(handler: (
+    fullPath: string,
+    originId: string,
+    workerId: string,
+    options?: WorkerFileOpenOptions,
+  ) => void): void {
     this.onWorkerFileClick = handler
+  }
+
+  setWorkerFileContextMenuHandler(handler: (
+    fullPath: string,
+    originId: string,
+    workerId: string,
+    clientX: number,
+    clientY: number,
+  ) => void): void {
+    this.onWorkerFileContextMenu = handler
   }
 
   updateHover(session: Session | null, anchor: { x: number; y: number } | null): void {
@@ -101,6 +132,7 @@ export class ZoneRendererWorkerTooltip {
     this.tooltipEl.removeEventListener('mouseleave', this.onTooltipMouseLeave)
     this.tooltipEl.remove()
     this.onWorkerFileClick = null
+    this.onWorkerFileContextMenu = null
     this.targetWorkerId = null
     this.requestId++
   }
@@ -220,8 +252,32 @@ export class ZoneRendererWorkerTooltip {
     item.addEventListener('click', (event) => {
       event.preventDefault()
       event.stopPropagation()
-      this.onWorkerFileClick?.(entry.fullPath, session.originId, session.id)
+      this.onWorkerFileClick?.(entry.fullPath, session.originId, session.id, {
+        openInNewTab: event.metaKey || event.ctrlKey,
+      })
       this.hide()
+    })
+
+    item.addEventListener('auxclick', (event) => {
+      if (event.button !== 1) return
+      event.preventDefault()
+      event.stopPropagation()
+      this.onWorkerFileClick?.(entry.fullPath, session.originId, session.id, {
+        openInNewTab: true,
+      })
+      this.hide()
+    })
+
+    item.addEventListener('contextmenu', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      this.onWorkerFileContextMenu?.(
+        entry.fullPath,
+        session.originId,
+        session.id,
+        event.clientX,
+        event.clientY,
+      )
     })
 
     return item
