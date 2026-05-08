@@ -11,9 +11,11 @@
   "dependencies": {
     "express": "^4.18.2",
     "fzy.js": "^0.4.1",
+    "katex": "^0.16.45",
     "lightcone-ui-core": "file:../../LightconeResearch/lightcone-ui/packages/core",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
     "unified": "^11.0.5",
     "ws": "^8.16.0",

@@ -148,6 +148,24 @@ describe('HttpApi — /file-content endpoint', () => {
     expect(res.data.url).toBe(`data:image/png;base64,${pngBytes.toString('base64')}`);
   });
 
+  it('parses dollar math in markdown into KaTeX-backed mdast nodes', async () => {
+    const mdPath = join(TEST_DIR, 'math.md');
+    writeFileSync(mdPath, String.raw`Inline $C_\ell$ and display:
+
+$$
+\alpha + \beta
+$$
+`);
+
+    const res = await httpRequest(api, 'GET', `/file-content?path=${encodeURIComponent(mdPath)}`);
+
+    expect(res.status).toBe(200);
+    const serialized = JSON.stringify(res.data.mdast);
+    expect(serialized).toContain('"type":"inlineMath"');
+    expect(serialized).toContain('"type":"math"');
+    expect(serialized).toContain('katex');
+  });
+
   it('streams project files with content types inferred from extension', async () => {
     const htmlPath = join(TEST_DIR, 'slides deck', 'index.html');
     mkdirSync(join(TEST_DIR, 'slides deck'), { recursive: true });

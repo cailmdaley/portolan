@@ -12,6 +12,8 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkFrontmatter from 'remark-frontmatter';
+import remarkMath from 'remark-math';
+import katex from 'katex';
 import { parse as parseYaml } from 'yaml';
 
 const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|([^\]]*?))?\]\]/g;
@@ -38,6 +40,29 @@ function remarkWikiLinks() {
   return (tree: any) => {
     transformNode(tree);
   };
+}
+
+function remarkKatexHtml() {
+  return (tree: any) => {
+    attachKatexHtml(tree);
+  };
+}
+
+function attachKatexHtml(node: any): void {
+  if (!node || typeof node !== 'object') return;
+  if (
+    (node.type === 'math' || node.type === 'inlineMath') &&
+    typeof node.value === 'string'
+  ) {
+    node.html = katex.renderToString(node.value, {
+      displayMode: node.type === 'math',
+      throwOnError: false,
+      output: 'html',
+    });
+  }
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) attachKatexHtml(child);
+  }
 }
 
 function transformNode(node: any): void {
@@ -123,9 +148,11 @@ export function markdownToMdast(content: string): unknown {
     // a single `yaml` node at the top of mdast.children which PretextProse
     // hides (same way mystra hides it server-side for fiber bodies).
     .use(remarkFrontmatter, ['yaml'])
+    .use(remarkMath)
     .use(remarkGfm)
     .use(remarkStripMystTargets)
-    .use(remarkWikiLinks);
+    .use(remarkWikiLinks)
+    .use(remarkKatexHtml);
   const tree = processor.parse(content);
   return processor.runSync(tree);
 }
