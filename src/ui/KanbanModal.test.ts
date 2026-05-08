@@ -25,6 +25,7 @@ function makeInFlightCard(overrides: Partial<{
   id: string
   runningWorker: string
   shuttleKind: 'oneshot' | 'standing'
+  sessionId: string
 }> = {}) {
   return {
     id: 'test/my-constitution',
@@ -109,6 +110,7 @@ function tick(): Promise<void> {
 async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Promise<{
   modal: FiberDetailModal
   dispatchBtn: HTMLButtonElement
+  resumeBtn: HTMLButtonElement
   directiveTa: HTMLTextAreaElement
   errorEl: HTMLElement
   onSaved: ReturnType<typeof vi.fn>
@@ -126,6 +128,8 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   const primaryBtns = document.querySelectorAll('.kbn-detail-action-primary') as NodeListOf<HTMLButtonElement>
   const dispatchBtn = primaryBtns[0]
   if (!dispatchBtn) throw new Error('Resubmit button not found — card may not be inFlight or shuttleKind is missing')
+  const resumeBtn = primaryBtns[1]
+  if (!resumeBtn) throw new Error('Resume button not found')
 
   const directiveTa = document.querySelector('.kbn-detail-directive') as HTMLTextAreaElement | null
   if (!directiveTa) throw new Error('Directive textarea not found')
@@ -137,7 +141,7 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   const errorEl = errors[0] as HTMLElement
   if (!errorEl) throw new Error('Error element not found')
 
-  return { modal, dispatchBtn, directiveTa, errorEl, onSaved }
+  return { modal, dispatchBtn, resumeBtn, directiveTa, errorEl, onSaved }
 }
 
 // ── Setup ────────────────────────────────────────────────────────────────────
@@ -318,6 +322,44 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       { fiber_id: 'test/my-constitution', ad_hoc: true },
     ])
     expect(transitionBodies).toEqual([])
+    expect(onSaved).toHaveBeenCalledOnce()
+  })
+
+  it('tries scheduled standing resume via force/non-ad-hoc dispatch without prechecking a session id', async () => {
+    const reviewBodies: unknown[] = []
+    const dispatchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/review-comment')) {
+        reviewBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { resumeBtn, onSaved } = await openDispatchModal(makeInFlightCard({
+      shuttleKind: 'standing',
+    }))
+    expect(resumeBtn.disabled).toBe(false)
+
+    resumeBtn.click()
+    await tick()
+
+    expect(reviewBodies).toEqual([
+      {
+        fiberId: 'test/my-constitution',
+        directive: '',
+        resumeMode: 'previous',
+        interactive: false,
+      },
+    ])
+    expect(dispatchBodies).toEqual([
+      { fiber_id: 'test/my-constitution', force: true },
+    ])
     expect(onSaved).toHaveBeenCalledOnce()
   })
 })

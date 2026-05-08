@@ -70,10 +70,9 @@ interface KanbanCard {
    */
   projectSlug?: string
   /**
-   * Session UUID of the most recently dispatched worker. Non-null enables
-   * the "Resume previous" button on awaiting-review cards. Populated from
-   * `shuttle.session.id` in the fiber frontmatter (written by the Shuttle
-   * daemon via `shuttle-ctl session-set` after a successful worker spawn).
+   * Session UUID of the most recently dispatched worker when frontmatter
+   * still carries one. Display-only hint data: Resume always tries, and
+   * Shuttle resolves the actual session at dispatch time.
    */
   sessionId?: string
   /**
@@ -1660,7 +1659,6 @@ export class FiberDetailModal {
     // Routing scope: parent kanban's view scope (NOT card.cityId).
     // See open()'s docstring for why these differ on the global kanban.
     const scope = scopeCityId ?? undefined
-    void this.loadHistory(card.id, scope, historyList)
 
     // ── Next dispatch (message + mode + action buttons) ──────────────────────
     // One canonical surface for "what happens when this fiber dispatches next."
@@ -1730,12 +1728,8 @@ export class FiberDetailModal {
     const requeueBtn = this.buildActionBtn('New session ▸', 'primary')
     requeueBtn.title = 'Dispatch a fresh worker; outcome preserved'
 
-    const hasSession = !!card.sessionId
     const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
-    resumeBtn.disabled = !hasSession
-    resumeBtn.title = hasSession
-      ? 'Resume the previous worker session; outcome preserved'
-      : 'No prior session stored — start a new session instead'
+    resumeBtn.title = 'Try to resume the previous worker session; outcome preserved'
 
     const temperBtn = this.buildActionBtn('Temper', 'tempered')
     temperBtn.title = 'Close as tempered (human-accepted)'
@@ -1766,7 +1760,6 @@ export class FiberDetailModal {
     })
     resumeBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      if (!hasSession) return
       void this.runRequeue(
         card,
         messageTa.value.trim(),
@@ -1777,6 +1770,8 @@ export class FiberDetailModal {
         interactiveState.value,
       )
     })
+
+    void this.loadHistory(card.id, scope, historyList)
     temperBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       void this.runTransition(card, 'tempered', scope, temperBtn, actionsErr)
@@ -2424,8 +2419,17 @@ export class FiberDetailModal {
           return
         }
         // Standing role NOT in awaiting state (scheduled, accepted) =
-        // dormant in drafts. Ad-hoc dispatch is the right gesture.
-        await this.runDispatchNow(card, btn, errorEl, interactive)
+        // dormant in drafts. New Session should be ad-hoc so the cron slot
+        // keeps its rhythm; Resume Previous must be force/non-ad-hoc so
+        // Shuttle can honor resume_mode instead of forcing fresh.
+        await this.runDispatchNow(
+          card,
+          btn,
+          errorEl,
+          interactive,
+          mode === 'previous' ? false : undefined,
+          mode === 'previous',
+        )
         return
       }
       const transRes = await fetch(this.transitionUrl(cityId), {
@@ -2513,6 +2517,7 @@ export class FiberDetailModal {
      * resume_mode review-comment.
      */
     adHoc?: boolean,
+    force: boolean = false,
   ): Promise<void> {
     const original = btn.textContent ?? ''
     btn.disabled = true
@@ -2545,6 +2550,7 @@ export class FiberDetailModal {
           // explicitly so the dispatcher takes the resume-honoring path
           // rather than ad-hoc-forces-fresh.
           ...((adHoc ?? card.shuttleKind === 'standing') ? { ad_hoc: true } : {}),
+          ...(force ? { force: true } : {}),
           ...(interactive ? { interactive: true } : {}),
         }),
       })

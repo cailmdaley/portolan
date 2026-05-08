@@ -102,16 +102,10 @@ export interface KanbanCard {
    */
   projectSlug?: string;
   /**
-   * The harness-native session UUID of the most recently dispatched worker,
-   * when resume is available. Written by the Shuttle daemon via
-   * `shuttle-ctl session-set` after a successful worker spawn.
-   *
-   * Non-null → the "Resume previous" button on awaiting-review cards is
-   * enabled. Absent → button is disabled with a tooltip explaining why.
-   *
-   * The dispatcher reads this field at next dispatch to invoke the
-   * harness-appropriate resume command (e.g. `claude --resume <id>`,
-   * `codex resume <id>`, `pi --session <id>`).
+   * The harness-native session UUID of the most recently dispatched worker
+   * when the frontmatter still carries one. This is only a card hint; Resume
+   * does not depend on it because Shuttle resolves the real session at
+   * dispatch time, including fallback to felt history.
    */
   sessionId?: string;
   /**

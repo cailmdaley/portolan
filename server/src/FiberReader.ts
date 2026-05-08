@@ -47,10 +47,8 @@ export interface Fiber {
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
   /**
    * `shuttle.session.id` — the session UUID of the most recently dispatched
-   * worker. Written by the Shuttle daemon after a successful worker spawn via
-   * `shuttle-ctl session-set`. Used to enable the "Resume previous" button on
-   * awaiting-review Kanban cards. Absent when no session has been stored yet,
-   * or after `shuttle-ctl session-clear`.
+   * worker when the frontmatter still carries one. Kanban treats this as
+   * display-only hint data; Shuttle owns resume resolution at dispatch time.
    */
   shuttleSessionId?: string;
   /**
