@@ -317,6 +317,13 @@ interface HttpApiKanbanOptions {
    */
   shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
   /**
+   * Test seam / daemon boundary: resolve a kanban target through Shuttle's
+   * action classifier. Production defaults to POST /api/v1/actions/resolve
+   * on the local Shuttle daemon, falling back to the local mirror if the
+   * daemon is unreachable so the kanban remains usable during development.
+   */
+  shuttleActionResolverFn?: (request: ShuttleActionResolveRequest) => Promise<ShuttleAction>;
+  /**
    * Test seam: override the local `felt edit` spawn for tag replacement.
    * Receives the exact add/remove diff the server would shell out.
    */
@@ -332,6 +339,33 @@ export type ShuttleCtlInvocation =
   // id; next_due_at preserved). On oneshots or with adHoc:false, behavior
   // matches `shuttle-ctl dispatch <fiber>` directly.
   | { host: string; verb: 'dispatch'; fiberId: string; adHoc?: boolean };
+
+export type ShuttleActionId =
+  | 'pause'
+  | 'reopen'
+  | 'accept-run'
+  | 'continue-run-fresh'
+  | 'continue-run-previous'
+  | 'dispatch-ad-hoc'
+  | 'close-awaiting-review'
+  | 'close-tempered'
+  | 'close-composted';
+
+export type ShuttleAction = {
+  id: ShuttleActionId;
+  invocation?: {
+    verb?: string;
+    ad_hoc?: boolean;
+    tempered?: boolean;
+    resume_mode?: 'fresh' | 'previous';
+  };
+};
+
+export type ShuttleActionResolveRequest = {
+  fiber: Fiber;
+  fiberId: string;
+  target: KanbanTarget;
+};
 
 export type RemoteKanbanMutationInvocation =
   | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
@@ -509,6 +543,7 @@ export class HttpApiKanban {
   private readonly listSessions: () => string[];
   private readonly cacheTtlMs: number;
   private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
+  private readonly shuttleActionResolverFn: HttpApiKanbanOptions['shuttleActionResolverFn'];
   private readonly feltEditFn: HttpApiKanbanOptions['feltEditFn'];
 
   /**
@@ -568,6 +603,35 @@ export class HttpApiKanban {
     }
   }
 
+  private async resolveShuttleAction(request: ShuttleActionResolveRequest): Promise<ShuttleAction> {
+    if (this.shuttleActionResolverFn) return this.shuttleActionResolverFn(request);
+
+    try {
+      const res = await fetch('http://127.0.0.1:4000/api/v1/actions/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiber_id: request.fiberId, target: request.target }),
+      });
+      if (!res.ok) throw new Error(`Shuttle actions resolver returned ${res.status}`);
+      const body = (await res.json()) as { action?: ShuttleAction };
+      if (body.action?.id) return body.action;
+      throw new Error('Shuttle actions resolver returned no action');
+    } catch {
+      // Development fallback: keep kanban usable if the daemon is down while
+      // preserving the exact local mirror of Shuttle.Actions for this stage.
+      return actionForTargetFallback(request.fiber, request.target);
+    }
+  }
+
+  private async transitionInvocationForEntry(
+    entry: KanbanFiberEntry,
+    target: KanbanTarget,
+  ): Promise<ShuttleCtlInvocation> {
+    const ref = canonicalRefForEntry(entry);
+    const action = await this.resolveShuttleAction({ fiber: entry.fiber, fiberId: ref.fiberId, target });
+    return invocationForShuttleAction(action, ref);
+  }
+
   /**
    * Per-instance memo: realpath of each pinned city's `.felt` directory,
    * sorted deepest-first so prefix matches pick the most-specific city
@@ -591,6 +655,7 @@ export class HttpApiKanban {
     this.listSessions = opts.listSessions ?? listShuttleSessions;
     this.cacheTtlMs = opts.cacheTtlMs ?? 0;
     this.shuttleCtlFn = opts.shuttleCtlFn;
+    this.shuttleActionResolverFn = opts.shuttleActionResolverFn;
     this.feltEditFn = opts.feltEditFn;
   }
 
@@ -1085,9 +1150,7 @@ export class HttpApiKanban {
           });
           this.clearFiberPoolCache();
         } else {
-          await this.runShuttleCtl(
-            transitionInvocationForTarget(fiber, canonicalRefForEntry(entry), 'drafts'),
-          );
+          await this.runShuttleCtl(await this.transitionInvocationForEntry(entry, 'drafts'));
           this.clearFiberPoolCache();
         }
       }
@@ -1144,9 +1207,7 @@ export class HttpApiKanban {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
 
-    await this.runShuttleCtl(
-      transitionInvocationForTarget(fiber, canonicalRefForEntry(entry), target),
-    );
+    await this.runShuttleCtl(await this.transitionInvocationForEntry(entry, target));
     this.clearFiberPoolCache();
 
     const refreshed = await getFiber(host, fiberId);
@@ -2022,6 +2083,53 @@ function transitionInvocationForTarget(
   if (target === 'awaitingReview') return { host: ref.host, verb: 'close', fiberId: ref.fiberId };
   if (target === 'tempered') return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: true };
   return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: false };
+}
+
+function invocationForShuttleAction(
+  action: ShuttleAction,
+  ref: { host: string; fiberId: string },
+): ShuttleCtlInvocation {
+  switch (action.id) {
+    case 'pause':
+      return { host: ref.host, verb: 'pause', fiberId: ref.fiberId };
+    case 'reopen':
+      return { host: ref.host, verb: 'reopen', fiberId: ref.fiberId };
+    case 'accept-run':
+      return { host: ref.host, verb: 'accept', fiberId: ref.fiberId };
+    case 'dispatch-ad-hoc':
+      return { host: ref.host, verb: 'dispatch', fiberId: ref.fiberId, adHoc: true };
+    case 'close-awaiting-review':
+      return { host: ref.host, verb: 'close', fiberId: ref.fiberId };
+    case 'close-tempered':
+      return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: true };
+    case 'close-composted':
+      return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: false };
+    case 'continue-run-fresh':
+    case 'continue-run-previous':
+      return { host: ref.host, verb: 'resume', fiberId: ref.fiberId };
+  }
+}
+
+function actionForTargetFallback(fiber: Fiber, target: KanbanTarget): ShuttleAction {
+  const invocation = transitionInvocationForTarget(
+    fiber,
+    { host: '', fiberId: fiber.id },
+    target,
+  );
+
+  if (invocation.verb === 'pause') return { id: 'pause', invocation: { verb: 'pause' } };
+  if (invocation.verb === 'reopen') return { id: 'reopen', invocation: { verb: 'reopen' } };
+  if (invocation.verb === 'accept') return { id: 'accept-run', invocation: { verb: 'accept' } };
+  if (invocation.verb === 'dispatch' && invocation.adHoc) {
+    return { id: 'dispatch-ad-hoc', invocation: { verb: 'dispatch', ad_hoc: true } };
+  }
+  if (invocation.verb === 'close' && invocation.tempered === true) {
+    return { id: 'close-tempered', invocation: { verb: 'close', tempered: true } };
+  }
+  if (invocation.verb === 'close' && invocation.tempered === false) {
+    return { id: 'close-composted', invocation: { verb: 'close', tempered: false } };
+  }
+  return { id: 'close-awaiting-review', invocation: { verb: 'close' } };
 }
 
 function normalizeTagList(tags: string[]): string[] {

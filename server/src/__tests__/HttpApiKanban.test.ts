@@ -784,6 +784,31 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toMatch(/^    state: scheduled$/m);
     });
 
+    it('uses Shuttle action resolver for local transition grammar', async () => {
+      writeFib('resolver-owned', {
+        name: 'Resolver owned',
+        status: 'active',
+        shuttle: SHUTTLE_STANDING_AWAITING,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const resolved: Array<{ fiberId: string; target: string }> = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+        shuttleActionResolverFn: async ({ fiberId, target }) => {
+          resolved.push({ fiberId, target });
+          return { id: 'accept-run', invocation: { verb: 'accept' } };
+        },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'resolver-owned', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(resolved).toEqual([{ fiberId: 'resolver-owned', target: 'inFlight' }]);
+      expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'accept', fiberId: 'resolver-owned' }]);
+    });
+
     it('standing role in scheduled state → inFlight calls dispatch with adHoc:true', async () => {
       // Manual launch from drafts: dragging a dormant standing role (waiting
       // for cron) to inFlight fires an ad-hoc run. The synthetic adhoc-*
