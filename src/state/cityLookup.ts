@@ -16,11 +16,37 @@ export function findNearestCity(cities: City[], hexGrid: HexGrid, hex: HexCoord)
   return nearest
 }
 
+function isPathInCity(filePath: string, cityPath: string): boolean {
+  if (filePath === cityPath) return true
+  const root = cityPath.endsWith('/') ? cityPath : `${cityPath}/`
+  return filePath.startsWith(root)
+}
+
 export function findBestMatchingCity(cities: City[], originId: string, filePath: string): City | null {
   let best: City | null = null
   for (const city of cities) {
     if (city.originId !== originId) continue
-    if (!filePath.startsWith(city.path)) continue
+    if (!isPathInCity(filePath, city.path)) continue
+    if (!best || city.path.length > best.path.length) {
+      best = city
+    }
+  }
+  return best
+}
+
+export function findBestMatchingCityForPath(
+  cities: City[],
+  filePath: string,
+  preferredOriginId?: string,
+): City | null {
+  const preferred = preferredOriginId
+    ? findBestMatchingCity(cities, preferredOriginId, filePath)
+    : null
+  if (preferred) return preferred
+
+  let best: City | null = null
+  for (const city of cities) {
+    if (!isPathInCity(filePath, city.path)) continue
     if (!best || city.path.length > best.path.length) {
       best = city
     }

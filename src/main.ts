@@ -43,7 +43,7 @@ import { NewWorkerDialog } from './ui/NewWorkerDialog'
 import { MapChromeBar } from './ui/MapChromeBar'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
-import { findBestMatchingCity, findNearestCity } from './state/cityLookup'
+import { findBestMatchingCity, findBestMatchingCityForPath, findNearestCity } from './state/cityLookup'
 import { PALETTE } from './state/types'
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
@@ -181,7 +181,10 @@ let vellumOpenIntent = false
  *  (between open-call and mount-completion) still emit `mode`. */
 function buildCurrentUrlState(): UrlState {
   const state: UrlState = {}
-  if (lastFocusedCityId) state.cityId = lastFocusedCityId
+  const urlCityId = vellumOpenIntent && activeWorkspaceCityId
+    ? activeWorkspaceCityId
+    : lastFocusedCityId
+  if (urlCityId) state.cityId = urlCityId
 
   if (vellumOpenIntent && lastVellumMode) {
     state.mode = lastVellumMode
@@ -1316,6 +1319,15 @@ async function applyUrlState(
     // keep the camera where it was rather than blanking out.
     if (!targetCity && target.cityId) {
       console.warn('[applyUrlState] #city=', target.cityId, 'not found in any local or remote city')
+    }
+
+    if (target.filePath) {
+      const fileCity = findBestMatchingCityForPath(
+        liveCities,
+        target.filePath,
+        targetCity?.originId,
+      )
+      if (fileCity) targetCity = fileCity
     }
 
     // Camera focus first — handleCityClick is idempotent on same-city.
