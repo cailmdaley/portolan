@@ -20,6 +20,7 @@ import {
   HttpApiKanban,
   classifyFiber,
   type FeltTagEditInvocation,
+  type KanbanCard,
   type RemoteKanbanMutationRequest,
   type ShuttleCtlInvocation,
 } from '../HttpApiKanban.js';
@@ -792,10 +793,15 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
       });
       const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const resolved: Array<{ fiberId: string; target: string }> = [];
       const invoked: Array<{ fiberId: string; action: string }> = [];
       const shuttleCtl = makeShuttleCtlStub(shuttleCalls);
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
+        shuttleActionResolverFn: async ({ fiberId, target }) => {
+          resolved.push({ fiberId, target });
+          return { id: 'accept-run' };
+        },
         shuttleActionInvokerFn: async ({ fiberId, action }) => {
           invoked.push({ fiberId, action });
           await shuttleCtl({ host: TEST_DIR, verb: 'accept', fiberId });
@@ -805,8 +811,62 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       await api.handleTransition(jsonReq({ fiberId: 'resolver-owned', target: 'inFlight' }), res);
 
       expect(status()).toBe(200);
+      expect(resolved).toEqual([{ fiberId: 'resolver-owned', target: 'inFlight' }]);
       expect(invoked).toEqual([{ fiberId: 'resolver-owned', action: 'accept-run' }]);
       expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'accept', fiberId: 'resolver-owned' }]);
+    });
+
+    it('falls back to local action mapping when tests use the shuttle-ctl seam', async () => {
+      writeFib('daemonless', {
+        name: 'Daemonless',
+        status: 'active',
+        shuttle: SHUTTLE_STANDING_AWAITING,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'daemonless', target: 'tempered' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'accept', fiberId: 'daemonless' }]);
+    });
+
+    it('can execute a local transition from submitted card context without walking the board', async () => {
+      writeFib('fast-card', {
+        name: 'Fast card',
+        status: 'active',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+      });
+      const card: KanbanCard = {
+        id: 'fast-card',
+        name: 'Fast card',
+        path: join(FELT_DIR, 'fast-card', 'fast-card.md'),
+        originId: 'local',
+        status: 'active',
+        createdAt: '2026-04-01',
+        dependsOnSatisfied: true,
+        shuttleEnabled: true,
+        shuttleKind: 'oneshot',
+      };
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        // If the implementation falls back to collectFibers(), this host has
+        // no .felt tree and the transition will fail. The submitted card path
+        // carries enough local context to avoid that slow lookup.
+        feltHost: join(TEST_DIR, 'missing-host'),
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'fast-card', target: 'tempered', card }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.tempered).toBe(true);
+      expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'close', fiberId: 'fast-card', tempered: true }]);
     });
 
     it('standing role in scheduled state → inFlight calls dispatch with adHoc:true', async () => {

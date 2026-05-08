@@ -108,6 +108,8 @@ export interface KanbanCard {
    * dispatch time, including fallback to felt history.
    */
   sessionId?: string;
+  /** `shuttle.enabled`, surfaced so transition requests can carry card context. */
+  shuttleEnabled?: boolean;
   /**
    * `shuttle.agent` — the agent identifier to dispatch with (e.g. `claude-opus`).
    * Present only when the shuttle block specifies an agent. Used by the
@@ -339,6 +341,11 @@ interface HttpApiKanbanOptions {
    */
   shuttleActionInvokerFn?: (request: ShuttleActionInvokeRequest) => Promise<void>;
   /**
+   * Test seam / daemon boundary: resolve a Kanban target to Shuttle's
+   * canonical lifecycle action id.
+   */
+  shuttleActionResolverFn?: (request: ShuttleActionResolveRequest) => Promise<ShuttleAction>;
+  /**
    * Test seam: override the local `felt edit` spawn for tag replacement.
    * Receives the exact add/remove diff the server would shell out.
    */
@@ -380,6 +387,12 @@ export type ShuttleActionInvokeRequest = {
   fiber: Fiber;
   fiberId: string;
   action: ShuttleActionId;
+};
+
+export type ShuttleActionResolveRequest = {
+  fiber: Fiber;
+  fiberId: string;
+  target: KanbanTarget;
 };
 
 export type RemoteKanbanMutationInvocation =
@@ -524,10 +537,56 @@ function canonicalRefForEntry(entry: KanbanFiberEntry): { host: string; fiberId:
   return { host: entry.host, fiberId: entry.fiber.id };
 }
 
+function entryFromLocalCard(card: KanbanCard | undefined): KanbanFiberEntry | null {
+  if (!card || card.originId !== 'local') return null;
+  const displayRef = canonicalFiberRefFromPath(card.path);
+  if (!displayRef) return null;
+
+  let canonicalPath: string | undefined;
+  try {
+    canonicalPath = realpathSync(card.path);
+  } catch {
+    return null;
+  }
+
+  return {
+    fiber: fiberFromCard(card),
+    host: displayRef.host,
+    originId: 'local',
+    canonicalPath,
+  };
+}
+
+function fiberFromCard(card: KanbanCard): Fiber {
+  return {
+    id: card.id,
+    name: card.name,
+    status: card.status,
+    kind: 'task',
+    priority: 2,
+    createdAt: card.createdAt,
+    outcome: card.outcome,
+    closedAt: card.closedAt,
+    tags: card.tags,
+    dependsOn: card.dependsOn,
+    tempered: card.tempered,
+    hasShuttleBlock: card.shuttleKind !== undefined,
+    shuttleEnabled: card.shuttleEnabled,
+    shuttleKind: card.shuttleKind,
+    shuttleReviewState: card.shuttleReviewState,
+    shuttleSessionId: card.sessionId,
+    shuttleAgent: card.shuttleAgent,
+    shuttleSchedule: card.shuttleSchedule
+      ? { expr: card.shuttleSchedule, tz: card.shuttleTz ?? 'Europe/Paris' }
+      : undefined,
+  };
+}
+
 /** What POST /kanban/transition expects in the body. */
 export interface KanbanTransitionRequest {
   fiberId: string;
   target: KanbanTarget;
+  card?: KanbanCard;
 }
 
 /** What POST /kanban/review-comment expects in the body. */
@@ -561,6 +620,7 @@ export class HttpApiKanban {
   private readonly cacheTtlMs: number;
   private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
   private readonly shuttleActionInvokerFn: HttpApiKanbanOptions['shuttleActionInvokerFn'];
+  private readonly shuttleActionResolverFn: HttpApiKanbanOptions['shuttleActionResolverFn'];
   private readonly feltEditFn: HttpApiKanbanOptions['feltEditFn'];
 
   /**
@@ -653,15 +713,56 @@ export class HttpApiKanban {
     }
   }
 
+  private async resolveShuttleAction(
+    request: ShuttleActionResolveRequest,
+  ): Promise<ShuttleAction> {
+    if (this.shuttleActionResolverFn) {
+      return this.shuttleActionResolverFn(request);
+    }
+    if (this.shuttleCtlFn) {
+      return { id: actionForKanbanTarget(request.fiber, request.target) };
+    }
+
+    let res: Response;
+    try {
+      res = await fetch('http://127.0.0.1:4000/api/v1/actions/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiber_id: request.fiberId, target: request.target }),
+      });
+    } catch {
+      // Development fallback: keep kanban usable if the daemon is down. The
+      // main path above asks Shuttle for the action id; this fallback is only
+      // for local/test operation without a reachable daemon.
+      return { id: actionForKanbanTarget(request.fiber, request.target) };
+    }
+
+    if (!res.ok) {
+      throw new Error(`Shuttle action resolve returned ${res.status}`);
+    }
+
+    const body = await res.json() as { action?: unknown };
+    if (!body.action || typeof body.action !== 'object' || Array.isArray(body.action)) {
+      throw new Error('Shuttle action resolve returned no action');
+    }
+    const action = body.action as Partial<ShuttleAction>;
+    if (!isShuttleActionId(action.id)) {
+      throw new Error(`Shuttle action resolve returned unknown action: ${String(action.id)}`);
+    }
+    return { id: action.id, invocation: action.invocation };
+  }
+
   private async runActionForEntry(
     entry: KanbanFiberEntry,
     target: KanbanTarget,
   ): Promise<void> {
     const ref = canonicalRefForEntry(entry);
-    const action = actionForKanbanTarget(entry.fiber, target);
+    const action = await this.resolveShuttleAction(
+      { fiber: entry.fiber, fiberId: ref.fiberId, target },
+    );
     await this.invokeShuttleAction(
-      { fiber: entry.fiber, fiberId: ref.fiberId, action },
-      invocationForShuttleAction({ id: action }, ref),
+      { fiber: entry.fiber, fiberId: ref.fiberId, action: action.id },
+      invocationForShuttleAction(action, ref),
     );
   }
 
@@ -691,6 +792,7 @@ export class HttpApiKanban {
     this.cacheTtlMs = opts.cacheTtlMs ?? 0;
     this.shuttleCtlFn = opts.shuttleCtlFn;
     this.shuttleActionInvokerFn = opts.shuttleActionInvokerFn;
+    this.shuttleActionResolverFn = opts.shuttleActionResolverFn;
     this.feltEditFn = opts.feltEditFn;
   }
 
@@ -1048,7 +1150,7 @@ export class HttpApiKanban {
     }
 
     try {
-      const updated = await this.applyTransition(body.fiberId, body.target);
+      const updated = await this.applyTransition(body.fiberId, body.target, body.card);
       this.json(res, 200, { ok: true, card: updated });
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err);
@@ -1143,9 +1245,22 @@ export class HttpApiKanban {
    * route the transition through the same merged set: the host that
    * contributed this fiber's *displayed* card is the host we write to.
    */
-  async applyTransition(fiberId: string, target: KanbanTarget): Promise<KanbanCard> {
-    const { merged } = await this.collectFibers();
-    const entry = merged.find(({ fiber }) => fiber.id === fiberId);
+  async applyTransition(
+    fiberId: string,
+    target: KanbanTarget,
+    card?: KanbanCard,
+  ): Promise<KanbanCard> {
+    const cardEntry = entryFromLocalCard(card);
+    const canUseCardEntry =
+      cardEntry !== null &&
+      cardEntry.fiber.id === fiberId &&
+      target !== 'ideas' &&
+      !normalizeTagList(cardEntry.fiber.tags ?? []).includes('idea');
+
+    const pool = canUseCardEntry ? null : await this.collectFibers();
+    const entry = cardEntry && canUseCardEntry
+      ? cardEntry
+      : pool?.merged.find(({ fiber }) => fiber.id === fiberId);
     if (!entry) throw new Error(`fiber not found: ${fiberId}`);
     const { fiber, host, originId } = entry;
     if (fiber.hasShuttleBlock !== true) {
@@ -1256,7 +1371,7 @@ export class HttpApiKanban {
 
     const refreshed = await getFiber(host, fiberId);
     if (!refreshed) throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
-    const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
+    const refreshedById = new Map(pool?.merged.map(({ fiber: f }) => [f.id, f]) ?? []);
     refreshedById.set(fiberId, refreshed);
     let canonicalAfter: string | undefined;
     try {
@@ -1933,6 +2048,7 @@ export class HttpApiKanban {
       cityId,
       projectSlug,
       sessionId: f.shuttleSessionId,
+      shuttleEnabled: f.shuttleEnabled,
       shuttleAgent: f.shuttleAgent,
       shuttleKind: f.shuttleKind,
       shuttleSchedule: f.shuttleSchedule?.expr,
@@ -2171,6 +2287,20 @@ function invocationForShuttleAction(
     case 'continue-run-previous':
       return { host: ref.host, verb: 'resume', fiberId: ref.fiberId };
   }
+}
+
+function isShuttleActionId(value: unknown): value is ShuttleActionId {
+  return (
+    value === 'pause' ||
+    value === 'reopen' ||
+    value === 'accept-run' ||
+    value === 'continue-run-fresh' ||
+    value === 'continue-run-previous' ||
+    value === 'dispatch-ad-hoc' ||
+    value === 'close-awaiting-review' ||
+    value === 'close-tempered' ||
+    value === 'close-composted'
+  );
 }
 
 function normalizeTagList(tags: string[]): string[] {

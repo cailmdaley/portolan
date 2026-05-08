@@ -75,6 +75,8 @@ interface KanbanCard {
    * Shuttle resolves the actual session at dispatch time.
    */
   sessionId?: string
+  /** `shuttle.enabled`, used by the server when this card is sent as transition context. */
+  shuttleEnabled?: boolean
   /**
    * `shuttle.agent` — the agent to dispatch with. Present when the fiber
    * has a shuttle block and the block specifies an agent.
@@ -436,7 +438,7 @@ export class KanbanModal {
       const res = await fetch(this.transitionUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, target }),
+        body: JSON.stringify({ fiberId: card.id, target, card }),
       })
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
