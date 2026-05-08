@@ -416,7 +416,20 @@ export type KanbanColumn =
  * fiber idea→draft is a tag edit alone — no need to also touch
  * shuttle.enabled.
  */
-export function classifyFiber(f: Fiber): KanbanColumn {
+export function classifyFiber(
+  f: Fiber,
+  opts: { runningWorker?: boolean } = {},
+): KanbanColumn {
+  // A live worker overrides everything for open fibers. The kanban shows
+  // ground truth: if a tmux session is actually running, the card lives
+  // in inFlight regardless of what review.state says — the file may not
+  // have caught up yet (workers update review.state only on exit). This
+  // matters for standing roles in particular: dispatch flips review.state
+  // from scheduled to "running-in-fact" before any file write, and the
+  // user dragging a card and seeing it stay in drafts is the dissonance
+  // we're avoiding.
+  if (opts.runningWorker && f.status !== 'closed') return 'inFlight';
+
   if (f.shuttleKind === 'standing' && f.shuttleReviewState === 'awaiting') {
     return 'awaitingReview';
   }
@@ -811,7 +824,7 @@ export class HttpApiKanban {
       };
       for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
-        buckets[classifyFiber(f)].push(card);
+        buckets[classifyFiber(f, { runningWorker: !!card.runningWorker })].push(card);
       }
 
       // Sort:
