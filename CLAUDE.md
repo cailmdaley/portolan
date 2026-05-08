@@ -18,6 +18,7 @@ Click worker → Kitty focuses that tab. Work happens in terminal, not here.
 ./dev.sh                    # Start/attach shared tmux session (frontend + backend + Shuttle)
 ./dev.sh restart            # Bounce the shared tmux session from any terminal/agent
 ./dev.sh kill               # Stop session and clear ports 5173, 4004, 4000
+./scripts/install-tunnels.sh # Install launchd-managed autossh tunnels for candide + cineca
 cd server && npm test       # ~282 tests
 ```
 
@@ -101,9 +102,13 @@ tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 
 ## Troubleshooting: Remote Workers Missing
 
-Requires `RemoteForward 4004 127.0.0.1:4004` in `~/.ssh/config`. Common failure: stale ControlMaster without tunnel.
-**Quick fix:** `./scripts/reset-tunnel.sh <host>` — resets ControlMaster, re-establishes tunnel, restarts agent.
-Manual: `ssh -O exit host && ssh -N -f host`, then restart portolan-agent tmux session.
+Remote portolan-agent reaches the local backend through launchd-managed autossh jobs:
+`com.cailmdaley.portolan-tunnel-candide` and `com.cailmdaley.portolan-tunnel-cineca`.
+Install/update them with `./scripts/install-tunnels.sh`; logs land in
+`~/.local/state/portolan/tunnel-<host>.log`.
+
+**Quick fix:** `./scripts/reset-tunnel.sh <host>` — `launchctl kickstart -k` for the tunnel, then restarts agent.
+Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot `ssh -N -f -R 4004:localhost:4004`.
 Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-remoteforward-port`.
 
 ## Activity Pipeline
@@ -122,7 +127,7 @@ When adding new code, these are the rules new code will violate if you don't kno
 - **New modal?** Default to `AppDialog` from `src/ui/AppDialog.tsx` (Radix-backed; focus trap + escape + portal + scroll lock for free). Only fall back to the legacy `lockModalBackground()` from `src/ui/modalBackgroundLock.ts` when growing an existing imperative modal class such as `NewWorkerDialog` or `PlaygroundViewer`. For the legacy path: call `lockModalBackground()` on show, return value on hide. `aria-modal="true"` alone doesn't hide siblings — AT and the agent-browser snapshot still see the map through any full-viewport modal. Stacked modals also need window-capture Escape + body-sibling inert.
 - **New scrollable overlay?** Add it to Camera's `closest()` exemption list, or window-wheel preventDefault eats overlay scroll and zooms the map instead.
 - **Popovers near vellum?** z-index ≥ 10000. `.vellum-modal-scrim` is 9999.
-- **Touching SSH?** `execFileAsync` + `shellEscape()`; single-quote remote commands (double-quotes expand locally); `--ssh-host` is the base name; one origin = one live agent (duplicate sockets race); `reconnectTunnel` must `ssh -O exit` first.
+- **Touching SSH?** `execFileAsync` + `shellEscape()`; single-quote remote commands (double-quotes expand locally); `--ssh-host` is the base name; one origin = one live agent (duplicate sockets race); `reconnectTunnel` must kick the launchd tunnel first and only use one-shot SSH as fallback.
 - **Touching felt?** Fibers use `name`, never `title`. `felt add <slug> <name>` (two args). Tags are comma-separated. `depends_on` is objects, extract `.id`.
 - **Mounting `<PretextProse>`?** Sibling `<TextAnnotationLayer>` for selection-to-comment / margin notes; measure `proseRef`'s `contentBoxSize.inlineSize` for `contentWidth`, not the wrapper's `clientWidth` — `.vellum-prose` has 3.5rem horizontal padding the wrapper doesn't account for.
 - **Type/picker that mounts in differently-sized containers?** Container queries (`container-type: inline-size`), not media queries — viewport doesn't change when the component shrinks inside a modal/embed.

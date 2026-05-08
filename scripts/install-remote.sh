@@ -258,9 +258,10 @@ fi
 
 echo ""
 log "Done! Next steps:"
-echo "  1. Ensure SSH tunnel is configured in local ~/.ssh/config:"
-echo "       Host $SSH_HOST"
-echo "         RemoteForward 4004 127.0.0.1:4004"
+echo "  1. Ensure the local launchd tunnel is installed:"
+echo "       ./scripts/install-tunnels.sh $SSH_HOST"
+echo "     Fallback without launchd:"
+echo "       ./scripts/reset-tunnel.sh --manual $SSH_HOST"
 echo ""
 echo "  2. Start the agent on remote (if not using --start):"
 echo "       ssh $SSH_HOST"

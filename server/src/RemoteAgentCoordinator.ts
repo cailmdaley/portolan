@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { promisify } from 'util';
 
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
@@ -14,6 +15,7 @@ import { CityManager, type City } from './CityManager.js';
 
 const ACTIVITY_PERSISTENCE_PATH = join(homedir(), '.portolan', 'remote-activities.json');
 const MAX_REMOTE_ACTIVITIES = 50;
+const execFileAsync = promisify(execFile);
 
 interface RemoteActivityPersistence {
   version: 1;
@@ -370,25 +372,66 @@ export class RemoteAgentCoordinator {
   }
 }
 
-export function reconnectTunnel(sshHost: string): Promise<void> {
-  return new Promise((resolve) => {
-    console.log(`Reconnecting SSH tunnel to ${sshHost}...`);
-    // Kill stale ControlMaster first — without this, ssh -fN multiplexes
-    // through the dead master and the RemoteForward never re-establishes.
-    execFile('ssh', ['-O', 'exit', sshHost], (exitError) => {
-      if (exitError) {
-        console.log(`ControlMaster exit for ${sshHost}: ${exitError.message} (continuing)`);
-      }
-      setTimeout(() => {
-        execFile('ssh', ['-fN', sshHost], (error) => {
-          if (error) {
-            console.error(`SSH tunnel reconnect to ${sshHost} failed:`, error.message);
-          } else {
-            console.log(`SSH tunnel to ${sshHost} re-established`);
-          }
-          resolve();
-        });
-      }, 1000);
-    });
-  });
+export function portolanTunnelLabel(sshHost: string): string {
+  return `com.cailmdaley.portolan-tunnel-${sshHost}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function legacyReconnectTunnel(sshHost: string): Promise<void> {
+  try {
+    await execFileAsync('ssh', ['-O', 'exit', sshHost]);
+  } catch (error) {
+    console.log(`ControlMaster exit for ${sshHost}: ${errorMessage(error)} (continuing)`);
+  }
+
+  await delay(1000);
+
+  try {
+    await execFileAsync('ssh', [
+      '-N',
+      '-f',
+      '-S',
+      'none',
+      '-o',
+      'ServerAliveInterval=30',
+      '-o',
+      'ServerAliveCountMax=3',
+      '-o',
+      'ControlMaster=no',
+      '-o',
+      'ExitOnForwardFailure=yes',
+      '-R',
+      '4004:localhost:4004',
+      sshHost,
+    ]);
+    console.log(`One-shot SSH tunnel to ${sshHost} re-established`);
+  } catch (error) {
+    console.error(`SSH tunnel reconnect to ${sshHost} failed:`, errorMessage(error));
+  }
+}
+
+export async function reconnectTunnel(sshHost: string): Promise<void> {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+
+  if (uid !== null) {
+    const target = `gui/${uid}/${portolanTunnelLabel(sshHost)}`;
+    console.log(`Kickstarting launchd tunnel ${target}...`);
+
+    try {
+      await execFileAsync('launchctl', ['kickstart', '-k', target]);
+      console.log(`Launchd tunnel ${target} kickstarted`);
+      return;
+    } catch (error) {
+      console.log(`launchctl kickstart for ${target} failed: ${errorMessage(error)}; falling back to one-shot SSH reconnect`);
+    }
+  }
+
+  await legacyReconnectTunnel(sshHost);
 }
