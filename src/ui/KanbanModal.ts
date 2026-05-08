@@ -600,8 +600,12 @@ export class KanbanModal {
     // Gap between cards in .kbn-col-list (CSS: gap: 8px).
     const cardGap = 8
     const minClamp = 4
-    const maxClamp = 16
     const maxVisibleCards = 3
+    // No upper cap on the clamp value: targetLines is already bounded by
+    // (column_height - overhead) / lineHeight, so a single-card column
+    // expands to fill the column. Cards with short outcomes show their
+    // full content (line-clamp is a max, not a fixed height) — the
+    // overgrown clamp value is harmless when there's nothing to clamp.
 
     // Reset cascade roots before measuring so a stale variable from a
     // prior render doesn't bias offsetHeight readings. Clear at every
@@ -652,7 +656,7 @@ export class KanbanModal {
       if (targetOutcomeHeight <= 0) continue
 
       const targetLines = Math.floor(targetOutcomeHeight / lineHeight)
-      const clamp = Math.max(minClamp, Math.min(targetLines, maxClamp))
+      const clamp = Math.max(minClamp, targetLines)
       if (clamp <= minClamp) continue
 
       col.style.setProperty('--card-line-clamp', String(clamp))
