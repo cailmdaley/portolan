@@ -317,12 +317,11 @@ interface HttpApiKanbanOptions {
    */
   shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
   /**
-   * Test seam / daemon boundary: resolve a kanban target through Shuttle's
-   * action classifier. Production defaults to POST /api/v1/actions/resolve
-   * on the local Shuttle daemon, falling back to the local mirror if the
-   * daemon is unreachable so the kanban remains usable during development.
+   * Test seam / daemon boundary: invoke a Shuttle lifecycle action by id.
+   * Portolan owns kanban target interpretation; Shuttle owns the lifecycle
+   * action vocabulary and mutation.
    */
-  shuttleActionResolverFn?: (request: ShuttleActionResolveRequest) => Promise<ShuttleAction>;
+  shuttleActionInvokerFn?: (request: ShuttleActionInvokeRequest) => Promise<void>;
   /**
    * Test seam: override the local `felt edit` spawn for tag replacement.
    * Receives the exact add/remove diff the server would shell out.
@@ -361,10 +360,10 @@ export type ShuttleAction = {
   };
 };
 
-export type ShuttleActionResolveRequest = {
+export type ShuttleActionInvokeRequest = {
   fiber: Fiber;
   fiberId: string;
-  target: KanbanTarget;
+  action: ShuttleActionId;
 };
 
 export type RemoteKanbanMutationInvocation =
@@ -543,7 +542,7 @@ export class HttpApiKanban {
   private readonly listSessions: () => string[];
   private readonly cacheTtlMs: number;
   private readonly shuttleCtlFn: HttpApiKanbanOptions['shuttleCtlFn'];
-  private readonly shuttleActionResolverFn: HttpApiKanbanOptions['shuttleActionResolverFn'];
+  private readonly shuttleActionInvokerFn: HttpApiKanbanOptions['shuttleActionInvokerFn'];
   private readonly feltEditFn: HttpApiKanbanOptions['feltEditFn'];
 
   /**
@@ -603,33 +602,49 @@ export class HttpApiKanban {
     }
   }
 
-  private async resolveShuttleAction(request: ShuttleActionResolveRequest): Promise<ShuttleAction> {
-    if (this.shuttleActionResolverFn) return this.shuttleActionResolverFn(request);
+  private async invokeShuttleAction(
+    request: ShuttleActionInvokeRequest,
+    fallbackInvocation: ShuttleCtlInvocation,
+  ): Promise<void> {
+    if (this.shuttleActionInvokerFn) {
+      await this.shuttleActionInvokerFn(request);
+      return;
+    }
+    if (this.shuttleCtlFn) {
+      await this.runShuttleCtl(fallbackInvocation);
+      return;
+    }
 
+    let res: Response;
     try {
-      const res = await fetch('http://127.0.0.1:4000/api/v1/actions/resolve', {
+      res = await fetch('http://127.0.0.1:4000/api/v1/actions/invoke', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiber_id: request.fiberId, target: request.target }),
+        body: JSON.stringify({ fiber_id: request.fiberId, action: request.action }),
       });
-      if (!res.ok) throw new Error(`Shuttle actions resolver returned ${res.status}`);
-      const body = (await res.json()) as { action?: ShuttleAction };
-      if (body.action?.id) return body.action;
-      throw new Error('Shuttle actions resolver returned no action');
     } catch {
-      // Development fallback: keep kanban usable if the daemon is down while
-      // preserving the exact local mirror of Shuttle.Actions for this stage.
-      return actionForTargetFallback(request.fiber, request.target);
+      // Development fallback: keep kanban usable if the daemon is down. The
+      // fallback is still derived from Portolan's target->action mapping; it
+      // only shells out locally instead of going through Shuttle's HTTP API.
+      await this.runShuttleCtl(fallbackInvocation);
+      return;
+    }
+
+    if (!res.ok) {
+      throw new Error(`Shuttle action invoke returned ${res.status}`);
     }
   }
 
-  private async transitionInvocationForEntry(
+  private async runActionForEntry(
     entry: KanbanFiberEntry,
     target: KanbanTarget,
-  ): Promise<ShuttleCtlInvocation> {
+  ): Promise<void> {
     const ref = canonicalRefForEntry(entry);
-    const action = await this.resolveShuttleAction({ fiber: entry.fiber, fiberId: ref.fiberId, target });
-    return invocationForShuttleAction(action, ref);
+    const action = actionForKanbanTarget(entry.fiber, target);
+    await this.invokeShuttleAction(
+      { fiber: entry.fiber, fiberId: ref.fiberId, action },
+      invocationForShuttleAction({ id: action }, ref),
+    );
   }
 
   /**
@@ -655,7 +670,7 @@ export class HttpApiKanban {
     this.listSessions = opts.listSessions ?? listShuttleSessions;
     this.cacheTtlMs = opts.cacheTtlMs ?? 0;
     this.shuttleCtlFn = opts.shuttleCtlFn;
-    this.shuttleActionResolverFn = opts.shuttleActionResolverFn;
+    this.shuttleActionInvokerFn = opts.shuttleActionInvokerFn;
     this.feltEditFn = opts.feltEditFn;
   }
 
@@ -1150,7 +1165,7 @@ export class HttpApiKanban {
           });
           this.clearFiberPoolCache();
         } else {
-          await this.runShuttleCtl(await this.transitionInvocationForEntry(entry, 'drafts'));
+          await this.runActionForEntry(entry, 'drafts');
           this.clearFiberPoolCache();
         }
       }
@@ -1207,7 +1222,7 @@ export class HttpApiKanban {
       throw new Error(`fiber file missing on disk: ${path}`);
     }
 
-    await this.runShuttleCtl(await this.transitionInvocationForEntry(entry, target));
+    await this.runActionForEntry(entry, target);
     this.clearFiberPoolCache();
 
     const refreshed = await getFiber(host, fiberId);
@@ -2049,6 +2064,10 @@ function transitionInvocationForTarget(
   ref: { host: string; fiberId: string },
   target: KanbanTarget,
 ): ShuttleCtlInvocation {
+  return invocationForShuttleAction({ id: actionForKanbanTarget(fiber, target) }, ref);
+}
+
+function actionForKanbanTarget(fiber: Fiber, target: KanbanTarget): ShuttleActionId {
   const isInFlightTarget =
     target === 'inFlight' || target === 'queued' || target === 'active';
 
@@ -2060,8 +2079,8 @@ function transitionInvocationForTarget(
     fiber.shuttleKind === 'standing' &&
     fiber.shuttleReviewState === 'awaiting';
 
-  if (isStandingAccept) return { host: ref.host, verb: 'accept', fiberId: ref.fiberId };
-  if (target === 'drafts') return { host: ref.host, verb: 'pause', fiberId: ref.fiberId };
+  if (isStandingAccept) return 'accept-run';
+  if (target === 'drafts') return 'pause';
 
   // Drag a dormant standing role (scheduled/accepted, enabled) to inFlight
   // = manual ad-hoc dispatch. Generates a synthetic adhoc-* run id; does
@@ -2074,15 +2093,15 @@ function transitionInvocationForTarget(
     fiber.shuttleEnabled !== false &&
     (fiber.shuttleReviewState === 'scheduled' || fiber.shuttleReviewState === 'accepted')
   ) {
-    return { host: ref.host, verb: 'dispatch', fiberId: ref.fiberId, adHoc: true };
+    return 'dispatch-ad-hoc';
   }
 
   if (isInFlightTarget) {
-    return { host: ref.host, verb: 'reopen', fiberId: ref.fiberId };
+    return 'reopen';
   }
-  if (target === 'awaitingReview') return { host: ref.host, verb: 'close', fiberId: ref.fiberId };
-  if (target === 'tempered') return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: true };
-  return { host: ref.host, verb: 'close', fiberId: ref.fiberId, tempered: false };
+  if (target === 'awaitingReview') return 'close-awaiting-review';
+  if (target === 'tempered') return 'close-tempered';
+  return 'close-composted';
 }
 
 function invocationForShuttleAction(
@@ -2108,28 +2127,6 @@ function invocationForShuttleAction(
     case 'continue-run-previous':
       return { host: ref.host, verb: 'resume', fiberId: ref.fiberId };
   }
-}
-
-function actionForTargetFallback(fiber: Fiber, target: KanbanTarget): ShuttleAction {
-  const invocation = transitionInvocationForTarget(
-    fiber,
-    { host: '', fiberId: fiber.id },
-    target,
-  );
-
-  if (invocation.verb === 'pause') return { id: 'pause', invocation: { verb: 'pause' } };
-  if (invocation.verb === 'reopen') return { id: 'reopen', invocation: { verb: 'reopen' } };
-  if (invocation.verb === 'accept') return { id: 'accept-run', invocation: { verb: 'accept' } };
-  if (invocation.verb === 'dispatch' && invocation.adHoc) {
-    return { id: 'dispatch-ad-hoc', invocation: { verb: 'dispatch', ad_hoc: true } };
-  }
-  if (invocation.verb === 'close' && invocation.tempered === true) {
-    return { id: 'close-tempered', invocation: { verb: 'close', tempered: true } };
-  }
-  if (invocation.verb === 'close' && invocation.tempered === false) {
-    return { id: 'close-composted', invocation: { verb: 'close', tempered: false } };
-  }
-  return { id: 'close-awaiting-review', invocation: { verb: 'close' } };
 }
 
 function normalizeTagList(tags: string[]): string[] {

@@ -784,7 +784,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toMatch(/^    state: scheduled$/m);
     });
 
-    it('uses Shuttle action resolver for local transition grammar', async () => {
+    it('invokes Shuttle action ids for local transition grammar', async () => {
       writeFib('resolver-owned', {
         name: 'Resolver owned',
         status: 'active',
@@ -792,20 +792,20 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'created-at': '2026-04-01',
       });
       const shuttleCalls: ShuttleCtlInvocation[] = [];
-      const resolved: Array<{ fiberId: string; target: string }> = [];
+      const invoked: Array<{ fiberId: string; action: string }> = [];
+      const shuttleCtl = makeShuttleCtlStub(shuttleCalls);
       const api = new HttpApiKanban({
         feltHost: TEST_DIR,
-        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
-        shuttleActionResolverFn: async ({ fiberId, target }) => {
-          resolved.push({ fiberId, target });
-          return { id: 'accept-run', invocation: { verb: 'accept' } };
+        shuttleActionInvokerFn: async ({ fiberId, action }) => {
+          invoked.push({ fiberId, action });
+          await shuttleCtl({ host: TEST_DIR, verb: 'accept', fiberId });
         },
       });
       const { res, status } = capRes();
       await api.handleTransition(jsonReq({ fiberId: 'resolver-owned', target: 'inFlight' }), res);
 
       expect(status()).toBe(200);
-      expect(resolved).toEqual([{ fiberId: 'resolver-owned', target: 'inFlight' }]);
+      expect(invoked).toEqual([{ fiberId: 'resolver-owned', action: 'accept-run' }]);
       expect(shuttleCalls).toEqual([{ host: TEST_DIR, verb: 'accept', fiberId: 'resolver-owned' }]);
     });
 
