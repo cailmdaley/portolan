@@ -1727,15 +1727,15 @@ export class FiberDetailModal {
     const actionsRow = document.createElement('div')
     actionsRow.className = 'kbn-detail-actions-row'
 
-    const requeueBtn = this.buildActionBtn('Resubmit ▸', 'primary')
-    requeueBtn.title = 'Dispatch a fresh worker (with message + mode if set)'
+    const requeueBtn = this.buildActionBtn('New session ▸', 'primary')
+    requeueBtn.title = 'Dispatch a fresh worker; outcome preserved'
 
     const hasSession = !!card.sessionId
     const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
     resumeBtn.disabled = !hasSession
     resumeBtn.title = hasSession
-      ? 'Resume previous worker session (with message + mode if set)'
-      : 'No prior session stored — dispatch a fresh worker first'
+      ? 'Resume the previous worker session; outcome preserved'
+      : 'No prior session stored — start a new session instead'
 
     const temperBtn = this.buildActionBtn('Temper', 'tempered')
     temperBtn.title = 'Close as tempered (human-accepted)'
@@ -2341,6 +2341,13 @@ export class FiberDetailModal {
       : `${this.apiBase}/kanban/tags`
   }
 
+  /** URL helper for /kanban/dispatch-resume with cityScope. */
+  private dispatchResumeUrl(cityId: string | undefined): string {
+    return cityId
+      ? `${this.apiBase}/kanban/dispatch-resume?cityId=${encodeURIComponent(cityId)}`
+      : `${this.apiBase}/kanban/dispatch-resume`
+  }
+
   /**
    * Two-step requeue: record a directive event (review-comment), then wake
    * the worker. One-shot fibers wake by transitioning to inFlight; standing
@@ -2364,7 +2371,7 @@ export class FiberDetailModal {
   ): Promise<void> {
     const original = btn.textContent ?? ''
     btn.disabled = true
-    btn.textContent = mode === 'fresh' ? 'Resubmitting…' : 'Resuming…'
+    btn.textContent = mode === 'fresh' ? 'Starting…' : 'Resuming…'
     errorEl.style.display = 'none'
     try {
       const commentRes = await fetch(this.reviewCommentUrl(cityId), {
@@ -2377,24 +2384,47 @@ export class FiberDetailModal {
         throw new Error(e.error || `review-comment ${commentRes.status}`)
       }
       if (card.shuttleKind === 'standing') {
-        // Standing roles in awaiting review state need shuttle-ctl accept to
-        // transition review.state → scheduled before the daemon will accept an
-        // ad-hoc dispatch. The kanban transition with target=inFlight detects
-        // standing+awaiting and routes to `shuttle-ctl accept`, which resolves
-        // the pending review and returns the fiber to the scheduled state the
-        // daemon expects. Standing roles not in awaiting state are ad-hoc
-        // dispatchable directly.
+        // Standing roles in awaiting state need a state transition before
+        // dispatch — but the verb depends on the user's intent:
+        //
+        //   • Drag-to-tempered (elsewhere) → shuttle-ctl accept.
+        //     Cycle advances, outcome cleared. The user is done with
+        //     this run.
+        //
+        //   • Modal Resume / New Session buttons (this path) →
+        //     shuttle-ctl resume. Cycle does NOT advance, outcome
+        //     preserved. The user is NOT done — they want another
+        //     worker on the same run, either continuing the same
+        //     session (Resume) or starting fresh (New Session). The
+        //     review-comment filed moments earlier carries the user's
+        //     resume_mode; the daemon's check_resume_intent honors it
+        //     on next dispatch.
+        //
+        // The previous accept-then-ad-hoc-dispatch path was wrong for
+        // "I'm not done" intent: it wiped the outcome the user was
+        // trying to talk to AND forced fresh (because accept clears
+        // session.id and ad-hoc dispatch always starts fresh).
         if (card.shuttleReviewState === 'awaiting') {
-          const transRes = await fetch(this.transitionUrl(cityId), {
+          const resumeRes = await fetch(this.dispatchResumeUrl(cityId), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fiberId: card.id, target: 'inFlight' }),
+            body: JSON.stringify({ fiberId: card.id }),
           })
-          if (!transRes.ok) {
-            const e = (await transRes.json().catch(() => ({}))) as { error?: string }
-            throw new Error(e.error || `transition ${transRes.status}`)
+          if (!resumeRes.ok) {
+            const e = (await resumeRes.json().catch(() => ({}))) as { error?: string }
+            throw new Error(e.error || `dispatch-resume ${resumeRes.status}`)
           }
+          // shuttle-ctl resume set state=scheduled + next_due_at=now,
+          // so the role is immediately due. We DON'T pass ad_hoc or
+          // force here — letting the dispatcher take the
+          // {:standing_run, run_id} prompt context (not :ad_hoc) so
+          // resolve_resume_intent defers to check_resume_intent and
+          // honors the user's resume_mode review-comment.
+          await this.runDispatchNow(card, btn, errorEl, interactive, /* adHoc */ false)
+          return
         }
+        // Standing role NOT in awaiting state (scheduled, accepted) =
+        // dormant in drafts. Ad-hoc dispatch is the right gesture.
         await this.runDispatchNow(card, btn, errorEl, interactive)
         return
       }
@@ -2474,6 +2504,15 @@ export class FiberDetailModal {
     btn: HTMLButtonElement,
     errorEl: HTMLElement,
     interactive: boolean = false,
+    /**
+     * Override the ad_hoc flag. Defaults to undefined, which means
+     * "ad_hoc=true for standing roles, ad_hoc=false for oneshots" — the
+     * historical behavior. Pass `false` from the awaiting-resume path so
+     * the dispatcher takes the {:standing_run, run_id} (non-:ad_hoc)
+     * prompt context, letting check_resume_intent honor the user's
+     * resume_mode review-comment.
+     */
+    adHoc?: boolean,
   ): Promise<void> {
     const original = btn.textContent ?? ''
     btn.disabled = true
@@ -2501,7 +2540,11 @@ export class FiberDetailModal {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fiber_id: card.id,
-          ...(card.shuttleKind === 'standing' ? { ad_hoc: true } : {}),
+          // Default: ad_hoc=true for standing roles (manual triggers don't
+          // consume scheduled slots). Resume-from-awaiting passes adHoc=false
+          // explicitly so the dispatcher takes the resume-honoring path
+          // rather than ad-hoc-forces-fresh.
+          ...((adHoc ?? card.shuttleKind === 'standing') ? { ad_hoc: true } : {}),
           ...(interactive ? { interactive: true } : {}),
         }),
       })

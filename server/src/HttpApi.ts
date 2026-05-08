@@ -390,6 +390,21 @@ export class HttpApi {
       return true;
     }
 
+    // POST /kanban/dispatch-resume — invokes `shuttle-ctl resume` on a
+    // standing role in awaiting state. Used by the modal's Resume / New
+    // Session buttons to transition awaiting → scheduled-now while
+    // preserving the outcome (in contrast to drag-to-tempered, which is
+    // accept and clears outcome). Daemon picks up the resulting scheduled
+    // role on its next poll; the kanban-filed review-comment carrying
+    // resume_mode (previous or fresh) drives the dispatcher's resume vs
+    // fresh decision via check_resume_intent.
+    if (url.pathname === '/kanban/dispatch-resume' && req.method === 'POST') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleDispatchResume(req, res);
+      return true;
+    }
+
     // POST /kanban/tags — Feature 4 (edit tags from kanban cards). Same
     // city-scope resolution as the kanban read and transition routes.
     if (url.pathname === '/kanban/tags' && req.method === 'POST') {

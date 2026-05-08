@@ -324,7 +324,7 @@ interface HttpApiKanbanOptions {
 }
 
 export type ShuttleCtlInvocation =
-  | { host: string; verb: 'pause' | 'reopen' | 'accept'; fiberId: string }
+  | { host: string; verb: 'pause' | 'reopen' | 'accept' | 'resume'; fiberId: string }
   | { host: string; verb: 'close'; fiberId: string; tempered?: boolean }
   | { host: string; verb: 'set-outcome'; fiberId: string; outcome: string }
   // dispatch with adHoc:true for standing roles fires a manual run that
@@ -944,6 +944,72 @@ export class HttpApiKanban {
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err);
       console.error('[Kanban] transition failed:', msg);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  /**
+   * POST /kanban/dispatch-resume — invoke `shuttle-ctl resume` on a fiber
+   * to transition it from awaiting → scheduled-with-next_due_at=now while
+   * preserving outcome. Used by the modal's Resume / New Session buttons.
+   * The daemon picks up the resulting scheduled role on its next poll, and
+   * the latest review-comment (filed by the kanban moments earlier with the
+   * user's directive + resume_mode) drives whether the next worker is
+   * resumed or fresh.
+   *
+   * Drag-to-tempered remains accept (advances the cycle, clears outcome).
+   * The Resume / New Session buttons are NOT a kind of accept — they're
+   * "I'm not done with this run; give me another worker on it" — and that
+   * needs a different verb.
+   */
+  async handleDispatchResume(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: { fiberId?: string };
+    try {
+      body = await readJsonBody<{ fiberId?: string }>(req);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 400, { error: `bad request body: ${msg}` });
+      return;
+    }
+    if (!body || typeof body.fiberId !== 'string') {
+      this.json(res, 400, { error: 'fiberId is required' });
+      return;
+    }
+    const fiberId = body.fiberId;
+
+    try {
+      const { merged } = await this.collectFibers();
+      const entry = merged.find(({ fiber }) => fiber.id === fiberId);
+      if (!entry) throw new Error(`fiber not found: ${fiberId}`);
+      const { fiber, host } = entry;
+      if (fiber.hasShuttleBlock !== true) {
+        throw new Error(
+          `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block`,
+        );
+      }
+
+      await this.runShuttleCtl({ host, verb: 'resume', fiberId });
+      this.clearFiberPoolCache();
+
+      const refreshed = await this.collectFibers();
+      const updated = refreshed.merged.find(({ fiber: f }) => f.id === fiberId);
+      if (!updated) {
+        this.json(res, 200, { ok: true });
+        return;
+      }
+      const liveSessions = new Set(this.listSessions());
+      const card = this.toCard(
+        updated.fiber,
+        updated.host,
+        updated.originId,
+        new Map(refreshed.merged.map(({ fiber: f }) => [f.id, f])),
+        liveSessions,
+        updated.canonicalPath,
+      );
+      this.json(res, 200, { ok: true, card });
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      console.error('[Kanban] dispatch-resume failed:', msg);
       this.json(res, 500, { error: msg });
     }
   }
