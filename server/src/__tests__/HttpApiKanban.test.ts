@@ -836,6 +836,27 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       ]);
     });
 
+    it('closed standing role → inFlight calls reopen before any ad-hoc dispatch', async () => {
+      writeFib('standing-closed', {
+        name: 'Standing role (closed)',
+        status: 'closed',
+        shuttle: SHUTTLE_STANDING_SCHEDULED,
+        'created-at': '2026-04-01',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'standing-closed', target: 'inFlight' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([
+        { host: TEST_DIR, verb: 'reopen', fiberId: 'standing-closed' },
+      ]);
+    });
+
     it('paused standing role (enabled=false) → inFlight calls reopen, not dispatch', async () => {
       // A paused standing role isn't dispatching at all (enabled=false),
       // so the natural gesture for unpausing is reopen — not ad-hoc

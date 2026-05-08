@@ -2071,6 +2071,8 @@ function actionForKanbanTarget(fiber: Fiber, target: KanbanTarget): ShuttleActio
   const isInFlightTarget =
     target === 'inFlight' || target === 'queued' || target === 'active';
 
+  if (fiber.status === 'closed' && isInFlightTarget) return 'reopen';
+
   // Drag a standing role in awaiting state to inFlight (or tempered) =
   // accept the pending run cyclically. Card returns to drafts (sorted to
   // bottom) until the next cron tick.
