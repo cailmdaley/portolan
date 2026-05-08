@@ -85,7 +85,12 @@ export function mapFeltJsonToFiber(item) {
     const createdAt = pickIsoString(f, ['created_at', 'created']) ?? '';
     const closedAt = pickIsoString(f, ['closed_at', 'closed']);
     const tags = stringList(f.tags);
-    const dependsOn = stringList(f.depends_on) ?? stringList(f['depends-on']);
+    // depends_on ships from felt as `[{id: "..."}]` for fibers using
+    // wikilink-style references (the common case post 2026-04 cleanup),
+    // and as bare-string arrays for legacy / hand-edited fibers. Accept
+    // both shapes — `stringList` alone silently drops the object form.
+    // See [[ai-futures/portolan/gotchas/gotcha-fiber-reader-depends-on-object-shape]].
+    const dependsOn = fiberRefList(f.depends_on) ?? fiberRefList(f['depends-on']);
     const tempered = typeof f.tempered === 'boolean' ? f.tempered : undefined;
     // shuttle: arrives as a native JSON map post felt v1.0.4. Anything else
     // (string, array, missing) means no shuttle block.
@@ -199,6 +204,33 @@ function stringList(v) {
             const trimmed = item.trim();
             if (trimmed)
                 out.push(trimmed);
+        }
+    }
+    return out.length > 0 ? out : undefined;
+}
+/**
+ * Like `stringList`, but also accepts items shaped as `{id: "..."}` so
+ * felt's object-form depends_on round-trips correctly. Tolerates mixed
+ * arrays (some entries strings, some objects) — felt has shipped both
+ * shapes in different fiber generations.
+ */
+function fiberRefList(v) {
+    if (!Array.isArray(v))
+        return undefined;
+    const out = [];
+    for (const item of v) {
+        if (typeof item === 'string') {
+            const trimmed = item.trim();
+            if (trimmed)
+                out.push(trimmed);
+        }
+        else if (item && typeof item === 'object' && !Array.isArray(item)) {
+            const id = item.id;
+            if (typeof id === 'string') {
+                const trimmed = id.trim();
+                if (trimmed)
+                    out.push(trimmed);
+            }
         }
     }
     return out.length > 0 ? out : undefined;
