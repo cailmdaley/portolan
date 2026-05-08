@@ -1,10 +1,7 @@
 import { exec, execFile } from 'child_process';
-import { existsSync, realpathSync } from 'fs';
 import { IncomingMessage, ServerResponse } from 'http';
-import { join } from 'path';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
-import { canonicalFiberRefFromPath } from './canonicalFiberRef.js';
 import type { City } from './CityManager.js';
 import type { Origin } from './OriginManager.js';
 import type { Session } from './SessionTracker.js';
@@ -61,19 +58,51 @@ function fiberPathToSlug(filePath: string): string {
   return parts.join('/');
 }
 
-function resolveLocalShuttleRef(cityPath: string, fiberId: string): { host: string; fiberId: string } {
-  const segments = fiberId.split('/');
-  const basename = segments[segments.length - 1];
-  const bare = join(cityPath, '.felt', `${basename}.md`);
-  const dir = join(cityPath, '.felt', ...segments, `${basename}.md`);
-  const mdPath = (!fiberId.includes('/') && existsSync(bare)) ? bare : dir;
+type ShuttleFiberCreateRequest = {
+  id: string;
+  name: string;
+  body?: string;
+  frontmatter: Record<string, unknown>;
+  originId: string;
+};
 
-  try {
-    const canonicalPath = realpathSync(mdPath);
-    return canonicalFiberRefFromPath(canonicalPath) ?? { host: cityPath, fiberId };
-  } catch {
-    return { host: cityPath, fiberId };
+type ShuttleFiberCreateResponse = {
+  id: string;
+  path?: string;
+};
+
+type InitialShuttleBlockInput = {
+  agent?: string;
+  kind?: 'oneshot' | 'standing';
+  schedule?: string;
+  tz?: string;
+  projectDir: string;
+};
+
+function buildInitialShuttleBlock({
+  agent,
+  kind,
+  schedule,
+  tz,
+  projectDir,
+}: InitialShuttleBlockInput): Record<string, unknown> {
+  const roleKind = kind === 'standing' ? 'standing' : 'oneshot';
+  const block: Record<string, unknown> = {
+    enabled: roleKind === 'standing',
+    kind: roleKind,
+    project_dir: projectDir,
+  };
+  if (agent) block.agent = agent;
+  if (roleKind === 'standing') {
+    block.schedule = { expr: schedule, tz: tz || 'UTC' };
+    block.review = { state: 'scheduled' };
+    block.next_due_at = new Date().toISOString();
   }
+  return block;
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
 }
 
 interface HttpApiAnnotationsOptions {
@@ -83,6 +112,7 @@ interface HttpApiAnnotationsOptions {
   parseJsonBody: JsonBodyParser;
   sendJsonError: JsonErrorSender;
   sendJsonSuccess: JsonSuccessSender;
+  shuttleFiberCreateFn?: (request: ShuttleFiberCreateRequest) => Promise<ShuttleFiberCreateResponse>;
 }
 
 export class HttpApiAnnotations {
@@ -92,6 +122,9 @@ export class HttpApiAnnotations {
   private readonly parseJsonBody: JsonBodyParser;
   private readonly sendJsonError: JsonErrorSender;
   private readonly sendJsonSuccess: JsonSuccessSender;
+  private readonly shuttleFiberCreateFn:
+    | ((request: ShuttleFiberCreateRequest) => Promise<ShuttleFiberCreateResponse>)
+    | undefined;
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
   private onCreateNewWorker: ((cityPath: string, originId: string) => Promise<string>) | null = null;
@@ -110,6 +143,7 @@ export class HttpApiAnnotations {
     this.parseJsonBody = options.parseJsonBody;
     this.sendJsonError = options.sendJsonError;
     this.sendJsonSuccess = options.sendJsonSuccess;
+    this.shuttleFiberCreateFn = options.shuttleFiberCreateFn;
   }
 
   setAnnotationPersistence(persistence: AnnotationPersistence): void {
@@ -130,6 +164,68 @@ export class HttpApiAnnotations {
 
   setOnFiberCreated(fn: (cityPath: string, sshHost?: string) => void): void {
     this.onFiberCreated = fn;
+  }
+
+  private async createFiberViaShuttle(
+    request: ShuttleFiberCreateRequest,
+  ): Promise<ShuttleFiberCreateResponse> {
+    if (this.shuttleFiberCreateFn) {
+      return await this.shuttleFiberCreateFn(request);
+    }
+
+    const baseUrl = await this.shuttleBaseUrlForOrigin(request.originId);
+    let response: Response;
+    try {
+      response = await fetch(`${trimTrailingSlash(baseUrl)}/api/v1/fiber/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: request.id,
+          name: request.name,
+          body: request.body ?? '',
+          frontmatter: request.frontmatter,
+        }),
+      });
+    } catch (error) {
+      const message = (error as { message?: string })?.message ?? String(error);
+      throw new Error(`Shuttle daemon unreachable at ${baseUrl}: ${message}`);
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      id?: string;
+      path?: string;
+      error?: string;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || `Shuttle daemon returned ${response.status}`);
+    }
+    if (!payload.id) {
+      throw new Error('Shuttle daemon response did not include id');
+    }
+    return { id: payload.id, path: payload.path };
+  }
+
+  private async shuttleBaseUrlForOrigin(originId: string): Promise<string> {
+    if (!originId || originId === 'local') return 'http://127.0.0.1:4000';
+
+    const origin = this.originLookup.getOrigin(originId);
+    const hostName = origin?.name ?? originId.replace(/^remote-/, '');
+    let response: Response;
+    try {
+      response = await fetch('http://127.0.0.1:4000/api/v1/origins');
+    } catch (error) {
+      const message = (error as { message?: string })?.message ?? String(error);
+      throw new Error(`Unable to read Shuttle origins from local daemon: ${message}`);
+    }
+    const data = (await response.json().catch(() => ({}))) as {
+      origins?: Array<{ name?: string; url?: string }>;
+      local?: { url?: string };
+    };
+    const match = (data.origins ?? []).find((entry) => entry.name === hostName);
+    if (!match?.url) {
+      throw new Error(`No Shuttle daemon URL configured for origin '${originId}'`);
+    }
+    return match.url;
   }
 
   async handleRecentAnnotations(url: URL, res: ServerResponse): Promise<void> {
@@ -462,12 +558,11 @@ export class HttpApiAnnotations {
   /**
    * POST /fiber/create — inline stash from vellum's workspace tab.
    *
-   * The GUI counterpart of `felt add <slug> <name> [-t tag] [-b body]` plus
-   * a follow-on `shuttle-ctl install --disabled` that writes the
-   * `shuttle:` block. Mounted by [[constitution-stash-button]]: a `+`
-   * button (or `n` hotkey) inside KanbanHost opens a small form that POSTs
-   * here. No agent in the loop — this is the *stash* affordance, not
-   * conversational authoring.
+   * The GUI counterpart of posting a complete fiber document to the target
+   * Shuttle daemon's daemon-local `/api/v1/fiber/create` route. Mounted by
+   * [[constitution-stash-button]]: a `+` button (or `n` hotkey) inside
+   * KanbanHost opens a small form that POSTs here. No agent in the loop —
+   * this is the *stash* affordance, not conversational authoring.
    *
    * Per [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]],
    * every stash creates a shuttle-managed fiber: the kanban is a UI over
@@ -477,14 +572,14 @@ export class HttpApiAnnotations {
    *
    * Differs from `/file-as-fiber` (which exists to file annotation comments
    * as a fiber): no annotation context, no synthesized body header, no
-   * `kind` defaulting, and no shuttle install (annotation-as-fiber is a
-   * felt-level stash, not a constitution). The slug is derived from the
-   * title via the same kebab-case rule as `/file-as-fiber` for consistency.
-   * Optional `parentSlug` nests the new fiber under an existing one (felt's
-   * slash-joined slug convention).
+   * `kind` defaulting, and no shuttle block (annotation-as-fiber is a
+   * felt-level stash, not a constitution). The slug is derived from the title
+   * via the same kebab-case rule as `/file-as-fiber` for consistency. Optional
+   * `parentSlug` nests the new fiber under an existing one (felt's slash-joined
+   * slug convention).
    *
    * Returns `{success: true, fiberId, slug}` where `fiberId` is the fully
-   * qualified slug (parentSlug + child) the felt CLI emitted on stdout.
+   * qualified slug (parentSlug + child) the Shuttle daemon wrote.
    */
   async handleCreateFiber(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const data = await this.parseJsonBody<{
@@ -547,8 +642,6 @@ export class HttpApiAnnotations {
       return;
     }
 
-    const isRemote = originId !== 'local' && !!originId;
-
     try {
       // Slug derivation mirrors handleFileAsFiber for consistency: kebab-case,
       // strip leading/trailing hyphens, cap at 60 chars, fallback to a
@@ -563,101 +656,39 @@ export class HttpApiAnnotations {
           .slice(0, 60) || `stash-${Date.now()}`;
       const slug = parentSlug ? `${parentSlug.replace(/^\/+|\/+$/g, '')}/${childSlug}` : childSlug;
 
-      // Build the felt invocation. `-t` is repeatable; emit one per tag so
-      // multi-word tags survive without comma-splitting heuristics.
-      const parts: string[] = [
-        `cd ${shellEscape(cityPath)}`,
-        '&&',
-        'felt add',
-        shellEscape(slug),
-        shellEscape(title.trim()),
-      ];
-      if (Array.isArray(tags)) {
-        for (const tag of tags) {
-          const trimmed = tag.trim();
-          if (!trimmed) continue;
-          parts.push('-t', shellEscape(trimmed));
-        }
-      }
-      if (status) {
-        parts.push('-s', shellEscape(status));
-      }
-      if (typeof body === 'string' && body.length > 0) {
-        parts.push('-b', shellEscape(body));
-      }
-      const feltCmd = parts.join(' ');
-
-      let fiberId: string;
-      let invalidateSshHost: string | undefined;
-      if (!isRemote) {
-        const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
-        fiberId = stdout.trim();
-      } else {
-        const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
-          this.sendJsonError(res, 404, 'Origin not found or not connected');
-          return;
-        }
-        const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, feltCmd],
-          { timeout: 30000, maxBuffer: 1024 * 1024 }
-        );
-        fiberId = stdout.trim();
-        invalidateSshHost = origin.sshHost;
+      if (kind === 'standing' && !schedule) {
+        this.sendJsonError(res, 400, 'schedule is required for kind=standing');
+        return;
       }
 
-      // Install the shuttle: block. Every stash is a constitution; lands in
-      // drafts (`enabled: false`) so the user can refine it before promoting
-      // to inFlight via the kanban (which flips `enabled: true` via
-      // `shuttle resume`). See
-      // [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]].
-      //
-      // Local origin only for now: shuttle-ctl runs locally against an
-      // explicit `--host` boundary derived from the created fiber's
-      // canonical store. Remote stashes skip the block install and surface
-      // a hint in the response so the user knows to install manually on the
-      // remote host. Wiring shuttle through the agent SSH path is a
-      // follow-up.
-      //
-      // Best-effort: if the install fails we leave the felt fiber in place
-      // and report the error in the response so the user can shuttle-install
-      // manually (the fiber is a real document and worth keeping; rolling
-      // back loses the title/body the user just typed).
-      let shuttleInstalled = false;
-      let shuttleError: string | undefined;
-      if (!isRemote) {
-        const shuttleRef = resolveLocalShuttleRef(cityPath, fiberId);
-        try {
-          let installArgs: string[];
-          if (kind === 'standing') {
-            // Standing role: `shuttle-ctl --host <host> repeat <id> --schedule <expr> --tz <tz> [--model <agent>]`
-            // Enabled by default (user committed to a schedule). schedule is
-            // required for standing; reject early if missing.
-            if (!schedule) {
-              this.sendJsonError(res, 400, 'schedule is required for kind=standing');
-              return;
-            }
-            installArgs = ['--host', shuttleRef.host, 'repeat', shuttleRef.fiberId, '--schedule', schedule, '--tz', tz || 'UTC'];
-            if (agent) installArgs.push('--model', agent);
-          } else {
-            // Oneshot (default): install with --disabled so the card lands in
-            // Drafts. The user promotes to inFlight by dragging in the kanban.
-            installArgs = ['--host', shuttleRef.host, 'install', shuttleRef.fiberId, '--disabled'];
-            if (agent) installArgs.push('--model', agent);
-          }
-          await execFileAsync('shuttle-ctl', installArgs, {
-            cwd: shuttleRef.host,
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          });
-          shuttleInstalled = true;
-        } catch (err: any) {
-          shuttleError = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
-          console.error(
-            `[fiber/create] shuttle install failed for ${fiberId}: ${shuttleError}`,
-          );
-        }
-      }
+      const frontmatter: Record<string, unknown> = {
+        name: title.trim(),
+        status: status || (kind === 'standing' ? 'active' : 'open'),
+        ...(Array.isArray(tags) && tags.length > 0
+          ? { tags: tags.map((tag) => tag.trim()).filter(Boolean) }
+          : {}),
+        shuttle: buildInitialShuttleBlock({
+          agent,
+          kind,
+          schedule,
+          tz,
+          projectDir: cityPath,
+        }),
+      };
+
+      const created = await this.createFiberViaShuttle({
+        id: slug,
+        name: title.trim(),
+        body: typeof body === 'string' ? body : '',
+        frontmatter,
+        originId,
+      });
+      const fiberId = created.id;
+
+      const invalidateSshHost =
+        originId !== 'local' && originId
+          ? this.originLookup.getOrigin(originId)?.sshHost
+          : undefined;
 
       // Invalidate the tapestry's fiber-list cache so /astra/graph and
       // /api/search reflect the new fiber immediately rather than waiting
@@ -668,12 +699,8 @@ export class HttpApiAnnotations {
         success: true,
         fiberId,
         slug,
-        shuttleInstalled,
-        ...(shuttleError ? { shuttleError } : {}),
-        // Remote stashes skip shuttle install for now; surface a hint so the
-        // frontend can show a "shuttle install on remote not yet wired"
-        // notice instead of silently dropping the new card off the kanban.
-        ...(isRemote ? { shuttleSkipped: 'remote-origin' } : {}),
+        shuttleInstalled: true,
+        ...(created.path ? { path: created.path } : {}),
       });
     } catch (error: any) {
       console.error('Failed to create fiber:', error.message);

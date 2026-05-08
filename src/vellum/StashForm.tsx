@@ -5,7 +5,7 @@
  * a `+` button (or `n` hotkey) inside vellum's workspace tab opens this
  * form, the user types a title (and optionally body, tags, parent path),
  * chooses dispatch settings, and on save it POSTs `/fiber/create` which
- * shells out to `felt add` + `shuttle-ctl install/repeat`.
+ * asks the target Shuttle daemon to create the fiber locally.
  *
  *   - No agent in the loop during stash. This just files + installs the
  *     shuttle block. Dispatch is the kanban's job.

@@ -108,6 +108,13 @@ export interface HttpApiOptions {
    */
   shuttleCtlFn?: (invocation: ShuttleCtlInvocation) => Promise<void>;
   feltEditFn?: (invocation: FeltTagEditInvocation) => Promise<void>;
+  shuttleFiberCreateFn?: (request: {
+    id: string;
+    name: string;
+    body?: string;
+    frontmatter: Record<string, unknown>;
+    originId: string;
+  }) => Promise<{ id: string; path?: string }>;
 }
 
 // ============================================================================
@@ -157,6 +164,7 @@ export class HttpApi {
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+      shuttleFiberCreateFn: options.shuttleFiberCreateFn,
     });
     this.fileContentApi = new HttpApiFileContent({
       originLookup,

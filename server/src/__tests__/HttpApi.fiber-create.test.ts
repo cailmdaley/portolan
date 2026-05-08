@@ -13,9 +13,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import YAML from 'yaml';
 import { HttpApi } from '../HttpApi.js';
 import { httpRequest, makeCityLookup, stubOriginLookup, stubPersistenceLookup } from './test-utils.js';
 
@@ -44,6 +45,7 @@ skipIfNoFelt('HttpApi — POST /fiber/create', () => {
       makeCityLookup('test', CITY_DIR) as any,
       stubOriginLookup as any,
       stubPersistenceLookup as any,
+      { shuttleFiberCreateFn: writeCreatedFiber },
     );
   });
 
@@ -149,3 +151,20 @@ skipIfNoFelt('HttpApi — POST /fiber/create', () => {
     expect(res.data.slug).toMatch(/^stash-\d+$/);
   });
 });
+
+async function writeCreatedFiber(request: {
+  id: string;
+  name: string;
+  body?: string;
+  frontmatter: Record<string, unknown>;
+}): Promise<{ id: string; path: string }> {
+  const segments = request.id.split('/');
+  const basename = segments[segments.length - 1];
+  const path = join(FELT_DIR, ...segments, `${basename}.md`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    `---\n${YAML.stringify(request.frontmatter)}---\n${request.body ?? ''}`,
+  );
+  return { id: request.id, path };
+}
