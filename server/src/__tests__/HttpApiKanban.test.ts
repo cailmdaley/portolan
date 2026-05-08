@@ -1540,6 +1540,27 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(byId.get('pure_eb')).toBe('remote-candide');
     });
 
+    it('remote felt-host filtering refuses origin-wide snapshots in city scope', async () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-candide', '/remote/loom', [
+        { path: 'pure_eb/pure_eb.md', content: fiberContent('stale loom pure_eb') },
+      ]);
+      const api = new HttpApiKanban({
+        feltHost: '/remote/projects/pure_eb',
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteOriginFilter: 'remote-candide',
+        remoteFeltHostFilter: '/remote/projects/pure_eb',
+        includeLocalFibers: false,
+        listSessions: () => [],
+      });
+      const res = await callKanban(api);
+      expect(res.body.totals.inFlight).toBe(0);
+      expect(res.body.staleness['remote-candide']).toEqual({
+        status: 'stale',
+        hostname: 'candide',
+      });
+    });
+
     it('applyTransition without a remoteTransitionExecutor still refuses remote fibers', async () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [

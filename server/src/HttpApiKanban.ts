@@ -283,11 +283,17 @@ interface HttpApiKanbanOptions {
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   /**
    * Optional origin filter for snapshot-backed Kanban views. Used by
-   * `?cityId=<remote-city>`: the remote agent currently pushes one
-   * snapshot per origin, so the scoped view is origin-scoped rather than
+   * `?cityId=<remote-city>` so the scoped view is not
    * global-local-plus-all-remotes.
    */
   remoteOriginFilter?: string;
+  /**
+   * Optional remote felt-host filter paired with `remoteOriginFilter`.
+   * Remote city-scoped views must only render a snapshot explicitly rooted at
+   * that city path. Falling back to an origin-wide `~/loom` snapshot makes a
+   * focused city look authoritative while showing stale cross-project fibers.
+   */
+  remoteFeltHostFilter?: string;
   /**
    * Include local filesystem walks in this view. Defaults to true. Remote
    * city-scoped views set this false so `/kanban?cityId=<remote>` is not
@@ -611,6 +617,7 @@ export class HttpApiKanban {
   private readonly cities: Array<{ id: string; path: string }> | undefined;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private readonly remoteOriginFilter: string | undefined;
+  private readonly remoteFeltHostFilter: string | undefined;
   private readonly includeLocalFibers: boolean;
   private readonly remoteTransitionExecutor:
     | HttpApiKanbanOptions['remoteTransitionExecutor']
@@ -785,6 +792,9 @@ export class HttpApiKanban {
     this.cities = opts.cities && opts.cities.length > 0 ? opts.cities : undefined;
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
     this.remoteOriginFilter = opts.remoteOriginFilter;
+    this.remoteFeltHostFilter = opts.remoteFeltHostFilter
+      ? normalizeRemotePath(opts.remoteFeltHostFilter)
+      : undefined;
     this.includeLocalFibers = opts.includeLocalFibers ?? true;
     this.remoteTransitionExecutor = opts.remoteTransitionExecutor;
     this.temperedLimit = opts.temperedLimit ?? 30;
@@ -971,7 +981,9 @@ export class HttpApiKanban {
     // file path locally, and city resolution doesn't apply across machines.
     if (this.remoteSnapshotsProvider) {
       for (const snapshot of this.remoteSnapshotsProvider()) {
-        if (this.remoteOriginFilter && snapshot.originId !== this.remoteOriginFilter) continue;
+        if (!snapshotMatchesRemoteScope(snapshot, this.remoteOriginFilter, this.remoteFeltHostFilter)) {
+          continue;
+        }
         for (const f of snapshot.fibers) {
           if (seenIds.has(f.id)) continue;
           const key = `${snapshot.originId}::${f.id}`;
@@ -2092,7 +2104,9 @@ export class HttpApiKanban {
     };
     if (!this.remoteSnapshotsProvider) return out;
     for (const snap of this.remoteSnapshotsProvider()) {
-      if (this.remoteOriginFilter && snap.originId !== this.remoteOriginFilter) continue;
+      if (!snapshotMatchesRemoteScope(snap, this.remoteOriginFilter, this.remoteFeltHostFilter)) {
+        continue;
+      }
       const hostname = snap.originId.replace(/^remote-/, '');
       out[snap.originId] = {
         status: snap.status,
@@ -2135,6 +2149,20 @@ function collectTagIndex(merged: Array<{ fiber: Fiber }>): string[] {
     }
   }
   return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeRemotePath(path: string): string {
+  return path.replace(/\/+$/, '');
+}
+
+function snapshotMatchesRemoteScope(
+  snapshot: FiberTreeSnapshot,
+  originId: string | undefined,
+  feltHost: string | undefined,
+): boolean {
+  if (originId && snapshot.originId !== originId) return false;
+  if (feltHost && normalizeRemotePath(snapshot.feltHost) !== feltHost) return false;
+  return true;
 }
 
 // ── Sort helpers ─────────────────────────────────────────────────────────────

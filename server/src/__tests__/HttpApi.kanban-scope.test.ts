@@ -199,7 +199,33 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     expect(res.data.error).toMatch(/unknown cityId/);
   });
 
-  it('GET /kanban?cityId=<remote> returns that remote origin snapshot', async () => {
+  it('GET /kanban?cityId=<remote> does not fall back to an origin-wide loom snapshot', async () => {
+    const res = await httpRequest(api, 'GET', '/kanban?cityId=r');
+    expect(res.status).toBe(200);
+    expect(res.data.remoteScope).toEqual({
+      originId: 'remote-elsewhere',
+      hostname: 'elsewhere',
+    });
+    expect(res.data.staleness['remote-elsewhere']).toEqual({
+      status: 'stale',
+      hostname: 'elsewhere',
+    });
+    expect(res.data.totals.inFlight).toBe(0);
+  });
+
+  it('GET /kanban?cityId=<remote> returns that remote city snapshot when rooted at the city path', async () => {
+    remoteStore.upsertFullDump('remote-elsewhere', CITY_REMOTE, [
+      {
+        path: 'remote-snapshot-fiber/remote-snapshot-fiber.md',
+        fiber: {
+          id: 'remote-snapshot-fiber',
+          name: 'Remote snapshot',
+          status: 'active',
+          shuttle: { enabled: true, kind: 'oneshot' },
+          created_at: '2026-04-18T00:00:00Z',
+        },
+      },
+    ]);
     const res = await httpRequest(api, 'GET', '/kanban?cityId=r');
     expect(res.status).toBe(200);
     expect(res.data.remoteScope).toEqual({
@@ -237,6 +263,18 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
   });
 
   it('POST /kanban/transition?cityId=<remote> reaches the remote snapshot boundary', async () => {
+    remoteStore.upsertFullDump('remote-elsewhere', CITY_REMOTE, [
+      {
+        path: 'remote-snapshot-fiber/remote-snapshot-fiber.md',
+        fiber: {
+          id: 'remote-snapshot-fiber',
+          name: 'Remote snapshot',
+          status: 'active',
+          shuttle: { enabled: true, kind: 'oneshot' },
+          created_at: '2026-04-18T00:00:00Z',
+        },
+      },
+    ]);
     const res = await httpRequest(
       api,
       'POST',

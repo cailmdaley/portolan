@@ -757,6 +757,7 @@ export class HttpApi {
         feltHost: city.path,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
         remoteOriginFilter: city.originId,
+        remoteFeltHostFilter: city.path,
         remoteTransitionExecutor: this.remoteTransitionExecutor,
         includeLocalFibers: false,
         cacheTtlMs: 5000,
