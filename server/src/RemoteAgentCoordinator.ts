@@ -395,7 +395,6 @@ async function legacyReconnectTunnel(sshHost: string): Promise<void> {
 
   try {
     await execFileAsync('ssh', [
-      '-N',
       '-f',
       '-S',
       'none',
@@ -410,6 +409,7 @@ async function legacyReconnectTunnel(sshHost: string): Promise<void> {
       '-R',
       '4004:localhost:4004',
       sshHost,
+      'sleep 3600',
     ]);
     console.log(`One-shot SSH tunnel to ${sshHost} re-established`);
   } catch (error) {

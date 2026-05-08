@@ -287,10 +287,6 @@ function handleCityClick(city: City): void {
   const pos = hexGrid.axialToCartesian(city.hex)
   camera.focusAndZoom(pos, 6, 0.95)
 
-  if (city.isDormant && city.originId !== 'local') {
-    void mapActions?.activateRemoteCity(city)
-  }
-
   // Stage J — push the new focused city into the URL fragment so back/
   // forward navigates the camera. Skip the no-op case so a `v` after a
   // hex-click on the same city doesn't sediment two identical history
