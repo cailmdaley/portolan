@@ -643,7 +643,7 @@ export class HttpApiKanban {
       return;
     }
 
-    const args = ['--host', invocation.host, invocation.verb, invocation.fiberId];
+    const args = shuttleCtlArgs(invocation.host, invocation.verb, invocation.fiberId);
     if (invocation.verb === 'close' && invocation.tempered !== undefined) {
       args.push(`--tempered=${invocation.tempered ? 'true' : 'false'}`);
     }
@@ -1941,27 +1941,29 @@ export class HttpApiKanban {
         // Uninstall first — install/repeat refuse to clobber. Skip when no
         // block exists yet (the patch can install fresh).
         if (fiber.hasShuttleBlock) {
-          await execFileAsync('shuttle-ctl', ['--host', localRef.host, 'uninstall', localRef.fiberId], ctlEnv);
+          await execFileAsync('shuttle-ctl', shuttleCtlArgs(localRef.host, 'uninstall', localRef.fiberId), ctlEnv);
         }
 
         if (targetKind === 'standing') {
           const args = [
-            '--host', localRef.host,
-            'repeat', localRef.fiberId,
+            ...shuttleCtlArgs(localRef.host, 'repeat', localRef.fiberId),
             '--schedule', targetSchedule!,
             '--tz', targetTz!,
           ];
           if (targetAgent) args.push('--model', targetAgent);
           await execFileAsync('shuttle-ctl', args, ctlEnv);
         } else {
-          const args = ['--host', localRef.host, 'install', localRef.fiberId];
+          const args = shuttleCtlArgs(localRef.host, 'install', localRef.fiberId);
           if (targetAgent) args.push('--model', targetAgent);
           if (wasDisabled) args.push('--disabled');
           await execFileAsync('shuttle-ctl', args, ctlEnv);
         }
       } else if (typeof body.shuttleAgent === 'string' && body.shuttleAgent) {
         // Agent-only change → set-model preserves session.id and review state.
-        await execFileAsync('shuttle-ctl', ['--host', localRef.host, 'set-model', localRef.fiberId, body.shuttleAgent], {
+        await execFileAsync('shuttle-ctl', [
+          ...shuttleCtlArgs(localRef.host, 'set-model', localRef.fiberId),
+          body.shuttleAgent,
+        ], {
           env: { ...process.env, HOME: process.env.HOME ?? '/tmp' },
           cwd: localRef.host,
         });
@@ -2157,6 +2159,10 @@ function collectTagIndex(merged: Array<{ fiber: Fiber }>): string[] {
 
 function normalizeRemotePath(path: string): string {
   return path.replace(/\/+$/, '');
+}
+
+function shuttleCtlArgs(host: string, verb: string, fiberId: string): string[] {
+  return ['--felt-store', host, verb, fiberId];
 }
 
 function snapshotMatchesRemoteScope(
