@@ -363,12 +363,11 @@ function openFile(args: OpenFileArgs): void {
       originId: args.originId,
       initialFilePath: args.path,
       // Read-mode default: markdown lands in the canvas (PretextProse —
-      // same renderer as fiber bodies); other text files render in
-      // CodeMirror read-only. Callers that want the source editor up
-      // front (e.g. worker prompts that pass jumpToLine for a code file)
-      // pass `editable: true` explicitly.
+      // same renderer as fiber bodies) when possible; non-markdown text
+      // files can default to the CodeMirror editor in Vellum.
+      // `editable` is passed through as an explicit override only.
       // See ai-futures/portolan/vellum-reader/markdown-and-fibers-share-canvas.
-      editable: args.editable ?? false,
+      editable: args.editable,
       jumpToLine: args.jumpToLine,
       cityName: args.cityId ? cities.find(c => c.id === args.cityId)?.name : undefined,
       onClose: handleWorkspaceClosed,
@@ -919,11 +918,13 @@ const debugPath = initialParams.get('vellumDebug')
 if (debugPath) {
   const lineParam = initialParams.get('vellumLine')
   const jumpToLine = lineParam ? Number(lineParam) : undefined
+  const rawEditable = initialParams.get('vellumEdit')
+  const editable = rawEditable === null ? undefined : rawEditable !== '0'
   openFile({
     path: debugPath,
     originId: initialParams.get('vellumOrigin') ?? undefined,
     cityId: initialParams.get('vellumCity') ?? undefined,
-    editable: initialParams.get('vellumEdit') !== '0',
+    editable,
     jumpToLine: Number.isFinite(jumpToLine) ? jumpToLine : undefined,
   })
 }
