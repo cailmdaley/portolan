@@ -37,7 +37,9 @@ export interface Fiber {
    */
   shuttleKind?: 'oneshot' | 'standing';
   /**
-   * `shuttle.review.state` for standing roles — `scheduled` | `awaiting` | `accepted`.
+   * `shuttle.review.state` for standing roles — canonical persisted values
+   * are `scheduled` | `awaiting` | `accepted`. Runtime-only states such as
+   * `running` and `due` come from live worker/snapshot data, not frontmatter.
    * `awaiting` after a worker completes a run; the kanban routes the card to
    * the awaitingReview column even though `status` remains `active`. Cleared
    * (back to `scheduled`) by `shuttle-ctl accept`.
