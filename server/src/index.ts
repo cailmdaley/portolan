@@ -30,7 +30,7 @@ import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
-import { publishShuttleFeltHosts } from './ShuttleFeltHostsPublisher.js';
+import { publishShuttleFeltStores } from './ShuttleFeltStoresPublisher.js';
 
 // ============================================================================
 // Constants
@@ -615,7 +615,7 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 server.listen(PORT, () => {
   console.log(`Portolan server running on port ${PORT}`);
   console.log(`WebSocket: ws://localhost:${PORT}`);
-  void publishShuttleFeltHosts(cityPersistence.getCities());
+  void publishShuttleFeltStores(cityPersistence.getCities());
 });
 
 // ============================================================================
