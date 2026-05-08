@@ -820,6 +820,8 @@
      the rest of the kanban only as a thin border around the card. */
   width: min(94vw, 1720px);
   height: min(86vh, 780px);
+  container-name: kbn-detail;
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
@@ -968,6 +970,58 @@
 .kbn-detail-col-right .kbn-detail-parent-wrap {
   max-width: 600px;
 }
+
+@container kbn-detail (max-width: 1120px) {
+  .kbn-detail-header {
+    padding: 18px 20px 4px;
+  }
+
+  .kbn-detail-body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .kbn-detail-col {
+    overflow: visible;
+    min-height: auto;
+  }
+
+  .kbn-detail-col-right {
+    order: 1;
+    flex: 0 0 auto;
+    min-width: 0;
+    border-bottom: 1px solid rgba(46, 42, 38, 0.10);
+  }
+
+  .kbn-detail-col-left {
+    order: 2;
+    flex: 0 0 auto;
+    border-right: none;
+  }
+
+  .kbn-detail-col-left .kbn-detail-section,
+  .kbn-detail-section {
+    padding-inline: 20px;
+  }
+
+  .kbn-detail-col-right .kbn-detail-directive,
+  .kbn-detail-col-right .kbn-detail-tags-row,
+  .kbn-detail-col-right .kbn-detail-field-row,
+  .kbn-detail-col-right .kbn-detail-current-parent,
+  .kbn-detail-col-right .kbn-detail-parent-wrap {
+    max-width: none;
+  }
+
+  .kbn-detail-field-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .kbn-detail-input-tz {
+    flex: 1 1 140px;
+  }
+}
+
 /* Horizontal hairline rule used inside the right column to separate
    controls from history. */
 .kbn-detail-rule {

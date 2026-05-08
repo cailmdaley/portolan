@@ -588,7 +588,24 @@ describe('Feature 1: cards sized to natural content', () => {
   })
 })
 
-// ── Feature 2: parent-fiber reactive dropdown ─────────────────────────────────
+describe('Feature 2: narrow detail modal layout', () => {
+  it('stacks chrome above the outcome when the detail dialog is narrow', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const cssPath = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      'KanbanModal.css',
+    )
+    const css = fs.readFileSync(cssPath, 'utf8')
+
+    expect(css).toMatch(/\.kbn-detail-dialog\s*\{[^}]*container-name\s*:\s*kbn-detail[^}]*container-type\s*:\s*inline-size/)
+    expect(css).toMatch(/@container\s+kbn-detail\s+\(max-width:\s*1120px\)\s*\{[\s\S]*\.kbn-detail-body\s*\{[^}]*flex-direction\s*:\s*column/)
+    expect(css).toMatch(/@container\s+kbn-detail\s+\(max-width:\s*1120px\)\s*\{[\s\S]*\.kbn-detail-col-right\s*\{[^}]*order\s*:\s*1/)
+    expect(css).toMatch(/@container\s+kbn-detail\s+\(max-width:\s*1120px\)\s*\{[\s\S]*\.kbn-detail-col-left\s*\{[^}]*order\s*:\s*2/)
+  })
+})
+
+// ── Feature 3: parent-fiber reactive dropdown ─────────────────────────────────
 // The parent-fiber section in the card modal must:
 //   a) open its dropdown immediately on focus (not only when the input is empty)
 //   b) pass the current input value as the initial search query
@@ -597,7 +614,7 @@ describe('Feature 1: cards sized to natural content', () => {
 //   e) support keyboard navigation: ArrowDown (input→first option),
 //      ArrowDown/Up (within options), Escape (close + return focus)
 
-describe('Feature 2: parent-fiber reactive dropdown', () => {
+describe('Feature 3: parent-fiber reactive dropdown', () => {
   /** Open a detail modal for a nested fiber and return handy DOM refs. */
   async function openParentModal(
     cardOverrides: Record<string, unknown> = {},
