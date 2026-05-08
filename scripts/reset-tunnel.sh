@@ -74,14 +74,15 @@ manual_reconnect() {
   sleep 1
 
   echo "[$HOST] Re-establishing one-shot tunnel..."
-  ssh -N -f \
+  ssh -f \
     -S none \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
     -o ControlMaster=no \
     -o ExitOnForwardFailure=yes \
     -R 4004:localhost:4004 \
-    "$HOST"
+    "$HOST" \
+    'sleep 3600'
 }
 
 if [ "$MANUAL" = true ]; then

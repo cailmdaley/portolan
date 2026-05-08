@@ -105,7 +105,6 @@ render_plist() {
   <key>ProgramArguments</key>
   <array>
     <string>$escaped_autossh</string>
-    <string>-N</string>
     <string>-M</string>
     <string>0</string>
     <string>-S</string>
@@ -133,6 +132,7 @@ PLIST_SOCK_ARGS
     <string>-R</string>
     <string>4004:localhost:4004</string>
     <string>$escaped_host</string>
+    <string>sleep 2147483647</string>
   </array>
 
   <key>EnvironmentVariables</key>
