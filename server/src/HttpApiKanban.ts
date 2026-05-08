@@ -326,7 +326,12 @@ interface HttpApiKanbanOptions {
 export type ShuttleCtlInvocation =
   | { host: string; verb: 'pause' | 'reopen' | 'accept'; fiberId: string }
   | { host: string; verb: 'close'; fiberId: string; tempered?: boolean }
-  | { host: string; verb: 'set-outcome'; fiberId: string; outcome: string };
+  | { host: string; verb: 'set-outcome'; fiberId: string; outcome: string }
+  // dispatch with adHoc:true for standing roles fires a manual run that
+  // does not consume the next scheduled occurrence (synthetic adhoc-* run
+  // id; next_due_at preserved). On oneshots or with adHoc:false, behavior
+  // matches `shuttle-ctl dispatch <fiber>` directly.
+  | { host: string; verb: 'dispatch'; fiberId: string; adHoc?: boolean };
 
 export type RemoteKanbanMutationInvocation =
   | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
@@ -512,6 +517,9 @@ export class HttpApiKanban {
     }
     if (invocation.verb === 'set-outcome') {
       args.push('--outcome', invocation.outcome);
+    }
+    if (invocation.verb === 'dispatch' && invocation.adHoc) {
+      args.push('--ad-hoc');
     }
 
     try {
@@ -1901,17 +1909,35 @@ function transitionInvocationForTarget(
   ref: { host: string; fiberId: string },
   target: KanbanTarget,
 ): ShuttleCtlInvocation {
+  const isInFlightTarget =
+    target === 'inFlight' || target === 'queued' || target === 'active';
+
+  // Drag a standing role in awaiting state to inFlight (or tempered) =
+  // accept the pending run cyclically. Card returns to drafts (sorted to
+  // bottom) until the next cron tick.
   const isStandingAccept =
-    (target === 'inFlight' ||
-      target === 'queued' ||
-      target === 'active' ||
-      target === 'tempered') &&
+    (isInFlightTarget || target === 'tempered') &&
     fiber.shuttleKind === 'standing' &&
     fiber.shuttleReviewState === 'awaiting';
 
   if (isStandingAccept) return { host: ref.host, verb: 'accept', fiberId: ref.fiberId };
   if (target === 'drafts') return { host: ref.host, verb: 'pause', fiberId: ref.fiberId };
-  if (target === 'inFlight' || target === 'queued' || target === 'active') {
+
+  // Drag a dormant standing role (scheduled/accepted, enabled) to inFlight
+  // = manual ad-hoc dispatch. Generates a synthetic adhoc-* run id; does
+  // not advance next_due_at, so the cron schedule keeps its rhythm. Paused
+  // (enabled=false) standing roles still take the reopen path; resume
+  // them first if you want to fire one now.
+  if (
+    isInFlightTarget &&
+    fiber.shuttleKind === 'standing' &&
+    fiber.shuttleEnabled !== false &&
+    (fiber.shuttleReviewState === 'scheduled' || fiber.shuttleReviewState === 'accepted')
+  ) {
+    return { host: ref.host, verb: 'dispatch', fiberId: ref.fiberId, adHoc: true };
+  }
+
+  if (isInFlightTarget) {
     return { host: ref.host, verb: 'reopen', fiberId: ref.fiberId };
   }
   if (target === 'awaitingReview') return { host: ref.host, verb: 'close', fiberId: ref.fiberId };
