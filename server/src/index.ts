@@ -134,16 +134,16 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
   // and resolves so HttpApiKanban can build the refreshed card. The
   // agent-side fs.watch will fire its own delta moments later; double-apply
   // is idempotent because the second copy carries identical felt JSON.
-  remoteTransitionExecutor: async ({ originId, ...payload }) => {
+  remoteTransitionExecutor: async ({ originId, feltHost, ...payload }) => {
     const result = await agentRequestCoordinator.send<{ fiber?: unknown }>(
       originId,
       'kanban-transition',
-      payload,
+      { ...payload, feltHost },
     );
     if (result.fiber !== undefined) {
       fiberTreeSnapshotStore.applyDelta(originId, [
         { path: payload.path, op: 'upsert', fiber: result.fiber },
-      ]);
+      ], feltHost);
     }
   },
 });
@@ -436,10 +436,11 @@ wss.on('connection', async (ws, req) => {
           // The kanban view rebuilds per request, so we don't need to push;
           // browsers polling /kanban will pick up the new state on next read.
         } else if (message.type === 'fiber_tree_delta') {
-          const { deltas } = message.payload as {
+          const { feltHost, deltas } = message.payload as {
+            feltHost?: string;
             deltas: Array<{ path: string; op: 'upsert' | 'delete'; fiber?: unknown }>;
           };
-          fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? []);
+          fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? [], feltHost);
         } else if (message.type === 'kanban-transition-result') {
           // Stage 4 — agent's reply to a `kanban-transition` round-trip.
           // Resolves or rejects the matching pending entry in the

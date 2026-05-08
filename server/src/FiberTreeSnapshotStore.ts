@@ -87,6 +87,10 @@ export interface FiberTreeSnapshot {
 export class FiberTreeSnapshotStore {
   private snapshots = new Map<string, FiberTreeSnapshot>();
 
+  private key(originId: string, feltHost: string): string {
+    return `${originId}\u0000${normalizeHost(feltHost)}`;
+  }
+
   /**
    * Replace the snapshot for an origin wholesale. Files whose path doesn't
    * resolve to a fiber id (non-container .md files, junk) are silently
@@ -94,14 +98,15 @@ export class FiberTreeSnapshotStore {
    * and the server filters by container shape.
    */
   upsertFullDump(originId: string, feltHost: string, files: FiberTreeFile[]): void {
+    const normalizedHost = normalizeHost(feltHost);
     const byId = new Map<string, Fiber>();
     for (const file of files) {
       const fiber = coerceWireFiber(file.path, file.fiber ?? file.content);
       if (fiber) byId.set(fiber.id, fiber);
     }
-    this.snapshots.set(originId, {
+    this.snapshots.set(this.key(originId, normalizedHost), {
       originId,
-      feltHost,
+      feltHost: normalizedHost,
       fibers: [...byId.values()],
       byId,
       lastFullDump: new Date(),
@@ -114,8 +119,8 @@ export class FiberTreeSnapshotStore {
    * batch (with a warning) if no snapshot exists yet — deltas before the
    * initial dump are a protocol violation we don't try to repair.
    */
-  applyDelta(originId: string, deltas: FiberTreeDelta[]): void {
-    const snap = this.snapshots.get(originId);
+  applyDelta(originId: string, deltas: FiberTreeDelta[], feltHost?: string): void {
+    const snap = this.resolveSnapshot(originId, feltHost);
     if (!snap) {
       console.warn(
         `[FiberTreeSnapshotStore] delta arrived for originId=${originId} ` +
@@ -147,8 +152,7 @@ export class FiberTreeSnapshotStore {
 
   /** Mark an origin's snapshot stale (kept, but flagged). For Stage 3b UI. */
   markStale(originId: string, sinceIso: string): void {
-    const snap = this.snapshots.get(originId);
-    if (snap) {
+    for (const snap of this.snapshotsForOrigin(originId)) {
       snap.status = 'stale';
       snap.staleSince = sinceIso;
     }
@@ -156,8 +160,7 @@ export class FiberTreeSnapshotStore {
 
   /** Mark an origin's snapshot fresh again — for an explicit reconnect ack. */
   markFresh(originId: string): void {
-    const snap = this.snapshots.get(originId);
-    if (snap) {
+    for (const snap of this.snapshotsForOrigin(originId)) {
       snap.status = 'fresh';
       snap.staleSince = undefined;
     }
@@ -165,16 +168,33 @@ export class FiberTreeSnapshotStore {
 
   /** Drop an origin's snapshot entirely — useful for tests, not used in v1 prod. */
   clear(originId: string): void {
-    this.snapshots.delete(originId);
+    for (const key of [...this.snapshots.keys()]) {
+      if (key === originId || key.startsWith(`${originId}\u0000`)) {
+        this.snapshots.delete(key);
+      }
+    }
   }
 
-  getSnapshot(originId: string): FiberTreeSnapshot | null {
-    return this.snapshots.get(originId) ?? null;
+  getSnapshot(originId: string, feltHost?: string): FiberTreeSnapshot | null {
+    return this.resolveSnapshot(originId, feltHost);
   }
 
   /** All known snapshots. Order is insertion-order (Map semantics). */
   getAllSnapshots(): FiberTreeSnapshot[] {
     return [...this.snapshots.values()];
+  }
+
+  private snapshotsForOrigin(originId: string): FiberTreeSnapshot[] {
+    return [...this.snapshots.values()].filter(snap => snap.originId === originId);
+  }
+
+  private resolveSnapshot(originId: string, feltHost?: string): FiberTreeSnapshot | null {
+    if (feltHost !== undefined) {
+      return this.snapshots.get(this.key(originId, feltHost)) ?? null;
+    }
+    const exactLegacy = this.snapshots.get(originId);
+    if (exactLegacy) return exactLegacy;
+    return this.snapshotsForOrigin(originId)[0] ?? null;
   }
 
   /**
@@ -268,6 +288,10 @@ export function idFromPath(filePath: string): {
   const id = idParts.join('/');
   const parentId = idParts.length > 1 ? idParts.slice(0, -1).join('/') : null;
   return { id, isRoot: false, parentId };
+}
+
+function normalizeHost(feltHost: string): string {
+  return feltHost.replace(/\/+$/, '');
 }
 
 function coerceWireFiber(path: string, raw: unknown): Fiber | null {

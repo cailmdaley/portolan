@@ -111,6 +111,21 @@ describe('FiberTreeSnapshotStore', () => {
       expect(store.getSnapshot('remote-cineca')!.byId.has('cmbx')).toBe(true);
     });
 
+    it('applies deltas to the matching felt host when an origin has multiple snapshots', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-candide', '/home/cail/loom', [
+        { path: 'shared/shared.md', fiber: baseFiber({ status: 'active' }) },
+      ]);
+      store.upsertFullDump('remote-candide', '/work/pure_eb', [
+        { path: 'shared/shared.md', fiber: baseFiber({ status: 'active' }) },
+      ]);
+      store.applyDelta('remote-candide', [
+        { path: 'shared/shared.md', op: 'upsert', fiber: baseFiber({ status: 'closed' }) },
+      ], '/work/pure_eb');
+      expect(store.getSnapshot('remote-candide', '/home/cail/loom')!.byId.get('shared')?.status).toBe('active');
+      expect(store.getSnapshot('remote-candide', '/work/pure_eb')!.byId.get('shared')?.status).toBe('closed');
+    });
+
     it('delete removes a fiber', () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [
@@ -193,6 +208,23 @@ describe('FiberTreeSnapshotStore', () => {
       ]);
       const all = store.getAllSnapshots();
       expect(all.map(s => s.originId).sort()).toEqual(['remote-candide', 'remote-cineca']);
+    });
+
+    it('keeps multiple felt hosts for the same origin separate', () => {
+      const store = new FiberTreeSnapshotStore();
+      store.upsertFullDump('remote-candide', '/home/cail/loom', [
+        { path: 'old/old.md', fiber: baseFiber({ name: 'Old loom copy' }) },
+      ]);
+      store.upsertFullDump('remote-candide', '/work/pure_eb', [
+        { path: 'live/live.md', fiber: baseFiber({ name: 'Live project copy' }) },
+      ]);
+
+      expect(store.getAllSnapshots().map(s => s.feltHost).sort()).toEqual([
+        '/home/cail/loom',
+        '/work/pure_eb',
+      ]);
+      expect(store.getSnapshot('remote-candide', '/home/cail/loom')?.byId.has('old')).toBe(true);
+      expect(store.getSnapshot('remote-candide', '/work/pure_eb')?.byId.has('live')).toBe(true);
     });
   });
 

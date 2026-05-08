@@ -406,7 +406,7 @@ export type RemoteKanbanMutationInvocation =
   | { kind: 'felt-tags'; fiberId: string; path: string; tags: string[] };
 
 export type RemoteKanbanMutationRequest =
-  RemoteKanbanMutationInvocation & { originId: string };
+  RemoteKanbanMutationInvocation & { originId: string; feltHost: string };
 
 export type FeltTagEditInvocation = {
   host: string;
@@ -1315,6 +1315,7 @@ export class HttpApiKanban {
           // Pause on the remote origin via the executor.
           await this.remoteTransitionExecutor({
             originId,
+            feltHost: host,
             path: relativeFeltPath(fiber),
             kind: 'shuttle',
             ...transitionInvocationForTarget(fiber, { host, fiberId: fiber.id }, 'drafts'),
@@ -1352,6 +1353,7 @@ export class HttpApiKanban {
       }
       await this.remoteTransitionExecutor({
         originId,
+        feltHost: host,
         path: relativeFeltPath(fiber),
         kind: 'shuttle',
         ...transitionInvocationForTarget(fiber, { host, fiberId: fiber.id }, target),
@@ -1360,7 +1362,7 @@ export class HttpApiKanban {
       const refreshedById = new Map<string, Fiber>();
       if (this.remoteSnapshotsProvider) {
         for (const snap of this.remoteSnapshotsProvider()) {
-          if (snap.originId !== originId) continue;
+          if (snap.originId !== originId || normalizeRemotePath(snap.feltHost) !== normalizeRemotePath(host)) continue;
           for (const f of snap.fibers) refreshedById.set(f.id, f);
         }
       }
@@ -1452,6 +1454,7 @@ export class HttpApiKanban {
       }
       await this.remoteTransitionExecutor({
         originId,
+        feltHost: host,
         fiberId,
         path: relativeFeltPath(fiber),
         kind: 'felt-tags',
@@ -1461,7 +1464,7 @@ export class HttpApiKanban {
       const refreshedById = new Map<string, Fiber>();
       if (this.remoteSnapshotsProvider) {
         for (const snap of this.remoteSnapshotsProvider()) {
-          if (snap.originId !== originId) continue;
+          if (snap.originId !== originId || normalizeRemotePath(snap.feltHost) !== normalizeRemotePath(host)) continue;
           for (const f of snap.fibers) refreshedById.set(f.id, f);
         }
       }
@@ -1873,6 +1876,7 @@ export class HttpApiKanban {
           }
           await this.remoteTransitionExecutor({
             originId,
+            feltHost: host,
             host,
             fiberId: fiber.id,
             path: relativeFeltPath(fiber),

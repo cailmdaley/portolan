@@ -46,10 +46,10 @@ const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLA
 // The agent ships fiber-tree state to the server alongside activity events,
 // enabling remote-origin fibers to land in the kanban's global view.
 //
-// PORTOLAN_FELT_HOST: parent dir of `.felt/`; defaults to `~/loom`. v1
-// supports a single feltHost per agent — multi-feltHost-per-origin is a
-// follow-up (the server already knows pinned cities for each origin and
-// will eventually push that list back to the agent on connect).
+// PORTOLAN_FELT_HOST: parent dir of `.felt/`; defaults to `~/loom`. The
+// agent publishes this default root on connect, and also publishes each
+// active session cwd that has its own `.felt/` so remote city-scoped kanban
+// can use the project's live store instead of an origin-wide loom snapshot.
 //
 // Watch debounces with FELT_WATCH_DEBOUNCE_MS so bursts (sweeps, mass
 // renames, git pulls) batch into a single delta message. Per the
@@ -59,6 +59,10 @@ const FELT_DIR = join(FELT_HOST, '.felt');
 const FELT_WATCH_DEBOUNCE_MS = process.env.PORTOLAN_FELT_DEBOUNCE_MS
   ? parseInt(process.env.PORTOLAN_FELT_DEBOUNCE_MS, 10)
   : 250;
+const CITY_FELT_DUMP_INTERVAL_MS = process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_MS
+  ? parseInt(process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_MS, 10)
+  : 30_000;
+const cityFeltDumpLastSent = new Map();
 
 // ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
 //
@@ -395,6 +399,7 @@ async function pollSessions() {
             payload: { sessions },
         }));
         debug(`Sent ${sessions.length} sessions to server: ${sessions.map(s => s.tmuxSession).join(', ')}`);
+        await sendActiveCityFiberTreeDumps(sessions);
     }
 }
 
@@ -543,6 +548,10 @@ function processEvent(event) {
  * `.felt/`-relative paths (e.g. `cmbx/cmbx.md`, `ai-futures/portolan/portolan.md`).
  * Non-container markdown files are skipped via `shuttleIdFromPath`.
  */
+function normalizeHostPath(path) {
+    return resolve(path).replace(/\/+$/, '');
+}
+
 function collectFeltFiberPaths(dir) {
     const out = [];
     function walk(currentDir) {
@@ -566,11 +575,11 @@ function collectFeltFiberPaths(dir) {
     return out;
 }
 
-async function readFeltFiberJson(fiberId) {
+async function readFeltFiberJson(fiberId, feltHost = FELT_HOST) {
     try {
         const { stdout } = await execFileAsync(
             'felt',
-            ['-C', FELT_HOST, 'show', fiberId, '-j'],
+            ['-C', feltHost, 'show', fiberId, '-j'],
             { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 },
         );
         const parsed = JSON.parse(stdout);
@@ -580,14 +589,15 @@ async function readFeltFiberJson(fiberId) {
     }
 }
 
-async function collectFiberTreeFiles() {
-    const paths = collectFeltFiberPaths(FELT_DIR);
+async function collectFiberTreeFiles(feltHost = FELT_HOST) {
+    const feltDir = join(feltHost, '.felt');
+    const paths = collectFeltFiberPaths(feltDir);
     const indexed = new Map();
 
     try {
         const { stdout } = await execFileAsync(
             'felt',
-            ['-C', FELT_HOST, 'ls', '-s', 'all', '-j', '--body'],
+            ['-C', feltHost, 'ls', '-s', 'all', '-j', '--body'],
             { timeout: 20_000, maxBuffer: 32 * 1024 * 1024 },
         );
         const raw = JSON.parse(stdout.trim() || '[]');
@@ -606,11 +616,31 @@ async function collectFiberTreeFiles() {
     for (const path of paths) {
         const id = shuttleIdFromPath(path);
         if (!id) continue;
-        const fiber = indexed.get(id) ?? await readFeltFiberJson(id);
+        const fiber = indexed.get(id) ?? await readFeltFiberJson(id, feltHost);
         if (!fiber) continue;
         files.push({ path, fiber });
     }
     return files;
+}
+
+async function sendFiberTreeDumpForHost(feltHost) {
+    const normalizedHost = normalizeHostPath(feltHost);
+    const feltDir = join(normalizedHost, '.felt');
+    if (!existsSync(feltDir)) {
+        log(`Fiber-tree dump skipped: ${feltDir} does not exist`);
+        return false;
+    }
+    const t0 = Date.now();
+    const files = await collectFiberTreeFiles(normalizedHost);
+    if (connected && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'fiber_tree_dump',
+            payload: { feltHost: normalizedHost, files },
+        }));
+        log(`Sent fiber_tree_dump: ${files.length} fibers (walk ${Date.now() - t0}ms) from ${feltDir}`);
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -619,18 +649,28 @@ async function collectFiberTreeFiles() {
  * server replaces the snapshot wholesale, no reconciliation needed).
  */
 async function sendFiberTreeDump() {
-    if (!existsSync(FELT_DIR)) {
-        log(`Fiber-tree dump skipped: ${FELT_DIR} does not exist`);
-        return;
+    await sendFiberTreeDumpForHost(FELT_HOST);
+}
+
+async function sendActiveCityFiberTreeDumps(sessions) {
+    const hosts = new Set();
+    for (const session of sessions) {
+        if (!session?.cwd) continue;
+        const host = normalizeHostPath(session.cwd);
+        if (host === normalizeHostPath(FELT_HOST)) continue;
+        if (!existsSync(join(host, '.felt'))) continue;
+        hosts.add(host);
     }
-    const t0 = Date.now();
-    const files = await collectFiberTreeFiles();
-    if (connected && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'fiber_tree_dump',
-            payload: { feltHost: FELT_HOST, files },
-        }));
-        log(`Sent fiber_tree_dump: ${files.length} fibers (walk ${Date.now() - t0}ms) from ${FELT_DIR}`);
+    const now = Date.now();
+    await Promise.all([...hosts].map(async (host) => {
+        const lastSent = cityFeltDumpLastSent.get(host) || 0;
+        if (now - lastSent < CITY_FELT_DUMP_INTERVAL_MS) return;
+        if (await sendFiberTreeDumpForHost(host)) {
+            cityFeltDumpLastSent.set(host, now);
+        }
+    }));
+    for (const host of [...cityFeltDumpLastSent.keys()]) {
+        if (!hosts.has(host)) cityFeltDumpLastSent.delete(host);
     }
 }
 
@@ -709,7 +749,7 @@ async function flushFiberTreeDeltas() {
     if (connected && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'fiber_tree_delta',
-            payload: { deltas },
+            payload: { feltHost: normalizeHostPath(FELT_HOST), deltas },
         }));
         debug(`Sent fiber_tree_delta: ${deltas.length} ops`);
     }
@@ -761,10 +801,10 @@ function diffTags(current, next) {
     };
 }
 
-async function runKanbanMutation(payload, fullPath) {
+async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
     const env = {
         ...process.env,
-        LOOM_HOME: FELT_HOST,
+        LOOM_HOME: feltHost,
         HOME: process.env.HOME ?? homedir(),
     };
 
@@ -793,7 +833,7 @@ async function runKanbanMutation(payload, fullPath) {
                 throw new Error(`unknown shuttle verb: ${payload.verb}`);
         }
         await execFileAsync('shuttle-ctl', args, {
-            cwd: FELT_HOST,
+            cwd: feltHost,
             env,
             timeout: 10_000,
             maxBuffer: 1024 * 1024,
@@ -808,7 +848,7 @@ async function runKanbanMutation(payload, fullPath) {
         if (!Array.isArray(payload.tags)) {
             throw new Error('missing tags payload');
         }
-        const fiberJson = await readFeltFiberJson(payload.fiberId);
+        const fiberJson = await readFeltFiberJson(payload.fiberId, feltHost);
         const current = normalizeTagList(
             Array.isArray(fiberJson?.tags) ? fiberJson.tags.filter((t) => typeof t === 'string') : [],
         );
@@ -816,11 +856,11 @@ async function runKanbanMutation(payload, fullPath) {
         const { add, remove } = diffTags(current, next);
         if (add.length === 0 && remove.length === 0) return;
 
-        const args = ['-C', FELT_HOST, 'edit', payload.fiberId];
+        const args = ['-C', feltHost, 'edit', payload.fiberId];
         for (const tag of remove) args.push('--untag', tag);
         for (const tag of add) args.push('--tag', tag);
         await execFileAsync('felt', args, {
-            cwd: FELT_HOST,
+            cwd: feltHost,
             env,
             timeout: 10_000,
             maxBuffer: 1024 * 1024,
@@ -856,16 +896,20 @@ async function handleKanbanTransition(message) {
         if (typeof relPath !== 'string' || relPath.includes('..') || relPath.startsWith('/')) {
             throw new Error(`invalid path: ${relPath}`);
         }
-        const fullPath = join(FELT_DIR, relPath);
+        const feltHost = typeof payload.feltHost === 'string'
+            ? normalizeHostPath(payload.feltHost)
+            : normalizeHostPath(FELT_HOST);
+        const feltDir = join(feltHost, '.felt');
+        const fullPath = join(feltDir, relPath);
         if (!existsSync(fullPath)) {
             throw new Error(`fiber file missing: ${relPath}`);
         }
-        await runKanbanMutation(payload, fullPath);
+        await runKanbanMutation(payload, fullPath, feltHost);
         const fiberId = shuttleIdFromPath(relPath);
         if (!fiberId) {
             throw new Error(`path is not a fiber: ${relPath}`);
         }
-        const updated = await readFeltFiberJson(fiberId);
+        const updated = await readFeltFiberJson(fiberId, feltHost);
         if (!updated) {
             throw new Error(`felt show failed after mutation: ${fiberId}`);
         }
