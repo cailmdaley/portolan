@@ -344,7 +344,46 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['canary']);
-    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['canary-scheduled']);
+    // Standing roles in scheduled state are dormant (waiting for next cron),
+    // so they land in drafts (sorted to the bottom) rather than crowding
+    // inFlight with cards that aren't actively running. inFlight stays empty
+    // here because there are no active oneshots.
+    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual([]);
+    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['canary-scheduled']);
+  });
+
+  it('sorts drafts with active drafts on top, dormant standing roles on bottom', async () => {
+    // Drafts hold two distinct kinds: paused/work-in-progress fibers (the
+    // ones a user is reviewing or about to dispatch) and dormant standing
+    // roles (waiting for cron). The standing roles get pushed below by the
+    // drafts comparator so they don't crowd the user's active drafts.
+    writeFib('paused-old', {
+      name: 'Paused (old)',
+      status: 'active',
+      shuttle: SHUTTLE_DRAFT,
+      'created-at': '2026-04-01',
+    });
+    writeFib('paused-new', {
+      name: 'Paused (new)',
+      status: 'active',
+      shuttle: SHUTTLE_DRAFT,
+      'created-at': '2026-04-03',
+    });
+    writeFib('standing-dormant', {
+      name: 'Standing (dormant, recently created)',
+      status: 'active',
+      shuttle: SHUTTLE_STANDING_SCHEDULED,
+      'created-at': '2026-04-05', // newest, but dormant — should still be below paused
+    });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+    const res = await callKanban(api);
+
+    expect(res.status).toBe(200);
+    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual([
+      'paused-new',
+      'paused-old',
+      'standing-dormant',
+    ]);
   });
 
   it('keeps a paused (enabled=false) closed fiber in awaiting/tempered, not drafts', async () => {
@@ -1586,7 +1625,13 @@ describe('classifyFiber', () => {
       ).toBe('awaitingReview');
     });
 
-    it('review.state=`scheduled` → inFlight (between runs)', () => {
+    it('review.state=`scheduled` → drafts (between runs, sorted to bottom)', () => {
+      // Standing roles between runs are dispatch-eligible but dormant —
+      // waiting for the next cron tick. They share the drafts column with
+      // paused fibers (sorted to the bottom by the drafts comparator) so
+      // the inFlight column stays focused on what's running or immediately
+      // due. View-only — the daemon's eligibility check reads shuttle:
+      // directly and is unaffected by column membership.
       expect(
         classifyFiber(
           fib({
@@ -1596,7 +1641,23 @@ describe('classifyFiber', () => {
             shuttleEnabled: true,
           }),
         ),
-      ).toBe('inFlight');
+      ).toBe('drafts');
+    });
+
+    it('review.state=`accepted` → drafts (just accepted, awaiting next cron)', () => {
+      // Same as scheduled: post-accept, the role is dormant until the next
+      // cron occurrence. accepted is a transient state that the daemon
+      // collapses to scheduled on next dispatch.
+      expect(
+        classifyFiber(
+          fib({
+            status: 'active',
+            shuttleKind: 'standing',
+            shuttleReviewState: 'accepted',
+            shuttleEnabled: true,
+          }),
+        ),
+      ).toBe('drafts');
     });
 
     it('paused standing role → drafts', () => {

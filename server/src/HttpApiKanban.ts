@@ -418,6 +418,18 @@ export function classifyFiber(f: Fiber): KanbanColumn {
   if (f.status !== 'closed') {
     if (f.tags?.includes('idea')) return 'ideas';
     if (f.shuttleEnabled === false) return 'drafts';
+    // Standing roles in scheduled/accepted state are dispatch-eligible but
+    // dormant — they're waiting for the next cron occurrence, not actively
+    // being worked on. Route them to drafts (sorted to the bottom by the
+    // drafts comparator below) so inFlight stays focused on what's running
+    // or immediately due. The daemon's eligibility check reads the shuttle:
+    // block directly; column membership is a view-only signal.
+    if (
+      f.shuttleKind === 'standing' &&
+      (f.shuttleReviewState === 'scheduled' || f.shuttleReviewState === 'accepted')
+    ) {
+      return 'drafts';
+    }
     return 'inFlight';
   }
   if (f.tempered === true) return 'tempered';
@@ -802,7 +814,16 @@ export class HttpApiKanban {
       //   tempered        : most-recently-closed first
       //   composted       : most-recently-closed first (the discarded, in reverse chrono)
       ideas.sort(byCreatedAtDesc);
-      drafts.sort(byCreatedAtDesc);
+      // Drafts: paused/work-in-progress at top, dormant standing roles at
+      // bottom. Standing roles in scheduled/accepted state share this column
+      // because they're waiting for cron, not being actively worked on — but
+      // they shouldn't crowd out the actual drafts the user is reviewing.
+      drafts.sort((a, b) => {
+        const aDormantStanding = a.shuttleKind === 'standing' ? 1 : 0;
+        const bDormantStanding = b.shuttleKind === 'standing' ? 1 : 0;
+        if (aDormantStanding !== bDormantStanding) return aDormantStanding - bDormantStanding;
+        return byCreatedAtDesc(a, b);
+      });
       inFlight.sort((a, b) => {
         const aActive = a.runningWorker || a.status === 'active' ? 0 : 1;
         const bActive = b.runningWorker || b.status === 'active' ? 0 : 1;
