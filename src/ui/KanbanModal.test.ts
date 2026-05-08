@@ -96,6 +96,30 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+function emptyKanbanResponse() {
+  return {
+    feltHost: '/tmp/felt',
+    columns: {
+      ideas: [],
+      drafts: [],
+      inFlight: [],
+      awaitingReview: [],
+      tempered: [],
+      composted: [],
+    },
+    totals: {
+      ideas: 0,
+      drafts: 0,
+      inFlight: 0,
+      awaitingReview: 0,
+      tempered: 0,
+      composted: 0,
+    },
+    temperedTotal: 0,
+    staleness: { local: { status: 'fresh' } },
+  }
+}
+
 /** Wait one microtask tick for async handlers to settle. */
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
@@ -157,6 +181,50 @@ afterEach(() => {
   // Remove any overlays the modal appended.
   document.querySelectorAll('.kbn-detail-overlay').forEach((el) => el.remove())
   vi.restoreAllMocks()
+})
+
+// ── Chrome ──────────────────────────────────────────────────────────────────
+
+describe('KanbanModal chrome', () => {
+  it('does not render the old constitution-tagged subtitle in global scope', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(emptyKanbanResponse()),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    expect(host.querySelector('.kbn-subtitle')?.textContent).toBe('')
+    expect(host.textContent).not.toContain('constitution-tagged fibers')
+    modal.unmount()
+    host.remove()
+  })
+
+  it('uses the subtitle only as a city scope cue', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(emptyKanbanResponse()),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host, { cityScope: { cityId: 'city-lightcone', cityName: 'Lightcone' } })
+    await tick()
+
+    expect(host.querySelector('.kbn-subtitle')?.textContent).toBe('Lightcone')
+    expect(host.textContent).not.toContain('constitution-tagged fibers')
+    modal.unmount()
+    host.remove()
+  })
 })
 
 // ── Grid card previews ──────────────────────────────────────────────────────

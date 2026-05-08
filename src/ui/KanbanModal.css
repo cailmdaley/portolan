@@ -50,6 +50,9 @@
   font-size: 14px;
   color: #7A7068;
 }
+.kbn-subtitle:empty {
+  display: none;
+}
 .kbn-status {
   flex: 1;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);

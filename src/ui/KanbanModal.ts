@@ -1,5 +1,5 @@
 /**
- * KanbanModal — global view of constitution-tagged fibers grouped by lifecycle.
+ * KanbanModal — global view of Shuttle-managed fibers grouped by lifecycle.
  *
  * Six flat columns: Ideas → Drafts → In flight → Awaiting → Tempered → Composted.
  * Each column scrolls vertically; the body scrolls horizontally when six columns
@@ -309,7 +309,7 @@ export class KanbanModal {
     this.container.className = 'kbn-modal'
     this.container.setAttribute('role', 'dialog')
     this.container.setAttribute('aria-modal', 'true')
-    this.container.setAttribute('aria-label', 'Kanban — constitution fibers')
+    this.container.setAttribute('aria-label', 'Kanban')
 
     const header = document.createElement('div')
     header.className = 'kbn-header'
@@ -1107,10 +1107,9 @@ export class KanbanModal {
     return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
   }
 
-  /** Subtitle copy: scope-aware so the user can read what they're looking at. */
+  /** Scope cue only; global kanban does not need an implementation subtitle. */
   private subtitleText(): string {
-    if (!this.cityScope) return 'constitution-tagged fibers'
-    return `constitution-tagged fibers · ${this.cityScope.cityName}`
+    return this.cityScope?.cityName ?? ''
   }
 
   /** Bug 3: lightweight auto-poll while mounted. 15s interval. */
