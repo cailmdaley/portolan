@@ -1749,18 +1749,18 @@ export class FiberDetailModal {
       e.stopPropagation()
       const message = messageTa.value.trim()
       const interactive = interactiveState.value
-      const needsAcceptFirst =
+      const needsResumeTransition =
         card.shuttleKind === 'standing' && card.shuttleReviewState === 'awaiting'
-      if (message === '' && !needsAcceptFirst && !interactive) {
+      if (message === '' && !needsResumeTransition && !interactive) {
         // Empty message + autonomous + already dispatch-eligible -> immediate
         // dispatch, no review-comment needed.
         void this.runDispatchNow(card, requeueBtn, actionsErr, interactive)
       } else {
         // Non-empty message, interactive mode (we want it persisted on the
         // review-comment so the worker reads it), or standing role in
-        // awaiting state (needs shuttle-ctl accept transition before ad-hoc
-        // dispatch) -> runRequeue, which handles the review-comment +
-        // optional transition + dispatch.
+        // awaiting state (needs shuttle-ctl resume to transition state
+        // while preserving outcome) -> runRequeue, which handles the
+        // review-comment + optional state transition + dispatch.
         void this.runRequeue(card, message, 'fresh', scope, requeueBtn, actionsErr, interactive)
       }
     })
