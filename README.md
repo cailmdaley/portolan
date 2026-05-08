@@ -8,6 +8,10 @@ Spatial map for development sessions. Cities are projects, workers are Claude in
 ./dev.sh          # Frontend (Vite :5173) + backend (Node :4004)
 ```
 
+```bash
+./scripts/install-session-start-hooks.sh # Register the city-list SessionStart hook for Claude and Codex
+```
+
 Requires [Kitty](https://sw.kovidgoyal.net/kitty/) with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
 
 ## Architecture
