@@ -113,12 +113,11 @@ kind: task
     expect(res.data.frontmatter.name).toBe('Empty');
   });
 
-  it('handles fibers with no frontmatter by treating whole file as body', async () => {
+  it('returns 404 for markdown files without felt frontmatter', async () => {
     writeFiber(FELT_DIR, 'plain', 'just a paragraph of prose.\n');
     const res = await httpRequest(api, 'GET', '/fiber/plain?cityId=test');
-    expect(res.status).toBe(200);
-    expect(res.data.frontmatter).toEqual({});
-    expect(res.data.mdast).toBeTruthy();
+    expect(res.status).toBe(404);
+    expect(res.data.error).toContain('not found');
   });
 });
 
