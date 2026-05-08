@@ -108,8 +108,18 @@ Install/update them with `./scripts/install-tunnels.sh`; logs land in
 `~/.local/state/portolan/tunnel-<host>.log`.
 
 **Quick fix:** `./scripts/reset-tunnel.sh <host>` — `launchctl kickstart -k` for the tunnel, then restarts agent.
-Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot `ssh -N -f -R 4004:localhost:4004`.
-Port still held? `ssh remote-host "fuser -k 4004/tcp"`. See fiber `gotcha-ssh-remoteforward-port`.
+Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot reverse tunnel.
+Port still held? `ssh <host> "fuser -k 4004/tcp"`. See fibers `gotcha-ssh-remoteforward-port`
+and `gotchas/gotcha-candide-reverse-tunnel-backoff`.
+
+Candide-specific model: SSH is ping-gated and seems to impose a short backoff after failed opens.
+Do not hammer it. First check whether candide can see the local backend:
+`ssh candide "curl -sS --max-time 4 http://localhost:4004/debug-runtime"`.
+If that hangs or refuses, debug the reverse tunnel before blaming tmux or the agent.
+`ss -ltnp | grep :4004` on candide shows whether a stale remote listener is blocking autossh.
+If Portolan is healthy locally but candide cannot reach `localhost:4004`, clear the remote listener,
+wait out the backoff, then start a command-mode tunnel (`ssh -R 4004:localhost:4004 candide 'sleep 3600'`);
+bare `ssh -N -R ...` is brittle on candide.
 
 ## Activity Pipeline
 
