@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { HttpApi } from '../HttpApi.js';
@@ -118,6 +118,46 @@ kind: task
     const res = await httpRequest(api, 'GET', '/fiber/plain?cityId=test');
     expect(res.status).toBe(404);
     expect(res.data.error).toContain('not found');
+  });
+
+  it('returns the raw fiber markdown for the inline editor', async () => {
+    const raw = `---
+name: Editable
+status: open
+---
+
+Body with $C_\\ell$.
+`;
+    writeFiber(FELT_DIR, 'editable', raw);
+
+    const res = await httpRequest(api, 'GET', '/fiber-raw/editable?cityId=test');
+
+    expect(res.status).toBe(200);
+    expect(res.data.slug).toBe('editable');
+    expect(res.data.body).toBe(raw);
+    expect(res.data.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('replaces raw fiber markdown for the inline editor', async () => {
+    writeFiber(FELT_DIR, 'editable', '---\nname: Editable\nstatus: open\n---\n\nOld body\n');
+    const next = `---
+name: Editable
+status: open
+---
+
+Updated body
+`;
+
+    const res = await httpRequest(api, 'PUT', '/fiber-raw/editable?cityId=test', { body: next });
+
+    expect(res.status).toBe(200);
+    expect(res.data.ok).toBe(true);
+    expect(readFileSync(join(FELT_DIR, 'editable', 'editable.md'), 'utf8')).toBe(next);
+  });
+
+  it('rejects path-traversing raw fiber slugs', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber-raw/..%2Fescape?cityId=test');
+    expect(res.status).toBe(400);
   });
 });
 

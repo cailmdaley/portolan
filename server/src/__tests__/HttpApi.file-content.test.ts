@@ -164,6 +164,8 @@ $$
     expect(serialized).toContain('"type":"inlineMath"');
     expect(serialized).toContain('"type":"math"');
     expect(serialized).toContain('katex');
+    expect(serialized).toContain('katex-mathml');
+    expect(serialized).toContain('katex-html');
   });
 
   it('streams project files with content types inferred from extension', async () => {

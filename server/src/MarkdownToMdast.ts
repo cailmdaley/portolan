@@ -57,7 +57,7 @@ function attachKatexHtml(node: any): void {
     node.html = katex.renderToString(node.value, {
       displayMode: node.type === 'math',
       throwOnError: false,
-      output: 'html',
+      output: 'htmlAndMathml',
     });
   }
   if (Array.isArray(node.children)) {

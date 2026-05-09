@@ -10,8 +10,9 @@
  *   - getAstraGraph hits /astra/graph?cityId=X
  *   - searchFibers wraps /api/search?cityId=…&q=… (server-side substring
  *     match across name/slug/tags/outcome/body, scored)
- *   - getDeltaSince, getRawFiber return empty/null until the server grows
- *     matching endpoints.
+ *   - getRawFiber / putRawFiber wrap /fiber-raw for Vellum's inline fiber
+ *     markdown editor.
+ *   - getDeltaSince returns empty until the server grows a matching endpoint.
  *
  * The adapter deliberately returns well-typed empty sentinels where portolan
  * can't yet serve something so vellum components don't need to distinguish
@@ -222,6 +223,17 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
   const defaultOriginId = opts.defaultOriginId ?? 'local';
   const collectionId = opts.collectionId;
 
+  async function resolveFiberCityId(slug: string): Promise<string | null> {
+    if (collectionId) return collectionId;
+    if (slug.startsWith('__city__:')) return null;
+    const locateRes = await fetch(
+      `${API_BASE}/fiber-locate?slug=${encodeURIComponent(slug)}`,
+    ).catch(() => null);
+    if (!locateRes || !locateRes.ok) return null;
+    const locate = await locateRes.json() as { cityId?: string };
+    return locate.cityId ?? null;
+  }
+
   return {
     async getFile(path: string, options: GetFileOptions = {}): Promise<FileContent | null> {
       const originId = options.originId ?? defaultOriginId;
@@ -339,8 +351,14 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       return res.json() as Promise<AstraGraph>;
     },
 
-    async getRawFiber(_slug: string): Promise<RawFiber | null> {
-      return null;
+    async getRawFiber(slug: string): Promise<RawFiber | null> {
+      const cityId = await resolveFiberCityId(slug);
+      if (!cityId) return null;
+      const res = await fetch(
+        `${API_BASE}/fiber-raw/${encodeSlug(slug)}?cityId=${encodeURIComponent(cityId)}`,
+      ).catch(() => null);
+      if (!res || !res.ok) return null;
+      return res.json() as Promise<RawFiber>;
     },
 
     async getAnnotations(slug: string, annOpts: GetAnnotationsOptions = {}): Promise<Annotation[]> {
@@ -390,18 +408,8 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       // portolan endpoint returns { events, status, reason? } — we pass
       // status through so the HistoryCard can distinguish "no events"
       // from "felt index busy" instead of conflating them.
-      let resolvedCityId = collectionId;
-      if (!resolvedCityId) {
-        const locateRes = await fetch(
-          `${API_BASE}/fiber-locate?slug=${encodeURIComponent(slug)}`,
-        ).catch(() => null);
-        if (!locateRes || !locateRes.ok) {
-          return { events: [], status: 'unavailable', reason: 'error' };
-        }
-        const locate = await locateRes.json() as { cityId?: string };
-        resolvedCityId = locate.cityId;
-        if (!resolvedCityId) return { events: [], status: 'ok' };
-      }
+      const resolvedCityId = await resolveFiberCityId(slug);
+      if (!resolvedCityId) return { events: [], status: collectionId ? 'ok' : 'unavailable', reason: 'error' };
       const url = `${API_BASE}/fiber-history/${encodeSlug(slug)}?cityId=${encodeURIComponent(resolvedCityId)}`;
       const res = await fetch(url).catch(() => null);
       if (!res || !res.ok) {
@@ -531,8 +539,23 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       throw new Error('patchFiberFrontmatter: portolan server endpoint not implemented');
     },
 
-    async putRawFiber(_slug: string, _body: string): Promise<void> {
-      throw new Error('putRawFiber: portolan server endpoint not implemented');
+    async putRawFiber(slug: string, body: string): Promise<void> {
+      const cityId = await resolveFiberCityId(slug);
+      if (!cityId) {
+        throw new Error(`putRawFiber: could not resolve city for ${slug}`);
+      }
+      const res = await fetch(
+        `${API_BASE}/fiber-raw/${encodeSlug(slug)}?cityId=${encodeURIComponent(cityId)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        },
+      ).catch(() => null);
+      if (!res || !res.ok) {
+        const err = await res?.json().catch(() => ({} as { error?: string })) ?? {};
+        throw new Error((err as { error?: string }).error ?? `save failed${res ? ` (${res.status})` : ''}`);
+      }
     },
 
     async saveFile(path: string, content: string, saveOpts: SaveFileOptions = {}): Promise<void> {
@@ -586,4 +609,3 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
 }
 
 export type { ReadOnlyAdapterError };
-

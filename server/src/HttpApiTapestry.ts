@@ -1,8 +1,9 @@
 import { execFile } from 'child_process';
-import type { ServerResponse } from 'http';
+import { createHash } from 'crypto';
+import type { IncomingMessage, ServerResponse } from 'http';
 import { existsSync } from 'fs';
-import { readFile } from 'fs/promises';
-import { join } from 'path';
+import { readFile, rename, writeFile } from 'fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
@@ -533,6 +534,71 @@ export class HttpApiTapestry {
     } catch (error: any) {
       console.error('Failed to render fiber content:', error);
       this.sendJsonError(res, 500, 'Failed to render fiber content: ' + error.message);
+    }
+  }
+
+  /**
+   * GET /fiber-raw/:slug?cityId=X — full markdown bytes for Vellum's inline
+   * editor. Unlike /fiber/:slug this returns frontmatter + body so the editor
+   * can round-trip the file without reparsing YAML.
+   */
+  async handleRawFiber(url: URL, slug: string, res: ServerResponse): Promise<void> {
+    const target = await this.resolveLocalRawFiber(url, slug, res);
+    if (!target) return;
+
+    try {
+      const body = await readFile(target.filePath, 'utf8');
+      this.sendJsonSuccess(res, {
+        slug,
+        body,
+        sha256: sha256(body),
+      });
+    } catch (error: any) {
+      console.error('Failed to read raw fiber:', error);
+      this.sendJsonError(res, 500, 'Failed to read raw fiber: ' + error.message);
+    }
+  }
+
+  /**
+   * PUT /fiber-raw/:slug?cityId=X — replace an existing local fiber file.
+   * This is edit-only: the slug must already resolve as a felt fiber.
+   */
+  async handlePutRawFiber(
+    req: IncomingMessage,
+    url: URL,
+    slug: string,
+    res: ServerResponse,
+  ): Promise<void> {
+    const target = await this.resolveLocalRawFiber(url, slug, res);
+    if (!target) return;
+
+    let data: { body?: unknown };
+    try {
+      data = await readJsonBody<{ body?: unknown }>(req);
+    } catch {
+      this.sendJsonError(res, 400, 'Invalid JSON body');
+      return;
+    }
+    if (typeof data.body !== 'string') {
+      this.sendJsonError(res, 400, 'body (string) is required');
+      return;
+    }
+    if (data.body.length > 2_000_000) {
+      this.sendJsonError(res, 413, 'fiber body exceeds 2 MB');
+      return;
+    }
+
+    try {
+      await writeAtomic(target.filePath, data.body);
+      this.invalidateFiberListCache(target.city.path);
+      this.sendJsonSuccess(res, {
+        ok: true,
+        slug,
+        sha256: sha256(data.body),
+      });
+    } catch (error: any) {
+      console.error('Failed to write raw fiber:', error);
+      this.sendJsonError(res, 500, 'Failed to write raw fiber: ' + error.message);
     }
   }
 
@@ -1262,6 +1328,84 @@ export class HttpApiTapestry {
       res.end('Failed to read asset');
     }
   }
+
+  private async resolveLocalRawFiber(
+    url: URL,
+    slug: string,
+    res: ServerResponse,
+  ): Promise<{ city: City; filePath: string } | null> {
+    const cityId = url.searchParams.get('cityId');
+    if (!cityId) {
+      this.sendJsonError(res, 400, 'Missing cityId parameter');
+      return null;
+    }
+    if (!isSafeFiberSlug(slug)) {
+      this.sendJsonError(res, 400, 'Invalid fiber slug');
+      return null;
+    }
+
+    const city = this.cityLookup.getCityById(cityId);
+    if (!city) {
+      this.sendJsonError(res, 404, 'City not found');
+      return null;
+    }
+    if (city.originId !== 'local') {
+      this.sendJsonError(res, 501, 'Raw fiber editing is currently local-only');
+      return null;
+    }
+
+    const fiber = await this.readLocalFiberJson(city.path, slug);
+    if (!fiber) {
+      this.sendJsonError(res, 404, `Fiber "${slug}" not found in city`);
+      return null;
+    }
+
+    const filePath = resolveFiberMarkdownPath(city.path, slug);
+    if (!filePath) {
+      this.sendJsonError(res, 404, `Fiber "${slug}" file not found in city`);
+      return null;
+    }
+    return { city, filePath };
+  }
+}
+
+function isSafeFiberSlug(slug: string): boolean {
+  if (!slug || isAbsolute(slug)) return false;
+  return slug.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..');
+}
+
+function resolveFiberMarkdownPath(cityPath: string, slug: string): string | null {
+  const feltRoot = resolve(cityPath, '.felt');
+  const parts = slug.split('/');
+  const leaf = parts[parts.length - 1] ?? '';
+  const candidates = [
+    resolve(feltRoot, slug, `${leaf}.md`),
+    resolve(feltRoot, `${slug}.md`),
+  ];
+  return candidates.find((candidate) => isPathInside(feltRoot, candidate) && existsSync(candidate)) ?? null;
+}
+
+function isPathInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+async function writeAtomic(target: string, content: string): Promise<void> {
+  const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  await writeFile(tmp, content, 'utf8');
+  await rename(tmp, target);
+}
+
+function sha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+  }
+  return JSON.parse(body) as T;
 }
 
 /**
