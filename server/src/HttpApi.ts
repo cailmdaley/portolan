@@ -35,7 +35,11 @@ import { HttpApiFilesSearch } from './HttpApiFilesSearch.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
-import { HttpApiTapestry } from './HttpApiTapestry.js';
+import {
+  HttpApiTapestry,
+  type RemoteRawFiberInvocation,
+  type RemoteRawFiberResult,
+} from './HttpApiTapestry.js';
 import type { MeetingBridge } from './MeetingBridge.js';
 
 // ============================================================================
@@ -93,6 +97,7 @@ interface CachedApi<T> {
 export interface HttpApiOptions {
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   remoteTransitionExecutor?: (args: RemoteKanbanMutationRequest) => Promise<void>;
+  remoteRawFiberExecutor?: (request: RemoteRawFiberInvocation) => Promise<RemoteRawFiberResult>;
   /**
    * Override felt root for the `/static/.felt/<rest>` asset route. Defaults
    * to `<projectRoot>/.felt`; tests inject an isolated tmpdir.
@@ -137,6 +142,7 @@ export class HttpApi {
   private tapestryApi: HttpApiTapestry;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
+  private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
   private feltEditFn: HttpApiOptions['feltEditFn'];
   private globalKanbanApiCache: CachedApi<HttpApiKanban> | null = null;
@@ -155,6 +161,7 @@ export class HttpApi {
     this.persistenceLookup = persistenceLookup;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
+    this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
     this.feltEditFn = options.feltEditFn;
     this.annotationsApi = new HttpApiAnnotations({
@@ -209,6 +216,8 @@ export class HttpApi {
       cityLookup,
       fileContentApi: this.fileContentApi,
       getSshHost: (city) => this.getSshHost(city),
+      remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+      remoteRawFiberExecutor: this.remoteRawFiberExecutor,
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });

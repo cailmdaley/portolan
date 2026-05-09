@@ -116,6 +116,20 @@ describe('agent: shuttleIdFromPath', () => {
   });
 });
 
+describe('agent: isSafeRemoteFiberPath', () => {
+  it('accepts relative container-fiber paths', () => {
+    expect(agentMod.isSafeRemoteFiberPath('cmbx/cmbx.md')).toBe(true);
+    expect(agentMod.isSafeRemoteFiberPath('ai-futures/portolan/portolan.md')).toBe(true);
+  });
+
+  it('rejects absolute, empty, and traversing paths', () => {
+    expect(agentMod.isSafeRemoteFiberPath('')).toBe(false);
+    expect(agentMod.isSafeRemoteFiberPath('/tmp/cmbx.md')).toBe(false);
+    expect(agentMod.isSafeRemoteFiberPath('../cmbx.md')).toBe(false);
+    expect(agentMod.isSafeRemoteFiberPath('cmbx/../cmbx.md')).toBe(false);
+  });
+});
+
 describe('agent: computeShuttleEligibility', () => {
   const fiber = (overrides: Record<string, unknown>) => ({
     id: 'foo',

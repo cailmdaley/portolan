@@ -22,10 +22,11 @@
 
 import WebSocket from 'ws';
 import { exec, execFile, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync, watch } from 'fs';
-import { resolve, join, relative, sep } from 'path';
+import { existsSync, readFileSync, readdirSync, renameSync, watch, writeFileSync } from 'fs';
+import { basename, dirname, isAbsolute, resolve, join, relative, sep } from 'path';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -923,6 +924,103 @@ async function handleKanbanTransition(message) {
     }
 }
 
+function sha256(content) {
+    return createHash('sha256').update(content).digest('hex');
+}
+
+function isPathInside(root, target) {
+    const rel = relative(root, target);
+    return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+export function isSafeRemoteFiberPath(relPath) {
+    if (typeof relPath !== 'string' || relPath.length === 0) return false;
+    if (isAbsolute(relPath)) return false;
+    return relPath.split('/').every(part => part.length > 0 && part !== '.' && part !== '..');
+}
+
+function resolveRemoteFiberFile(feltHost, relPath) {
+    if (!isSafeRemoteFiberPath(relPath)) {
+        throw new Error(`invalid path: ${relPath}`);
+    }
+    if (!shuttleIdFromPath(relPath)) {
+        throw new Error(`path is not a fiber: ${relPath}`);
+    }
+    const feltDir = join(feltHost, '.felt');
+    const fullPath = resolve(feltDir, relPath);
+    if (!isPathInside(feltDir, fullPath)) {
+        throw new Error(`path escapes .felt: ${relPath}`);
+    }
+    return fullPath;
+}
+
+function writeAtomicSync(target, content) {
+    const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${Date.now()}.tmp`);
+    writeFileSync(tmp, content, 'utf8');
+    renameSync(tmp, target);
+}
+
+/**
+ * Handle a raw fiber read/write request from the server. This is the remote
+ * counterpart to Portolan's local /fiber-raw endpoint: the server resolves
+ * the fiber against the pushed snapshot, then the agent reads or atomically
+ * replaces the actual markdown file on the machine that owns it.
+ */
+async function handleFiberRaw(message) {
+    const payload = message.payload || {};
+    const { correlationId, operation, path: relPath } = payload;
+    if (!correlationId) {
+        debug('fiber-raw without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'fiber-raw-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+    try {
+        const feltHost = typeof payload.feltHost === 'string'
+            ? normalizeHostPath(payload.feltHost)
+            : normalizeHostPath(FELT_HOST);
+        const fullPath = resolveRemoteFiberFile(feltHost, relPath);
+        if (!existsSync(fullPath)) {
+            throw new Error(`fiber file missing: ${relPath}`);
+        }
+
+        if (operation === 'read') {
+            const body = readFileSync(fullPath, 'utf8');
+            reply({ ok: true, body, sha256: sha256(body) });
+            return;
+        }
+
+        if (operation === 'write') {
+            if (typeof payload.body !== 'string') {
+                throw new Error('missing body');
+            }
+            if (payload.body.length > 2_000_000) {
+                throw new Error('fiber body exceeds 2 MB');
+            }
+            writeAtomicSync(fullPath, payload.body);
+            const fiberId = shuttleIdFromPath(relPath);
+            const updated = await readFeltFiberJson(fiberId, feltHost);
+            if (!updated) {
+                throw new Error(`felt show failed after raw write: ${fiberId}`);
+            }
+            reply({ ok: true, sha256: sha256(payload.body), fiber: updated });
+            debug(`fiber-raw write ok: ${relPath}`);
+            return;
+        }
+
+        throw new Error(`unknown fiber-raw operation: ${operation}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`fiber-raw failed (${relPath}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
 // ============================================================================
 // Shuttle on the agent (constitution-shuttle-remote-dispatch)
 // ============================================================================
@@ -1351,6 +1449,10 @@ function handleMessage(message) {
 
         case 'kanban-transition':
             handleKanbanTransition(message);
+            break;
+
+        case 'fiber-raw':
+            handleFiberRaw(message);
             break;
 
         default:

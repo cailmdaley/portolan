@@ -128,6 +128,15 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
             ], feltHost);
         }
     },
+    remoteRawFiberExecutor: async ({ originId, feltHost, ...payload }) => {
+        const result = await agentRequestCoordinator.send(originId, 'fiber-raw', { ...payload, feltHost }, 10_000);
+        if (payload.operation === 'write' && result.fiber !== undefined) {
+            fiberTreeSnapshotStore.applyDelta(originId, [
+                { path: payload.path, op: 'upsert', fiber: result.fiber },
+            ], feltHost);
+        }
+        return { body: result.body, sha256: result.sha256 };
+    },
 });
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
@@ -405,6 +414,17 @@ wss.on('connection', async (ws, req) => {
                     // and HttpApiKanban builds the refreshed card.
                     const { correlationId, ok, error, fiber } = message.payload;
                     agentRequestCoordinator.handleResult(correlationId, !!ok, fiber !== undefined ? { fiber } : {}, error);
+                }
+                else if (message.type === 'fiber-raw-result') {
+                    const { correlationId, ok, error, body, sha256, fiber } = message.payload;
+                    const result = {};
+                    if (body !== undefined)
+                        result.body = body;
+                    if (sha256 !== undefined)
+                        result.sha256 = sha256;
+                    if (fiber !== undefined)
+                        result.fiber = fiber;
+                    agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
                 }
             }
             catch (error) {

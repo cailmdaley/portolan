@@ -13,10 +13,12 @@ import { HttpApi } from '../HttpApi.js';
 import {
   httpRequest,
   makeCityLookup,
+  makeMultiCityLookup,
   writeFiber,
   stubOriginLookup,
   stubPersistenceLookup,
 } from './test-utils.js';
+import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 
 const TEST_DIR = join(homedir(), '.portolan-test-httpapi-fiber');
 
@@ -200,5 +202,96 @@ describe('HttpApi — /fiber-locate endpoint', () => {
     expect(res.data.cityName).toBe('TestCity');
     expect(res.data.cityPath).toBe(CITY_DIR);
     expect(res.data.originId).toBe('local');
+  });
+});
+
+describe('HttpApi — /fiber-raw remote endpoint', () => {
+  const REMOTE_CITY_DIR = '/remote/portolan';
+  let remoteStore: FiberTreeSnapshotStore;
+  let calls: Array<Record<string, unknown>>;
+  let api: HttpApi;
+
+  beforeEach(() => {
+    remoteStore = new FiberTreeSnapshotStore();
+    remoteStore.upsertFullDump('remote-cineca', REMOTE_CITY_DIR, [
+      {
+        path: 'editable/editable.md',
+        fiber: {
+          id: 'editable',
+          name: 'Editable',
+          status: 'active',
+          created_at: '2026-05-09T00:00:00Z',
+        },
+      },
+    ]);
+    calls = [];
+    api = new HttpApi(
+      makeMultiCityLookup([
+        { id: 'remote-city', path: REMOTE_CITY_DIR, name: 'RemoteCity', originId: 'remote-cineca' },
+      ]) as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteSnapshotsProvider: () => remoteStore.getAllSnapshots(),
+        remoteRawFiberExecutor: async (request) => {
+          calls.push(request);
+          if (request.operation === 'read') {
+            return { body: '---\nname: Editable\n---\n\nRemote body\n', sha256: 'remote-read-sha' };
+          }
+          return { sha256: 'remote-write-sha' };
+        },
+      },
+    );
+  });
+
+  it('reads raw markdown through the remote raw fiber executor', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber-raw/editable?cityId=remote-city');
+
+    expect(res.status).toBe(200);
+    expect(res.data.body).toContain('Remote body');
+    expect(res.data.sha256).toBe('remote-read-sha');
+    expect(calls).toEqual([
+      {
+        originId: 'remote-cineca',
+        feltHost: REMOTE_CITY_DIR,
+        path: 'editable/editable.md',
+        operation: 'read',
+      },
+    ]);
+  });
+
+  it('writes raw markdown through the remote raw fiber executor', async () => {
+    const body = '---\nname: Editable\n---\n\nUpdated remotely\n';
+
+    const res = await httpRequest(api, 'PUT', '/fiber-raw/editable?cityId=remote-city', { body });
+
+    expect(res.status).toBe(200);
+    expect(res.data.ok).toBe(true);
+    expect(res.data.sha256).toBe('remote-write-sha');
+    expect(calls).toEqual([
+      {
+        originId: 'remote-cineca',
+        feltHost: REMOTE_CITY_DIR,
+        path: 'editable/editable.md',
+        operation: 'write',
+        body,
+      },
+    ]);
+  });
+
+  it('returns 501 for remote raw reads without agent wiring', async () => {
+    const unwired = new HttpApi(
+      makeMultiCityLookup([
+        { id: 'remote-city', path: REMOTE_CITY_DIR, name: 'RemoteCity', originId: 'remote-cineca' },
+      ]) as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      { remoteSnapshotsProvider: () => remoteStore.getAllSnapshots() },
+    );
+
+    const res = await httpRequest(unwired, 'GET', '/fiber-raw/editable?cityId=remote-city');
+
+    expect(res.status).toBe(501);
+    expect(res.data.error).toMatch(/remote agent/i);
   });
 });

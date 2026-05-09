@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
 import { getAllFibers, mapFeltJsonToFiber, type Fiber } from './FiberReader.js';
+import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
 import { markdownToMdast } from './MarkdownToMdast.js';
 import { shellEscape } from './ShellPathUtils.js';
@@ -30,14 +31,31 @@ interface HttpApiTapestryOptions {
   cityLookup: CityLookup;
   fileContentApi: HttpApiFileContent;
   getSshHost: (city: City) => string;
+  remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  remoteRawFiberExecutor?: (request: RemoteRawFiberInvocation) => Promise<RemoteRawFiberResult>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
+}
+
+export interface RemoteRawFiberInvocation {
+  originId: string;
+  feltHost: string;
+  path: string;
+  operation: 'read' | 'write';
+  body?: string;
+}
+
+export interface RemoteRawFiberResult {
+  body?: string;
+  sha256?: string;
 }
 
 export class HttpApiTapestry {
   private readonly cityLookup: CityLookup;
   private readonly fileContentApi: HttpApiFileContent;
   private readonly getSshHost: (city: City) => string;
+  private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private readonly remoteRawFiberExecutor: HttpApiTapestryOptions['remoteRawFiberExecutor'];
   private readonly sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   private readonly sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
 
@@ -59,6 +77,8 @@ export class HttpApiTapestry {
     this.cityLookup = options.cityLookup;
     this.fileContentApi = options.fileContentApi;
     this.getSshHost = options.getSshHost;
+    this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
+    this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.sendJsonError = options.sendJsonError;
     this.sendJsonSuccess = options.sendJsonSuccess;
   }
@@ -543,10 +563,33 @@ export class HttpApiTapestry {
    * can round-trip the file without reparsing YAML.
    */
   async handleRawFiber(url: URL, slug: string, res: ServerResponse): Promise<void> {
-    const target = await this.resolveLocalRawFiber(url, slug, res);
+    const target = await this.resolveRawFiber(url, slug, res);
     if (!target) return;
 
     try {
+      if (target.kind === 'remote') {
+        if (!this.remoteRawFiberExecutor) {
+          this.sendJsonError(res, 501, 'Remote raw fiber reads require remote agent wiring');
+          return;
+        }
+        const result = await this.remoteRawFiberExecutor({
+          originId: target.originId,
+          feltHost: target.feltHost,
+          path: target.path,
+          operation: 'read',
+        });
+        if (typeof result.body !== 'string') {
+          this.sendJsonError(res, 502, 'Remote agent did not return fiber body');
+          return;
+        }
+        this.sendJsonSuccess(res, {
+          slug,
+          body: result.body,
+          sha256: result.sha256 ?? sha256(result.body),
+        });
+        return;
+      }
+
       const body = await readFile(target.filePath, 'utf8');
       this.sendJsonSuccess(res, {
         slug,
@@ -569,9 +612,6 @@ export class HttpApiTapestry {
     slug: string,
     res: ServerResponse,
   ): Promise<void> {
-    const target = await this.resolveLocalRawFiber(url, slug, res);
-    if (!target) return;
-
     let data: { body?: unknown };
     try {
       data = await readJsonBody<{ body?: unknown }>(req);
@@ -588,7 +628,30 @@ export class HttpApiTapestry {
       return;
     }
 
+    const target = await this.resolveRawFiber(url, slug, res);
+    if (!target) return;
+
     try {
+      if (target.kind === 'remote') {
+        if (!this.remoteRawFiberExecutor) {
+          this.sendJsonError(res, 501, 'Remote raw fiber writes require remote agent wiring');
+          return;
+        }
+        const result = await this.remoteRawFiberExecutor({
+          originId: target.originId,
+          feltHost: target.feltHost,
+          path: target.path,
+          operation: 'write',
+          body: data.body,
+        });
+        this.sendJsonSuccess(res, {
+          ok: true,
+          slug,
+          sha256: result.sha256 ?? sha256(data.body),
+        });
+        return;
+      }
+
       await writeAtomic(target.filePath, data.body);
       this.invalidateFiberListCache(target.city.path);
       this.sendJsonSuccess(res, {
@@ -1329,11 +1392,15 @@ export class HttpApiTapestry {
     }
   }
 
-  private async resolveLocalRawFiber(
+  private async resolveRawFiber(
     url: URL,
     slug: string,
     res: ServerResponse,
-  ): Promise<{ city: City; filePath: string } | null> {
+  ): Promise<
+    | { kind: 'local'; city: City; filePath: string }
+    | { kind: 'remote'; city: City; originId: string; feltHost: string; path: string }
+    | null
+  > {
     const cityId = url.searchParams.get('cityId');
     if (!cityId) {
       this.sendJsonError(res, 400, 'Missing cityId parameter');
@@ -1350,8 +1417,12 @@ export class HttpApiTapestry {
       return null;
     }
     if (city.originId !== 'local') {
-      this.sendJsonError(res, 501, 'Raw fiber editing is currently local-only');
-      return null;
+      const target = this.resolveRemoteRawFiber(city, slug);
+      if (!target) {
+        this.sendJsonError(res, 404, `Fiber "${slug}" not found in remote snapshot`);
+        return null;
+      }
+      return target;
     }
 
     const fiber = await this.readLocalFiberJson(city.path, slug);
@@ -1365,7 +1436,27 @@ export class HttpApiTapestry {
       this.sendJsonError(res, 404, `Fiber "${slug}" file not found in city`);
       return null;
     }
-    return { city, filePath };
+    return { kind: 'local', city, filePath };
+  }
+
+  private resolveRemoteRawFiber(
+    city: City,
+    slug: string,
+  ): { kind: 'remote'; city: City; originId: string; feltHost: string; path: string } | null {
+    if (!this.remoteSnapshotsProvider) return null;
+    const snapshots = this.remoteSnapshotsProvider();
+    const snapshot = snapshots.find((snap) =>
+      snap.originId === city.originId && normalizeRemoteHost(snap.feltHost) === normalizeRemoteHost(city.path)
+    );
+    const fiber = snapshot?.fibers.find((f) => f.id === slug);
+    if (!snapshot || !fiber) return null;
+    return {
+      kind: 'remote',
+      city,
+      originId: snapshot.originId,
+      feltHost: snapshot.feltHost,
+      path: relativeFeltPathForFiber(fiber),
+    };
   }
 }
 
@@ -1398,6 +1489,16 @@ async function writeAtomic(target: string, content: string): Promise<void> {
 
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+function normalizeRemoteHost(path: string): string {
+  return path.replace(/\/+$/, '');
+}
+
+function relativeFeltPathForFiber(fiber: Fiber): string {
+  const segments = fiber.id.split('/');
+  const leaf = segments[segments.length - 1];
+  return fiber.isRoot ? `${leaf}.md` : `${fiber.id}/${leaf}.md`;
 }
 
 async function readJsonBody<T>(req: IncomingMessage): Promise<T> {

@@ -146,6 +146,24 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
       ], feltHost);
     }
   },
+  remoteRawFiberExecutor: async ({ originId, feltHost, ...payload }) => {
+    const result = await agentRequestCoordinator.send<{
+      body?: string;
+      sha256?: string;
+      fiber?: unknown;
+    }>(
+      originId,
+      'fiber-raw',
+      { ...payload, feltHost },
+      10_000,
+    );
+    if (payload.operation === 'write' && result.fiber !== undefined) {
+      fiberTreeSnapshotStore.applyDelta(originId, [
+        { path: payload.path, op: 'upsert', fiber: result.fiber },
+      ], feltHost);
+    }
+    return { body: result.body, sha256: result.sha256 };
+  },
 });
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
@@ -458,6 +476,20 @@ wss.on('connection', async (ws, req) => {
             fiber !== undefined ? { fiber } : {},
             error,
           );
+        } else if (message.type === 'fiber-raw-result') {
+          const { correlationId, ok, error, body, sha256, fiber } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            body?: string;
+            sha256?: string;
+            fiber?: unknown;
+          };
+          const result: Record<string, unknown> = {};
+          if (body !== undefined) result.body = body;
+          if (sha256 !== undefined) result.sha256 = sha256;
+          if (fiber !== undefined) result.fiber = fiber;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
