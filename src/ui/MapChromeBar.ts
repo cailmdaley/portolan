@@ -590,7 +590,7 @@ export class MapChromeBar {
       .mcb-city-name {
         white-space: nowrap;
         font-family: var(--font-main, 'EB Garamond', serif);
-        font-size: 15.5px;
+        font-size: 17px;
         line-height: 1.05;
         font-style: normal;
         font-variant: small-caps;
