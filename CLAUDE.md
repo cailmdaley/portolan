@@ -25,6 +25,22 @@ cd server && npm test       # ~282 tests
 Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
 The dev stack lives in tmux session `portolan-dev`; detach with `Ctrl+B`, then `D`.
 
+## Testing
+
+Portolan has a strong preference for tests that exercise real seams: HTTP routes,
+modal click paths, tmux/agent adapters, and end-to-end browser behavior when the
+bug was user-visible. Unit tests are welcome for pure classification or parsing
+rules, but a button, route, or agent workflow that failed in dogfooding should
+usually leave behind coverage at the highest practical layer.
+
+When an issue comes in as "this button doesn't work" or "this action did the
+wrong thing," extend the test surface around that workflow before calling it
+fixed. Prefer a regression that clicks the actual UI control or calls the real
+HTTP handler with representative fixtures over a narrow helper mock that only
+proves the helper still works. If a full agent launch would be expensive, stop at
+the last free boundary that still proves intent, such as "the right tmux send
+would happen" or "the right Shuttle request body would be sent."
+
 ## Architecture
 
 ```
