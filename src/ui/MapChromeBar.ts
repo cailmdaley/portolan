@@ -120,14 +120,11 @@ export class MapChromeBar {
     this.cityPlaque = document.createElement('div')
     this.cityPlaque.className = 'mcb-city'
     this.cityPlaque.setAttribute('aria-live', 'polite')
-    const cityPlaqueLabel = document.createElement('span')
-    cityPlaqueLabel.className = 'mcb-city-label'
-    cityPlaqueLabel.textContent = 'city'
     this.cityPlaqueName = document.createElement('span')
     this.cityPlaqueName.className = 'mcb-city-name'
     this.cityPlaqueOrigin = document.createElement('span')
     this.cityPlaqueOrigin.className = 'mcb-city-origin'
-    this.cityPlaque.append(cityPlaqueLabel, this.cityPlaqueName, this.cityPlaqueOrigin)
+    this.cityPlaque.append(this.cityPlaqueName, this.cityPlaqueOrigin)
     this.syncFocusedCity(null)
 
     const sepCity = this.makeSeparator()
@@ -213,13 +210,13 @@ export class MapChromeBar {
       this.cityPlaqueOrigin.textContent = city.originId === 'local'
         ? 'local'
         : city.originId.replace(/^remote-/, '')
-      this.cityPlaque.title = city.path
+      this.cityPlaque.removeAttribute('title')
       this.cityPlaque.setAttribute('aria-label', `Selected city ${city.name}`)
     } else {
       this.cityPlaque.classList.add('mcb-city-empty')
       this.cityPlaqueName.textContent = 'world map'
       this.cityPlaqueOrigin.textContent = ''
-      this.cityPlaque.title = ''
+      this.cityPlaque.removeAttribute('title')
       this.cityPlaque.setAttribute('aria-label', 'No selected city')
     }
   }
@@ -334,7 +331,7 @@ export class MapChromeBar {
           cityName ? `Recent worker ${fullName} on ${cityName}` : `Recent worker ${fullName}`,
         )
         existing.classList.toggle('is-working', session.status === 'working')
-        existing.title = cityName ? `${fullName} on ${cityName}` : fullName
+        existing.removeAttribute('title')
         const label = existing.querySelector<HTMLElement>('.mcb-worker-name')
         if (label) label.textContent = displayName
         nextBirds.push(existing)
@@ -368,7 +365,6 @@ export class MapChromeBar {
       'aria-label',
       cityName ? `Recent worker ${fullName} on ${cityName}` : `Recent worker ${fullName}`,
     )
-    perch.title = cityName ? `${fullName} on ${cityName}` : fullName
     perch.classList.toggle('is-working', session.status === 'working')
 
     const opacity = 0.32 + ((total - 1 - index) / Math.max(total - 1, 1)) * 0.45
@@ -590,14 +586,13 @@ export class MapChromeBar {
 
       /* ── focused city plaque ── */
       .mcb-city {
-        display: grid;
-        grid-template-columns: auto auto;
-        grid-template-rows: auto auto;
+        display: inline-flex;
+        align-items: center;
         align-content: center;
-        gap: 0 6px;
-        min-width: 118px;
-        max-width: 190px;
-        padding: 3px 8px 2px;
+        flex: 0 0 auto;
+        gap: 7px;
+        min-width: max-content;
+        padding: 3px 10px 2px;
         color: var(--ink-dark, #2A2520);
         border-top: 1px solid rgba(154, 123, 53, 0.24);
         border-bottom: 1px solid rgba(154, 123, 53, 0.24);
@@ -605,27 +600,18 @@ export class MapChromeBar {
           linear-gradient(90deg, rgba(154, 123, 53, 0.14), transparent 24px, transparent calc(100% - 24px), rgba(154, 123, 53, 0.10)),
           rgba(255, 252, 246, 0.32);
       }
-      .mcb-city-label {
-        grid-column: 1 / -1;
-        font-family: var(--font-mono, 'JetBrains Mono', monospace);
-        font-size: 8.5px;
-        line-height: 1;
-        text-transform: uppercase;
-        color: var(--ink-faded, #7A7068);
-      }
       .mcb-city-name {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
         white-space: nowrap;
         font-family: var(--font-main, 'EB Garamond', serif);
-        font-size: 16px;
+        font-size: 15px;
         line-height: 1.05;
-        font-style: italic;
-        letter-spacing: 0.01em;
+        font-style: normal;
+        font-variant-caps: small-caps;
+        text-transform: lowercase;
+        letter-spacing: 0.08em;
       }
       .mcb-city-origin {
-        align-self: end;
+        align-self: center;
         max-width: 54px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -729,7 +715,7 @@ export class MapChromeBar {
       @media (max-width: 820px) {
         .mcb-bar { gap: 8px; padding-inline: 8px; }
         .mcb-launch-label { display: none; }
-        .mcb-city { min-width: 92px; max-width: 128px; padding-inline: 6px; }
+        .mcb-city { padding-inline: 7px; }
         .mcb-city-origin { display: none; }
         .mcb-perch { width: 54px; flex-basis: 54px; }
       }
