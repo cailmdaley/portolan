@@ -470,6 +470,50 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     ])
     expect(onSaved).toHaveBeenCalledOnce()
   })
+
+  it('oneshot resume reopens then dispatches immediately so Shuttle can surface resume errors', async () => {
+    const reviewBodies: unknown[] = []
+    const transitionBodies: unknown[] = []
+    const dispatchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/review-comment')) {
+        reviewBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/kanban/transition')) {
+        transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: false, reason: ':missing_session_id' }, 500))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { resumeBtn, errorEl, onSaved } = await openDispatchModal(makeInFlightCard())
+    resumeBtn.click()
+    await tick()
+
+    expect(reviewBodies).toEqual([
+      {
+        fiberId: 'test/my-constitution',
+        directive: '',
+        resumeMode: 'previous',
+        interactive: false,
+      },
+    ])
+    expect(transitionBodies).toEqual([
+      { fiberId: 'test/my-constitution', target: 'inFlight' },
+    ])
+    expect(dispatchBodies).toEqual([
+      { fiber_id: 'test/my-constitution' },
+    ])
+    expect(errorEl.textContent).toContain('missing_session_id')
+    expect(document.querySelector('.kbn-detail-overlay')).not.toBeNull()
+    expect(onSaved).not.toHaveBeenCalled()
+  })
 })
 
 describe('FiberDetailModal terminal transitions', () => {

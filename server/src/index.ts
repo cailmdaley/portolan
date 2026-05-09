@@ -31,7 +31,7 @@ import { TerminalStreamManager } from './TerminalStreamManager.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 import { publishShuttleFeltStores } from './ShuttleFeltStoresPublisher.js';
-import { visibleRemoteSnapshots } from './RemoteSnapshotPolicy.js';
+import { visibleRemoteCityPaths, visibleRemoteSnapshots } from './RemoteSnapshotPolicy.js';
 
 // ============================================================================
 // Constants
@@ -689,15 +689,7 @@ function stopBackgroundTimers(): void {
 }
 
 function remoteFeltHostsForOrigin(originId: string): string[] {
-  return cityManager.getCities()
-    .filter((city) => city.originId === originId)
-    .map((city) => city.path)
-    .filter((path) => remotePathBasename(path) !== 'loom');
-}
-
-function remotePathBasename(path: string): string {
-  const normalized = path.replace(/\/+$/, '');
-  return normalized.slice(normalized.lastIndexOf('/') + 1);
+  return visibleRemoteCityPaths(originId, cityManager.getCities()).map((city) => city.path);
 }
 
 function shutdown() {

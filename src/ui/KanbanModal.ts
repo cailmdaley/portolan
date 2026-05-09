@@ -2453,8 +2453,7 @@ export class FiberDetailModal {
         const e = (await transRes.json().catch(() => ({}))) as { error?: string }
         throw new Error(e.error || `transition ${transRes.status}`)
       }
-      this.close()
-      this.onSaved()
+      await this.runDispatchNow(card, btn, errorEl, interactive)
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err)
       errorEl.textContent = msg
