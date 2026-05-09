@@ -56,7 +56,7 @@ function makeKanbanCard(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function renderGridCard(overrides: Record<string, unknown> = {}): {
+function renderGridCard(overrides: Record<string, unknown> = {}, kind: 'drafts' | 'awaitingReview' = 'drafts'): {
   el: HTMLElement
   detailOpen: ReturnType<typeof vi.fn>
 } {
@@ -69,8 +69,8 @@ function renderGridCard(overrides: Record<string, unknown> = {}): {
     open: detailOpen,
   }
   const el = (modal as unknown as {
-    renderCard: (card: ReturnType<typeof makeKanbanCard>, kind: 'drafts') => HTMLElement
-  }).renderCard(makeKanbanCard(overrides), 'drafts')
+    renderCard: (card: ReturnType<typeof makeKanbanCard>, kind: 'drafts' | 'awaitingReview') => HTMLElement
+  }).renderCard(makeKanbanCard(overrides), kind)
   document.body.append(el)
   return { el, detailOpen }
 }
@@ -168,6 +168,13 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   return { modal, dispatchBtn, resumeBtn, directiveTa, errorEl, onSaved }
 }
 
+function detailActionButton(label: string): HTMLButtonElement {
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>('.kbn-detail-action-btn'))
+    .find((candidate) => candidate.textContent?.trim() === label)
+  if (!btn) throw new Error(`${label} button not found`)
+  return btn
+}
+
 // ── Setup ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -255,6 +262,39 @@ describe('KanbanModal grid card outcome preview', () => {
 
     el.querySelector('.kbn-card-outcome')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(detailOpen).toHaveBeenCalledOnce()
+  })
+})
+
+describe('KanbanModal grid card review actions', () => {
+  it('sends the composted target when clicking an inline awaiting-review Compost button', async () => {
+    const transitionBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/transition')) {
+        transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/kanban')) return Promise.resolve(jsonResponse(emptyKanbanResponse()))
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { el, detailOpen } = renderGridCard({
+      name: 'Constitution: Standing inbox triage — read + fiber creation',
+      status: 'closed',
+    }, 'awaitingReview')
+    const compostBtn = Array.from(el.querySelectorAll<HTMLButtonElement>('.kbn-review-meta-btn'))
+      .find((btn) => btn.textContent?.trim() === 'Compost')
+    if (!compostBtn) throw new Error('Inline Compost button not found')
+
+    compostBtn.click()
+    await tick()
+
+    expect(detailOpen).not.toHaveBeenCalled()
+    expect(transitionBodies).toHaveLength(1)
+    expect(transitionBodies[0]).toMatchObject({
+      fiberId: 'test/my-constitution',
+      target: 'composted',
+    })
   })
 })
 
@@ -428,6 +468,52 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     expect(dispatchBodies).toEqual([
       { fiber_id: 'test/my-constitution', force: true },
     ])
+    expect(onSaved).toHaveBeenCalledOnce()
+  })
+})
+
+describe('FiberDetailModal terminal transitions', () => {
+  it('sends the composted target when clicking Compost', async () => {
+    const transitionBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/transition')) {
+        transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { onSaved } = await openDispatchModal(makeInFlightCard())
+    detailActionButton('Compost').click()
+    await tick()
+
+    expect(transitionBodies).toEqual([
+      { fiberId: 'test/my-constitution', target: 'composted' },
+    ])
+    expect(document.querySelector('.kbn-detail-overlay')).toBeNull()
+    expect(onSaved).toHaveBeenCalledOnce()
+  })
+
+  it('sends the tempered target when clicking Temper', async () => {
+    const transitionBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/transition')) {
+        transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { onSaved } = await openDispatchModal(makeInFlightCard())
+    detailActionButton('Temper').click()
+    await tick()
+
+    expect(transitionBodies).toEqual([
+      { fiberId: 'test/my-constitution', target: 'tempered' },
+    ])
+    expect(document.querySelector('.kbn-detail-overlay')).toBeNull()
     expect(onSaved).toHaveBeenCalledOnce()
   })
 })
