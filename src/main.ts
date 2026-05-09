@@ -116,6 +116,7 @@ const zoneRenderer = new ZoneRenderer(scene, hexGrid)
 // the URL fragment via `pushCurrentUrl()` below.
 let lastFocusedCityId: string | null = null
 let refreshKanbanBadgeSoon: () => void = () => { /* noop until chrome bar is constructed */ }
+let syncFocusedCityInChrome: (city: City | null) => void = (_city) => { /* noop until chrome bar is constructed */ }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Stage J — URL-fragment-stable navigation
@@ -282,6 +283,7 @@ function handleCityClick(city: City): void {
   selectedHex = city.hex
   const cityChanged = lastFocusedCityId !== city.id
   lastFocusedCityId = city.id
+  syncFocusedCityInChrome(city)
 
   // Focus on city and zoom to detail level
   const pos = hexGrid.axialToCartesian(city.hex)
@@ -992,6 +994,12 @@ const mapChromeBar = new MapChromeBar({
     }
     mapActions?.focusKittyTab(session.id)
   },
+  onWorkerHoverStart: (session, anchor) => {
+    zoneRenderer.updateWorkerFileHover(session, anchor)
+  },
+  onWorkerHoverEnd: () => {
+    zoneRenderer.clearWorkerFileHover()
+  },
   // Pause the awaiting-review badge poll while vellum is showing the kanban
   // tab — the embedded grid renders fresh counts there. Mirrors the
   // pre-Stage-H KanbanLaunchButton policy.
@@ -1006,6 +1014,7 @@ const mapChromeBar = new MapChromeBar({
   },
 })
 refreshKanbanBadgeSoon = () => mapChromeBar.refreshSoon()
+syncFocusedCityInChrome = (city) => mapChromeBar.syncFocusedCity(city)
 
 /**
  * Stage H — launch button. Open the vellum view that best matches "last

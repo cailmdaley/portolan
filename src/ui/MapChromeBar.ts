@@ -18,8 +18,8 @@ import type { City, Session } from '../state/types'
  *   - V / K / F mode chips: mirror the `v` / `k` / `/` hotkeys. The chip
  *     for the currently-active vellum tab lights up via `syncMode()`.
  *   - worker birds: same data feed RecentWorkerBar consumed (idle workers,
- *     ranked by `lastActivity`), rendered horizontally in the bar with a
- *     city-name tooltip on hover and click → kitty focus.
+ *     ranked by `lastActivity`), rendered horizontally in the bar with names
+ *     below the birds, hover → recent files, and click → kitty focus.
  *   - activity glance: live counts on the right — N working sessions,
  *     plus an awaiting-review chip on the K letter when the kanban poll
  *     turns up cards in `awaiting-review`.
@@ -44,6 +44,10 @@ interface MapChromeBarOptions {
   onOpenFind: () => void
   /** Bird click — focus camera + kitty tab on this worker. */
   onSelectWorker: (session: Session) => void
+  /** Worker perch hover — show the shared recent-file tooltip. */
+  onWorkerHoverStart?: (session: Session, anchor: { x: number; y: number }) => void
+  /** Worker perch hover end — hide the shared recent-file tooltip. */
+  onWorkerHoverEnd?: () => void
   /** Override fetch base for the awaiting-review badge poll. */
   apiBase?: string
   /** Suppress the badge poll while vellum is showing the kanban tab — the
@@ -70,6 +74,9 @@ export class MapChromeBar {
   private readonly chipKanban: HTMLButtonElement
   private readonly chipFind: HTMLButtonElement
   private readonly kanbanBadge: HTMLSpanElement
+  private readonly cityPlaque: HTMLDivElement
+  private readonly cityPlaqueName: HTMLSpanElement
+  private readonly cityPlaqueOrigin: HTMLSpanElement
   private readonly birdsRow: HTMLDivElement
   private readonly glance: HTMLDivElement
   private readonly glanceWorking: HTMLSpanElement
@@ -110,10 +117,25 @@ export class MapChromeBar {
 
     const sep1 = this.makeSeparator()
 
+    this.cityPlaque = document.createElement('div')
+    this.cityPlaque.className = 'mcb-city'
+    this.cityPlaque.setAttribute('aria-live', 'polite')
+    const cityPlaqueLabel = document.createElement('span')
+    cityPlaqueLabel.className = 'mcb-city-label'
+    cityPlaqueLabel.textContent = 'city'
+    this.cityPlaqueName = document.createElement('span')
+    this.cityPlaqueName.className = 'mcb-city-name'
+    this.cityPlaqueOrigin = document.createElement('span')
+    this.cityPlaqueOrigin.className = 'mcb-city-origin'
+    this.cityPlaque.append(cityPlaqueLabel, this.cityPlaqueName, this.cityPlaqueOrigin)
+    this.syncFocusedCity(null)
+
+    const sepCity = this.makeSeparator()
+
     this.birdsRow = document.createElement('div')
     this.birdsRow.className = 'mcb-birds'
     this.birdsRow.setAttribute('role', 'list')
-    this.birdsRow.setAttribute('aria-label', 'Recent idle workers')
+    this.birdsRow.setAttribute('aria-label', 'Recent workers')
     // Bird click delegation (Enter/Space keyboard parity for role="button"
     // perches; same pattern as legacy RecentWorkerBar).
     const activatePerch = (target: EventTarget | null): void => {
@@ -141,7 +163,7 @@ export class MapChromeBar {
     this.glance.appendChild(this.glanceWorking)
     this.refreshGlance(0)
 
-    this.container.append(this.launchBtn, chipsGroup, sep1, this.birdsRow, sep2, this.glance)
+    this.container.append(this.launchBtn, chipsGroup, sep1, this.cityPlaque, sepCity, this.birdsRow, sep2, this.glance)
     document.body.appendChild(this.container)
 
     void this.refreshAwaitingReview()
@@ -168,11 +190,11 @@ export class MapChromeBar {
   update(cities: City[], sessions: Session[]): void {
     this.cityNameById = new Map(cities.map((c) => [c.id, c.name]))
 
-    const idle = sessions
-      .filter((s) => s.status !== 'working' && s.lastActivity)
+    const recent = sessions
+      .filter((s) => s.lastActivity)
       .sort((a, b) => b.lastActivity - a.lastActivity)
-      .slice(0, 5)
-    this.reconcileBirds(idle)
+      .slice(0, 6)
+    this.reconcileBirds(recent)
 
     const working = sessions.filter((s) => s.status === 'working').length
     this.refreshGlance(working)
@@ -182,6 +204,24 @@ export class MapChromeBar {
    *  count is fresh without waiting for the poll. */
   refreshSoon(): void {
     void this.refreshAwaitingReview()
+  }
+
+  syncFocusedCity(city: City | null): void {
+    if (city) {
+      this.cityPlaque.classList.remove('mcb-city-empty')
+      this.cityPlaqueName.textContent = city.name
+      this.cityPlaqueOrigin.textContent = city.originId === 'local'
+        ? 'local'
+        : city.originId.replace(/^remote-/, '')
+      this.cityPlaque.title = city.path
+      this.cityPlaque.setAttribute('aria-label', `Selected city ${city.name}`)
+    } else {
+      this.cityPlaque.classList.add('mcb-city-empty')
+      this.cityPlaqueName.textContent = 'world map'
+      this.cityPlaqueOrigin.textContent = ''
+      this.cityPlaque.title = ''
+      this.cityPlaque.setAttribute('aria-label', 'No selected city')
+    }
   }
 
   dispose(): void {
@@ -288,12 +328,15 @@ export class MapChromeBar {
         // Keep aria-label fresh — city name might have changed.
         const cityName = session.cityId ? this.cityNameById.get(session.cityId) : null
         const fullName = session.tmuxSession || session.name
+        const displayName = this.workerDisplayName(session)
         existing.setAttribute(
           'aria-label',
           cityName ? `Recent worker ${fullName} on ${cityName}` : `Recent worker ${fullName}`,
         )
-        const tooltip = existing.querySelector<HTMLElement>('.mcb-perch-tooltip')
-        if (tooltip) tooltip.textContent = cityName ?? fullName
+        existing.classList.toggle('is-working', session.status === 'working')
+        existing.title = cityName ? `${fullName} on ${cityName}` : fullName
+        const label = existing.querySelector<HTMLElement>('.mcb-worker-name')
+        if (label) label.textContent = displayName
         nextBirds.push(existing)
       } else {
         const perch = this.createPerch(session, i, total)
@@ -325,11 +368,14 @@ export class MapChromeBar {
       'aria-label',
       cityName ? `Recent worker ${fullName} on ${cityName}` : `Recent worker ${fullName}`,
     )
+    perch.title = cityName ? `${fullName} on ${cityName}` : fullName
+    perch.classList.toggle('is-working', session.status === 'working')
 
     const opacity = 0.32 + ((total - 1 - index) / Math.max(total - 1, 1)) * 0.45
     perch.style.opacity = String(opacity)
     const angle = this.nameToAngle(session.name)
     perch.style.animationDelay = `${index * 60}ms`
+    this.attachWorkerHover(perch)
 
     const bird = document.createElement('img')
     bird.className = 'mcb-bird'
@@ -338,12 +384,38 @@ export class MapChromeBar {
     bird.draggable = false
     bird.style.transform = `rotate(${angle}deg)`
 
-    const tooltip = document.createElement('span')
-    tooltip.className = 'mcb-perch-tooltip'
-    tooltip.textContent = cityName ?? fullName
+    const label = document.createElement('span')
+    label.className = 'mcb-worker-name'
+    label.textContent = this.workerDisplayName(session)
 
-    perch.append(bird, tooltip)
+    perch.append(bird, label)
     return perch
+  }
+
+  private workerDisplayName(session: Session): string {
+    return session.name || session.tmuxSession || 'worker'
+  }
+
+  private attachWorkerHover(perch: HTMLElement): void {
+    const show = (): void => {
+      const session = (perch as unknown as { __session?: Session }).__session
+      if (session) this.opts.onWorkerHoverStart?.(session, this.workerTooltipAnchor(perch))
+    }
+    const hide = (): void => {
+      this.opts.onWorkerHoverEnd?.()
+    }
+    perch.addEventListener('mouseenter', show)
+    perch.addEventListener('focus', show)
+    perch.addEventListener('mouseleave', hide)
+    perch.addEventListener('blur', hide)
+  }
+
+  private workerTooltipAnchor(perch: HTMLElement): { x: number; y: number } {
+    const rect = perch.getBoundingClientRect()
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.bottom + 4,
+    }
   }
 
   private nameToAngle(name: string): number {
@@ -402,10 +474,12 @@ export class MapChromeBar {
         transform: translateX(-50%);
         z-index: 50;
         display: flex;
-        align-items: center;
+        align-items: stretch;
         gap: 12px;
-        height: 36px;
-        padding: 4px 12px;
+        min-height: 54px;
+        max-width: calc(100vw - 24px);
+        box-sizing: border-box;
+        padding: 6px 12px;
         background: rgba(237, 232, 224, 0.78);
         backdrop-filter: blur(2px);
         border: 1px solid rgba(122, 112, 104, 0.18);
@@ -422,7 +496,8 @@ export class MapChromeBar {
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        height: 26px;
+        height: 34px;
+        align-self: center;
         padding: 0 10px;
         background: transparent;
         border: 1px solid transparent;
@@ -453,6 +528,7 @@ export class MapChromeBar {
       /* ── V / K / F chips ── */
       .mcb-chips {
         display: inline-flex;
+        align-self: center;
         gap: 4px;
       }
       .mcb-chip {
@@ -506,16 +582,68 @@ export class MapChromeBar {
       /* ── separators ── */
       .mcb-sep {
         display: inline-block;
+        align-self: center;
         width: 1px;
-        height: 16px;
+        height: 28px;
         background: rgba(122, 112, 104, 0.22);
       }
+
+      /* ── focused city plaque ── */
+      .mcb-city {
+        display: grid;
+        grid-template-columns: auto auto;
+        grid-template-rows: auto auto;
+        align-content: center;
+        gap: 0 6px;
+        min-width: 118px;
+        max-width: 190px;
+        padding: 3px 8px 2px;
+        color: var(--ink-dark, #2A2520);
+        border-top: 1px solid rgba(154, 123, 53, 0.24);
+        border-bottom: 1px solid rgba(154, 123, 53, 0.24);
+        background:
+          linear-gradient(90deg, rgba(154, 123, 53, 0.14), transparent 24px, transparent calc(100% - 24px), rgba(154, 123, 53, 0.10)),
+          rgba(255, 252, 246, 0.32);
+      }
+      .mcb-city-label {
+        grid-column: 1 / -1;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 8.5px;
+        line-height: 1;
+        text-transform: uppercase;
+        color: var(--ink-faded, #7A7068);
+      }
+      .mcb-city-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--font-main, 'EB Garamond', serif);
+        font-size: 16px;
+        line-height: 1.05;
+        font-style: italic;
+        letter-spacing: 0.01em;
+      }
+      .mcb-city-origin {
+        align-self: end;
+        max-width: 54px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 8.5px;
+        line-height: 1.2;
+        color: #5A7B7B;
+      }
+      .mcb-city-empty .mcb-city-name { color: var(--ink-faded, #7A7068); }
 
       /* ── worker birds ── */
       .mcb-birds {
         display: inline-flex;
         align-items: center;
-        gap: 14px;
+        flex: 1 1 auto;
+        overflow: hidden;
+        gap: 8px;
         min-width: 0; /* let it shrink, doesn't push glance off */
       }
       .mcb-birds-empty { display: none; }
@@ -529,7 +657,13 @@ export class MapChromeBar {
       .mcb-perch {
         position: relative;
         display: inline-flex;
+        flex-direction: column;
         align-items: center;
+        justify-content: center;
+        gap: 2px;
+        width: 68px;
+        flex: 0 0 68px;
+        min-height: 40px;
         cursor: pointer;
         transition: opacity 200ms ease, transform 200ms ease;
         color: var(--ink-faded, #7A7068);
@@ -558,28 +692,24 @@ export class MapChromeBar {
         transform: rotate(0deg) scale(1.18) !important;
         filter: sepia(1) saturate(2) hue-rotate(100deg) brightness(0.32);
       }
-      .mcb-perch-tooltip {
-        position: absolute;
-        top: calc(100% + 4px);
-        left: 50%;
-        transform: translateX(-50%) translateY(-2px);
-        opacity: 0;
-        pointer-events: none;
-        white-space: nowrap;
-        padding: 2px 6px;
-        background: rgba(46, 42, 38, 0.92);
-        color: #FBF7F0;
-        font-family: var(--font-main, 'EB Garamond', serif);
-        font-style: italic;
-        font-size: 11.5px;
-        letter-spacing: 0.02em;
-        border-radius: 3px;
-        transition: opacity 140ms ease, transform 140ms ease;
+      .mcb-perch.is-working .mcb-bird {
+        filter: sepia(1) saturate(1.7) hue-rotate(124deg) brightness(0.46);
       }
-      .mcb-perch:hover .mcb-perch-tooltip,
-      .mcb-perch:focus-within .mcb-perch-tooltip {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
+      .mcb-worker-name {
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: center;
+        font-family: var(--font-mono, 'JetBrains Mono', monospace);
+        font-size: 9.5px;
+        line-height: 1.1;
+        letter-spacing: 0;
+        color: var(--ink-faded, #7A7068);
+      }
+      .mcb-perch:hover .mcb-worker-name,
+      .mcb-perch:focus-within .mcb-worker-name {
+        color: var(--ink-dark, #2A2520);
       }
 
       /* ── activity glance (right edge) ── */
@@ -595,6 +725,14 @@ export class MapChromeBar {
       }
       .mcb-glance.mcb-empty { display: none; }
       .mcb-glance.mcb-empty + .mcb-sep { display: none; }
+
+      @media (max-width: 820px) {
+        .mcb-bar { gap: 8px; padding-inline: 8px; }
+        .mcb-launch-label { display: none; }
+        .mcb-city { min-width: 92px; max-width: 128px; padding-inline: 6px; }
+        .mcb-city-origin { display: none; }
+        .mcb-perch { width: 54px; flex-basis: 54px; }
+      }
     `
     document.head.appendChild(style)
   }
