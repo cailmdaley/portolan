@@ -6,7 +6,9 @@ interface TestEventInput {
   type: string;
   timestamp: number;
   tool?: string;
+  toolInput?: Record<string, unknown>;
   prompt?: string;
+  harness?: string;
 }
 
 function makeEvent(input: TestEventInput): Record<string, unknown> {
@@ -17,7 +19,9 @@ function makeEvent(input: TestEventInput): Record<string, unknown> {
     sessionId: `${input.tmuxSession}-session`,
     cwd: '/tmp/project',
     tmuxSession: input.tmuxSession,
+    harness: input.harness,
     tool: input.tool,
+    toolInput: input.toolInput,
     prompt: input.prompt,
   };
 }
@@ -146,5 +150,27 @@ describe('EventWatcher session-state ownership', () => {
     expect(stats.recentActivitySessionCount).toBe(1);
     expect(stats.totalRecentActivities).toBe(1);
     expect(stats.trackedSessionCount).toBe(1);
+  });
+
+  it('records canonical post-tool file touches from any harness', () => {
+    const watcher = new EventWatcher('/tmp/nonexistent-events.jsonl');
+
+    processEvent(watcher, makeEvent({
+      tmuxSession: 'codex-worker',
+      type: 'post_tool_use',
+      timestamp: Date.now(),
+      tool: 'Edit',
+      toolInput: { file_path: '/project/src/main.ts' },
+      harness: 'codex',
+    }));
+
+    expect(watcher.getRecentActivities('codex-worker')).toEqual([
+      expect.objectContaining({
+        tool: 'Edit',
+        fullPath: '/project/src/main.ts',
+        summary: 'src/main.ts',
+        eventType: 'tool',
+      }),
+    ]);
   });
 });

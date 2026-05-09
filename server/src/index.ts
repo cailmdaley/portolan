@@ -24,7 +24,7 @@ import { MessageRouter, AgentActivityMessage } from './MessageRouter.js';
 import { MeetingBridge } from './MeetingBridge.js';
 import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
 import { VibeVoiceTranscriptSource } from './VibeVoiceTranscriptSource.js';
-import { RemoteAgentCoordinator, reconnectTunnel } from './RemoteAgentCoordinator.js';
+import { RemoteAgentCoordinator, recoverRemoteAgent } from './RemoteAgentCoordinator.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
@@ -201,6 +201,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     },
     eventWatcher: eventWatcher.getStats(),
     remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
+    remoteAgentRecovery: remoteAgentCoordinator.getRemoteAgentRecoveryStats(),
     recentFiles: {
       sessionCount: recentFileTracker.getSessionCount(),
       entryCount: recentFileTracker.getTotalEntryCount(),
@@ -252,7 +253,7 @@ const remoteAgentCoordinator = new RemoteAgentCoordinator(
       void browserStateCoordinator.broadcastCurrentState();
     },
     rebuildCities: browserStateCoordinator.rebuildCities.bind(browserStateCoordinator),
-    reconnectTunnel,
+    recoverRemoteAgent,
   },
 );
 browserStateCoordinator.setRemoteAgentStateSource(remoteAgentCoordinator);
@@ -635,6 +636,7 @@ remoteWorkingTimeoutIntervalHandle = setInterval(() => {
   if (changed) {
     void browserStateCoordinator.broadcastCurrentState();
   }
+  remoteAgentCoordinator.recoverDisconnectedAgents();
 }, 5000);
 
 server.on('error', (err: NodeJS.ErrnoException) => {

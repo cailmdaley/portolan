@@ -518,8 +518,10 @@ function processNewEvents() {
 function processEvent(event) {
     if (!event.tmuxSession) return;
 
-    // Only send activity for pre_tool_use events (has tool info)
-    if (event.type === 'pre_tool_use' && event.tool) {
+    // Send activity for canonical file-tool events. PostToolUse is included
+    // so harnesses that only know the file path after execution still feed
+    // the same recent-file trail.
+    if ((event.type === 'pre_tool_use' || event.type === 'post_tool_use') && event.tool) {
         const details = extractActivityDetails(event.tool, event.toolInput);
         const activity = {
             tmuxSession: event.tmuxSession,

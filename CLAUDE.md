@@ -123,6 +123,12 @@ Remote portolan-agent reaches the local backend through launchd-managed autossh 
 Install/update them with `./scripts/install-tunnels.sh`; logs land in
 `~/.local/state/portolan/tunnel-<host>.log`.
 
+When a remote agent WebSocket disconnects, Portolan now self-recovers: it kickstarts
+the launchd tunnel, verifies the remote can reach local `/debug-runtime`, and restarts
+only the remote `portolan-agent` tmux session. Check `/debug-runtime` under
+`runtime.remoteAgentRecovery` and the backend log lines prefixed `[RemoteAgent]` to
+distinguish tunnel-unreachable from tunnel-reachable-agent-restarted.
+
 **Quick fix:** `./scripts/reset-tunnel.sh <host>` — `launchctl kickstart -k` for the tunnel, then restarts agent.
 Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot reverse tunnel.
 Port still held? `ssh <host> "fuser -k 4004/tcp"`. See fibers `gotcha-ssh-remoteforward-port`

@@ -99,7 +99,16 @@ fi
 
 sleep 1
 
-if ! ssh "$HOST" 'curl -s --connect-timeout 3 http://localhost:4004/' >/dev/null 2>&1; then
+TUNNEL_OK=false
+for _ in $(seq 1 20); do
+  if ssh "$HOST" 'curl -s --connect-timeout 3 http://localhost:4004/' >/dev/null 2>&1; then
+    TUNNEL_OK=true
+    break
+  fi
+  sleep 1
+done
+
+if [ "$TUNNEL_OK" != true ]; then
   echo "[$HOST] ERROR: tunnel still broken; remote localhost:4004 not reachable"
   echo "[$HOST] Check launchd: launchctl print $TARGET"
   echo "[$HOST] Port held remotely? ssh $HOST 'fuser -k 4004/tcp'"

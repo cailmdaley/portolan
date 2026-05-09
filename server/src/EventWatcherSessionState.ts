@@ -1,16 +1,7 @@
 import { extractActivityDetails } from './activityUtils.js';
+import type { PortolanEvent } from './PortolanEventNormalizer.js';
 
-export interface PortolanEvent {
-  id: string;
-  timestamp: number;
-  type: string;
-  sessionId: string;
-  cwd: string;
-  tmuxSession: string;
-  tool?: string;
-  toolInput?: Record<string, unknown>;
-  prompt?: string;
-}
+export type { PortolanEvent } from './PortolanEventNormalizer.js';
 
 export interface ActivityEvent {
   tmuxSession: string;
@@ -195,7 +186,7 @@ export class EventWatcherSessionState {
   }
 
   private createActivityEvent(event: PortolanEvent): ActivityEvent | null {
-    if (event.type === 'pre_tool_use' && event.tool) {
+    if ((event.type === 'pre_tool_use' || event.type === 'post_tool_use') && event.tool) {
       const details = extractActivityDetails(event.tool, event.toolInput);
       return {
         tmuxSession: event.tmuxSession,

@@ -35,19 +35,6 @@ input=$(cat)
 
 raw_hook_name=$(printf '%s' "$input" | "$JQ" -r '.hook_event_name // empty' 2>/dev/null || true)
 
-if [ "$raw_hook_name" = "PostToolUse" ]; then
-  forward_payload=$(printf '%s' "$input" | "$JQ" -c --arg tmux "$tmux_session" --arg origin "$(hostname)" '
-    select((.tool_name // "") | test("^(Read|Write|Edit)$")) |
-    . + { tmux_session: $tmux, origin_name: $origin }
-  ' 2>/dev/null || true)
-  if [ -n "$forward_payload" ]; then
-    curl -sS -m 2 -X POST http://localhost:4004/hook/file-touch \
-      -H 'Content-Type: application/json' \
-      -d "$forward_payload" >/dev/null 2>&1 || true
-  fi
-  exit 0
-fi
-
 if [ "$raw_hook_name" = "Stop" ]; then
   transcript_path=$(printf '%s' "$input" | "$JQ" -r '.transcript_path // empty' 2>/dev/null || true)
   session_id=$(printf '%s' "$input" | "$JQ" -r '.session_id // empty' 2>/dev/null || true)
@@ -94,10 +81,11 @@ if [ "$raw_hook_name" = "Stop" ]; then
   fi
 fi
 
-payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmux_session" '
-  # Map hook event name to event type (PostToolUse excluded - unused by server)
+payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmux_session" --arg harness "claude-code" --arg origin "$(hostname)" '
+  # Map hook event name to the canonical Portolan event schema.
   def map_event_type:
     if . == "PreToolUse" then "pre_tool_use"
+    elif . == "PostToolUse" then "post_tool_use"
     elif . == "Stop" then "stop"
     elif . == "SubagentStop" then "subagent_stop"
     elif . == "SessionStart" then "session_start"
@@ -122,10 +110,22 @@ payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmu
       type: $event_type,
       sessionId: $session_id,
       cwd: (.cwd // ""),
-      tmuxSession: $tmux
+      tmuxSession: $tmux,
+      harness: $harness,
+      originName: $origin
     } + (
       if .tool_name then
-        { tool: .tool_name, toolInput: (.tool_input // null) }
+        (.tool_input // {}) as $tool_input |
+        ($tool_input.file_path // $tool_input.path // $tool_input.filePath // empty) as $file_path |
+        {
+          tool: .tool_name,
+          toolInput: (
+            if ($file_path | type) == "string" and ($file_path | length) > 0
+            then $tool_input + { file_path: $file_path }
+            else $tool_input
+            end
+          )
+        }
       elif .prompt then
         { prompt: .prompt }
       else {}
