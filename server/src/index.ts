@@ -31,6 +31,7 @@ import { TerminalStreamManager } from './TerminalStreamManager.js';
 import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 import { publishShuttleFeltStores } from './ShuttleFeltStoresPublisher.js';
+import { visibleRemoteSnapshots } from './RemoteSnapshotPolicy.js';
 
 // ============================================================================
 // Constants
@@ -126,7 +127,10 @@ const cityLookup = {
 // ============================================================================
 
 const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
-  remoteSnapshotsProvider: () => fiberTreeSnapshotStore.getAllSnapshots(),
+  remoteSnapshotsProvider: () => visibleRemoteSnapshots(
+    fiberTreeSnapshotStore.getAllSnapshots(),
+    cityManager.getCities(),
+  ),
   // Stage 4 — remote-origin kanban mutations route through this executor.
   // Sends a `kanban-transition` payload over the agent's WebSocket via the
   // correlation-ID layer, applies the agent's reply fiber JSON as a
@@ -429,6 +433,10 @@ wss.on('connection', async (ws, req) => {
       type: 'connected',
       payload: { originId: origin.id, position: origin.position },
     }));
+    ws.send(JSON.stringify({
+      type: 'fiber_tree_hosts',
+      payload: { feltHosts: remoteFeltHostsForOrigin(origin.id) },
+    }));
 
     console.log(`Agent connected: ${originName} (${origin.id})`);
 
@@ -678,6 +686,18 @@ function stopBackgroundTimers(): void {
     clearInterval(remoteWorkingTimeoutIntervalHandle);
     remoteWorkingTimeoutIntervalHandle = null;
   }
+}
+
+function remoteFeltHostsForOrigin(originId: string): string[] {
+  return cityManager.getCities()
+    .filter((city) => city.originId === originId)
+    .map((city) => city.path)
+    .filter((path) => remotePathBasename(path) !== 'loom');
+}
+
+function remotePathBasename(path: string): string {
+  const normalized = path.replace(/\/+$/, '');
+  return normalized.slice(normalized.lastIndexOf('/') + 1);
 }
 
 function shutdown() {

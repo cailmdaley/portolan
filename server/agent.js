@@ -47,10 +47,11 @@ const PLANNOTATOR_PORT = process.env.PLANNOTATOR_PORT ? parseInt(process.env.PLA
 // The agent ships fiber-tree state to the server alongside activity events,
 // enabling remote-origin fibers to land in the kanban's global view.
 //
-// PORTOLAN_FELT_HOST: parent dir of `.felt/`; defaults to `~/loom`. The
-// agent publishes this default root on connect, and also publishes each
-// active session cwd that has its own `.felt/` so remote city-scoped kanban
-// can use the project's live store instead of an origin-wide loom snapshot.
+// PORTOLAN_FELT_HOST: parent dir of `.felt/`; defaults to `~/loom` for
+// backward-compatible mutation fallback only. The local server sends the
+// pinned remote city hosts it wants via `fiber_tree_hosts`; the agent
+// publishes those explicit hosts, plus active session cwds that have their
+// own `.felt/`. It does not publish the default loom mirror on connect.
 //
 // Watch debounces with FELT_WATCH_DEBOUNCE_MS so bursts (sweeps, mass
 // renames, git pulls) batch into a single delta message. Per the
@@ -647,12 +648,15 @@ async function sendFiberTreeDumpForHost(feltHost) {
 }
 
 /**
- * Send a full fiber-tree dump for FELT_DIR. Called after the agent
- * registers with the server (initial connect, and on every reconnect — the
- * server replaces the snapshot wholesale, no reconciliation needed).
+ * Send a full fiber-tree dump for explicitly configured felt hosts. Called
+ * when the server registers this agent and tells it which pinned remote
+ * cities should be visible in Portolan.
  */
-async function sendFiberTreeDump() {
-    await sendFiberTreeDumpForHost(FELT_HOST);
+async function sendConfiguredFiberTreeDumps(feltHosts) {
+    const hosts = [...new Set((feltHosts || [])
+        .filter((host) => typeof host === 'string' && host.trim().length > 0)
+        .map(normalizeHostPath))];
+    await Promise.all(hosts.map((host) => sendFiberTreeDumpForHost(host)));
 }
 
 async function sendActiveCityFiberTreeDumps(sessions) {
@@ -1401,11 +1405,10 @@ function connect(serverUrl, sshHost) {
         // Send initial sessions
         pollSessions();
 
-        // Stage 3a: ship the fiber tree on connect. The server replaces
-        // any prior snapshot wholesale — reconnects don't need state-diff
-        // coordination because the agent is the sole writer to its
-        // host's `.felt/`.
-        void sendFiberTreeDump();
+        // The server replies with `fiber_tree_hosts`, scoped to the pinned
+        // remote cities it wants this agent to expose. We intentionally do
+        // not publish the default ~/loom mirror here; it is often a synced,
+        // stale view of local truth.
 
         // Constitution shuttle-remote-dispatch: ship the most recent
         // shuttle snapshot if we have one. Lets the server pick up the
@@ -1447,6 +1450,10 @@ function handleMessage(message) {
     switch (message.type) {
         case 'connected':
             log(`Registered with server (origin: ${message.payload?.originId})`);
+            break;
+
+        case 'fiber_tree_hosts':
+            void sendConfiguredFiberTreeDumps(message.payload?.feltHosts);
             break;
 
         case 'kanban-transition':
