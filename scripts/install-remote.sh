@@ -105,13 +105,17 @@ ssh "$SSH_HOST" "chmod +x ~/.portolan/hooks/portolan-hook.sh"
 log "Copying agent.js..."
 scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/.local/bin/portolan-agent.js"
 
-# Constitution shuttle-remote-dispatch: ship the shuttle worker script so
-# the agent can dispatch its own constitution fibers locally on the host.
-# The agent looks for it at ~/.portolan/bin/shuttle-worker.sh by default
-# (overridable via PORTOLAN_SHUTTLE_WORKER).
-log "Copying shuttle-worker.sh..."
-scp -q "$REPO_DIR/server/src/shuttle-worker.sh" "$SSH_HOST:~/.portolan/bin/"
-ssh "$SSH_HOST" "chmod +x ~/.portolan/bin/shuttle-worker.sh"
+# Older Portolan agents used a bundled TS Shuttle worker. The standalone
+# Shuttle cutover removed that script; keep install compatible with older
+# checkouts without failing current agent installs.
+if [ -f "$REPO_DIR/server/src/shuttle-worker.sh" ]; then
+  log "Copying shuttle-worker.sh..."
+  scp -q "$REPO_DIR/server/src/shuttle-worker.sh" "$SSH_HOST:~/.portolan/bin/"
+  ssh "$SSH_HOST" "chmod +x ~/.portolan/bin/shuttle-worker.sh"
+else
+  warn "shuttle-worker.sh not present; skipping retired TS Shuttle worker install"
+  ssh "$SSH_HOST" "rm -f ~/.portolan/bin/shuttle-worker.sh"
+fi
 
 # Install ws dependency for agent (use login shell for nvm)
 log "Installing ws package..."
@@ -198,7 +202,7 @@ log "Verifying..."
 ssh "$SSH_HOST" bash <<'VERIFY'
 echo "  Hook: $(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  Agent: $(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Shuttle worker: $(ls ~/.portolan/bin/shuttle-worker.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
+echo "  Retired TS Shuttle worker removed: $([ ! -e ~/.portolan/bin/shuttle-worker.sh ] && echo 'OK' || echo 'STALE')"
 echo "  ws: $(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  Settings: $(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
 echo "  File-touch hook: $(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
