@@ -38,7 +38,7 @@
  * the user can open — only what they're presented with by default.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { score as fzyScore, hasMatch as fzyHasMatch } from 'fzy.js'
 import { fiberStatusIcon } from '../ui/utils'
@@ -2278,6 +2278,35 @@ interface CombinedFileHit {
 
 type CombinedHit = CombinedFiberHit | CombinedFileHit
 
+interface CombinedDirectoryEntry {
+  name: string
+  kind: 'file' | 'dir'
+  fullPath: string
+  relativePath: string
+}
+
+interface CombinedDirectoryBrowseState {
+  anchor: CombinedDirectoryAnchor
+  target: CombinedDirectoryTarget
+  entries: CombinedDirectoryEntry[]
+  loading: boolean
+  error: string | null
+}
+
+interface CombinedDirectoryAnchor {
+  cityId: string
+  fullPath: string
+}
+
+interface CombinedDirectoryTarget {
+  cityId: string
+  cityName?: string
+  originId: string
+  fullPath: string
+  relativePath: string
+  name: string
+}
+
 function CombinedResultsSection({
   query,
   loading,
@@ -2300,12 +2329,79 @@ function CombinedResultsSection({
 }): JSX.Element {
   const ctx = getPortolanMountContext()
   const openFile = ctx?.openFile
+  const requestListing = ctx?.requestDirectoryListing
+  const [directoryState, setDirectoryState] = useState<CombinedDirectoryBrowseState | null>(null)
+  const directoryRequestSeq = useRef(0)
 
   const merged = useMemo<CombinedHit[]>(() => {
     const all: CombinedHit[] = [...fiberHits, ...fileHits]
     all.sort((a, b) => b.score - a.score)
     return all
   }, [fiberHits, fileHits])
+
+  const loadDirectory = useCallback(
+    (target: CombinedDirectoryTarget, anchor: CombinedDirectoryAnchor = target): void => {
+      const requestSeq = directoryRequestSeq.current + 1
+      directoryRequestSeq.current = requestSeq
+      setDirectoryState({
+        anchor,
+        target,
+        entries: [],
+        loading: true,
+        error: null,
+      })
+
+      if (!requestListing) {
+        setDirectoryState({
+          anchor,
+          target,
+          entries: [],
+          loading: false,
+          error: 'Directory listing is not connected.',
+        })
+        return
+      }
+
+      void requestListing(target.cityId, target.fullPath)
+        .then((result) => {
+          if (directoryRequestSeq.current !== requestSeq) return
+          if (result.error) {
+            setDirectoryState({
+              anchor,
+              target,
+              entries: [],
+              loading: false,
+              error: result.error,
+            })
+            return
+          }
+          setDirectoryState({
+            anchor,
+            target,
+            entries: result.entries.map((entry) => ({
+              name: entry.name,
+              kind: entry.type === 'dir' ? 'dir' : 'file',
+              fullPath: joinDirectoryPath(target.fullPath, entry.name),
+              relativePath: joinRelativePath(target.relativePath, entry.name),
+            })),
+            loading: false,
+            error: null,
+          })
+        })
+        .catch((err: unknown) => {
+          if (directoryRequestSeq.current !== requestSeq) return
+          const msg = (err as { message?: string })?.message ?? String(err)
+          setDirectoryState({
+            anchor,
+            target,
+            entries: [],
+            loading: false,
+            error: msg,
+          })
+        })
+    },
+    [requestListing],
+  )
 
   const handleClick = (hit: CombinedHit): void => {
     if (hit.kind === 'fiber') {
@@ -2331,10 +2427,39 @@ function CombinedResultsSection({
       })
       return
     }
-    // Directory click in combined results: no in-modal browse target,
-    // since opening the directory in vellum's file mode would 404 on a
-    // path-not-a-file. Surface in console so it's discoverable.
-    console.info('[FindHost] directory results are browse-only:', hit.fullPath)
+    const target = directoryTargetOf(hit)
+    if (
+      directoryState?.anchor.cityId === target.cityId &&
+      directoryState.anchor.fullPath === target.fullPath
+    ) {
+      setDirectoryState(null)
+      return
+    }
+    loadDirectory(target)
+  }
+
+  const handleBrowseEntry = (entry: CombinedDirectoryEntry): void => {
+    if (!directoryState) return
+    if (entry.kind === 'file') {
+      if (!openFile) {
+        console.warn('[FindHost] openFile not wired; directory child click ignored.')
+        return
+      }
+      openFile({
+        path: entry.fullPath,
+        cityId: directoryState.target.cityId,
+        originId: directoryState.target.originId,
+      })
+      return
+    }
+    loadDirectory({
+      cityId: directoryState.target.cityId,
+      cityName: directoryState.target.cityName,
+      originId: directoryState.target.originId,
+      fullPath: entry.fullPath,
+      relativePath: entry.relativePath,
+      name: entry.name,
+    }, directoryState.anchor)
   }
 
   return (
@@ -2375,7 +2500,21 @@ function CombinedResultsSection({
                 hit={hit}
                 cityName={resolveCityName(hit, cityById)}
                 onClick={() => handleClick(hit)}
+                isExpanded={
+                  hit.kind === 'dir' &&
+                  directoryState?.anchor.cityId === hit.cityId &&
+                  directoryState.anchor.fullPath === hit.fullPath
+                }
               />
+              {hit.kind === 'dir' &&
+                directoryState?.anchor.cityId === hit.cityId &&
+                directoryState.anchor.fullPath === hit.fullPath && (
+                  <CombinedDirectoryBrowser
+                    state={directoryState}
+                    onEntryClick={handleBrowseEntry}
+                    onClose={() => setDirectoryState(null)}
+                  />
+                )}
             </li>
           ))}
         </ul>
@@ -2388,10 +2527,12 @@ function CombinedRow({
   hit,
   cityName,
   onClick,
+  isExpanded,
 }: {
   hit: CombinedHit
   cityName?: string
   onClick: () => void
+  isExpanded?: boolean
 }): JSX.Element {
   const isFiber = hit.kind === 'fiber'
   const kindLabel = hit.kind
@@ -2406,6 +2547,7 @@ function CombinedRow({
       onClick={onClick}
       title={isFiber ? hit.id : hit.fullPath}
       className="find-fiber-row"
+      aria-expanded={hit.kind === 'dir' ? !!isExpanded : undefined}
       style={{
         display: 'flex',
         alignItems: 'baseline',
@@ -2462,6 +2604,159 @@ function CombinedRow({
   )
 }
 
+function CombinedDirectoryBrowser({
+  state,
+  onEntryClick,
+  onClose,
+}: {
+  state: CombinedDirectoryBrowseState
+  onEntryClick: (entry: CombinedDirectoryEntry) => void
+  onClose: () => void
+}): JSX.Element {
+  const displayPath = state.target.relativePath || state.target.fullPath
+  return (
+    <div
+      style={{
+        margin: '0.1rem 0 0.35rem 1.4rem',
+        border: '1px solid var(--border-muted, #E5DFD5)',
+        borderRadius: '4px',
+        background: 'var(--surface-raised, #FFFDF8)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          padding: '0.35rem 0.45rem',
+          borderBottom: '1px solid var(--border-muted, #E5DFD5)',
+          color: 'var(--text-muted, #7A7368)',
+        }}
+      >
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, monospace)',
+            fontSize: '0.72rem',
+          }}
+          title={displayPath}
+        >
+          {displayPath}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close directory contents"
+          title="Close"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: 'inherit',
+            cursor: 'pointer',
+            font: 'inherit',
+            padding: '0 0.15rem',
+          }}
+        >
+          x
+        </button>
+      </div>
+      {state.loading && <DirectoryBrowseStatus>Loading...</DirectoryBrowseStatus>}
+      {!state.loading && state.error && (
+        <DirectoryBrowseStatus tone="error">{state.error}</DirectoryBrowseStatus>
+      )}
+      {!state.loading && !state.error && state.entries.length === 0 && (
+        <DirectoryBrowseStatus>Empty directory.</DirectoryBrowseStatus>
+      )}
+      {!state.loading && !state.error && state.entries.length > 0 && (
+        <ul
+          style={{
+            listStyle: 'none',
+            margin: 0,
+            padding: '0.2rem 0',
+            maxHeight: '18rem',
+            overflow: 'auto',
+          }}
+        >
+          {state.entries.map((entry) => (
+            <li key={`${entry.kind}::${entry.fullPath}`}>
+              <button
+                type="button"
+                onClick={() => onEntryClick(entry)}
+                title={entry.fullPath}
+                className="find-fiber-row"
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: '0.45rem',
+                  width: '100%',
+                  padding: '0.28rem 0.5rem',
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'inherit',
+                  font: 'inherit',
+                  textAlign: 'left',
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    opacity: 0.7,
+                    width: '0.9rem',
+                    flexShrink: 0,
+                    textAlign: 'center',
+                    fontSize: '0.72rem',
+                  }}
+                >
+                  {entry.kind === 'dir' ? '▸' : ''}
+                </span>
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  {entry.name}
+                </span>
+                <Badge muted>{entry.kind}</Badge>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function DirectoryBrowseStatus({
+  children,
+  tone,
+}: {
+  children: React.ReactNode
+  tone?: 'error'
+}): JSX.Element {
+  return (
+    <div
+      style={{
+        padding: '0.55rem 0.5rem',
+        fontSize: '0.78rem',
+        color: tone === 'error' ? 'var(--text-error, #B5402F)' : 'var(--text-muted, #7A7368)',
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 function Badge({
   children,
   muted,
@@ -2506,6 +2801,28 @@ function resolveCityName(
   if (hit.cityName) return hit.cityName
   const meta = cityById.get(hit.cityId)
   return meta?.name ?? meta?.path?.split('/').pop()
+}
+
+function directoryTargetOf(hit: CombinedFileHit): CombinedDirectoryTarget {
+  return {
+    cityId: hit.cityId,
+    cityName: hit.cityName,
+    originId: hit.originId,
+    fullPath: hit.fullPath,
+    relativePath: hit.relativePath,
+    name: hit.name,
+  }
+}
+
+function joinDirectoryPath(parent: string, name: string): string {
+  if (parent.endsWith('/')) return parent + name
+  return `${parent}/${name}`
+}
+
+function joinRelativePath(parent: string, name: string): string {
+  if (!parent || parent === '.') return name
+  if (parent.endsWith('/')) return parent + name
+  return `${parent}/${name}`
 }
 
 /* ------------------------------------------------------------------------ *
