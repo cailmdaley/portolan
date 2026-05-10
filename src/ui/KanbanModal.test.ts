@@ -506,6 +506,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     ])
     expect(transitionBodies).toEqual([
       { fiberId: 'test/my-constitution', target: 'inFlight' },
+      { fiberId: 'test/my-constitution', target: 'awaitingReview' },
     ])
     expect(dispatchBodies).toEqual([
       { fiber_id: 'test/my-constitution' },

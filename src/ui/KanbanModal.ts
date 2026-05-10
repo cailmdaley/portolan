@@ -2453,13 +2453,31 @@ export class FiberDetailModal {
         const e = (await transRes.json().catch(() => ({}))) as { error?: string }
         throw new Error(e.error || `transition ${transRes.status}`)
       }
-      await this.runDispatchNow(card, btn, errorEl, interactive)
+      const dispatched = await this.runDispatchNow(card, btn, errorEl, interactive)
+      if (!dispatched) {
+        await this.rollbackFailedOneshotRequeue(card, cityId)
+      }
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err)
       errorEl.textContent = msg
       errorEl.style.display = ''
       btn.disabled = false
       btn.textContent = original
+    }
+  }
+
+  private async rollbackFailedOneshotRequeue(
+    card: KanbanCard,
+    cityId: string | undefined,
+  ): Promise<void> {
+    const res = await fetch(this.transitionUrl(cityId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fiberId: card.id, target: 'awaitingReview' }),
+    })
+    if (!res.ok) {
+      const e = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(e.error || `rollback ${res.status}`)
     }
   }
 
@@ -2574,7 +2592,7 @@ export class FiberDetailModal {
         original,
         `Couldn't reach the Shuttle daemon (${shuttleBase}). Is it running? ${detail}`,
       )
-      return
+      return false
     }
 
     const body = await res.json().catch(() => ({})) as {
@@ -2589,26 +2607,27 @@ export class FiberDetailModal {
       btn.disabled = true
       errorEl.textContent = 'A worker is already running for this fiber.'
       errorEl.style.display = ''
-      return
+      return true
     }
 
     if (res.status === 422) {
       // not_eligible: the daemon knows why — not yet due, disabled, or closed.
       const humanReason = dispatchIneligibleReason(body.reason)
       this.showDispatchError(errorEl, btn, original, humanReason)
-      return
+      return false
     }
 
     if (!res.ok) {
       // Daemon-side error (500 etc.) — surface whatever reason the body carries.
       const msg = body.reason ?? `Dispatch failed (${res.status})`
       this.showDispatchError(errorEl, btn, original, msg)
-      return
+      return false
     }
 
     // 200 success — close the modal and refresh the kanban board.
     this.close()
     this.onSaved()
+    return true
   }
 
   private showDispatchError(
