@@ -3,14 +3,15 @@ import {
   buildBrowserTabTitle,
   citySpriteIconCandidates,
   defaultCitySpriteIndex,
+  isImageContentType,
 } from './BrowserTabIdentity'
 
 describe('BrowserTabIdentity', () => {
-  it('uses the focused city when no vellum surface is open', () => {
+  it('keeps idle map tabs at the product title', () => {
     expect(buildBrowserTabTitle({
       city: { id: 'portolan', name: 'portolan' },
       isOpen: false,
-    })).toBe('portolan · Portolan')
+    })).toBe('Portolan')
   })
 
   it('puts the active filename first so narrow browser tabs differ', () => {
@@ -35,5 +36,12 @@ describe('BrowserTabIdentity', () => {
       '/sprites/cities/ai-futures.png',
       `/sprites/cities/default-${defaultCitySpriteIndex('ai-futures')}.png`,
     ])
+  })
+
+  it('accepts only image content types for custom sprite candidates', () => {
+    expect(isImageContentType('image/png')).toBe(true)
+    expect(isImageContentType('image/svg+xml; charset=utf-8')).toBe(true)
+    expect(isImageContentType('text/html')).toBe(false)
+    expect(isImageContentType(null)).toBe(false)
   })
 })

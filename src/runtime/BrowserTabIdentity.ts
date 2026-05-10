@@ -1,3 +1,6 @@
+import { citySpritePathCandidates } from './citySpritePaths'
+export { defaultCitySpriteIndex } from './citySpritePaths'
+
 export interface BrowserTabCity {
   id: string
   name: string
@@ -16,13 +19,13 @@ export interface BrowserTabIdentityState {
 export const DEFAULT_BROWSER_TITLE = 'Portolan'
 export const DEFAULT_FAVICON_HREF = '/favicon.svg'
 
-const NUM_DEFAULT_CITY_SPRITES = 5
-
 export function buildBrowserTabTitle(state: BrowserTabIdentityState): string {
+  if (!state.isOpen) return DEFAULT_BROWSER_TITLE
+
   const cityName = state.city?.name ?? null
   const scope = cityName ?? 'All cities'
   const resource =
-    state.isOpen && state.mode === 'narrative'
+    state.mode === 'narrative'
       ? state.filePath
         ? basename(state.filePath)
         : state.fiberSlug
@@ -31,26 +34,17 @@ export function buildBrowserTabTitle(state: BrowserTabIdentityState): string {
       : null
 
   if (resource) return [resource, scope, DEFAULT_BROWSER_TITLE].join(' · ')
-  if (state.isOpen && state.mode) return [modeLabel(state.mode), scope, DEFAULT_BROWSER_TITLE].join(' · ')
-  if (cityName) return [cityName, DEFAULT_BROWSER_TITLE].join(' · ')
+  if (state.mode) return [modeLabel(state.mode), scope, DEFAULT_BROWSER_TITLE].join(' · ')
   return DEFAULT_BROWSER_TITLE
 }
 
 export function citySpriteIconCandidates(city: BrowserTabCity | null | undefined): string[] {
   if (!city) return [DEFAULT_FAVICON_HREF]
-  return [
-    `/sprites/cities/${encodeURIComponent(city.name)}.png`,
-    `/sprites/cities/default-${defaultCitySpriteIndex(city.id)}.png`,
-  ]
+  return citySpritePathCandidates(city)
 }
 
-export function defaultCitySpriteIndex(cityId: string): number {
-  let hash = 0
-  for (let i = 0; i < cityId.length; i++) {
-    hash = ((hash << 5) - hash) + cityId.charCodeAt(i)
-    hash = hash & hash
-  }
-  return (Math.abs(hash) % NUM_DEFAULT_CITY_SPRITES) + 1
+export function isImageContentType(contentType: string | null): boolean {
+  return contentType?.toLowerCase().split(';', 1)[0].trim().startsWith('image/') ?? false
 }
 
 function modeLabel(mode: BrowserTabMode): string {

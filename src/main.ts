@@ -35,6 +35,7 @@ import {
   DEFAULT_FAVICON_HREF,
   buildBrowserTabTitle,
   citySpriteIconCandidates,
+  isImageContentType,
 } from './runtime/BrowserTabIdentity'
 import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
@@ -253,10 +254,18 @@ function syncBrowserTabIcon(city: City | null): void {
     apply(primary)
     return
   }
-  const img = new Image()
-  img.onload = () => apply(primary)
-  img.onerror = () => apply(fallback)
-  img.src = primary
+  void resolveIconHref(primary, fallback).then(apply)
+}
+
+async function resolveIconHref(primary: string, fallback: string): Promise<string> {
+  if (primary === DEFAULT_FAVICON_HREF) return primary
+  try {
+    const res = await fetch(primary, { method: 'HEAD', cache: 'force-cache' })
+    if (res.ok && isImageContentType(res.headers.get('content-type'))) return primary
+  } catch {
+    // Fall through to the deterministic default sprite.
+  }
+  return fallback
 }
 
 /** Push the URL fragment to match the current module-state. No-op when

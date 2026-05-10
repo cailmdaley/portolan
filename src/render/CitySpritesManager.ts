@@ -3,9 +3,12 @@
 
 import { Texture, TextureLoader } from 'three'
 import type { City } from '../state/types'
-
-// Number of default fallback sprites
-const NUM_DEFAULT_SPRITES = 5
+import {
+  NUM_DEFAULT_CITY_SPRITES,
+  customCitySpritePath,
+  defaultCitySpriteIndex,
+  defaultCitySpritePathByIndex,
+} from '../runtime/citySpritePaths'
 
 export class CitySpritesManager {
   private textureLoader = new TextureLoader()
@@ -25,16 +28,16 @@ export class CitySpritesManager {
    * Load the 5 default city sprites from public/sprites/cities/
    */
   private loadDefaultSprites(): void {
-    for (let i = 1; i <= NUM_DEFAULT_SPRITES; i++) {
+    for (let i = 1; i <= NUM_DEFAULT_CITY_SPRITES; i++) {
       // Sprites served from public/sprites/cities/
-      const path = `/sprites/cities/default-${i}.png`
+      const path = defaultCitySpritePathByIndex(i)
       this.textureLoader.load(
         path,
         (texture) => {
           // Mark as managed so disposeObject() won't dispose shared textures
           texture.userData = { managed: true }
           this.defaultSprites.set(i, texture)
-          if (this.defaultSprites.size === NUM_DEFAULT_SPRITES) {
+          if (this.defaultSprites.size === NUM_DEFAULT_CITY_SPRITES) {
             this.defaultSpritesLoaded = true
           }
         },
@@ -44,19 +47,6 @@ export class CitySpritesManager {
         }
       )
     }
-  }
-
-  /**
-   * Get a deterministic default sprite index based on city ID
-   * Uses simple hash to ensure same city always gets same default
-   */
-  private getDefaultSpriteIndex(cityId: string): number {
-    let hash = 0
-    for (let i = 0; i < cityId.length; i++) {
-      hash = ((hash << 5) - hash) + cityId.charCodeAt(i)
-      hash = hash & hash // Convert to 32-bit integer
-    }
-    return (Math.abs(hash) % NUM_DEFAULT_SPRITES) + 1
   }
 
   /**
@@ -96,7 +86,7 @@ export class CitySpritesManager {
    */
   private loadCitySprite(city: City): void {
     this.pendingLoads.add(city.id)
-    const path = `/sprites/cities/${city.name}.png`
+    const path = customCitySpritePath(city)
 
     this.textureLoader.load(
       path,
@@ -121,7 +111,7 @@ export class CitySpritesManager {
    * Get a default sprite based on city ID (deterministic selection)
    */
   getDefaultSprite(cityId: string): Texture | null {
-    const index = this.getDefaultSpriteIndex(cityId)
+    const index = defaultCitySpriteIndex(cityId)
     return this.defaultSprites.get(index) || null
   }
 
