@@ -1020,6 +1020,8 @@ export interface OpenWorkspaceModalOptions {
   editable?: boolean
   /** 1-indexed line to jump to when the file opens. Ignored unless `initialFilePath` is set. */
   jumpToLine?: number
+  /** Fired when Vellum file mode follows a link to another project file. */
+  onFilePathChange?: (path: string, opts?: { jumpToLine?: number }) => void
   /** Tab to land on at first paint. `'narrative'` (default) opens on the prose;
    *  `'kanban'` deep-links to the (slot-overridden) Workspace tab so the user
    *  sees the kanban grid immediately — used by the global launch button and
@@ -1367,9 +1369,15 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
           originId={opts.originId}
           editable={opts.editable}
           jumpToLine={opts.jumpToLine}
+          onFilePathChange={opts.onFilePathChange}
           eyebrow={opts.cityName}
           headerAnnotationActions={portolanHeaderActions({
             path,
+            originId: opts.originId ?? 'local',
+            cityId: opts.cityId,
+          })}
+          headerAnnotationActionsForFile={(nextPath) => portolanHeaderActions({
+            path: nextPath,
             originId: opts.originId ?? 'local',
             cityId: opts.cityId,
           })}

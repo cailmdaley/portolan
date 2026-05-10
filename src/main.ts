@@ -372,6 +372,13 @@ function openFile(args: OpenFileArgs): void {
       editable: args.editable,
       jumpToLine: args.jumpToLine,
       cityName: args.cityId ? cities.find(c => c.id === args.cityId)?.name : undefined,
+      onFilePathChange: (path) => {
+        activeWorkspaceFilePath = path
+        pushCurrentUrl()
+        if (args.cityId) {
+          recordRecentTouch({ kind: 'file', cityId: args.cityId, originId: args.originId, path })
+        }
+      },
       onClose: handleWorkspaceClosed,
     })
     activeWorkspaceHandle = handle
