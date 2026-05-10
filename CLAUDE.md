@@ -55,7 +55,7 @@ Server (Node, :4004)          Browser (Three.js, :5173)
 └── index.ts (state, WS)      └── main.ts
 ```
 
-Server polls tmux → builds state → broadcasts. File touches flow via hooks (POST `/hook/file-touch` → `RecentFileTracker`). Browser renders → user clicks → routes to Kitty.
+Server polls tmux → builds state → broadcasts. File touches flow through the canonical hook JSONL stream (`~/.portolan/data/events.jsonl` → `EventWatcher`/`portolan-agent` → `RecentFileTracker`). Browser renders → user clicks → routes to Kitty.
 
 **File viewer = vellum.** Main app opens files via `openVellumWorkspaceModal({ initialFilePath })` in `src/vellum/mount.tsx` → `WorkspaceMount` → `FiberPage`'s `FileModeView` → vellum's `FileViewerPage` + `PortolanAdapter` → server endpoints (`/project-file/`, `/raw-file/`, `/file-content`, `/fiber/:slug`, annotations). Files and fibers share one workspace shell (the standalone `openVellumFileModal()` retired 2026-04-25 — see `card-redesign/file-modal-absorbs-into-workspace`). Portolan's old `src/ui/FileViewer*` is gone; React only lives inside `src/vellum/`, everything else is vanilla TS/Three.js.
 
@@ -105,8 +105,8 @@ This is navigation, not interaction. ~6,200 LOC vs original's 14,000.
 ```bash
 curl http://localhost:4004/debug-runtime       # runtime state and map sizes
 curl 'http://localhost:4004/recent-files?sessionId=X'  # recent file touches for a worker
-curl -s localhost:4004/hook/file-touch -X POST -H 'Content-Type: application/json' \
-  -d '{"session_id":"test","tool_name":"Read","tool_input":{"file_path":"/tmp/test.ts"}}'
+printf '%s\n' '{"hook_event_name":"PostToolUse","session_id":"test","tool_name":"Read","tool_input":{"file_path":"/tmp/test.ts"},"cwd":"/tmp"}' \
+  | PORTOLAN_EVENTS_FILE=/tmp/portolan-events-smoke.jsonl server/hooks/portolan-hook.sh
 curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
 curl 'http://localhost:4004/project-file/local/path/to/file.html'  # serve project file (also: /project-file/{originId}/path)
 curl 'http://localhost:4004/astra-paper-view/local/abs/path/to/astra.yaml'  # render astra.yaml as lightcone paper view (local only)

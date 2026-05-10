@@ -8,8 +8,7 @@
 # 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js
 # 3. Creates ~/.portolan/data/ directory
 # 4. Patches ~/.claude/settings.json to add:
-#    - command hooks for portolan activity tracking
-#    - PostToolUse HTTP hook for file-touch forwarding
+#    - command hooks for canonical Portolan activity and file-touch tracking
 # 5. Optionally starts the agent in a tmux session
 #
 # Prerequisites on remote:
@@ -139,7 +138,6 @@ ssh "$SSH_HOST" bash <<'PATCH_SETTINGS'
 set -e
 SETTINGS_FILE=~/.claude/settings.json
 HOOK_PATH="$HOME/.portolan/hooks/portolan-hook.sh"
-FILE_TOUCH_URL="http://localhost:4004/hook/file-touch"
 
 # Create settings file if it doesn't exist
 if [ ! -f "$SETTINGS_FILE" ]; then
@@ -205,10 +203,10 @@ echo "  Agent: $(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || e
 echo "  Retired TS Shuttle worker removed: $([ ! -e ~/.portolan/bin/shuttle-worker.sh ] && echo 'OK' || echo 'STALE')"
 echo "  ws: $(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  Settings: $(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
-echo "  File-touch hook: $(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
+echo "  PostToolUse JSONL hook: $(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
 VERIFY
 
-log "Checking remote HTTP hook forwarding..."
+log "Checking remote tunnel and canonical hook output..."
 if ! curl -sS -m 3 http://localhost:4004/debug-runtime >/dev/null 2>&1; then
   warn "Local portolan server not reachable at http://localhost:4004; skipping live forwarding probe"
 else
@@ -233,17 +231,24 @@ else
       log "Tunnel check: remote /debug-runtime endpoint is reachable"
     fi
 
-    probe_session="remote-forward-probe-$(date +%s)"
-    probe_payload="$(printf '{"session_id":"%s","tool_name":"Read","tool_input":{"file_path":"/tmp/portolan-remote-forward-probe.ts"},"cwd":"/tmp"}' "$probe_session")"
-    probe_response="$(ssh "$SSH_HOST" "curl -sS -m 5 -X POST http://localhost:4004/hook/file-touch -H 'Content-Type: application/json' -d @-" <<< "$probe_payload" 2>/dev/null || true)"
+    probe_session="remote-hook-probe-$(date +%s)"
+    probe_path="/tmp/portolan-remote-hook-probe.ts"
+    probe_payload="$(printf '{"hook_event_name":"PostToolUse","session_id":"%s","tool_name":"Read","tool_input":{"file_path":"%s"},"cwd":"/tmp"}' "$probe_session" "$probe_path")"
+    escaped_probe_payload="$(printf "%s" "$probe_payload" | sed "s/'/'\\\\''/g")"
+    probe_response="$(ssh "$SSH_HOST" "PROBE_PAYLOAD='$escaped_probe_payload' bash -s" <<'REMOTE_HOOK_PROBE' 2>/dev/null || true
+set -e
+tmp_events="$(mktemp)"
+trap 'rm -f "$tmp_events"' EXIT
+printf '%s' "$PROBE_PAYLOAD" | PORTOLAN_EVENTS_FILE="$tmp_events" ~/.portolan/hooks/portolan-hook.sh
+tail -n 1 "$tmp_events"
+REMOTE_HOOK_PROBE
+)"
 
-    if command -v jq >/dev/null 2>&1 && echo "$probe_response" | jq -e '.success == true' >/dev/null 2>&1; then
-      log "Hook check: remote POST /hook/file-touch reached server"
-    elif echo "$probe_response" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
-      log "Hook check: remote POST /hook/file-touch reached server"
+    if command -v jq >/dev/null 2>&1 && echo "$probe_response" | jq -e --arg session "$probe_session" --arg path "$probe_path" '.type == "post_tool_use" and .harness == "claude-code" and .sessionId == $session and .tool == "Read" and .toolInput.file_path == $path' >/dev/null 2>&1; then
+      log "Hook check: remote command hook wrote canonical JSONL"
     else
-      warn "Hook check failed. Response: ${probe_response:-<empty>}"
-      warn "Verify SSH config includes: RemoteForward 4004 127.0.0.1:4004"
+      warn "Hook check failed. Event: ${probe_response:-<empty>}"
+      warn "Verify ~/.portolan/hooks/portolan-hook.sh is executable and jq is installed on $SSH_HOST"
     fi
   fi
 fi
