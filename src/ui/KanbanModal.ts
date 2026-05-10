@@ -2552,7 +2552,7 @@ export class FiberDetailModal {
      */
     adHoc?: boolean,
     force: boolean = false,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const original = btn.textContent ?? ''
     btn.disabled = true
     btn.textContent = 'Dispatching…'
