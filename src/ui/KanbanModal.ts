@@ -70,6 +70,11 @@ interface KanbanCard {
    */
   projectSlug?: string
   /**
+   * Fiber id in Shuttle's canonical felt store. City-scoped kanban cards may
+   * use project-relative ids for navigation; dispatch must use this id.
+   */
+  shuttleFiberId?: string
+  /**
    * Session UUID of the most recently dispatched worker when frontmatter
    * still carries one. Display-only hint data: Resume always tries, and
    * Shuttle resolves the actual session at dispatch time.
@@ -2563,6 +2568,7 @@ export class FiberDetailModal {
     } catch {
       shuttleBase = 'http://127.0.0.1:4000'
     }
+    const dispatchFiberId = card.shuttleFiberId ?? card.id
 
     // Distinguish network failures (fetch never completed) from HTTP errors
     // (server responded). A TypeError from fetch means no response arrived —
@@ -2573,7 +2579,7 @@ export class FiberDetailModal {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fiber_id: card.id,
+          fiber_id: dispatchFiberId,
           // Default: ad_hoc=true for standing roles (manual triggers don't
           // consume scheduled slots). Resume-from-awaiting passes adHoc=false
           // explicitly so the dispatcher takes the resume-honoring path

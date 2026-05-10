@@ -102,6 +102,12 @@ export interface KanbanCard {
    */
   projectSlug?: string;
   /**
+   * Fiber id in the canonical felt store that Shuttle reads. In city-scoped
+   * kanban views `id` may be project-relative (for Vellum navigation), while
+   * the Shuttle daemon is registered against loom/canonical ids.
+   */
+  shuttleFiberId?: string;
+  /**
    * The harness-native session UUID of the most recently dispatched worker
    * when the frontmatter still carries one. This is only a card hint; Resume
    * does not depend on it because Shuttle resolves the real session at
@@ -2039,7 +2045,9 @@ export class HttpApiKanban {
     // canonical-path realpath gets us back to the project-rooted view.
     let cityId: string | undefined;
     let projectSlug: string | undefined;
+    let shuttleFiberId: string | undefined;
     if (canonicalPath !== undefined) {
+      shuttleFiberId = canonicalFiberRefFromPath(canonicalPath)?.fiberId;
       const segments = f.id.split('/');
       const basename = segments[segments.length - 1];
       const owner = this.resolveCityForCanonicalPath(canonicalPath, basename);
@@ -2065,6 +2073,7 @@ export class HttpApiKanban {
       runningWorker,
       cityId,
       projectSlug,
+      shuttleFiberId,
       sessionId: f.shuttleSessionId,
       shuttleEnabled: f.shuttleEnabled,
       shuttleAgent: f.shuttleAgent,

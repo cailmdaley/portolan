@@ -26,6 +26,7 @@ function makeInFlightCard(overrides: Partial<{
   runningWorker: string
   shuttleKind: 'oneshot' | 'standing'
   sessionId: string
+  shuttleFiberId: string
 }> = {}) {
   return {
     id: 'test/my-constitution',
@@ -37,6 +38,7 @@ function makeInFlightCard(overrides: Partial<{
     createdAt: '2026-01-01T00:00:00Z',
     shuttleKind: 'oneshot' as const,
     shuttleAgent: 'claude-sonnet',
+    shuttleFiberId: 'test/my-constitution',
     tags: ['constitution'],
     ...overrides,
   }
@@ -389,6 +391,30 @@ describe('FiberDetailModal dispatch — 200 success', () => {
 
     expect(dispatchBodies).toEqual([
       { fiber_id: 'test/my-constitution' },
+    ])
+  })
+
+  it('dispatches city-scoped cards with their canonical Shuttle fiber id', async () => {
+    const dispatchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-ai-futures/portolan/backend/work' }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { dispatchBtn } = await openDispatchModal(makeInFlightCard({
+      id: 'backend/work',
+      projectSlug: 'backend/work',
+      shuttleFiberId: 'ai-futures/portolan/backend/work',
+    } as any))
+    dispatchBtn.click()
+    await tick()
+
+    expect(dispatchBodies).toEqual([
+      { fiber_id: 'ai-futures/portolan/backend/work' },
     ])
   })
 

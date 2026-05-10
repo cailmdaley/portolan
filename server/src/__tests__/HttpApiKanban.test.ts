@@ -555,6 +555,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(card).toBeTruthy();
     expect(card.cityId).toBe('self');
     expect(card.projectSlug).toBe('parent/child');
+    expect(card.shuttleFiberId).toBe('parent/child');
   });
 
   it('resolves to the deeper-matching city when a fiber is reachable via a symlinked alias', async () => {
