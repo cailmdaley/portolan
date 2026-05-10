@@ -31,6 +31,11 @@ import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { UrlFragmentSync, SCOPE_GLOBAL, type UrlState, type VellumMode } from './runtime/UrlFragment'
 import { buildVellumFileUrl } from './runtime/vellumFileLink'
+import {
+  DEFAULT_FAVICON_HREF,
+  buildBrowserTabTitle,
+  citySpriteIconCandidates,
+} from './runtime/BrowserTabIdentity'
 import { ContextMenu } from './ui/ContextMenu'
 import { PlaygroundViewer } from './ui/PlaygroundViewer'
 import { NewWorkerDialog } from './ui/NewWorkerDialog'
@@ -150,6 +155,8 @@ let activeWorkspaceFilePath: string | null = null
  *  `SCOPE_GLOBAL` = explicit global override; cityId string = explicit
  *  city scope. Drives the `scope` URL param. */
 let activeWorkspaceScopeOverride: string | typeof SCOPE_GLOBAL | null = null
+let browserIconRequestToken = 0
+let browserIconCandidateKey: string | null = null
 
 /** Stage J — when the open paths (`openCityWorkspace` etc.) close the
  *  current modal as a prelude to opening a fresh one, `handleWorkspaceClosed`
@@ -203,11 +210,61 @@ function buildCurrentUrlState(): UrlState {
   return state
 }
 
+function currentBrowserTabCity(): City | null {
+  const cityId = vellumOpenIntent && activeWorkspaceCityId
+    ? activeWorkspaceCityId
+    : lastFocusedCityId
+  return cityId ? cities.find(c => c.id === cityId) ?? null : null
+}
+
+function syncBrowserTabIdentity(): void {
+  const city = currentBrowserTabCity()
+  document.title = buildBrowserTabTitle({
+    city,
+    isOpen: vellumOpenIntent,
+    mode: lastVellumMode,
+    filePath: activeWorkspaceFilePath,
+    fiberSlug: activeWorkspaceFiberSlug,
+  })
+  syncBrowserTabIcon(city)
+}
+
+function syncBrowserTabIcon(city: City | null): void {
+  const candidates = citySpriteIconCandidates(city)
+  const key = candidates.join('\n')
+  if (key === browserIconCandidateKey) return
+  browserIconCandidateKey = key
+
+  const token = ++browserIconRequestToken
+  const apply = (href: string): void => {
+    if (token !== browserIconRequestToken) return
+    let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      document.head.appendChild(link)
+    }
+    link.href = href
+    link.type = href.endsWith('.svg') ? 'image/svg+xml' : 'image/png'
+  }
+
+  const [primary, fallback = DEFAULT_FAVICON_HREF] = candidates
+  if (primary === DEFAULT_FAVICON_HREF) {
+    apply(primary)
+    return
+  }
+  const img = new Image()
+  img.onload = () => apply(primary)
+  img.onerror = () => apply(fallback)
+  img.src = primary
+}
+
 /** Push the URL fragment to match the current module-state. No-op when
  *  the URL already matches (e.g., redundant `commitVellumMode('find')` on
  *  in-place tab flips). Suppressed during popstate / hashchange
  *  convergence so the converging open paths don't double-push. */
 function pushCurrentUrl(): void {
+  syncBrowserTabIdentity()
   urlSync.push(buildCurrentUrlState())
 }
 
@@ -284,6 +341,7 @@ function handleCityClick(city: City): void {
   const cityChanged = lastFocusedCityId !== city.id
   lastFocusedCityId = city.id
   syncFocusedCityInChrome(city)
+  syncBrowserTabIdentity()
 
   // Focus on city and zoom to detail level
   const pos = hexGrid.axialToCartesian(city.hex)
@@ -1251,6 +1309,7 @@ const stateSync = new FrontendStateSync({
     // explicit known-orphaned affordance until either Find or the chrome
     // bar grows a section for them.
     mapChromeBar.update(cities, sessions)
+    syncBrowserTabIdentity()
 
     if (!isInitialState || cities.length === 0) return
 
