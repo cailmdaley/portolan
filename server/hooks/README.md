@@ -30,9 +30,10 @@ Claude `PreToolUse` and `PostToolUse` payloads to the canonical JSONL schema.
 
 Install `server/hooks/portolan-codex-hook.sh` from `~/.codex/hooks.json` for
 `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, and `Stop` when those hooks are
-enabled. Codex currently provides the documented common fields on stdin; real
-file-tool names should be confirmed from local payloads before adding narrower
-matchers.
+enabled. Current Codex payloads report shell commands as `Bash` with
+`tool_input.command`, and file edits as `apply_patch` with the patch text in
+`tool_input.command`; the adapter extracts `*** Update File:` style headers into
+canonical `Edit` file touches.
 
 ## Pi
 

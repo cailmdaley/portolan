@@ -46,12 +46,35 @@ payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmu
     else .
     end;
 
+  def canonical_path($cwd):
+    if type == "string" and length > 0 then
+      if startswith("/") then .
+      elif ($cwd | type) == "string" and ($cwd | length) > 0 then
+        "\($cwd | sub("/$"; ""))/\(.)"
+      else .
+      end
+    else empty
+    end;
+
+  def explicit_file_path:
+    .file_path // .path // .filePath // .absolute_path // empty;
+
+  def apply_patch_paths:
+    (.command // "") as $command |
+    if ($command | type) == "string" then
+      $command
+      | split("\n")
+      | map(capture("^\\*\\*\\* (?:Add|Update|Delete) File: (?<path>.+)$")? | .path)
+      | unique
+    else []
+    end;
+
   (.hook_event_name // "unknown") as $hook |
   ($hook | map_event_type) as $event_type |
   (.session_id // "unknown") as $session_id |
   if $event_type == null then empty
   else
-    {
+    ({
       id: "codex-\($session_id)-\($ts)-\(now * 1000 | floor % 100000)",
       timestamp: ($ts | tonumber),
       type: $event_type,
@@ -60,19 +83,23 @@ payload=$(printf '%s' "$input" | "$JQ" -c --arg ts "$timestamp" --arg tmux "$tmu
       tmuxSession: $tmux,
       harness: "codex",
       originName: $origin
-    } + (
+    }) as $base |
+    $base + (
       if .tool_name then
         (.tool_input // {}) as $tool_input |
-        ($tool_input.file_path // $tool_input.path // $tool_input.filePath // $tool_input.absolute_path // empty) as $file_path |
-        {
-          tool: (.tool_name | normalize_tool),
-          toolInput: (
-            if ($file_path | type) == "string" and ($file_path | length) > 0
-            then $tool_input + { file_path: $file_path }
-            else $tool_input
-            end
-          )
-        }
+        (.tool_name | normalize_tool) as $tool |
+        (.cwd // "") as $cwd |
+        (
+          [$tool_input | explicit_file_path | canonical_path($cwd)]
+          + if .tool_name == "apply_patch" then [$tool_input | apply_patch_paths[] | canonical_path($cwd)] else [] end
+          | unique
+        ) as $file_paths |
+        if ($file_paths | length) > 0 then
+          $file_paths[]
+          | { tool: $tool, toolInput: ($tool_input + { file_path: . }) }
+        else
+          { tool: $tool, toolInput: $tool_input }
+        end
       elif .prompt then
         { prompt: .prompt }
       else {}

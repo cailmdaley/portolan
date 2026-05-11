@@ -139,7 +139,7 @@ export function normalizeToolTouch(payload: Record<string, unknown>): Normalized
     ?? objectField(payload.input)
     ?? objectField(payload.args)
     ?? {};
-  const filePath = extractFilePath(rawInput);
+  const filePath = extractFilePath(rawInput) ?? extractApplyPatchPath(rawTool, rawInput);
   if (!filePath) return null;
 
   return {
@@ -164,6 +164,17 @@ function extractFilePath(input: Record<string, unknown>): string | null {
   for (const key of FILE_PATH_KEYS) {
     const value = stringField(input[key]);
     if (value) return value;
+  }
+  return null;
+}
+
+function extractApplyPatchPath(rawTool: string, input: Record<string, unknown>): string | null {
+  if (rawTool !== 'apply_patch') return null;
+  const command = stringField(input.command);
+  if (!command) return null;
+  for (const line of command.split('\n')) {
+    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
+    if (match?.[1]) return match[1];
   }
   return null;
 }

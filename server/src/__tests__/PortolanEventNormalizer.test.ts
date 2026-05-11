@@ -44,6 +44,35 @@ describe('PortolanEventNormalizer', () => {
     });
   });
 
+  it('extracts Codex apply_patch file paths from the command payload', () => {
+    const touch = normalizeToolTouch({
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: [
+          '*** Begin Patch',
+          '*** Update File: seed.txt',
+          '@@',
+          '+raw-hook-active',
+          '*** End Patch',
+        ].join('\n'),
+      },
+    });
+
+    expect(touch).toEqual({
+      tool: 'Edit',
+      toolInput: {
+        command: [
+          '*** Begin Patch',
+          '*** Update File: seed.txt',
+          '@@',
+          '+raw-hook-active',
+          '*** End Patch',
+        ].join('\n'),
+        file_path: 'seed.txt',
+      },
+    });
+  });
+
   it('normalizes Pi tool_call/tool_result event names', () => {
     const event = normalizeHarnessEvent({
       event: 'tool_call',
