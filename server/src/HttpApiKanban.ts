@@ -1307,9 +1307,11 @@ export class HttpApiKanban {
       // `idea` tag won't move it into Ideas: classification treats `closed`
       // fibers as awaitingReview/tempered/composted regardless of tags.
       // To support the direct drag path "awaitingReview → ideas", reopen
-      // the fiber first (pause → drafts) then add the `idea` tag so
-      // classification places it into Ideas (the `idea` tag takes
-      // precedence for open fibers).
+      // the fiber first, then pause it back into a non-dispatchable draft,
+      // then add the `idea` tag so classification places it into Ideas
+      // (the `idea` tag takes precedence for open fibers). Shuttle only
+      // exposes `reopen` for closed fibers, so asking it to `pause` the
+      // closed fiber directly returns action_not_available.
       if (fiber.status === 'closed') {
         if (originId !== 'local') {
           if (!this.remoteTransitionExecutor) {
@@ -1318,7 +1320,13 @@ export class HttpApiKanban {
                 `(fiber ${fiberId} is on origin '${originId}')`,
             );
           }
-          // Pause on the remote origin via the executor.
+          await this.remoteTransitionExecutor({
+            originId,
+            feltHost: host,
+            path: relativeFeltPath(fiber),
+            kind: 'shuttle',
+            ...transitionInvocationForTarget(fiber, { host, fiberId: fiber.id }, 'inFlight'),
+          });
           await this.remoteTransitionExecutor({
             originId,
             feltHost: host,
@@ -1328,6 +1336,8 @@ export class HttpApiKanban {
           });
           this.clearFiberPoolCache();
         } else {
+          await this.runActionForEntry(entry, 'inFlight');
+          this.clearFiberPoolCache();
           await this.runActionForEntry(entry, 'drafts');
           this.clearFiberPoolCache();
         }

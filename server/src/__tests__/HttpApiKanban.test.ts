@@ -1239,6 +1239,46 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toMatch(/^  - idea$/m);
     });
 
+    it('awaitingReview → ideas reopens, pauses, then adds the idea tag', async () => {
+      // Closed fibers cannot be paused directly through Shuttle's action API:
+      // the available lifecycle action is reopen. Moving a reviewed handoff
+      // back to Ideas therefore has to reopen first, pause so it will not
+      // dispatch, then add the tag that classifies open fibers as Ideas.
+      writeFib('needs-thinking', {
+        name: 'Needs thinking',
+        status: 'closed',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+        'closed-at': '2026-04-03',
+      });
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const feltCalls: FeltTagEditInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+        feltEditFn: makeFeltEditStub(feltCalls),
+      });
+      const { res, status, body } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'needs-thinking', target: 'ideas' }), res);
+
+      expect(status()).toBe(200);
+      expect(shuttleCalls).toEqual([
+        { host: TEST_DIR, verb: 'reopen', fiberId: 'needs-thinking' },
+        { host: TEST_DIR, verb: 'pause', fiberId: 'needs-thinking' },
+      ]);
+      expect(feltCalls).toEqual([
+        { host: TEST_DIR, fiberId: 'needs-thinking', add: ['idea'], remove: [] },
+      ]);
+      expect(body().card.status).toBe('active');
+      expect(body().card.shuttleEnabled).toBe(false);
+      expect(body().card.tags).toContain('idea');
+      const after = readFileSync(join(FELT_DIR, 'needs-thinking', 'needs-thinking.md'), 'utf-8');
+      expect(after).toMatch(/^status: active$/m);
+      expect(after).toMatch(/^  enabled: false$/m);
+      expect(after).toMatch(/^  - idea$/m);
+      expect(after).not.toMatch(/^closed-at:/m);
+    });
+
     it('ideas → drafts strips the idea tag and pauses', async () => {
       // Drag-out-of-ideas chains a tag-strip into the lifecycle verb so the
       // fiber lands in the requested column under classifyFiber's rules
