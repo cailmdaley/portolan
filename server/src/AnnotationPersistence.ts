@@ -18,6 +18,7 @@ export interface Annotation {
   id: string;
   originId: string;        // 'local' or 'remote-{hostname}'
   comment: string;
+  intent?: 'note' | 'delete'; // omitted legacy rows behave as note annotations
   createdAt: number;
   /** ms epoch when the annotation was last successfully sent to a worker.
    *  Undefined = never sent. Updated on every successful /send-annotations

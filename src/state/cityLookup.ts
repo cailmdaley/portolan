@@ -51,7 +51,40 @@ export function findBestMatchingCityForPath(
       best = city
     }
   }
-  return best
+  if (best) return best
+
+  return findRemoteFeltCityForPath(cities, filePath, preferredOriginId)
+}
+
+function findRemoteFeltCityForPath(
+  cities: City[],
+  filePath: string,
+  preferredOriginId?: string,
+): City | null {
+  const feltMatch = filePath.match(/\/\.felt\/(.+)$/)
+  if (!feltMatch) return null
+  const segments = feltMatch[1].split('/').filter(Boolean)
+  if (segments.length === 0) return null
+
+  const candidates = cities
+    .filter((city) => city.originId !== 'local')
+    .filter((city) => segments.includes(city.name))
+  if (candidates.length === 0) return null
+
+  if (preferredOriginId) {
+    const preferred = candidates.find((city) => city.originId === preferredOriginId)
+    if (preferred) return preferred
+  }
+
+  const segmentRank = (city: City) => {
+    const idx = segments.indexOf(city.name)
+    return idx < 0 ? Number.MAX_SAFE_INTEGER : idx
+  }
+  return candidates.sort((a, b) =>
+    segmentRank(a) - segmentRank(b)
+    || b.path.length - a.path.length
+    || a.originId.localeCompare(b.originId),
+  )[0] ?? null
 }
 
 export function getCityWorkers(city: City, sessions: Session[]): { id: string; name: string; tmuxSession: string }[] {

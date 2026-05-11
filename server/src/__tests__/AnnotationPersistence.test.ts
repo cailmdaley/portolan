@@ -165,6 +165,14 @@ describe('AnnotationPersistence', () => {
       expect(data.annotations).toHaveLength(1);
     });
 
+    it('persists deletion intent for strikethrough annotations', () => {
+      persistence.load();
+      persistence.add(fileAnnotation({ intent: 'delete', comment: 'delete' }));
+
+      const data = JSON.parse(readFileSync(TEST_FILE, 'utf-8'));
+      expect(data.annotations[0].intent).toBe('delete');
+    });
+
     it('updates annotation history for file annotations', () => {
       persistence.load();
       persistence.add(fileAnnotation({ filePath: '/project/main.ts' }));

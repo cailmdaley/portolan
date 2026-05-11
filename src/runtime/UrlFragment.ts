@@ -9,6 +9,7 @@
  *   #mode=<narrative|kanban|find>  ← active vellum tab; absent ⇒ vellum closed
  *   #fiber=<slug>          ← currently-open fiber (narrative mode)
  *   #file=<absolute-path>  ← currently-open file (narrative file mode)
+ *   #origin=<origin-id>    ← file origin when it is not local
  *   #scope=<id|global>     ← Find/Kanban scope when it diverges from focused city
  *
  * Pre-Stage-J the fragment carried only `city` + `fiber` and was read once at
@@ -47,6 +48,8 @@ export interface UrlState {
   fiberSlug?: string
   /** Currently-open file path. Only meaningful with `mode=narrative` (file mode). */
   filePath?: string
+  /** File origin. Omitted for local, carried for remote file-mode links. */
+  originId?: string
   /** Vellum modal scope. `undefined` ⇒ inherit from `cityId`; `'global'` ⇒ explicit global. */
   scopeCityId?: string | typeof SCOPE_GLOBAL
 }
@@ -70,6 +73,7 @@ export function readUrlState(): UrlState {
   const cityId = get('city') ?? undefined
   const fiberSlug = get('fiber') ?? undefined
   const filePath = hashParams?.get('file') ?? undefined
+  const originId = hashParams?.get('origin') ?? undefined
   const scopeRaw = hashParams?.get('scope')
   const modeRaw = hashParams?.get('mode')
 
@@ -90,6 +94,7 @@ export function readUrlState(): UrlState {
     mode,
     fiberSlug,
     filePath,
+    originId,
     scopeCityId,
   }
 }
@@ -98,7 +103,7 @@ export function readUrlState(): UrlState {
  * Encode a UrlState as a `#…` fragment string suitable for `pushState` /
  * `replaceState`. Returns `''` (empty string) when no axes are set —
  * callers detect "no fragment needed" and pass `''` to history APIs to
- * keep the URL clean. Param order is fixed (city, mode, fiber/file,
+ * keep the URL clean. Param order is fixed (city, mode, fiber/file/origin,
  * scope) so identical states encode to identical strings; the
  * `urlStatesEqual` check below relies on that.
  */
@@ -110,6 +115,7 @@ export function encodeUrlState(state: UrlState): string {
   if (state.mode) params.set('mode', state.mode)
   if (state.fiberSlug) params.set('fiber', state.fiberSlug)
   if (state.filePath) params.set('file', state.filePath)
+  if (state.originId && state.originId !== 'local') params.set('origin', state.originId)
   if (state.scopeCityId) params.set('scope', state.scopeCityId)
   const encoded = params.toString()
   return encoded ? `#${encoded}` : ''
@@ -124,6 +130,7 @@ export function urlStatesEqual(a: UrlState, b: UrlState): boolean {
     (a.mode ?? '') === (b.mode ?? '') &&
     (a.fiberSlug ?? '') === (b.fiberSlug ?? '') &&
     (a.filePath ?? '') === (b.filePath ?? '') &&
+    (a.originId ?? '') === (b.originId ?? '') &&
     (a.scopeCityId ?? '') === (b.scopeCityId ?? '')
   )
 }

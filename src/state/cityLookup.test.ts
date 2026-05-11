@@ -82,4 +82,26 @@ describe('findBestMatchingCityForPath', () => {
 
     expect(match).toBe(owner)
   })
+
+  it('repairs remote loom felt file links by matching the city segment', () => {
+    const pureEb = city({
+      id: 'pure-eb',
+      name: 'pure_eb',
+      path: '/automnt/n17data/cdaley/unions/pure_eb',
+      originId: 'remote-candide',
+    })
+    const spValidation = city({
+      id: 'sp-validation',
+      name: 'sp_validation',
+      path: '/automnt/n17data/cdaley/unions/pure_eb/code/sp_validation',
+      originId: 'remote-candide',
+    })
+
+    const owner = findBestMatchingCityForPath(
+      [pureEb, spValidation],
+      '/home/cdaley/loom/.felt/science/pure_eb/unions-3500-companion-review/review-unions-3500-harmonic/review-unions-3500-harmonic.md',
+    )
+
+    expect(owner).toBe(pureEb)
+  })
 })

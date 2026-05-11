@@ -29,7 +29,21 @@ describe('buildVellumFileUrl', () => {
       mode: 'narrative',
       fiberSlug: undefined,
       filePath: '/Users/cd280747/Documents/projects/portolan/src/main.ts',
+      originId: undefined,
       scopeCityId: undefined,
     })
+  })
+
+  it('carries remote origin in file-mode deep links', () => {
+    const url = buildVellumFileUrl({
+      baseUrl: 'http://localhost:5173/',
+      cityId: 'pure-eb',
+      originId: 'remote-candide',
+      path: '/home/cdaley/loom/.felt/science/pure_eb/review.md',
+    })
+
+    expect(url).toBe(
+      'http://localhost:5173/#city=pure-eb&mode=narrative&file=%2Fhome%2Fcdaley%2Floom%2F.felt%2Fscience%2Fpure_eb%2Freview.md&origin=remote-candide',
+    )
   })
 })

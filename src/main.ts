@@ -135,6 +135,7 @@ let syncFocusedCityInChrome: (city: City | null) => void = (_city) => { /* noop 
  *   - `mode`       ← which vellum tab is open, or absent if vellum is closed
  *   - `fiberSlug`  ← active fiber (narrative mode) or `null` for city index
  *   - `filePath`   ← active file (narrative mode in file mode)
+ *   - `originId`   ← active file origin when remote
  *   - `scopeCityId`← Find/Kanban scope when it diverges from `cityId`
  *                    (`SCOPE_GLOBAL` for explicit global with a focused city)
  *
@@ -150,6 +151,7 @@ let syncFocusedCityInChrome: (city: City | null) => void = (_city) => { /* noop 
 const urlSync = new UrlFragmentSync()
 let activeWorkspaceFiberSlug: string | null = null
 let activeWorkspaceFilePath: string | null = null
+let activeWorkspaceOriginId: string | null = null
 /** Vellum scope tracker — distinct from `activeWorkspaceCityId` because
  *  Find tab lets the user re-scope in place without changing the modal's
  *  outer cityId. `null` = scope inherits from `lastFocusedCityId`;
@@ -204,11 +206,20 @@ function buildCurrentUrlState(): UrlState {
     // state for those tabs.
     if (lastVellumMode === 'narrative') {
       if (activeWorkspaceFiberSlug) state.fiberSlug = activeWorkspaceFiberSlug
-      if (activeWorkspaceFilePath) state.filePath = activeWorkspaceFilePath
+      if (activeWorkspaceFilePath) {
+        state.filePath = activeWorkspaceFilePath
+        if (activeWorkspaceOriginId && activeWorkspaceOriginId !== 'local') {
+          state.originId = activeWorkspaceOriginId
+        }
+      }
     }
     if (activeWorkspaceScopeOverride) state.scopeCityId = activeWorkspaceScopeOverride
   }
   return state
+}
+
+function normalizeUrlOrigin(originId?: string | null): string | null {
+  return originId && originId !== 'local' ? originId : null
 }
 
 function currentBrowserTabCity(): City | null {
@@ -399,6 +410,19 @@ interface OpenFileArgs {
 }
 
 function openFile(args: OpenFileArgs): void {
+  const requestedCity = args.cityId
+    ? cities.find(c => c.id === args.cityId && (!args.originId || c.originId === args.originId))
+      ?? cities.find(c => c.id === args.cityId)
+    : null
+  const inferredCity = findBestMatchingCityForPath(
+    cities,
+    args.path,
+    args.originId ?? requestedCity?.originId,
+  )
+  const fileCity = requestedCity ?? inferredCity
+  const originId = args.originId ?? fileCity?.originId ?? 'local'
+  const cityId = fileCity?.id ?? args.cityId
+
   // File mode is single-instance, same lifecycle as the fiber-side workspace.
   // Reuse the workspace open-token so a rapid file-then-fiber sequence (or
   // vice versa) keeps only the latest modal mounted.
@@ -407,10 +431,11 @@ function openFile(args: OpenFileArgs): void {
   activeWorkspaceHandle = null
   modalReopenInProgress = false
   vellumOpenIntent = true
-  activeWorkspaceCityId = args.cityId ?? null
+  activeWorkspaceCityId = cityId ?? null
   // Stage J — track the file path and clear fiber/scope so the URL
   // fragment reflects file mode (`mode=narrative&file=…`).
   activeWorkspaceFilePath = args.path
+  activeWorkspaceOriginId = originId
   activeWorkspaceFiberSlug = null
   activeWorkspaceScopeOverride = null
   // Stage H — file mode lives in the narrative slot (vellum disables
@@ -422,14 +447,14 @@ function openFile(args: OpenFileArgs): void {
   // Stage G recents — every file open is a human view. Skips silently if
   // there's no resolved city (file system path with no owning city);
   // those don't have a meaningful Recents row.
-  if (args.cityId && args.path) {
-    recordRecentTouch({ kind: 'file', cityId: args.cityId, originId: args.originId, path: args.path })
+  if (cityId && args.path) {
+    recordRecentTouch({ kind: 'file', cityId, originId, path: args.path })
   }
   void vellumMountPromise.then(({ openVellumWorkspaceModal }) => {
     if (myToken !== workspaceOpenToken) return
     const handle = openVellumWorkspaceModal({
-      cityId: args.cityId,
-      originId: args.originId,
+      cityId,
+      originId,
       initialFilePath: args.path,
       // Read-mode default: markdown lands in the canvas (PretextProse —
       // same renderer as fiber bodies) when possible; non-markdown text
@@ -438,12 +463,24 @@ function openFile(args: OpenFileArgs): void {
       // See ai-futures/portolan/vellum-reader/markdown-and-fibers-share-canvas.
       editable: args.editable,
       jumpToLine: args.jumpToLine,
-      cityName: args.cityId ? cities.find(c => c.id === args.cityId)?.name : undefined,
+      cityName: cityId ? cities.find(c => c.id === cityId && c.originId === originId)?.name : undefined,
       onFilePathChange: (path) => {
+        const nextCity = findBestMatchingCityForPath(cities, path, activeWorkspaceOriginId ?? originId)
         activeWorkspaceFilePath = path
+        if (nextCity) {
+          activeWorkspaceCityId = nextCity.id
+          activeWorkspaceOriginId = nextCity.originId
+        } else {
+          activeWorkspaceOriginId = activeWorkspaceOriginId ?? originId
+        }
         pushCurrentUrl()
-        if (args.cityId) {
-          recordRecentTouch({ kind: 'file', cityId: args.cityId, originId: args.originId, path })
+        if (activeWorkspaceCityId) {
+          recordRecentTouch({
+            kind: 'file',
+            cityId: activeWorkspaceCityId,
+            originId: activeWorkspaceOriginId ?? originId,
+            path,
+          })
         }
       },
       onClose: handleWorkspaceClosed,
@@ -457,6 +494,7 @@ function openFileInNewTab(args: OpenFileArgs): void {
     baseUrl: window.location.href,
     path: args.path,
     cityId: args.cityId,
+    originId: args.originId,
   })
   window.open(url, '_blank', 'noopener')
 }
@@ -530,6 +568,7 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
   // `applyUrlState` before openCityWorkspace runs).
   activeWorkspaceFiberSlug = opts.initialSlug ?? null
   activeWorkspaceFilePath = null
+  activeWorkspaceOriginId = null
   if (opts.initialScope === SCOPE_GLOBAL || (opts.initialScope && opts.initialScope !== city.id)) {
     activeWorkspaceScopeOverride = opts.initialScope
   } else {
@@ -721,6 +760,7 @@ function handleWorkspaceClosed(): void {
   // chrome bar's launch button can re-open the same tab.
   activeWorkspaceFiberSlug = null
   activeWorkspaceFilePath = null
+  activeWorkspaceOriginId = null
   activeWorkspaceScopeOverride = null
   // Vellum is gone — clear the chrome bar's chip highlight and refresh the
   // awaiting-review badge in case the user just closed the kanban tab
@@ -757,6 +797,7 @@ function openGlobalVellumIndex(): void {
   vellumOpenIntent = true
   activeWorkspaceFiberSlug = null
   activeWorkspaceFilePath = null
+  activeWorkspaceOriginId = null
   activeWorkspaceScopeOverride = SCOPE_GLOBAL
   commitVellumMode('narrative')
   if (activeWorkspaceHandle) {
@@ -817,6 +858,7 @@ function openGlobalKanban(): void {
   vellumOpenIntent = true
   activeWorkspaceFiberSlug = null
   activeWorkspaceFilePath = null
+  activeWorkspaceOriginId = null
   activeWorkspaceScopeOverride = SCOPE_GLOBAL
   // Stage H — chip lights up regardless of the open-vs-flip branch.
   commitVellumMode('kanban')
@@ -871,6 +913,7 @@ function openGlobalFind(): void {
   vellumOpenIntent = true
   activeWorkspaceFiberSlug = null
   activeWorkspaceFilePath = null
+  activeWorkspaceOriginId = null
   activeWorkspaceScopeOverride = SCOPE_GLOBAL
   // Stage H — chip lights up regardless of the open-vs-flip branch.
   commitVellumMode('find')
@@ -1409,6 +1452,7 @@ async function applyUrlState(
   const liveCities = opts.cities ?? cities
   if (liveCities.length === 0) return // wait for InitialFocus
 
+  let canonicalizeAfterApply = false
   await urlSync.runSuppressed(async () => {
     // Resolve the city the URL is pointing at. May be unset (global modal
     // or just-the-fiber URL) — we then ask the server which city owns the
@@ -1431,9 +1475,18 @@ async function applyUrlState(
       const fileCity = findBestMatchingCityForPath(
         liveCities,
         target.filePath,
-        targetCity?.originId,
+        target.originId ?? targetCity?.originId,
       )
       if (fileCity) targetCity = fileCity
+      if (
+        targetCity
+        && (
+          target.cityId !== targetCity.id
+          || normalizeUrlOrigin(target.originId) !== normalizeUrlOrigin(targetCity.originId)
+        )
+      ) {
+        canonicalizeAfterApply = true
+      }
     }
 
     // Camera focus first — handleCityClick is idempotent on same-city.
@@ -1455,10 +1508,11 @@ async function applyUrlState(
     const sameMode = currentMode === (target.mode ?? null)
     const sameFiber = (activeWorkspaceFiberSlug ?? null) === (target.fiberSlug ?? null)
     const sameFile = (activeWorkspaceFilePath ?? null) === (target.filePath ?? null)
+    const sameOrigin = normalizeUrlOrigin(activeWorkspaceOriginId) === normalizeUrlOrigin(target.originId)
     const sameScope = (activeWorkspaceScopeOverride ?? null) === (target.scopeCityId ?? null)
     const sameCity = (activeWorkspaceCityId ?? null) === (targetCity?.id ?? null)
 
-    if (sameMode && sameFiber && sameFile && sameScope && sameCity) {
+    if (sameMode && sameFiber && sameFile && sameOrigin && sameScope && sameCity) {
       return // nothing to do
     }
 
@@ -1480,6 +1534,7 @@ async function applyUrlState(
       activeWorkspaceHandle != null
       && sameFiber
       && sameFile
+      && sameOrigin
       && sameScope
       && sameCity
     if (canFlipInPlace && !sameMode) {
@@ -1501,7 +1556,7 @@ async function applyUrlState(
       openFile({
         path: target.filePath,
         cityId: targetCity?.id,
-        originId: targetCity?.originId,
+        originId: target.originId ?? targetCity?.originId,
       })
       return
     }
@@ -1530,6 +1585,10 @@ async function applyUrlState(
       })
     }
   })
+
+  if (canonicalizeAfterApply) {
+    urlSync.replace(buildCurrentUrlState())
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
