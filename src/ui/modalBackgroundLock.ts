@@ -13,16 +13,16 @@
  * city label and the chrome bar's worker birds alongside the modal —
  * `aria-modal="true"` alone doesn't hide background siblings.
  *
- * (Pre-Stage-I, this helper also exempted the `GlobalSearchPalette`'s
- * `gs-palette` / `gs-backdrop` siblings so it could layer over modals
- * Cmd-K-style; the palette retired in Stage C+E and its disk file in
- * Stage I, so the carve-out is gone.)
+ * The slash `GlobalSearchPalette` is itself a modal overlay split across
+ * two body siblings (`gs-palette` + `gs-backdrop`), so keep both parts out
+ * of the inerted background set when it layers over another modal.
  */
 export function lockModalBackground(modalContainer: HTMLElement): () => void {
   const restorers: Array<() => void> = []
   for (const child of Array.from(document.body.children)) {
     if (child === modalContainer) continue
     if (!(child instanceof HTMLElement)) continue
+    if (child.classList.contains('gs-palette') || child.classList.contains('gs-backdrop')) continue
     const prevInert = child.inert
     const prevAriaHidden = child.getAttribute('aria-hidden')
     child.inert = true

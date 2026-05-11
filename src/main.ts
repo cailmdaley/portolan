@@ -21,7 +21,7 @@ const vellumMountPromise = import('./vellum/mount')
 import type { VellumModalHandle } from './vellum/mount'
 // `find-shared` is a tiny constants module — safe to import eagerly without
 // pulling the React tree into the initial paint.
-import { FIND_FOCUS_SEARCH_EVENT, FIND_SEARCH_INPUT_CLASS } from './vellum/find-shared'
+import { FIND_FOCUS_SEARCH_EVENT } from './vellum/find-shared'
 import { MapInteractionController } from './MapInteractionController'
 import { FrontendMapActions } from './FrontendMapActions'
 import { installFrontendRuntimeDiagnostics } from './runtime/FrontendRuntimeDiagnostics'
@@ -43,11 +43,11 @@ import { NewWorkerDialog } from './ui/NewWorkerDialog'
 // Stage H of constitution-portolan-navigation-layer: MapChromeBar is the
 // only persistent UI on top of the map (vellum launch + V/K/F chips +
 // worker birds + glance + awaiting-review badge); it replaced the
-// predecessor `KanbanLaunchButton` + `RecentWorkerBar` widgets in Stage H,
-// and the CityHUD overlay + `GlobalSearchPalette` retired alongside it in
-// Stage I. The map now shows just geography + this bar; per-city detail
-// lives entirely in vellum's Find tab.
+// predecessor `KanbanLaunchButton` + `RecentWorkerBar` widgets in Stage H.
+// The CityHUD overlay stayed retired, but the transient slash palette is
+// back as a map navigator for cities and workers.
 import { MapChromeBar } from './ui/MapChromeBar'
+import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
 import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
 import { findBestMatchingCity, findBestMatchingCityForPath, findNearestCity } from './state/cityLookup'
@@ -343,7 +343,7 @@ function resolveCityFromUrlId(urlCityId: string): City | null {
 // Shared handler for city clicks (used by sprite click and label click).
 // Stage I — hex click only sets focus + moves the camera. The CityHUD
 // overlay retired; per-city detail lives in vellum's Find tab now (open
-// with `/` or the chrome bar's F chip), and `v` / `k` open
+// with `f` or the chrome bar's F chip), and `v` / `k` open
 // narrative / kanban scoped to the focused city.
 function handleCityClick(city: City): void {
   selectedHex = city.hex
@@ -634,8 +634,7 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
  * own scope-up control by reading the modal's current tab at click
  * time and dispatching to the matching global opener.
  *
- * Mirrors the close-then-reopen guard used in `escalateFindScope`: the
- * `modalReopenInProgress` flag suppresses `handleWorkspaceClosed`'s URL
+ * Uses `modalReopenInProgress` to suppress `handleWorkspaceClosed`'s URL
  * push during the in-flight close so only the final URL state lands in
  * history.
  */
@@ -976,16 +975,20 @@ function openCityFromSyntheticNode(slug: string): void {
  * `onOpenWorker` plumbing on `openVellumWorkspaceModal` so a click on a
  * running-worker indicator inside a card brings up the live terminal.
  */
+function focusWorkerOnMap(session: Session): void {
+  const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
+  if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
+  else if (session.hex) camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
+  mapActions?.focusKittyTab(session.id)
+}
+
 function focusWorkerByTmuxSession(tmuxSessionName: string): void {
   const session = sessions.find(s => s.tmuxSession === tmuxSessionName)
   if (!session) {
     console.warn('[Kanban] no session tracked for tmux name:', tmuxSessionName)
     return
   }
-  const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
-  if (swarmPos) camera.focusAndZoom(swarmPos, 6, 0.95)
-  else if (session.hex) camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
-  mapActions?.focusKittyTab(session.id)
+  focusWorkerOnMap(session)
 }
 
 // URL-param auto-open retained for deep-linking and debugging.
@@ -1040,6 +1043,11 @@ const newWorkerDialog = new NewWorkerDialog()
 // surviving primary affordance until a Playgrounds row lands in Find.
 const playgroundViewer = new PlaygroundViewer()
 
+const globalSearchPalette = new GlobalSearchPalette({
+  onSelectCity: (city) => handleCityClick(city),
+  onSelectWorker: (session) => focusWorkerOnMap(session),
+})
+
 // Kanban: global view of constitution-tagged fibers, grouped by lifecycle.
 // Every entry point (launch button, hotkey `k`, city HUD's "Open kanban
 // scoped to <city>" button) opens vellum-on-the-relevant-scope with the
@@ -1058,16 +1066,8 @@ const mapChromeBar = new MapChromeBar({
   onOpenLastView: () => openLastView(),
   onOpenNarrative: () => handleNarrativeHotkey(new KeyboardEvent('synthetic')),
   onOpenKanban: () => handleKanbanHotkey(new KeyboardEvent('synthetic')),
-  onOpenFind: () => handleSlashHotkey(new KeyboardEvent('synthetic')),
-  onSelectWorker: (session) => {
-    const swarmPos = zoneRenderer.getSwarmWorldPosition(session.id)
-    if (swarmPos) {
-      camera.focusAndZoom(swarmPos, 6, 0.95)
-    } else if (session.hex) {
-      camera.focusAndZoom(hexGrid.axialToCartesian(session.hex), 6, 0.95)
-    }
-    mapActions?.focusKittyTab(session.id)
-  },
+  onOpenFind: () => handleFindHotkey(new KeyboardEvent('synthetic')),
+  onSelectWorker: (session) => focusWorkerOnMap(session),
   onWorkerHoverStart: (session, anchor) => {
     zoneRenderer.updateWorkerFileHover(session, anchor)
   },
@@ -1596,21 +1596,16 @@ const isEditableElement = (element: Element | null): boolean => {
 }
 
 /* ────────────────────────────────────────────────────────────────────── *
- * Hotkeys (Stage K — constitution-portolan-navigation-layer §"Hotkey
- * scheme: v / k / / and //").
+ * Hotkeys (Stage K, with the restored map slash palette).
  *
  * Two declarative `tinykeys` binding maps: one at capture phase on
- * `document` for `/` (beats vellum's bubble-phase `/` handler that focuses
- * its in-collection thumb-index search), and one at bubble phase on
- * `window` for the rest (`v`, `k`, `n`) where there is no listener
- * conflict. The capture/bubble split is the only place phase still
- * matters; otherwise tinykeys handles modifier-state matching for us.
+ * `document` for `/` (the map navigator should win before vellum's
+ * bubble-phase thumb-index search), and one at bubble phase on `window`
+ * for the rest (`v`, `k`, `f`, `n`).
  *
  * Why each hotkey behaves the way it does is documented at its handler.
  * Common to all of them: bail when typing into an editable element. (The
- * Stage K-era `globalSearchPalette.isVisible()` check retired in Stage C+E
- * along with the legacy `/` palette; the HUD-visibility check retired in
- * Stage I along with the rest of CityHUD.)
+ * HUD-visibility check retired in Stage I along with the rest of CityHUD.)
  * ────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -1625,82 +1620,25 @@ const resolveFocusedCity = (): City | null => {
 }
 
 /**
- * Escalate one rung up the Find scope ladder: city → global → close. Used
- * by both the bare `/` handler (when vellum is on Find at city scope) and
- * the `// chord` (when the search input is focused but empty).
- *
- * Capture `activeWorkspaceCityId` *before* `handle.close()` fires:
- * `onClose` (i.e. `handleWorkspaceClosed`) synchronously zeroes both
- * `activeWorkspaceHandle` and `activeWorkspaceCityId`, so reading after
- * the close would always see `null` and we'd skip the openGlobalFind()
- * branch — flatlining the city → global step into city → close.
- */
-const escalateFindScope = (): void => {
-  const handle = activeWorkspaceHandle
-  if (!handle) return
-  const wasCityScoped = activeWorkspaceCityId !== null
-  // Stage J — when escalating city → global, the close is a transition
-  // (followed by openGlobalFind), so suppress the transient
-  // "vellum-closed" URL push. When already on global, this is a real
-  // close and we want the URL push.
-  modalReopenInProgress = wasCityScoped
-  handle.close()
-  modalReopenInProgress = false
-  activeWorkspaceHandle = null
-  activeWorkspaceCityId = null
-  if (wasCityScoped) {
-    openGlobalFind()
-    return
-  }
-  // Was already on global Find — close drops out to the map.
-}
-
-/**
- * `/` — scope-step ladder + `// chord` for the Find tab. Bound at capture
- * on `document` so we own the keystroke before vellum's FiberPage handler
- * (which focuses the in-collection thumb-index search). Once we decide to
- * act we `stopImmediatePropagation` so vellum never sees the press.
+ * `f` — open the Find tab at the focused-city scope, or global scope when
+ * no city is focused.
  *
  * Behaviour by current state:
  *
  *   ┌────────────────────────────────────────┬────────────────────────────┐
  *   │ active element                         │ action                     │
  *   ├────────────────────────────────────────┼────────────────────────────┤
- *   │ Find search input, has text            │ no-op (types literally)    │
- *   │ Find search input, empty               │ escalate scope (// chord)  │
- *   │ any other editable element             │ no-op (let it type)        │
+ *   │ any editable element                   │ no-op (let it type)        │
  *   ├────────────────────────────────────────┼────────────────────────────┤
  *   │ vellum closed, focused city X          │ openCityWorkspace(X, find) │
  *   │ vellum closed, no focused city         │ openGlobalFind()           │
  *   │ vellum open, not on Find tab           │ handle.setMode('find')     │
  *   │ vellum open on Find, input not focused │ dispatch focus-search evt  │
  *   └────────────────────────────────────────┴────────────────────────────┘
- *
- * The `// chord` is implemented inline rather than via tinykeys' sequence
- * machinery: the second `/` is only special *because the input is focused
- * and empty*, which depends on DOM state, not on a timed key sequence.
  */
-const handleSlashHotkey = (event: KeyboardEvent): void => {
-  const active = document.activeElement
-  if (
-    active instanceof HTMLInputElement
-    && active.classList.contains(FIND_SEARCH_INPUT_CLASS)
-  ) {
-    if (active.value.length > 0) return // type literally
-    event.preventDefault()
-    event.stopImmediatePropagation()
-    escalateFindScope()
-    return
-  }
-
-  if (isEditableElement(active)) return
-
-  // Beat vellum's bubble-phase `/` handler (FiberPage thumb-index search).
-  // Without stopImmediatePropagation, vellum focuses its in-collection
-  // search input *after* we open Find, leaving the user typing into the
-  // wrong control.
+const handleFindHotkey = (event: KeyboardEvent): void => {
+  if (shouldSkipBubbleHotkey()) return
   event.preventDefault()
-  event.stopImmediatePropagation()
 
   const handle = activeWorkspaceHandle
   if (!handle) {
@@ -1720,24 +1658,31 @@ const handleSlashHotkey = (event: KeyboardEvent): void => {
   }
 
   // Vellum already on Find but the input isn't focused. Ask FindHost to
-  // focus + select it; the `// chord` (input empty + another `/`) lives in
-  // the `active.classList.contains(FIND_SEARCH_INPUT_CLASS)` branch above.
+  // focus + select it.
   window.dispatchEvent(new Event(FIND_FOCUS_SEARCH_EVENT))
 }
 
 /**
- * Common preflight for the bubble-phase hotkeys (`v`, `k`, `n`, `t`).
+ * `/` — restored map navigator for cities and workers. Bound at capture on
+ * `document` so it wins before vellum's thumb-index `/` listener whenever
+ * the user is not typing into an editable element.
+ */
+const handleMapSearchHotkey = (event: KeyboardEvent): void => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  if (isEditableElement(document.activeElement)) return
+  if (globalSearchPalette.isVisible()) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  globalSearchPalette.show(cities, sessions)
+}
+
+/**
+ * Common preflight for the bubble-phase hotkeys (`v`, `k`, `f`, `n`, `t`).
  * Returns true to abort the hotkey (keep the event flowing untouched);
  * the caller handles `event.preventDefault()` itself when it acts.
- *
- * Stage K had a `globalSearchPalette.isVisible()` short-circuit here for
- * the legacy `/` palette overlay; that palette retired in Stage C+E
- * along with the rest of `GlobalSearchPalette` (the search lives in
- * vellum's Find tab now). `isEditableElement` covers the remaining case:
- * focus inside vellum's own search input — typing 'v' there shouldn't
- * flip the modal mode.
  */
 const shouldSkipBubbleHotkey = (): boolean => {
+  if (globalSearchPalette.isVisible()) return true
   if (isEditableElement(document.activeElement)) return true
   return false
 }
@@ -1813,12 +1758,13 @@ const handleNewWorkerHotkey = (event: KeyboardEvent): void => {
 
 const unbindSlashHotkey = tinykeys(
   document,
-  { '/': handleSlashHotkey },
+  { '/': handleMapSearchHotkey },
   { capture: true },
 )
 const unbindBubbleHotkeys = tinykeys(window, {
   v: handleNarrativeHotkey,
   k: handleKanbanHotkey,
+  f: handleFindHotkey,
   n: handleNewWorkerHotkey,
 })
 
@@ -1885,6 +1831,7 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     unbindSlashHotkey()
     unbindBubbleHotkeys()
+    globalSearchPalette.hide()
     mapChromeBar.dispose()
     appRuntime.dispose()
   })
