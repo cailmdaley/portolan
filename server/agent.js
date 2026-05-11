@@ -63,7 +63,7 @@ const FELT_WATCH_DEBOUNCE_MS = process.env.PORTOLAN_FELT_DEBOUNCE_MS
   : 250;
 const CITY_FELT_DUMP_INTERVAL_MS = process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_MS
   ? parseInt(process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_MS, 10)
-  : 30_000;
+  : 10 * 60_000;
 const cityFeltDumpLastSent = new Map();
 
 // ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
@@ -111,9 +111,10 @@ let connected = false;
 let pollInterval = null;
 let eventsWatchInterval = null;
 let lastEventsCharPosition = 0;
-let fiberTreeWatcher = null;
-let fiberTreeFlushTimer = null;
-const fiberTreePending = new Map();  // relPath → 'upsert' | 'delete'
+const fiberTreeWatchers = new Map();  // normalized feltHost → FSWatcher
+const fiberTreeWatchUnsupported = new Set();  // normalized feltHost
+const fiberTreeFlushTimers = new Map();  // normalized feltHost → Timeout
+const fiberTreePending = new Map();  // normalized feltHost → Map<relPath, op>
 let shuttleInterval = null;
 const shuttleDispatched = new Map();  // fiberId → { fiberId, tmuxSession, state, startedAt }
 let lastShuttleSnapshot = null;
@@ -647,6 +648,13 @@ async function sendFiberTreeDumpForHost(feltHost) {
     return false;
 }
 
+function shouldPeriodicFullDump(feltHost, now = Date.now()) {
+    const normalizedHost = normalizeHostPath(feltHost);
+    if (!cityFeltDumpLastSent.has(normalizedHost)) return true;
+    if (!fiberTreeWatchUnsupported.has(normalizedHost)) return false;
+    return now - cityFeltDumpLastSent.get(normalizedHost) >= CITY_FELT_DUMP_INTERVAL_MS;
+}
+
 /**
  * Send a full fiber-tree dump for explicitly configured felt hosts. Called
  * when the server registers this agent and tells it which pinned remote
@@ -656,7 +664,13 @@ async function sendConfiguredFiberTreeDumps(feltHosts) {
     const hosts = [...new Set((feltHosts || [])
         .filter((host) => typeof host === 'string' && host.trim().length > 0)
         .map(normalizeHostPath))];
-    await Promise.all(hosts.map((host) => sendFiberTreeDumpForHost(host)));
+    await Promise.all(hosts.map(async (host) => {
+        const sent = await sendFiberTreeDumpForHost(host);
+        if (sent) {
+            cityFeltDumpLastSent.set(host, Date.now());
+            startFiberTreeWatcherForHost(host);
+        }
+    }));
 }
 
 async function sendActiveCityFiberTreeDumps(sessions) {
@@ -670,8 +684,15 @@ async function sendActiveCityFiberTreeDumps(sessions) {
     }
     const now = Date.now();
     await Promise.all([...hosts].map(async (host) => {
-        const lastSent = cityFeltDumpLastSent.get(host) || 0;
-        if (now - lastSent < CITY_FELT_DUMP_INTERVAL_MS) return;
+        if (!cityFeltDumpLastSent.has(host)) {
+            if (await sendFiberTreeDumpForHost(host)) {
+                cityFeltDumpLastSent.set(host, now);
+            }
+            startFiberTreeWatcherForHost(host);
+            return;
+        }
+        startFiberTreeWatcherForHost(host);
+        if (!shouldPeriodicFullDump(host, now)) return;
         if (await sendFiberTreeDumpForHost(host)) {
             cityFeltDumpLastSent.set(host, now);
         }
@@ -691,55 +712,76 @@ async function sendActiveCityFiberTreeDumps(sessions) {
  * error and degrades gracefully — the dump on connect still ships, just
  * without live deltas. Reconnect-triggered re-dumps recover any drift.
  */
-function startFiberTreeWatcher() {
-    if (!existsSync(FELT_DIR)) {
-        log(`Fiber-tree watcher skipped: ${FELT_DIR} does not exist`);
-        return;
+function startFiberTreeWatcherForHost(feltHost = FELT_HOST) {
+    const normalizedHost = normalizeHostPath(feltHost);
+    if (fiberTreeWatchers.has(normalizedHost) || fiberTreeWatchUnsupported.has(normalizedHost)) {
+        return fiberTreeWatchers.has(normalizedHost);
     }
+    const feltDir = join(normalizedHost, '.felt');
+    if (!existsSync(feltDir)) {
+        log(`Fiber-tree watcher skipped: ${feltDir} does not exist`);
+        return false;
+    }
+
     try {
-        fiberTreeWatcher = watch(FELT_DIR, { recursive: true, persistent: false }, (eventType, filename) => {
+        const watcher = watch(feltDir, { recursive: true, persistent: false }, (eventType, filename) => {
             if (!filename) return;
             // Normalize to forward slashes for wire consistency. fs.watch on
             // Windows would emit backslashes; harmless on POSIX.
             const relPath = String(filename).split(sep).join('/');
             if (!relPath.endsWith('.md')) return;
-            const fullPath = join(FELT_DIR, relPath);
+            const fullPath = join(feltDir, relPath);
             // Probe existence at event time rather than trusting eventType:
             // 'change' usually means write, 'rename' covers create/delete/move.
             // existsSync is the unambiguous signal — file present = upsert,
             // absent = delete. The flush re-reads, so a flap (delete-then-
             // recreate within debounce window) settles to the final state.
             const op = existsSync(fullPath) ? 'upsert' : 'delete';
-            fiberTreePending.set(relPath, op);
-            scheduleFiberTreeFlush();
+            let pending = fiberTreePending.get(normalizedHost);
+            if (!pending) {
+                pending = new Map();
+                fiberTreePending.set(normalizedHost, pending);
+            }
+            pending.set(relPath, op);
+            scheduleFiberTreeFlush(normalizedHost);
         });
-        log(`Watching fiber tree: ${FELT_DIR} (debounce ${FELT_WATCH_DEBOUNCE_MS}ms)`);
+        fiberTreeWatchers.set(normalizedHost, watcher);
+        log(`Watching fiber tree: ${feltDir} (debounce ${FELT_WATCH_DEBOUNCE_MS}ms)`);
+        return true;
     } catch (err) {
+        fiberTreeWatchUnsupported.add(normalizedHost);
         log(`Fiber-tree watcher unsupported on this platform: ${err.message}. ` +
-            `Reconnect-triggered re-dumps will recover any drift.`);
+            `Fallback full dumps every ${Math.round(CITY_FELT_DUMP_INTERVAL_MS / 1000)}s.`);
+        return false;
     }
 }
 
-function scheduleFiberTreeFlush() {
-    if (fiberTreeFlushTimer) clearTimeout(fiberTreeFlushTimer);
-    fiberTreeFlushTimer = setTimeout(() => {
-        void flushFiberTreeDeltas();
+function scheduleFiberTreeFlush(feltHost = FELT_HOST) {
+    const normalizedHost = normalizeHostPath(feltHost);
+    const existing = fiberTreeFlushTimers.get(normalizedHost);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+        fiberTreeFlushTimers.delete(normalizedHost);
+        void flushFiberTreeDeltas(normalizedHost);
     }, FELT_WATCH_DEBOUNCE_MS);
+    fiberTreeFlushTimers.set(normalizedHost, timer);
 }
 
-async function flushFiberTreeDeltas() {
-    fiberTreeFlushTimer = null;
-    if (fiberTreePending.size === 0) return;
+async function flushFiberTreeDeltas(feltHost = FELT_HOST) {
+    const normalizedHost = normalizeHostPath(feltHost);
+    const pending = fiberTreePending.get(normalizedHost);
+    if (!pending || pending.size === 0) return;
+    const feltDir = join(normalizedHost, '.felt');
     const deltas = [];
-    for (const [path, op] of fiberTreePending) {
-        const fullPath = join(FELT_DIR, path);
+    for (const [path, op] of pending) {
+        const fullPath = join(feltDir, path);
         if (op === 'upsert') {
             if (!existsSync(fullPath)) {
                 deltas.push({ path, op: 'delete' });
                 continue;
             }
             const id = shuttleIdFromPath(path);
-            const fiber = id ? await readFeltFiberJson(id) : null;
+            const fiber = id ? await readFeltFiberJson(id, normalizedHost) : null;
             if (fiber) {
                 deltas.push({ path, op: 'upsert', fiber });
             } else {
@@ -751,26 +793,27 @@ async function flushFiberTreeDeltas() {
             deltas.push({ path, op: 'delete' });
         }
     }
-    fiberTreePending.clear();
+    fiberTreePending.delete(normalizedHost);
     if (deltas.length === 0) return;
     if (connected && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'fiber_tree_delta',
-            payload: { feltHost: normalizeHostPath(FELT_HOST), deltas },
+            payload: { feltHost: normalizedHost, deltas },
         }));
-        debug(`Sent fiber_tree_delta: ${deltas.length} ops`);
+        debug(`Sent fiber_tree_delta: ${deltas.length} ops from ${normalizedHost}`);
     }
 }
 
-function stopFiberTreeWatcher() {
-    if (fiberTreeWatcher) {
-        try { fiberTreeWatcher.close(); } catch { /* already closed */ }
-        fiberTreeWatcher = null;
+function stopFiberTreeWatchers() {
+    for (const watcher of fiberTreeWatchers.values()) {
+        try { watcher.close(); } catch { /* already closed */ }
     }
-    if (fiberTreeFlushTimer) {
-        clearTimeout(fiberTreeFlushTimer);
-        fiberTreeFlushTimer = null;
+    fiberTreeWatchers.clear();
+    fiberTreeWatchUnsupported.clear();
+    for (const timer of fiberTreeFlushTimers.values()) {
+        clearTimeout(timer);
     }
+    fiberTreeFlushTimers.clear();
     fiberTreePending.clear();
 }
 
@@ -1547,7 +1590,7 @@ async function main() {
             // fire before connect just queue in the pending map and
             // flush on the first scheduled timer tick after the socket
             // is ready.
-            startFiberTreeWatcher();
+            startFiberTreeWatcherForHost(FELT_HOST);
 
             // Constitution shuttle-remote-dispatch: poller runs whether or
             // not the WS is up, so dispatch survives tunnel drops and
@@ -1563,7 +1606,7 @@ async function main() {
                 log('Shutting down...');
                 if (pollInterval) clearInterval(pollInterval);
                 if (eventsWatchInterval) clearInterval(eventsWatchInterval);
-                stopFiberTreeWatcher();
+                stopFiberTreeWatchers();
                 stopShuttlePoller();
                 if (ws) ws.close();
                 process.exit(0);
