@@ -65,6 +65,7 @@ const CITY_FELT_DUMP_INTERVAL_MS = process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_
   ? parseInt(process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_MS, 10)
   : 10 * 60_000;
 const cityFeltDumpLastSent = new Map();
+const fiberTreeDumpInFlight = new Map();  // normalized feltHost -> Promise<boolean>
 
 // ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
 //
@@ -630,6 +631,15 @@ async function collectFiberTreeFiles(feltHost = FELT_HOST) {
 
 async function sendFiberTreeDumpForHost(feltHost) {
     const normalizedHost = normalizeHostPath(feltHost);
+    const existing = fiberTreeDumpInFlight.get(normalizedHost);
+    if (existing) return existing;
+    const promise = sendFiberTreeDumpForNormalizedHost(normalizedHost)
+        .finally(() => fiberTreeDumpInFlight.delete(normalizedHost));
+    fiberTreeDumpInFlight.set(normalizedHost, promise);
+    return promise;
+}
+
+async function sendFiberTreeDumpForNormalizedHost(normalizedHost) {
     const feltDir = join(normalizedHost, '.felt');
     if (!existsSync(feltDir)) {
         log(`Fiber-tree dump skipped: ${feltDir} does not exist`);
