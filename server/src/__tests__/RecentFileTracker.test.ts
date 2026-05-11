@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { RecentFileTracker } from '../RecentFileTracker.js';
 
 describe('RecentFileTracker', () => {
@@ -74,5 +77,30 @@ describe('RecentFileTracker', () => {
     tracker.recordTouch('', 'Read', '/p/a.ts', 1);
     tracker.recordTouch('s1', 'Read', '   ', 2);
     expect(tracker.getSessionCount()).toBe(0);
+  });
+
+  it('persists recent files across tracker instances', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'portolan-recent-files-'));
+    const path = join(dir, 'recent-files.json');
+    try {
+      const first = new RecentFileTracker(3, path);
+      first.recordTouch('s1', 'Read', '/p/a.ts', 1);
+      first.recordTouch('s1', 'Edit', '/p/b.ts', 2);
+
+      const second = new RecentFileTracker(3, path);
+      expect(second.getRecentFiles('s1')).toEqual([
+        expect.objectContaining({ toolName: 'Edit', fullPath: '/p/b.ts', basename: 'b.ts', timestamp: 2 }),
+        expect.objectContaining({ toolName: 'Read', fullPath: '/p/a.ts', basename: 'a.ts', timestamp: 1 }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a session trail when the worker temporarily disappears', () => {
+    const tracker = new RecentFileTracker();
+    tracker.recordTouch('s1', 'Read', '/p/a.ts', 1);
+    tracker.removeSession('s1');
+    expect(tracker.getRecentFiles('s1').map(f => f.basename)).toEqual(['a.ts']);
   });
 });
