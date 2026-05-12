@@ -8,6 +8,7 @@ import type { ContextMenu } from '../ui/ContextMenu'
 import type { NewWorkerDialog } from '../ui/NewWorkerDialog'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { City, Session } from '../state/types'
+import { getPageAttention, UNFOCUSED_VISIBLE_FRAME_MS } from './PageAttention'
 
 interface FrontendAppRuntimeOptions {
   renderer: WebGLRenderer
@@ -42,6 +43,7 @@ export class FrontendAppRuntime {
   private readonly options: FrontendAppRuntimeOptions
   private runtimeDisposed = false
   private animationFrameId: number | null = null
+  private unfocusedFrameTimeoutId: number | null = null
   private mockDataTimeout: ReturnType<typeof setTimeout> | null = null
   private workerHudUpdateFrameId: number | null = null
   private hasRuntimeCleanupRun = false
@@ -57,6 +59,9 @@ export class FrontendAppRuntime {
     // minimized window). `visibilitychange` fires on document; the handler
     // restarts the loop when the page returns to the foreground.
     document.addEventListener('visibilitychange', this.onVisibilityChange)
+    // A tiled but unfocused window is still visible, so Page Visibility does
+    // not fire. Resume the full-rate RAF loop immediately when focus returns.
+    window.addEventListener('focus', this.onWindowFocus)
     this.animate()
     this.scheduleMockDataFallback()
   }
@@ -69,6 +74,10 @@ export class FrontendAppRuntime {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId)
       this.animationFrameId = null
+    }
+    if (this.unfocusedFrameTimeoutId !== null) {
+      window.clearTimeout(this.unfocusedFrameTimeoutId)
+      this.unfocusedFrameTimeoutId = null
     }
     if (this.mockDataTimeout) {
       clearTimeout(this.mockDataTimeout)
@@ -84,6 +93,7 @@ export class FrontendAppRuntime {
     this.options.mapInteractions.dispose()
     window.removeEventListener('resize', this.onResize)
     document.removeEventListener('visibilitychange', this.onVisibilityChange)
+    window.removeEventListener('focus', this.onWindowFocus)
 
     this.options.contextMenu.dispose()
     this.options.newWorkerDialog.dispose()
@@ -128,28 +138,64 @@ export class FrontendAppRuntime {
   /** Restart the render loop when the page returns to the foreground. */
   private readonly onVisibilityChange = (): void => {
     if (this.runtimeDisposed) return
-    if (!document.hidden && this.animationFrameId === null) {
+    if (document.hidden) {
+      this.clearUnfocusedFrameTimeout()
+      return
+    }
+    if (!this.hasScheduledFrame()) {
       this.animate()
+    }
+  }
+
+  private readonly onWindowFocus = (): void => {
+    if (this.runtimeDisposed || document.hidden) return
+    if (this.unfocusedFrameTimeoutId !== null) {
+      this.clearUnfocusedFrameTimeout()
+      if (this.animationFrameId === null) {
+        this.animationFrameId = requestAnimationFrame(this.animate)
+      }
     }
   }
 
   private readonly animate = (): void => {
     if (this.runtimeDisposed) return
+    this.animationFrameId = null
 
     // Pause when the page is hidden — no visible output to produce and
     // browsers already throttle RAF on hidden pages. Setting animationFrameId
     // to null signals the paused state so onVisibilityChange can restart.
-    if (document.hidden) {
-      this.animationFrameId = null
+    if (getPageAttention() === 'hidden') {
       return
     }
-
-    this.animationFrameId = requestAnimationFrame(this.animate)
 
     this.options.zoneRenderer.animate(this.options.camera.cameraDistance)
     this.options.renderer.render(this.options.scene, this.options.camera.camera)
     this.options.labelRenderer.render(this.options.scene, this.options.camera.camera)
     this.options.onFrame?.()
+    this.scheduleNextFrame()
+  }
+
+  private scheduleNextFrame(): void {
+    if (this.runtimeDisposed || document.hidden) return
+    if (getPageAttention() === 'visible-unfocused') {
+      this.unfocusedFrameTimeoutId = window.setTimeout(() => {
+        this.unfocusedFrameTimeoutId = null
+        if (this.runtimeDisposed || document.hidden) return
+        this.animationFrameId = requestAnimationFrame(this.animate)
+      }, UNFOCUSED_VISIBLE_FRAME_MS)
+      return
+    }
+    this.animationFrameId = requestAnimationFrame(this.animate)
+  }
+
+  private hasScheduledFrame(): boolean {
+    return this.animationFrameId !== null || this.unfocusedFrameTimeoutId !== null
+  }
+
+  private clearUnfocusedFrameTimeout(): void {
+    if (this.unfocusedFrameTimeoutId === null) return
+    window.clearTimeout(this.unfocusedFrameTimeoutId)
+    this.unfocusedFrameTimeoutId = null
   }
 
   private scheduleMockDataFallback(): void {

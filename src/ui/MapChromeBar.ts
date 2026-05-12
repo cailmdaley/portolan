@@ -1,4 +1,5 @@
 import type { City, Session } from '../state/types'
+import { shouldRunVisiblePoll } from '../runtime/PageAttention'
 
 /**
  * MapChromeBar — Stage H of constitution-portolan-navigation-layer.
@@ -83,6 +84,7 @@ export class MapChromeBar {
   private cityNameById = new Map<string, string>()
   private currentBirds: HTMLElement[] = []
   private pollTimer: number | null = null
+  private lastBadgePollStartedAt: number | null = null
   private lastBadgeValue: number | null = null
 
   constructor(options: MapChromeBarOptions) {
@@ -197,7 +199,7 @@ export class MapChromeBar {
   /** Manual badge refresh — called after an open/close on kanban so the
    *  count is fresh without waiting for the poll. */
   refreshSoon(): void {
-    void this.refreshAwaitingReview()
+    void this.refreshAwaitingReview({ force: true })
   }
 
   syncFocusedCity(city: City | null): void {
@@ -424,10 +426,11 @@ export class MapChromeBar {
     }, this.pollIntervalMs)
   }
 
-  private async refreshAwaitingReview(): Promise<void> {
-    // Skip poll while the page is hidden — the badge will refresh on the
-    // next tick after the tab returns to the foreground.
+  private async refreshAwaitingReview(opts: { force?: boolean } = {}): Promise<void> {
+    const now = Date.now()
+    if (!opts.force && !shouldRunVisiblePoll(this.lastBadgePollStartedAt, now, this.pollIntervalMs)) return
     if (document.hidden) return
+    this.lastBadgePollStartedAt = now
     try {
       const cityId = this.opts.getKanbanBadgeCityId?.() ?? null
       const url = cityId

@@ -8,12 +8,17 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { FrontendAppRuntime } from './FrontendAppRuntime'
+import { UNFOCUSED_VISIBLE_FRAME_MS } from './PageAttention'
 
 // ── Mock rAF / cAF ───────────────────────────────────────────────────────────
 
 let rafCounter = 0
 const pendingRafs = new Map<number, FrameRequestCallback>()
 const cancelledRafs = new Set<number>()
+let timeoutCounter = 0
+const pendingTimeouts = new Map<number, { cb: () => void; ms?: number }>()
+let documentHasFocus = true
+type RuntimeOptions = ConstructorParameters<typeof FrontendAppRuntime>[0]
 
 function mockRaf(cb: FrameRequestCallback): number {
   const id = ++rafCounter
@@ -26,6 +31,25 @@ function mockCaf(id: number): void {
   pendingRafs.delete(id)
 }
 
+function mockSetTimeout(handler: TimerHandler, ms?: number, ...args: unknown[]): number {
+  if (typeof handler !== 'function') {
+    throw new Error('mockSetTimeout only supports function handlers')
+  }
+  const id = ++timeoutCounter
+  pendingTimeouts.set(id, {
+    cb: () => {
+      (handler as (...args: unknown[]) => void)(...args)
+    },
+    ms,
+  })
+  return id
+}
+
+function mockClearTimeout(id?: string | number | ReturnType<typeof setTimeout>): void {
+  if (id === undefined) return
+  pendingTimeouts.delete(Number(id))
+}
+
 /** Fire all pending RAF callbacks once (simulates one browser frame). */
 function flushRafs(): void {
   const toFire = [...pendingRafs.entries()]
@@ -35,36 +59,49 @@ function flushRafs(): void {
   }
 }
 
+function flushTimeouts(ms?: number): void {
+  const toFire = [...pendingTimeouts.entries()]
+    .filter(([, timeout]) => ms === undefined || timeout.ms === ms)
+  for (const [id, timeout] of toFire) {
+    pendingTimeouts.delete(id)
+    timeout.cb()
+  }
+}
+
+function countTimeouts(ms: number): number {
+  return [...pendingTimeouts.values()].filter((timeout) => timeout.ms === ms).length
+}
+
 // ── Mock options factory ──────────────────────────────────────────────────────
 
-function makeMockOptions(): Parameters<typeof FrontendAppRuntime>[0] {
+function makeMockOptions(): RuntimeOptions {
   return {
     renderer: {
       setSize: vi.fn(),
       render: vi.fn(),
       dispose: vi.fn(),
-    } as unknown as Parameters<typeof FrontendAppRuntime>[0]['renderer'],
-    scene: {} as unknown as Parameters<typeof FrontendAppRuntime>[0]['scene'],
+    } as unknown as RuntimeOptions['renderer'],
+    scene: {} as unknown as RuntimeOptions['scene'],
     labelRenderer: {
       setSize: vi.fn(),
       render: vi.fn(),
       domElement: { remove: vi.fn() },
-    } as unknown as Parameters<typeof FrontendAppRuntime>[0]['labelRenderer'],
+    } as unknown as RuntimeOptions['labelRenderer'],
     camera: {
       camera: {},
       cameraDistance: 10,
       resize: vi.fn(),
       dispose: vi.fn(),
-    } as unknown as Parameters<typeof FrontendAppRuntime>[0]['camera'],
+    } as unknown as RuntimeOptions['camera'],
     zoneRenderer: {
       animate: vi.fn(),
       dispose: vi.fn(),
-    } as unknown as Parameters<typeof FrontendAppRuntime>[0]['zoneRenderer'],
-    stateSync: { dispose: vi.fn() } as unknown as Parameters<typeof FrontendAppRuntime>[0]['stateSync'],
-    mapInteractions: { dispose: vi.fn() } as unknown as Parameters<typeof FrontendAppRuntime>[0]['mapInteractions'],
-    contextMenu: { dispose: vi.fn() } as unknown as Parameters<typeof FrontendAppRuntime>[0]['contextMenu'],
-    newWorkerDialog: { dispose: vi.fn() } as unknown as Parameters<typeof FrontendAppRuntime>[0]['newWorkerDialog'],
-    playgroundViewer: { dispose: vi.fn() } as unknown as Parameters<typeof FrontendAppRuntime>[0]['playgroundViewer'],
+    } as unknown as RuntimeOptions['zoneRenderer'],
+    stateSync: { dispose: vi.fn() } as unknown as RuntimeOptions['stateSync'],
+    mapInteractions: { dispose: vi.fn() } as unknown as RuntimeOptions['mapInteractions'],
+    contextMenu: { dispose: vi.fn() } as unknown as RuntimeOptions['contextMenu'],
+    newWorkerDialog: { dispose: vi.fn() } as unknown as RuntimeOptions['newWorkerDialog'],
+    playgroundViewer: { dispose: vi.fn() } as unknown as RuntimeOptions['playgroundViewer'],
     clearArtifactMediaCaches: vi.fn(),
     getCities: vi.fn().mockReturnValue([]),
     updateWorkerHud: vi.fn(),
@@ -77,26 +114,34 @@ function setDocumentHidden(hidden: boolean): void {
   Object.defineProperty(document, 'hidden', { value: hidden, configurable: true })
 }
 
+function setDocumentFocused(focused: boolean): void {
+  documentHasFocus = focused
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   rafCounter = 0
+  timeoutCounter = 0
   pendingRafs.clear()
   cancelledRafs.clear()
+  pendingTimeouts.clear()
 
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation(mockRaf)
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(mockCaf)
-  // Block the mock-data fallback setTimeout so it doesn't interfere.
-  vi.spyOn(window, 'setTimeout').mockReturnValue(0 as unknown as ReturnType<typeof setTimeout>)
-  vi.spyOn(window, 'clearTimeout').mockImplementation(() => undefined)
+  vi.spyOn(window, 'setTimeout').mockImplementation(mockSetTimeout as unknown as typeof window.setTimeout)
+  vi.spyOn(window, 'clearTimeout').mockImplementation(mockClearTimeout as typeof window.clearTimeout)
+  vi.spyOn(document, 'hasFocus').mockImplementation(() => documentHasFocus)
 
   setDocumentHidden(false)
+  setDocumentFocused(true)
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
   // Restore document.hidden to the default false so other tests start clean.
   setDocumentHidden(false)
+  setDocumentFocused(true)
 })
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -161,6 +206,68 @@ describe('FrontendAppRuntime — render loop visibility gating', () => {
     runtime.dispose()
   })
 
+  it('throttles a visible unfocused window through delayed frames', () => {
+    setDocumentFocused(false)
+    const options = makeMockOptions()
+    const runtime = new FrontendAppRuntime(options)
+    runtime.start()
+
+    // Start renders once so the visible tile is not stale, then uses the
+    // slower unfocused cadence instead of immediately scheduling another RAF.
+    expect(options.renderer.render).toHaveBeenCalledTimes(1)
+    expect(pendingRafs.size).toBe(0)
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(1)
+
+    flushTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)
+    expect(pendingRafs.size).toBe(1)
+
+    flushRafs()
+    expect(options.renderer.render).toHaveBeenCalledTimes(2)
+    expect(pendingRafs.size).toBe(0)
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(1)
+
+    runtime.dispose()
+  })
+
+  it('resumes full-rate RAF immediately when a visible unfocused window gains focus', () => {
+    setDocumentFocused(false)
+    const options = makeMockOptions()
+    const runtime = new FrontendAppRuntime(options)
+    runtime.start()
+
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(1)
+
+    setDocumentFocused(true)
+    window.dispatchEvent(new Event('focus'))
+
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(0)
+    expect(pendingRafs.size).toBe(1)
+
+    flushRafs()
+    expect(options.renderer.render).toHaveBeenCalledTimes(2)
+    expect(pendingRafs.size).toBe(1)
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(0)
+
+    runtime.dispose()
+  })
+
+  it('clears the visible-unfocused throttle timer when the page becomes hidden', () => {
+    setDocumentFocused(false)
+    const runtime = new FrontendAppRuntime(makeMockOptions())
+    runtime.start()
+
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(1)
+
+    setDocumentHidden(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(0)
+    flushTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)
+    expect(pendingRafs.size).toBe(0)
+
+    runtime.dispose()
+  })
+
   it('does not double-start the loop on repeated visibilitychange visible events', () => {
     const runtime = new FrontendAppRuntime(makeMockOptions())
     runtime.start()
@@ -199,10 +306,12 @@ describe('FrontendAppRuntime — render loop visibility gating', () => {
 
   it('removes the visibilitychange listener on dispose', () => {
     const removeSpy = vi.spyOn(document, 'removeEventListener')
+    const windowRemoveSpy = vi.spyOn(window, 'removeEventListener')
     const runtime = new FrontendAppRuntime(makeMockOptions())
     runtime.start()
     runtime.dispose()
 
     expect(removeSpy).toHaveBeenCalledWith('visibilitychange', expect.any(Function))
+    expect(windowRemoveSpy).toHaveBeenCalledWith('focus', expect.any(Function))
   })
 })

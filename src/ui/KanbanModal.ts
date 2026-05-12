@@ -15,6 +15,7 @@
 
 import './KanbanModal.css'
 import { renderMarkdown } from './utils.js'
+import { shouldRunVisiblePoll } from '../runtime/PageAttention'
 
 /** Column identifier — also doubles as the API target. */
 type ColumnKind = 'ideas' | 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
@@ -227,6 +228,7 @@ export class KanbanModal {
   /** Bug 3: lightweight auto-poll while mounted. 15s default. */
   private pollTimer: number | null = null
   private readonly pollIntervalMs = 15_000
+  private lastFetchStartedAt: number | null = null
   /** Intermediate fiber-detail modal — one instance, re-used across opens. */
   private detailModal: FiberDetailModal | null = null
 
@@ -481,6 +483,7 @@ export class KanbanModal {
   }
 
   private async fetchAndRender(): Promise<void> {
+    this.lastFetchStartedAt = Date.now()
     const token = ++this.inflightFetchToken
     if (this.statusEl) this.statusEl.textContent = 'Loading…'
     try {
@@ -1123,9 +1126,9 @@ export class KanbanModal {
   private startPolling(): void {
     this.stopPolling()
     this.pollTimer = window.setInterval(() => {
-      // Skip refresh while the page is hidden; the next poll after the
-      // tab returns to the foreground will catch any drift.
-      if (document.hidden) return
+      // Hidden tabs stop polling; visible but unfocused tiled windows slow
+      // down to the shared page-attention cadence.
+      if (!shouldRunVisiblePoll(this.lastFetchStartedAt, Date.now(), this.pollIntervalMs)) return
       void this.fetchAndRender()
     }, this.pollIntervalMs)
   }
