@@ -192,6 +192,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       browserClients: browserStateCoordinator.getClientCount(),
       connectedRemoteOrigins,
     },
+    browserState: browserStateCoordinator.getBroadcastStats(),
     maps: {
       activeSearches: workspaceBrowser.getActiveSearchCount(),
       remoteSessionOrigins: remoteAgentCoordinator.getRemoteSessionOriginCount(),

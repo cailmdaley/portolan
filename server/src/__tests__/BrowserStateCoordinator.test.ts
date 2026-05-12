@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
 import { BrowserStateCoordinator } from '../BrowserStateCoordinator.js';
 
 describe('BrowserStateCoordinator', () => {
@@ -141,5 +142,62 @@ describe('BrowserStateCoordinator', () => {
         lastMeeting: null,
       },
     });
+  });
+
+  it('reports browser-state websocket payload fanout diagnostics', async () => {
+    const coordinator = makeCoordinator();
+    const ws = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+
+    await coordinator.attachClient(ws);
+    expect(coordinator.getBroadcastStats()).toMatchObject({
+      clients: 1,
+      state: {
+        initialSnapshots: 1,
+        broadcasts: 0,
+        messagesSent: 1,
+        lastRecipientCount: 1,
+      },
+    });
+
+    coordinator.broadcast({ cities: [], sessions: [] });
+
+    const stats = coordinator.getBroadcastStats();
+    expect(stats.state).toMatchObject({
+      initialSnapshots: 1,
+      broadcasts: 1,
+      messagesSent: 2,
+      lastRecipientCount: 1,
+    });
+    expect(stats.state.lastPayloadBytes).toBeGreaterThan(0);
+    expect(stats.state.approxBytesSent).toBeGreaterThanOrEqual(stats.state.lastPayloadBytes);
+    expect(stats.state.lastSentAt).toEqual(expect.any(Number));
+  });
+
+  it('reports activity websocket payload fanout diagnostics', async () => {
+    const coordinator = makeCoordinator();
+    const ws = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+
+    await coordinator.attachClient(ws);
+    coordinator.broadcastActivity({
+      tmuxSession: 'worker-1',
+      toolName: 'Read',
+      filePath: '/tmp/file.ts',
+      timestamp: Date.now(),
+    } as any, 'local');
+
+    const stats = coordinator.getBroadcastStats();
+    expect(stats.activity).toMatchObject({
+      broadcasts: 1,
+      messagesSent: 1,
+      lastRecipientCount: 1,
+    });
+    expect(stats.activity.lastPayloadBytes).toBeGreaterThan(0);
+    expect(stats.activity.approxBytesSent).toBeGreaterThan(0);
   });
 });

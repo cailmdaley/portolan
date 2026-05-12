@@ -72,6 +72,34 @@ interface FiberCountCacheEntry {
   updatedAt: number;
 }
 
+interface BrowserStateMessageStats {
+  broadcasts: number;
+  initialSnapshots: number;
+  messagesSent: number;
+  approxBytesSent: number;
+  lastPayloadBytes: number;
+  lastRecipientCount: number;
+  lastSentAt: number | null;
+}
+
+export interface BrowserStateBroadcastStats {
+  clients: number;
+  state: BrowserStateMessageStats;
+  activity: BrowserStateMessageStats;
+}
+
+function createMessageStats(): BrowserStateMessageStats {
+  return {
+    broadcasts: 0,
+    initialSnapshots: 0,
+    messagesSent: 0,
+    approxBytesSent: 0,
+    lastPayloadBytes: 0,
+    lastRecipientCount: 0,
+    lastSentAt: null,
+  };
+}
+
 export class BrowserStateCoordinator {
   private readonly clients = new Set<WebSocket>();
   private readonly localOriginId: string;
@@ -80,6 +108,8 @@ export class BrowserStateCoordinator {
   private readonly fiberCountCache = new Map<string, FiberCountCacheEntry>();
   private readonly fiberCountReads = new Map<string, Promise<number>>();
   private readonly countOpenFibers: (cityPath: string) => Promise<number>;
+  private readonly stateMessageStats: BrowserStateMessageStats = createMessageStats();
+  private readonly activityMessageStats: BrowserStateMessageStats = createMessageStats();
   private remoteAgentStateSource: RemoteAgentStateSource | null = null;
 
   constructor(private options: BrowserStateCoordinatorOptions) {
@@ -93,6 +123,14 @@ export class BrowserStateCoordinator {
 
   getClientCount(): number {
     return this.clients.size;
+  }
+
+  getBroadcastStats(): BrowserStateBroadcastStats {
+    return {
+      clients: this.clients.size,
+      state: { ...this.stateMessageStats },
+      activity: { ...this.activityMessageStats },
+    };
   }
 
   getFiberCountCacheStats(): { entries: number; inFlight: number; localCities: number; lastUpdatedAt: number | null } {
@@ -129,7 +167,9 @@ export class BrowserStateCoordinator {
   async attachClient(ws: WebSocket): Promise<void> {
     this.clients.add(ws);
     const state = await this.buildState();
-    ws.send(JSON.stringify(state));
+    const message = JSON.stringify(state);
+    ws.send(message);
+    this.recordMessageStats(this.stateMessageStats, message, 1, 'initial');
   }
 
   detachClient(ws: WebSocket): void {
@@ -219,11 +259,14 @@ export class BrowserStateCoordinator {
 
   broadcast(state: StateUpdate): void {
     const message = JSON.stringify(state);
+    let recipients = 0;
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
+        recipients += 1;
       }
     }
+    this.recordMessageStats(this.stateMessageStats, message, recipients, 'broadcast');
     this.lastBroadcastState = state;
   }
 
@@ -236,11 +279,14 @@ export class BrowserStateCoordinator {
         activitySessionKey: this.getActivitySessionKey(originId, activity.tmuxSession),
       },
     });
+    let recipients = 0;
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
+        recipients += 1;
       }
     }
+    this.recordMessageStats(this.activityMessageStats, message, recipients, 'broadcast');
   }
 
   async broadcastCurrentState(): Promise<void> {
@@ -539,6 +585,25 @@ export class BrowserStateCoordinator {
     for (const cityId of this.fiberCountReads.keys()) {
       if (!currentLocalCityIds.has(cityId)) this.fiberCountReads.delete(cityId);
     }
+  }
+
+  private recordMessageStats(
+    stats: BrowserStateMessageStats,
+    message: string,
+    recipients: number,
+    kind: 'broadcast' | 'initial',
+  ): void {
+    if (kind === 'broadcast') {
+      stats.broadcasts += 1;
+    } else {
+      stats.initialSnapshots += 1;
+    }
+    stats.messagesSent += recipients;
+    const payloadBytes = Buffer.byteLength(message, 'utf8');
+    stats.approxBytesSent += payloadBytes * recipients;
+    stats.lastPayloadBytes = payloadBytes;
+    stats.lastRecipientCount = recipients;
+    stats.lastSentAt = Date.now();
   }
 
   private async getRemoteFibers(
