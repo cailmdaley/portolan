@@ -5,7 +5,9 @@ Spatial map for development sessions. Cities are projects, workers are Claude in
 ## Running
 
 ```bash
-./dev.sh          # Frontend (Vite :5173) + backend (Node :4004)
+./dev.sh             # Frontend (Vite :5173) + backend (Node :4004)
+npm run tauri:dev    # Native desktop shell around the same dev stack
+npm run tauri:build  # Build Portolan.app + DMG under src-tauri/target/release/bundle/
 ```
 
 ```bash

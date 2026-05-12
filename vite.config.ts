@@ -13,6 +13,7 @@ const lightconeRoot = dirname(vellumRealPath)
 
 export default defineConfig({
   plugins: [react()],
+  clearScreen: false,
   resolve: {
     alias: {
       // Vellum's internals import via `~/...` (alias for vellum's own src/).
@@ -22,10 +23,22 @@ export default defineConfig({
     },
   },
   server: {
-    // Disable the error overlay which uses an iframe
-    hmr: {
-      overlay: false
+    // Tauri expects this exact URL in `src-tauri/tauri.conf.json`.
+    port: 5173,
+    strictPort: true,
+    host: process.env.TAURI_DEV_HOST || false,
+    hmr: process.env.TAURI_DEV_HOST
+      ? {
+          protocol: 'ws',
+          host: process.env.TAURI_DEV_HOST,
+          port: 5173,
+          overlay: false,
+        }
+      : { overlay: false },
+    watch: {
+      ignored: ['**/src-tauri/**'],
     },
+    // Disable the error overlay which uses an iframe
     // Serve .portolan directory for city sprites, and the real path of the
     // vellum symlink (node_modules/vellum → ../../lightcone/vellum) so Vite
     // doesn't reject those files as outside the allow list.
