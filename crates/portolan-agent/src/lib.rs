@@ -1,6 +1,7 @@
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentFrame, AgentRequestPayload, AgentResultPayload,
-    FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload,
+    FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDumpPayload,
+    FiberTreeFile,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -165,13 +166,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
             );
             Vec::new()
         }
-        AgentFrame::FiberTreeHosts { payload } => {
-            eprintln!(
-                "[portolan-agent-rust] server requested {} felt host(s); fiber-tree publishing is not enabled in the preview binary",
-                payload.felt_hosts.len()
-            );
-            Vec::new()
-        }
+        AgentFrame::FiberTreeHosts { payload } => build_fiber_tree_dumps(&payload.felt_hosts),
         AgentFrame::KanbanTransition { payload } => {
             vec![unsupported_kanban_transition(payload)]
         }
@@ -235,6 +230,93 @@ fn read_raw_fiber(payload: &FiberRawRequestPayload) -> Result<(String, String), 
         .map_err(|error| format!("failed to read fiber {}: {error}", payload.path))?;
     let sha256 = sha256_hex(&body);
     Ok((body, sha256))
+}
+
+fn build_fiber_tree_dumps(felt_hosts: &[String]) -> Vec<AgentFrame> {
+    let mut frames = Vec::new();
+    let mut seen = Vec::<PathBuf>::new();
+
+    for felt_host in felt_hosts.iter().filter(|host| !host.trim().is_empty()) {
+        let normalized_host = normalize_host_path(felt_host);
+        if seen.iter().any(|host| host == &normalized_host) {
+            continue;
+        }
+        seen.push(normalized_host.clone());
+
+        match collect_fiber_tree_files(&normalized_host) {
+            Ok(files) => {
+                eprintln!(
+                    "[portolan-agent-rust] publishing fiber_tree_dump: {} fibers from {}",
+                    files.len(),
+                    normalized_host.display()
+                );
+                frames.push(AgentFrame::FiberTreeDump {
+                    payload: FiberTreeDumpPayload {
+                        felt_host: normalized_host.display().to_string(),
+                        files,
+                    },
+                });
+            }
+            Err(error) => {
+                eprintln!(
+                    "[portolan-agent-rust] fiber-tree dump skipped for {}: {error}",
+                    normalized_host.display()
+                );
+            }
+        }
+    }
+
+    frames
+}
+
+fn collect_fiber_tree_files(felt_host: &Path) -> Result<Vec<FiberTreeFile>, String> {
+    let felt_dir = felt_host.join(".felt");
+    if !felt_dir.is_dir() {
+        return Err(format!("{} does not exist", felt_dir.display()));
+    }
+
+    let mut paths = Vec::new();
+    collect_fiber_paths(&felt_dir, &felt_dir, &mut paths);
+    paths.sort();
+
+    let mut files = Vec::new();
+    for path in paths {
+        let body = fs::read_to_string(felt_dir.join(&path))
+            .map_err(|error| format!("failed to read {path}: {error}"))?;
+        files.push(FiberTreeFile {
+            path,
+            fiber: None,
+            content: Some(body),
+        });
+    }
+    Ok(files)
+}
+
+fn collect_fiber_paths(root: &Path, current: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(current) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_fiber_paths(root, &path, out);
+        } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        {
+            let Ok(rel_path) = path.strip_prefix(root) else {
+                continue;
+            };
+            let rel_path = rel_path
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            if fiber_id_from_path(&rel_path).is_some() {
+                out.push(rel_path);
+            }
+        }
+    }
 }
 
 fn resolve_remote_fiber_file(felt_host: &str, rel_path: &str) -> Result<PathBuf, String> {
@@ -306,7 +388,9 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use portolan_agent_protocol::{FiberRawOperation, FiberRawRequestPayload, HexPosition};
+    use portolan_agent_protocol::{
+        FiberRawOperation, FiberRawRequestPayload, FiberTreeHostsPayload, HexPosition,
+    };
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::{
@@ -381,6 +465,78 @@ mod tests {
             payload: portolan_agent_protocol::ConnectedPayload {
                 origin_id: "remote-candide".to_string(),
                 position: HexPosition { q: 2, r: -1 },
+            },
+        });
+
+        assert_eq!(responses, vec![]);
+    }
+
+    #[test]
+    fn publishes_fiber_tree_dump_for_requested_hosts() {
+        let dir = temp_host("fiber-tree");
+        fs::create_dir_all(dir.join(".felt/portolan/native")).unwrap();
+        fs::create_dir_all(dir.join(".felt/notes")).unwrap();
+        fs::write(
+            dir.join(".felt/portolan/portolan.md"),
+            "---\nname: Portolan\nstatus: active\n---\n\nRoot\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".felt/portolan/native/native.md"),
+            "---\nname: Native\nstatus: open\n---\n\nChild\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".felt/portolan/native/scratch.md"),
+            "---\nname: Not a container fiber\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".felt/notes.md"),
+            "---\nname: Notes\nstatus: closed\n---\n",
+        )
+        .unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::FiberTreeHosts {
+            payload: FiberTreeHostsPayload {
+                felt_hosts: vec![dir.display().to_string(), dir.display().to_string()],
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(responses.len(), 1);
+        match &responses[0] {
+            AgentFrame::FiberTreeDump { payload } => {
+                assert_eq!(payload.felt_host, dir.display().to_string());
+                let paths: Vec<_> = payload
+                    .files
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect();
+                assert_eq!(
+                    paths,
+                    vec![
+                        "notes.md",
+                        "portolan/native/native.md",
+                        "portolan/portolan.md"
+                    ]
+                );
+                assert!(payload.files.iter().all(|file| file.fiber.is_none()));
+                assert!(payload.files[0]
+                    .content
+                    .as_deref()
+                    .unwrap()
+                    .contains("name: Notes"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skips_missing_fiber_tree_hosts() {
+        let responses = handle_server_frame(&AgentFrame::FiberTreeHosts {
+            payload: FiberTreeHostsPayload {
+                felt_hosts: vec!["/tmp/portolan-agent-missing-felt-host".to_string()],
             },
         });
 
