@@ -157,6 +157,7 @@ describe('BrowserStateCoordinator', () => {
       state: {
         initialSnapshots: 1,
         broadcasts: 0,
+        duplicateBroadcastsSuppressed: 0,
         messagesSent: 1,
         lastRecipientCount: 1,
       },
@@ -168,12 +169,37 @@ describe('BrowserStateCoordinator', () => {
     expect(stats.state).toMatchObject({
       initialSnapshots: 1,
       broadcasts: 1,
+      duplicateBroadcastsSuppressed: 0,
       messagesSent: 2,
       lastRecipientCount: 1,
     });
     expect(stats.state.lastPayloadBytes).toBeGreaterThan(0);
     expect(stats.state.approxBytesSent).toBeGreaterThanOrEqual(stats.state.lastPayloadBytes);
     expect(stats.state.lastSentAt).toEqual(expect.any(Number));
+  });
+
+  it('suppresses duplicate full-state broadcasts after the first send', async () => {
+    const coordinator = makeCoordinator();
+    const ws = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+    const state = { cities: [], sessions: [] };
+
+    await coordinator.attachClient(ws);
+    coordinator.broadcast(state);
+    coordinator.broadcast({ cities: [], sessions: [] });
+
+    expect(ws.send).toHaveBeenCalledTimes(2);
+    const stats = coordinator.getBroadcastStats();
+    expect(stats.state).toMatchObject({
+      initialSnapshots: 1,
+      broadcasts: 1,
+      duplicateBroadcastsSuppressed: 1,
+      messagesSent: 2,
+      lastRecipientCount: 1,
+    });
+    expect(stats.state.lastSuppressedAt).toEqual(expect.any(Number));
   });
 
   it('reports activity websocket payload fanout diagnostics', async () => {

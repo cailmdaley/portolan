@@ -75,11 +75,13 @@ interface FiberCountCacheEntry {
 interface BrowserStateMessageStats {
   broadcasts: number;
   initialSnapshots: number;
+  duplicateBroadcastsSuppressed: number;
   messagesSent: number;
   approxBytesSent: number;
   lastPayloadBytes: number;
   lastRecipientCount: number;
   lastSentAt: number | null;
+  lastSuppressedAt: number | null;
 }
 
 export interface BrowserStateBroadcastStats {
@@ -92,11 +94,13 @@ function createMessageStats(): BrowserStateMessageStats {
   return {
     broadcasts: 0,
     initialSnapshots: 0,
+    duplicateBroadcastsSuppressed: 0,
     messagesSent: 0,
     approxBytesSent: 0,
     lastPayloadBytes: 0,
     lastRecipientCount: 0,
     lastSentAt: null,
+    lastSuppressedAt: null,
   };
 }
 
@@ -110,6 +114,7 @@ export class BrowserStateCoordinator {
   private readonly countOpenFibers: (cityPath: string) => Promise<number>;
   private readonly stateMessageStats: BrowserStateMessageStats = createMessageStats();
   private readonly activityMessageStats: BrowserStateMessageStats = createMessageStats();
+  private lastBroadcastMessage: string | null = null;
   private remoteAgentStateSource: RemoteAgentStateSource | null = null;
 
   constructor(private options: BrowserStateCoordinatorOptions) {
@@ -259,6 +264,13 @@ export class BrowserStateCoordinator {
 
   broadcast(state: StateUpdate): void {
     const message = JSON.stringify(state);
+    if (message === this.lastBroadcastMessage) {
+      this.stateMessageStats.duplicateBroadcastsSuppressed += 1;
+      this.stateMessageStats.lastSuppressedAt = Date.now();
+      this.lastBroadcastState = state;
+      return;
+    }
+
     let recipients = 0;
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
@@ -268,6 +280,7 @@ export class BrowserStateCoordinator {
     }
     this.recordMessageStats(this.stateMessageStats, message, recipients, 'broadcast');
     this.lastBroadcastState = state;
+    this.lastBroadcastMessage = message;
   }
 
   broadcastActivity(activity: ActivityEvent, originId: string): void {
