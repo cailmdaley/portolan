@@ -1123,6 +1123,9 @@ export class KanbanModal {
   private startPolling(): void {
     this.stopPolling()
     this.pollTimer = window.setInterval(() => {
+      // Skip refresh while the page is hidden; the next poll after the
+      // tab returns to the foreground will catch any drift.
+      if (document.hidden) return
       void this.fetchAndRender()
     }, this.pollIntervalMs)
   }

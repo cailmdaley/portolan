@@ -425,6 +425,9 @@ export class MapChromeBar {
   }
 
   private async refreshAwaitingReview(): Promise<void> {
+    // Skip poll while the page is hidden — the badge will refresh on the
+    // next tick after the tab returns to the foreground.
+    if (document.hidden) return
     try {
       const cityId = this.opts.getKanbanBadgeCityId?.() ?? null
       const url = cityId

@@ -53,6 +53,10 @@ export class FrontendAppRuntime {
 
   start(): void {
     window.addEventListener('resize', this.onResize)
+    // Pause the render loop when the page is hidden (background tab,
+    // minimized window). `visibilitychange` fires on document; the handler
+    // restarts the loop when the page returns to the foreground.
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
     this.animate()
     this.scheduleMockDataFallback()
   }
@@ -79,6 +83,7 @@ export class FrontendAppRuntime {
 
     this.options.mapInteractions.dispose()
     window.removeEventListener('resize', this.onResize)
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
 
     this.options.contextMenu.dispose()
     this.options.newWorkerDialog.dispose()
@@ -120,8 +125,25 @@ export class FrontendAppRuntime {
     this.options.camera.resize()
   }
 
+  /** Restart the render loop when the page returns to the foreground. */
+  private readonly onVisibilityChange = (): void => {
+    if (this.runtimeDisposed) return
+    if (!document.hidden && this.animationFrameId === null) {
+      this.animate()
+    }
+  }
+
   private readonly animate = (): void => {
     if (this.runtimeDisposed) return
+
+    // Pause when the page is hidden — no visible output to produce and
+    // browsers already throttle RAF on hidden pages. Setting animationFrameId
+    // to null signals the paused state so onVisibilityChange can restart.
+    if (document.hidden) {
+      this.animationFrameId = null
+      return
+    }
+
     this.animationFrameId = requestAnimationFrame(this.animate)
 
     this.options.zoneRenderer.animate(this.options.camera.cameraDistance)
