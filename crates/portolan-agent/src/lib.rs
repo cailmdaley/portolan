@@ -1,8 +1,15 @@
 use portolan_agent_protocol::{
-    AgentFrame, AgentRequestPayload, AgentResultPayload, FiberRawRequestPayload,
-    FiberRawResultPayload,
+    is_safe_remote_fiber_path, AgentFrame, AgentRequestPayload, AgentResultPayload,
+    FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload,
 };
-use std::{env, ffi::OsString, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 const DEFAULT_SERVER: &str = "localhost:4004";
 const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
@@ -168,7 +175,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::KanbanTransition { payload } => {
             vec![unsupported_kanban_transition(payload)]
         }
-        AgentFrame::FiberRaw { payload } => vec![unsupported_fiber_raw(payload)],
+        AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         _ => Vec::new(),
     }
 }
@@ -188,20 +195,108 @@ fn unsupported_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
     }
 }
 
-fn unsupported_fiber_raw(payload: &FiberRawRequestPayload) -> AgentFrame {
-    AgentFrame::FiberRawResult {
-        payload: FiberRawResultPayload {
-            correlation_id: payload.correlation_id.clone(),
-            ok: false,
-            error: Some(
-                "rust portolan-agent preview does not implement fiber-raw yet; use server/agent.js"
-                    .to_string(),
-            ),
-            body: None,
-            sha256: None,
-            fiber: None,
+fn handle_fiber_raw(payload: &FiberRawRequestPayload) -> AgentFrame {
+    let result = match payload.operation {
+        FiberRawOperation::Read => read_raw_fiber(payload),
+        FiberRawOperation::Write => Err(
+            "rust portolan-agent preview implements fiber-raw read only; use server/agent.js for writes"
+                .to_string(),
+        ),
+    };
+
+    match result {
+        Ok((body, sha256)) => AgentFrame::FiberRawResult {
+            payload: FiberRawResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                body: Some(body),
+                sha256: Some(sha256),
+                fiber: None,
+            },
+        },
+        Err(error) => AgentFrame::FiberRawResult {
+            payload: FiberRawResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                body: None,
+                sha256: None,
+                fiber: None,
+            },
         },
     }
+}
+
+fn read_raw_fiber(payload: &FiberRawRequestPayload) -> Result<(String, String), String> {
+    let felt_host = payload.felt_host.clone().unwrap_or_else(default_felt_host);
+    let full_path = resolve_remote_fiber_file(&felt_host, &payload.path)?;
+    let body = fs::read_to_string(&full_path)
+        .map_err(|error| format!("failed to read fiber {}: {error}", payload.path))?;
+    let sha256 = sha256_hex(&body);
+    Ok((body, sha256))
+}
+
+fn resolve_remote_fiber_file(felt_host: &str, rel_path: &str) -> Result<PathBuf, String> {
+    if !is_safe_remote_fiber_path(rel_path) {
+        return Err(format!("invalid path: {rel_path}"));
+    }
+    if fiber_id_from_path(rel_path).is_none() {
+        return Err(format!("path is not a fiber: {rel_path}"));
+    }
+
+    let felt_dir = normalize_host_path(felt_host).join(".felt");
+    let full_path = felt_dir.join(rel_path);
+    if !full_path.starts_with(&felt_dir) {
+        return Err(format!("path escapes .felt: {rel_path}"));
+    }
+    if !full_path.exists() {
+        return Err(format!("fiber file missing: {rel_path}"));
+    }
+    Ok(full_path)
+}
+
+fn normalize_host_path(path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn default_felt_host() -> String {
+    env::var("PORTOLAN_FELT_HOST")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| env::var("HOME").ok().map(|home| format!("{home}/loom")))
+        .unwrap_or_else(|| "loom".to_string())
+}
+
+fn sha256_hex(body: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn fiber_id_from_path(path: &str) -> Option<String> {
+    let cleaned = path.strip_prefix("./").unwrap_or(path);
+    let no_ext = cleaned.strip_suffix(".md")?;
+    let parts: Vec<_> = no_ext.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() == 1 {
+        return Some(parts[0].to_string());
+    }
+    let last = parts[parts.len() - 1];
+    let second_last = parts[parts.len() - 2];
+    if last != second_last {
+        return None;
+    }
+    Some(parts[..parts.len() - 1].join("/"))
 }
 
 fn usage() -> String {
@@ -214,10 +309,26 @@ mod tests {
     use portolan_agent_protocol::{FiberRawOperation, FiberRawRequestPayload, HexPosition};
     use pretty_assertions::assert_eq;
     use serde_json::json;
-    use std::{collections::BTreeMap, ffi::OsString};
+    use std::{
+        collections::BTreeMap,
+        ffi::OsString,
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    fn temp_host(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "portolan-agent-test-{name}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -303,27 +414,82 @@ mod tests {
     }
 
     #[test]
-    fn returns_typed_unsupported_fiber_raw_result() {
+    fn reads_raw_fiber_with_sha256() {
+        let dir = temp_host("raw-read");
+        let fiber_dir = dir.join(".felt/portolan");
+        fs::create_dir_all(&fiber_dir).unwrap();
+        let body = "---\nname: Portolan\n---\n\nRemote body\n";
+        fs::write(fiber_dir.join("portolan.md"), body).unwrap();
+
         let responses = handle_server_frame(&AgentFrame::FiberRaw {
             payload: FiberRawRequestPayload {
                 correlation_id: "raw-1".to_string(),
                 operation: FiberRawOperation::Read,
                 path: "portolan/portolan.md".to_string(),
-                felt_host: Some("/Users/cd280747/loom".to_string()),
+                felt_host: Some(dir.display().to_string()),
                 body: None,
             },
         });
+        fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].correlation_id(), Some("raw-1"));
         match &responses[0] {
             AgentFrame::FiberRawResult { payload } => {
-                assert!(!payload.ok);
+                assert!(payload.ok);
+                assert_eq!(payload.body.as_deref(), Some(body));
                 assert!(payload
-                    .error
+                    .sha256
                     .as_deref()
                     .unwrap()
-                    .contains("server/agent.js"));
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit()));
+                assert_eq!(payload.sha256.as_deref().unwrap().len(), 64);
+                assert!(payload.error.is_none());
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keeps_fiber_raw_writes_explicitly_unsupported() {
+        let responses = handle_server_frame(&AgentFrame::FiberRaw {
+            payload: FiberRawRequestPayload {
+                correlation_id: "raw-write".to_string(),
+                operation: FiberRawOperation::Write,
+                path: "portolan/portolan.md".to_string(),
+                felt_host: Some("/tmp/portolan-agent-test".to_string()),
+                body: Some("---\nname: Portolan\n---\n".to_string()),
+            },
+        });
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].correlation_id(), Some("raw-write"));
+        match &responses[0] {
+            AgentFrame::FiberRawResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload.error.as_deref().unwrap().contains("read only"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_raw_fiber_paths() {
+        let responses = handle_server_frame(&AgentFrame::FiberRaw {
+            payload: FiberRawRequestPayload {
+                correlation_id: "raw-bad".to_string(),
+                operation: FiberRawOperation::Read,
+                path: "../escape.md".to_string(),
+                felt_host: Some("/tmp/portolan-agent-test".to_string()),
+                body: None,
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::FiberRawResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload.error.as_deref().unwrap().contains("invalid path"));
             }
             other => panic!("unexpected response: {other:?}"),
         }
