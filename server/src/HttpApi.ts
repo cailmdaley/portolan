@@ -31,7 +31,7 @@ import {
   type ShuttleCtlInvocation,
 } from './HttpApiKanban.js';
 import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
-import { HttpApiFilesSearch } from './HttpApiFilesSearch.js';
+import { HttpApiFilesSearch, type FilesSearchDiagnostics } from './HttpApiFilesSearch.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
@@ -269,6 +269,10 @@ export class HttpApi {
    */
   setRuntimeDiagnosticsProvider(provider: RuntimeDiagnosticsProvider): void {
     this.hooksRuntimeApi.setRuntimeDiagnosticsProvider(provider);
+  }
+
+  getFilesSearchDiagnostics(): FilesSearchDiagnostics | null {
+    return this.filesSearchApiCache?.api.getDiagnostics() ?? null;
   }
 
   setMeetingBridge(bridge: MeetingBridge): void {

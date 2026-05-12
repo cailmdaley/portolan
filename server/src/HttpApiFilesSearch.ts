@@ -16,13 +16,12 @@
  *     The Files column reuses that protocol for lazy node-expansion;
  *     this HTTP endpoint is the search complement, not a tree replacement.
  *
- * Search strategy: `fd` for filename matching when available, falling back
- * to `find -type f -type d` + `grep -i` when not. Mirrors the
- * `WorkspaceBrowser.handleSearchFiles` shell-out (so the Find search
- * behaves like the per-city HUD search did) but aggregates across every
- * pinned local city in parallel rather than scoping to one. fzy re-ranks
- * the candidates client-server-side so the ordering lines up with
- * `/global-search` fiber scores.
+ * Search strategy: build one short-lived candidate index per pinned local
+ * city, using `fd` when available and falling back to `find`. Queries then
+ * fzy-rank the cached candidates in process. This keeps Find's per-keystroke
+ * and multi-window traffic from spawning a fresh filesystem walk in every
+ * tab while preserving the same filename/path score model as
+ * `/global-search`.
  *
  * Remote-origin file search is a follow-up: snapshot stores carry fiber
  * ids but not the underlying filesystem layout, and a per-keystroke SSH
@@ -34,7 +33,7 @@
 import type { ServerResponse } from 'http';
 import { spawn } from 'child_process';
 import { realpathSync, existsSync } from 'fs';
-import { join, sep, basename } from 'path';
+import { join, basename } from 'path';
 import { score as fzyScore, hasMatch } from 'fzy.js';
 
 // ============================================================================
@@ -87,37 +86,83 @@ interface HttpApiFilesSearchOptions {
   defaultLimit?: number;
   /** Hard cap for `?limit=`. */
   maxLimit?: number;
-  /** Per-city result cap *before* fzy ranking. Defaults to 200; the
-   *  shell-out caps each city's `head` to bound shell-side cost. */
-  perCityCap?: number;
   /** Per-city wall-clock budget in ms. Defaults to 1500ms — fast typers
    *  shouldn't be chasing a search that's already stale. */
   perCityTimeoutMs?: number;
   /** Bound concurrent `fd`/`find` processes. Defaults to 4. */
   maxConcurrentCitySearches?: number;
+  /** TTL for each per-city candidate index. Defaults to 30s. */
+  indexTtlMs?: number;
+  /** Hard cap for indexed candidates per city. Defaults to 20k. */
+  maxIndexedEntriesPerCity?: number;
 }
 
 // ============================================================================
 // Class
 // ============================================================================
 
+interface CityFileIndex {
+  cityId: string;
+  cityName?: string;
+  cityPath: string;
+  entries: GlobalFileHit[];
+  builtAt: number;
+  expiresAt: number;
+  durationMs: number;
+  refreshCount: number;
+  truncated: boolean;
+  timedOut: boolean;
+  warnings: string[];
+}
+
+interface FileWalkResult {
+  lines: string[];
+  timedOut: boolean;
+  stderr: string;
+}
+
+export interface FilesSearchDiagnostics {
+  ttlMs: number;
+  maxIndexedEntriesPerCity: number;
+  cachedCities: number;
+  inFlight: number;
+  totalEntries: number;
+  cities: Array<{
+    cityId: string;
+    cityName?: string;
+    path: string;
+    entries: number;
+    builtAt: number;
+    expiresInMs: number;
+    durationMs: number;
+    refreshCount: number;
+    truncated: boolean;
+    timedOut: boolean;
+    warnings: string[];
+  }>;
+}
+
 export class HttpApiFilesSearch {
   private readonly cities: Array<{ id: string; path: string; name?: string }>;
   private readonly defaultLimit: number;
   private readonly maxLimit: number;
-  private readonly perCityCap: number;
   private readonly perCityTimeoutMs: number;
   private readonly maxConcurrentCitySearches: number;
+  private readonly indexTtlMs: number;
+  private readonly maxIndexedEntriesPerCity: number;
   /** Lazy: `fd` availability probe. Cached for the instance's lifetime. */
   private hasFd: boolean | null = null;
+  private readonly cityIndexes = new Map<string, CityFileIndex>();
+  private readonly cityIndexInFlight = new Map<string, Promise<CityFileIndex>>();
 
   constructor(opts: HttpApiFilesSearchOptions = {}) {
     this.cities = opts.cities ?? [];
     this.defaultLimit = opts.defaultLimit ?? 30;
     this.maxLimit = opts.maxLimit ?? 200;
-    this.perCityCap = opts.perCityCap ?? 200;
     this.perCityTimeoutMs = opts.perCityTimeoutMs ?? 1500;
     this.maxConcurrentCitySearches = opts.maxConcurrentCitySearches ?? 4;
+    this.indexTtlMs = opts.indexTtlMs ?? 30_000;
+    this.maxIndexedEntriesPerCity = opts.maxIndexedEntriesPerCity ?? 20_000;
   }
 
   /**
@@ -175,11 +220,10 @@ export class HttpApiFilesSearch {
       : this.cities;
     if (cities.length === 0) return { hits: [], warnings: [] };
 
-    const fd = await this.detectFd();
     const perCity = await mapSettledWithConcurrency(
       cities,
       Math.max(1, this.maxConcurrentCitySearches),
-      (city) => this.walkCity(city, q, fd),
+      (city) => this.getCityIndex(city),
     );
 
     const merged: GlobalFileHit[] = [];
@@ -193,14 +237,21 @@ export class HttpApiFilesSearch {
         warnings.push({ cityId: city.id, message });
         continue;
       }
-      merged.push(...result.value);
+      for (const message of result.value.warnings) {
+        warnings.push({ cityId: city.id, message });
+      }
+      for (const hit of result.value.entries) {
+        if (hasMatch(q, hit.name) || hasMatch(q, hit.relativePath)) {
+          merged.push(hit);
+        }
+      }
     }
 
     // Final ranking pass: fzy-score the (relativePath, name) pair to keep
     // basename matches dominant ("StashForm" matches over "deep/dir/x.tsx"
     // when both contain the needle) while still favouring shorter path
-    // prefixes. Sort + slice; the per-city cap above already trimmed the
-    // long tail.
+    // prefixes. Sort + slice; the per-city index cap above already trimmed
+    // the long tail.
     const ranked = merged
       .map((hit) => ({ hit, s: rerankScore(hit, q) }))
       .filter((entry) => entry.s > 0)
@@ -215,50 +266,163 @@ export class HttpApiFilesSearch {
   }
 
   /**
-   * One city's walk. Spawns `fd <q>` (or the find/grep fallback) inside
-   * the city's path, parses entries, attaches city metadata. The shell
-   * caps `head -N` so the parent process doesn't hang on enormous trees.
+   * Runtime view for /debug-runtime. Operators can see whether Find is using
+   * one bounded candidate set per city or rebuilding repeatedly.
    */
-  private walkCity(
-    city: { id: string; path: string; name?: string },
-    q: string,
-    fd: boolean,
-  ): Promise<GlobalFileHit[]> {
-    return new Promise((resolve, reject) => {
-      // Skip cities whose path doesn't exist on disk (stale pin) — keeps
-      // the walk from producing a confusing fd error.
-      let cityPath: string;
-      try {
-        cityPath = realpathSync(city.path);
-      } catch (err) {
-        reject(err);
-        return;
-      }
-      if (!existsSync(cityPath)) {
-        resolve([]);
-        return;
-      }
+  getDiagnostics(): FilesSearchDiagnostics {
+    const now = Date.now();
+    const cities = [...this.cityIndexes.values()].map((entry) => ({
+      cityId: entry.cityId,
+      cityName: entry.cityName,
+      path: entry.cityPath,
+      entries: entry.entries.length,
+      builtAt: entry.builtAt,
+      expiresInMs: Math.max(0, entry.expiresAt - now),
+      durationMs: entry.durationMs,
+      refreshCount: entry.refreshCount,
+      truncated: entry.truncated,
+      timedOut: entry.timedOut,
+      warnings: entry.warnings,
+    }));
+    return {
+      ttlMs: this.indexTtlMs,
+      maxIndexedEntriesPerCity: this.maxIndexedEntriesPerCity,
+      cachedCities: cities.length,
+      inFlight: this.cityIndexInFlight.size,
+      totalEntries: cities.reduce((sum, city) => sum + city.entries, 0),
+      cities,
+    };
+  }
 
+  private async getCityIndex(city: { id: string; path: string; name?: string }): Promise<CityFileIndex> {
+    const key = cityIndexKey(city);
+    const now = Date.now();
+    const cached = this.cityIndexes.get(key);
+    if (cached && cached.expiresAt > now) return cached;
+
+    const inFlight = this.cityIndexInFlight.get(key);
+    if (inFlight) return inFlight;
+
+    const pending = this.detectFd()
+      .then((fd) => this.buildCityIndex(city, fd, cached?.refreshCount ?? 0))
+      .then((entry) => {
+        this.cityIndexes.set(key, entry);
+        return entry;
+      })
+      .catch((err: unknown) => {
+        if (!cached) throw err;
+        const message = (err as { message?: string })?.message ?? String(err);
+        return {
+          ...cached,
+          warnings: [`index refresh failed; showing stale entries: ${message}`],
+        };
+      })
+      .finally(() => {
+        if (this.cityIndexInFlight.get(key) === pending) {
+          this.cityIndexInFlight.delete(key);
+        }
+      });
+    this.cityIndexInFlight.set(key, pending);
+    return pending;
+  }
+
+  private async buildCityIndex(
+    city: { id: string; path: string; name?: string },
+    fd: boolean,
+    priorRefreshCount: number,
+  ): Promise<CityFileIndex> {
+    const startedAt = Date.now();
+    let cityPath: string;
+    try {
+      cityPath = realpathSync(city.path);
+    } catch (err) {
+      throw err;
+    }
+    if (!existsSync(cityPath)) {
+      return {
+        cityId: city.id,
+        cityName: city.name,
+        cityPath,
+        entries: [],
+        builtAt: Date.now(),
+        expiresAt: Date.now() + this.indexTtlMs,
+        durationMs: Date.now() - startedAt,
+        refreshCount: priorRefreshCount + 1,
+        truncated: false,
+        timedOut: false,
+        warnings: [],
+      };
+    }
+
+    const walk = await this.walkCityIndex(cityPath, fd);
+    const truncated = walk.lines.length > this.maxIndexedEntriesPerCity;
+    const lines = walk.lines.slice(0, this.maxIndexedEntriesPerCity);
+    const seen = new Set<string>();
+    const entries: GlobalFileHit[] = [];
+
+    for (const raw of lines) {
+      const isDir = raw.endsWith('/');
+      const cleaned = isDir ? raw.slice(0, -1) : raw;
+      const rel = cleaned.replace(/^\.\//, '');
+      if (!rel || rel === '.') continue;
+      const dedupeKey = `${isDir ? 'dir' : 'file'}:${rel}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const name = basename(rel) || rel;
+      entries.push({
+        fullPath: join(cityPath, rel),
+        relativePath: rel,
+        name,
+        type: isDir ? 'dir' : 'file',
+        cityId: city.id,
+        cityName: city.name,
+        originId: 'local',
+        score: 0,
+      });
+    }
+
+    const warnings: string[] = [];
+    if (walk.timedOut) {
+      const stderr = walk.stderr.trim();
+      warnings.push(
+        stderr
+          ? `index refresh timed out; showing partial entries: ${stderr.slice(0, 160)}`
+          : 'index refresh timed out; showing partial entries',
+      );
+    }
+    if (truncated) {
+      warnings.push(`index truncated at ${this.maxIndexedEntriesPerCity} entries`);
+    }
+
+    const builtAt = Date.now();
+    return {
+      cityId: city.id,
+      cityName: city.name,
+      cityPath,
+      entries,
+      builtAt,
+      expiresAt: builtAt + this.indexTtlMs,
+      durationMs: builtAt - startedAt,
+      refreshCount: priorRefreshCount + 1,
+      truncated,
+      timedOut: walk.timedOut,
+      warnings,
+    };
+  }
+
+  /**
+   * One city's candidate refresh. Spawns an unfiltered file/dir walk inside
+   * the city's path; query matching happens later against the cached entries.
+   */
+  private walkCityIndex(cityPath: string, fd: boolean): Promise<FileWalkResult> {
+    return new Promise((resolve, reject) => {
+      const cap = this.maxIndexedEntriesPerCity + 1;
       const proc = fd
         ? spawn(
-            'fd',
+            'sh',
             [
-              '--type', 'f',
-              '--type', 'd',
-              '--follow',
-              '--full-path',
-              '--hidden',
-              '--no-ignore',
-              '--max-results',
-              String(this.perCityCap),
-              '--threads',
-              '1',
-              '--exclude', '.git',
-              '--exclude', '.felt',
-              '--exclude', 'node_modules',
-              '--exclude', '__pycache__',
-              '--color', 'never',
-              q,
+              '-c',
+              `((fd --min-depth 1 --type d --follow --full-path --hidden --no-ignore --max-results ${cap} --threads 1 --exclude .git --exclude .felt --exclude node_modules --exclude __pycache__ --color never . | sed 's|^\\./||;s|$|/|' && fd --min-depth 1 --type f --follow --full-path --hidden --no-ignore --max-results ${cap} --threads 1 --exclude .git --exclude .felt --exclude node_modules --exclude __pycache__ --color never . | sed 's|^\\./||') 2>/dev/null || true) | head -n ${cap}`,
             ],
             { cwd: cityPath },
           )
@@ -266,11 +430,7 @@ export class HttpApiFilesSearch {
             'sh',
             [
               '-c',
-              // Mirrors WorkspaceBrowser.searchLocal's find fallback: walk
-              // files + dirs, mark dirs with a trailing slash, grep on the
-              // user's needle. Quoting the needle for grep — `[`, `*`,
-              // etc. would otherwise blow up the regex.
-              `find -L . \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o \\( -type f -o -type d \\) -print 2>/dev/null | while IFS= read -r path; do if [ -d "$path" ]; then printf '%s/\\n' "$path"; else printf '%s\\n' "$path"; fi; done | grep -i ${shellQuote(q)} | head -${this.perCityCap}`,
+              `find -L . -mindepth 1 \\( -name '.git' -o -name '.felt' -o -name 'node_modules' -o -name '__pycache__' \\) -prune -o \\( -type f -o -type d \\) -print 2>/dev/null | while IFS= read -r path; do if [ -d "$path" ]; then printf '%s/\\n' "$path"; else printf '%s\\n' "$path"; fi; done | head -n ${cap}`,
             ],
             { cwd: cityPath },
           );
@@ -297,35 +457,8 @@ export class HttpApiFilesSearch {
 
       proc.on('close', () => {
         clearTimeout(timer);
-        // fd / find output one entry per line, with directories marked by
-        // a trailing slash. Cap to perCityCap *after* parsing because fd
-        // doesn't have a built-in head and we don't want to pipe it.
-        const lines = stdout.split('\n').filter((l) => l.trim()).slice(0, this.perCityCap);
-        const hits: GlobalFileHit[] = [];
-        for (const raw of lines) {
-          const isDir = raw.endsWith('/');
-          const cleaned = isDir ? raw.slice(0, -1) : raw;
-          // fd's --full-path emits paths with `./` prefix; drop it.
-          const rel = cleaned.replace(/^\.\//, '');
-          if (!rel) continue;
-          const name = basename(rel) || rel;
-          hits.push({
-            fullPath: join(cityPath, rel),
-            relativePath: rel,
-            name,
-            type: isDir ? 'dir' : 'file',
-            cityId: city.id,
-            cityName: city.name,
-            originId: 'local',
-            score: 0,  // filled in by the rerank pass
-          });
-        }
-        if (timedOut && stderr) {
-          // Surface the timeout cause so the warnings list carries
-          // actionable context instead of a generic "timed out."
-          console.warn(`[FilesSearch] ${city.id} timed out: ${stderr.slice(0, 200)}`);
-        }
-        resolve(hits);
+        const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+        resolve({ lines, timedOut, stderr });
       });
     });
   }
@@ -405,16 +538,6 @@ function rerankScore(hit: GlobalFileHit, needle: string): number {
   return total;
 }
 
-/**
- * Single-quote a value for shell. Used by the `find | grep` fallback path
- * when `fd` isn't available; mirrors the quoting strategy in
- * `WorkspaceBrowser.searchLocal` so behaviour parity stays tight.
- */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+function cityIndexKey(city: { id: string; path: string }): string {
+  return `${city.id}\0${city.path}`;
 }
-
-// `sep` is imported for cross-platform `relativePath` rendering — Windows
-// would otherwise emit backslashes here that don't round-trip with the
-// frontend's slash-joined paths.
-void sep;

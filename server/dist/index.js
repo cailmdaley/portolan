@@ -168,6 +168,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
             remoteActivities: remoteAgentCoordinator.getRemoteActivityStoreCount(),
             remoteActivityEvents: remoteAgentCoordinator.getRemoteActivityEventCount(),
         },
+        fiberCounts: browserStateCoordinator.getFiberCountCacheStats(),
         intervals: {
             fiberRefreshActive: browserStateCoordinator.isFiberRefreshActive(),
             remoteWorkingTimeoutActive: remoteWorkingTimeoutIntervalHandle !== null,
@@ -179,6 +180,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
             sessionCount: recentFileTracker.getSessionCount(),
             entryCount: recentFileTracker.getTotalEntryCount(),
         },
+        filesSearch: httpApi.getFilesSearchDiagnostics(),
         meetingBridge: meetingBridge.getState(),
         // Constitution `shuttle-remote-dispatch` — composite of local
         // Shuttle's last tick and every connected remote agent's pushed
