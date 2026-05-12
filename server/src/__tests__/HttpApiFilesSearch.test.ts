@@ -208,6 +208,86 @@ describe('HttpApiFilesSearch', () => {
     expect(calls).toEqual(['hafs']);
   });
 
+  it('reuses a fresh persistent city search result for repeated identical query', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'src', 'HttpApiFilesSearch.ts'));
+    const calls: string[] = [];
+    const searchCityIndex: CityIndexSearcher = async (_cityPath, query) => {
+      calls.push(query);
+      return {
+        entries: [{ relativePath: 'src/HttpApiFilesSearch.ts', type: 'file' }],
+        truncated: false,
+        timedOut: false,
+        stderr: '',
+        indexRefreshed: true,
+      };
+    };
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      searchCityIndex,
+      indexerKind: 'mock-sqlite',
+      indexTtlMs: 60_000,
+    });
+
+    await expect(api.search('hafs', 10)).resolves.toMatchObject({
+      hits: [expect.objectContaining({ relativePath: 'src/HttpApiFilesSearch.ts' })],
+    });
+    await expect(api.search('hafs', 10)).resolves.toMatchObject({
+      hits: [expect.objectContaining({ relativePath: 'src/HttpApiFilesSearch.ts' })],
+    });
+
+    expect(calls).toEqual(['hafs']);
+    expect(api.getDiagnostics().cities).toEqual([
+      expect.objectContaining({
+        cityId: 'city-a',
+        query: 'hafs',
+      }),
+    ]);
+  });
+
+  it('falls back to stale persistent search hits when a refresh/search fails', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'CachedWidget.ts'));
+    const calls: string[] = [];
+    let shouldFail = false;
+    const flakySearchCityIndex: CityIndexSearcher = async (_cityPath, query) => {
+      calls.push(query);
+      if (shouldFail) {
+        throw new Error('indexer unavailable');
+      }
+      return {
+        entries: [{ relativePath: 'CachedWidget.ts', type: 'file' }],
+        truncated: false,
+        timedOut: false,
+        stderr: '',
+        indexRefreshed: true,
+      };
+    };
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      searchCityIndex: flakySearchCityIndex,
+      indexTtlMs: 1,
+      indexerKind: 'mock-sqlite',
+    });
+
+    await expect(api.search('CachedWidget', 10)).resolves.toMatchObject({
+      hits: [expect.objectContaining({ relativePath: 'CachedWidget.ts' })],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    shouldFail = true;
+
+    const result = await api.search('CachedWidget', 10);
+
+    expect(result.hits.map((hit) => hit.relativePath)).toEqual(['CachedWidget.ts']);
+    expect(result.warnings).toEqual([
+      { cityId: 'city-a', message: 'persistent index search failed; showing stale entries: indexer unavailable' },
+    ]);
+    expect(calls).toEqual(['CachedWidget', 'CachedWidget']);
+  });
+
   it('honors cityId without indexing unrelated local cities', async () => {
     const cityA = join(TEST_ROOT, 'city-a');
     const cityB = join(TEST_ROOT, 'city-b');
@@ -292,6 +372,34 @@ describe('HttpApiFilesSearch', () => {
     });
   });
 
+  it('surfaces unreadable-directory warnings in candidate-cache mode', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'Readable.ts'));
+    const walkWithUnreadable: CityIndexWalker = async () => ({
+      entries: [{ relativePath: 'Readable.ts', type: 'file' }],
+      truncated: false,
+      timedOut: false,
+      stderr: '',
+      unreadableDirs: 3,
+    });
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      walkCityIndex: walkWithUnreadable,
+      indexerKind: 'unreadable-cache-test',
+    });
+
+    const result = await api.search('Readable', 10);
+
+    expect(result.warnings).toEqual([
+      { cityId: 'city-a', message: 'search skipped 3 unreadable directories' },
+    ]);
+    expect(api.getDiagnostics().cities[0]).toMatchObject({
+      unreadableDirs: 3,
+      warnings: ['search skipped 3 unreadable directories'],
+    });
+  });
+
   it('surfaces timeout warnings without claiming partial entries', async () => {
     const cityPath = join(TEST_ROOT, 'city-a');
     writeFile(join(cityPath, 'SlowWidget.ts'));
@@ -317,6 +425,37 @@ describe('HttpApiFilesSearch', () => {
     expect(api.getDiagnostics().cities[0]).toMatchObject({
       timedOut: true,
       warnings: ['index refresh timed out before returning entries'],
+    });
+  });
+
+  it('surfaces unreadable-directory warnings in persistent-search mode', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'CachedWidget.ts'));
+    const searchWithUnreadable: CityIndexSearcher = async () => ({
+      entries: [{ relativePath: 'CachedWidget.ts', type: 'file' }],
+      truncated: false,
+      timedOut: false,
+      stderr: '',
+      unreadableDirs: 2,
+      indexRefreshed: true,
+    });
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      searchCityIndex: searchWithUnreadable,
+      indexerKind: 'unreadable-persistent-test',
+      indexTtlMs: 60_000,
+    });
+
+    const result = await api.search('CachedWidget', 10);
+
+    expect(result.warnings).toEqual([
+      { cityId: 'city-a', message: 'search skipped 2 unreadable directories' },
+    ]);
+    expect(api.getDiagnostics().cities[0]).toMatchObject({
+      mode: 'persistent-search',
+      unreadableDirs: 2,
+      warnings: ['search skipped 2 unreadable directories'],
     });
   });
 

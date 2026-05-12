@@ -116,6 +116,7 @@ interface CityFileIndex {
   expiresAt: number;
   durationMs: number;
   refreshCount: number;
+  unreadableDirs?: number;
   truncated: boolean;
   timedOut: boolean;
   warnings: string[];
@@ -136,6 +137,7 @@ export interface FileWalkResult {
   entries: FileWalkEntry[];
   timedOut: boolean;
   stderr: string;
+  unreadableDirs?: number;
   truncated: boolean;
   indexRefreshed?: boolean;
   indexAgeMs?: number;
@@ -169,6 +171,7 @@ export interface FilesSearchDiagnostics {
     cityName?: string;
     path: string;
     entries: number;
+    unreadableDirs?: number;
     builtAt: number;
     expiresInMs: number;
     durationMs: number;
@@ -332,6 +335,7 @@ export class HttpApiFilesSearch {
       expiresInMs: Math.max(0, entry.expiresAt - now),
       durationMs: entry.durationMs,
       refreshCount: entry.refreshCount,
+      unreadableDirs: entry.unreadableDirs,
       truncated: entry.truncated,
       timedOut: entry.timedOut,
       warnings: entry.warnings,
@@ -365,7 +369,7 @@ export class HttpApiFilesSearch {
     const perCity = await mapSettledWithConcurrency(
       cities,
       Math.max(1, this.maxConcurrentCitySearches),
-      (city) => this.searchCity(city, q, candidateLimit),
+      (city) => this.getPersistentCityIndex(city, q, candidateLimit),
     );
 
     const merged: GlobalFileHit[] = [];
@@ -402,20 +406,42 @@ export class HttpApiFilesSearch {
     return { hits, warnings };
   }
 
-  private async searchCity(
+  private async getPersistentCityIndex(
     city: { id: string; path: string; name?: string },
     q: string,
     candidateLimit: number,
   ): Promise<CityFileIndex> {
     const key = citySearchKey(city, q, candidateLimit);
+    const now = Date.now();
+    const cached = this.cityIndexes.get(key);
+    if (cached && cached.expiresAt > now) return cached;
+
     const inFlight = this.cityIndexInFlight.get(key);
     if (inFlight) return inFlight;
 
-    const pending = this.buildPersistentCityIndex(city, q, candidateLimit).finally(() => {
-      if (this.cityIndexInFlight.get(key) === pending) {
-        this.cityIndexInFlight.delete(key);
-      }
-    });
+    const pending = this.buildPersistentCityIndex(
+      city,
+      q,
+      candidateLimit,
+      cached?.refreshCount ?? 0,
+    )
+      .then((entry) => {
+        this.cityIndexes.set(key, entry);
+        return entry;
+      })
+      .catch((err: unknown) => {
+        if (!cached) throw err;
+        const message = (err as { message?: string })?.message ?? String(err);
+        return {
+          ...cached,
+          warnings: [`persistent index search failed; showing stale entries: ${message}`],
+        };
+      })
+      .finally(() => {
+        if (this.cityIndexInFlight.get(key) === pending) {
+          this.cityIndexInFlight.delete(key);
+        }
+      });
     this.cityIndexInFlight.set(key, pending);
     return pending;
   }
@@ -424,6 +450,7 @@ export class HttpApiFilesSearch {
     city: { id: string; path: string; name?: string },
     q: string,
     candidateLimit: number,
+    priorRefreshCount: number,
   ): Promise<CityFileIndex> {
     const startedAt = Date.now();
     const cityPath = realpathSync(city.path);
@@ -433,7 +460,7 @@ export class HttpApiFilesSearch {
         truncated: false,
         timedOut: false,
         stderr: '',
-      });
+      }, priorRefreshCount);
     }
     const search = await this.searchCityIndexImpl!(
       cityPath,
@@ -443,7 +470,7 @@ export class HttpApiFilesSearch {
       this.indexTtlMs,
       this.perCityTimeoutMs,
     );
-    return this.recordPersistentCityIndex(city, cityPath, q, search.entries, startedAt, search);
+    return this.recordPersistentCityIndex(city, cityPath, q, search.entries, startedAt, search, priorRefreshCount);
   }
 
   private async getCityIndex(city: { id: string; path: string; name?: string }): Promise<CityFileIndex> {
@@ -544,6 +571,9 @@ export class HttpApiFilesSearch {
           : 'index refresh timed out before returning entries',
       );
     }
+    if ((walk.unreadableDirs ?? 0) > 0) {
+      warnings.push(`search skipped ${walk.unreadableDirs} unreadable directories`);
+    }
     if (truncated) {
       warnings.push(`index truncated at ${this.maxIndexedEntriesPerCity} entries`);
     }
@@ -558,6 +588,7 @@ export class HttpApiFilesSearch {
       expiresAt: builtAt + this.indexTtlMs,
       durationMs: builtAt - startedAt,
       refreshCount: priorRefreshCount + 1,
+      unreadableDirs: walk.unreadableDirs,
       truncated,
       timedOut: walk.timedOut,
       warnings,
@@ -573,6 +604,7 @@ export class HttpApiFilesSearch {
     walkEntries: FileWalkEntry[],
     startedAt: number,
     search: FileWalkResult,
+    priorRefreshCount: number,
   ): CityFileIndex {
     const seen = new Set<string>();
     const entries: GlobalFileHit[] = [];
@@ -605,12 +637,14 @@ export class HttpApiFilesSearch {
           : 'persistent index search timed out before returning entries',
       );
     }
+    if ((search.unreadableDirs ?? 0) > 0) {
+      warnings.push(`search skipped ${search.unreadableDirs} unreadable directories`);
+    }
     if (search.truncated) {
       warnings.push(`persistent index truncated at ${this.maxIndexedEntriesPerCity} entries`);
     }
 
     const builtAt = Date.now();
-    const priorRefreshCount = this.cityIndexes.get(cityIndexKey(city))?.refreshCount ?? 0;
     const refreshCount =
       search.indexRefreshed === false ? priorRefreshCount : priorRefreshCount + 1;
     const expiresAt =
@@ -628,6 +662,7 @@ export class HttpApiFilesSearch {
       refreshCount,
       truncated: search.truncated,
       timedOut: search.timedOut,
+      unreadableDirs: search.unreadableDirs,
       warnings,
       indexerKind: this.indexerKind,
       mode: 'persistent-search',
@@ -636,7 +671,6 @@ export class HttpApiFilesSearch {
       indexAgeMs: search.indexAgeMs,
       databasePath: search.databasePath,
     };
-    this.cityIndexes.set(cityIndexKey(city), entry);
     return entry;
   }
 

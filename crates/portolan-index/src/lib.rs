@@ -13,6 +13,7 @@ pub struct WalkSummary {
     pub truncated: bool,
     pub visited_dirs: usize,
     pub ignored_dirs: usize,
+    pub unreadable_dirs: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +83,7 @@ pub struct SearchSummary {
     pub truncated: bool,
     pub visited_dirs: usize,
     pub ignored_dirs: usize,
+    pub unreadable_dirs: usize,
     pub index_refreshed: bool,
     pub index_age_ms: u64,
     pub database_path: String,
@@ -93,6 +95,7 @@ struct WalkState {
     truncated: bool,
     visited_dirs: usize,
     ignored_dirs: usize,
+    unreadable_dirs: usize,
     seen_dirs: HashSet<PathBuf>,
     max_entries: usize,
 }
@@ -104,6 +107,7 @@ pub fn walk_city(options: &WalkOptions) -> io::Result<WalkSummary> {
         truncated: false,
         visited_dirs: 0,
         ignored_dirs: 0,
+        unreadable_dirs: 0,
         seen_dirs: HashSet::new(),
         max_entries: options.max_entries,
     };
@@ -115,6 +119,7 @@ pub fn walk_city(options: &WalkOptions) -> io::Result<WalkSummary> {
         truncated: state.truncated,
         visited_dirs: state.visited_dirs,
         ignored_dirs: state.ignored_dirs,
+        unreadable_dirs: state.unreadable_dirs,
     })
 }
 
@@ -130,12 +135,14 @@ pub fn search_city(options: &SearchOptions) -> Result<SearchSummary, IndexError>
     let now = now_ms();
     let root_string = root.to_string_lossy().to_string();
     let stored_root = metadata_value(&conn, "root")?;
+    let index_built = metadata_value(&conn, "index_built")?
+        .map(|value| value == "true")
+        .unwrap_or(false);
     let built_at = metadata_value(&conn, "built_at_ms")?
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    let entry_count = count_entries(&conn)?;
     let stale = stored_root.as_deref() != Some(root_string.as_str())
-        || entry_count == 0
+        || !index_built
         || built_at == 0
         || now.saturating_sub(built_at) > options.refresh_ttl_ms;
 
@@ -177,12 +184,23 @@ pub fn search_city(options: &SearchOptions) -> Result<SearchSummary, IndexError>
                 .and_then(|value| value.parse::<usize>().ok())
         })
         .unwrap_or(0);
+    let unreadable_dirs = latest_walk
+        .as_ref()
+        .map(|walk| walk.unreadable_dirs)
+        .or_else(|| {
+            metadata_value(&conn, "unreadable_dirs")
+                .ok()
+                .flatten()
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .unwrap_or(0);
 
     Ok(SearchSummary {
         entries,
         truncated,
         visited_dirs,
         ignored_dirs,
+        unreadable_dirs,
         index_refreshed: refreshed,
         index_age_ms,
         database_path: options.database.to_string_lossy().to_string(),
@@ -205,7 +223,10 @@ fn walk_dir(dir: &Path, relative_dir: &Path, state: &mut WalkState) -> io::Resul
 
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            state.unreadable_dirs += 1;
+            return Ok(());
+        }
     };
 
     for entry in entries {
@@ -343,10 +364,6 @@ fn metadata_value(conn: &rusqlite::Connection, key: &str) -> rusqlite::Result<Op
     }
 }
 
-fn count_entries(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
-    conn.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
-}
-
 fn rebuild_index(
     conn: &mut rusqlite::Connection,
     root: &str,
@@ -376,10 +393,12 @@ fn rebuild_index(
 
     for (key, value) in [
         ("root", root.to_string()),
+        ("index_built", "true".to_string()),
         ("built_at_ms", built_at_ms.to_string()),
         ("truncated", walk.truncated.to_string()),
         ("visited_dirs", walk.visited_dirs.to_string()),
         ("ignored_dirs", walk.ignored_dirs.to_string()),
+        ("unreadable_dirs", walk.unreadable_dirs.to_string()),
     ] {
         tx.execute(
             "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
@@ -598,6 +617,57 @@ mod tests {
         assert!(summary.truncated);
 
         remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn counts_unreadable_dirs_in_walk_summary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("unreadable");
+        create_dir_all(root.join("blocked")).unwrap();
+        write_test_file(&root.join("accessible").join("ok.txt"));
+
+        let blocked = root.join("blocked");
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let summary = walk_city(&WalkOptions::new(&root, 20)).unwrap();
+
+        assert_eq!(summary.unreadable_dirs, 1);
+        assert_eq!(summary.ignored_dirs, 0);
+        assert!(summary
+            .entries
+            .iter()
+            .any(|entry| entry.relative_path == "accessible"));
+        assert!(summary
+            .entries
+            .iter()
+            .any(|entry| entry.relative_path == "accessible/ok.txt"));
+
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755)).unwrap();
+        remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_city_index_is_stable_with_no_entries() {
+        let root = temp_root("empty-index");
+        create_dir_all(&root).unwrap();
+        let db_root = temp_root("empty-index-db");
+        let db = db_root.join("files.sqlite");
+
+        let first =
+            search_city(&SearchOptions::new(&root, &db, "anything", 10, 20, 60_000)).unwrap();
+        let second =
+            search_city(&SearchOptions::new(&root, &db, "anything", 10, 20, 60_000)).unwrap();
+
+        assert!(first.index_refreshed);
+        assert!(!second.index_refreshed);
+        assert_eq!(first.entries.len(), 0);
+        assert_eq!(second.entries.len(), 0);
+        assert_eq!(second.unreadable_dirs, 0);
+
+        remove_dir_all(root).unwrap();
+        remove_dir_all(db_root).unwrap();
     }
 
     #[test]
