@@ -9,6 +9,7 @@ import type {
 } from '../state/types'
 import { normalizeCity, normalizeSession } from '../state/types'
 import { FrontendActivityStore, type FrontendActivityEvent } from './FrontendActivityStore'
+import { getPageAttention, type PageAttentionState } from './PageAttention'
 import { readUrlState, type UrlState } from './UrlFragment'
 
 const API_BASE = `ws://${window.location.hostname}:4004`
@@ -52,6 +53,11 @@ interface ErrorMessage {
 interface ActivityMessage {
   type: 'activity'
   activity: FrontendActivityEvent
+}
+
+interface BrowserAttentionMessage {
+  type: 'browserAttention'
+  attention: PageAttentionState
 }
 
 type ServerMessage =
@@ -100,6 +106,7 @@ export class FrontendStateSync {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   private hasReceivedInitialState = false
   private activityStore = new FrontendActivityStore()
+  private attentionListenersInstalled = false
 
   constructor(options: FrontendStateSyncOptions) {
     this.options = options
@@ -107,6 +114,7 @@ export class FrontendStateSync {
 
   connect(): void {
     if (this.wsCleanedUp) return
+    this.installAttentionListeners()
     this.ws = new WebSocket(API_BASE)
 
     this.ws.onopen = () => {
@@ -116,6 +124,7 @@ export class FrontendStateSync {
         this.reconnectTimeout = null
       }
       this.options.onSocketOpen(this.ws!)
+      this.publishBrowserAttention()
     }
 
     this.ws.onmessage = (event) => {
@@ -158,6 +167,7 @@ export class FrontendStateSync {
 
   dispose(): void {
     this.wsCleanedUp = true
+    this.removeAttentionListeners()
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
@@ -278,5 +288,29 @@ export class FrontendStateSync {
       activitySessionKey: update.activitySessionKey,
       activities: update.activities,
     })
+  }
+
+  private installAttentionListeners(): void {
+    if (this.attentionListenersInstalled) return
+    this.attentionListenersInstalled = true
+    document.addEventListener('visibilitychange', this.publishBrowserAttention)
+    window.addEventListener('focus', this.publishBrowserAttention)
+    window.addEventListener('blur', this.publishBrowserAttention)
+  }
+
+  private removeAttentionListeners(): void {
+    if (!this.attentionListenersInstalled) return
+    this.attentionListenersInstalled = false
+    document.removeEventListener('visibilitychange', this.publishBrowserAttention)
+    window.removeEventListener('focus', this.publishBrowserAttention)
+    window.removeEventListener('blur', this.publishBrowserAttention)
+  }
+
+  private readonly publishBrowserAttention = (): void => {
+    const message: BrowserAttentionMessage = {
+      type: 'browserAttention',
+      attention: getPageAttention(),
+    }
+    this.send(message)
   }
 }

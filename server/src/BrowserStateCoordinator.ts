@@ -75,30 +75,39 @@ interface FiberCountCacheEntry {
 interface BrowserStateMessageStats {
   broadcasts: number;
   initialSnapshots: number;
+  clientRefreshes: number;
   duplicateBroadcastsSuppressed: number;
   messagesSent: number;
   approxBytesSent: number;
   lastPayloadBytes: number;
   lastRecipientCount: number;
+  hiddenRecipientsSkipped: number;
+  lastHiddenRecipientsSkipped: number;
   lastSentAt: number | null;
   lastSuppressedAt: number | null;
 }
 
 export interface BrowserStateBroadcastStats {
   clients: number;
+  clientAttention: Record<BrowserAttentionState, number>;
   state: BrowserStateMessageStats;
   activity: BrowserStateMessageStats;
 }
+
+export type BrowserAttentionState = 'active' | 'visible-unfocused' | 'hidden';
 
 function createMessageStats(): BrowserStateMessageStats {
   return {
     broadcasts: 0,
     initialSnapshots: 0,
+    clientRefreshes: 0,
     duplicateBroadcastsSuppressed: 0,
     messagesSent: 0,
     approxBytesSent: 0,
     lastPayloadBytes: 0,
     lastRecipientCount: 0,
+    hiddenRecipientsSkipped: 0,
+    lastHiddenRecipientsSkipped: 0,
     lastSentAt: null,
     lastSuppressedAt: null,
   };
@@ -106,6 +115,7 @@ function createMessageStats(): BrowserStateMessageStats {
 
 export class BrowserStateCoordinator {
   private readonly clients = new Set<WebSocket>();
+  private readonly clientAttention = new Map<WebSocket, BrowserAttentionState>();
   private readonly localOriginId: string;
   private lastBroadcastState: StateUpdate | null = null;
   private fiberRefreshIntervalHandle: NodeJS.Timeout | null = null;
@@ -133,6 +143,7 @@ export class BrowserStateCoordinator {
   getBroadcastStats(): BrowserStateBroadcastStats {
     return {
       clients: this.clients.size,
+      clientAttention: this.getClientAttentionCounts(),
       state: { ...this.stateMessageStats },
       activity: { ...this.activityMessageStats },
     };
@@ -171,6 +182,7 @@ export class BrowserStateCoordinator {
 
   async attachClient(ws: WebSocket): Promise<void> {
     this.clients.add(ws);
+    this.clientAttention.set(ws, 'active');
     const state = await this.buildState();
     const message = JSON.stringify(state);
     ws.send(message);
@@ -179,6 +191,16 @@ export class BrowserStateCoordinator {
 
   detachClient(ws: WebSocket): void {
     this.clients.delete(ws);
+    this.clientAttention.delete(ws);
+  }
+
+  handleBrowserAttention(ws: WebSocket, attention: BrowserAttentionState): void {
+    const previous = this.clientAttention.get(ws) ?? 'active';
+    const next = normalizeBrowserAttention(attention);
+    this.clientAttention.set(ws, next);
+    if (previous === 'hidden' && next !== 'hidden') {
+      void this.refreshClientState(ws);
+    }
   }
 
   assignSessionToCity(session: Session, city: City): void {
@@ -272,13 +294,18 @@ export class BrowserStateCoordinator {
     }
 
     let recipients = 0;
+    let hiddenRecipientsSkipped = 0;
     for (const client of this.clients) {
+      if (this.clientAttention.get(client) === 'hidden') {
+        hiddenRecipientsSkipped += 1;
+        continue;
+      }
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
         recipients += 1;
       }
     }
-    this.recordMessageStats(this.stateMessageStats, message, recipients, 'broadcast');
+    this.recordMessageStats(this.stateMessageStats, message, recipients, 'broadcast', hiddenRecipientsSkipped);
     this.lastBroadcastState = state;
     this.lastBroadcastMessage = message;
   }
@@ -293,13 +320,18 @@ export class BrowserStateCoordinator {
       },
     });
     let recipients = 0;
+    let hiddenRecipientsSkipped = 0;
     for (const client of this.clients) {
+      if (this.clientAttention.get(client) === 'hidden') {
+        hiddenRecipientsSkipped += 1;
+        continue;
+      }
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
         recipients += 1;
       }
     }
-    this.recordMessageStats(this.activityMessageStats, message, recipients, 'broadcast');
+    this.recordMessageStats(this.activityMessageStats, message, recipients, 'broadcast', hiddenRecipientsSkipped);
   }
 
   async broadcastCurrentState(): Promise<void> {
@@ -604,19 +636,43 @@ export class BrowserStateCoordinator {
     stats: BrowserStateMessageStats,
     message: string,
     recipients: number,
-    kind: 'broadcast' | 'initial',
+    kind: 'broadcast' | 'initial' | 'refresh',
+    hiddenRecipientsSkipped = 0,
   ): void {
     if (kind === 'broadcast') {
       stats.broadcasts += 1;
-    } else {
+    } else if (kind === 'initial') {
       stats.initialSnapshots += 1;
+    } else {
+      stats.clientRefreshes += 1;
     }
     stats.messagesSent += recipients;
     const payloadBytes = Buffer.byteLength(message, 'utf8');
     stats.approxBytesSent += payloadBytes * recipients;
     stats.lastPayloadBytes = payloadBytes;
     stats.lastRecipientCount = recipients;
+    stats.hiddenRecipientsSkipped += hiddenRecipientsSkipped;
+    stats.lastHiddenRecipientsSkipped = hiddenRecipientsSkipped;
     stats.lastSentAt = Date.now();
+  }
+
+  private async refreshClientState(ws: WebSocket): Promise<void> {
+    if (!this.clients.has(ws) || ws.readyState !== WebSocket.OPEN) return;
+    const message = JSON.stringify(await this.buildState());
+    ws.send(message);
+    this.recordMessageStats(this.stateMessageStats, message, 1, 'refresh');
+  }
+
+  private getClientAttentionCounts(): Record<BrowserAttentionState, number> {
+    const counts: Record<BrowserAttentionState, number> = {
+      active: 0,
+      'visible-unfocused': 0,
+      hidden: 0,
+    };
+    for (const client of this.clients) {
+      counts[this.clientAttention.get(client) ?? 'active'] += 1;
+    }
+    return counts;
   }
 
   private async getRemoteFibers(
@@ -684,6 +740,11 @@ export class BrowserStateCoordinator {
       return { open: [], closed: [] };
     }
   }
+}
+
+function normalizeBrowserAttention(attention: BrowserAttentionState): BrowserAttentionState {
+  if (attention === 'hidden' || attention === 'visible-unfocused') return attention;
+  return 'active';
 }
 
 function mapRawFiber(raw: unknown): RemoteFiber | null {

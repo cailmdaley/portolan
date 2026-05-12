@@ -284,6 +284,7 @@ const messageRouter = new MessageRouter({
     onSearchFiles: workspaceBrowser.handleSearchFiles.bind(workspaceBrowser),
     onMoveCity: browserStateCoordinator.handleMoveCity.bind(browserStateCoordinator),
     onListDirectory: workspaceBrowser.handleListDirectory.bind(workspaceBrowser),
+    onBrowserAttention: browserStateCoordinator.handleBrowserAttention.bind(browserStateCoordinator),
     onTerminalAttach: (ws, sessionId) => {
         const tmuxSession = resolveLocalTmuxSession(sessionId);
         if (!tmuxSession) {

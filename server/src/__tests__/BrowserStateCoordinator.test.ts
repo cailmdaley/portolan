@@ -202,6 +202,71 @@ describe('BrowserStateCoordinator', () => {
     expect(stats.state.lastSuppressedAt).toEqual(expect.any(Number));
   });
 
+  it('skips hidden browser clients during routine full-state broadcasts', async () => {
+    const coordinator = makeCoordinator();
+    const activeWs = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+    const hiddenWs = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+
+    await coordinator.attachClient(activeWs);
+    await coordinator.attachClient(hiddenWs);
+    coordinator.handleBrowserAttention(hiddenWs, 'hidden');
+
+    coordinator.broadcast({ cities: [], sessions: [] });
+
+    expect(activeWs.send).toHaveBeenCalledTimes(2);
+    expect(hiddenWs.send).toHaveBeenCalledTimes(1);
+    expect(coordinator.getBroadcastStats()).toMatchObject({
+      clients: 2,
+      clientAttention: {
+        active: 1,
+        'visible-unfocused': 0,
+        hidden: 1,
+      },
+      state: {
+        broadcasts: 1,
+        messagesSent: 3,
+        lastRecipientCount: 1,
+        hiddenRecipientsSkipped: 1,
+        lastHiddenRecipientsSkipped: 1,
+      },
+    });
+  });
+
+  it('refreshes a hidden browser client when it becomes visible again', async () => {
+    const coordinator = makeCoordinator();
+    const ws = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+
+    await coordinator.attachClient(ws);
+    coordinator.handleBrowserAttention(ws, 'hidden');
+    coordinator.broadcast({ cities: [], sessions: [] });
+    expect(ws.send).toHaveBeenCalledTimes(1);
+
+    coordinator.handleBrowserAttention(ws, 'visible-unfocused');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(ws.send).toHaveBeenCalledTimes(2);
+    expect(coordinator.getBroadcastStats()).toMatchObject({
+      clientAttention: {
+        active: 0,
+        'visible-unfocused': 1,
+        hidden: 0,
+      },
+      state: {
+        clientRefreshes: 1,
+        messagesSent: 2,
+      },
+    });
+  });
+
   it('reports activity websocket payload fanout diagnostics', async () => {
     const coordinator = makeCoordinator();
     const ws = {
@@ -225,5 +290,39 @@ describe('BrowserStateCoordinator', () => {
     });
     expect(stats.activity.lastPayloadBytes).toBeGreaterThan(0);
     expect(stats.activity.approxBytesSent).toBeGreaterThan(0);
+  });
+
+  it('skips hidden browser clients during activity broadcasts', async () => {
+    const coordinator = makeCoordinator();
+    const activeWs = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+    const hiddenWs = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+
+    await coordinator.attachClient(activeWs);
+    await coordinator.attachClient(hiddenWs);
+    coordinator.handleBrowserAttention(hiddenWs, 'hidden');
+    coordinator.broadcastActivity({
+      tmuxSession: 'worker-1',
+      toolName: 'Read',
+      filePath: '/tmp/file.ts',
+      timestamp: Date.now(),
+    } as any, 'local');
+
+    expect(activeWs.send).toHaveBeenCalledTimes(2);
+    expect(hiddenWs.send).toHaveBeenCalledTimes(1);
+    expect(coordinator.getBroadcastStats()).toMatchObject({
+      activity: {
+        broadcasts: 1,
+        messagesSent: 1,
+        lastRecipientCount: 1,
+        hiddenRecipientsSkipped: 1,
+        lastHiddenRecipientsSkipped: 1,
+      },
+    });
   });
 });

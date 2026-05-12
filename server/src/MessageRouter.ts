@@ -7,6 +7,7 @@
  */
 
 import { WebSocket } from 'ws';
+import type { BrowserAttentionState } from './BrowserStateCoordinator.js';
 import type { GitStatus } from './GitStatusManager.js';
 
 // ============================================================================
@@ -107,6 +108,11 @@ export interface ListDirectoryMessage {
   path: string;
 }
 
+export interface BrowserAttentionMessage {
+  type: 'browserAttention';
+  attention: BrowserAttentionState;
+}
+
 /** Subscribe to a worker's live tmux pane output. Server responds with a
  *  one-shot `terminal:scrollback` (current buffer) then a stream of
  *  `terminal:bytes` chunks until the client sends `terminal:detach` or the
@@ -137,6 +143,7 @@ export type ClientMessage =
   | SearchFilesMessage
   | MoveCityMessage
   | ListDirectoryMessage
+  | BrowserAttentionMessage
   | TerminalAttachMessage
   | TerminalDetachMessage;
 
@@ -156,6 +163,7 @@ export interface MessageHandlers {
   onSearchFiles(ws: WebSocket, cityId: string, query: string, searchId: string, mode?: 'filename' | 'content'): void;
   onMoveCity(ws: WebSocket, cityId: string, newPosition: { q: number; r: number }): void;
   onListDirectory(ws: WebSocket, cityId: string, path: string): void;
+  onBrowserAttention(ws: WebSocket, attention: BrowserAttentionState): void;
   onTerminalAttach(ws: WebSocket, sessionId: string): void;
   onTerminalDetach(ws: WebSocket, sessionId: string): void;
 }
@@ -222,6 +230,10 @@ export class MessageRouter {
 
         case 'listDirectory':
           this.handlers.onListDirectory(ws, message.cityId, message.path);
+          break;
+
+        case 'browserAttention':
+          this.handlers.onBrowserAttention(ws, message.attention);
           break;
 
         case 'terminal:attach':
