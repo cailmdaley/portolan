@@ -28,6 +28,10 @@ export interface StateUpdate {
   meetingBridge?: MeetingBridgeState | null;
 }
 
+interface BuildStateOptions {
+  includeActivities?: boolean;
+}
+
 interface SessionLookup {
   getAllSessions(): Session[];
 }
@@ -90,6 +94,10 @@ interface BrowserStateMessageStats {
 export interface BrowserStateBroadcastStats {
   clients: number;
   clientAttention: Record<BrowserAttentionState, number>;
+  stateBuilds: {
+    withActivities: number;
+    withoutActivities: number;
+  };
   state: BrowserStateMessageStats;
   activity: BrowserStateMessageStats;
 }
@@ -124,6 +132,8 @@ export class BrowserStateCoordinator {
   private readonly countOpenFibers: (cityPath: string) => Promise<number>;
   private readonly stateMessageStats: BrowserStateMessageStats = createMessageStats();
   private readonly activityMessageStats: BrowserStateMessageStats = createMessageStats();
+  private stateBuildsWithActivities = 0;
+  private stateBuildsWithoutActivities = 0;
   private lastBroadcastMessage: string | null = null;
   private remoteAgentStateSource: RemoteAgentStateSource | null = null;
 
@@ -144,6 +154,10 @@ export class BrowserStateCoordinator {
     return {
       clients: this.clients.size,
       clientAttention: this.getClientAttentionCounts(),
+      stateBuilds: {
+        withActivities: this.stateBuildsWithActivities,
+        withoutActivities: this.stateBuildsWithoutActivities,
+      },
       state: { ...this.stateMessageStats },
       activity: { ...this.activityMessageStats },
     };
@@ -183,7 +197,7 @@ export class BrowserStateCoordinator {
   async attachClient(ws: WebSocket): Promise<void> {
     this.clients.add(ws);
     this.clientAttention.set(ws, 'active');
-    const state = await this.buildState();
+    const state = await this.buildState({ includeActivities: true });
     const message = JSON.stringify(state);
     ws.send(message);
     this.recordMessageStats(this.stateMessageStats, message, 1, 'initial');
@@ -216,7 +230,14 @@ export class BrowserStateCoordinator {
     }
   }
 
-  async buildState(): Promise<StateUpdate> {
+  async buildState(options: BuildStateOptions = {}): Promise<StateUpdate> {
+    const includeActivities = options.includeActivities ?? true;
+    if (includeActivities) {
+      this.stateBuildsWithActivities += 1;
+    } else {
+      this.stateBuildsWithoutActivities += 1;
+    }
+
     const sessions = this.options.sessionLookup.getAllSessions();
     const cities = this.options.cityManager.getCities();
 
@@ -264,24 +285,28 @@ export class BrowserStateCoordinator {
       return session;
     });
 
-    const activities: Record<string, ActivityEvent[]> = {};
-    for (const session of sessions) {
-      const activitySessionKey = this.getActivitySessionKey(session.originId, session.tmuxSession);
-      const sessionActivities = session.originId === this.localOriginId
-        ? this.options.eventWatcher.getRecentActivities(session.tmuxSession)
-        : this.remoteAgentStateSource?.getActivities(session.originId, session.tmuxSession) ?? [];
-      if (sessionActivities.length > 0) {
-        activities[activitySessionKey] = sessionActivities;
-      }
-    }
-
-    return {
+    const state: StateUpdate = {
       cities: citiesWithFibers,
       sessions: sessionsWithAbsoluteHex,
       origins: this.options.originManager.getOrigins(),
-      activities,
       meetingBridge: this.options.getMeetingState?.() ?? null,
     };
+
+    if (includeActivities) {
+      const activities: Record<string, ActivityEvent[]> = {};
+      for (const session of sessions) {
+        const activitySessionKey = this.getActivitySessionKey(session.originId, session.tmuxSession);
+        const sessionActivities = session.originId === this.localOriginId
+          ? this.options.eventWatcher.getRecentActivities(session.tmuxSession)
+          : this.remoteAgentStateSource?.getActivities(session.originId, session.tmuxSession) ?? [];
+        if (sessionActivities.length > 0) {
+          activities[activitySessionKey] = sessionActivities;
+        }
+      }
+      state.activities = activities;
+    }
+
+    return state;
   }
 
   broadcast(state: StateUpdate): void {
@@ -335,7 +360,7 @@ export class BrowserStateCoordinator {
   }
 
   async broadcastCurrentState(): Promise<void> {
-    this.broadcast(await this.buildState());
+    this.broadcast(await this.buildState({ includeActivities: false }));
   }
 
   async handleLocalSessionsChange(localSessions: Session[]): Promise<void> {
@@ -557,7 +582,7 @@ export class BrowserStateCoordinator {
 
   private async refreshFiberCounts(): Promise<void> {
     await this.refreshLocalFiberCountCache();
-    const state = await this.buildState();
+    const state = await this.buildState({ includeActivities: false });
     if (!this.fiberCountsChanged(this.lastBroadcastState, state)) return;
     console.log('Fiber counts changed, broadcasting update');
     this.broadcast(state);
@@ -658,7 +683,7 @@ export class BrowserStateCoordinator {
 
   private async refreshClientState(ws: WebSocket): Promise<void> {
     if (!this.clients.has(ws) || ws.readyState !== WebSocket.OPEN) return;
-    const message = JSON.stringify(await this.buildState());
+    const message = JSON.stringify(await this.buildState({ includeActivities: true }));
     ws.send(message);
     this.recordMessageStats(this.stateMessageStats, message, 1, 'refresh');
   }

@@ -5,10 +5,14 @@ import { BrowserStateCoordinator } from '../BrowserStateCoordinator.js';
 describe('BrowserStateCoordinator', () => {
   function makeCoordinator({
     cities = [],
+    sessions = [],
+    recentActivities = [],
     countOpenFibers = vi.fn().mockResolvedValue(0),
     getMeetingState,
   }: {
     cities?: any[];
+    sessions?: any[];
+    recentActivities?: any[];
     countOpenFibers?: (cityPath: string) => Promise<number>;
     getMeetingState?: () => any;
   } = {}) {
@@ -20,7 +24,7 @@ describe('BrowserStateCoordinator', () => {
       } as any,
       cityPersistence: {} as any,
       eventWatcher: {
-        getRecentActivities: () => [],
+        getRecentActivities: () => recentActivities,
       } as any,
       gitStatusManager: {
         getStatus: () => undefined,
@@ -31,7 +35,7 @@ describe('BrowserStateCoordinator', () => {
       previousSessions: new Map(),
       recentFileTracker: {} as any,
       sessionLookup: {
-        getAllSessions: () => [],
+        getAllSessions: () => sessions,
       },
       getMeetingState,
       countOpenFibers,
@@ -140,6 +144,47 @@ describe('BrowserStateCoordinator', () => {
           ],
         },
         lastMeeting: null,
+      },
+    });
+  });
+
+  it('includes activity buffers in initial snapshots but omits them from routine broadcasts', async () => {
+    const coordinator = makeCoordinator({
+      sessions: [{
+        id: 'session-1',
+        name: 'worker',
+        tmuxSession: 'worker-1',
+        originId: 'local',
+        cwd: '/project/portolan',
+        status: 'idle',
+        createdAt: 1,
+        lastActivity: 2,
+      }],
+      recentActivities: [{
+        tmuxSession: 'worker-1',
+        tool: 'Read',
+        fullPath: '/project/portolan/src/main.ts',
+        timestamp: 3,
+      }],
+    });
+    const ws = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+
+    await coordinator.attachClient(ws);
+    const initial = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(initial.activities).toMatchObject({
+      'local:worker-1': [expect.objectContaining({ tool: 'Read' })],
+    });
+
+    await coordinator.broadcastCurrentState();
+    const broadcast = JSON.parse(ws.send.mock.calls[1][0]);
+    expect(broadcast.activities).toBeUndefined();
+    expect(coordinator.getBroadcastStats()).toMatchObject({
+      stateBuilds: {
+        withActivities: 1,
+        withoutActivities: 1,
       },
     });
   });
