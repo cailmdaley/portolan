@@ -14,6 +14,19 @@ import { readUrlState, type UrlState } from './UrlFragment'
 
 const API_BASE = `ws://${window.location.hostname}:4004`
 
+function applyCollectionDelta<T extends { id: string }>(
+  items: T[],
+  delta: CollectionDelta<T> | undefined,
+): T[] {
+  if (!delta) return items
+  const removed = new Set(delta.remove)
+  const byId = new Map(items.filter(item => !removed.has(item.id)).map(item => [item.id, item]))
+  for (const item of delta.upsert) {
+    byId.set(item.id, item)
+  }
+  return Array.from(byId.values())
+}
+
 interface ServerState {
   cities: ServerCity[]
   sessions: ServerSession[]
@@ -55,6 +68,20 @@ interface ActivityMessage {
   activity: FrontendActivityEvent
 }
 
+interface CollectionDelta<T extends { id: string }> {
+  upsert: T[]
+  remove: string[]
+}
+
+interface StateDeltaMessage {
+  type: 'stateDelta'
+  cities?: CollectionDelta<ServerCity>
+  sessions?: CollectionDelta<ServerSession>
+  origins?: ServerOrigin[]
+  activities?: Record<string, Activity[]>
+  meetingBridge?: ServerMeetingBridgeState | null
+}
+
 interface BrowserAttentionMessage {
   type: 'browserAttention'
   attention: PageAttentionState
@@ -68,6 +95,7 @@ type ServerMessage =
   | CityMovedMessage
   | ErrorMessage
   | ActivityMessage
+  | StateDeltaMessage
 
 interface FrontendStateSnapshot {
   cities: City[]
@@ -97,6 +125,8 @@ interface FrontendStateSyncOptions {
 
 export class FrontendStateSync {
   private options: FrontendStateSyncOptions
+  private serverCities: ServerCity[] = []
+  private serverSessions: ServerSession[] = []
   private cities: City[] = []
   private sessions: Session[] = []
   private origins: ServerOrigin[] = []
@@ -247,6 +277,11 @@ export class FrontendStateSync {
         this.handleActivityEvent(message.activity)
         return
       }
+
+      if (message.type === 'stateDelta') {
+        this.handleStateDelta(message)
+        return
+      }
     }
 
     this.handleStateUpdate(message as ServerState)
@@ -255,8 +290,10 @@ export class FrontendStateSync {
   private handleStateUpdate(state: ServerState): void {
     if (!state.cities || !state.sessions) return
 
-    this.cities = state.cities.map(normalizeCity)
-    this.sessions = state.sessions.map(normalizeSession)
+    this.serverCities = state.cities
+    this.serverSessions = state.sessions
+    this.cities = this.serverCities.map(normalizeCity)
+    this.sessions = this.serverSessions.map(normalizeSession)
     if (state.origins) {
       this.origins = state.origins
     }
@@ -277,6 +314,18 @@ export class FrontendStateSync {
       meetingBridge: this.meetingBridge,
       isInitialState,
       urlState: isInitialState ? readUrlState() : null,
+    })
+  }
+
+  private handleStateDelta(delta: StateDeltaMessage): void {
+    this.handleStateUpdate({
+      cities: applyCollectionDelta(this.serverCities, delta.cities),
+      sessions: applyCollectionDelta(this.serverSessions, delta.sessions),
+      origins: delta.origins ?? this.origins,
+      activities: delta.activities,
+      meetingBridge: Object.prototype.hasOwnProperty.call(delta, 'meetingBridge')
+        ? delta.meetingBridge ?? null
+        : this.meetingBridge,
     })
   }
 

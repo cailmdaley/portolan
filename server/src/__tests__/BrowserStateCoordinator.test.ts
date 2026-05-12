@@ -247,6 +247,63 @@ describe('BrowserStateCoordinator', () => {
     expect(stats.state.lastSuppressedAt).toEqual(expect.any(Number));
   });
 
+  it('sends routine state deltas after the first full-state broadcast', async () => {
+    const coordinator = makeCoordinator();
+    const ws = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+    } as any;
+    const city = {
+      id: 'city-1',
+      name: 'portolan',
+      path: '/project/portolan',
+      position: { q: 0, r: 0 },
+      originId: 'local',
+      fiberCount: 3,
+    };
+    const session = {
+      id: 'session-1',
+      name: 'worker',
+      tmuxSession: 'worker-1',
+      originId: 'local',
+      cwd: '/project/portolan',
+      status: 'idle',
+      createdAt: 1,
+      lastActivity: 2,
+    };
+
+    await coordinator.attachClient(ws);
+    coordinator.broadcast({ cities: [city], sessions: [session] });
+    coordinator.broadcast({
+      cities: [{ ...city, fiberCount: 4 }],
+      sessions: [],
+    });
+
+    const full = JSON.parse(ws.send.mock.calls[1][0]);
+    const delta = JSON.parse(ws.send.mock.calls[2][0]);
+    expect(full).toMatchObject({
+      cities: [expect.objectContaining({ id: 'city-1', fiberCount: 3 })],
+      sessions: [expect.objectContaining({ id: 'session-1' })],
+    });
+    expect(delta).toEqual({
+      type: 'stateDelta',
+      cities: {
+        upsert: [expect.objectContaining({ id: 'city-1', fiberCount: 4 })],
+        remove: [],
+      },
+      sessions: {
+        upsert: [],
+        remove: ['session-1'],
+      },
+    });
+    expect(coordinator.getBroadcastStats().state).toMatchObject({
+      broadcasts: 2,
+      fullBroadcasts: 2,
+      deltaBroadcasts: 1,
+      lastPayloadKind: 'state-delta',
+    });
+  });
+
   it('skips hidden browser clients during routine full-state broadcasts', async () => {
     const coordinator = makeCoordinator();
     const activeWs = {

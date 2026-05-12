@@ -1117,6 +1117,13 @@ export class KanbanModal {
     return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
   }
 
+  /** POST endpoint for review comments, with `?cityId=` when scoped. */
+  private reviewCommentUrl(cityId: string | undefined): string {
+    return cityId
+      ? `${this.apiBase}/kanban/review-comment?cityId=${encodeURIComponent(cityId)}`
+      : `${this.apiBase}/kanban/review-comment`
+  }
+
   /** Scope cue only; global kanban does not need an implementation subtitle. */
   private subtitleText(): string {
     return this.cityScope?.cityName ?? ''

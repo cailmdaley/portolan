@@ -28,6 +28,20 @@ export interface StateUpdate {
   meetingBridge?: MeetingBridgeState | null;
 }
 
+interface CollectionDelta<T extends { id: string }> {
+  upsert: T[];
+  remove: string[];
+}
+
+interface StateDeltaUpdate {
+  type: 'stateDelta';
+  cities?: CollectionDelta<City>;
+  sessions?: CollectionDelta<Session>;
+  origins?: Origin[];
+  activities?: Record<string, ActivityEvent[]>;
+  meetingBridge?: MeetingBridgeState | null;
+}
+
 interface BuildStateOptions {
   includeActivities?: boolean;
 }
@@ -87,6 +101,9 @@ interface BrowserStateMessageStats {
   lastRecipientCount: number;
   hiddenRecipientsSkipped: number;
   lastHiddenRecipientsSkipped: number;
+  fullBroadcasts: number;
+  deltaBroadcasts: number;
+  lastPayloadKind: 'full-state' | 'state-delta' | 'activity' | null;
   lastSentAt: number | null;
   lastSuppressedAt: number | null;
 }
@@ -116,6 +133,9 @@ function createMessageStats(): BrowserStateMessageStats {
     lastRecipientCount: 0,
     hiddenRecipientsSkipped: 0,
     lastHiddenRecipientsSkipped: 0,
+    fullBroadcasts: 0,
+    deltaBroadcasts: 0,
+    lastPayloadKind: null,
     lastSentAt: null,
     lastSuppressedAt: null,
   };
@@ -200,7 +220,7 @@ export class BrowserStateCoordinator {
     const state = await this.buildState({ includeActivities: true });
     const message = JSON.stringify(state);
     ws.send(message);
-    this.recordMessageStats(this.stateMessageStats, message, 1, 'initial');
+    this.recordMessageStats(this.stateMessageStats, message, 1, 'initial', 0, 'full-state');
   }
 
   detachClient(ws: WebSocket): void {
@@ -310,13 +330,15 @@ export class BrowserStateCoordinator {
   }
 
   broadcast(state: StateUpdate): void {
-    const message = JSON.stringify(state);
-    if (message === this.lastBroadcastMessage) {
+    const canonicalState = JSON.stringify(state);
+    if (canonicalState === this.lastBroadcastMessage) {
       this.stateMessageStats.duplicateBroadcastsSuppressed += 1;
       this.stateMessageStats.lastSuppressedAt = Date.now();
       this.lastBroadcastState = state;
       return;
     }
+    const { payload, payloadKind } = this.createBroadcastPayload(state);
+    const message = JSON.stringify(payload);
 
     let recipients = 0;
     let hiddenRecipientsSkipped = 0;
@@ -330,9 +352,16 @@ export class BrowserStateCoordinator {
         recipients += 1;
       }
     }
-    this.recordMessageStats(this.stateMessageStats, message, recipients, 'broadcast', hiddenRecipientsSkipped);
+    this.recordMessageStats(
+      this.stateMessageStats,
+      message,
+      recipients,
+      'broadcast',
+      hiddenRecipientsSkipped,
+      payloadKind,
+    );
     this.lastBroadcastState = state;
-    this.lastBroadcastMessage = message;
+    this.lastBroadcastMessage = canonicalState;
   }
 
   broadcastActivity(activity: ActivityEvent, originId: string): void {
@@ -356,7 +385,7 @@ export class BrowserStateCoordinator {
         recipients += 1;
       }
     }
-    this.recordMessageStats(this.activityMessageStats, message, recipients, 'broadcast', hiddenRecipientsSkipped);
+    this.recordMessageStats(this.activityMessageStats, message, recipients, 'broadcast', hiddenRecipientsSkipped, 'activity');
   }
 
   async broadcastCurrentState(): Promise<void> {
@@ -663,6 +692,7 @@ export class BrowserStateCoordinator {
     recipients: number,
     kind: 'broadcast' | 'initial' | 'refresh',
     hiddenRecipientsSkipped = 0,
+    payloadKind: BrowserStateMessageStats['lastPayloadKind'] = null,
   ): void {
     if (kind === 'broadcast') {
       stats.broadcasts += 1;
@@ -678,6 +708,12 @@ export class BrowserStateCoordinator {
     stats.lastRecipientCount = recipients;
     stats.hiddenRecipientsSkipped += hiddenRecipientsSkipped;
     stats.lastHiddenRecipientsSkipped = hiddenRecipientsSkipped;
+    if (payloadKind === 'full-state') {
+      stats.fullBroadcasts += 1;
+    } else if (payloadKind === 'state-delta') {
+      stats.deltaBroadcasts += 1;
+    }
+    stats.lastPayloadKind = payloadKind;
     stats.lastSentAt = Date.now();
   }
 
@@ -685,7 +721,7 @@ export class BrowserStateCoordinator {
     if (!this.clients.has(ws) || ws.readyState !== WebSocket.OPEN) return;
     const message = JSON.stringify(await this.buildState({ includeActivities: true }));
     ws.send(message);
-    this.recordMessageStats(this.stateMessageStats, message, 1, 'refresh');
+    this.recordMessageStats(this.stateMessageStats, message, 1, 'refresh', 0, 'full-state');
   }
 
   private getClientAttentionCounts(): Record<BrowserAttentionState, number> {
@@ -698,6 +734,40 @@ export class BrowserStateCoordinator {
       counts[this.clientAttention.get(client) ?? 'active'] += 1;
     }
     return counts;
+  }
+
+  private createBroadcastPayload(state: StateUpdate): {
+    payload: StateUpdate | StateDeltaUpdate;
+    payloadKind: 'full-state' | 'state-delta';
+  } {
+    if (!this.lastBroadcastState) {
+      return { payload: state, payloadKind: 'full-state' };
+    }
+
+    return {
+      payload: this.diffState(this.lastBroadcastState, state),
+      payloadKind: 'state-delta',
+    };
+  }
+
+  private diffState(previous: StateUpdate, next: StateUpdate): StateDeltaUpdate {
+    const delta: StateDeltaUpdate = { type: 'stateDelta' };
+    const cityDelta = diffCollection(previous.cities, next.cities);
+    const sessionDelta = diffCollection(previous.sessions, next.sessions);
+
+    if (cityDelta) delta.cities = cityDelta;
+    if (sessionDelta) delta.sessions = sessionDelta;
+    if (JSON.stringify(previous.origins ?? []) !== JSON.stringify(next.origins ?? [])) {
+      delta.origins = next.origins ?? [];
+    }
+    if (JSON.stringify(previous.meetingBridge ?? null) !== JSON.stringify(next.meetingBridge ?? null)) {
+      delta.meetingBridge = next.meetingBridge ?? null;
+    }
+    if (JSON.stringify(previous.activities ?? undefined) !== JSON.stringify(next.activities ?? undefined)) {
+      delta.activities = next.activities;
+    }
+
+    return delta;
   }
 
   private async getRemoteFibers(
@@ -770,6 +840,25 @@ export class BrowserStateCoordinator {
 function normalizeBrowserAttention(attention: BrowserAttentionState): BrowserAttentionState {
   if (attention === 'hidden' || attention === 'visible-unfocused') return attention;
   return 'active';
+}
+
+function diffCollection<T extends { id: string }>(
+  previousItems: T[],
+  nextItems: T[],
+): CollectionDelta<T> | null {
+  const previousById = new Map(previousItems.map((item) => [item.id, item]));
+  const nextById = new Map(nextItems.map((item) => [item.id, item]));
+  const upsert = nextItems.filter((item) => {
+    const previous = previousById.get(item.id);
+    return !previous || JSON.stringify(previous) !== JSON.stringify(item);
+  });
+  const remove = previousItems
+    .filter((item) => !nextById.has(item.id))
+    .map((item) => item.id);
+
+  return upsert.length > 0 || remove.length > 0
+    ? { upsert, remove }
+    : null;
 }
 
 function mapRawFiber(raw: unknown): RemoteFiber | null {
