@@ -21,3 +21,6 @@ __pycache__/
 
 # TypeScript build cache
 tsconfig.tsbuildinfo
+
+# Rust build output
+target/

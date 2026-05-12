@@ -1,14 +1,54 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { dirname, join, relative } from 'path';
 import { HttpApiFilesSearch } from '../HttpApiFilesSearch.js';
+import type { CityIndexWalker, FileWalkEntry, FileWalkResult } from '../HttpApiFilesSearch.js';
 
 const TEST_ROOT = join(homedir(), '.portolan-test-files-search');
 
 function writeFile(path: string, content = ''): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, 'utf-8');
+}
+
+const testWalkCityIndex: CityIndexWalker = async (cityPath, maxEntries) => {
+  const entries: FileWalkEntry[] = [];
+  let truncated = false;
+
+  const push = (entry: FileWalkEntry): boolean => {
+    if (entries.length >= maxEntries) {
+      truncated = true;
+      return false;
+    }
+    entries.push(entry);
+    return true;
+  };
+
+  const walk = (dir: string): boolean => {
+    const children = readdirSync(dir)
+      .filter((name) => !['.git', '.felt', 'node_modules', '__pycache__'].includes(name))
+      .map((name) => join(dir, name))
+      .sort((a, b) => relative(cityPath, a).localeCompare(relative(cityPath, b)));
+    const dirs = children.filter((path) => statSync(path).isDirectory());
+    const files = children.filter((path) => statSync(path).isFile());
+
+    for (const path of dirs) {
+      if (!push({ relativePath: relative(cityPath, path), type: 'dir' })) return false;
+      if (!walk(path)) return false;
+    }
+    for (const path of files) {
+      if (!push({ relativePath: relative(cityPath, path), type: 'file' })) return false;
+    }
+    return true;
+  };
+
+  walk(cityPath);
+  return { entries, truncated, timedOut: false, stderr: '' };
+};
+
+function testApiOptions() {
+  return { walkCityIndex: testWalkCityIndex, indexerKind: 'test' };
 }
 
 describe('HttpApiFilesSearch', () => {
@@ -28,6 +68,7 @@ describe('HttpApiFilesSearch', () => {
 
     const api = new HttpApiFilesSearch({
       cities: [{ id: 'city-a', path: cityPath, name: 'City A' }],
+      ...testApiOptions(),
     });
 
     await expect(api.search('', 10)).resolves.toEqual({ hits: [], warnings: [] });
@@ -43,6 +84,7 @@ describe('HttpApiFilesSearch', () => {
     const api = new HttpApiFilesSearch({
       cities: [{ id: 'city-a', path: cityPath, name: 'City A' }],
       indexTtlMs: 60_000,
+      ...testApiOptions(),
     });
 
     const widget = await api.search('WidgetPanel', 10);
@@ -61,6 +103,7 @@ describe('HttpApiFilesSearch', () => {
       truncated: false,
       timedOut: false,
       warnings: [],
+      indexerKind: 'test',
     });
   });
 
@@ -75,6 +118,7 @@ describe('HttpApiFilesSearch', () => {
         { id: 'city-a', path: cityA, name: 'City A' },
         { id: 'city-b', path: cityB, name: 'City B' },
       ],
+      ...testApiOptions(),
     });
 
     const result = await api.search('Needle', 10, 'city-a');
@@ -90,6 +134,7 @@ describe('HttpApiFilesSearch', () => {
     const api = new HttpApiFilesSearch({
       cities: [{ id: 'city-a', path: cityPath }],
       indexTtlMs: 1,
+      ...testApiOptions(),
     });
 
     await expect(api.search('AlphaOnly', 10)).resolves.toMatchObject({
@@ -112,6 +157,7 @@ describe('HttpApiFilesSearch', () => {
 
     const api = new HttpApiFilesSearch({
       cities: [{ id: 'city-a', path: cityPath }],
+      ...testApiOptions(),
     });
 
     const ignored = await api.search('IgnoredWidget', 10);
@@ -130,6 +176,7 @@ describe('HttpApiFilesSearch', () => {
     const api = new HttpApiFilesSearch({
       cities: [{ id: 'city-a', path: cityPath }],
       maxIndexedEntriesPerCity: 1,
+      ...testApiOptions(),
     });
 
     const result = await api.search('file-match', 10);
@@ -142,5 +189,67 @@ describe('HttpApiFilesSearch', () => {
       truncated: true,
       warnings: ['index truncated at 1 entries'],
     });
+  });
+
+  it('surfaces timeout warnings without claiming partial entries', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'SlowWidget.ts'));
+    const timedOutWalker: CityIndexWalker = async (): Promise<FileWalkResult> => ({
+      entries: [],
+      truncated: false,
+      timedOut: true,
+      stderr: '',
+    });
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      walkCityIndex: timedOutWalker,
+      indexerKind: 'timeout-test',
+    });
+
+    const result = await api.search('SlowWidget', 10);
+
+    expect(result.hits).toEqual([]);
+    expect(result.warnings).toEqual([
+      { cityId: 'city-a', message: 'index refresh timed out before returning entries' },
+    ]);
+    expect(api.getDiagnostics().cities[0]).toMatchObject({
+      timedOut: true,
+      warnings: ['index refresh timed out before returning entries'],
+    });
+  });
+
+  it('keeps stale entries when a refresh fails after a cached index expires', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'CachedWidget.ts'));
+    let shouldFail = false;
+    const flakyWalker: CityIndexWalker = async (path, maxEntries, timeoutMs) => {
+      if (shouldFail) throw new Error('indexer missing');
+      return testWalkCityIndex(path, maxEntries, timeoutMs);
+    };
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      indexTtlMs: 1,
+      walkCityIndex: flakyWalker,
+      indexerKind: 'flaky-test',
+    });
+
+    await expect(api.search('CachedWidget', 10)).resolves.toMatchObject({
+      hits: [expect.objectContaining({ relativePath: 'CachedWidget.ts' })],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    shouldFail = true;
+
+    const result = await api.search('CachedWidget', 10);
+
+    expect(result.hits.map((hit) => hit.relativePath)).toEqual(['CachedWidget.ts']);
+    expect(result.warnings).toEqual([
+      {
+        cityId: 'city-a',
+        message: 'index refresh failed; showing stale entries: indexer missing',
+      },
+    ]);
   });
 });

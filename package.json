@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "native:assets": "npm run build && npm --prefix server run build",
+    "native:index": "cargo build --manifest-path crates/portolan-index/Cargo.toml --release && mkdir -p server/dist/native && cp crates/portolan-index/target/release/portolan-index server/dist/native/portolan-index",
+    "native:assets": "npm run build && npm --prefix server run build && npm run native:index",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

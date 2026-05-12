@@ -128,18 +128,22 @@ impl BackendBridge {
             last_error: self.last_error.clone(),
         }
     }
-}
 
-impl Drop for BackendBridge {
-    fn drop(&mut self) {
+    fn shutdown(&mut self) {
         if !matches!(self.owner, BackendOwner::App | BackendOwner::Failed) {
             return;
         }
 
-        if let Some(child) = self.child.as_mut() {
+        if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+impl Drop for BackendBridge {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -264,9 +268,17 @@ fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
     }
 }
 
+fn shutdown_backend(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<NativeState>() {
+        if let Ok(mut backend) = state.backend.lock() {
+            backend.shutdown();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![native_status])
         .setup(|app| {
             app.manage(NativeState {
@@ -281,8 +293,15 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            shutdown_backend(app_handle);
+        }
+        _ => {}
+    });
 }
 
 #[cfg(test)]
