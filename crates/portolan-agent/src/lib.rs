@@ -3,13 +3,15 @@ use portolan_agent_protocol::{
     FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDumpPayload,
     FiberTreeFile,
 };
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     env,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const DEFAULT_SERVER: &str = "localhost:4004";
@@ -192,15 +194,16 @@ fn unsupported_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
 
 fn handle_fiber_raw(payload: &FiberRawRequestPayload) -> AgentFrame {
     let result = match payload.operation {
-        FiberRawOperation::Read => read_raw_fiber(payload),
-        FiberRawOperation::Write => Err(
-            "rust portolan-agent preview implements fiber-raw read only; use server/agent.js for writes"
-                .to_string(),
-        ),
+        FiberRawOperation::Read => {
+            read_raw_fiber(payload).map(|(body, sha256)| RawFiberResult::Read { body, sha256 })
+        }
+        FiberRawOperation::Write => {
+            write_raw_fiber(payload).map(|(sha256, fiber)| RawFiberResult::Write { sha256, fiber })
+        }
     };
 
     match result {
-        Ok((body, sha256)) => AgentFrame::FiberRawResult {
+        Ok(RawFiberResult::Read { body, sha256 }) => AgentFrame::FiberRawResult {
             payload: FiberRawResultPayload {
                 correlation_id: payload.correlation_id.clone(),
                 ok: true,
@@ -208,6 +211,16 @@ fn handle_fiber_raw(payload: &FiberRawRequestPayload) -> AgentFrame {
                 body: Some(body),
                 sha256: Some(sha256),
                 fiber: None,
+            },
+        },
+        Ok(RawFiberResult::Write { sha256, fiber }) => AgentFrame::FiberRawResult {
+            payload: FiberRawResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                body: None,
+                sha256: Some(sha256),
+                fiber: Some(fiber),
             },
         },
         Err(error) => AgentFrame::FiberRawResult {
@@ -223,6 +236,11 @@ fn handle_fiber_raw(payload: &FiberRawRequestPayload) -> AgentFrame {
     }
 }
 
+enum RawFiberResult {
+    Read { body: String, sha256: String },
+    Write { sha256: String, fiber: Value },
+}
+
 fn read_raw_fiber(payload: &FiberRawRequestPayload) -> Result<(String, String), String> {
     let felt_host = payload.felt_host.clone().unwrap_or_else(default_felt_host);
     let full_path = resolve_remote_fiber_file(&felt_host, &payload.path)?;
@@ -230,6 +248,70 @@ fn read_raw_fiber(payload: &FiberRawRequestPayload) -> Result<(String, String), 
         .map_err(|error| format!("failed to read fiber {}: {error}", payload.path))?;
     let sha256 = sha256_hex(&body);
     Ok((body, sha256))
+}
+
+fn write_raw_fiber(payload: &FiberRawRequestPayload) -> Result<(String, Value), String> {
+    write_raw_fiber_with_snapshot(payload, read_felt_fiber_json)
+}
+
+fn write_raw_fiber_with_snapshot(
+    payload: &FiberRawRequestPayload,
+    read_snapshot: impl Fn(&str, &str) -> Result<Value, String>,
+) -> Result<(String, Value), String> {
+    let body = payload
+        .body
+        .as_deref()
+        .ok_or_else(|| "missing body".to_string())?;
+    if body.len() > 2_000_000 {
+        return Err("fiber body exceeds 2 MB".to_string());
+    }
+
+    let felt_host = payload.felt_host.clone().unwrap_or_else(default_felt_host);
+    let full_path = resolve_remote_fiber_file(&felt_host, &payload.path)?;
+    write_atomic(&full_path, body)?;
+    let fiber_id = fiber_id_from_path(&payload.path)
+        .ok_or_else(|| format!("path is not a fiber: {}", payload.path))?;
+    let fiber = read_snapshot(&felt_host, &fiber_id)
+        .map_err(|error| format!("felt show failed after raw write: {fiber_id}: {error}"))?;
+    Ok((sha256_hex(body), fiber))
+}
+
+fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String> {
+    let output = Command::new("felt")
+        .args(["-C", felt_host, "show", fiber_id, "-j"])
+        .output()
+        .map_err(|error| format!("failed to run felt: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.trim().to_string());
+    }
+    let parsed: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("failed to parse felt JSON: {error}"))?;
+    if !parsed.is_object() {
+        return Err("felt JSON was not an object".to_string());
+    }
+    Ok(parsed)
+}
+
+fn write_atomic(target: &Path, content: &str) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("target has no parent: {}", target.display()))?;
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("target has no UTF-8 filename: {}", target.display()))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock before UNIX epoch: {error}"))?
+        .as_nanos();
+    let tmp = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    fs::write(&tmp, content)
+        .map_err(|error| format!("failed to write temporary fiber {}: {error}", tmp.display()))?;
+    fs::rename(&tmp, target).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed to replace fiber {}: {error}", target.display())
+    })
 }
 
 fn build_fiber_tree_dumps(felt_hosts: &[String]) -> Vec<AgentFrame> {
@@ -608,23 +690,66 @@ mod tests {
     }
 
     #[test]
-    fn keeps_fiber_raw_writes_explicitly_unsupported() {
+    fn writes_raw_fiber_atomically_and_returns_snapshot() {
+        let dir = temp_host("raw-write");
+        let fiber_dir = dir.join(".felt/portolan");
+        fs::create_dir_all(&fiber_dir).unwrap();
+        fs::write(
+            fiber_dir.join("portolan.md"),
+            "---\nname: Old\n---\n\nOld\n",
+        )
+        .unwrap();
+        let next = "---\nname: New\nstatus: active\n---\n\nNew body\n";
+
         let responses = handle_server_frame(&AgentFrame::FiberRaw {
             payload: FiberRawRequestPayload {
                 correlation_id: "raw-write".to_string(),
                 operation: FiberRawOperation::Write,
                 path: "portolan/portolan.md".to_string(),
-                felt_host: Some("/tmp/portolan-agent-test".to_string()),
-                body: Some("---\nname: Portolan\n---\n".to_string()),
+                felt_host: Some(dir.display().to_string()),
+                body: Some(next.to_string()),
             },
         });
+        let saved = fs::read_to_string(fiber_dir.join("portolan.md")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].correlation_id(), Some("raw-write"));
         match &responses[0] {
             AgentFrame::FiberRawResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.body, None);
+                assert_eq!(saved, next);
+                assert!(payload
+                    .sha256
+                    .as_deref()
+                    .unwrap()
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit()));
+                assert_eq!(payload.sha256.as_deref().unwrap().len(), 64);
+                assert_eq!(payload.fiber.as_ref().unwrap()["id"], json!("portolan"));
+                assert_eq!(payload.fiber.as_ref().unwrap()["name"], json!("New"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_raw_fiber_writes_without_body() {
+        let responses = handle_server_frame(&AgentFrame::FiberRaw {
+            payload: FiberRawRequestPayload {
+                correlation_id: "raw-write-missing".to_string(),
+                operation: FiberRawOperation::Write,
+                path: "portolan/portolan.md".to_string(),
+                felt_host: Some("/tmp/portolan-agent-test".to_string()),
+                body: None,
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::FiberRawResult { payload } => {
                 assert!(!payload.ok);
-                assert!(payload.error.as_deref().unwrap().contains("read only"));
+                assert!(payload.error.as_deref().unwrap().contains("missing body"));
             }
             other => panic!("unexpected response: {other:?}"),
         }
