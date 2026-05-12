@@ -153,6 +153,15 @@ describe('FrontendAppRuntime — render loop visibility gating', () => {
 
     // animate() schedules the first RAF synchronously on start.
     expect(pendingRafs.size).toBe(1)
+    expect(runtime.getRenderLoopStats()).toMatchObject({
+      attention: 'active',
+      scheduledWork: 'raf',
+      totalFrames: 1,
+      activeFrames: 1,
+      visibleUnfocusedFrames: 0,
+      hiddenSkips: 0,
+      recentFrameCount: 1,
+    })
 
     runtime.dispose()
   })
@@ -164,6 +173,12 @@ describe('FrontendAppRuntime — render loop visibility gating', () => {
 
     // animate() exits early when document.hidden — no RAF scheduled.
     expect(pendingRafs.size).toBe(0)
+    expect(runtime.getRenderLoopStats()).toMatchObject({
+      attention: 'hidden',
+      scheduledWork: 'paused',
+      totalFrames: 0,
+      hiddenSkips: 1,
+    })
 
     runtime.dispose()
   })
@@ -217,6 +232,13 @@ describe('FrontendAppRuntime — render loop visibility gating', () => {
     expect(options.renderer.render).toHaveBeenCalledTimes(1)
     expect(pendingRafs.size).toBe(0)
     expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(1)
+    expect(runtime.getRenderLoopStats()).toMatchObject({
+      attention: 'visible-unfocused',
+      scheduledWork: 'timeout',
+      totalFrames: 1,
+      activeFrames: 0,
+      visibleUnfocusedFrames: 1,
+    })
 
     flushTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)
     expect(pendingRafs.size).toBe(1)
@@ -225,6 +247,11 @@ describe('FrontendAppRuntime — render loop visibility gating', () => {
     expect(options.renderer.render).toHaveBeenCalledTimes(2)
     expect(pendingRafs.size).toBe(0)
     expect(countTimeouts(UNFOCUSED_VISIBLE_FRAME_MS)).toBe(1)
+    expect(runtime.getRenderLoopStats()).toMatchObject({
+      scheduledWork: 'timeout',
+      totalFrames: 2,
+      visibleUnfocusedFrames: 2,
+    })
 
     runtime.dispose()
   })

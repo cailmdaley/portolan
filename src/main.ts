@@ -1880,6 +1880,7 @@ installFrontendRuntimeDiagnostics({
   }),
   getActivityStats: () => stateSync.getActivityStats(),
   getHudStats: () => appRuntime.getHudStats(),
+  getRenderLoopStats: () => appRuntime.getRenderLoopStats(),
 })
 
 stateSync.connect()

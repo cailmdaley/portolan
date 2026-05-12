@@ -3,6 +3,7 @@ import type { ZoneRenderer } from '../render/ZoneRenderer'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
 import type { getArtifactMediaCacheStats } from '../ui/ArtifactMedia'
+import type { FrontendRenderLoopStats } from './FrontendAppRuntime'
 
 export type DebugRuntimeWindow = Window & {
   zoneRenderer: ZoneRenderer
@@ -39,6 +40,7 @@ export interface FrontendRuntimeDiagnostics {
     hasPendingWorkerUpdateFrame: boolean
     totalWorkerHudUpdates: number
   }
+  renderLoop: FrontendRenderLoopStats
   renderer: ReturnType<ZoneRenderer['getRuntimeStats']>
   webgl: {
     geometries: number
@@ -90,6 +92,7 @@ interface InstallFrontendRuntimeDiagnosticsOptions {
     hasPendingWorkerUpdateFrame: boolean
     totalWorkerHudUpdates: number
   }
+  getRenderLoopStats: () => FrontendRenderLoopStats
 }
 
 export function installFrontendRuntimeDiagnostics(
@@ -116,6 +119,7 @@ export function installFrontendRuntimeDiagnostics(
     const webglInfo = options.renderer.info
     const world = options.getWorldStats()
     const hud = options.getHudStats()
+    const renderLoop = options.getRenderLoopStats()
 
     return {
       timestamp: new Date().toISOString(),
@@ -136,6 +140,7 @@ export function installFrontendRuntimeDiagnostics(
         streamWithMostEvents: activity.stats.streamWithMostEvents,
       },
       hud,
+      renderLoop,
       renderer: options.zoneRenderer.getRuntimeStats(),
       webgl: {
         geometries: webglInfo.memory.geometries,
