@@ -4,7 +4,7 @@ import { promisify } from 'util';
 
 import { WebSocket } from 'ws';
 
-import { countOpenFibers, getAllFibers, mapFeltJsonToFiber } from './FiberReader.js';
+import { countOpenFibers as countOpenFibersFromDisk, getAllFibers, mapFeltJsonToFiber } from './FiberReader.js';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
 import type { MeetingBridgeState } from './MeetingBridge.js';
@@ -62,6 +62,14 @@ interface BrowserStateCoordinatorOptions {
   sessionLookup: SessionLookup;
   getMeetingState?: () => MeetingBridgeState | null;
   localOriginId?: string;
+  countOpenFibers?: (cityPath: string) => Promise<number>;
+}
+
+interface FiberCountCacheEntry {
+  originId: string;
+  path: string;
+  count: number;
+  updatedAt: number;
 }
 
 export class BrowserStateCoordinator {
@@ -69,10 +77,14 @@ export class BrowserStateCoordinator {
   private readonly localOriginId: string;
   private lastBroadcastState: StateUpdate | null = null;
   private fiberRefreshIntervalHandle: NodeJS.Timeout | null = null;
+  private readonly fiberCountCache = new Map<string, FiberCountCacheEntry>();
+  private readonly fiberCountReads = new Map<string, Promise<number>>();
+  private readonly countOpenFibers: (cityPath: string) => Promise<number>;
   private remoteAgentStateSource: RemoteAgentStateSource | null = null;
 
   constructor(private options: BrowserStateCoordinatorOptions) {
     this.localOriginId = options.localOriginId ?? 'local';
+    this.countOpenFibers = options.countOpenFibers ?? countOpenFibersFromDisk;
   }
 
   setRemoteAgentStateSource(remoteAgentStateSource: RemoteAgentStateSource): void {
@@ -81,6 +93,20 @@ export class BrowserStateCoordinator {
 
   getClientCount(): number {
     return this.clients.size;
+  }
+
+  getFiberCountCacheStats(): { entries: number; inFlight: number; localCities: number; lastUpdatedAt: number | null } {
+    const localCities = this.options.cityManager
+      .getCities()
+      .filter((city) => city.originId === this.localOriginId)
+      .length;
+    const updatedAtValues = [...this.fiberCountCache.values()].map((entry) => entry.updatedAt);
+    return {
+      entries: this.fiberCountCache.size,
+      inFlight: this.fiberCountReads.size,
+      localCities,
+      lastUpdatedAt: updatedAtValues.length > 0 ? Math.max(...updatedAtValues) : null,
+    };
   }
 
   startFiberRefresh(intervalMs: number): void {
@@ -132,6 +158,8 @@ export class BrowserStateCoordinator {
 
     const activeCityIds = new Set(sessions.filter((session) => session.cityId).map((session) => session.cityId));
 
+    this.pruneFiberCountCache(cities);
+
     const citiesWithFibers = await Promise.all(
       cities.map(async (city) => {
         let gitStatus: GitStatus | undefined;
@@ -143,7 +171,7 @@ export class BrowserStateCoordinator {
 
         return {
           ...city,
-          fiberCount: city.originId === this.localOriginId ? await countOpenFibers(city.path) : 0,
+          fiberCount: await this.getFiberCount(city),
           hasClaims: city.hasClaims ?? false,
           hasPlaygrounds: city.hasPlaygrounds ?? false,
           isDormant: !activeCityIds.has(city.id),
@@ -437,6 +465,7 @@ export class BrowserStateCoordinator {
   }
 
   private async refreshFiberCounts(): Promise<void> {
+    await this.refreshLocalFiberCountCache();
     const state = await this.buildState();
     if (!this.fiberCountsChanged(this.lastBroadcastState, state)) return;
     console.log('Fiber counts changed, broadcasting update');
@@ -451,6 +480,65 @@ export class BrowserStateCoordinator {
       if (!oldCity || oldCity.fiberCount !== newCity.fiberCount) return true;
     }
     return false;
+  }
+
+  private async getFiberCount(city: City): Promise<number> {
+    if (city.originId !== this.localOriginId) return 0;
+    const cached = this.fiberCountCache.get(city.id);
+    if (cached && cached.path === city.path && cached.originId === city.originId) {
+      return cached.count;
+    }
+    return this.refreshFiberCount(city);
+  }
+
+  private async refreshLocalFiberCountCache(): Promise<void> {
+    const cities = this.options.cityManager.getCities();
+    this.pruneFiberCountCache(cities);
+    await Promise.all(
+      cities
+        .filter((city) => city.originId === this.localOriginId)
+        .map((city) => this.refreshFiberCount(city)),
+    );
+  }
+
+  private async refreshFiberCount(city: City): Promise<number> {
+    const inFlight = this.fiberCountReads.get(city.id);
+    if (inFlight) return inFlight;
+
+    const read = this.countOpenFibers(city.path)
+      .then((count) => {
+        this.fiberCountCache.set(city.id, {
+          originId: city.originId,
+          path: city.path,
+          count,
+          updatedAt: Date.now(),
+        });
+        return count;
+      })
+      .catch((error) => {
+        console.warn(`Failed to count fibers for ${city.path}:`, error);
+        return this.fiberCountCache.get(city.id)?.count ?? 0;
+      })
+      .finally(() => {
+        this.fiberCountReads.delete(city.id);
+      });
+
+    this.fiberCountReads.set(city.id, read);
+    return read;
+  }
+
+  private pruneFiberCountCache(cities: City[]): void {
+    const currentLocalCityIds = new Set(
+      cities
+        .filter((city) => city.originId === this.localOriginId)
+        .map((city) => city.id),
+    );
+    for (const cityId of this.fiberCountCache.keys()) {
+      if (!currentLocalCityIds.has(cityId)) this.fiberCountCache.delete(cityId);
+    }
+    for (const cityId of this.fiberCountReads.keys()) {
+      if (!currentLocalCityIds.has(cityId)) this.fiberCountReads.delete(cityId);
+    }
   }
 
   private async getRemoteFibers(

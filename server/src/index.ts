@@ -199,6 +199,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       remoteActivities: remoteAgentCoordinator.getRemoteActivityStoreCount(),
       remoteActivityEvents: remoteAgentCoordinator.getRemoteActivityEventCount(),
     },
+    fiberCounts: browserStateCoordinator.getFiberCountCacheStats(),
     intervals: {
       fiberRefreshActive: browserStateCoordinator.isFiberRefreshActive(),
       remoteWorkingTimeoutActive: remoteWorkingTimeoutIntervalHandle !== null,
