@@ -42,6 +42,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { score as fzyScore, hasMatch as fzyHasMatch } from 'fzy.js'
 import { fiberStatusIcon } from '../ui/utils'
+import { VisiblePollScheduler } from '../runtime/PageAttention'
 import { getPortolanMountContext } from './mount'
 import { FIND_FOCUS_SEARCH_EVENT, FIND_SEARCH_INPUT_CLASS } from './find-shared'
 import { FindFilesSection } from './FindFilesSection'
@@ -1170,9 +1171,11 @@ function RecentsSection({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Re-fetch on scope or refresh, then poll every 5s. The poll catches
+  // Re-fetch on scope or refresh, then poll while the page is visible. The poll catches
   // agent file-touches arriving from EventWatcher and human opens fired
-  // from a different window without forcing the user to hit refresh.
+  // from a different window without forcing the user to hit refresh. Hidden
+  // windows stay timer-free; visible unfocused tiled windows use the shared
+  // slow cadence from PageAttention.
   useEffect(() => {
     let cancelled = false
     const fetchRecents = async (): Promise<void> => {
@@ -1193,11 +1196,14 @@ function RecentsSection({
         if (!cancelled) setLoading(false)
       }
     }
-    void fetchRecents()
-    const id = window.setInterval(fetchRecents, 5000)
+    const scheduler = new VisiblePollScheduler({
+      intervalMs: 5000,
+      poll: fetchRecents,
+    })
+    scheduler.start()
     return () => {
       cancelled = true
-      window.clearInterval(id)
+      scheduler.stop()
     }
   }, [focusedCityId, refreshTick])
 
@@ -2846,9 +2852,12 @@ function usePortolanRuntimeSnapshot(): PortolanRuntimeSnapshot {
       lastSignature = next.signature
       setSnapshot(next)
     }
-    refresh()
-    const handle = window.setInterval(refresh, 1500)
-    return () => window.clearInterval(handle)
+    const scheduler = new VisiblePollScheduler({
+      intervalMs: 1500,
+      poll: refresh,
+    })
+    scheduler.start()
+    return () => scheduler.stop()
     // The interval compares against a local signature so it can avoid
     // React state updates when the module-scoped mount context is stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps

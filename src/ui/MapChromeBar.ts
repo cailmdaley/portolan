@@ -1,5 +1,5 @@
 import type { City, Session } from '../state/types'
-import { shouldRunVisiblePoll } from '../runtime/PageAttention'
+import { VisiblePollScheduler } from '../runtime/PageAttention'
 
 /**
  * MapChromeBar — Stage H of constitution-portolan-navigation-layer.
@@ -83,8 +83,7 @@ export class MapChromeBar {
 
   private cityNameById = new Map<string, string>()
   private currentBirds: HTMLElement[] = []
-  private pollTimer: number | null = null
-  private lastBadgePollStartedAt: number | null = null
+  private readonly badgePoll: VisiblePollScheduler
   private lastBadgeValue: number | null = null
 
   constructor(options: MapChromeBarOptions) {
@@ -162,8 +161,14 @@ export class MapChromeBar {
     this.container.append(this.launchBtn, chipsGroup, sep1, this.cityPlaque, sepCity, this.birdsRow, sep2, this.glance)
     document.body.appendChild(this.container)
 
-    void this.refreshAwaitingReview()
-    this.startPolling()
+    this.badgePoll = new VisiblePollScheduler({
+      intervalMs: this.pollIntervalMs,
+      poll: () => {
+        if (this.opts.isKanbanModalOpen?.()) return
+        return this.refreshAwaitingReview()
+      },
+    })
+    this.badgePoll.start()
   }
 
   /** Push the current vellum tab so the matching chip lights up. Pass
@@ -199,7 +204,7 @@ export class MapChromeBar {
   /** Manual badge refresh — called after an open/close on kanban so the
    *  count is fresh without waiting for the poll. */
   refreshSoon(): void {
-    void this.refreshAwaitingReview({ force: true })
+    this.badgePoll.requestNow()
   }
 
   syncFocusedCity(city: City | null): void {
@@ -217,10 +222,7 @@ export class MapChromeBar {
   }
 
   dispose(): void {
-    if (this.pollTimer !== null) {
-      window.clearInterval(this.pollTimer)
-      this.pollTimer = null
-    }
+    this.badgePoll.stop()
     this.container.remove()
   }
 
@@ -419,18 +421,7 @@ export class MapChromeBar {
 
   // ───────────── awaiting-review badge poll ─────────────
 
-  private startPolling(): void {
-    this.pollTimer = window.setInterval(() => {
-      if (this.opts.isKanbanModalOpen?.()) return
-      void this.refreshAwaitingReview()
-    }, this.pollIntervalMs)
-  }
-
-  private async refreshAwaitingReview(opts: { force?: boolean } = {}): Promise<void> {
-    const now = Date.now()
-    if (!opts.force && !shouldRunVisiblePoll(this.lastBadgePollStartedAt, now, this.pollIntervalMs)) return
-    if (document.hidden) return
-    this.lastBadgePollStartedAt = now
+  private async refreshAwaitingReview(): Promise<void> {
     try {
       const cityId = this.opts.getKanbanBadgeCityId?.() ?? null
       const url = cityId
