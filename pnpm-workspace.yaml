@@ -1,0 +1,8 @@
+packages:
+  - "."
+  - "server"
+
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - "@portolan/*"
+blockExoticSubdeps: true
