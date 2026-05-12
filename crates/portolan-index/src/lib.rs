@@ -3,6 +3,7 @@ use std::{
     collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +45,48 @@ impl WalkOptions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchOptions {
+    pub root: PathBuf,
+    pub database: PathBuf,
+    pub query: String,
+    pub limit: usize,
+    pub max_entries: usize,
+    pub refresh_ttl_ms: u64,
+}
+
+impl SearchOptions {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        database: impl Into<PathBuf>,
+        query: impl Into<String>,
+        limit: usize,
+        max_entries: usize,
+        refresh_ttl_ms: u64,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            database: database.into(),
+            query: query.into(),
+            limit,
+            max_entries,
+            refresh_ttl_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSummary {
+    pub entries: Vec<WalkEntry>,
+    pub truncated: bool,
+    pub visited_dirs: usize,
+    pub ignored_dirs: usize,
+    pub index_refreshed: bool,
+    pub index_age_ms: u64,
+    pub database_path: String,
+}
+
 #[derive(Debug)]
 struct WalkState {
     entries: Vec<WalkEntry>,
@@ -72,6 +115,77 @@ pub fn walk_city(options: &WalkOptions) -> io::Result<WalkSummary> {
         truncated: state.truncated,
         visited_dirs: state.visited_dirs,
         ignored_dirs: state.ignored_dirs,
+    })
+}
+
+pub fn search_city(options: &SearchOptions) -> Result<SearchSummary, IndexError> {
+    let root = options.root.canonicalize()?;
+    if let Some(parent) = options.database.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut conn = rusqlite::Connection::open(&options.database)?;
+    initialize_schema(&conn)?;
+
+    let now = now_ms();
+    let root_string = root.to_string_lossy().to_string();
+    let stored_root = metadata_value(&conn, "root")?;
+    let built_at = metadata_value(&conn, "built_at_ms")?
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let entry_count = count_entries(&conn)?;
+    let stale = stored_root.as_deref() != Some(root_string.as_str())
+        || entry_count == 0
+        || built_at == 0
+        || now.saturating_sub(built_at) > options.refresh_ttl_ms;
+
+    let mut refreshed = false;
+    let mut latest_walk = None;
+    if stale {
+        let walk = walk_city(&WalkOptions::new(&root, options.max_entries))?;
+        rebuild_index(&mut conn, &root_string, now, &walk)?;
+        refreshed = true;
+        latest_walk = Some(walk);
+    }
+
+    let entries = search_entries(&conn, &options.query, options.limit)?;
+    let index_age_ms = now_ms().saturating_sub(
+        metadata_value(&conn, "built_at_ms")?
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(now),
+    );
+    let truncated = metadata_value(&conn, "truncated")?
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    let visited_dirs = latest_walk
+        .as_ref()
+        .map(|walk| walk.visited_dirs)
+        .or_else(|| {
+            metadata_value(&conn, "visited_dirs")
+                .ok()
+                .flatten()
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+    let ignored_dirs = latest_walk
+        .as_ref()
+        .map(|walk| walk.ignored_dirs)
+        .or_else(|| {
+            metadata_value(&conn, "ignored_dirs")
+                .ok()
+                .flatten()
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+
+    Ok(SearchSummary {
+        entries,
+        truncated,
+        visited_dirs,
+        ignored_dirs,
+        index_refreshed: refreshed,
+        index_age_ms,
+        database_path: options.database.to_string_lossy().to_string(),
     })
 }
 
@@ -171,6 +285,235 @@ fn should_ignore(name: &str) -> bool {
     )
 }
 
+#[derive(Debug)]
+pub enum IndexError {
+    Io(io::Error),
+    Sql(rusqlite::Error),
+}
+
+impl std::fmt::Display for IndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Sql(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for IndexError {}
+
+impl From<io::Error> for IndexError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<rusqlite::Error> for IndexError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sql(error)
+    }
+}
+
+fn initialize_schema(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS entries (
+            relative_path TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            name TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts
+            USING fts5(relative_path, name, type UNINDEXED);
+        ",
+    )
+}
+
+fn metadata_value(conn: &rusqlite::Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT value FROM metadata WHERE key = ?1")?;
+    let mut rows = stmt.query([key])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn count_entries(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    conn.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+}
+
+fn rebuild_index(
+    conn: &mut rusqlite::Connection,
+    root: &str,
+    built_at_ms: u64,
+    walk: &WalkSummary,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM metadata", [])?;
+    tx.execute("DELETE FROM entries", [])?;
+    tx.execute("DELETE FROM entries_fts", [])?;
+
+    {
+        let mut insert_entry =
+            tx.prepare("INSERT INTO entries(relative_path, type, name) VALUES (?1, ?2, ?3)")?;
+        let mut insert_fts =
+            tx.prepare("INSERT INTO entries_fts(relative_path, name, type) VALUES (?1, ?2, ?3)")?;
+        for entry in &walk.entries {
+            let entry_type = entry_type_str(entry.entry_type);
+            let name = Path::new(&entry.relative_path)
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.relative_path.clone());
+            insert_entry.execute(rusqlite::params![&entry.relative_path, entry_type, &name])?;
+            insert_fts.execute(rusqlite::params![&entry.relative_path, &name, entry_type])?;
+        }
+    }
+
+    for (key, value) in [
+        ("root", root.to_string()),
+        ("built_at_ms", built_at_ms.to_string()),
+        ("truncated", walk.truncated.to_string()),
+        ("visited_dirs", walk.visited_dirs.to_string()),
+        ("ignored_dirs", walk.ignored_dirs.to_string()),
+    ] {
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        )?;
+    }
+    tx.commit()
+}
+
+fn search_entries(
+    conn: &rusqlite::Connection,
+    query: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<WalkEntry>> {
+    if limit == 0 || query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+
+    if let Some(fts_query) = fts_query(query) {
+        let mut stmt = conn.prepare(
+            "
+            SELECT relative_path, type
+            FROM entries_fts
+            WHERE entries_fts MATCH ?1
+            ORDER BY bm25(entries_fts)
+            LIMIT ?2
+            ",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![fts_query, limit as i64],
+            row_to_walk_entry,
+        )?;
+        for entry in rows {
+            push_unique(&mut entries, &mut seen, entry?);
+        }
+    }
+
+    if entries.len() < limit {
+        let needle = query.to_lowercase();
+        let mut stmt =
+            conn.prepare("SELECT relative_path, type FROM entries ORDER BY relative_path")?;
+        let rows = stmt.query_map([], row_to_walk_entry)?;
+        for entry in rows {
+            if entries.len() >= limit {
+                break;
+            }
+            let entry = entry?;
+            if seen.contains(&entry.relative_path) {
+                continue;
+            }
+            let path = entry.relative_path.to_lowercase();
+            let name = Path::new(&path)
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            if path.contains(&needle)
+                || name.contains(&needle)
+                || subsequence_match(&needle, &path)
+                || subsequence_match(&needle, &name)
+            {
+                push_unique(&mut entries, &mut seen, entry);
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+fn row_to_walk_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<WalkEntry> {
+    let relative_path: String = row.get(0)?;
+    let entry_type: String = row.get(1)?;
+    Ok(WalkEntry {
+        relative_path,
+        entry_type: if entry_type == "dir" {
+            WalkEntryType::Dir
+        } else {
+            WalkEntryType::File
+        },
+    })
+}
+
+fn push_unique(entries: &mut Vec<WalkEntry>, seen: &mut HashSet<String>, entry: WalkEntry) {
+    if seen.insert(entry.relative_path.clone()) {
+        entries.push(entry);
+    }
+}
+
+fn fts_query(query: &str) -> Option<String> {
+    let tokens: Vec<String> = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("\"{}\"*", token.replace('"', "\"\"")))
+        .collect();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" AND "))
+    }
+}
+
+fn subsequence_match(needle: &str, haystack: &str) -> bool {
+    let mut chars = needle.chars().filter(|ch| !ch.is_whitespace());
+    let Some(mut current) = chars.next() else {
+        return true;
+    };
+    for ch in haystack.chars() {
+        if ch == current {
+            if let Some(next) = chars.next() {
+                current = next;
+            } else {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn entry_type_str(entry_type: WalkEntryType) -> &'static str {
+    match entry_type {
+        WalkEntryType::Dir => "dir",
+        WalkEntryType::File => "file",
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +598,45 @@ mod tests {
         assert!(summary.truncated);
 
         remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persists_search_index_between_queries() {
+        let root = temp_root("sqlite");
+        let db_root = temp_root("sqlite-db");
+        let db = db_root.join("files.sqlite");
+        write_test_file(&root.join("src").join("HttpApiFilesSearch.ts"));
+        write_test_file(&root.join("src").join("KanbanModal.ts"));
+
+        let first =
+            search_city(&SearchOptions::new(&root, &db, "HttpApi", 10, 20, 60_000)).unwrap();
+        let second =
+            search_city(&SearchOptions::new(&root, &db, "Kanban", 10, 20, 60_000)).unwrap();
+
+        assert!(first.index_refreshed);
+        assert!(!second.index_refreshed);
+        assert_eq!(first.entries[0].relative_path, "src/HttpApiFilesSearch.ts");
+        assert_eq!(second.entries[0].relative_path, "src/KanbanModal.ts");
+
+        remove_dir_all(root).unwrap();
+        remove_dir_all(db_root).unwrap();
+    }
+
+    #[test]
+    fn search_falls_back_to_subsequence_matching() {
+        let root = temp_root("subsequence");
+        let db_root = temp_root("subsequence-db");
+        let db = db_root.join("files.sqlite");
+        write_test_file(&root.join("src").join("HttpApiFilesSearch.ts"));
+
+        let summary = search_city(&SearchOptions::new(&root, &db, "hafs", 10, 20, 60_000)).unwrap();
+
+        assert_eq!(
+            summary.entries[0].relative_path,
+            "src/HttpApiFilesSearch.ts"
+        );
+
+        remove_dir_all(root).unwrap();
+        remove_dir_all(db_root).unwrap();
     }
 }

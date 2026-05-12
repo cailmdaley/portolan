@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import { homedir } from 'os';
 import { dirname, join, relative } from 'path';
 import { HttpApiFilesSearch } from '../HttpApiFilesSearch.js';
-import type { CityIndexWalker, FileWalkEntry, FileWalkResult } from '../HttpApiFilesSearch.js';
+import type {
+  CityIndexSearcher,
+  CityIndexWalker,
+  FileWalkEntry,
+  FileWalkResult,
+} from '../HttpApiFilesSearch.js';
 
 const TEST_ROOT = join(homedir(), '.portolan-test-files-search');
 
@@ -105,6 +110,102 @@ describe('HttpApiFilesSearch', () => {
       warnings: [],
       indexerKind: 'test',
     });
+  });
+
+  it('can use the persistent Rust search seam without building a full TS candidate cache', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'src', 'HttpApiFilesSearch.ts'));
+    const calls: Array<{ query: string; limit: number; maxEntries: number; refreshTtlMs: number }> = [];
+    const searchCityIndex: CityIndexSearcher = async (
+      _cityPath,
+      query,
+      limit,
+      maxEntries,
+      refreshTtlMs,
+    ) => {
+      calls.push({ query, limit, maxEntries, refreshTtlMs });
+      return {
+        entries: [{ relativePath: 'src/HttpApiFilesSearch.ts', type: 'file' }],
+        truncated: false,
+        timedOut: false,
+        stderr: '',
+        indexRefreshed: calls.length === 1,
+        indexAgeMs: 12,
+        databasePath: '/tmp/portolan-index.sqlite',
+      };
+    };
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath, name: 'City A' }],
+      searchCityIndex,
+      indexerKind: 'mock-sqlite',
+      indexTtlMs: 60_000,
+    });
+
+    const result = await api.search('hafs', 10);
+
+    expect(result.hits.map((hit) => hit.relativePath)).toEqual(['src/HttpApiFilesSearch.ts']);
+    expect(calls).toEqual([
+      { query: 'hafs', limit: 200, maxEntries: 20_001, refreshTtlMs: 60_000 },
+    ]);
+    expect(api.getDiagnostics()).toMatchObject({
+      mode: 'persistent-search',
+      cachedCities: 1,
+      cities: [
+        {
+          cityId: 'city-a',
+          mode: 'persistent-search',
+          query: 'hafs',
+          indexerKind: 'mock-sqlite',
+          indexRefreshed: true,
+          indexAgeMs: 12,
+          databasePath: '/tmp/portolan-index.sqlite',
+        },
+      ],
+    });
+  });
+
+  it('deduplicates identical in-flight persistent city searches', async () => {
+    const cityPath = join(TEST_ROOT, 'city-a');
+    writeFile(join(cityPath, 'src', 'HttpApiFilesSearch.ts'));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: string[] = [];
+    const searchCityIndex: CityIndexSearcher = async (_cityPath, query) => {
+      calls.push(query);
+      await gate;
+      return {
+        entries: [{ relativePath: 'src/HttpApiFilesSearch.ts', type: 'file' }],
+        truncated: false,
+        timedOut: false,
+        stderr: '',
+        indexRefreshed: true,
+      };
+    };
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath }],
+      searchCityIndex,
+      indexerKind: 'mock-sqlite',
+    });
+
+    const first = api.search('hafs', 10);
+    const second = api.search('hafs', 10);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(api.getDiagnostics().inFlight).toBe(1);
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({
+        hits: [expect.objectContaining({ relativePath: 'src/HttpApiFilesSearch.ts' })],
+      }),
+      expect.objectContaining({
+        hits: [expect.objectContaining({ relativePath: 'src/HttpApiFilesSearch.ts' })],
+      }),
+    ]);
+    expect(calls).toEqual(['hafs']);
   });
 
   it('honors cityId without indexing unrelated local cities', async () => {

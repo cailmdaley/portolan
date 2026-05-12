@@ -1,5 +1,7 @@
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,11 +15,17 @@ export interface RustFileIndexResult {
   truncated: boolean;
   timedOut: boolean;
   stderr: string;
+  indexRefreshed?: boolean;
+  indexAgeMs?: number;
+  databasePath?: string;
 }
 
 interface RustWalkPayload {
   entries?: unknown;
   truncated?: unknown;
+  indexRefreshed?: unknown;
+  indexAgeMs?: unknown;
+  databasePath?: unknown;
 }
 
 interface RustIndexerCommand {
@@ -32,12 +40,50 @@ export function walkCityIndexWithRust(
   timeoutMs: number,
 ): Promise<RustFileIndexResult> {
   const command = resolveRustIndexerCommand();
+  return runIndexerCommand(
+    command,
+    ['walk', '--root', cityPath, '--max-entries', String(maxEntries)],
+    timeoutMs,
+  );
+}
+
+export function searchCityIndexWithRust(
+  cityPath: string,
+  query: string,
+  limit: number,
+  maxEntries: number,
+  refreshTtlMs: number,
+  timeoutMs: number,
+): Promise<RustFileIndexResult> {
+  const command = resolveRustIndexerCommand();
+  return runIndexerCommand(
+    command,
+    [
+      'search',
+      '--root',
+      cityPath,
+      '--db',
+      resolveRustIndexDatabase(cityPath),
+      '--query',
+      query,
+      '--limit',
+      String(limit),
+      '--max-entries',
+      String(maxEntries),
+      '--refresh-ttl-ms',
+      String(refreshTtlMs),
+    ],
+    timeoutMs,
+  );
+}
+
+function runIndexerCommand(
+  command: RustIndexerCommand,
+  commandArgs: string[],
+  timeoutMs: number,
+): Promise<RustFileIndexResult> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(
-      command.program,
-      [...command.args, '--root', cityPath, '--max-entries', String(maxEntries)],
-      { cwd: command.cwd },
-    );
+    const proc = spawn(command.program, [...command.args, ...commandArgs], { cwd: command.cwd });
 
     let stdout = '';
     let stderr = '';
@@ -82,6 +128,10 @@ export function walkCityIndexWithRust(
           truncated: payload.truncated === true,
           timedOut: false,
           stderr,
+          indexRefreshed: payload.indexRefreshed === true ? true : undefined,
+          indexAgeMs: typeof payload.indexAgeMs === 'number' ? payload.indexAgeMs : undefined,
+          databasePath:
+            typeof payload.databasePath === 'string' ? payload.databasePath : undefined,
         });
       } catch (error) {
         reject(
@@ -97,25 +147,25 @@ export function walkCityIndexWithRust(
 function resolveRustIndexerCommand(): RustIndexerCommand {
   const projectRoot = resolveProjectRoot();
   const override = process.env.PORTOLAN_INDEX_BIN;
-  if (override) return { program: override, args: ['walk'], cwd: projectRoot };
+  if (override) return { program: override, args: [], cwd: projectRoot };
 
   const crateRoot = join(projectRoot, 'crates', 'portolan-index');
   const binaryName = process.platform === 'win32' ? 'portolan-index.exe' : 'portolan-index';
   const bundledCandidate = join(dirname(fileURLToPath(import.meta.url)), 'native', binaryName);
   if (existsSync(bundledCandidate)) {
-    return { program: bundledCandidate, args: ['walk'], cwd: projectRoot };
+    return { program: bundledCandidate, args: [], cwd: projectRoot };
   }
 
   for (const profile of ['release', 'debug']) {
     const candidate = join(crateRoot, 'target', profile, binaryName);
     if (existsSync(candidate)) {
-      return { program: candidate, args: ['walk'], cwd: projectRoot };
+      return { program: candidate, args: [], cwd: projectRoot };
     }
   }
 
   return {
     program: 'cargo',
-    args: ['run', '--quiet', '--manifest-path', join(crateRoot, 'Cargo.toml'), '--', 'walk'],
+    args: ['run', '--quiet', '--manifest-path', join(crateRoot, 'Cargo.toml'), '--'],
     cwd: projectRoot,
   };
 }
@@ -123,6 +173,14 @@ function resolveRustIndexerCommand(): RustIndexerCommand {
 function resolveProjectRoot(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   return dirname(dirname(here));
+}
+
+function resolveRustIndexDatabase(cityPath: string): string {
+  const baseDir =
+    process.env.PORTOLAN_INDEX_DIR ?? join(homedir(), '.portolan', 'data', 'file-indexes');
+  mkdirSync(baseDir, { recursive: true });
+  const digest = createHash('sha256').update(cityPath).digest('hex').slice(0, 24);
+  return join(baseDir, `${digest}.sqlite`);
 }
 
 function parseEntries(value: unknown): RustIndexedFileEntry[] {

@@ -16,11 +16,12 @@
  *     The Files column reuses that protocol for lazy node-expansion;
  *     this HTTP endpoint is the search complement, not a tree replacement.
  *
- * Search strategy: build one short-lived candidate index per pinned local
- * city through the Rust `portolan-index` helper. Queries then fzy-rank the
- * cached candidates in process. This keeps Find's per-keystroke and
- * multi-window traffic from spawning ad-hoc shell walks in every tab while
- * preserving the same filename/path score model as `/global-search`.
+ * Search strategy: ask the Rust `portolan-index` helper for a persistent
+ * SQLite/FTS-backed candidate set per pinned local city. The TypeScript route
+ * keeps the HTTP wire contract and final fzy ranking, but the expensive
+ * filesystem walk and cross-process persistence now belong to the Rust
+ * substrate. Tests can still inject the older walk-shaped seam for focused
+ * cache behavior.
  *
  * Remote-origin file search is a follow-up: snapshot stores carry fiber
  * ids but not the underlying filesystem layout, and a per-keystroke SSH
@@ -33,7 +34,7 @@ import type { ServerResponse } from 'http';
 import { realpathSync, existsSync } from 'fs';
 import { join, basename } from 'path';
 import { score as fzyScore, hasMatch } from 'fzy.js';
-import { walkCityIndexWithRust } from './RustFileIndexer.js';
+import { searchCityIndexWithRust, walkCityIndexWithRust } from './RustFileIndexer.js';
 
 // ============================================================================
 // Wire types
@@ -96,6 +97,8 @@ interface HttpApiFilesSearchOptions {
   maxIndexedEntriesPerCity?: number;
   /** File-walk substrate. Defaults to the Rust `portolan-index` helper. */
   walkCityIndex?: CityIndexWalker;
+  /** Query substrate. Defaults to the Rust SQLite/FTS `portolan-index` helper. */
+  searchCityIndex?: CityIndexSearcher;
   /** Diagnostic label for the active substrate. */
   indexerKind?: string;
 }
@@ -117,6 +120,11 @@ interface CityFileIndex {
   timedOut: boolean;
   warnings: string[];
   indexerKind: string;
+  mode: 'candidate-cache' | 'persistent-search';
+  query?: string;
+  indexRefreshed?: boolean;
+  indexAgeMs?: number;
+  databasePath?: string;
 }
 
 export interface FileWalkEntry {
@@ -129,11 +137,23 @@ export interface FileWalkResult {
   timedOut: boolean;
   stderr: string;
   truncated: boolean;
+  indexRefreshed?: boolean;
+  indexAgeMs?: number;
+  databasePath?: string;
 }
 
 export type CityIndexWalker = (
   cityPath: string,
   maxEntries: number,
+  timeoutMs: number,
+) => Promise<FileWalkResult>;
+
+export type CityIndexSearcher = (
+  cityPath: string,
+  query: string,
+  limit: number,
+  maxEntries: number,
+  refreshTtlMs: number,
   timeoutMs: number,
 ) => Promise<FileWalkResult>;
 
@@ -143,6 +163,7 @@ export interface FilesSearchDiagnostics {
   cachedCities: number;
   inFlight: number;
   totalEntries: number;
+  mode: 'candidate-cache' | 'persistent-search';
   cities: Array<{
     cityId: string;
     cityName?: string;
@@ -156,6 +177,11 @@ export interface FilesSearchDiagnostics {
     timedOut: boolean;
     warnings: string[];
     indexerKind: string;
+    mode: 'candidate-cache' | 'persistent-search';
+    query?: string;
+    indexRefreshed?: boolean;
+    indexAgeMs?: number;
+    databasePath?: string;
   }>;
 }
 
@@ -168,6 +194,7 @@ export class HttpApiFilesSearch {
   private readonly indexTtlMs: number;
   private readonly maxIndexedEntriesPerCity: number;
   private readonly walkCityIndexImpl: CityIndexWalker;
+  private readonly searchCityIndexImpl: CityIndexSearcher | undefined;
   private readonly indexerKind: string;
   private readonly cityIndexes = new Map<string, CityFileIndex>();
   private readonly cityIndexInFlight = new Map<string, Promise<CityFileIndex>>();
@@ -181,7 +208,9 @@ export class HttpApiFilesSearch {
     this.indexTtlMs = opts.indexTtlMs ?? 30_000;
     this.maxIndexedEntriesPerCity = opts.maxIndexedEntriesPerCity ?? 20_000;
     this.walkCityIndexImpl = opts.walkCityIndex ?? walkCityIndexWithRust;
-    this.indexerKind = opts.indexerKind ?? 'rust';
+    this.searchCityIndexImpl =
+      opts.searchCityIndex ?? (opts.walkCityIndex ? undefined : searchCityIndexWithRust);
+    this.indexerKind = opts.indexerKind ?? (this.searchCityIndexImpl ? 'rust-sqlite' : 'rust');
   }
 
   /**
@@ -238,6 +267,10 @@ export class HttpApiFilesSearch {
       ? this.cities.filter((city) => city.id === cityId)
       : this.cities;
     if (cities.length === 0) return { hits: [], warnings: [] };
+
+    if (this.searchCityIndexImpl) {
+      return this.searchPersistent(q, limit, cities);
+    }
 
     const perCity = await mapSettledWithConcurrency(
       cities,
@@ -303,6 +336,11 @@ export class HttpApiFilesSearch {
       timedOut: entry.timedOut,
       warnings: entry.warnings,
       indexerKind: entry.indexerKind,
+      mode: entry.mode,
+      query: entry.query,
+      indexRefreshed: entry.indexRefreshed,
+      indexAgeMs: entry.indexAgeMs,
+      databasePath: entry.databasePath,
     }));
     return {
       ttlMs: this.indexTtlMs,
@@ -310,8 +348,102 @@ export class HttpApiFilesSearch {
       cachedCities: cities.length,
       inFlight: this.cityIndexInFlight.size,
       totalEntries: cities.reduce((sum, city) => sum + city.entries, 0),
+      mode: this.searchCityIndexImpl ? 'persistent-search' : 'candidate-cache',
       cities,
     };
+  }
+
+  private async searchPersistent(
+    q: string,
+    limit: number,
+    cities: Array<{ id: string; path: string; name?: string }>,
+  ): Promise<{ hits: GlobalFileHit[]; warnings: Array<{ cityId: string; message: string }> }> {
+    const candidateLimit = Math.min(
+      this.maxIndexedEntriesPerCity,
+      Math.max(limit * 8, Math.min(200, this.maxIndexedEntriesPerCity)),
+    );
+    const perCity = await mapSettledWithConcurrency(
+      cities,
+      Math.max(1, this.maxConcurrentCitySearches),
+      (city) => this.searchCity(city, q, candidateLimit),
+    );
+
+    const merged: GlobalFileHit[] = [];
+    const warnings: Array<{ cityId: string; message: string }> = [];
+
+    for (let i = 0; i < perCity.length; i++) {
+      const result = perCity[i];
+      const city = cities[i];
+      if (result.status === 'rejected') {
+        const message = (result.reason as { message?: string })?.message ?? String(result.reason);
+        warnings.push({ cityId: city.id, message });
+        continue;
+      }
+      for (const message of result.value.warnings) {
+        warnings.push({ cityId: city.id, message });
+      }
+      for (const hit of result.value.entries) {
+        if (hasMatch(q, hit.name) || hasMatch(q, hit.relativePath)) {
+          merged.push(hit);
+        }
+      }
+    }
+
+    const ranked = merged
+      .map((hit) => ({ hit, s: rerankScore(hit, q) }))
+      .filter((entry) => entry.s > 0)
+      .sort((a, b) => b.s - a.s);
+
+    const hits = ranked.slice(0, limit).map((entry) => ({
+      ...entry.hit,
+      score: entry.s,
+    }));
+
+    return { hits, warnings };
+  }
+
+  private async searchCity(
+    city: { id: string; path: string; name?: string },
+    q: string,
+    candidateLimit: number,
+  ): Promise<CityFileIndex> {
+    const key = citySearchKey(city, q, candidateLimit);
+    const inFlight = this.cityIndexInFlight.get(key);
+    if (inFlight) return inFlight;
+
+    const pending = this.buildPersistentCityIndex(city, q, candidateLimit).finally(() => {
+      if (this.cityIndexInFlight.get(key) === pending) {
+        this.cityIndexInFlight.delete(key);
+      }
+    });
+    this.cityIndexInFlight.set(key, pending);
+    return pending;
+  }
+
+  private async buildPersistentCityIndex(
+    city: { id: string; path: string; name?: string },
+    q: string,
+    candidateLimit: number,
+  ): Promise<CityFileIndex> {
+    const startedAt = Date.now();
+    const cityPath = realpathSync(city.path);
+    if (!existsSync(cityPath)) {
+      return this.recordPersistentCityIndex(city, cityPath, q, [], startedAt, {
+        entries: [],
+        truncated: false,
+        timedOut: false,
+        stderr: '',
+      });
+    }
+    const search = await this.searchCityIndexImpl!(
+      cityPath,
+      q,
+      candidateLimit,
+      this.maxIndexedEntriesPerCity + 1,
+      this.indexTtlMs,
+      this.perCityTimeoutMs,
+    );
+    return this.recordPersistentCityIndex(city, cityPath, q, search.entries, startedAt, search);
   }
 
   private async getCityIndex(city: { id: string; path: string; name?: string }): Promise<CityFileIndex> {
@@ -370,6 +502,7 @@ export class HttpApiFilesSearch {
         timedOut: false,
         warnings: [],
         indexerKind: this.indexerKind,
+        mode: 'candidate-cache',
       };
     }
 
@@ -429,7 +562,82 @@ export class HttpApiFilesSearch {
       timedOut: walk.timedOut,
       warnings,
       indexerKind: this.indexerKind,
+      mode: 'candidate-cache',
     };
+  }
+
+  private recordPersistentCityIndex(
+    city: { id: string; path: string; name?: string },
+    cityPath: string,
+    query: string,
+    walkEntries: FileWalkEntry[],
+    startedAt: number,
+    search: FileWalkResult,
+  ): CityFileIndex {
+    const seen = new Set<string>();
+    const entries: GlobalFileHit[] = [];
+
+    for (const entry of walkEntries) {
+      const rel = entry.relativePath.replace(/^\.\//, '');
+      if (!rel || rel === '.') continue;
+      const dedupeKey = `${entry.type}:${rel}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const name = basename(rel) || rel;
+      entries.push({
+        fullPath: join(cityPath, rel),
+        relativePath: rel,
+        name,
+        type: entry.type,
+        cityId: city.id,
+        cityName: city.name,
+        originId: 'local',
+        score: 0,
+      });
+    }
+
+    const warnings: string[] = [];
+    if (search.timedOut) {
+      const stderr = search.stderr.trim();
+      warnings.push(
+        stderr
+          ? `persistent index search timed out before returning entries: ${stderr.slice(0, 160)}`
+          : 'persistent index search timed out before returning entries',
+      );
+    }
+    if (search.truncated) {
+      warnings.push(`persistent index truncated at ${this.maxIndexedEntriesPerCity} entries`);
+    }
+
+    const builtAt = Date.now();
+    const priorRefreshCount = this.cityIndexes.get(cityIndexKey(city))?.refreshCount ?? 0;
+    const refreshCount =
+      search.indexRefreshed === false ? priorRefreshCount : priorRefreshCount + 1;
+    const expiresAt =
+      typeof search.indexAgeMs === 'number'
+        ? builtAt + Math.max(0, this.indexTtlMs - search.indexAgeMs)
+        : builtAt + this.indexTtlMs;
+    const entry: CityFileIndex = {
+      cityId: city.id,
+      cityName: city.name,
+      cityPath,
+      entries,
+      builtAt,
+      expiresAt,
+      durationMs: builtAt - startedAt,
+      refreshCount,
+      truncated: search.truncated,
+      timedOut: search.timedOut,
+      warnings,
+      indexerKind: this.indexerKind,
+      mode: 'persistent-search',
+      query,
+      indexRefreshed: search.indexRefreshed,
+      indexAgeMs: search.indexAgeMs,
+      databasePath: search.databasePath,
+    };
+    this.cityIndexes.set(cityIndexKey(city), entry);
+    return entry;
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {
@@ -494,4 +702,8 @@ function rerankScore(hit: GlobalFileHit, needle: string): number {
 
 function cityIndexKey(city: { id: string; path: string }): string {
   return `${city.id}\0${city.path}`;
+}
+
+function citySearchKey(city: { id: string; path: string }, query: string, limit: number): string {
+  return `${cityIndexKey(city)}\0${query}\0${limit}`;
 }
