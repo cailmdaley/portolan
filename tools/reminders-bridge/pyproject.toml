@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "portolan-reminders-bridge"
+version = "0.1.0"
+description = "Mirror open felt fibers into Apple Reminders"
+requires-python = ">=3.9"
+dependencies = [
+  "pyobjc-framework-EventKit>=11.0; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+portolan-reminders-bridge = "reminders_bridge.sync:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reminders_bridge"]
