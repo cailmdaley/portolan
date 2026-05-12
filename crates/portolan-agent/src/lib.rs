@@ -1,11 +1,12 @@
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentFrame, AgentRequestPayload, AgentResultPayload,
-    FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDumpPayload,
-    FiberTreeFile,
+    FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
+    FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     env,
     ffi::OsString,
     fs,
@@ -175,6 +176,19 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         _ => Vec::new(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FiberTreeFileOp {
+    Upsert,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiberTreeFileEvent {
+    pub felt_host: String,
+    pub path: String,
+    pub op: FiberTreeFileOp,
 }
 
 fn unsupported_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
@@ -351,6 +365,68 @@ fn build_fiber_tree_dumps(felt_hosts: &[String]) -> Vec<AgentFrame> {
     frames
 }
 
+pub fn collect_fiber_tree_delta_frame(
+    felt_host: &str,
+    pending: &BTreeMap<String, FiberTreeFileOp>,
+) -> Option<AgentFrame> {
+    collect_fiber_tree_delta_frame_with_snapshot(felt_host, pending, read_felt_fiber_json)
+}
+
+fn collect_fiber_tree_delta_frame_with_snapshot(
+    felt_host: &str,
+    pending: &BTreeMap<String, FiberTreeFileOp>,
+    read_snapshot: impl Fn(&str, &str) -> Result<Value, String>,
+) -> Option<AgentFrame> {
+    let normalized_host = normalize_felt_host(felt_host);
+    let felt_dir = Path::new(&normalized_host).join(".felt");
+    let mut deltas = Vec::new();
+
+    for (path, op) in pending {
+        match op {
+            FiberTreeFileOp::Delete => deltas.push(FiberTreeDelta {
+                path: path.clone(),
+                op: FiberTreeDeltaOp::Delete,
+                fiber: None,
+                content: None,
+            }),
+            FiberTreeFileOp::Upsert => {
+                let full_path = felt_dir.join(path);
+                if !full_path.exists() {
+                    deltas.push(FiberTreeDelta {
+                        path: path.clone(),
+                        op: FiberTreeDeltaOp::Delete,
+                        fiber: None,
+                        content: None,
+                    });
+                    continue;
+                }
+                let Some(fiber_id) = fiber_id_from_path(path) else {
+                    continue;
+                };
+                if let Ok(fiber) = read_snapshot(&normalized_host, &fiber_id) {
+                    deltas.push(FiberTreeDelta {
+                        path: path.clone(),
+                        op: FiberTreeDeltaOp::Upsert,
+                        fiber: Some(fiber),
+                        content: None,
+                    });
+                }
+            }
+        }
+    }
+
+    if deltas.is_empty() {
+        None
+    } else {
+        Some(AgentFrame::FiberTreeDelta {
+            payload: FiberTreeDeltaPayload {
+                felt_host: Some(normalized_host),
+                deltas,
+            },
+        })
+    }
+}
+
 fn collect_fiber_tree_files(felt_host: &Path) -> Result<Vec<FiberTreeFile>, String> {
     let felt_dir = felt_host.join(".felt");
     if !felt_dir.is_dir() {
@@ -429,6 +505,10 @@ fn normalize_host_path(path: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     }
+}
+
+pub fn normalize_felt_host(path: &str) -> String {
+    normalize_host_path(path).display().to_string()
 }
 
 fn default_felt_host() -> String {
@@ -612,6 +692,69 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn builds_fiber_tree_delta_batch_for_watched_changes() {
+        let dir = temp_host("fiber-delta");
+        let fiber_dir = dir.join(".felt/portolan/native");
+        fs::create_dir_all(&fiber_dir).unwrap();
+        fs::write(
+            fiber_dir.join("native.md"),
+            "---\nname: Native\nstatus: active\n---\n\nBody\n",
+        )
+        .unwrap();
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            "portolan/native/native.md".to_string(),
+            FiberTreeFileOp::Upsert,
+        );
+        pending.insert("portolan/old/old.md".to_string(), FiberTreeFileOp::Delete);
+
+        let frame = collect_fiber_tree_delta_frame_with_snapshot(
+            &dir.display().to_string(),
+            &pending,
+            |_, fiber_id| Ok(json!({ "id": fiber_id, "name": "Native" })),
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let AgentFrame::FiberTreeDelta { payload } = frame else {
+            panic!("expected delta");
+        };
+        assert_eq!(payload.felt_host.as_deref(), Some(dir.to_str().unwrap()));
+        assert_eq!(payload.deltas.len(), 2);
+        assert_eq!(payload.deltas[0].op, FiberTreeDeltaOp::Upsert);
+        assert_eq!(
+            payload.deltas[0].fiber.as_ref().unwrap()["id"],
+            json!("portolan/native")
+        );
+        assert_eq!(payload.deltas[1].op, FiberTreeDeltaOp::Delete);
+    }
+
+    #[test]
+    fn converts_missing_upsert_to_delete_delta() {
+        let dir = temp_host("fiber-delta-missing");
+        fs::create_dir_all(dir.join(".felt/portolan/native")).unwrap();
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            "portolan/native/native.md".to_string(),
+            FiberTreeFileOp::Upsert,
+        );
+
+        let frame = collect_fiber_tree_delta_frame_with_snapshot(
+            &dir.display().to_string(),
+            &pending,
+            |_, _| panic!("missing file should not be snapshotted"),
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let AgentFrame::FiberTreeDelta { payload } = frame else {
+            panic!("expected delta");
+        };
+        assert_eq!(payload.deltas.len(), 1);
+        assert_eq!(payload.deltas[0].op, FiberTreeDeltaOp::Delete);
     }
 
     #[test]
