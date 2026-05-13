@@ -1,6 +1,6 @@
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
-    FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
+    AgentSession, FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
     FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
 };
 use serde_json::{json, Value};
@@ -170,16 +170,77 @@ pub struct AgentConfig {
     pub once: bool,
 }
 
-pub fn format_status_report(sessions: &[portolan_agent_protocol::AgentSession]) -> String {
-    if sessions.is_empty() {
-        return "No Claude/Codex/Pi sessions found".to_string();
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentStatusSnapshot {
+    pub sessions: Vec<AgentSession>,
+    pub default_felt_host: String,
+    pub default_felt_dir_exists: bool,
+    pub events_file: PathBuf,
+    pub events_file_exists: bool,
+    pub active_city_felt_hosts: Vec<String>,
+}
+
+pub fn collect_agent_status_snapshot() -> AgentStatusSnapshot {
+    let sessions = collect_agent_sessions();
+    let default_felt_host = default_felt_host();
+    let active_city_felt_hosts =
+        active_city_felt_hosts_with_probe(&sessions, Path::new(&default_felt_host), |felt_dir| {
+            felt_dir.is_dir()
+        });
+    AgentStatusSnapshot {
+        sessions,
+        default_felt_dir_exists: Path::new(&default_felt_host).join(".felt").is_dir(),
+        default_felt_host,
+        events_file: events_file_path(),
+        events_file_exists: events_file_path().is_file(),
+        active_city_felt_hosts,
+    }
+}
+
+pub fn format_status_report(snapshot: &AgentStatusSnapshot) -> String {
+    let mut lines = Vec::new();
+    lines.push("Rust portolan-agent status:".to_string());
+    lines.push(format!(
+        "  felt host: {} ({})",
+        snapshot.default_felt_host,
+        if snapshot.default_felt_dir_exists {
+            ".felt ok"
+        } else {
+            ".felt missing"
+        }
+    ));
+    lines.push(format!(
+        "  events file: {} ({})",
+        snapshot.events_file.display(),
+        if snapshot.events_file_exists {
+            "present"
+        } else {
+            "missing"
+        }
+    ));
+    if snapshot.active_city_felt_hosts.is_empty() {
+        lines.push("  active city felt hosts: none".to_string());
+    } else {
+        lines.push(format!(
+            "  active city felt hosts: {}",
+            snapshot.active_city_felt_hosts.len()
+        ));
+        for host in &snapshot.active_city_felt_hosts {
+            lines.push(format!("    {host}"));
+        }
+    }
+    lines.push(String::new());
+
+    if snapshot.sessions.is_empty() {
+        lines.push("No Claude/Codex/Pi sessions found".to_string());
+        return lines.join("\n");
     }
 
-    let mut lines = vec![format!(
+    lines.push(format!(
         "Found {} Claude/Codex/Pi session(s):",
-        sessions.len()
-    )];
-    for session in sessions {
+        snapshot.sessions.len()
+    ));
+    for session in &snapshot.sessions {
         lines.push(String::new());
         lines.push(format!("  {}", session.tmux_session));
         lines.push(format!("    cwd: {}", session.cwd));
@@ -225,6 +286,18 @@ pub fn format_status_report(sessions: &[portolan_agent_protocol::AgentSession]) 
     }
 
     lines.join("\n")
+}
+
+pub fn events_file_path() -> PathBuf {
+    if let Ok(path) = env::var("PORTOLAN_EVENTS_FILE") {
+        return PathBuf::from(path);
+    }
+
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    Path::new(&home)
+        .join(".portolan")
+        .join("data")
+        .join("events.jsonl")
 }
 
 pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<AgentCommand, String> {
@@ -397,13 +470,13 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
     }
 }
 
-pub fn collect_agent_sessions() -> Vec<portolan_agent_protocol::AgentSession> {
+pub fn collect_agent_sessions() -> Vec<AgentSession> {
     collect_agent_sessions_with_runner(run_command_for_discovery)
 }
 
 fn collect_agent_sessions_with_runner(
     mut run_command: impl FnMut(&str, &[&str]) -> Result<String, String>,
-) -> Vec<portolan_agent_protocol::AgentSession> {
+) -> Vec<AgentSession> {
     let output = match run_command(
         "tmux",
         &[
@@ -430,7 +503,7 @@ fn collect_agent_sessions_with_runner(
         let has_claims = detect_claims_in_cwd(&cwd);
         let has_playgrounds = detect_playgrounds_in_cwd(&cwd);
         let git_status = collect_git_status_for_cwd(&cwd, &mut run_command);
-        sessions.push(portolan_agent_protocol::AgentSession {
+        sessions.push(AgentSession {
             id: None,
             name: pane.tmux_session.clone(),
             tmux_session: pane.tmux_session,
@@ -442,6 +515,37 @@ fn collect_agent_sessions_with_runner(
         });
     }
     sessions
+}
+
+pub fn active_city_felt_hosts(sessions: &[AgentSession], default_felt_host: &Path) -> Vec<String> {
+    active_city_felt_hosts_with_probe(sessions, default_felt_host, |felt_dir| felt_dir.is_dir())
+}
+
+pub fn active_city_felt_hosts_with_probe<F>(
+    sessions: &[AgentSession],
+    default_felt_host: &Path,
+    felt_dir_exists: F,
+) -> Vec<String>
+where
+    F: Fn(&Path) -> bool,
+{
+    let default_host = normalize_felt_host(&default_felt_host.to_string_lossy());
+    let mut hosts = Vec::new();
+    let mut seen = BTreeMap::<String, ()>::new();
+    for session in sessions {
+        if session.cwd.is_empty() {
+            continue;
+        }
+        let host = normalize_felt_host(&session.cwd);
+        if host == default_host || !felt_dir_exists(&Path::new(&host).join(".felt")) {
+            continue;
+        }
+        if !seen.contains_key(&host) {
+            seen.insert(host.clone(), ());
+            hosts.push(host);
+        }
+    }
+    hosts
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1795,35 +1899,47 @@ malformed
 
     #[test]
     fn formats_status_report_from_discovered_sessions() {
-        let report = format_status_report(&[
-            portolan_agent_protocol::AgentSession {
-                id: None,
-                name: "review".to_string(),
-                tmux_session: "review".to_string(),
-                cwd: "/remote/review".to_string(),
-                status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
-                has_claims: Some(true),
-                has_playgrounds: Some(false),
-                git_status: Some(json!({
-                    "branch": "main",
-                    "dirty": true,
-                    "totalFiles": 3,
-                    "ahead": 1,
-                    "behind": 2
-                })),
-            },
-            portolan_agent_protocol::AgentSession {
-                id: None,
-                name: "scratch".to_string(),
-                tmux_session: "scratch".to_string(),
-                cwd: "/tmp/scratch".to_string(),
-                status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
-                has_claims: Some(false),
-                has_playgrounds: Some(false),
-                git_status: None,
-            },
-        ]);
+        let report = format_status_report(&AgentStatusSnapshot {
+            sessions: vec![
+                portolan_agent_protocol::AgentSession {
+                    id: None,
+                    name: "review".to_string(),
+                    tmux_session: "review".to_string(),
+                    cwd: "/remote/review".to_string(),
+                    status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
+                    has_claims: Some(true),
+                    has_playgrounds: Some(false),
+                    git_status: Some(json!({
+                        "branch": "main",
+                        "dirty": true,
+                        "totalFiles": 3,
+                        "ahead": 1,
+                        "behind": 2
+                    })),
+                },
+                portolan_agent_protocol::AgentSession {
+                    id: None,
+                    name: "scratch".to_string(),
+                    tmux_session: "scratch".to_string(),
+                    cwd: "/tmp/scratch".to_string(),
+                    status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
+                    has_claims: Some(false),
+                    has_playgrounds: Some(false),
+                    git_status: None,
+                },
+            ],
+            default_felt_host: "/Users/cail/loom".to_string(),
+            default_felt_dir_exists: true,
+            events_file: PathBuf::from("/Users/cail/.portolan/data/events.jsonl"),
+            events_file_exists: false,
+            active_city_felt_hosts: vec!["/remote/review".to_string()],
+        });
 
+        assert!(report.contains("Rust portolan-agent status:"));
+        assert!(report.contains("felt host: /Users/cail/loom (.felt ok)"));
+        assert!(report.contains("events file: /Users/cail/.portolan/data/events.jsonl (missing)"));
+        assert!(report.contains("active city felt hosts: 1"));
+        assert!(report.contains("    /remote/review"));
         assert!(report.contains("Found 2 Claude/Codex/Pi session(s):"));
         assert!(report.contains("  review\n    cwd: /remote/review"));
         assert!(report.contains("    git: main dirty(3) ahead(1) behind(2)"));
@@ -1832,10 +1948,18 @@ malformed
 
     #[test]
     fn formats_empty_status_report() {
-        assert_eq!(
-            format_status_report(&[]),
-            "No Claude/Codex/Pi sessions found"
-        );
+        let report = format_status_report(&AgentStatusSnapshot {
+            sessions: vec![],
+            default_felt_host: "/Users/cail/loom".to_string(),
+            default_felt_dir_exists: false,
+            events_file: PathBuf::from("/tmp/events.jsonl"),
+            events_file_exists: false,
+            active_city_felt_hosts: vec![],
+        });
+
+        assert!(report.contains("felt host: /Users/cail/loom (.felt missing)"));
+        assert!(report.contains("active city felt hosts: none"));
+        assert!(report.ends_with("No Claude/Codex/Pi sessions found"));
     }
 
     #[test]

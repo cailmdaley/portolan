@@ -1,9 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
-    build_agent_url, collect_agent_sessions, collect_fiber_tree_delta_frame, format_status_report,
-    handle_server_frame, normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args,
-    AgentCommand, AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
+    active_city_felt_hosts, build_agent_url, collect_agent_sessions, collect_agent_status_snapshot,
+    collect_fiber_tree_delta_frame, events_file_path, format_status_report, handle_server_frame,
+    normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args, AgentCommand,
+    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
 };
 use portolan_agent_protocol::{
     AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
@@ -36,7 +37,7 @@ async fn main() {
     match command {
         AgentCommand::Connect(config) => run_connect_loop(config).await,
         AgentCommand::Status => {
-            println!("{}", format_status_report(&collect_agent_sessions()));
+            println!("{}", format_status_report(&collect_agent_status_snapshot()));
         }
     }
 }
@@ -142,18 +143,6 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
             }
         }
     }
-}
-
-fn events_file_path() -> PathBuf {
-    if let Ok(path) = env::var("PORTOLAN_EVENTS_FILE") {
-        return PathBuf::from(path);
-    }
-
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Path::new(&home)
-        .join(".portolan")
-        .join("data")
-        .join("events.jsonl")
 }
 
 fn initial_file_position(events_file: &Path) -> usize {
@@ -321,10 +310,7 @@ where
     W: futures_util::Sink<Message> + Unpin,
     <W as futures_util::Sink<Message>>::Error: std::fmt::Display,
 {
-    let active_hosts =
-        active_city_felt_hosts_with_probe(sessions, &default_felt_host_path(), |felt_dir| {
-            felt_dir.is_dir()
-        });
+    let active_hosts = active_city_felt_hosts(sessions, &default_felt_host_path());
     let active_host_set = active_hosts.iter().cloned().collect::<HashSet<_>>();
     sent_hosts.retain(|host| active_host_set.contains(host));
 
@@ -343,32 +329,6 @@ where
         send_responses(write, handle_server_frame(&frame)).await?;
     }
     Ok(())
-}
-
-fn active_city_felt_hosts_with_probe<F>(
-    sessions: &[AgentSession],
-    default_felt_host: &Path,
-    felt_dir_exists: F,
-) -> Vec<String>
-where
-    F: Fn(&Path) -> bool,
-{
-    let default_host = normalize_felt_host(&default_felt_host.to_string_lossy());
-    let mut hosts = Vec::new();
-    let mut seen = HashSet::new();
-    for session in sessions {
-        if session.cwd.is_empty() {
-            continue;
-        }
-        let host = normalize_felt_host(&session.cwd);
-        if host == default_host || !felt_dir_exists(&Path::new(&host).join(".felt")) {
-            continue;
-        }
-        if seen.insert(host.clone()) {
-            hosts.push(host);
-        }
-    }
-    hosts
 }
 
 fn default_felt_host_path() -> PathBuf {
@@ -707,9 +667,11 @@ mod tests {
             session(""),
         ];
 
-        let hosts = active_city_felt_hosts_with_probe(&sessions, default_host, |felt_dir| {
-            felt_dir == Path::new("/work/project-a/.felt")
-        });
+        let hosts = portolan_agent::active_city_felt_hosts_with_probe(
+            &sessions,
+            default_host,
+            |felt_dir| felt_dir == Path::new("/work/project-a/.felt"),
+        );
 
         assert_eq!(hosts, vec!["/work/project-a"]);
     }
@@ -720,9 +682,11 @@ mod tests {
         let sessions = vec![session("./relative-city")];
         let normalized = normalize_felt_host("./relative-city");
 
-        let hosts = active_city_felt_hosts_with_probe(&sessions, default_host, |felt_dir| {
-            felt_dir == Path::new(&normalized).join(".felt")
-        });
+        let hosts = portolan_agent::active_city_felt_hosts_with_probe(
+            &sessions,
+            default_host,
+            |felt_dir| felt_dir == Path::new(&normalized).join(".felt"),
+        );
 
         assert_eq!(hosts, vec![normalized]);
     }
