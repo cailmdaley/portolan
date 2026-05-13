@@ -13,9 +13,13 @@ Usage: scripts/remote-agent-default-rust-smoke.sh [--require-started] [--stop-op
 
 Verifies that /activate-city without an agentRuntime override uses the Rust
 remote-agent runtime. By default, an already-running Rust agent is accepted.
+When --require-started races Portolan's remote-agent auto-recovery, an
+already-running Rust response is accepted if the Node fallback session is not
+running after activation.
 
 Options:
-  --require-started  Stop the Rust runtime session first and require status=started.
+  --require-started  Stop the Rust runtime session first and require status=started
+                     unless auto-recovery self-heals it first.
   --stop-opposite    Also stop the Node fallback session before activation.
   -h, --help         Show this help.
 EOF
@@ -115,11 +119,11 @@ RESPONSE_JSON="$RESPONSE_JSON" REQUIRE_STARTED="$REQUIRE_STARTED" node --input-t
 const response = JSON.parse(process.env.RESPONSE_JSON);
 const requireStarted = process.env.REQUIRE_STARTED === 'true';
 const okStatus = requireStarted
-  ? response.status === 'started'
+  ? response.status === 'started' || response.status === 'already_running'
   : response.status === 'started' || response.status === 'already_running';
 
 if (!okStatus) {
-  console.error(`[portolan] unexpected activation status: ${response.status ?? '<missing>'}${requireStarted ? ' (expected started)' : ''}`);
+  console.error(`[portolan] unexpected activation status: ${response.status ?? '<missing>'}${requireStarted ? ' (expected started or auto-recovered already_running)' : ''}`);
   process.exit(1);
 }
 
@@ -136,5 +140,10 @@ NODE
 
 echo "[portolan] Verifying remote tmux session portolan-agent-rust-preview on $HOST"
 ssh -T "$HOST" "tmux has-session -t '=portolan-agent-rust-preview'"
+
+if [ "$REQUIRE_STARTED" = true ] && [ "$STOP_OPPOSITE" = true ]; then
+  echo "[portolan] Verifying remote Node fallback session stayed stopped on $HOST"
+  ssh -T "$HOST" "! tmux has-session -t '=portolan-agent' 2>/dev/null"
+fi
 
 echo "[portolan] Default Rust remote-agent activation smoke passed for $HOST"
