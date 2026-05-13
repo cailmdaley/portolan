@@ -29,6 +29,7 @@ const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const CLI_DISCOVERY_DEPTH: usize = 4;
 const AGENT_SESSION_NAMES: &[&str] = &["portolan-agent", "portolan-agent-rust-preview"];
 const DEFAULT_SEARCH_LIMIT: usize = 50;
+pub const RUST_AGENT_READY_PREFIX: &str = "[portolan-agent-rust] READY runtime=rust";
 
 const SEARCH_SKIP_DIR_NAMES: &[&str] =
     &[".git", ".felt", "node_modules", "__pycache__", ".DS_Store"];
@@ -297,6 +298,10 @@ pub fn format_status_report(snapshot: &AgentStatusSnapshot) -> String {
     }
 
     lines.join("\n")
+}
+
+pub fn rust_agent_ready_marker(runtime_origin: &str, backend_origin_id: &str) -> String {
+    format!("{RUST_AGENT_READY_PREFIX} origin={runtime_origin} origin_id={backend_origin_id}")
 }
 
 pub fn events_file_path() -> PathBuf {
@@ -3726,6 +3731,14 @@ malformed
         });
 
         assert_eq!(responses, vec![]);
+    }
+
+    #[test]
+    fn builds_stable_rust_agent_ready_marker() {
+        assert_eq!(
+            rust_agent_ready_marker("remote-candide", "remote-candide"),
+            "[portolan-agent-rust] READY runtime=rust origin=remote-candide origin_id=remote-candide"
+        );
     }
 
     #[test]

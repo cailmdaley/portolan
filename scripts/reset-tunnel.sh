@@ -164,15 +164,22 @@ wait_for_agent_connect() {
   local attempt
   local session_log=""
   local connected=false
-  local marker_pattern
-
-  marker_pattern="Connected|registered as|agentRuntime=${runtime}"
+  local marker_pattern="[portolan-agent-rust] READY runtime=rust"
+  local legacy_pattern="Connected|registered as|agentRuntime=${runtime}"
 
   echo "[$host] Runtime command: $command"
   echo "[$host] Verifying session '$session'..."
   for attempt in $(seq 1 10); do
     session_log="$(ssh "$host" "tmux capture-pane -t $(shell_quote_word "$session") -p" 2>/dev/null || true)"
-    if echo "$session_log" | grep -Eq "$marker_pattern"; then
+    if [ "$runtime" = "rust" ] && echo "$session_log" | grep -Fq "$marker_pattern"; then
+      connected=true
+      break
+    fi
+    if [ "$runtime" = "rust" ] && echo "$session_log" | grep -Eq "$legacy_pattern"; then
+      connected=true
+      break
+    fi
+    if [ "$runtime" != "rust" ] && echo "$session_log" | grep -Eq "$legacy_pattern"; then
       connected=true
       break
     fi

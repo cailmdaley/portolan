@@ -4,8 +4,8 @@ use portolan_agent::{
     active_city_felt_hosts, build_agent_url, collect_agent_sessions, collect_agent_status_snapshot,
     collect_fiber_tree_delta_frame, collect_shuttle_snapshot_frame, events_file_path,
     format_status_report, handle_server_frame, normalize_felt_host,
-    parse_activity_frames_from_events_jsonl, parse_args, AgentCommand, AgentConfig,
-    FiberTreeFileEvent, FiberTreeFileOp,
+    parse_activity_frames_from_events_jsonl, parse_args, rust_agent_ready_marker, AgentCommand,
+    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
 };
 use portolan_agent_protocol::{
     AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
@@ -152,8 +152,24 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
                 let Some(message) = maybe_message else { return Ok(ConnectExit::Disconnected); };
                 let message = message.map_err(|error| format!("websocket read failed: {error}"))?;
                 match message {
-                    Message::Text(text) => handle_text_frame(&mut write, &mut fiber_watchers, text).await?,
-                    Message::Binary(bytes) => handle_binary_frame(&mut write, &mut fiber_watchers, bytes).await?,
+                    Message::Text(text) => {
+                        handle_text_frame(
+                            &mut write,
+                            &mut fiber_watchers,
+                            &config.origin,
+                            text,
+                        )
+                        .await?
+                    }
+                    Message::Binary(bytes) => {
+                        handle_binary_frame(
+                            &mut write,
+                            &mut fiber_watchers,
+                            &config.origin,
+                            bytes,
+                        )
+                        .await?
+                    }
                     Message::Close(_) => return Ok(ConnectExit::Disconnected),
                     Message::Ping(bytes) => write.send(Message::Pong(bytes)).await.map_err(|error| format!("send pong failed: {error}"))?,
                     Message::Pong(_) | Message::Frame(_) => {}
@@ -247,6 +263,7 @@ fn poll_events_file(
 async fn handle_text_frame<W>(
     write: &mut W,
     fiber_watchers: &mut FiberTreeWatcherSet,
+    runtime_origin: &str,
     text: String,
 ) -> Result<(), String>
 where
@@ -255,6 +272,7 @@ where
 {
     let frame = AgentFrame::parse(text.as_bytes())
         .map_err(|error| format!("parse server frame failed: {error}"))?;
+    log_ready_marker(runtime_origin, &frame);
     watch_requested_fiber_hosts(fiber_watchers, &frame);
     send_responses(write, handle_server_frame(&frame)).await
 }
@@ -262,6 +280,7 @@ where
 async fn handle_binary_frame<W>(
     write: &mut W,
     fiber_watchers: &mut FiberTreeWatcherSet,
+    runtime_origin: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String>
 where
@@ -270,8 +289,18 @@ where
 {
     let frame =
         AgentFrame::parse(bytes).map_err(|error| format!("parse server frame failed: {error}"))?;
+    log_ready_marker(runtime_origin, &frame);
     watch_requested_fiber_hosts(fiber_watchers, &frame);
     send_responses(write, handle_server_frame(&frame)).await
+}
+
+fn log_ready_marker(runtime_origin: &str, frame: &AgentFrame) {
+    if let AgentFrame::Connected { payload } = frame {
+        eprintln!(
+            "{}",
+            rust_agent_ready_marker(runtime_origin, &payload.origin_id)
+        );
+    }
 }
 
 fn watch_requested_fiber_hosts(fiber_watchers: &mut FiberTreeWatcherSet, frame: &AgentFrame) {
