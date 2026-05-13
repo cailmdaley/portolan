@@ -55,6 +55,14 @@ pub enum AgentFrame {
     TerminalCaptureResult {
         payload: TerminalCaptureResultPayload,
     },
+    #[serde(rename = "terminal-subscribe")]
+    TerminalSubscribe { payload: TerminalSubscribePayload },
+    #[serde(rename = "terminal-unsubscribe")]
+    TerminalUnsubscribe { payload: TerminalUnsubscribePayload },
+    #[serde(rename = "terminal-bytes")]
+    TerminalBytes { payload: TerminalBytesPayload },
+    #[serde(rename = "terminal-exit")]
+    TerminalExit { payload: TerminalExitPayload },
     #[serde(rename = "shuttle_snapshot")]
     ShuttleSnapshot { payload: ShuttleSnapshotPayload },
 }
@@ -101,6 +109,8 @@ impl AgentFrame {
                 | AgentFrame::ProjectFile { .. }
                 | AgentFrame::ListDirectory { .. }
                 | AgentFrame::TerminalCapture { .. }
+                | AgentFrame::TerminalSubscribe { .. }
+                | AgentFrame::TerminalUnsubscribe { .. }
         )
     }
 
@@ -115,6 +125,8 @@ impl AgentFrame {
                 | AgentFrame::ProjectFileResult { .. }
                 | AgentFrame::ListDirectoryResult { .. }
                 | AgentFrame::TerminalCaptureResult { .. }
+                | AgentFrame::TerminalBytes { .. }
+                | AgentFrame::TerminalExit { .. }
         )
     }
 }
@@ -464,6 +476,34 @@ pub struct TerminalCaptureResultPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSubscribePayload {
+    pub subscription_id: String,
+    pub tmux_session: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalUnsubscribePayload {
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalBytesPayload {
+    pub subscription_id: String,
+    pub bytes_base64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExitPayload {
+    pub subscription_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShuttleSnapshotPayload {
     #[serde(flatten)]
     pub fields: BTreeMap<String, Value>,
@@ -794,6 +834,57 @@ mod tests {
                 assert_eq!(payload.rows, Some(40));
             }
             _ => panic!("unexpected response: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_terminal_subscription_frames() {
+        let subscribe = AgentFrame::parse(
+            br##"{
+              "type": "terminal-subscribe",
+              "payload": {
+                "subscriptionId": "sub-1",
+                "tmuxSession": "worker"
+              }
+            }"##,
+        )
+        .unwrap();
+        assert!(subscribe.is_server_request());
+        match subscribe {
+            AgentFrame::TerminalSubscribe { payload } => {
+                assert_eq!(payload.subscription_id, "sub-1");
+                assert_eq!(payload.tmux_session, "worker");
+            }
+            _ => panic!("unexpected frame: {subscribe:?}"),
+        }
+
+        let bytes = AgentFrame::TerminalBytes {
+            payload: TerminalBytesPayload {
+                subscription_id: "sub-1".to_string(),
+                bytes_base64: "aGk=".to_string(),
+            },
+        };
+        let encoded = bytes.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"terminal-bytes""#));
+        assert!(encoded.contains(r#""subscriptionId":"sub-1""#));
+
+        let exit = AgentFrame::parse(
+            br##"{
+              "type": "terminal-exit",
+              "payload": {
+                "subscriptionId": "sub-1",
+                "reason": "code 0"
+              }
+            }"##,
+        )
+        .unwrap();
+        assert!(exit.is_agent_result());
+        match exit {
+            AgentFrame::TerminalExit { payload } => {
+                assert_eq!(payload.subscription_id, "sub-1");
+                assert_eq!(payload.reason.as_deref(), Some("code 0"));
+            }
+            _ => panic!("unexpected frame: {exit:?}"),
         }
     }
 

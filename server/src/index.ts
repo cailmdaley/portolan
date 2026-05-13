@@ -7,7 +7,8 @@
  */
 
 import { createServer } from 'http';
-import { WebSocketServer } from 'ws';
+import { randomUUID } from 'crypto';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import { SessionTracker, Session } from './SessionTracker.js';
 import { CityManager, City } from './CityManager.js';
@@ -43,6 +44,10 @@ const PORT = process.env.VITEST ? 4099 : 4004;
 const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 const LOCAL_ORIGIN_ID = 'local';
 let remoteWorkingTimeoutIntervalHandle: NodeJS.Timeout | null = null;
+const remoteTerminalSubscriptions = new Map<WebSocket, Map<string, {
+  originId: string;
+  subscriptionId: string;
+}>>();
 
 function parseRemoteAgentRuntime(value: string | null): RemoteAgentRuntime {
   return value === 'rust' ? 'rust' : 'node';
@@ -406,6 +411,90 @@ function resolveTerminalSession(sessionId: string): Session | null {
   return sessionLookup.findSession(sessionId) ?? null;
 }
 
+function sendAgentFrame(originId: string, frame: Record<string, unknown>): boolean {
+  const origin = originManager.getOrigin(originId);
+  const agentSocket = origin ? [...origin.agentSockets].find(s => s.readyState === WebSocket.OPEN) : undefined;
+  if (!agentSocket) return false;
+  agentSocket.send(JSON.stringify(frame));
+  return true;
+}
+
+function registerRemoteTerminalSubscription(
+  ws: WebSocket,
+  sessionId: string,
+  originId: string,
+  tmuxSession: string,
+): string | null {
+  const subscriptionId = randomUUID();
+  if (!sendAgentFrame(originId, {
+    type: 'terminal-subscribe',
+    payload: { subscriptionId, tmuxSession },
+  })) {
+    return null;
+  }
+  let perClient = remoteTerminalSubscriptions.get(ws);
+  if (!perClient) {
+    perClient = new Map();
+    remoteTerminalSubscriptions.set(ws, perClient);
+  }
+  const previous = perClient.get(sessionId);
+  if (previous) {
+    sendAgentFrame(previous.originId, {
+      type: 'terminal-unsubscribe',
+      payload: { subscriptionId: previous.subscriptionId },
+    });
+  }
+  perClient.set(sessionId, { originId, subscriptionId });
+  return subscriptionId;
+}
+
+function detachRemoteTerminal(ws: WebSocket, sessionId: string): void {
+  const perClient = remoteTerminalSubscriptions.get(ws);
+  const entry = perClient?.get(sessionId);
+  if (!entry) return;
+  sendAgentFrame(entry.originId, {
+    type: 'terminal-unsubscribe',
+    payload: { subscriptionId: entry.subscriptionId },
+  });
+  perClient!.delete(sessionId);
+  if (perClient!.size === 0) remoteTerminalSubscriptions.delete(ws);
+}
+
+function detachAllRemoteTerminals(ws: WebSocket): void {
+  const perClient = remoteTerminalSubscriptions.get(ws);
+  if (!perClient) return;
+  for (const entry of perClient.values()) {
+    sendAgentFrame(entry.originId, {
+      type: 'terminal-unsubscribe',
+      payload: { subscriptionId: entry.subscriptionId },
+    });
+  }
+  remoteTerminalSubscriptions.delete(ws);
+}
+
+function routeRemoteTerminalBytes(originId: string, subscriptionId: string, bytesBase64: string): void {
+  for (const [ws, perClient] of remoteTerminalSubscriptions) {
+    for (const [sessionId, entry] of perClient) {
+      if (entry.originId !== originId || entry.subscriptionId !== subscriptionId) continue;
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      ws.send(JSON.stringify({ type: 'terminal:bytes', sessionId, bytes: bytesBase64 }));
+    }
+  }
+}
+
+function routeRemoteTerminalExit(originId: string, subscriptionId: string, reason?: string): void {
+  for (const [ws, perClient] of remoteTerminalSubscriptions) {
+    for (const [sessionId, entry] of [...perClient]) {
+      if (entry.originId !== originId || entry.subscriptionId !== subscriptionId) continue;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'terminal:exit', sessionId, reason }));
+      }
+      perClient.delete(sessionId);
+    }
+    if (perClient.size === 0) remoteTerminalSubscriptions.delete(ws);
+  }
+}
+
 const messageRouter = new MessageRouter({
   onFocus: (sessionId) => kitty.focusSession(sessionId),
   onGetFibers: browserStateCoordinator.handleGetFibers.bind(browserStateCoordinator),
@@ -431,6 +520,15 @@ const messageRouter = new MessageRouter({
     }
     const tmuxSession = session.tmuxSession;
     if (session.originId !== LOCAL_ORIGIN_ID) {
+      const subscriptionId = registerRemoteTerminalSubscription(ws, sessionId, session.originId, tmuxSession);
+      if (!subscriptionId) {
+        ws.send(JSON.stringify({
+          type: 'terminal:error',
+          sessionId,
+          error: `origin ${session.originId} has no connected agent`,
+        }));
+        return;
+      }
       agentRequestCoordinator.send<{
         bytesBase64?: string;
         cols?: number;
@@ -446,11 +544,6 @@ const messageRouter = new MessageRouter({
           bytes: result.bytesBase64 ?? '',
           ...(result.cols ? { cols: result.cols } : {}),
           ...(result.rows ? { rows: result.rows } : {}),
-        }));
-        ws.send(JSON.stringify({
-          type: 'terminal:exit',
-          sessionId,
-          reason: 'remote-live-stream-unavailable',
         }));
       }).catch((err) => {
         if (ws.readyState !== ws.OPEN) return;
@@ -510,9 +603,13 @@ const messageRouter = new MessageRouter({
     });
   },
   onTerminalDetach: (ws, sessionId) => {
-    const tmuxSession = resolveLocalTmuxSession(sessionId);
-    if (!tmuxSession) return;
-    terminalStreamManager.detach(tmuxSession, ws);
+    const session = resolveTerminalSession(sessionId);
+    if (!session) return;
+    if (session.originId !== LOCAL_ORIGIN_ID) {
+      detachRemoteTerminal(ws, sessionId);
+      return;
+    }
+    terminalStreamManager.detach(session.tmuxSession, ws);
   },
 });
 
@@ -703,6 +800,18 @@ wss.on('connection', async (ws, req) => {
           if (cols !== undefined) result.cols = cols;
           if (rows !== undefined) result.rows = rows;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'terminal-bytes') {
+          const { subscriptionId, bytesBase64 } = message.payload as {
+            subscriptionId: string;
+            bytesBase64: string;
+          };
+          routeRemoteTerminalBytes(origin.id, subscriptionId, bytesBase64);
+        } else if (message.type === 'terminal-exit') {
+          const { subscriptionId, reason } = message.payload as {
+            subscriptionId: string;
+            reason?: string;
+          };
+          routeRemoteTerminalExit(origin.id, subscriptionId, reason);
         }
       } catch (error) {
         console.error('Failed to handle agent message:', error);
@@ -745,6 +854,7 @@ wss.on('connection', async (ws, req) => {
       // not leak tmux control-mode processes. Manager refcounts per
       // session, so this is a no-op when the ws had no attaches.
       terminalStreamManager.detachAll(ws);
+      detachAllRemoteTerminals(ws);
       console.log('Browser client disconnected');
     });
     ws.on('error', (error) => console.error('WebSocket error:', error));

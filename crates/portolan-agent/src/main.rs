@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
@@ -9,6 +10,8 @@ use portolan_agent::{
 };
 use portolan_agent_protocol::{
     AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
+    TerminalBytesPayload, TerminalExitPayload, TerminalSubscribePayload,
+    TerminalUnsubscribePayload,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -17,7 +20,13 @@ use std::{
     process,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    sync::mpsc,
+    task::JoinHandle,
+    time::MissedTickBehavior,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const DEFAULT_FELT_WATCH_DEBOUNCE_MS: u64 = 250;
@@ -73,6 +82,8 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
         .map_err(|error| format!("connect failed: {error}"))?;
     let (mut write, mut read) = stream.split();
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
+    let mut terminal_subscriptions = HashMap::<String, JoinHandle<()>>::new();
     let mut fiber_watchers = FiberTreeWatcherSet::new(watch_tx);
     let mut pending_fiber_deltas = BTreeMap::<String, BTreeMap<String, FiberTreeFileOp>>::new();
     let mut active_city_felt_dump_hosts = HashSet::<String>::new();
@@ -148,6 +159,12 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
                     Err(error) => eprintln!("[portolan-agent-rust] shuttle snapshot skipped: {error}"),
                 }
             }
+            Some(frame) = terminal_rx.recv() => {
+                if let AgentFrame::TerminalExit { payload } = &frame {
+                    terminal_subscriptions.remove(&payload.subscription_id);
+                }
+                send_agent_frame(&mut write, &frame).await?;
+            }
             maybe_message = read.next() => {
                 let Some(message) = maybe_message else { return Ok(ConnectExit::Disconnected); };
                 let message = message.map_err(|error| format!("websocket read failed: {error}"))?;
@@ -156,6 +173,8 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
                         handle_text_frame(
                             &mut write,
                             &mut fiber_watchers,
+                            &terminal_tx,
+                            &mut terminal_subscriptions,
                             &config.origin,
                             text,
                         )
@@ -165,6 +184,8 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
                         handle_binary_frame(
                             &mut write,
                             &mut fiber_watchers,
+                            &terminal_tx,
+                            &mut terminal_subscriptions,
                             &config.origin,
                             bytes,
                         )
@@ -263,6 +284,8 @@ fn poll_events_file(
 async fn handle_text_frame<W>(
     write: &mut W,
     fiber_watchers: &mut FiberTreeWatcherSet,
+    terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
+    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
     runtime_origin: &str,
     text: String,
 ) -> Result<(), String>
@@ -274,12 +297,17 @@ where
         .map_err(|error| format!("parse server frame failed: {error}"))?;
     log_ready_marker(runtime_origin, &frame);
     watch_requested_fiber_hosts(fiber_watchers, &frame);
+    if handle_terminal_subscription_frame(terminal_tx, terminal_subscriptions, &frame) {
+        return Ok(());
+    }
     send_responses(write, handle_server_frame(&frame)).await
 }
 
 async fn handle_binary_frame<W>(
     write: &mut W,
     fiber_watchers: &mut FiberTreeWatcherSet,
+    terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
+    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
     runtime_origin: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String>
@@ -291,7 +319,183 @@ where
         AgentFrame::parse(bytes).map_err(|error| format!("parse server frame failed: {error}"))?;
     log_ready_marker(runtime_origin, &frame);
     watch_requested_fiber_hosts(fiber_watchers, &frame);
+    if handle_terminal_subscription_frame(terminal_tx, terminal_subscriptions, &frame) {
+        return Ok(());
+    }
     send_responses(write, handle_server_frame(&frame)).await
+}
+
+fn handle_terminal_subscription_frame(
+    terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
+    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    frame: &AgentFrame,
+) -> bool {
+    match frame {
+        AgentFrame::TerminalSubscribe { payload } => {
+            start_terminal_subscription(terminal_tx.clone(), terminal_subscriptions, payload);
+            true
+        }
+        AgentFrame::TerminalUnsubscribe { payload } => {
+            stop_terminal_subscription(terminal_subscriptions, payload);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn start_terminal_subscription(
+    terminal_tx: mpsc::UnboundedSender<AgentFrame>,
+    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    payload: &TerminalSubscribePayload,
+) {
+    if let Some(existing) = terminal_subscriptions.remove(&payload.subscription_id) {
+        existing.abort();
+    }
+    let subscription_id = payload.subscription_id.clone();
+    let tmux_session = payload.tmux_session.clone();
+    let task_subscription_id = subscription_id.clone();
+    let handle = tokio::spawn(async move {
+        stream_tmux_control(task_subscription_id, tmux_session, terminal_tx).await;
+    });
+    terminal_subscriptions.insert(subscription_id, handle);
+}
+
+fn stop_terminal_subscription(
+    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    payload: &TerminalUnsubscribePayload,
+) {
+    if let Some(handle) = terminal_subscriptions.remove(&payload.subscription_id) {
+        handle.abort();
+    }
+}
+
+async fn stream_tmux_control(
+    subscription_id: String,
+    tmux_session: String,
+    terminal_tx: mpsc::UnboundedSender<AgentFrame>,
+) {
+    let target = format!("={tmux_session}:");
+    let mut child = match Command::new("tmux")
+        .args(["-C", "attach", "-r", "-t", &target])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            send_terminal_exit(
+                &terminal_tx,
+                &subscription_id,
+                Some(format!("failed to run tmux: {error}")),
+            );
+            return;
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(b"refresh-client -C 200x50\n").await;
+        });
+    }
+
+    let Some(stdout) = child.stdout.take() else {
+        send_terminal_exit(
+            &terminal_tx,
+            &subscription_id,
+            Some("tmux stdout unavailable".to_string()),
+        );
+        return;
+    };
+    let mut lines = BufReader::new(stdout).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => handle_tmux_control_line(&terminal_tx, &subscription_id, &line),
+            Ok(None) => break,
+            Err(error) => {
+                send_terminal_exit(
+                    &terminal_tx,
+                    &subscription_id,
+                    Some(format!("tmux control read failed: {error}")),
+                );
+                return;
+            }
+        }
+    }
+
+    let reason = child
+        .wait()
+        .await
+        .map(|status| status.to_string())
+        .unwrap_or_else(|error| format!("tmux wait failed: {error}"));
+    send_terminal_exit(&terminal_tx, &subscription_id, Some(reason));
+}
+
+fn handle_tmux_control_line(
+    terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
+    subscription_id: &str,
+    line: &str,
+) {
+    if let Some(rest) = line.strip_prefix("%output ") {
+        let Some((_, escaped)) = rest.split_once(' ') else {
+            return;
+        };
+        let bytes = decode_tmux_escape(escaped);
+        if bytes.is_empty() {
+            return;
+        }
+        let _ = terminal_tx.send(AgentFrame::TerminalBytes {
+            payload: TerminalBytesPayload {
+                subscription_id: subscription_id.to_string(),
+                bytes_base64: BASE64_STANDARD.encode(bytes),
+            },
+        });
+    } else if line.starts_with("%exit") {
+        let reason = line.strip_prefix("%exit ").map(str::to_string);
+        send_terminal_exit(terminal_tx, subscription_id, reason);
+    } else if let Some(error) = line.strip_prefix("%error ") {
+        send_terminal_exit(terminal_tx, subscription_id, Some(error.to_string()));
+    }
+}
+
+fn send_terminal_exit(
+    terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
+    subscription_id: &str,
+    reason: Option<String>,
+) {
+    let _ = terminal_tx.send(AgentFrame::TerminalExit {
+        payload: TerminalExitPayload {
+            subscription_id: subscription_id.to_string(),
+            reason,
+        },
+    });
+}
+
+fn decode_tmux_escape(input: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 1] < b'8'
+            && bytes[i + 2].is_ascii_digit()
+            && bytes[i + 2] < b'8'
+            && bytes[i + 3].is_ascii_digit()
+            && bytes[i + 3] < b'8'
+        {
+            out.push(
+                ((bytes[i + 1] - b'0') << 6) | ((bytes[i + 2] - b'0') << 3) | (bytes[i + 3] - b'0'),
+            );
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn log_ready_marker(runtime_origin: &str, frame: &AgentFrame) {

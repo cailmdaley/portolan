@@ -78,6 +78,7 @@ const CITY_FELT_DUMP_INTERVAL_MS = process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_
 const cityFeltDumpLastSent = new Map();
 const fiberTreeDumpInFlight = new Map();  // normalized feltHost -> Promise<boolean>
 const NON_GIT_SKIP = new Set(['.git', 'node_modules', '__pycache__', '.DS_Store']);
+const terminalSubscriptions = new Map();
 const SEARCH_MAX_RESULTS = 50;
 
 // ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
@@ -1309,6 +1310,102 @@ function handleTerminalCapture(message) {
     });
 }
 
+function decodeTmuxEscape(input) {
+    const out = [];
+    for (let i = 0; i < input.length; i++) {
+        const c = input.charCodeAt(i);
+        if (c === 0x5c && i + 3 < input.length) {
+            const a = input.charCodeAt(i + 1);
+            const b = input.charCodeAt(i + 2);
+            const d = input.charCodeAt(i + 3);
+            if (a >= 0x30 && a <= 0x37 && b >= 0x30 && b <= 0x37 && d >= 0x30 && d <= 0x37) {
+                out.push(((a - 0x30) << 6) | ((b - 0x30) << 3) | (d - 0x30));
+                i += 3;
+                continue;
+            }
+        }
+        out.push(c & 0xff);
+    }
+    return Buffer.from(out);
+}
+
+function sendTerminalExit(subscriptionId, reason) {
+    if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+        type: 'terminal-exit',
+        payload: { subscriptionId, ...(reason ? { reason } : {}) },
+    }));
+}
+
+function handleTerminalSubscribe(message) {
+    const payload = message.payload || {};
+    const { subscriptionId, tmuxSession } = payload;
+    if (!subscriptionId || !tmuxSession) {
+        debug('terminal-subscribe missing subscriptionId or tmuxSession');
+        return;
+    }
+    handleTerminalUnsubscribe({ payload: { subscriptionId } });
+
+    const child = spawn('tmux', ['-C', 'attach', '-r', '-t', `=${tmuxSession}:`], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let lineBuf = '';
+    terminalSubscriptions.set(subscriptionId, child);
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+        lineBuf += chunk;
+        let idx;
+        while ((idx = lineBuf.indexOf('\n')) !== -1) {
+            const line = lineBuf.slice(0, idx);
+            lineBuf = lineBuf.slice(idx + 1);
+            if (line.startsWith('%output ')) {
+                const rest = line.slice(8);
+                const sp = rest.indexOf(' ');
+                if (sp < 0) continue;
+                const bytes = decodeTmuxEscape(rest.slice(sp + 1));
+                if (!bytes.length || !connected || !ws || ws.readyState !== WebSocket.OPEN) continue;
+                ws.send(JSON.stringify({
+                    type: 'terminal-bytes',
+                    payload: {
+                        subscriptionId,
+                        bytesBase64: bytes.toString('base64'),
+                    },
+                }));
+            } else if (line.startsWith('%exit')) {
+                sendTerminalExit(subscriptionId, line.length > 5 ? line.slice(6) : undefined);
+            } else if (line.startsWith('%error ')) {
+                sendTerminalExit(subscriptionId, line.slice(7));
+            }
+        }
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => sendTerminalExit(subscriptionId, chunk.trimEnd()));
+    child.on('exit', (code, signal) => {
+        terminalSubscriptions.delete(subscriptionId);
+        sendTerminalExit(subscriptionId, signal ? `signal ${signal}` : `code ${code}`);
+    });
+    child.on('error', (error) => {
+        terminalSubscriptions.delete(subscriptionId);
+        sendTerminalExit(subscriptionId, error.message);
+    });
+    child.stdin.write('refresh-client -C 200x50\n');
+}
+
+function handleTerminalUnsubscribe(message) {
+    const subscriptionId = message.payload?.subscriptionId;
+    if (!subscriptionId) return;
+    const child = terminalSubscriptions.get(subscriptionId);
+    if (!child) return;
+    terminalSubscriptions.delete(subscriptionId);
+    try {
+        child.stdin.end();
+    } catch {
+        // Ignore half-closed pipes.
+    }
+    child.kill('SIGTERM');
+}
+
 export function executeFileContentRequest(payload) {
     const { operation, path: filePath, content } = payload || {};
     const fullPath = resolveRemoteFilePath(filePath, operation !== 'write');
@@ -2040,6 +2137,14 @@ function connect(serverUrl, sshHost) {
 
     ws.on('close', () => {
         connected = false;
+        for (const child of terminalSubscriptions.values()) {
+            try {
+                child.kill('SIGTERM');
+            } catch {
+                // Ignore cleanup failures on reconnect.
+            }
+        }
+        terminalSubscriptions.clear();
         log('Disconnected from server');
         scheduleReconnect(serverUrl, sshHost);
     });
@@ -2083,6 +2188,12 @@ function handleMessage(message) {
             break;
         case 'terminal-capture':
             handleTerminalCapture(message);
+            break;
+        case 'terminal-subscribe':
+            handleTerminalSubscribe(message);
+            break;
+        case 'terminal-unsubscribe':
+            handleTerminalUnsubscribe(message);
             break;
         case 'search-files':
             handleSearchFiles(message);
