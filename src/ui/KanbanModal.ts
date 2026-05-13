@@ -777,13 +777,19 @@ export class KanbanModal {
     for (const day of days) axis.append(buildDayCell(day))
     wrap.append(axis)
 
-    // Card strip: each card grid-column = its day's index+1.
+    // Card strip: each card lives at (grid-column = day index + 1, grid-row =
+    // its 1-indexed position within that day). Explicit rows are required —
+    // CSS Grid's sparse auto-placement advances its cursor forward, so cards
+    // arriving in decreasing-column order (the past list is reverse-
+    // chronological) would each force a new row and staircase down the strip.
     const strip = document.createElement('div')
     strip.className = 'kbn-timeline-strip'
     strip.style.gridTemplateColumns = `repeat(${days.length}, ${TIMELINE_DAY_WIDTH_PX}px)`
 
     // Drag drop targets: one transparent column per day so dragover/drop
-    // can resolve to a specific date. Sit behind the cards (z-index in CSS).
+    // can resolve to a specific date. They span the full strip height via
+    // a large explicit row span (CSS `grid-row: 1 / -1` is a no-op without
+    // grid-template-rows). Cards added after sit on top in DOM order.
     for (let i = 0; i < days.length; i += 1) {
       const dropCol = document.createElement('div')
       dropCol.className = 'kbn-timeline-dropcol'
@@ -793,15 +799,23 @@ export class KanbanModal {
       strip.append(dropCol)
     }
 
+    // Per-column stack counters: card N on day X lands at grid-row N.
+    const rowByCol = new Map<number, number>()
+    const nextRow = (col: number): number => {
+      const row = (rowByCol.get(col) ?? 0) + 1
+      rowByCol.set(col, row)
+      return row
+    }
+
     for (const card of timeline.past) {
       const col = dayIndexForIso(card.closedAt, dayIndex)
       if (col === null) continue
-      strip.append(this.renderTimelineCard(card, col, 'past', staleness[card.originId]))
+      strip.append(this.renderTimelineCard(card, col, nextRow(col), 'past', staleness[card.originId]))
     }
     for (const card of timeline.futureDated) {
       const col = dayIndexForIso(card.due, dayIndex)
       if (col === null) continue
-      strip.append(this.renderTimelineCard(card, col, 'future', staleness[card.originId]))
+      strip.append(this.renderTimelineCard(card, col, nextRow(col), 'future', staleness[card.originId]))
     }
     wrap.append(strip)
 
@@ -1044,10 +1058,14 @@ export class KanbanModal {
   }
 
   /** Compact card variant for the timeline strip — single-line with
-   *  glyph + title, color-coded by past/future/agent/human. */
+   *  glyph + title, color-coded by past/future/agent/human. The caller
+   *  supplies the 1-indexed row within the card's day column so that
+   *  multiple cards on the same day stack vertically while different
+   *  days share row 1. */
   private renderTimelineCard(
     card: KanbanCard,
     column: number,
+    row: number,
     kind: 'past' | 'future',
     staleness: KanbanOriginStaleness | undefined,
   ): HTMLElement {
@@ -1060,6 +1078,7 @@ export class KanbanModal {
     const el = document.createElement('div')
     el.className = `kbn-tl-card ${variantClass}${isStale ? ' kbn-card--stale' : ''}`
     el.style.gridColumn = String(column + 1)
+    el.style.gridRow = String(row)
     el.draggable = !isStale && kind === 'future'
     el.dataset.fiberId = card.id
     el.title = card.name

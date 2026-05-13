@@ -387,6 +387,69 @@ describe('KanbanModal three-surface layout', () => {
     host.remove()
   })
 
+  it('timeline cards stack within a day but share rows across days (no staircase)', async () => {
+    // Regression: the strip is a CSS grid with explicit columns but no
+    // explicit rows. If cards omit grid-row, sparse auto-placement
+    // staircases them one-per-row (col 11 → row 1, col 10 → row 2, …).
+    // Each card must carry an explicit grid-row computed from its
+    // position within its day.
+    const today = new Date()
+    const isoDay = (d: Date) => {
+      const tz = d.getTimezoneOffset() * 60_000
+      return new Date(d.getTime() - tz).toISOString().slice(0, 10)
+    }
+    const dayAt = (offset: number) => {
+      const d = new Date(today)
+      d.setHours(12, 0, 0, 0)
+      d.setDate(d.getDate() + offset)
+      return d.toISOString()
+    }
+
+    const response = emptyKanbanResponse()
+    // Past list is reverse-chronological — most recent first — which is
+    // precisely the case that breaks sparse auto-placement.
+    response.timeline.past = [
+      makeKanbanCard({ id: 'past/d-1-a', name: 'd-1 a', closedAt: dayAt(-1) }),
+      makeKanbanCard({ id: 'past/d-2-a', name: 'd-2 a', closedAt: dayAt(-2) }),
+      makeKanbanCard({ id: 'past/d-3-a', name: 'd-3 a', closedAt: dayAt(-3) }),
+      makeKanbanCard({ id: 'past/d-3-b', name: 'd-3 b', closedAt: dayAt(-3) }),
+      makeKanbanCard({ id: 'past/d-3-c', name: 'd-3 c', closedAt: dayAt(-3) }),
+    ]
+    response.totals = { ...response.totals, past: 5 }
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(response),
+    }))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+    modal.mount(host)
+    await tick()
+
+    const row = (id: string) =>
+      (host.querySelector(`[data-fiber-id="${id}"]`) as HTMLElement | null)?.style.gridRow
+    // Singletons on their own day → row 1
+    expect(row('past/d-1-a')).toBe('1')
+    expect(row('past/d-2-a')).toBe('1')
+    // Three cards on the same day stack 1, 2, 3
+    expect(row('past/d-3-a')).toBe('1')
+    expect(row('past/d-3-b')).toBe('2')
+    expect(row('past/d-3-c')).toBe('3')
+
+    // Sanity: distinct day columns differ
+    const col = (id: string) =>
+      (host.querySelector(`[data-fiber-id="${id}"]`) as HTMLElement | null)?.style.gridColumn
+    expect(col('past/d-1-a')).not.toBe(col('past/d-2-a'))
+    expect(col('past/d-2-a')).not.toBe(col('past/d-3-a'))
+    void isoDay  // silence unused — kept for future per-iso assertions
+
+    modal.unmount()
+    host.remove()
+  })
+
   it('clusters stash cards by containment-path; held-open below warm', async () => {
     const response = emptyKanbanResponse()
     response.stash = [
