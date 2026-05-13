@@ -94,6 +94,11 @@ function parseRustActivationOptions(body: ActivationBody, runtime: RemoteAgentRu
   return options;
 }
 
+function isDuplicateTmuxSessionError(error: unknown, session: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(`duplicate session: ${session}`);
+}
+
 export class HttpApiActivation {
   private readonly cityLookup: CityLookup;
   private readonly getSshHost: (city: City) => string;
@@ -213,11 +218,27 @@ export class HttpApiActivation {
 
       console.log(`[Activate] Starting ${runtime} portolan agent on ${sshHost}...`);
       const remoteCommand = `tmux new-session -d -s ${shellEscape(runtimeSession)} ${shellEscape(`bash -l -c ${shellEscape(startCommand)}`)}`;
-      await this.execFileFn(
-        'ssh',
-        ['-T', sshHost, remoteCommand],
-        { timeout: 60_000 }
-      );
+      try {
+        await this.execFileFn(
+          'ssh',
+          ['-T', sshHost, remoteCommand],
+          { timeout: 60_000 }
+        );
+      } catch (error: any) {
+        if (!isDuplicateTmuxSessionError(error, runtimeSession)) {
+          throw error;
+        }
+        if (replacesRuntime) {
+          this.recordPreferredRuntime(sshHost, runtime);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({
+          status: 'already_running',
+          message: `Agent (${runtime}) already running on ${sshHost}`,
+          ...this.preferenceResponse(sshHost),
+        }));
+        return;
+      }
       if (replacesRuntime) {
         this.recordPreferredRuntime(sshHost, runtime);
       }

@@ -1,9 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${1:-candide}"
+HOST="candide"
 PORTOLAN_URL="${PORTOLAN_URL:-http://localhost:4004}"
 CITIES_FILE="${PORTOLAN_CITIES_FILE:-$HOME/.portolan/cities.json}"
+REQUIRE_STARTED=false
+STOP_OPPOSITE=false
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/remote-agent-default-rust-smoke.sh [--require-started] [--stop-opposite] [host]
+
+Verifies that /activate-city without an agentRuntime override uses the Rust
+remote-agent runtime. By default, an already-running Rust agent is accepted.
+
+Options:
+  --require-started  Stop the Rust runtime session first and require status=started.
+  --stop-opposite    Also stop the Node fallback session before activation.
+  -h, --help         Show this help.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --require-started)
+      REQUIRE_STARTED=true
+      shift
+      ;;
+    --stop-opposite)
+      STOP_OPPOSITE=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "[portolan] unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      HOST="$1"
+      shift
+      ;;
+  esac
+done
 
 if ! command -v node >/dev/null 2>&1; then
   echo "[portolan] remote-agent-default-rust-smoke requires node on PATH" >&2
@@ -50,6 +92,15 @@ if (prefs?.defaultRuntime !== 'rust') {
 }
 NODE
 
+if [ "$REQUIRE_STARTED" = true ]; then
+  echo "[portolan] Stopping remote Rust runtime session before activation on $HOST"
+  ssh -T "$HOST" "tmux kill-session -t '=portolan-agent-rust-preview' 2>/dev/null || true"
+  if [ "$STOP_OPPOSITE" = true ]; then
+    echo "[portolan] Stopping remote Node fallback session before activation on $HOST"
+    ssh -T "$HOST" "tmux kill-session -t '=portolan-agent' 2>/dev/null || true"
+  fi
+fi
+
 echo "[portolan] Activating $HOST city $CITY_ID without an agentRuntime override"
 RESPONSE_JSON="$(
   curl -fsS \
@@ -60,12 +111,15 @@ RESPONSE_JSON="$(
 )"
 printf '%s\n' "$RESPONSE_JSON"
 
-RESPONSE_JSON="$RESPONSE_JSON" node --input-type=module <<'NODE'
+RESPONSE_JSON="$RESPONSE_JSON" REQUIRE_STARTED="$REQUIRE_STARTED" node --input-type=module <<'NODE'
 const response = JSON.parse(process.env.RESPONSE_JSON);
-const okStatus = response.status === 'started' || response.status === 'already_running';
+const requireStarted = process.env.REQUIRE_STARTED === 'true';
+const okStatus = requireStarted
+  ? response.status === 'started'
+  : response.status === 'started' || response.status === 'already_running';
 
 if (!okStatus) {
-  console.error(`[portolan] unexpected activation status: ${response.status ?? '<missing>'}`);
+  console.error(`[portolan] unexpected activation status: ${response.status ?? '<missing>'}${requireStarted ? ' (expected started)' : ''}`);
   process.exit(1);
 }
 

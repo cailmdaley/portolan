@@ -225,6 +225,36 @@ describe('HttpApiActivation', () => {
     });
   });
 
+  it('treats a duplicate runtime tmux session during start as already running', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockRejectedValueOnce(new Error('duplicate session: portolan-agent-rust-preview'));
+    const preferences = runtimePreferences({ candide: 'rust' });
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+      runtimePreferences: preferences,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(new URL('http://localhost/activate-city?cityId=remote-city'), res);
+
+    expect(execFileFn).toHaveBeenCalledTimes(4);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'already_running',
+        message: 'Agent (rust) already running on candide',
+        preferredRuntime: 'rust',
+      },
+    });
+  });
+
   it('uses the configured default runtime when no host preference exists', async () => {
     const execFileFn = vi
       .fn()
