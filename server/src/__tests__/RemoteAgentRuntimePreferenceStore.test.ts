@@ -19,6 +19,16 @@ describe('RemoteAgentRuntimePreferenceStore', () => {
     return join(dir, 'preferences.json');
   }
 
+  it('defaults ordinary remote activation to Rust', () => {
+    const store = new RemoteAgentRuntimePreferenceStore(storePath());
+
+    expect(store.getDefaultRuntime()).toBe('rust');
+    expect(store.getDiagnostics()).toEqual({
+      defaultRuntime: 'rust',
+      preferences: [],
+    });
+  });
+
   it('persists runtime preferences by ssh host', () => {
     const path = storePath();
     const first = new RemoteAgentRuntimePreferenceStore(path);
@@ -29,9 +39,22 @@ describe('RemoteAgentRuntimePreferenceStore', () => {
     const second = new RemoteAgentRuntimePreferenceStore(path);
     expect(second.getPreferredRuntime('candide')).toBe('rust');
     expect(second.getPreferredRuntime('cineca')).toBe('node');
-    expect(second.getDiagnostics()).toEqual([
-      expect.objectContaining({ sshHost: 'candide', runtime: 'rust' }),
-      expect.objectContaining({ sshHost: 'cineca', runtime: 'node' }),
-    ]);
+    expect(second.getDiagnostics()).toEqual({
+      defaultRuntime: 'rust',
+      preferences: [
+        expect.objectContaining({ sshHost: 'candide', runtime: 'rust' }),
+        expect.objectContaining({ sshHost: 'cineca', runtime: 'node' }),
+      ],
+    });
+  });
+
+  it('accepts an explicit Node default for rollback-oriented launches', () => {
+    const store = new RemoteAgentRuntimePreferenceStore(storePath(), 'node');
+
+    expect(store.getDefaultRuntime()).toBe('node');
+    expect(store.getDiagnostics()).toEqual({
+      defaultRuntime: 'node',
+      preferences: [],
+    });
   });
 });

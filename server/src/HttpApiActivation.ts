@@ -136,7 +136,9 @@ export class HttpApiActivation {
     }
 
     const sshHost = this.getSshHost(city);
-    const preferredRuntime = this.runtimePreferences?.getPreferredRuntime(sshHost) ?? 'node';
+    const preferredRuntime = this.runtimePreferences?.getPreferredRuntime(sshHost)
+      ?? this.runtimePreferences?.getDefaultRuntime()
+      ?? 'node';
     let runtime: RemoteAgentRuntime;
     try {
       runtime = parseAgentRuntime(requestedRuntime, preferredRuntime);
@@ -235,7 +237,10 @@ export class HttpApiActivation {
 
   private preferenceResponse(sshHost: string): { preferredRuntime?: RemoteAgentRuntime | null } {
     if (!this.runtimePreferences) return {};
-    return { preferredRuntime: this.runtimePreferences.getPreferredRuntime(sshHost) ?? null };
+    return {
+      preferredRuntime: this.runtimePreferences.getPreferredRuntime(sshHost)
+        ?? this.runtimePreferences.getDefaultRuntime(),
+    };
   }
 
   private recordPreferredRuntime(sshHost: string, runtime: RemoteAgentRuntime): void {

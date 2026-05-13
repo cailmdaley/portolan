@@ -9,26 +9,41 @@ export interface RemoteAgentRuntimePreference {
   updatedAt: string;
 }
 
+export interface RemoteAgentRuntimePreferenceDiagnostics {
+  defaultRuntime: RemoteAgentRuntime;
+  preferences: RemoteAgentRuntimePreference[];
+}
+
 interface PreferenceFile {
   version: 1;
   preferences: RemoteAgentRuntimePreference[];
 }
 
 export interface RemoteAgentRuntimePreferences {
+  getDefaultRuntime(): RemoteAgentRuntime;
   getPreferredRuntime(sshHost: string): RemoteAgentRuntime | undefined;
   setPreferredRuntime(sshHost: string, runtime: RemoteAgentRuntime): void;
-  getDiagnostics(): RemoteAgentRuntimePreference[];
+  getDiagnostics(): RemoteAgentRuntimePreferenceDiagnostics;
 }
 
 export class RemoteAgentRuntimePreferenceStore implements RemoteAgentRuntimePreferences {
   private readonly dataDir: string;
   private readonly filePath: string;
+  private readonly defaultRuntime: RemoteAgentRuntime;
   private preferences = new Map<string, RemoteAgentRuntimePreference>();
 
-  constructor(filePath = join(homedir(), '.portolan', 'remote-agent-runtime-preferences.json')) {
+  constructor(
+    filePath = join(homedir(), '.portolan', 'remote-agent-runtime-preferences.json'),
+    defaultRuntime = defaultRemoteAgentRuntime(),
+  ) {
     this.filePath = filePath;
     this.dataDir = dirname(filePath);
+    this.defaultRuntime = defaultRuntime;
     this.load();
+  }
+
+  getDefaultRuntime(): RemoteAgentRuntime {
+    return this.defaultRuntime;
   }
 
   getPreferredRuntime(sshHost: string): RemoteAgentRuntime | undefined {
@@ -44,8 +59,11 @@ export class RemoteAgentRuntimePreferenceStore implements RemoteAgentRuntimePref
     this.save();
   }
 
-  getDiagnostics(): RemoteAgentRuntimePreference[] {
-    return Array.from(this.preferences.values()).sort((a, b) => a.sshHost.localeCompare(b.sshHost));
+  getDiagnostics(): RemoteAgentRuntimePreferenceDiagnostics {
+    return {
+      defaultRuntime: this.defaultRuntime,
+      preferences: this.sortedPreferences(),
+    };
   }
 
   private load(): void {
@@ -72,15 +90,31 @@ export class RemoteAgentRuntimePreferenceStore implements RemoteAgentRuntimePref
 
     const data: PreferenceFile = {
       version: 1,
-      preferences: this.getDiagnostics(),
+      preferences: this.sortedPreferences(),
     };
     const tmpPath = `${this.filePath}.tmp`;
 
     writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
     renameSync(tmpPath, this.filePath);
   }
+
+  private sortedPreferences(): RemoteAgentRuntimePreference[] {
+    return Array.from(this.preferences.values()).sort((a, b) => a.sshHost.localeCompare(b.sshHost));
+  }
 }
 
 function isRemoteAgentRuntime(value: unknown): value is RemoteAgentRuntime {
   return value === 'node' || value === 'rust';
+}
+
+function defaultRemoteAgentRuntime(): RemoteAgentRuntime {
+  const configured = process.env.PORTOLAN_REMOTE_AGENT_DEFAULT_RUNTIME;
+  if (configured === undefined || configured === '') {
+    return 'rust';
+  }
+  if (isRemoteAgentRuntime(configured)) {
+    return configured;
+  }
+  console.warn(`[RemoteAgent] Ignoring invalid PORTOLAN_REMOTE_AGENT_DEFAULT_RUNTIME=${configured}; using rust`);
+  return 'rust';
 }
