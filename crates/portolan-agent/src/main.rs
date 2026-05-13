@@ -26,6 +26,11 @@ const DEFAULT_SESSION_POLL_MS: u64 = 5_000;
 const DEFAULT_EVENT_POLL_MS: u64 = 1_000;
 const DEFAULT_SHUTTLE_POLL_MS: u64 = 30_000;
 
+enum ConnectExit {
+    Disconnected,
+    Shutdown,
+}
+
 #[tokio::main]
 async fn main() {
     let command = match parse_args(env::args_os().skip(1)) {
@@ -47,8 +52,9 @@ async fn main() {
 async fn run_connect_loop(config: AgentConfig) {
     loop {
         match connect_once(&config).await {
-            Ok(()) if config.once => return,
-            Ok(()) => {}
+            Ok(ConnectExit::Shutdown) => return,
+            Ok(ConnectExit::Disconnected) if config.once => return,
+            Ok(ConnectExit::Disconnected) => {}
             Err(error) => eprintln!("[portolan-agent-rust] {error}"),
         }
 
@@ -59,7 +65,7 @@ async fn run_connect_loop(config: AgentConfig) {
     }
 }
 
-async fn connect_once(config: &AgentConfig) -> Result<(), String> {
+async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
     let url = build_agent_url(config);
     eprintln!("[portolan-agent-rust] connecting to {url}");
     let (stream, _) = connect_async(&url)
@@ -97,7 +103,7 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = tokio::signal::ctrl_c() => return Ok(ConnectExit::Shutdown),
             Some(event) = watch_rx.recv() => {
                 pending_fiber_deltas
                     .entry(event.felt_host)
@@ -143,12 +149,12 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
                 }
             }
             maybe_message = read.next() => {
-                let Some(message) = maybe_message else { return Ok(()); };
+                let Some(message) = maybe_message else { return Ok(ConnectExit::Disconnected); };
                 let message = message.map_err(|error| format!("websocket read failed: {error}"))?;
                 match message {
                     Message::Text(text) => handle_text_frame(&mut write, &mut fiber_watchers, text).await?,
                     Message::Binary(bytes) => handle_binary_frame(&mut write, &mut fiber_watchers, bytes).await?,
-                    Message::Close(_) => return Ok(()),
+                    Message::Close(_) => return Ok(ConnectExit::Disconnected),
                     Message::Ping(bytes) => write.send(Message::Pong(bytes)).await.map_err(|error| format!("send pong failed: {error}"))?,
                     Message::Pong(_) | Message::Frame(_) => {}
                 }
