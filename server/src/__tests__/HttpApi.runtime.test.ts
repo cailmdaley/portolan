@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpApi } from '../HttpApi.js';
 import { CityManager } from '../CityManager.js';
 import { OriginManager } from '../OriginManager.js';
@@ -41,13 +41,40 @@ const stubCityLookup = {
 
 describe('HttpApi — /debug-runtime endpoint', () => {
   let api: HttpApi;
+  let previousNativeEnv: {
+    native?: string;
+    backendRoot?: string;
+    resourceDir?: string;
+    launchKind?: string;
+  };
 
   beforeEach(() => {
+    previousNativeEnv = {
+      native: process.env.PORTOLAN_NATIVE,
+      backendRoot: process.env.PORTOLAN_NATIVE_BACKEND_ROOT,
+      resourceDir: process.env.PORTOLAN_NATIVE_RESOURCE_DIR,
+      launchKind: process.env.PORTOLAN_NATIVE_LAUNCH_KIND,
+    };
+    delete process.env.PORTOLAN_NATIVE;
+    delete process.env.PORTOLAN_NATIVE_BACKEND_ROOT;
+    delete process.env.PORTOLAN_NATIVE_RESOURCE_DIR;
+    delete process.env.PORTOLAN_NATIVE_LAUNCH_KIND;
     api = new HttpApi(
       stubCityLookup as any,
       stubOriginLookup as any,
       stubPersistenceLookup as any,
     );
+  });
+
+  afterEach(() => {
+    if (previousNativeEnv.native === undefined) delete process.env.PORTOLAN_NATIVE;
+    else process.env.PORTOLAN_NATIVE = previousNativeEnv.native;
+    if (previousNativeEnv.backendRoot === undefined) delete process.env.PORTOLAN_NATIVE_BACKEND_ROOT;
+    else process.env.PORTOLAN_NATIVE_BACKEND_ROOT = previousNativeEnv.backendRoot;
+    if (previousNativeEnv.resourceDir === undefined) delete process.env.PORTOLAN_NATIVE_RESOURCE_DIR;
+    else process.env.PORTOLAN_NATIVE_RESOURCE_DIR = previousNativeEnv.resourceDir;
+    if (previousNativeEnv.launchKind === undefined) delete process.env.PORTOLAN_NATIVE_LAUNCH_KIND;
+    else process.env.PORTOLAN_NATIVE_LAUNCH_KIND = previousNativeEnv.launchKind;
   });
 
   it('returns process diagnostics when no runtime provider is set', async () => {
@@ -73,6 +100,29 @@ describe('HttpApi — /debug-runtime endpoint', () => {
     expect(res.data.runtime).toEqual({
       sessions: { local: 1, remote: 2, total: 3 },
       maps: { remoteActivities: 4 },
+    });
+  });
+
+  it('includes native backend launch context when spawned by the Tauri shell', async () => {
+    process.env.PORTOLAN_NATIVE = '1';
+    process.env.PORTOLAN_NATIVE_BACKEND_ROOT = '/tmp/Portolan.app/Contents/Resources/server';
+    process.env.PORTOLAN_NATIVE_RESOURCE_DIR = '/tmp/Portolan.app/Contents/Resources';
+    process.env.PORTOLAN_NATIVE_LAUNCH_KIND = 'node-dist-resource';
+    api.setRuntimeDiagnosticsProvider(() => ({
+      sessions: { local: 1 },
+    }));
+
+    const res = await httpRequest(api, 'GET', '/debug-runtime');
+
+    expect(res.status).toBe(200);
+    expect(res.data.runtime).toEqual({
+      sessions: { local: 1 },
+      nativeBackend: {
+        enabled: true,
+        backendRoot: '/tmp/Portolan.app/Contents/Resources/server',
+        resourceDir: '/tmp/Portolan.app/Contents/Resources',
+        launchKind: 'node-dist-resource',
+      },
     });
   });
 

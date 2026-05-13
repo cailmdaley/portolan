@@ -129,6 +129,13 @@ const cityLookup = {
   },
 };
 
+const remoteDirectoryExecutor = async (originId: string, path: string) => {
+  const result = await agentRequestCoordinator.send<{
+    entries?: Array<{ name: string; type: 'file' | 'dir' }>;
+  }>(originId, 'list-directory', { path }, 10_000);
+  return result.entries ?? [];
+};
+
 // ============================================================================
 // Extracted Modules
 // ============================================================================
@@ -195,6 +202,7 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     );
     return { content: result.content };
   },
+  remoteDirectoryExecutor,
   remoteProjectFileExecutor: async ({ originId, ...payload }) => {
     const result = await agentRequestCoordinator.send<{
       contentBase64?: string;
@@ -270,12 +278,6 @@ const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 // interface through the portolan-agent tailer. See
 // constitution-terminals-in-map.
 const terminalStreamManager = new TerminalStreamManager();
-const remoteDirectoryExecutor = async (originId: string, path: string) => {
-  const result = await agentRequestCoordinator.send<{
-    entries?: Array<{ name: string; type: 'file' | 'dir' }>;
-  }>(originId, 'list-directory', { path }, 10_000);
-  return result.entries ?? [];
-};
 const remoteSearchExecutor = async (
   originId: string,
   path: string,

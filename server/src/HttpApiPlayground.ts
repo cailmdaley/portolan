@@ -3,6 +3,10 @@ import { readFile } from 'fs/promises';
 import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
+import type {
+  RemoteFileContentInvocation,
+  RemoteFileContentResult,
+} from './HttpApiFileContent.js';
 import { shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
@@ -14,15 +18,26 @@ interface CityLookup {
 interface HttpApiPlaygroundOptions {
   cityLookup: CityLookup;
   getSshHost: (city: City) => string;
+  remoteDirectoryExecutor?: (
+    originId: string,
+    path: string,
+  ) => Promise<Array<{ name: string; type: 'file' | 'dir' }>>;
+  remoteFileContentExecutor?: (
+    request: RemoteFileContentInvocation,
+  ) => Promise<RemoteFileContentResult>;
 }
 
 export class HttpApiPlayground {
   private readonly cityLookup: CityLookup;
   private readonly getSshHost: (city: City) => string;
+  private readonly remoteDirectoryExecutor: HttpApiPlaygroundOptions['remoteDirectoryExecutor'];
+  private readonly remoteFileContentExecutor: HttpApiPlaygroundOptions['remoteFileContentExecutor'];
 
   constructor(options: HttpApiPlaygroundOptions) {
     this.cityLookup = options.cityLookup;
     this.getSshHost = options.getSshHost;
+    this.remoteDirectoryExecutor = options.remoteDirectoryExecutor;
+    this.remoteFileContentExecutor = options.remoteFileContentExecutor;
   }
 
   async handlePlaygroundList(url: URL, res: ServerResponse): Promise<void> {
@@ -45,7 +60,7 @@ export class HttpApiPlayground {
     try {
       const files = city.originId === 'local'
         ? await this.listLocalPlaygrounds(playgroundsDir)
-        : await this.listRemotePlaygrounds(playgroundsDir, this.getSshHost(city));
+        : await this.listRemotePlaygrounds(city, playgroundsDir);
 
       files.sort();
 
@@ -92,7 +107,7 @@ export class HttpApiPlayground {
     try {
       const html = city.originId === 'local'
         ? await readFile(playgroundPath, 'utf-8')
-        : await this.readRemotePlayground(playgroundPath, this.getSshHost(city));
+        : await this.readRemotePlayground(playgroundPath, city);
 
       res.writeHead(200, {
         'Content-Type': 'text/html',
@@ -111,7 +126,51 @@ export class HttpApiPlayground {
     return readdirSync(playgroundsDir).filter((file) => file.endsWith('.html'));
   }
 
-  private async listRemotePlaygrounds(playgroundsDir: string, sshHost: string): Promise<string[]> {
+  private async listRemotePlaygrounds(city: City, playgroundsDir: string): Promise<string[]> {
+    if (this.remoteDirectoryExecutor) {
+      try {
+        const entries = await this.remoteDirectoryExecutor(city.originId, playgroundsDir);
+        return entries
+          .filter((entry) => entry.type === 'file' && entry.name.endsWith('.html'))
+          .map((entry) => entry.name);
+      } catch (error) {
+        const sshHost = this.getSshHost(city);
+        if (!sshHost) {
+          throw error;
+        }
+      }
+    }
+
+    return this.listRemotePlaygroundsViaSsh(playgroundsDir, this.getSshHost(city));
+  }
+
+  private async readRemotePlayground(
+    playgroundPath: string,
+    city: City,
+  ): Promise<string> {
+    if (this.remoteFileContentExecutor) {
+      try {
+        const result = await this.remoteFileContentExecutor({
+          originId: city.originId,
+          path: playgroundPath,
+          operation: 'read',
+        });
+        if (typeof result.content !== 'string') {
+          throw new Error('Remote agent did not return playground content');
+        }
+        return result.content;
+      } catch (error) {
+        const sshHost = this.getSshHost(city);
+        if (!sshHost) {
+          throw error;
+        }
+      }
+    }
+
+    return this.readRemotePlaygroundViaSsh(playgroundPath, this.getSshHost(city));
+  }
+
+  private async listRemotePlaygroundsViaSsh(playgroundsDir: string, sshHost: string): Promise<string[]> {
     const { stdout } = await execFileAsync(
       'ssh',
       [sshHost, `ls ${shellEscape(playgroundsDir)}/*.html 2>/dev/null || true`],
@@ -126,7 +185,7 @@ export class HttpApiPlayground {
       .filter((file) => file.endsWith('.html'));
   }
 
-  private async readRemotePlayground(playgroundPath: string, sshHost: string): Promise<string> {
+  private async readRemotePlaygroundViaSsh(playgroundPath: string, sshHost: string): Promise<string> {
     const { stdout } = await execFileAsync(
       'ssh',
       [sshHost, `cat ${shellEscape(playgroundPath)}`],

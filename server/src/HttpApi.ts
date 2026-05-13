@@ -107,6 +107,10 @@ interface CachedApi<T> {
 export interface HttpApiOptions {
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   remoteShuttleDiagnosticsProvider?: () => RemoteShuttleSnapshotDiagnostic[];
+  remoteDirectoryExecutor?: (
+    originId: string,
+    path: string,
+  ) => Promise<Array<{ name: string; type: 'file' | 'dir' }>>;
   remoteTransitionExecutor?: (args: RemoteKanbanMutationRequest) => Promise<void>;
   remoteRawFiberExecutor?: (request: RemoteRawFiberInvocation) => Promise<RemoteRawFiberResult>;
   remoteFiberHistoryExecutor?: (
@@ -163,6 +167,7 @@ export class HttpApi {
   private tapestryApi: HttpApiTapestry;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteShuttleDiagnosticsProvider: (() => RemoteShuttleSnapshotDiagnostic[]) | undefined;
+  private remoteDirectoryExecutor: HttpApiOptions['remoteDirectoryExecutor'];
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
   private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private remoteFiberHistoryExecutor: HttpApiOptions['remoteFiberHistoryExecutor'];
@@ -186,6 +191,7 @@ export class HttpApi {
     this.persistenceLookup = persistenceLookup;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
     this.remoteShuttleDiagnosticsProvider = options.remoteShuttleDiagnosticsProvider;
+    this.remoteDirectoryExecutor = options.remoteDirectoryExecutor;
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
@@ -244,6 +250,8 @@ export class HttpApi {
     this.playgroundApi = new HttpApiPlayground({
       cityLookup,
       getSshHost: (city) => this.getSshHost(city),
+      remoteDirectoryExecutor: this.remoteDirectoryExecutor,
+      remoteFileContentExecutor: this.remoteFileContentExecutor,
     });
     this.tapestryApi = new HttpApiTapestry({
       cityLookup,

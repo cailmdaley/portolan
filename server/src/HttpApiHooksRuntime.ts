@@ -3,6 +3,13 @@ import type { RecentFileTracker } from './RecentFileTracker.js';
 
 type RuntimeDiagnosticsProvider = () => unknown | Promise<unknown>;
 
+interface NativeBackendDiagnostics {
+  enabled: true;
+  backendRoot?: string;
+  resourceDir?: string;
+  launchKind?: string;
+}
+
 interface HttpApiHooksRuntimeDeps {
   parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
@@ -53,13 +60,16 @@ export class HttpApiHooksRuntime {
       const runtimeDiagnostics = this.runtimeDiagnosticsProvider
         ? await this.runtimeDiagnosticsProvider()
         : {};
+      const nativeBackend = this.nativeBackendDiagnostics();
 
       const debug = {
         timestamp: Date.now(),
         pid: process.pid,
         uptimeSeconds: process.uptime(),
         memory: process.memoryUsage(),
-        runtime: runtimeDiagnostics,
+        runtime: nativeBackend
+          ? { ...(this.isRecord(runtimeDiagnostics) ? runtimeDiagnostics : {}), nativeBackend }
+          : runtimeDiagnostics,
       };
 
       res.writeHead(200, {
@@ -71,5 +81,20 @@ export class HttpApiHooksRuntime {
       console.error('Failed to collect runtime diagnostics:', error);
       this.sendJsonError(res, 500, 'Failed to collect runtime diagnostics');
     }
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private nativeBackendDiagnostics(): NativeBackendDiagnostics | null {
+    if (process.env.PORTOLAN_NATIVE !== '1') return null;
+
+    return {
+      enabled: true,
+      backendRoot: process.env.PORTOLAN_NATIVE_BACKEND_ROOT || undefined,
+      resourceDir: process.env.PORTOLAN_NATIVE_RESOURCE_DIR || undefined,
+      launchKind: process.env.PORTOLAN_NATIVE_LAUNCH_KIND || undefined,
+    };
   }
 }

@@ -195,6 +195,7 @@ impl BackendLaunch {
             .current_dir(&self.cwd)
             .env("PORTOLAN_NATIVE", "1")
             .env("PORTOLAN_NATIVE_BACKEND_ROOT", &self.cwd)
+            .env("PORTOLAN_NATIVE_LAUNCH_KIND", &self.kind)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
