@@ -2,8 +2,8 @@ use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
     build_agent_url, collect_agent_sessions, collect_fiber_tree_delta_frame, handle_server_frame,
-    normalize_felt_host, parse_args, AgentCommand, AgentConfig, FiberTreeFileEvent,
-    FiberTreeFileOp,
+    normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args, AgentCommand,
+    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
 };
 use portolan_agent_protocol::{AgentFrame, AgentSessionsUpdatePayload};
 use std::{
@@ -11,7 +11,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -19,6 +19,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 const DEFAULT_FELT_WATCH_DEBOUNCE_MS: u64 = 250;
 const DEFAULT_FELT_POLL_MS: u64 = 5_000;
 const DEFAULT_SESSION_POLL_MS: u64 = 5_000;
+const DEFAULT_EVENT_POLL_MS: u64 = 1_000;
 
 #[tokio::main]
 async fn main() {
@@ -71,6 +72,11 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
     poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut session_poll_interval = tokio::time::interval(session_poll_interval());
     session_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut events_poll_interval = tokio::time::interval(events_poll_interval());
+    events_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let events_file = events_file_path();
+    let mut last_events_char_position = initial_file_position(&events_file);
+    let mut events_file_started = false;
 
     send_agent_session_update(&mut write).await?;
 
@@ -102,6 +108,12 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
             _ = session_poll_interval.tick() => {
                 send_agent_session_update(&mut write).await?;
             }
+            _ = events_poll_interval.tick() => {
+                let frames = poll_events_file(&events_file, &mut last_events_char_position, &mut events_file_started);
+                for frame in frames {
+                    send_agent_frame(&mut write, &frame).await?;
+                }
+            }
             maybe_message = read.next() => {
                 let Some(message) = maybe_message else { return Ok(()); };
                 let message = message.map_err(|error| format!("websocket read failed: {error}"))?;
@@ -115,6 +127,75 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
             }
         }
     }
+}
+
+fn events_file_path() -> PathBuf {
+    if let Ok(path) = env::var("PORTOLAN_EVENTS_FILE") {
+        return PathBuf::from(path);
+    }
+
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    Path::new(&home)
+        .join(".portolan")
+        .join("data")
+        .join("events.jsonl")
+}
+
+fn initial_file_position(events_file: &Path) -> usize {
+    match fs::read_to_string(events_file) {
+        Ok(content) => content.len(),
+        Err(_) => 0,
+    }
+}
+
+fn events_poll_interval() -> Duration {
+    env::var("PORTOLAN_EVENTS_POLL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_EVENT_POLL_MS))
+}
+
+fn poll_events_file(
+    events_file: &Path,
+    last_events_char_position: &mut usize,
+    started_once: &mut bool,
+) -> Vec<AgentFrame> {
+    if !events_file.exists() {
+        if !*started_once {
+            eprintln!(
+                "[portolan-agent-rust] events file not found: {}",
+                events_file.display()
+            );
+            eprintln!("[portolan-agent-rust] activity tracking disabled");
+            *started_once = true;
+        }
+        return Vec::new();
+    }
+
+    let Ok(content) = fs::read_to_string(events_file) else {
+        return Vec::new();
+    };
+
+    if content.len() < *last_events_char_position {
+        *last_events_char_position = 0;
+    }
+
+    if content.len() <= *last_events_char_position {
+        return Vec::new();
+    }
+
+    let new_content = &content[*last_events_char_position..];
+    *last_events_char_position = content.len();
+    let fallback_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_millis() as i64);
+
+    parse_activity_frames_from_events_jsonl(new_content, fallback_timestamp)
+        .into_iter()
+        .map(|activity| AgentFrame::AgentActivity { activity })
+        .collect()
 }
 
 async fn handle_text_frame<W>(
@@ -423,4 +504,91 @@ fn watched_path_to_fiber_event(
         path: rel_path,
         op,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_events_file(tag: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "portolan-agent-rust-preview-{tag}-{}.jsonl",
+            process::id()
+        ))
+    }
+
+    fn write_events_file(path: &Path, lines: &str) {
+        fs::write(path, lines).unwrap();
+    }
+
+    #[test]
+    fn polls_events_file_incrementally() {
+        let path = temp_events_file("incremental");
+        let mut cursor = 0usize;
+        let mut started = false;
+
+        let initial = r#"{"timestamp":1700000001000,"type":"pre_tool_use","tmuxSession":"worker","tool":"Read","toolInput":{"file_path":"notes/workbench.md"}}
+"#;
+        write_events_file(&path, initial);
+
+        let frames = poll_events_file(&path, &mut cursor, &mut started);
+        assert_eq!(frames.len(), 1);
+        let AgentFrame::AgentActivity { activity } = &frames[0] else {
+            panic!("expected AgentActivity frame");
+        };
+        assert_eq!(activity.tmux_session, "worker");
+
+        let frames = poll_events_file(&path, &mut cursor, &mut started);
+        assert_eq!(frames.len(), 0);
+
+        let appended = format!(
+            "{}{}",
+            initial,
+            r#"{"timestamp":1700000002000,"type":"post_tool_use","tmuxSession":"editor","tool":"Write","toolInput":{"file_path":"notes/final.md"}}
+"#,
+        );
+        write_events_file(&path, &appended);
+
+        let frames = poll_events_file(&path, &mut cursor, &mut started);
+        assert_eq!(frames.len(), 1);
+        let AgentFrame::AgentActivity { activity } = &frames[0] else {
+            panic!("expected AgentActivity frame");
+        };
+        assert_eq!(activity.tmux_session, "editor");
+        assert_eq!(activity.tool, "Write");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn poll_events_file_recovers_from_truncation() {
+        let path = temp_events_file("truncate");
+        let mut cursor = 0usize;
+        let mut started = false;
+
+        write_events_file(
+            &path,
+            r#"{"timestamp":1700000001000,"type":"pre_tool_use","tmuxSession":"worker","tool":"Read","toolInput":{"file_path":"notes/a.md"}}
+"#,
+        );
+        let first = poll_events_file(&path, &mut cursor, &mut started);
+        assert_eq!(first.len(), 1);
+
+        write_events_file(&path, "");
+        let _ = poll_events_file(&path, &mut cursor, &mut started);
+
+        write_events_file(
+            &path,
+            r#"{"timestamp":1700000002000,"type":"post_tool_use","tmuxSession":"worker","tool":"Edit","toolInput":{"file_path":"notes/b.md"}}
+"#,
+        );
+        let second = poll_events_file(&path, &mut cursor, &mut started);
+        assert_eq!(second.len(), 1);
+        let AgentFrame::AgentActivity { activity } = &second[0] else {
+            panic!("expected AgentActivity frame");
+        };
+        assert_eq!(activity.tool, "Edit");
+
+        let _ = fs::remove_file(path);
+    }
 }

@@ -1,5 +1,5 @@
 use portolan_agent_protocol::{
-    is_safe_remote_fiber_path, AgentFrame, AgentRequestPayload, AgentResultPayload,
+    is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
     FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
     FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
 };
@@ -21,6 +21,131 @@ const DEFAULT_SERVER: &str = "localhost:4004";
 const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const CLI_DISCOVERY_DEPTH: usize = 4;
 const AGENT_SESSION_NAMES: &[&str] = &["portolan-agent", "portolan-agent-rust-preview"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedPortolanActivity {
+    pub tmux_session: String,
+    pub tool: String,
+    pub summary: Option<String>,
+    pub full_path: Option<String>,
+    pub timestamp: i64,
+}
+
+pub fn parse_activity_frame_from_events_jsonl_line(
+    line: &str,
+    fallback_timestamp_ms: i64,
+) -> Option<ParsedPortolanActivity> {
+    let event: Value = serde_json::from_str(line).ok()?;
+    let event_type = event.get("type")?.as_str()?;
+    if event_type != "pre_tool_use" && event_type != "post_tool_use" {
+        return None;
+    }
+    let tmux_session = event.get("tmuxSession")?.as_str()?.to_string();
+    if tmux_session.is_empty() {
+        return None;
+    }
+    let tool = event.get("tool")?.as_str()?.to_string();
+    let tool_input = event.get("toolInput").and_then(Value::as_object);
+    let (summary, full_path) = parse_tool_activity_details(&tool, tool_input);
+
+    Some(ParsedPortolanActivity {
+        tmux_session,
+        tool,
+        summary,
+        full_path,
+        timestamp: parse_portolan_timestamp(event.get("timestamp"), fallback_timestamp_ms),
+    })
+}
+
+pub fn parse_activity_frames_from_events_jsonl(
+    text: &str,
+    fallback_timestamp_ms: i64,
+) -> Vec<AgentActivity> {
+    text.split('\n')
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            parse_activity_frame_from_events_jsonl_line(line, fallback_timestamp_ms).map(
+                |activity| AgentActivity {
+                    tmux_session: activity.tmux_session,
+                    tool: activity.tool,
+                    summary: activity.summary,
+                    full_path: activity.full_path,
+                    timestamp: activity.timestamp,
+                },
+            )
+        })
+        .collect()
+}
+
+fn parse_portolan_timestamp(raw: Option<&Value>, fallback_timestamp_ms: i64) -> i64 {
+    let Some(raw) = raw else {
+        return fallback_timestamp_ms;
+    };
+
+    match raw {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().map(|value| value as i64))
+            .unwrap_or(fallback_timestamp_ms),
+        Value::String(value) => value.parse::<i64>().unwrap_or(fallback_timestamp_ms),
+        _ => fallback_timestamp_ms,
+    }
+}
+
+fn parse_tool_activity_details(
+    tool: &str,
+    tool_input: Option<&serde_json::Map<String, Value>>,
+) -> (Option<String>, Option<String>) {
+    if !matches!(tool, "Read" | "Write" | "Edit") {
+        return (None, None);
+    }
+
+    let Some(file_path) = tool_input
+        .and_then(|input| input.get("file_path"))
+        .and_then(Value::as_str)
+    else {
+        return (None, None);
+    };
+    if file_path.is_empty() {
+        return (None, None);
+    }
+
+    let file_path = file_path.to_string();
+
+    let parts = file_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return (None, None);
+    }
+
+    let filename = parts.last().copied().unwrap_or("");
+    let parent = if parts.len() >= 2 {
+        Some(parts[parts.len() - 2])
+    } else {
+        None
+    };
+    let summary = Some(match parent {
+        Some(parent) => {
+            let display = format!("{parent}/{filename}");
+            let len = display.chars().count();
+            if len > 35 {
+                let suffix = display
+                    .chars()
+                    .skip(len.saturating_sub(34))
+                    .collect::<String>();
+                format!("…{suffix}")
+            } else {
+                display
+            }
+        }
+        None => filename.to_string(),
+    });
+
+    (summary, Some(file_path))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TmuxPane {
@@ -1184,6 +1309,91 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn parses_activity_from_events_jsonl_lines() {
+        let now = 1_700_000_000_000i64;
+        let line = r#"{"timestamp":1700000001000,"type":"pre_tool_use","tmuxSession":"worker","tool":"Read","toolInput":{"file_path":"scratch/paper.md"}}"#;
+        let activity = parse_activity_frame_from_events_jsonl_line(line, now)
+            .expect("expected parseable activity");
+
+        assert_eq!(activity.tmux_session, "worker");
+        assert_eq!(activity.tool, "Read");
+        assert_eq!(activity.full_path.as_deref(), Some("scratch/paper.md"));
+        assert_eq!(activity.summary.as_deref(), Some("scratch/paper.md"));
+        assert_eq!(activity.timestamp, 1_700_000_001_000);
+    }
+
+    #[test]
+    fn truncates_activity_summary_like_node_agent() {
+        let now = 1_700_000_000_000i64;
+        let long_parent = "a".repeat(40);
+        let line = format!(
+            r#"{{"timestamp":1700000001000,"type":"post_tool_use","tmuxSession":"worker","tool":"Write","toolInput":{{"file_path":"{}/notes.md"}}}}"#,
+            long_parent
+        );
+        let activity = parse_activity_frame_from_events_jsonl_line(&line, now)
+            .expect("expected parseable activity");
+        let display = format!("{long_parent}/notes.md");
+        let expected = format!("…{}", &display[display.len() - 34..]);
+
+        assert_eq!(activity.summary, Some(expected));
+    }
+
+    #[test]
+    fn truncates_unicode_activity_summary_without_byte_slicing() {
+        let now = 1_700_000_000_000i64;
+        let long_parent = "é".repeat(40);
+        let line = format!(
+            r#"{{"timestamp":1700000001000,"type":"post_tool_use","tmuxSession":"worker","tool":"Write","toolInput":{{"file_path":"{}/notes.md"}}}}"#,
+            long_parent
+        );
+        let activity = parse_activity_frame_from_events_jsonl_line(&line, now)
+            .expect("expected parseable activity");
+        let summary = activity.summary.expect("expected summary");
+
+        assert!(summary.starts_with('…'));
+        assert_eq!(summary.chars().count(), 35);
+        assert!(summary.ends_with("/notes.md"));
+    }
+
+    #[test]
+    fn ignores_non_tool_events() {
+        let now = 1_700_000_000_000i64;
+        let line = r#"{"timestamp":1700000001000,"type":"stop","tmuxSession":"worker","tool":"Read","toolInput":{"file_path":"scratch/paper.md"}}"#;
+        let activity = parse_activity_frame_from_events_jsonl_line(line, now);
+
+        assert!(activity.is_none());
+    }
+
+    #[test]
+    fn skips_unknown_tool_summary_but_still_preserves_tool() {
+        let now = 1_700_000_000_000i64;
+        let line = r#"{"timestamp":1700000001000,"type":"pre_tool_use","tmuxSession":"worker","tool":"Bash","toolInput":{"file_path":"scratch/paper.md"}}"#;
+        let activity = parse_activity_frame_from_events_jsonl_line(line, now)
+            .expect("expected parseable activity");
+
+        assert_eq!(activity.tool, "Bash");
+        assert!(activity.summary.is_none());
+        assert!(activity.full_path.is_none());
+    }
+
+    #[test]
+    fn parses_multiple_activity_lines_into_frames() {
+        let now = 1_700_000_000_000i64;
+        let payload = r#"{"timestamp":1700000001000,"type":"pre_tool_use","tmuxSession":"worker","tool":"Read","toolInput":{"file_path":"scratch/paper.md"}}
+{"timestamp":1700000002000,"type":"stop","tmuxSession":"worker","tool":"Read","toolInput":{"file_path":"scratch/paper.md"}}
+{"timestamp":1700000003000,"type":"post_tool_use","tmuxSession":"editor","tool":"Write","toolInput":{"file_path":"docs/notes.md"}}
+malformed
+{"timestamp":1700000004000,"type":"pre_tool_use","tmuxSession":"","tool":"Read","toolInput":{"file_path":"bad/one.md"}}"#;
+        let frames = parse_activity_frames_from_events_jsonl(payload, now);
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].tmux_session, "worker");
+        assert_eq!(frames[0].tool, "Read");
+        assert_eq!(frames[1].tmux_session, "editor");
+        assert_eq!(frames[1].tool, "Write");
     }
 
     fn temp_host(name: &str) -> PathBuf {
