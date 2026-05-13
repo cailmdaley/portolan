@@ -424,12 +424,13 @@ wss.on('connection', async (ws, req) => {
   const agentRuntime = parseRemoteAgentRuntime(url.searchParams.get('agentRuntime'));
   const plannotatorPortParam = url.searchParams.get('plannotatorPort');
   const plannotatorPort = plannotatorPortParam ? parseInt(plannotatorPortParam, 10) : undefined;
+  const agentOnce = url.searchParams.get('once') === 'true';
 
   if (isAgent && originName) {
     // Agent connection — normalize origin name using sshHost when available
     // so different login nodes (login07.leonardo.local) map to the same origin (cineca).
     const effectiveOriginName = sshHost ? sshHost.replace(/-login\d+$/, '') : originName;
-    const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort, agentRuntime);
+    const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort, agentRuntime, agentOnce);
     cityManager.setOriginPosition(origin.id, origin.position);
     // Track sshHost for city key normalization (so different login nodes share cities)
     if (sshHost) {

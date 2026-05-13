@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
 import type { AgentActivityMessage, AgentSessionsUpdateMessage } from './MessageRouter.js';
-import { OriginManager, type RemoteAgentRuntime } from './OriginManager.js';
+import { OriginManager, type Origin, type RemoteAgentRuntime } from './OriginManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
 import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
@@ -31,7 +31,17 @@ interface RemoteAgentCoordinatorCallbacks {
   broadcastActivity(activity: ActivityEvent, originId: string): void;
   broadcastState(): void;
   rebuildCities(): void;
-  recoverRemoteAgent(sshHost: string, agentRuntime?: RemoteAgentRuntime): Promise<RemoteAgentRecoveryResult>;
+  recoverRemoteAgent(
+    sshHost: string,
+    agentRuntime?: RemoteAgentRuntime,
+    startupOptions?: RemoteAgentStartupOptions,
+  ): Promise<RemoteAgentRecoveryResult>;
+}
+
+interface RemoteAgentStartupOptions {
+  origin?: string;
+  plannotatorPort?: number;
+  once?: boolean;
 }
 
 export interface RemoteAgentRecoveryResult {
@@ -50,6 +60,7 @@ interface RemoteAgentRecoveryState {
   lastResult?: RemoteAgentRecoveryResult;
   lastError?: string;
   inFlight?: boolean;
+  startupOptions?: RemoteAgentStartupOptions;
 }
 
 export interface RemoteShuttleSnapshotStats {
@@ -133,6 +144,7 @@ export class RemoteAgentCoordinator {
       originId: state.originId,
       sshHost: state.sshHost,
       agentRuntime: state.agentRuntime,
+      startupOptions: state.startupOptions ?? null,
       disconnectedAt: new Date(state.disconnectedAt).toISOString(),
       lastAttemptAt: state.lastAttemptAt ? new Date(state.lastAttemptAt).toISOString() : null,
       inFlight: !!state.inFlight,
@@ -153,6 +165,17 @@ export class RemoteAgentCoordinator {
         snapshot: entry.snapshot,
       };
     });
+  }
+
+  private runtimeStartupOptions(origin: Origin | null | undefined): RemoteAgentStartupOptions {
+    if (!origin) {
+      return {};
+    }
+    const options: RemoteAgentStartupOptions = { origin: origin.name };
+    if (origin.plannotatorPort !== undefined) {
+      options.plannotatorPort = origin.plannotatorPort;
+    }
+    return options;
   }
 
   getGitStatus(originId: string, path: string): GitStatus | undefined {
@@ -353,13 +376,20 @@ export class RemoteAgentCoordinator {
     this.callbacks.broadcastState();
 
     if (sshHost) {
+      const origin = this.originManager.getOrigin(originId);
+      if (origin?.agentOnce) {
+        console.log(`[RemoteAgent] ${sshHost}: ${agentRuntime} one-shot agent disconnected; skipping auto-recovery`);
+        return;
+      }
+      const startupOptions = this.runtimeStartupOptions(origin);
       this.recoveryStates.set(originId, {
         originId,
         sshHost,
         agentRuntime,
+        startupOptions,
         disconnectedAt: Date.now(),
       });
-      void this.recoverRemoteAgent(originId, sshHost, Date.now(), agentRuntime);
+      void this.recoverRemoteAgent(originId, sshHost, Date.now(), agentRuntime, startupOptions);
     }
   }
 
@@ -368,10 +398,12 @@ export class RemoteAgentCoordinator {
       if (origin.type !== 'remote' || !origin.sshHost || this.originManager.isOriginConnected(origin.id)) {
         continue;
       }
+      if (origin.agentOnce) continue;
       const state = this.recoveryStates.get(origin.id);
       if (!state) continue;
       if (now - state.disconnectedAt < 15_000) continue;
-      void this.recoverRemoteAgent(origin.id, origin.sshHost, now, origin.agentRuntime ?? 'node');
+      const startupOptions = this.runtimeStartupOptions(origin);
+      void this.recoverRemoteAgent(origin.id, origin.sshHost, now, origin.agentRuntime ?? 'node', startupOptions);
     }
   }
 
@@ -380,6 +412,7 @@ export class RemoteAgentCoordinator {
     sshHost: string,
     now = Date.now(),
     agentRuntime: RemoteAgentRuntime = 'node',
+    startupOptions: RemoteAgentStartupOptions = {},
   ): Promise<void> {
     const existing = this.recoveryStates.get(originId) ?? {
       originId,
@@ -396,11 +429,12 @@ export class RemoteAgentCoordinator {
     existing.inFlight = true;
     existing.lastAttemptAt = now;
     existing.lastError = undefined;
+    existing.startupOptions = startupOptions;
     this.recoveryStates.set(originId, existing);
 
     try {
       console.log(`[RemoteAgent] ${sshHost}: tunnel/${agentRuntime} agent recovery starting`);
-      existing.lastResult = await this.callbacks.recoverRemoteAgent(sshHost, agentRuntime);
+      existing.lastResult = await this.callbacks.recoverRemoteAgent(sshHost, agentRuntime, startupOptions);
       console.log(`[RemoteAgent] ${sshHost}: ${existing.lastResult.message}`);
     } catch (error) {
       existing.lastError = errorMessage(error);
@@ -611,16 +645,36 @@ function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string {
   return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;
 }
 
-function remoteAgentCommand(agentRuntime: RemoteAgentRuntime, sshHost: string): string {
+function buildRustRemoteCommand(
+  sshHost: string,
+  options: RemoteAgentStartupOptions = {},
+): string {
+  const origin = options.origin ? ` --origin=${shellEscape(options.origin)}` : '';
+  const plannotatorPort = options.plannotatorPort !== undefined
+    ? ` --plannotator-port=${shellEscape(String(options.plannotatorPort))}`
+    : '';
+  const once = options.once ? ' --once' : '';
+  return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}${origin}${plannotatorPort}${once}`;
+}
+
+function remoteAgentCommand(
+  agentRuntime: RemoteAgentRuntime,
+  sshHost: string,
+  startupOptions: RemoteAgentStartupOptions = {},
+): string {
   if (agentRuntime === 'rust') {
-    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}`;
+    return buildRustRemoteCommand(sshHost, startupOptions);
   }
   return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
 }
 
-async function startRemoteAgent(sshHost: string, agentRuntime: RemoteAgentRuntime): Promise<void> {
+async function startRemoteAgent(
+  sshHost: string,
+  agentRuntime: RemoteAgentRuntime,
+  startupOptions: RemoteAgentStartupOptions = {},
+): Promise<void> {
   const session = remoteAgentTmuxSession(agentRuntime);
-  const agentCommand = remoteAgentCommand(agentRuntime, sshHost);
+  const agentCommand = remoteAgentCommand(agentRuntime, sshHost, startupOptions);
   const remoteCommand = [
     `tmux kill-session -t ${shellEscape(`=${session}:`)} 2>/dev/null || true`,
     `tmux new-session -d -s ${shellEscape(session)} ${shellEscape(`bash -l -c ${shellEscape(agentCommand)}`)}`,
@@ -632,6 +686,7 @@ async function startRemoteAgent(sshHost: string, agentRuntime: RemoteAgentRuntim
 export async function recoverRemoteAgent(
   sshHost: string,
   agentRuntime: RemoteAgentRuntime = 'node',
+  startupOptions: RemoteAgentStartupOptions = {},
 ): Promise<RemoteAgentRecoveryResult> {
   await reconnectTunnel(sshHost);
   const session = remoteAgentTmuxSession(agentRuntime);
@@ -647,7 +702,7 @@ export async function recoverRemoteAgent(
   }
 
   try {
-    await startRemoteAgent(sshHost, agentRuntime);
+    await startRemoteAgent(sshHost, agentRuntime, startupOptions);
     return {
       sshHost,
       tunnel: 'reachable',

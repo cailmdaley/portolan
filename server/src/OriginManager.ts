@@ -18,6 +18,7 @@ export interface Origin {
   type: 'local' | 'remote';
   sshHost?: string;              // SSH config host (for remote focus)
   agentRuntime?: RemoteAgentRuntime; // Runtime that currently owns this origin socket
+  agentOnce?: boolean;           // One-shot preview agents intentionally do not auto-recover
   plannotatorPort?: number;      // Port for plannotator on this origin
   position: { q: number; r: number };  // hex offset for this origin's cities
   connectedAt: number;
@@ -59,6 +60,7 @@ export class OriginManager {
     sshHost?: string,
     plannotatorPort?: number,
     agentRuntime: RemoteAgentRuntime = 'node',
+    agentOnce = false,
   ): Origin {
     const originId = `remote-${originName}`;
     let origin = this.origins.get(originId);
@@ -72,6 +74,7 @@ export class OriginManager {
         type: 'remote',
         sshHost: sshHost || originName,
         agentRuntime,
+        agentOnce,
         plannotatorPort,
         position: this.getCompassPosition(this.nextPositionIndex),
         connectedAt: Date.now(),
@@ -87,6 +90,7 @@ export class OriginManager {
         origin.sshHost = sshHost;
       }
       origin.agentRuntime = agentRuntime;
+      origin.agentOnce = agentOnce;
       if (plannotatorPort) {
         origin.plannotatorPort = plannotatorPort;
       }

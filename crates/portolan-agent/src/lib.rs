@@ -431,6 +431,9 @@ pub fn build_agent_url(config: &AgentConfig) -> String {
         url.push_str("&plannotatorPort=");
         url.push_str(&plannotator_port.to_string());
     }
+    if config.once {
+        url.push_str("&once=true");
+    }
 
     url
 }
@@ -2868,6 +2871,23 @@ malformed
         assert_eq!(
             url,
             "ws://localhost:4004/?agent=true&agentRuntime=rust&origin=login%2001&sshHost=cineca-login01&plannotatorPort=4008"
+        );
+    }
+
+    #[test]
+    fn includes_once_in_agent_url_for_one_shot_preview_sessions() {
+        let url = build_agent_url(&AgentConfig {
+            server: "localhost:4004".to_string(),
+            origin: "candide".to_string(),
+            ssh_host: Some("candide".to_string()),
+            plannotator_port: None,
+            reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
+            once: true,
+        });
+
+        assert_eq!(
+            url,
+            "ws://localhost:4004/?agent=true&agentRuntime=rust&origin=candide&sshHost=candide&once=true"
         );
     }
 

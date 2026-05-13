@@ -538,7 +538,18 @@ export class HttpApi {
     }
 
     if (req.method === 'POST' && url.pathname === '/activate-city') {
-      await this.activationApi.handleActivateCity(url, res);
+      const hasJsonBody = req.headers['content-type']?.toString().startsWith('application/json')
+        && (!!req.headers['content-length']
+          ? Number(req.headers['content-length']) > 0
+          : req.headers['transfer-encoding'] !== undefined);
+
+      let body: unknown = undefined;
+      if (hasJsonBody) {
+        const parsedBody = await this.parseJsonBody<unknown>(req, res);
+        if (parsedBody === null) return true;
+        body = parsedBody;
+      }
+      await this.activationApi.handleActivateCity(url, res, body);
       return true;
     }
 

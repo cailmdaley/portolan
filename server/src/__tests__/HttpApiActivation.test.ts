@@ -145,6 +145,74 @@ describe('HttpApiActivation', () => {
     });
   });
 
+  it('accepts rust preview activation options from request body', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
+    const remoteCity = city();
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(remoteCity) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn,
+      execFileFn: execFileFn as any,
+    });
+    const { res, result } = captureResponse();
+    const body = {
+      cityId: 'remote-city',
+      agentRuntime: 'rust',
+      origin: "candide' ; touch /tmp/x",
+      plannotatorPort: 50055,
+      once: true,
+    };
+
+    await api.handleActivateCity(new URL('http://localhost/activate-city'), res, body);
+
+    expect(reconnectTunnelFn).toHaveBeenCalledWith('candide');
+    expect(execFileFn).toHaveBeenCalledTimes(2);
+    const startArgs = execFileFn.mock.calls[1]?.[1] as string[];
+    const escapedOrigin = shellEscape(body.origin);
+    const expectedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape('candide')} --origin=${escapedOrigin} --plannotator-port=${shellEscape('50055')} --once`;
+    const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust-preview')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
+    expect(startArgs[0]).toBe('-T');
+    expect(startArgs[1]).toBe('candide');
+    expect(startArgs[2]).toBe(expectedRemoteCommand);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'started',
+        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+      },
+    });
+  });
+
+  it('rejects invalid rust preview plannotator port payload', async () => {
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      execFileFn: vi.fn() as any,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city'),
+      res,
+      {
+        cityId: 'remote-city',
+        agentRuntime: 'rust',
+        plannotatorPort: 'nope',
+      },
+    );
+
+    expect(result()).toEqual({
+      status: 400,
+      body: {
+        error: 'Invalid plannotatorPort: nope',
+      },
+    });
+  });
+
   it('does not start a second runtime-specific session when one is already running', async () => {
     const execFileFn = vi.fn().mockResolvedValueOnce({ stdout: 'running\n', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);

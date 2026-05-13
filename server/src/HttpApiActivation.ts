@@ -23,6 +23,20 @@ type RemoteAgentRuntime = 'node' | 'rust';
 const NODE_AGENT_SESSION = 'portolan-agent';
 const RUST_AGENT_SESSION = 'portolan-agent-rust-preview';
 
+interface ActivationBody {
+  cityId?: string;
+  agentRuntime?: string;
+  origin?: string;
+  plannotatorPort?: number | string;
+  once?: boolean;
+}
+
+interface RustActivationOptions {
+  origin?: string;
+  plannotatorPort?: number;
+  once?: boolean;
+}
+
 function parseAgentRuntime(value: string | null): RemoteAgentRuntime {
   if (!value || value === 'node') {
     return 'node';
@@ -37,9 +51,61 @@ function agentSessionForRuntime(runtime: RemoteAgentRuntime): string {
   return runtime === 'rust' ? RUST_AGENT_SESSION : NODE_AGENT_SESSION;
 }
 
-function agentStartCommand(runtime: RemoteAgentRuntime, sshHost: string): string {
+function parseActivationBody(body: unknown): ActivationBody {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return {};
+  }
+  return body as ActivationBody;
+}
+
+function parsePlannotatorPort(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+      throw new Error(`Invalid plannotatorPort: ${value}`);
+    }
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isInteger(parsed) || `${parsed}` !== value.trim() || parsed < 1 || parsed > 65535) {
+      throw new Error(`Invalid plannotatorPort: ${value}`);
+    }
+    return parsed;
+  }
+  throw new Error(`Invalid plannotatorPort: ${String(value)}`);
+}
+
+function parseRustActivationOptions(body: ActivationBody, runtime: RemoteAgentRuntime): RustActivationOptions {
+  if (runtime !== 'rust') {
+    return {};
+  }
+
+  const origin = body.origin?.trim();
+  const plannotatorPort = parsePlannotatorPort(body.plannotatorPort);
+  const once = body.once;
+
+  if (once !== undefined && typeof once !== 'boolean') {
+    throw new Error(`Invalid once flag: ${String(once)}`);
+  }
+
+  const options: RustActivationOptions = {};
+  if (origin) options.origin = origin;
+  if (plannotatorPort !== undefined) options.plannotatorPort = plannotatorPort;
+  if (once === true) options.once = once;
+  return options;
+}
+
+function agentStartCommand(runtime: RemoteAgentRuntime, sshHost: string, options: RustActivationOptions = {}): string {
   if (runtime === 'rust') {
-    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}`;
+    const origin = options.origin
+      ? ` --origin=${shellEscape(options.origin)}`
+      : '';
+    const plannotatorPort = options.plannotatorPort !== undefined
+      ? ` --plannotator-port=${shellEscape(String(options.plannotatorPort))}`
+      : '';
+    const once = options.once ? ' --once' : '';
+    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}${origin}${plannotatorPort}${once}`;
   }
   return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
 }
@@ -57,9 +123,11 @@ export class HttpApiActivation {
     this.execFileFn = options.execFileFn ?? execFileAsync;
   }
 
-  async handleActivateCity(url: URL, res: ServerResponse): Promise<void> {
-    console.log(`[Activate] Received request for cityId=${url.searchParams.get('cityId')}`);
-    const cityId = url.searchParams.get('cityId');
+  async handleActivateCity(url: URL, res: ServerResponse, body?: unknown): Promise<void> {
+    const payload = parseActivationBody(body);
+    const cityId = payload.cityId ?? url.searchParams.get('cityId');
+    console.log(`[Activate] Received request for cityId=${cityId}`);
+    const requestedRuntime = payload.agentRuntime ?? url.searchParams.get('agentRuntime');
     if (!cityId) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing cityId parameter' }));
@@ -75,7 +143,16 @@ export class HttpApiActivation {
 
     let runtime: RemoteAgentRuntime;
     try {
-      runtime = parseAgentRuntime(url.searchParams.get('agentRuntime'));
+      runtime = parseAgentRuntime(requestedRuntime);
+    } catch (error: unknown) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: (error as Error).message }));
+      return;
+    }
+
+    let rustOptions: RustActivationOptions;
+    try {
+      rustOptions = parseRustActivationOptions(payload, runtime);
     } catch (error: unknown) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: (error as Error).message }));
@@ -90,7 +167,9 @@ export class HttpApiActivation {
 
     const sshHost = this.getSshHost(city);
     const runtimeSession = agentSessionForRuntime(runtime);
-    const startCommand = agentStartCommand(runtime, sshHost);
+    const startCommand = runtime === 'rust'
+      ? agentStartCommand(runtime, sshHost, rustOptions)
+      : agentStartCommand(runtime, sshHost);
 
     try {
       // Reset tunnel first — kills stale ControlMaster and re-establishes

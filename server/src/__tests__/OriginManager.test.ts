@@ -45,4 +45,18 @@ describe('OriginManager', () => {
     expect(fullyDisconnected?.agentRuntime).toBe('rust');
     expect(fullyDisconnected?.sshHost).toBe('candide');
   });
+
+  it('stores and clears one-shot agent registrations per origin', () => {
+    const manager = new OriginManager();
+    const firstSocket = makeSocket();
+    const secondSocket = makeSocket();
+
+    const firstOrigin = manager.registerAgent('candide', firstSocket, 'candide', undefined, 'rust', true);
+    expect(firstOrigin.agentRuntime).toBe('rust');
+    expect(firstOrigin.agentOnce).toBe(true);
+
+    const secondOrigin = manager.registerAgent('candide', secondSocket, 'candide', undefined, 'rust');
+    expect(firstSocket.close).toHaveBeenCalledTimes(1);
+    expect(secondOrigin.agentOnce).toBe(false);
+  });
 });
