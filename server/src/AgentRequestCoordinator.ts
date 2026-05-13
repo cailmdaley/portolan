@@ -31,6 +31,8 @@ import type { OriginManager } from './OriginManager.js';
 interface PendingRequest {
   correlationId: string;
   originId: string;
+  type: string;
+  startedAt: number;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timeoutHandle: NodeJS.Timeout;
@@ -39,17 +41,34 @@ interface PendingRequest {
 export interface AgentRequestCoordinatorOptions {
   /** Default request timeout in ms. Overridable per-call. */
   defaultTimeoutMs?: number;
+  now?: () => number;
+}
+
+export interface AgentRequestDiagnostic {
+  correlationId: string;
+  originId: string;
+  type: string;
+  ageMs: number;
+}
+
+export interface AgentRequestDiagnostics {
+  pending: number;
+  byOrigin: Array<{ originId: string; pending: number }>;
+  byType: Array<{ type: string; pending: number }>;
+  requests: AgentRequestDiagnostic[];
 }
 
 export class AgentRequestCoordinator {
   private pending = new Map<string, PendingRequest>();
   private readonly defaultTimeoutMs: number;
+  private readonly now: () => number;
 
   constructor(
     private originManager: OriginManager,
     options: AgentRequestCoordinatorOptions = {},
   ) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 5000;
+    this.now = options.now ?? Date.now;
   }
 
   /**
@@ -97,6 +116,8 @@ export class AgentRequestCoordinator {
       this.pending.set(correlationId, {
         correlationId,
         originId,
+        type,
+        startedAt: this.now(),
         resolve: resolve as (r: unknown) => void,
         reject,
         timeoutHandle,
@@ -158,5 +179,40 @@ export class AgentRequestCoordinator {
   /** Test/observability hook — number of in-flight requests. */
   getPendingCount(): number {
     return this.pending.size;
+  }
+
+  getDiagnostics(): AgentRequestDiagnostics {
+    const now = this.now();
+    const byOrigin = new Map<string, number>();
+    const byType = new Map<string, number>();
+    const requests = Array.from(this.pending.values()).map((entry) => {
+      byOrigin.set(entry.originId, (byOrigin.get(entry.originId) ?? 0) + 1);
+      byType.set(entry.type, (byType.get(entry.type) ?? 0) + 1);
+      return {
+        correlationId: entry.correlationId,
+        originId: entry.originId,
+        type: entry.type,
+        ageMs: Math.max(0, now - entry.startedAt),
+      };
+    });
+
+    const sortCounts = <T extends { pending: number } & Record<string, unknown>>(
+      left: T,
+      right: T,
+      key: keyof T,
+    ) => right.pending - left.pending || String(left[key]).localeCompare(String(right[key]));
+
+    return {
+      pending: this.pending.size,
+      byOrigin: Array.from(byOrigin.entries())
+        .map(([originId, pending]) => ({ originId, pending }))
+        .sort((a, b) => sortCounts(a, b, 'originId')),
+      byType: Array.from(byType.entries())
+        .map(([type, pending]) => ({ type, pending }))
+        .sort((a, b) => sortCounts(a, b, 'type')),
+      requests: requests.sort((a, b) =>
+        b.ageMs - a.ageMs || a.originId.localeCompare(b.originId) || a.type.localeCompare(b.type),
+      ),
+    };
   }
 }

@@ -295,6 +295,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       local: terminalStreamManager.stats(),
       remote: getRemoteTerminalSubscriptionStats(),
     },
+    remoteAgentRequests: agentRequestCoordinator.getDiagnostics(),
     remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
     remoteAgentRecovery: remoteAgentCoordinator.getRemoteAgentRecoveryStats(),
     remoteAgentRuntimeProfiles: remoteAgentRuntimeProfiles(),

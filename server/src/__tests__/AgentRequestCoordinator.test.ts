@@ -203,4 +203,53 @@ describe('AgentRequestCoordinator', () => {
     await expect(coord.send('remote-cineca', 'noop', {})).rejects.toThrow(/socket dead/);
     expect(coord.getPendingCount()).toBe(0);
   });
+
+  it('reports pending requests by origin and type for runtime diagnostics', () => {
+    let now = 1_000;
+    const { ws: cinecaWs } = makeStubWs();
+    const { ws: candideWs } = makeStubWs();
+    originManager.registerAgent('cineca', cinecaWs);
+    originManager.registerAgent('candide', candideWs);
+    coord = new AgentRequestCoordinator(originManager, { now: () => now });
+
+    const pending = [
+      coord.send('remote-cineca', 'terminal-capture', {}),
+      coord.send('remote-cineca', 'file-content', {}),
+      coord.send('remote-candide', 'terminal-capture', {}),
+    ];
+    now = 1_250;
+
+    expect(coord.getDiagnostics()).toEqual({
+      pending: 3,
+      byOrigin: [
+        { originId: 'remote-cineca', pending: 2 },
+        { originId: 'remote-candide', pending: 1 },
+      ],
+      byType: [
+        { type: 'terminal-capture', pending: 2 },
+        { type: 'file-content', pending: 1 },
+      ],
+      requests: expect.arrayContaining([
+        expect.objectContaining({
+          originId: 'remote-cineca',
+          type: 'terminal-capture',
+          ageMs: 250,
+        }),
+        expect.objectContaining({
+          originId: 'remote-cineca',
+          type: 'file-content',
+          ageMs: 250,
+        }),
+        expect.objectContaining({
+          originId: 'remote-candide',
+          type: 'terminal-capture',
+          ageMs: 250,
+        }),
+      ]),
+    });
+
+    for (const request of pending) {
+      request.catch(() => {});
+    }
+  });
 });
