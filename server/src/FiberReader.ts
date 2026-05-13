@@ -9,7 +9,7 @@ export interface Fiber {
   id: string;        // slug path under .felt/ — bare for top-level (`foo`) or
                      // slash-joined for nested (`foo/bar`). Matches what
                      // `felt ls --json` emits for nested fibers.
-  name: string;      // frontmatter `name:` (ASTRA vocabulary)
+  name: string;      // frontmatter `name:`
   status: string;    // open, active, closed
   kind: string;      // task, decision, question, spec
   priority: number;  // default 2
@@ -25,7 +25,7 @@ export interface Fiber {
   cold?: boolean;     // project-owned frontmatter `cold:` — when true, stash
                       // cluster renders dimmer and below warm clusters
                       // (held-open). Default false (warm).
-  tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
+  tags?: string[];
   dependsOn?: string[]; // fiber IDs this depends on
   tempered?: boolean;   // human-acceptance signal — agent never sets this itself; Shuttle reads it as the dependency-satisfied edge
   /** True when the fiber has a `shuttle:` frontmatter block. The dispatch signal lives here. */
@@ -90,7 +90,7 @@ export interface Fiber {
  * `withBody` is opt-in. Bodies inflate the JSON payload ~80× (8.6 MB vs
  * ~100 KB on a 325-fiber loom) and force felt to read every file's body
  * off disk; metadata-only callers (kanban, fiber-count probes) should
- * keep the default `false`. Search/tapestry callers that score against
+ * keep the default `false`. Search callers that score against
  * body content pass `true`.
  */
 async function readAllFibers(cityPath: string, opts: { withBody?: boolean } = {}): Promise<Fiber[]> {
@@ -145,7 +145,7 @@ async function readAllFibers(cityPath: string, opts: { withBody?: boolean } = {}
  * re-parsing YAML.
  *
  * `kind` and `priority` are not part of felt's serialized model — they're
- * Portolan/ASTRA conventions felt does not interpret. We default them so
+ * Portolan conventions felt does not interpret. We default them so
  * downstream consumers see a uniform shape regardless of source.
  */
 export function mapFeltJsonToFiber(item: unknown): Fiber | null {
@@ -241,7 +241,7 @@ export function mapFeltJsonToFiber(item: unknown): Fiber | null {
       ? id.slice(0, id.lastIndexOf('/'))
       : null;
 
-  // kind / priority are Portolan/ASTRA conventions felt does not interpret.
+  // kind / priority are Portolan conventions felt does not interpret.
   // They land in ExtraFields and surface as flat top-level JSON keys
   // (felt v1.0.4+); we read them here with stable defaults so downstream
   // consumers see a uniform shape.
@@ -403,7 +403,7 @@ export async function getFiber(cityPath: string, fiberId: string): Promise<Fiber
 /**
  * Gets all fibers for a city regardless of status. `withBody` is off by
  * default — pass `{ withBody: true }` only when the caller actually scores
- * or renders against fiber bodies (search, tapestry). Most consumers
+ * or renders against fiber bodies (search). Most consumers
  * (kanban, count probes, fiber list) only need metadata.
  */
 export async function getAllFibers(

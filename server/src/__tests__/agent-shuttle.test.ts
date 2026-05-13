@@ -337,25 +337,6 @@ describe('agent: remote file request helpers', () => {
     }
   });
 
-  it('returns tapestry evidence JSON with mtimes', () => {
-    const evidenceDir = join(rootDir, 'results', 'tapestry', 'spec_a');
-    mkdirSync(evidenceDir, { recursive: true });
-    writeFileSync(
-      join(evidenceDir, 'evidence.json'),
-      '{"evidence":{"pte":0.12},"output":{"figure":"plot.png"}}',
-    );
-
-    const result = agentMod.executeTapestryEvidenceRequest({
-      cityPath: rootDir,
-      specNames: ['spec_a', 'missing'],
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.evidences.spec_a.evidenceJson).toContain('"pte":0.12');
-    expect(result.evidences.spec_a.mtimeMs).toBeGreaterThan(0);
-    expect(result.evidences.missing).toBeNull();
-  });
-
   it('reports file-content and project-file size errors before replying', () => {
     const writePath = join(rootDir, 'large.txt');
     expect(() => agentMod.executeFileContentRequest({

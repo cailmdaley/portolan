@@ -289,7 +289,7 @@ export function renderArtifactGallery(
 
   const renderPdfPreview = async (container: HTMLElement, path: string): Promise<void> => {
     if (!isPdfArtifact(path)) return
-    const media = container.querySelector('.tapestry-artifact .artifact-media.pdf') as HTMLElement | null
+    const media = container.querySelector('.artifact-view .artifact-media.pdf') as HTMLElement | null
     if (!media || media.dataset.artifactPath !== path) return
     const canvas = media.querySelector('canvas') as HTMLCanvasElement | null
     if (!canvas) return
@@ -399,9 +399,9 @@ export function renderArtifactGallery(
 
   const [name0, path0] = entries[0]
   const html = `
-    <div class="tapestry-artifact-viewer">
+    <div class="artifact-viewer">
       ${hasMultiple ? `<span class="artifact-nav" data-delta="-1">\u2190</span>` : ''}
-      <div class="tapestry-artifact">
+      <div class="artifact-view">
         <span class="artifact-label">${escapeHtml(name0)}${hasMultiple ? ` (1/${entries.length})` : ''}</span>
         ${mediaHtml(name0, path0)}
       </div>
@@ -410,7 +410,7 @@ export function renderArtifactGallery(
 
   const markImageLoaded = (container: HTMLElement, path: string) => {
     if (isPdfArtifact(path)) return
-    const media = container.querySelector('.tapestry-artifact .artifact-media.image') as HTMLElement | null
+    const media = container.querySelector('.artifact-view .artifact-media.image') as HTMLElement | null
     if (!media || media.dataset.artifactPath !== path) return
     const img = media.querySelector('img')
     if (!img) return
@@ -432,7 +432,7 @@ export function renderArtifactGallery(
 
   const updateImg = (container: HTMLElement) => {
     const [name, path] = entries[currentIndex]
-    const media = container.querySelector('.tapestry-artifact .artifact-media') as HTMLElement | null
+    const media = container.querySelector('.artifact-view .artifact-media') as HTMLElement | null
     clearPdfResizeObserver()
     if (media) media.outerHTML = mediaHtml(name, path)
     const label = container.querySelector('.artifact-label')

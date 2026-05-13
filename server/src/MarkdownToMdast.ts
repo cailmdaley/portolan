@@ -4,7 +4,7 @@
  * Mirrors mystra/src/transform/render-markdown.ts — the same remark stack plus
  * a small [[wikilink]] plugin so portolan fiber cross-references render as
  * clickable links in the vellum reader. Kept in-repo (rather than importing
- * mystra) because portolan fibers don't need the full ASTRA transform; plain
+ * mystra) because portolan fibers don't need a full external transform; plain
  * markdown + wikilinks is the whole surface area.
  */
 

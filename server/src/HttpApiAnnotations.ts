@@ -129,10 +129,10 @@ export class HttpApiAnnotations {
   private sessionLookup: SessionLookup | null = null;
   private onCreateNewWorker: ((cityPath: string, originId: string) => Promise<string>) | null = null;
   private onFocusSession: ((sessionId: string) => void) | null = null;
-  /** Notifies the tapestry cache that a new fiber landed via /file-as-fiber.
-   *  Without this, the 30s TTL would hide the new fiber from /astra/graph
+  /** Notifies the fiber-list cache that a new fiber landed via /file-as-fiber.
+   *  Without this, the 30s TTL would hide the new fiber from /fiber-graph
    *  and search until expiry. Wired in HttpApi after both APIs are
-   *  constructed (tapestryApi can't be referenced from this constructor). */
+   *  constructed (the fibers API can't be referenced from this constructor). */
   private onFiberCreated: ((cityPath: string, sshHost?: string) => void) | null = null;
   private tmuxMessenger = new TmuxSessionMessenger();
 
@@ -542,7 +542,7 @@ export class HttpApiAnnotations {
         invalidateSshHost = origin.sshHost;
       }
 
-      // Invalidate the tapestry's fiber-list cache so the next /astra/graph
+      // Invalidate the fiber-list cache so the next /fiber-graph
       // or search hit sees the freshly-created fiber instead of waiting out
       // the 30s TTL. Best-effort — if the hook isn't wired we just live
       // with the latency.
@@ -690,7 +690,7 @@ export class HttpApiAnnotations {
           ? this.originLookup.getOrigin(originId)?.sshHost
           : undefined;
 
-      // Invalidate the tapestry's fiber-list cache so /astra/graph and
+      // Invalidate the fiber-list cache so /fiber-graph and
       // /api/search reflect the new fiber immediately rather than waiting
       // out the 30s TTL. Same hook /file-as-fiber uses.
       this.onFiberCreated?.(cityPath, invalidateSshHost);

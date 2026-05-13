@@ -7,7 +7,7 @@
  *   - getAnnotations / createAnnotation etc. wrap /annotations (file-keyed today;
  *     fiber-slug keying TODO on server side)
  *   - getFiberContent hits /fiber/:slug (remark + wikilink transform on demand)
- *   - getFiberGraph hits /astra/graph?cityId=X
+ *   - getFiberGraph hits /fiber-graph?cityId=X
  *   - searchFibers wraps /api/search?cityId=…&q=… (server-side substring
  *     match across name/slug/tags/outcome/body, scored)
  *   - getRawFiber / putRawFiber wrap /fiber-raw for Vellum's inline fiber
@@ -126,7 +126,7 @@ interface GraphLinkWorld {
   kind: 'contains' | 'data-flow' | 'cites';
 }
 
-type LegacyGraphNode = GraphNode & { hasASTRA?: boolean };
+type LegacyGraphNode = GraphNode & { hasStructuredData?: boolean };
 
 function normalizeFiberGraph(graph: FiberGraph): FiberGraph {
   return {
@@ -135,7 +135,7 @@ function normalizeFiberGraph(graph: FiberGraph): FiberGraph {
       const legacy = node as LegacyGraphNode;
       return {
         ...node,
-        hasStructuredData: node.hasStructuredData ?? legacy.hasASTRA,
+        hasStructuredData: node.hasStructuredData ?? legacy.hasStructuredData,
       };
     }),
   };
@@ -270,7 +270,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
           })),
         };
       }
-      const res = await fetch(`${API_BASE}/astra/graph?cityId=${encodeURIComponent(collectionId)}`).catch(
+      const res = await fetch(`${API_BASE}/fiber-graph?cityId=${encodeURIComponent(collectionId)}`).catch(
         () => null,
       );
       if (!res || !res.ok) return { nodes: [], links: [] };
@@ -448,9 +448,8 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
 }
 
 /**
- * Narrow read-only view for contexts that cannot mutate (e.g. the static
- * tapestry deploy eventually uses a different adapter altogether, but code
- * paths that only read benefit from the narrower type).
+ * Narrow read-only view for contexts that cannot mutate. Code paths that
+ * only read benefit from the narrower type.
  */
 export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {}): ReadOnlyAdapter {
   const full = createPortolanAdapter(opts);

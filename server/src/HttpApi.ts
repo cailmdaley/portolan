@@ -2,8 +2,7 @@
  * HttpApi - HTTP request handlers
  *
  * Handles non-WebSocket HTTP endpoints:
- * - Tapestry DAG (fibers, evidence, staleness)
- * - Evidence artifact serving
+ * - Vellum fiber graph and fiber content
  * - Annotation CRUD
  * - City activation (start remote agent)
  */
@@ -21,7 +20,6 @@ import type { RecentsStore } from './RecentsStore.js';
 import { HttpApiActivation } from './HttpApiActivation.js';
 import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
-import { HttpApiAstraView } from './HttpApiAstraView.js';
 import {
   HttpApiFileContent,
   type RemoteFileContentInvocation,
@@ -44,13 +42,12 @@ import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiMeeting } from './HttpApiMeeting.js';
 import { HttpApiPlayground } from './HttpApiPlayground.js';
 import {
-  HttpApiTapestry,
+  HttpApiFibers,
   type RemoteFiberHistoryInvocation,
   type RemoteFiberHistoryResult,
   type RemoteRawFiberInvocation,
   type RemoteRawFiberResult,
-} from './HttpApiTapestry.js';
-import type { RemoteEvidenceBatchInvocation, RemoteEvidenceBatchResult } from './EvidenceReader.js';
+} from './HttpApiFibers.js';
 import type { MeetingBridge } from './MeetingBridge.js';
 
 // ============================================================================
@@ -62,7 +59,7 @@ interface CityLookup {
   /** All known cities (used by /fiber-locate to scan for a slug). */
   getCities(): City[];
   /** True iff this cityId is pinned (i.e. surfaces on the kanban / map).
-   *  Used by /astra/graph's cross-city augmentation. */
+   *  Used by the Vellum graph's cross-city augmentation. */
   isPinned(cityId: string): boolean;
 }
 
@@ -117,8 +114,6 @@ export interface HttpApiOptions {
   remoteFiberHistoryExecutor?: (
     request: RemoteFiberHistoryInvocation,
   ) => Promise<RemoteFiberHistoryResult>;
-  remoteCityConfigReader?: (request: { originId: string; path: string }) => Promise<string>;
-  remoteEvidenceBatchExecutor?: (request: RemoteEvidenceBatchInvocation) => Promise<RemoteEvidenceBatchResult>;
   remoteFileContentExecutor?: (
     request: RemoteFileContentInvocation,
   ) => Promise<RemoteFileContentResult>;
@@ -159,7 +154,6 @@ export class HttpApi {
   private originLookup: OriginLookup;
   private persistenceLookup: PersistenceLookup;
   private annotationsApi: HttpApiAnnotations;
-  private astraViewApi: HttpApiAstraView;
   private fileContentApi: HttpApiFileContent;
   private hooksRuntimeApi: HttpApiHooksRuntime;
   private recentsApi: HttpApiRecents;
@@ -167,15 +161,13 @@ export class HttpApi {
   private meetingApi: HttpApiMeeting;
   private activationApi: HttpApiActivation;
   private playgroundApi: HttpApiPlayground;
-  private tapestryApi: HttpApiTapestry;
+  private fibersApi: HttpApiFibers;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private remoteShuttleDiagnosticsProvider: (() => RemoteShuttleSnapshotDiagnostic[]) | undefined;
   private remoteDirectoryExecutor: HttpApiOptions['remoteDirectoryExecutor'];
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
   private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private remoteFiberHistoryExecutor: HttpApiOptions['remoteFiberHistoryExecutor'];
-  private remoteCityConfigReader: HttpApiOptions['remoteCityConfigReader'];
-  private remoteEvidenceBatchExecutor: HttpApiOptions['remoteEvidenceBatchExecutor'];
   private remoteFileContentExecutor: HttpApiOptions['remoteFileContentExecutor'];
   private remoteProjectFileExecutor: HttpApiOptions['remoteProjectFileExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
@@ -200,8 +192,6 @@ export class HttpApi {
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
-    this.remoteCityConfigReader = options.remoteCityConfigReader;
-    this.remoteEvidenceBatchExecutor = options.remoteEvidenceBatchExecutor;
     this.remoteFileContentExecutor = options.remoteFileContentExecutor;
     this.remoteProjectFileExecutor = options.remoteProjectFileExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
@@ -223,12 +213,6 @@ export class HttpApi {
       remoteFileContentExecutor: this.remoteFileContentExecutor,
       remoteProjectFileExecutor: this.remoteProjectFileExecutor,
       feltRoot: options.feltRoot,
-    });
-    this.astraViewApi = new HttpApiAstraView({
-      originLookup,
-      remoteDirectoryExecutor: this.remoteDirectoryExecutor,
-      remoteFileContentExecutor: this.remoteFileContentExecutor,
-      remoteProjectFileExecutor: this.remoteProjectFileExecutor,
     });
     this.kanbanApi = new HttpApiKanban({
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
@@ -265,25 +249,23 @@ export class HttpApi {
       remoteDirectoryExecutor: this.remoteDirectoryExecutor,
       remoteFileContentExecutor: this.remoteFileContentExecutor,
     });
-    this.tapestryApi = new HttpApiTapestry({
+    this.fibersApi = new HttpApiFibers({
       cityLookup,
       fileContentApi: this.fileContentApi,
       getSshHost: (city) => this.getSshHost(city),
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
-      remoteCityConfigReader: this.remoteCityConfigReader,
       remoteRawFiberExecutor: this.remoteRawFiberExecutor,
       remoteFiberHistoryExecutor: this.remoteFiberHistoryExecutor,
-      remoteEvidenceBatchExecutor: this.remoteEvidenceBatchExecutor,
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });
     // After both APIs exist, link them so a successful /file-as-fiber
-    // invalidates the tapestry's fiber-list cache. Without this, the 30s
-    // TTL would hide a freshly-created child fiber from /astra/graph and
+    // invalidates the Vellum fiber-list cache. Without this, the 30s
+    // TTL would hide a freshly-created child fiber from /fiber-graph and
     // /api/search until expiry. Couldn't be wired in HttpApiAnnotations'
-    // construction above — tapestryApi didn't exist yet.
+    // construction above — fiberGraphApi didn't exist yet.
     this.annotationsApi.setOnFiberCreated((cityPath, sshHost) => {
-      this.tapestryApi.invalidateFiberListCache(cityPath, sshHost);
+      this.fibersApi.invalidateFiberListCache(cityPath, sshHost);
     });
   }
 
@@ -361,42 +343,37 @@ export class HttpApi {
       return true;
     }
 
-    if (url.pathname === '/tapestry') {
-      await this.tapestryApi.handleTapestry(url, res);
-      return true;
-    }
-
-    if (url.pathname === '/astra/graph') {
-      await this.tapestryApi.handleAstraGraph(url, res);
+    if (url.pathname === '/fiber-graph') {
+      await this.fibersApi.handleFiberGraph(url, res);
       return true;
     }
 
     if (url.pathname === '/city-root-slug') {
-      await this.tapestryApi.handleCityRootSlug(url, res);
+      await this.fibersApi.handleCityRootSlug(url, res);
       return true;
     }
 
     // Must precede `/fiber/` prefix match — the literal `/fiber-locate`
     // path is unrelated to the fiber content endpoint.
     if (url.pathname === '/fiber-locate' && req.method === 'GET') {
-      await this.tapestryApi.handleFiberLocate(url, res);
+      await this.fibersApi.handleFiberLocate(url, res);
       return true;
     }
 
     if (url.pathname.startsWith('/fiber-raw/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber-raw/'.length));
       if (req.method === 'GET') {
-        await this.tapestryApi.handleRawFiber(url, slug, res);
+        await this.fibersApi.handleRawFiber(url, slug, res);
         return true;
       }
       if (req.method === 'PUT') {
-        await this.tapestryApi.handlePutRawFiber(req, url, slug, res);
+        await this.fibersApi.handlePutRawFiber(req, url, slug, res);
         return true;
       }
     }
 
     if (url.pathname === '/api/search' && req.method === 'GET') {
-      await this.tapestryApi.handleSearch(url, res);
+      await this.fibersApi.handleSearch(url, res);
       return true;
     }
 
@@ -429,7 +406,7 @@ export class HttpApi {
       return true;
     }
 
-    // /global-graph — vellum AstraGraph for "global Vellum" mode.
+    // /global-graph — vellum FiberGraph for "global Vellum" mode.
     //
     // We treat the loom city as the canonical global view: top-level loom
     // sub-folders (cities like portolan, ai-futures, plus loom-only
@@ -439,7 +416,7 @@ export class HttpApi {
     // so emitting a synthetic city-node graph alongside the loom tree
     // double-counts: portolan would appear once as a city gateway and
     // once as a loom sub-fiber. By delegating to the loom city's own
-    // augmented graph (HttpApiTapestry.handleAstraGraph), we get one
+    // augmented graph (HttpApiFibers.handleFiberGraph), we get one
     // source of truth — the loom directory — with the existing
     // city-as-parent augmentation providing cross-city navigation.
     //
@@ -453,7 +430,7 @@ export class HttpApi {
       if (loomCity) {
         const loomUrl = new URL(url.toString());
         loomUrl.searchParams.set('cityId', loomCity.id);
-        await this.tapestryApi.handleAstraGraph(loomUrl, res);
+        await this.fibersApi.handleFiberGraph(loomUrl, res);
         return true;
       }
       const searchApi = this.resolveGlobalSearchApi();
@@ -573,18 +550,13 @@ export class HttpApi {
     // the `/fiber-history/` prefix doesn't get eaten by that check.
     if (req.method === 'GET' && url.pathname.startsWith('/fiber-history/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber-history/'.length));
-      await this.tapestryApi.handleFiberHistory(url, slug, res);
+      await this.fibersApi.handleFiberHistory(url, slug, res);
       return true;
     }
 
     if (url.pathname.startsWith('/fiber/')) {
       const slug = decodeURIComponent(url.pathname.slice('/fiber/'.length));
-      await this.tapestryApi.handleFiberContent(url, slug, res);
-      return true;
-    }
-
-    if (url.pathname.startsWith('/tapestry-asset/')) {
-      await this.tapestryApi.handleTapestryAsset(url, res);
+      await this.fibersApi.handleFiberContent(url, slug, res);
       return true;
     }
 
@@ -624,28 +596,17 @@ export class HttpApi {
       return true;
     }
 
-    if (req.method === 'GET' && url.pathname.startsWith('/astra-paper-view/')) {
-      await this.astraViewApi.handlePaperView(url, res);
-      return true;
-    }
-
-    if (req.method === 'GET' && url.pathname.startsWith('/astra-bundle/')) {
-      await this.astraViewApi.handleBundle(url, res);
-      return true;
-    }
-
-    if (req.method === 'GET' && url.pathname.startsWith('/astra-mtime/')) {
-      await this.astraViewApi.handleMtime(url, res);
-      return true;
-    }
-
-    if (req.method === 'GET' && url.pathname.startsWith('/astra/asset/')) {
-      await this.astraViewApi.handleAsset(url, res);
-      return true;
-    }
-
-    if (req.method === 'GET' && url.pathname.startsWith('/papers/')) {
-      await this.astraViewApi.handlePaperPdf(url, res);
+    if (
+      req.method === 'GET' &&
+      (
+        url.pathname.startsWith('/astra-paper-view/') ||
+        url.pathname.startsWith('/astra-bundle/') ||
+        url.pathname.startsWith('/astra-mtime/') ||
+        url.pathname.startsWith('/astra/asset/') ||
+        url.pathname.startsWith('/papers/')
+      )
+    ) {
+      this.sendJsonError(res, 501, 'ASTRA paper-view routes are not part of Portolan core; install the ASTRA extension to enable them.');
       return true;
     }
 

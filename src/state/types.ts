@@ -44,7 +44,7 @@ export interface ServerCity {
   path: string
   position: HexCoord
   fiberCount?: number
-  hasClaims?: boolean  // Has claims directory (workflow/config or results/tapestry)
+  hasClaims?: boolean  // Legacy field: has workflow/config or .felt
   hasPlaygrounds?: boolean  // Has .portolan/playgrounds/ with HTML files
   isDormant?: boolean  // No active sessions (persisted city with no workers)
   gitStatus?: GitStatus  // Git repository status

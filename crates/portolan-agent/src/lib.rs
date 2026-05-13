@@ -8,8 +8,7 @@ use portolan_agent_protocol::{
     FileContentOperation, FileContentRequestPayload, FileContentResultPayload,
     ListDirectoryRequestPayload, ListDirectoryResultPayload, ProjectFileRequestPayload,
     ProjectFileResultPayload, SearchFilesMode, SearchFilesRequestPayload, SearchFilesResultPayload,
-    SearchResultPayload, ShuttleSnapshotPayload, TapestryEvidencePayload,
-    TapestryEvidenceRequestPayload, TapestryEvidenceResultPayload,
+    SearchResultPayload, ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -499,7 +498,6 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::SearchFiles { payload } => vec![handle_search_files(payload)],
         AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
         AgentFrame::ListDirectory { payload } => vec![handle_list_directory(payload)],
-        AgentFrame::TapestryEvidence { payload } => vec![handle_tapestry_evidence(payload)],
         _ => Vec::new(),
     }
 }
@@ -874,7 +872,6 @@ fn parse_pids(raw: String) -> Vec<String> {
 fn detect_claims_in_cwd(cwd: &str) -> bool {
     let root = Path::new(cwd);
     root.join("workflow").join("config").exists()
-        || root.join("results").join("tapestry").exists()
         || root.join(".felt").exists()
 }
 
@@ -1941,85 +1938,6 @@ fn read_text_file_content(path: &str) -> Result<TextFileContent, String> {
         .and_then(|mtime| mtime.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs_f64() * 1000.0);
     Ok(TextFileContent { content, mtime_ms })
-}
-
-fn handle_tapestry_evidence(payload: &TapestryEvidenceRequestPayload) -> AgentFrame {
-    match read_tapestry_evidence(payload) {
-        Ok(evidences) => AgentFrame::TapestryEvidenceResult {
-            payload: TapestryEvidenceResultPayload {
-                correlation_id: payload.correlation_id.clone(),
-                ok: true,
-                error: None,
-                evidences,
-            },
-        },
-        Err(error) => AgentFrame::TapestryEvidenceResult {
-            payload: TapestryEvidenceResultPayload {
-                correlation_id: payload.correlation_id.clone(),
-                ok: false,
-                error: Some(error),
-                evidences: BTreeMap::new(),
-            },
-        },
-    }
-}
-
-fn read_tapestry_evidence(
-    payload: &TapestryEvidenceRequestPayload,
-) -> Result<BTreeMap<String, Option<TapestryEvidencePayload>>, String> {
-    let city_path = resolve_remote_directory_path(&payload.city_path)?;
-    let mut evidences = BTreeMap::new();
-
-    for spec_name in &payload.spec_names {
-        let evidence = if is_safe_tapestry_spec_name(spec_name) {
-            read_tapestry_evidence_file(&city_path, spec_name).ok()
-        } else {
-            None
-        };
-        evidences.insert(spec_name.clone(), evidence);
-    }
-
-    Ok(evidences)
-}
-
-fn is_safe_tapestry_spec_name(spec_name: &str) -> bool {
-    !spec_name.is_empty()
-        && !spec_name.contains("..")
-        && !spec_name.contains('/')
-        && !spec_name.contains('\\')
-}
-
-fn read_tapestry_evidence_file(
-    city_path: &Path,
-    spec_name: &str,
-) -> Result<TapestryEvidencePayload, String> {
-    let evidence_path = city_path
-        .join("results")
-        .join("tapestry")
-        .join(spec_name)
-        .join("evidence.json");
-    let evidence_json = fs::read_to_string(&evidence_path).map_err(|error| {
-        format!(
-            "failed to read evidence file {}: {error}",
-            evidence_path.display()
-        )
-    })?;
-    let mtime_ms = fs::metadata(&evidence_path)
-        .and_then(|metadata| metadata.modified())
-        .map_err(|error| {
-            format!(
-                "failed to stat evidence file {}: {error}",
-                evidence_path.display()
-            )
-        })?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("evidence mtime before UNIX epoch: {error}"))?
-        .as_millis() as i64;
-
-    Ok(TapestryEvidencePayload {
-        evidence_json,
-        mtime_ms,
-    })
 }
 
 fn handle_search_files(payload: &SearchFilesRequestPayload) -> AgentFrame {
@@ -4678,39 +4596,6 @@ malformed
             AgentFrame::FileContentResult { payload } => {
                 assert!(payload.ok);
                 assert_eq!(payload.content.as_deref(), Some("# Notes\n"));
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn reads_tapestry_evidence_batch() {
-        let dir = temp_host("tapestry-evidence");
-        let evidence_dir = dir.join("results").join("tapestry").join("spec_a");
-        fs::create_dir_all(&evidence_dir).unwrap();
-        fs::write(
-            evidence_dir.join("evidence.json"),
-            r#"{"evidence":{"pte":0.2},"output":{"figure":"plot.png"}}"#,
-        )
-        .unwrap();
-
-        let responses = handle_server_frame(&AgentFrame::TapestryEvidence {
-            payload: TapestryEvidenceRequestPayload {
-                correlation_id: "tapestry-evidence".to_string(),
-                city_path: dir.display().to_string(),
-                spec_names: vec!["spec_a".to_string(), "missing".to_string()],
-                felt_host: None,
-            },
-        });
-        fs::remove_dir_all(&dir).unwrap();
-
-        match &responses[0] {
-            AgentFrame::TapestryEvidenceResult { payload } => {
-                assert!(payload.ok);
-                let spec_a = payload.evidences.get("spec_a").unwrap().as_ref().unwrap();
-                assert!(spec_a.evidence_json.contains(r#""pte":0.2"#));
-                assert!(spec_a.mtime_ms > 0);
-                assert_eq!(payload.evidences.get("missing"), Some(&None));
             }
             other => panic!("unexpected response: {other:?}"),
         }

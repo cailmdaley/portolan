@@ -15,8 +15,8 @@
  *
  * Previously also exposed `mountVellumFileSurface` /
  * `mountVellumFiberSurface` for the floating-card pin layer, and
- * `openVellumStaticFileModal()` for the standalone GitHub-Pages tapestry
- * viewer. Both retired alongside the floating-card and tapestry rollups
+ * `openVellumStaticFileModal()` for the standalone GitHub-Pages artifact
+ * viewer. Both retired alongside the floating-card and static artifact rollups
  * (commit 1f25e71 and predecessors); git history carries the recoverable
  * shape if needed.
  *
@@ -1399,7 +1399,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     // empty slug so vellum lands on its IndexView — a coherent "look around"
     // entry point. The previous fallback was `${cityId}/${cityId}` from when
     // cityId was the slug name; now cityId is an opaque hash (per
-    // `/astra/graph rootSlug uses city.name`) so that fallback would form
+    // `/fiber-graph rootSlug uses city.name`) so that fallback would form
     // `<hash>/<hash>` and trigger vellum's "Fiber X not found. Is mystra
     // running on port 3100?" error on a server that isn't even mystra.
     resolveCityRootSlug(opts.cityId)
@@ -1420,7 +1420,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
 
 async function resolveCityRootSlug(cityId: string | undefined): Promise<string | null> {
   if (!cityId) return null
-  // Use the dedicated /city-root-slug endpoint instead of /astra/graph: the
+  // Use the dedicated /city-root-slug endpoint instead of /fiber-graph: the
   // modal only needs rootSlug here, and WorkspaceMount fetches the full graph
   // again itself. See vellum-dogfood/vellum-modal-double-graph-fetch.
   const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost'

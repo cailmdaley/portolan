@@ -987,7 +987,7 @@ function openFiberInCityFromKanban(cityId: string, slug: string): void {
  */
 function openCityFromSyntheticNode(slug: string): void {
   // The `__loom__` node is the synthetic loom-wide parent injected by
-  // server-side graph augmentation (see HttpApiTapestry.handleAstraGraph).
+  // server-side graph augmentation (see HttpApiFibers.handleFiberGraph).
   // It sits above each city's root fiber so the thumb-index parent-row
   // resolves to "← loom" instead of the no-parent escape-button. Click =
   // escalate to the global Vellum index, mode-preserving.

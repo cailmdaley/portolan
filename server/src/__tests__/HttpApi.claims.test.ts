@@ -5,7 +5,6 @@
  * - GET /annotations?claimId= returns claim annotations
  * - POST /annotations creates claims annotations with validation
  * - formatClaimsAnnotationsForClaude output format
- * - /tapestry endpoint (DAG with fibers, evidence, staleness)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -624,42 +623,6 @@ describe('HttpApi — claims annotations', () => {
   });
 
   // ────────────────────────────────────────────────────────────
-  // Tapestry asset serving — security
-  // ────────────────────────────────────────────────────────────
-
-  describe('GET /tapestry-asset (security)', () => {
-    it('rejects path traversal in nested segments', async () => {
-      const res = await httpRequest(api, 'GET', '/tapestry-asset/sub/..%2F..%2Fetc/passwd?cityId=test');
-
-      // Either 400 (caught by traversal check) or 404 (city not found) — never serves the file
-      expect([400, 404]).toContain(res.status);
-    });
-
-    it('rejects shell injection via dollar substitution', async () => {
-      // /tapestry-asset requires {specName}/{filename} — single segment is rejected early
-      const res = await httpRequest(api, 'GET', '/tapestry-asset/spec/$(id).png?cityId=test');
-
-      expect(res.status).toBe(400);
-      expect(res.data).toContain('Invalid asset path');
-    });
-
-    it('rejects shell injection via backticks', async () => {
-      const res = await httpRequest(api, 'GET', '/tapestry-asset/spec/`whoami`.png?cityId=test');
-
-      expect(res.status).toBe(400);
-      expect(res.data).toContain('Invalid asset path');
-    });
-
-    it('accepts clean asset paths', async () => {
-      // Will 404 (city not found in stub) but should pass the security check
-      const res = await httpRequest(api, 'GET', '/tapestry-asset/spec-name/plot.png?cityId=test');
-
-      // 404 because stub city lookup returns null — but NOT 400
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────
   // Special characters in annotation comments
   // ────────────────────────────────────────────────────────────
 
@@ -770,119 +733,6 @@ describe('HttpApi — claims annotations', () => {
       // Inside single quotes, only ' needs escaping.
       // Double quotes, backticks, $ are all literal inside single quotes.
       expect(shellEscape("path'with\"dangerous`chars$(id)")).toBe("'path'\\''with\"dangerous`chars$(id)'");
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────
-  // GET /tapestry endpoint
-  // ────────────────────────────────────────────────────────────
-
-  describe('GET /tapestry', () => {
-    const TAPESTRY_CITY_DIR = join(TEST_DIR, 'tapestry-city');
-    const TAPESTRY_FELT_DIR = join(TAPESTRY_CITY_DIR, '.felt');
-
-    function makeTapestryApi(cityId: string, cityDir: string) {
-      return new HttpApi(
-        makeCityLookup(cityId, cityDir, 'TapestryCity') as any,
-        stubOriginLookup as any, stubPersistenceLookup as any,
-      );
-    }
-
-    it('returns 400 without cityId', async () => {
-      const tapestryApi = makeTapestryApi('test', TAPESTRY_CITY_DIR);
-      const res = await httpRequest(tapestryApi, 'GET', '/tapestry');
-
-      expect(res.status).toBe(400);
-      expect(res.data.error).toMatch(/cityId/i);
-    });
-
-    it('returns 404 for unknown city', async () => {
-      const tapestryApi = makeTapestryApi('test', TAPESTRY_CITY_DIR);
-      const res = await httpRequest(tapestryApi, 'GET', '/tapestry?cityId=nonexistent');
-
-      expect(res.status).toBe(404);
-    });
-
-    it('returns DAG with nodes, links, and downstream for tapestry: fibers', async () => {
-      // Set up two tapestry: fibers with a dependency
-      writeFiber(TAPESTRY_FELT_DIR, 'fiber-a', `---
-name: Fiber A
-status: active
-kind: spec
-tags:
-  - tapestry:fiber_a
----
-Body of fiber A.
-`);
-      writeFiber(TAPESTRY_FELT_DIR, 'fiber-b', `---
-name: Fiber B
-status: open
-kind: spec
-tags:
-  - tapestry:fiber_b
-depends-on:
-  - fiber-a
----
-Body of fiber B depends on A.
-`);
-      // A non-rule fiber that depends on a rule fiber (downstream concern)
-      writeFiber(TAPESTRY_FELT_DIR, 'task-c', `---
-name: Task C
-status: open
-kind: task
-depends-on:
-  - fiber-a
----
-Downstream task.
-`);
-
-      const tapestryApi = makeTapestryApi('tapestry-test', TAPESTRY_CITY_DIR);
-      const res = await httpRequest(tapestryApi, 'GET', '/tapestry?cityId=tapestry-test');
-
-      expect(res.status).toBe(200);
-
-      // Nodes: only tapestry: fibers (fiber-a, fiber-b), not task-c
-      expect(res.data.nodes).toHaveLength(2);
-      const nodeIds = res.data.nodes.map((n: any) => n.id);
-      expect(nodeIds).toContain('fiber-a');
-      expect(nodeIds).toContain('fiber-b');
-
-      // Each node has expected fields
-      const nodeA = res.data.nodes.find((n: any) => n.id === 'fiber-a');
-      expect(nodeA.name).toBe('Fiber A');
-      expect(nodeA.body).toContain('Body of fiber A');
-      expect(nodeA.specName).toBe('fiber_a');
-      expect(nodeA.staleness).toBeDefined();
-
-      // Links: fiber-a → fiber-b (source: fiber-a, target: fiber-b)
-      expect(res.data.links).toHaveLength(1);
-      expect(res.data.links[0]).toEqual({ source: 'fiber-a', target: 'fiber-b' });
-
-      // Downstream: only DAG nodes (fiber-b), not non-rule fibers (task-c)
-      expect(res.data.downstream['fiber-a']).toBeDefined();
-      expect(res.data.downstream['fiber-a']).toHaveLength(1);
-      expect(res.data.downstream['fiber-a'][0].id).toBe('fiber-b');
-    });
-
-    it('returns empty DAG when no tapestry: fibers exist', async () => {
-      const emptyDir = join(TEST_DIR, 'empty-city');
-      const emptyFeltDir = join(emptyDir, '.felt');
-      mkdirSync(emptyFeltDir, { recursive: true });
-      writeFiber(emptyFeltDir, 'plain-task', `---
-name: Just a task
-status: open
-kind: task
----
-No rule tag.
-`);
-
-      const emptyApi = makeTapestryApi('empty-test', emptyDir);
-      const res = await httpRequest(emptyApi, 'GET', '/tapestry?cityId=empty-test');
-
-      expect(res.status).toBe(200);
-      expect(res.data.nodes).toHaveLength(0);
-      expect(res.data.links).toHaveLength(0);
-      expect(res.data.downstream).toEqual({});
     });
   });
 

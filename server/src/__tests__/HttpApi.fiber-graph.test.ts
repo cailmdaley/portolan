@@ -1,10 +1,8 @@
 /**
- * HttpApi /astra/graph endpoint tests
+ * HttpApi /fiber-graph endpoint tests
  *
- * Returns a vellum-shaped AstraGraph (nodes + links) for all fibers in a
- * city. Distinct from /tapestry in that it:
- *   - includes every fiber, not just those with `tapestry:`/`rule:` tags
- *   - emits vellum's field names (label/slug, not title/id only)
+ * Returns a vellum-shaped FiberGraph (nodes + links) for all fibers in a
+ * city.  *   - emits vellum's field names (label/slug, not title/id only)
  *   - tags every link with kind: 'data-flow'
  */
 
@@ -50,9 +48,9 @@ function stripAugmentation(graph: { nodes: any[]; links: any[] }): { nodes: any[
   };
 }
 
-const TEST_DIR = join(homedir(), '.portolan-test-httpapi-astra-graph');
+const TEST_DIR = join(homedir(), '.portolan-test-httpapi-fiber-graph');
 
-describe('HttpApi — /astra/graph endpoint', () => {
+describe('HttpApi — /fiber-graph endpoint', () => {
   const CITY_DIR = join(TEST_DIR, 'test-city');
   const FELT_DIR = join(CITY_DIR, '.felt');
   let api: HttpApi;
@@ -75,18 +73,18 @@ describe('HttpApi — /astra/graph endpoint', () => {
   });
 
   it('returns 400 without cityId', async () => {
-    const res = await httpRequest(api, 'GET', '/astra/graph');
+    const res = await httpRequest(api, 'GET', '/fiber-graph');
     expect(res.status).toBe(400);
     expect(res.data.error).toMatch(/cityId/i);
   });
 
   it('returns 404 for unknown city', async () => {
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=nonexistent');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=nonexistent');
     expect(res.status).toBe(404);
   });
 
   it('returns empty graph when city has no fibers', async () => {
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.status).toBe(200);
     const stripped = stripAugmentation(res.data);
     expect(stripped.nodes).toEqual([]);
@@ -107,7 +105,7 @@ tags:
 
 Alpha body.`);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.status).toBe(200);
     const stripped = stripAugmentation(res.data);
     expect(stripped.nodes).toHaveLength(1);
@@ -121,10 +119,10 @@ Alpha body.`);
     expect(node.tags).toEqual(['vellum', 'react']);
     expect(node.createdAt).toBe('2026-01-01T00:00:00Z');
     expect(node.tempered).toBe(false);
-    expect(node.hasASTRA).toBe(false);
+    expect(node.hasStructuredData).toBe(false);
   });
 
-  it('includes fibers without tapestry/rule tags', async () => {
+  it('includes fibers without tags', async () => {
     writeFiber(FELT_DIR, 'plain-xyz', `---
 name: Plain
 status: open
@@ -134,7 +132,7 @@ created-at: 2026-01-01T00:00:00Z
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     const stripped = stripAugmentation(res.data);
     expect(stripped.nodes).toHaveLength(1);
     expect(stripped.nodes[0].id).toBe('plain-xyz');
@@ -160,7 +158,7 @@ depends-on:
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     const stripped = stripAugmentation(res.data);
     // Filter to data-flow links only — resolveRootSlug's last-resort
     // fallback elevates `allFibers[0]` (here: `base`) as a virtual root
@@ -192,7 +190,7 @@ created-at: 2026-01-02T00:00:00Z
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.data.rootSlug).toBe('test');
   });
 
@@ -206,7 +204,7 @@ created-at: 2026-01-01T00:00:00Z
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.data.rootSlug).toBe('alpha');
   });
 
@@ -230,7 +228,7 @@ tags:
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.data.rootSlug).toBe('zzz');
   });
 
@@ -267,7 +265,7 @@ created-at: 2026-01-02T00:00:00Z
       stubPersistenceLookup as any,
     );
 
-    const res = await httpRequest(slugApi, 'GET', `/astra/graph?cityId=${hashCityId}`);
+    const res = await httpRequest(slugApi, 'GET', `/fiber-graph?cityId=${hashCityId}`);
     expect(res.data.rootSlug).toBe('pure_eb');
   });
 
@@ -292,12 +290,12 @@ created-at: 2026-01-01T00:00:00Z
       stubPersistenceLookup as any,
     );
 
-    const res = await httpRequest(slugApi, 'GET', `/astra/graph?cityId=${hashCityId}`);
+    const res = await httpRequest(slugApi, 'GET', `/fiber-graph?cityId=${hashCityId}`);
     expect(res.data.rootSlug).toBe('portolan/portolan');
   });
 
   it('rootSlug is null when the city has no fibers', async () => {
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.data.rootSlug).toBeNull();
   });
 
@@ -313,7 +311,7 @@ depends-on:
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     const stripped = stripAugmentation(res.data);
     expect(stripped.links).toEqual([]);
     expect(stripped.nodes).toHaveLength(1);
@@ -348,7 +346,7 @@ created-at: 2026-01-03T00:00:00Z
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     expect(res.status).toBe(200);
     const stripped = stripAugmentation(res.data);
     // Strip the city-as-parent intra-city links too: with rootSlug='test'
@@ -378,14 +376,14 @@ created-at: 2026-01-01T00:00:00Z
 ---
 `);
 
-    const res = await httpRequest(api, 'GET', '/astra/graph?cityId=test');
+    const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     const stripped = stripAugmentation(res.data);
     expect(stripped.links.filter((l: any) => l.kind === 'contains')).toEqual([]);
   });
 });
 
 describe('HttpApi — /city-root-slug endpoint', () => {
-  // Sibling of /astra/graph that returns just { rootSlug } so the vellum
+  // Sibling of /fiber-graph that returns just { rootSlug } so the vellum
   // modal cold-open doesn't pay the cost of the full graph payload twice.
   // See vellum-dogfood/vellum-modal-double-graph-fetch.
   const CITY_DIR = join(TEST_DIR, 'test-city-root-slug');
@@ -441,7 +439,7 @@ created-at: 2026-01-01T00:00:00Z
     expect(res.data.rootSlug).toBeNull();
   });
 
-  it('uses the same resolution rules as /astra/graph (slug, not hash cityId)', async () => {
+  it('uses the same resolution rules as /fiber-graph (slug, not hash cityId)', async () => {
     rmSync(FELT_DIR, { recursive: true, force: true });
     const slugDir = join(TEST_DIR, 'slug-city-root-slug');
     const slugFelt = join(slugDir, '.felt');

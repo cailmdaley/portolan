@@ -33,7 +33,7 @@ export interface City {
   name: string;         // display name
   position: { q: number; r: number };
   fiberCount?: number;  // injected by FiberReader
-  hasClaims?: boolean;  // has workflow/config or results/tapestry
+  hasClaims?: boolean;  // legacy field: has workflow/config or .felt
   hasPlaygrounds?: boolean;  // has .portolan/playgrounds/ with files
   gitStatus?: GitStatus;  // injected by GitStatusManager
   createdAt?: number;
@@ -135,10 +135,8 @@ export class CityManager {
       return existing;
     }
 
-    // Create new pinned city — remote cities default hasClaims=true since the
-    // tapestry endpoint handles SSH discovery regardless, and any running agent
-    // will override with the actual value.  Without this, dormant remote cities
-    // never show the tapestry button because no agent session reports hasClaims.
+    // Create new pinned city — remote cities default hasClaims=true so Vellum
+    // entry points stay visible until an agent reports the real value.
     const city: City = {
       id: stableId,
       path: resolvedPath,
@@ -467,7 +465,7 @@ export class CityManager {
   }
 
   /**
-   * Detect if a city has claims (workflow/config or results/tapestry directories)
+   * Detect if a city has Portolan-relevant project structure.
    * Only works for local cities.
    */
   detectClaims(city: City): boolean {
@@ -477,9 +475,8 @@ export class CityManager {
     }
 
     const hasWorkflowConfig = existsSync(resolve(city.path, 'workflow/config'));
-    const hasResultsClaims = existsSync(resolve(city.path, 'results/tapestry'));
     const hasFelt = existsSync(resolve(city.path, '.felt'));
-    return hasWorkflowConfig || hasResultsClaims || hasFelt;
+    return hasWorkflowConfig || hasFelt;
   }
 
   /**

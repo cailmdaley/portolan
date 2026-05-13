@@ -22,7 +22,7 @@
  * fuzzy-finder ranking the fzf/Selecta family use): a per-field fzy score
  * weighted to keep name+id matches dominant, with body/outcome contributing
  * a damped tail so a typo in the title still surfaces a body hit. Replaces
- * the older substring-contains scoring that mirrored HttpApiTapestry; the
+ * the older substring-contains scoring that mirrored HttpApiFibers; the
  * tradeoff is fewer false negatives on partial typos at the cost of
  * occasionally surprising matches on very short queries (clamped via the
  * positive-score-only filter — fzy returns -Infinity when no character in

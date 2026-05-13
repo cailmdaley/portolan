@@ -209,36 +209,6 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     return { events: result.events };
   },
   remoteFileContentExecutor,
-  remoteCityConfigReader: async ({ originId, path }) => {
-    const result = await remoteFileContentExecutor({ originId, path, operation: 'read' });
-    if (typeof result.content !== 'string') {
-      throw new Error('Remote agent did not return file content');
-    }
-    return result.content;
-  },
-  remoteEvidenceBatchExecutor: async ({
-    cityPath,
-    specNames,
-    originId,
-    feltHost,
-  }) => {
-    if (!originId) {
-      throw new Error('originId required for remote evidence batch reads');
-    }
-    const result = await agentRequestCoordinator.send<{
-      evidences?: Record<string, { evidenceJson: string; mtimeMs: number } | null>;
-    }>(
-      originId,
-      'tapestry-evidence',
-      {
-        cityPath,
-        specNames,
-        feltHost,
-      },
-      15_000,
-    );
-    return result.evidences ?? {};
-  },
   remoteDirectoryExecutor,
   remoteProjectFileExecutor: async ({ originId, ...payload }) => {
     const result = await agentRequestCoordinator.send<{

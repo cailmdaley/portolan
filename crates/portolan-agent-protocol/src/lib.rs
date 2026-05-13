@@ -47,14 +47,6 @@ pub enum AgentFrame {
     },
     #[serde(rename = "list-directory-result")]
     ListDirectoryResult { payload: ListDirectoryResultPayload },
-    #[serde(rename = "tapestry-evidence")]
-    TapestryEvidence {
-        payload: TapestryEvidenceRequestPayload,
-    },
-    #[serde(rename = "tapestry-evidence-result")]
-    TapestryEvidenceResult {
-        payload: TapestryEvidenceResultPayload,
-    },
     #[serde(rename = "shuttle_snapshot")]
     ShuttleSnapshot { payload: ShuttleSnapshotPayload },
 }
@@ -84,8 +76,6 @@ impl AgentFrame {
             AgentFrame::ProjectFileResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ListDirectory { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ListDirectoryResult { payload } => Some(payload.correlation_id.as_str()),
-            AgentFrame::TapestryEvidence { payload } => Some(payload.correlation_id.as_str()),
-            AgentFrame::TapestryEvidenceResult { payload } => Some(payload.correlation_id.as_str()),
             _ => None,
         }
     }
@@ -100,7 +90,6 @@ impl AgentFrame {
                 | AgentFrame::SearchFiles { .. }
                 | AgentFrame::ProjectFile { .. }
                 | AgentFrame::ListDirectory { .. }
-                | AgentFrame::TapestryEvidence { .. }
         )
     }
 
@@ -114,7 +103,6 @@ impl AgentFrame {
                 | AgentFrame::SearchFilesResult { .. }
                 | AgentFrame::ProjectFileResult { .. }
                 | AgentFrame::ListDirectoryResult { .. }
-                | AgentFrame::TapestryEvidenceResult { .. }
         )
     }
 }
@@ -424,35 +412,6 @@ pub struct ListDirectoryResultPayload {
     pub entries: Option<Vec<DirectoryEntryPayload>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TapestryEvidenceRequestPayload {
-    pub correlation_id: String,
-    pub city_path: String,
-    #[serde(default)]
-    pub spec_names: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub felt_host: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TapestryEvidencePayload {
-    pub evidence_json: String,
-    pub mtime_ms: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TapestryEvidenceResultPayload {
-    pub correlation_id: String,
-    pub ok: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub evidences: BTreeMap<String, Option<TapestryEvidencePayload>>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntryPayload {
@@ -760,60 +719,6 @@ mod tests {
                 assert!(matches!(entries[1].kind, DirectoryEntryType::File));
             }
             _ => panic!("unexpected response: {result:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_tapestry_evidence_round_trip() {
-        let request = AgentFrame::TapestryEvidence {
-            payload: TapestryEvidenceRequestPayload {
-                correlation_id: "corr-evidence".to_string(),
-                city_path: "/home/cdaley/project".to_string(),
-                spec_names: vec!["spec_a".to_string(), "spec_b".to_string()],
-                felt_host: Some("candide".to_string()),
-            },
-        };
-        let encoded = request.to_json_string().unwrap();
-        assert!(encoded.contains(r#""type":"tapestry-evidence""#));
-        assert!(encoded.contains(r#""correlationId":"corr-evidence""#));
-        assert!(encoded.contains(r#""specNames""#));
-
-        let result = AgentFrame::parse(
-            br#"{
-              "type": "tapestry-evidence-result",
-              "payload": {
-                "correlationId": "corr-evidence",
-                "ok": true,
-                "evidences": {
-                  "spec_a": {
-                    "evidenceJson": "{\"evidence\":{\"pte\":0.1}}",
-                    "mtimeMs": 123000
-                  },
-                  "spec_b": null
-                }
-              }
-            }"#,
-        )
-        .unwrap();
-        assert!(result.is_agent_result());
-        assert_eq!(result.correlation_id(), Some("corr-evidence"));
-        match result {
-            AgentFrame::TapestryEvidenceResult { payload } => {
-                assert!(payload.ok);
-                assert_eq!(payload.evidences.len(), 2);
-                assert_eq!(
-                    payload
-                        .evidences
-                        .get("spec_a")
-                        .and_then(|entry| entry.as_ref()),
-                    Some(&TapestryEvidencePayload {
-                        evidence_json: "{\"evidence\":{\"pte\":0.1}}".to_string(),
-                        mtime_ms: 123000,
-                    }),
-                );
-                assert_eq!(payload.evidences.get("spec_b"), Some(&None));
-            }
-            other => panic!("unexpected response: {other:?}"),
         }
     }
 

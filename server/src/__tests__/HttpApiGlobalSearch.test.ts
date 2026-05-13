@@ -2,7 +2,7 @@
  * HttpApiGlobalSearch — cross-project fiber search.
  *
  * Stage 2 of constitution-portolan-navigation-layer. The endpoint mirrors
- * HttpApiTapestry.handleSearch's score model but spans every pinned felt
+ * HttpApiFibers.handleSearch's score model but spans every pinned felt
  * host plus pushed remote snapshots, with realpath/id dedupe so a fiber
  * visible through a loom symlink doesn't double-count.
  */
