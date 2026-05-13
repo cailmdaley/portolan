@@ -38,10 +38,23 @@ interface PendingRequest {
   timeoutHandle: NodeJS.Timeout;
 }
 
+export type AgentRequestCompletionStatus = 'ok' | 'error' | 'timeout' | 'disconnect' | 'send_error';
+
+export interface AgentRequestCompletionDiagnostic {
+  correlationId: string;
+  originId: string;
+  type: string;
+  status: AgentRequestCompletionStatus;
+  durationMs: number;
+  completedAt: number;
+  error?: string;
+}
+
 export interface AgentRequestCoordinatorOptions {
   /** Default request timeout in ms. Overridable per-call. */
   defaultTimeoutMs?: number;
   now?: () => number;
+  maxRecentCompletions?: number;
 }
 
 export interface AgentRequestDiagnostic {
@@ -56,11 +69,14 @@ export interface AgentRequestDiagnostics {
   byOrigin: Array<{ originId: string; pending: number }>;
   byType: Array<{ type: string; pending: number }>;
   requests: AgentRequestDiagnostic[];
+  recent: AgentRequestCompletionDiagnostic[];
 }
 
 export class AgentRequestCoordinator {
   private pending = new Map<string, PendingRequest>();
+  private recentCompletions: AgentRequestCompletionDiagnostic[] = [];
   private readonly defaultTimeoutMs: number;
+  private readonly maxRecentCompletions: number;
   private readonly now: () => number;
 
   constructor(
@@ -68,6 +84,7 @@ export class AgentRequestCoordinator {
     options: AgentRequestCoordinatorOptions = {},
   ) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 5000;
+    this.maxRecentCompletions = options.maxRecentCompletions ?? 20;
     this.now = options.now ?? Date.now;
   }
 
@@ -106,7 +123,10 @@ export class AgentRequestCoordinator {
       const correlationId = randomUUID();
       const effectiveTimeout = timeoutMs ?? this.defaultTimeoutMs;
       const timeoutHandle = setTimeout(() => {
-        if (this.pending.delete(correlationId)) {
+        const entry = this.pending.get(correlationId);
+        if (entry) {
+          this.pending.delete(correlationId);
+          this.recordCompletion(entry, 'timeout', "remote agent didn't acknowledge");
           reject(new Error("remote agent didn't acknowledge"));
         }
       }, effectiveTimeout);
@@ -127,7 +147,11 @@ export class AgentRequestCoordinator {
         ws.send(JSON.stringify({ type, payload: { correlationId, ...payload } }));
       } catch (err) {
         clearTimeout(timeoutHandle);
-        this.pending.delete(correlationId);
+        const entry = this.pending.get(correlationId);
+        if (entry) {
+          this.pending.delete(correlationId);
+          this.recordCompletion(entry, 'send_error', err instanceof Error ? err.message : String(err));
+        }
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -156,9 +180,12 @@ export class AgentRequestCoordinator {
     clearTimeout(entry.timeoutHandle);
     this.pending.delete(correlationId);
     if (ok) {
+      this.recordCompletion(entry, 'ok');
       entry.resolve(result);
     } else {
-      entry.reject(new Error(error ?? 'remote operation failed'));
+      const message = error ?? 'remote operation failed';
+      this.recordCompletion(entry, 'error', message);
+      entry.reject(new Error(message));
     }
   }
 
@@ -172,7 +199,9 @@ export class AgentRequestCoordinator {
       if (entry.originId !== originId) continue;
       clearTimeout(entry.timeoutHandle);
       this.pending.delete(correlationId);
-      entry.reject(new Error(`agent for ${originId} disconnected`));
+      const message = `agent for ${originId} disconnected`;
+      this.recordCompletion(entry, 'disconnect', message);
+      entry.reject(new Error(message));
     }
   }
 
@@ -213,6 +242,27 @@ export class AgentRequestCoordinator {
       requests: requests.sort((a, b) =>
         b.ageMs - a.ageMs || a.originId.localeCompare(b.originId) || a.type.localeCompare(b.type),
       ),
+      recent: [...this.recentCompletions],
     };
+  }
+
+  private recordCompletion(
+    entry: PendingRequest,
+    status: AgentRequestCompletionStatus,
+    error?: string,
+  ): void {
+    const completedAt = this.now();
+    this.recentCompletions.unshift({
+      correlationId: entry.correlationId,
+      originId: entry.originId,
+      type: entry.type,
+      status,
+      durationMs: Math.max(0, completedAt - entry.startedAt),
+      completedAt,
+      ...(error ? { error } : {}),
+    });
+    if (this.recentCompletions.length > this.maxRecentCompletions) {
+      this.recentCompletions.length = this.maxRecentCompletions;
+    }
   }
 }

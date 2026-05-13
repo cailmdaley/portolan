@@ -246,10 +246,87 @@ describe('AgentRequestCoordinator', () => {
           ageMs: 250,
         }),
       ]),
+      recent: [],
     });
 
     for (const request of pending) {
       request.catch(() => {});
+    }
+  });
+
+  it('reports recent completed requests with status and duration for diagnostics', async () => {
+    let now = 2_000;
+    const { ws, sent } = makeStubWs();
+    originManager.registerAgent('cineca', ws);
+    coord = new AgentRequestCoordinator(originManager, {
+      now: () => now,
+      maxRecentCompletions: 2,
+    });
+
+    const ok = coord.send('remote-cineca', 'file-content', {});
+    const okCorrelationId = lastSent(sent).payload.correlationId;
+    now = 2_090;
+    coord.handleResult(okCorrelationId, true, { content: 'ok' });
+    await expect(ok).resolves.toEqual({ content: 'ok' });
+
+    const failed = coord.send('remote-cineca', 'project-file', {});
+    const failedCorrelationId = lastSent(sent).payload.correlationId;
+    now = 2_150;
+    coord.handleResult(failedCorrelationId, false, {}, 'missing file');
+    await expect(failed).rejects.toThrow(/missing file/);
+
+    const disconnected = coord.send('remote-cineca', 'terminal-capture', {});
+    now = 2_200;
+    coord.drainOnDisconnect('remote-cineca');
+    await expect(disconnected).rejects.toThrow(/disconnected/);
+
+    expect(coord.getDiagnostics().recent).toEqual([
+      expect.objectContaining({
+        originId: 'remote-cineca',
+        type: 'terminal-capture',
+        status: 'disconnect',
+        durationMs: 50,
+        completedAt: 2_200,
+        error: 'agent for remote-cineca disconnected',
+      }),
+      expect.objectContaining({
+        originId: 'remote-cineca',
+        type: 'project-file',
+        status: 'error',
+        durationMs: 60,
+        completedAt: 2_150,
+        error: 'missing file',
+      }),
+    ]);
+  });
+
+  it('records timed-out requests in recent diagnostics', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 5_000;
+      const { ws } = makeStubWs();
+      originManager.registerAgent('cineca', ws);
+      coord = new AgentRequestCoordinator(originManager, {
+        defaultTimeoutMs: 100,
+        now: () => now,
+      });
+
+      const pending = coord.send('remote-cineca', 'search-files', {});
+      now = 5_150;
+      vi.advanceTimersByTime(150);
+      await expect(pending).rejects.toThrow(/didn't acknowledge/);
+
+      expect(coord.getDiagnostics().recent).toEqual([
+        expect.objectContaining({
+          originId: 'remote-cineca',
+          type: 'search-files',
+          status: 'timeout',
+          durationMs: 150,
+          error: "remote agent didn't acknowledge",
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
