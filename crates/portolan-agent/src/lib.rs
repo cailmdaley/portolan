@@ -10,9 +10,11 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    io::Read,
     path::{Path, PathBuf},
-    process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const DEFAULT_SERVER: &str = "localhost:4004";
@@ -171,7 +173,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         }
         AgentFrame::FiberTreeHosts { payload } => build_fiber_tree_dumps(&payload.felt_hosts),
         AgentFrame::KanbanTransition { payload } => {
-            vec![unsupported_kanban_transition(payload)]
+            vec![handle_kanban_transition(payload)]
         }
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         _ => Vec::new(),
@@ -191,19 +193,416 @@ pub struct FiberTreeFileEvent {
     pub op: FiberTreeFileOp,
 }
 
-fn unsupported_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
-    AgentFrame::KanbanTransitionResult {
-        payload: AgentResultPayload {
-            correlation_id: payload.correlation_id.clone(),
-            ok: false,
-            error: Some(
-                "rust portolan-agent preview does not implement kanban-transition yet; use server/agent.js"
-                    .to_string(),
-            ),
-            fiber: None,
-            fields: Default::default(),
+fn handle_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
+    match run_kanban_transition(payload) {
+        Ok(fiber) => AgentFrame::KanbanTransitionResult {
+            payload: AgentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                fiber: Some(fiber),
+                fields: Default::default(),
+            },
+        },
+        Err(error) => AgentFrame::KanbanTransitionResult {
+            payload: AgentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                fiber: None,
+                fields: Default::default(),
+            },
         },
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessInvocation {
+    program: String,
+    args: Vec<String>,
+    cwd: PathBuf,
+    envs: BTreeMap<String, String>,
+}
+
+fn run_kanban_transition(payload: &AgentRequestPayload) -> Result<Value, String> {
+    run_kanban_transition_with(payload, run_process, read_felt_fiber_json)
+}
+
+fn run_kanban_transition_with<R, S>(
+    payload: &AgentRequestPayload,
+    mut run_process: R,
+    read_snapshot: S,
+) -> Result<Value, String>
+where
+    R: FnMut(ProcessInvocation) -> Result<(), String>,
+    S: Fn(&str, &str) -> Result<Value, String>,
+{
+    let rel_path = required_string_field(payload, "path")?;
+    let felt_host = optional_string_field(payload, "feltHost")
+        .map(str::to_string)
+        .unwrap_or_else(default_felt_host);
+    let full_path = resolve_remote_fiber_file(&felt_host, rel_path)?;
+
+    run_kanban_mutation_with(
+        payload,
+        &full_path,
+        &felt_host,
+        &mut run_process,
+        &read_snapshot,
+    )?;
+
+    let fiber_id =
+        fiber_id_from_path(rel_path).ok_or_else(|| format!("path is not a fiber: {rel_path}"))?;
+    read_snapshot(&felt_host, &fiber_id)
+        .map_err(|error| format!("felt show failed after mutation: {fiber_id}: {error}"))
+}
+
+fn run_kanban_mutation_with<R, S>(
+    payload: &AgentRequestPayload,
+    full_path: &Path,
+    felt_host: &str,
+    run_process: &mut R,
+    read_snapshot: &S,
+) -> Result<(), String>
+where
+    R: FnMut(ProcessInvocation) -> Result<(), String>,
+    S: Fn(&str, &str) -> Result<Value, String>,
+{
+    match required_string_field(payload, "kind")? {
+        "shuttle" => run_shuttle_kanban_mutation(payload, felt_host, run_process),
+        "felt-tags" => {
+            run_felt_tags_kanban_mutation(payload, felt_host, run_process, read_snapshot)
+        }
+        "felt-horizon" => run_felt_horizon_kanban_mutation(payload, full_path),
+        kind => Err(format!("unknown mutation kind: {kind}")),
+    }
+}
+
+fn run_shuttle_kanban_mutation<R>(
+    payload: &AgentRequestPayload,
+    felt_host: &str,
+    run_process: &mut R,
+) -> Result<(), String>
+where
+    R: FnMut(ProcessInvocation) -> Result<(), String>,
+{
+    let verb = required_string_field(payload, "verb")?;
+    let fiber_id = required_string_field(payload, "fiberId")?;
+    let mut args = vec![
+        "--felt-store".to_string(),
+        felt_host.to_string(),
+        verb.to_string(),
+        fiber_id.to_string(),
+    ];
+
+    match verb {
+        "pause" | "reopen" | "accept" | "resume" => {}
+        "close" => {
+            if let Some(tempered) = optional_bool_field(payload, "tempered")? {
+                args.push(format!(
+                    "--tempered={}",
+                    if tempered { "true" } else { "false" }
+                ));
+            }
+        }
+        "set-outcome" => {
+            let outcome = required_string_field(payload, "outcome")?;
+            args.push("--outcome".to_string());
+            args.push(outcome.to_string());
+        }
+        "dispatch" => {
+            if optional_bool_field(payload, "adHoc")?.unwrap_or(false) {
+                args.push("--ad-hoc".to_string());
+            }
+        }
+        _ => return Err(format!("unknown shuttle verb: {verb}")),
+    }
+
+    run_process(ProcessInvocation {
+        program: "shuttle-ctl".to_string(),
+        args,
+        cwd: normalize_host_path(felt_host),
+        envs: process_env_for_felt_host(felt_host),
+    })
+}
+
+fn run_felt_tags_kanban_mutation<R, S>(
+    payload: &AgentRequestPayload,
+    felt_host: &str,
+    run_process: &mut R,
+    read_snapshot: &S,
+) -> Result<(), String>
+where
+    R: FnMut(ProcessInvocation) -> Result<(), String>,
+    S: Fn(&str, &str) -> Result<Value, String>,
+{
+    let fiber_id = required_string_field(payload, "fiberId")?;
+    let tags = payload
+        .fields
+        .get("tags")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "missing tags payload".to_string())?;
+    let next = normalize_tag_list(tags.iter().filter_map(Value::as_str));
+    let current_fiber = read_snapshot(felt_host, fiber_id)?;
+    let current = normalize_tag_list(
+        current_fiber
+            .get("tags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str),
+    );
+    let (add, remove) = diff_tag_lists(&current, &next);
+    if add.is_empty() && remove.is_empty() {
+        return Ok(());
+    }
+
+    let mut args = vec![
+        "-C".to_string(),
+        felt_host.to_string(),
+        "edit".to_string(),
+        fiber_id.to_string(),
+    ];
+    for tag in remove {
+        args.push("--untag".to_string());
+        args.push(tag);
+    }
+    for tag in add {
+        args.push("--tag".to_string());
+        args.push(tag);
+    }
+
+    run_process(ProcessInvocation {
+        program: "felt".to_string(),
+        args,
+        cwd: normalize_host_path(felt_host),
+        envs: process_env_for_felt_host(felt_host),
+    })
+}
+
+fn run_felt_horizon_kanban_mutation(
+    payload: &AgentRequestPayload,
+    full_path: &Path,
+) -> Result<(), String> {
+    let horizon = match payload.fields.get("horizon") {
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(other) => {
+            return Err(format!(
+                "invalid horizon payload: expected string or null, got {other}"
+            ))
+        }
+        None => return Err("missing horizon payload".to_string()),
+    };
+    let raw = fs::read_to_string(full_path)
+        .map_err(|error| format!("failed to read fiber {}: {error}", full_path.display()))?;
+    let rewritten = rewrite_horizon_frontmatter(&raw, horizon)?;
+    fs::write(full_path, rewritten)
+        .map_err(|error| format!("failed to write fiber {}: {error}", full_path.display()))
+}
+
+fn run_process(invocation: ProcessInvocation) -> Result<(), String> {
+    let mut child = Command::new(&invocation.program)
+        .args(&invocation.args)
+        .current_dir(&invocation.cwd)
+        .envs(&invocation.envs)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run {}: {error}", invocation.program))?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to wait for {}: {error}", invocation.program))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{} {} timed out after 10s",
+                invocation.program,
+                invocation.args.join(" ")
+            ));
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    if status.success() {
+        Ok(())
+    } else if stderr.trim().is_empty() {
+        Err(format!(
+            "{} {} failed with status {status}",
+            invocation.program,
+            invocation.args.join(" ")
+        ))
+    } else {
+        Err(format!(
+            "{} {} failed: {}",
+            invocation.program,
+            invocation.args.join(" "),
+            stderr.trim()
+        ))
+    }
+}
+
+fn process_env_for_felt_host(felt_host: &str) -> BTreeMap<String, String> {
+    let mut envs = BTreeMap::new();
+    envs.insert("LOOM_HOME".to_string(), felt_host.to_string());
+    if let Ok(home) = env::var("HOME") {
+        envs.insert("HOME".to_string(), home);
+    }
+    envs
+}
+
+fn required_string_field<'a>(
+    payload: &'a AgentRequestPayload,
+    key: &str,
+) -> Result<&'a str, String> {
+    optional_string_field(payload, key).ok_or_else(|| format!("missing {key}"))
+}
+
+fn optional_string_field<'a>(payload: &'a AgentRequestPayload, key: &str) -> Option<&'a str> {
+    payload.fields.get(key).and_then(Value::as_str)
+}
+
+fn optional_bool_field(payload: &AgentRequestPayload, key: &str) -> Result<Option<bool>, String> {
+    match payload.fields.get(key) {
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(format!("invalid {key}: expected boolean")),
+        None => Ok(None),
+    }
+}
+
+fn normalize_tag_list<'a>(tags: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = BTreeMap::<String, ()>::new();
+    let mut out = Vec::new();
+    for tag in tags {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() || seen.contains_key(trimmed) {
+            continue;
+        }
+        seen.insert(trimmed.to_string(), ());
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
+fn diff_tag_lists(current: &[String], next: &[String]) -> (Vec<String>, Vec<String>) {
+    let add = next
+        .iter()
+        .filter(|tag| !current.contains(tag))
+        .cloned()
+        .collect();
+    let remove = current
+        .iter()
+        .filter(|tag| !next.contains(tag))
+        .cloned()
+        .collect();
+    (add, remove)
+}
+
+fn rewrite_horizon_frontmatter(raw: &str, horizon: Option<&str>) -> Result<String, String> {
+    if let Some(horizon) = horizon {
+        if !matches!(horizon, "now" | "soon" | "later" | "someday") {
+            return Err(format!("unknown horizon: {horizon}"));
+        }
+    }
+
+    let (frontmatter, closing_newline_len, body_start) = split_yaml_frontmatter(raw)?;
+    let parsed: serde_yaml::Value = serde_yaml::from_str(frontmatter)
+        .map_err(|error| format!("failed to parse fiber frontmatter: {error}"))?;
+    if !matches!(
+        parsed,
+        serde_yaml::Value::Mapping(_) | serde_yaml::Value::Null
+    ) {
+        return Err("fiber frontmatter must be a YAML mapping".to_string());
+    }
+
+    let eol = if raw.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = if frontmatter.is_empty() {
+        Vec::new()
+    } else {
+        frontmatter
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+            .collect()
+    };
+    let range = top_level_key_range(&lines, "horizon");
+
+    match (horizon, range) {
+        (None, Some((start, end))) => {
+            lines.splice(start..end, std::iter::empty());
+        }
+        (None, None) => {}
+        (Some(horizon), Some((start, end))) => {
+            lines.splice(start..end, [format!("horizon: {horizon}")]);
+        }
+        (Some(horizon), None) => lines.push(format!("horizon: {horizon}")),
+    }
+
+    let closing_newline = &raw[body_start - closing_newline_len..body_start];
+    let body = &raw[body_start..];
+    Ok(format!(
+        "---{eol}{}{eol}---{closing_newline}{body}",
+        lines.join(eol)
+    ))
+}
+
+fn split_yaml_frontmatter(raw: &str) -> Result<(&str, usize, usize), String> {
+    let Some(after_open) = raw
+        .strip_prefix("---\n")
+        .map(|_| 4)
+        .or_else(|| raw.strip_prefix("---\r\n").map(|_| 5))
+    else {
+        return Err("fiber file has no YAML frontmatter".to_string());
+    };
+    let rest = &raw[after_open..];
+    for marker in ["\n---\r\n", "\n---\n", "\r\n---\r\n", "\r\n---\n"] {
+        if let Some(idx) = rest.find(marker) {
+            let marker_start = after_open + idx;
+            let frontmatter = &raw[after_open..marker_start];
+            let closing_newline_len = if marker.ends_with("\r\n") { 2 } else { 1 };
+            let body_start = marker_start + marker.len();
+            return Ok((frontmatter, closing_newline_len, body_start));
+        }
+    }
+    Err("fiber file has no YAML frontmatter".to_string())
+}
+
+fn top_level_key_range(lines: &[String], key: &str) -> Option<(usize, usize)> {
+    let start = lines
+        .iter()
+        .position(|line| is_named_top_level_key(line, key))?;
+    let mut end = start + 1;
+    while end < lines.len() && !is_any_top_level_key(&lines[end]) {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+fn is_named_top_level_key(line: &str, key: &str) -> bool {
+    let Some(rest) = line.strip_prefix(key) else {
+        return false;
+    };
+    rest.trim_start().starts_with(':')
+}
+
+fn is_any_top_level_key(line: &str) -> bool {
+    let Some((key, _)) = line.split_once(':') else {
+        return false;
+    };
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
 fn handle_fiber_raw(payload: &FiberRawRequestPayload) -> AgentFrame {
@@ -768,15 +1167,212 @@ mod tests {
         assert_eq!(responses, vec![]);
     }
 
-    #[test]
-    fn returns_typed_unsupported_kanban_result() {
+    fn kanban_payload(entries: &[(&str, Value)]) -> AgentRequestPayload {
         let mut fields = BTreeMap::new();
-        fields.insert("path".to_string(), json!("portolan/portolan.md"));
-        let responses = handle_server_frame(&AgentFrame::KanbanTransition {
-            payload: AgentRequestPayload {
-                correlation_id: "abc".to_string(),
-                fields,
+        for (key, value) in entries {
+            fields.insert((*key).to_string(), value.clone());
+        }
+        AgentRequestPayload {
+            correlation_id: "abc".to_string(),
+            fields,
+        }
+    }
+
+    #[test]
+    fn runs_shuttle_kanban_transition_and_returns_refreshed_snapshot() {
+        let dir = temp_host("kanban-shuttle");
+        fs::create_dir_all(dir.join(".felt/story")).unwrap();
+        fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
+        let payload = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("verb", json!("close")),
+            ("tempered", json!(true)),
+        ]);
+        let mut invocations = Vec::new();
+
+        let fiber = run_kanban_transition_with(
+            &payload,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
             },
+            |_, fiber_id| Ok(json!({ "id": fiber_id, "status": "closed" })),
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(fiber["id"], json!("story"));
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].program, "shuttle-ctl");
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "--felt-store",
+                dir.to_str().unwrap(),
+                "close",
+                "story",
+                "--tempered=true"
+            ]
+        );
+        assert_eq!(invocations[0].cwd, dir);
+    }
+
+    #[test]
+    fn shuttle_kanban_transition_supports_outcome_and_adhoc_dispatch_flags() {
+        let dir = temp_host("kanban-shuttle-flags");
+        fs::create_dir_all(dir.join(".felt/story")).unwrap();
+        fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
+        let outcome = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("verb", json!("set-outcome")),
+            ("outcome", json!("First line\nSecond line")),
+        ]);
+        let dispatch = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("verb", json!("dispatch")),
+            ("adHoc", json!(true)),
+        ]);
+        let mut invocations = Vec::new();
+        for payload in [&outcome, &dispatch] {
+            run_kanban_transition_with(
+                payload,
+                |invocation| {
+                    invocations.push(invocation);
+                    Ok(())
+                },
+                |_, fiber_id| Ok(json!({ "id": fiber_id })),
+            )
+            .unwrap();
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "--felt-store",
+                dir.to_str().unwrap(),
+                "set-outcome",
+                "story",
+                "--outcome",
+                "First line\nSecond line"
+            ]
+        );
+        assert_eq!(
+            invocations[1].args,
+            vec![
+                "--felt-store",
+                dir.to_str().unwrap(),
+                "dispatch",
+                "story",
+                "--ad-hoc"
+            ]
+        );
+    }
+
+    #[test]
+    fn felt_tags_kanban_transition_diffs_normalized_tags() {
+        let dir = temp_host("kanban-tags");
+        fs::create_dir_all(dir.join(".felt/story")).unwrap();
+        fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
+        let payload = kanban_payload(&[
+            ("kind", json!("felt-tags")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("tags", json!(["active", " idea ", "idea", ""])),
+        ]);
+        let mut invocations = Vec::new();
+
+        run_kanban_transition_with(
+            &payload,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| {
+                Ok(json!({
+                    "id": fiber_id,
+                    "tags": ["draft", "active"]
+                }))
+            },
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].program, "felt");
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "-C",
+                dir.to_str().unwrap(),
+                "edit",
+                "story",
+                "--untag",
+                "draft",
+                "--tag",
+                "idea"
+            ]
+        );
+    }
+
+    #[test]
+    fn felt_horizon_kanban_transition_rewrites_frontmatter() {
+        let dir = temp_host("kanban-horizon");
+        let fiber_dir = dir.join(".felt/story");
+        fs::create_dir_all(&fiber_dir).unwrap();
+        fs::write(
+            fiber_dir.join("story.md"),
+            "---\nname: Story\nnotes: |-\n  horizon: not top-level\n---\n\nBody\n",
+        )
+        .unwrap();
+        let payload = kanban_payload(&[
+            ("kind", json!("felt-horizon")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("horizon", json!("later")),
+        ]);
+        let mut invocations = Vec::new();
+
+        let fiber = run_kanban_transition_with(
+            &payload,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id, "horizon": "later" })),
+        )
+        .unwrap();
+        let saved = fs::read_to_string(fiber_dir.join("story.md")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(invocations.is_empty());
+        assert_eq!(fiber["horizon"], json!("later"));
+        assert_eq!(
+            saved,
+            "---\nname: Story\nnotes: |-\n  horizon: not top-level\nhorizon: later\n---\n\nBody\n"
+        );
+    }
+
+    #[test]
+    fn kanban_transition_reports_errors_in_result_frame() {
+        let responses = handle_server_frame(&AgentFrame::KanbanTransition {
+            payload: kanban_payload(&[
+                ("path", json!("../escape.md")),
+                ("kind", json!("shuttle")),
+                ("fiberId", json!("story")),
+                ("verb", json!("close")),
+            ]),
         });
 
         assert_eq!(responses.len(), 1);
@@ -784,11 +1380,7 @@ mod tests {
         match &responses[0] {
             AgentFrame::KanbanTransitionResult { payload } => {
                 assert!(!payload.ok);
-                assert!(payload
-                    .error
-                    .as_deref()
-                    .unwrap()
-                    .contains("server/agent.js"));
+                assert!(payload.error.as_deref().unwrap().contains("invalid path"));
             }
             other => panic!("unexpected response: {other:?}"),
         }
