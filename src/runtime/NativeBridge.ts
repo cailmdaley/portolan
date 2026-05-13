@@ -36,3 +36,17 @@ export async function getNativePortolanStatus(): Promise<NativePortolanStatus | 
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<NativePortolanStatus>('native_status')
 }
+
+export interface NativeWorkspaceWindowArgs {
+  routeUrl: string
+  title?: string
+}
+
+export async function openNativeWorkspaceWindow(
+  args: NativeWorkspaceWindowArgs,
+): Promise<string | null> {
+  if (!isNativePortolanRuntime()) return null
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<string>('open_workspace_window', { ...args })
+}

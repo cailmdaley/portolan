@@ -426,6 +426,35 @@ fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
     }
 }
 
+#[tauri::command]
+async fn open_workspace_window(
+    app: tauri::AppHandle,
+    route_url: String,
+    title: Option<String>,
+) -> Result<String, String> {
+    let route = workspace_route_path(&route_url)?;
+    let label = format!("workspace-{}", unix_now_millis());
+    let window_title = title
+        .as_deref()
+        .map(sanitize_window_title)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Portolan".to_string());
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        label.clone(),
+        tauri::WebviewUrl::App(PathBuf::from(route)),
+    )
+    .title(window_title)
+    .inner_size(1200.0, 860.0)
+    .min_inner_size(960.0, 640.0)
+    .resizable(true)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    Ok(label)
+}
+
 fn shutdown_backend(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<NativeState>() {
         if let Ok(mut backend) = state.backend.lock() {
@@ -437,7 +466,10 @@ fn shutdown_backend(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![native_status])
+        .invoke_handler(tauri::generate_handler![
+            native_status,
+            open_workspace_window
+        ])
         .setup(|app| {
             let resource_dir = app.path().resource_dir().ok();
             app.manage(NativeState {
@@ -464,6 +496,49 @@ pub fn run() {
     });
 }
 
+fn workspace_route_path(route_url: &str) -> Result<String, String> {
+    let trimmed = route_url.trim();
+    if trimmed.is_empty() {
+        return Err("route_url is required".to_string());
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return Err("workspace windows must use app-local routes".to_string());
+    }
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err("workspace route cannot contain newlines".to_string());
+    }
+
+    if trimmed.starts_with('#') {
+        return Ok(format!("index.html{trimmed}"));
+    }
+    if trimmed.starts_with('/') {
+        let route = trimmed.trim_start_matches('/');
+        return Ok(if route.is_empty() {
+            "index.html".to_string()
+        } else {
+            route.to_string()
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+fn sanitize_window_title(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(120)
+        .collect()
+}
+
+fn unix_now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +550,27 @@ mod tests {
     fn backend_addr_targets_portolan_backend() {
         assert_eq!(backend_addr().to_string(), "127.0.0.1:4004");
         assert_eq!(BACKEND_HOST, "127.0.0.1");
+    }
+
+    #[test]
+    fn workspace_route_hash_loads_index_with_fragment() {
+        assert_eq!(
+            workspace_route_path("#city=portolan&mode=narrative&fiber=portolan").unwrap(),
+            "index.html#city=portolan&mode=narrative&fiber=portolan"
+        );
+    }
+
+    #[test]
+    fn workspace_route_rejects_external_urls() {
+        assert!(workspace_route_path("https://example.com/#city=portolan").is_err());
+    }
+
+    #[test]
+    fn window_title_drops_control_characters_and_trims() {
+        assert_eq!(
+            sanitize_window_title("  Portolan\nWindow\t  "),
+            "PortolanWindow"
+        );
     }
 
     #[test]

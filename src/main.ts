@@ -31,6 +31,7 @@ import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { UrlFragmentSync, SCOPE_GLOBAL, readUrlState, type UrlState, type VellumMode } from './runtime/UrlFragment'
 import { buildVellumFileUrl } from './runtime/vellumFileLink'
+import { openNativeWorkspaceWindow } from './runtime/NativeBridge'
 import {
   DEFAULT_FAVICON_HREF,
   buildBrowserTabTitle,
@@ -489,13 +490,20 @@ function openFile(args: OpenFileArgs): void {
   })
 }
 
-function openFileInNewTab(args: OpenFileArgs): void {
+async function openFileInNewTab(args: OpenFileArgs): Promise<void> {
   const url = buildVellumFileUrl({
     baseUrl: window.location.href,
     path: args.path,
     cityId: args.cityId,
     originId: args.originId,
   })
+  const routeUrl = new URL(url).hash
+  const nativeWindow = await openNativeWorkspaceWindow({
+    routeUrl,
+    title: `Portolan - ${args.path.split('/').pop() ?? args.path}`,
+  })
+  if (nativeWindow) return
+
   window.open(url, '_blank', 'noopener')
 }
 
@@ -1061,7 +1069,7 @@ zoneRenderer.setWorkerFileClickHandler((fullPath, originId, _workerId, options) 
   const city = findBestMatchingCity(cities, originId, fullPath)
   const args = { path: fullPath, originId, cityId: city?.id }
   if (options?.openInNewTab) {
-    openFileInNewTab(args)
+    void openFileInNewTab(args)
     return
   }
   openFile(args)
