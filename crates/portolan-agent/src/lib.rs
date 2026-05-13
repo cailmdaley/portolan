@@ -2430,9 +2430,15 @@ fn list_directory(
                 std::cmp::Ordering::Greater
             };
         }
-        left.name.cmp(&right.name)
+        compare_directory_entry_names(&left.name, &right.name)
     });
     Ok(entries)
+}
+
+fn compare_directory_entry_names(left: &str, right: &str) -> std::cmp::Ordering {
+    left.to_lowercase()
+        .cmp(&right.to_lowercase())
+        .then_with(|| left.cmp(right))
 }
 
 fn read_remote_directory_entries(path: &Path) -> Result<Vec<DirectoryEntryPayload>, String> {
@@ -5139,6 +5145,38 @@ malformed
                 assert!(matches!(entries[1].kind, DirectoryEntryType::File));
                 assert_eq!(entries[2].name, "notes.md");
                 assert!(matches!(entries[2].kind, DirectoryEntryType::File));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lists_directory_entries_case_insensitively_like_node() {
+        let dir = temp_host("list-dir-case");
+        fs::create_dir_all(dir.join("beta")).unwrap();
+        fs::create_dir_all(dir.join("Alpha")).unwrap();
+        fs::write(dir.join("b.txt"), "b\n").unwrap();
+        fs::write(dir.join("A.txt"), "a\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "list-dir-case".to_string(),
+                path: dir.display().to_string(),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::ListDirectoryResult { payload } => {
+                assert!(payload.ok);
+                let names = payload
+                    .entries
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| entry.name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(names, vec!["Alpha", "beta", "A.txt", "b.txt"]);
             }
             other => panic!("unexpected response: {other:?}"),
         }
