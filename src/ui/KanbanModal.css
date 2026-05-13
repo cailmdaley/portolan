@@ -1,3 +1,64 @@
+/* EB Garamond Initials F1 / F2 — the two-layer dropcap fonts. F2 is
+   the character body; F1 is the flourish overlay (vine + cartouche)
+   drawn on top at low opacity. Pattern adapted from
+   cailmdaley.github.io's science-ai.astro and vellum's .illuminated
+   class. Served from portolan's public/fonts/. */
+@font-face {
+  font-family: 'EBGI F1';
+  src: url('/fonts/EBGaramond-InitialsF1.otf') format('opentype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'EBGI F2';
+  src: url('/fonts/EBGaramond-InitialsF2.otf') format('opentype');
+  font-display: swap;
+}
+
+/* Kanban dropcap — wraps a single capital letter with the layered
+   F2/F1 treatment. KanbanModal.ts injects:
+     <span class="kbn-cap" data-letter="D">D</span>...
+   The visible letter is the F2 body in cinnabar; the ::before
+   pseudo-element duplicates the letter in F1 (the flourish overlay)
+   at reduced opacity. Inline sizing reads as a manuscript second-
+   color drop initial, not a UI rubrication. */
+.kbn-cap {
+  font-family: 'EBGI F2', 'EB Garamond', Georgia, serif;
+  color: #BC4538;
+  text-transform: uppercase;
+  position: relative;
+  display: inline-block;
+  font-size: 1.55em;
+  line-height: 0.78;
+  letter-spacing: 0;
+  vertical-align: -0.06em;
+  margin-right: 0.04em;
+  font-style: normal;
+  font-variant: normal;
+  font-weight: 500;
+}
+.kbn-cap::before {
+  content: attr(data-letter);
+  font-family: 'EBGI F1', 'EB Garamond', Georgia, serif;
+  color: #BC4538;
+  opacity: 0.55;
+  text-transform: uppercase;
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+/* Per-column tinting of the dropcap. The F2 body shifts to the column's
+   stage colour while the F1 flourish stays in cinnabar — the second
+   layer ties every cap back to the rubric. */
+.kbn-col-awaiting .kbn-cap,
+.kbn-col-awaitingReview .kbn-cap { color: #C49333; }
+.kbn-col-tempered .kbn-cap { color: #3F8278; }
+.kbn-col-composted .kbn-cap,
+.kbn-col-drafts .kbn-cap { color: #7A6F5C; }
+.kbn-col-drafts .kbn-cap { opacity: 0.85; }
+.kbn-col-drafts .kbn-cap::before,
+.kbn-col-composted .kbn-cap::before { opacity: 0.35; }
+
 /* Fills the host element supplied by vellum's workspace slot
    (KanbanHost in src/vellum/mount.tsx). The host gives us a fixed-
    viewport positioning context; the kanban stretches to inset:0
@@ -84,23 +145,22 @@
 .kbn-title-wrap {
   display: flex; align-items: baseline; gap: 10px;
 }
-/* Kanban masthead — set in EB Garamond display with a single cinnabar
-   rubricated initial. The K is the page's first stamp. */
+/* Kanban masthead — set in EB Garamond with a layered F1/F2 dropcap
+   wrapping the leading K (injected by KanbanModal.ts as
+   <span class="kbn-cap" data-letter="K">K</span>). The remainder of
+   the word continues in the body face beside it. */
 .kbn-title {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 500;
   font-variant-caps: normal;
   letter-spacing: 0.005em;
   color: #1B1611;
 }
-.kbn-title::first-letter {
-  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 1.25em;
-  font-weight: 500;
-  color: #BC4538;
-  letter-spacing: 0;
-  margin-right: 1px;
+.kbn-title .kbn-cap {
+  font-size: 1.22em;
+  vertical-align: -0.03em;
+  margin-right: 0.04em;
 }
 .kbn-subtitle {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
@@ -290,27 +350,24 @@
 }
 /* Section strip — visible only when the section is collapsed.
    Treated like a manuscript catch-line: italic small caps with a
-   cinnabar rubricated initial. Reads like a marginal tab. */
+   layered F1/F2 dropcap on the leading letter. Reads like a
+   marginal tab. */
 .kbn-section-strip-label {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 14px;
+  font-size: 17px;
   font-style: italic;
   font-variant-caps: small-caps;
   font-feature-settings: "smcp";
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   color: #2A231A;
 }
-.kbn-section-strip-label::first-letter {
-  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 1.7em;
+.kbn-section-strip-label .kbn-cap {
+  font-size: 1.45em;
   font-style: normal;
-  font-variant-caps: normal;
-  font-weight: 500;
-  color: #BC4538;
-  line-height: 0.8;
-  letter-spacing: 0;
-  margin-right: 2px;
-  vertical-align: -1px;
+  font-variant: normal;
+  margin-right: 0.05em;
+  vertical-align: -0.04em;
+  line-height: 0.82;
 }
 .kbn-section-strip-count {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
@@ -749,41 +806,28 @@
   outline: 1px dashed rgba(188, 69, 56, 0.55);
   outline-offset: -2px;
 }
-/* Column title — small caps in EB Garamond rather than the previous
-   uppercase. The shape reads as a section in a manuscript header rather
-   than a database column. ::first-letter receives the rubricated
-   treatment: a single cinnabar glyph at the head of each title, set
-   slightly above the baseline of the small caps that follow. One
-   manuscript second-color gesture per column. */
+/* Column title — small caps in EB Garamond rather than uppercase, so
+   the head reads as a section in a manuscript header rather than a
+   database column. The leading capital is wrapped in <span class="kbn-cap"
+   data-letter="…"> by KanbanModal.ts; the .kbn-cap rule above paints
+   the layered F2 body + F1 flourish dropcap. */
 .kbn-col-title {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 500;
   font-variant-caps: all-small-caps;
   font-feature-settings: "smcp", "c2sc";
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: none;
   color: #1B1611;
   margin: 0;
 }
-.kbn-col-title::first-letter {
-  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 1.55em;
-  font-weight: 500;
-  font-variant-caps: normal;
-  color: #BC4538;
-  /* Slight optical lift — the cinnabar capital should sit a hair above
-     the small-caps line, the way a rubricated initial would. */
-  line-height: 0.85;
-  letter-spacing: 0;
-  margin-right: 1px;
-  /* Cinnabar inks the *whole* first letter, not just its outline. */
-  padding-right: 0;
+.kbn-col-title .kbn-cap {
+  font-size: 1.35em;
+  vertical-align: -0.04em;
+  margin-right: 0.04em;
+  line-height: 0.82;
 }
-.kbn-col-awaiting .kbn-col-title::first-letter { color: #C49333; }
-.kbn-col-tempered .kbn-col-title::first-letter { color: #3F8278; }
-.kbn-col-composted .kbn-col-title::first-letter { color: #7A6F5C; }
-.kbn-col-drafts .kbn-col-title::first-letter { color: #7A6F5C; opacity: 0.85; }
 .kbn-col-awaiting .kbn-col-title { color: #C49333; }
 .kbn-col-tempered .kbn-col-title { color: #3F8278; }
 .kbn-col-count {
@@ -822,16 +866,16 @@
   opacity: 0.55;
   font-style: normal;
 }
-/* Card — a slip of rag laid on the sheet. The left edge carries a
-   thin pigment rule that picks up the column's stage colour (cinnabar
-   for in-flight, ochre for awaiting, teal for tempered). One mark
-   anchors the card without painting every edge. */
+/* Card — a slip of rag laid on the sheet. Kind differentiation rides
+   the background tint and border-style on the existing .kbn-card-*
+   modifiers; no painted left-edge ribbon. The column container
+   already signals lifecycle, the kbn-pill stamp carries the status
+   mark, and the worker / dispatch chips do the rest. */
 .kbn-card {
   background: #FBF6E9;
   border: 1px solid rgba(27, 22, 17, 0.12);
-  border-left: 2px solid rgba(122, 111, 92, 0.30);
   border-radius: 3px;
-  padding: 10px 12px 10px 14px;
+  padding: 10px 12px;
   text-align: left;
   cursor: grab;
   font-family: inherit;
@@ -848,18 +892,6 @@
   flex-grow: 0;
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
 }
-/* Stage-specific left rules — the manuscript's stage colour applied
-   as a single hairline. Drafts keep the muted rule, in-flight cards
-   pick up cinnabar (decision in motion), awaiting cards take ochre
-   (chrome calling for a verdict), tempered cards take teal (rest with
-   life). One pigment per card. */
-.kbn-col-inFlight .kbn-card { border-left-color: rgba(188, 69, 56, 0.55); }
-.kbn-col-awaitingReview .kbn-card,
-.kbn-card-awaitingReview { border-left-color: rgba(196, 147, 51, 0.65); }
-.kbn-col-tempered .kbn-card,
-.kbn-card-tempered { border-left-color: rgba(63, 130, 120, 0.55); }
-.kbn-col-composted .kbn-card,
-.kbn-card-composted { border-left-color: rgba(122, 111, 92, 0.40); }
 .kbn-card:hover {
   background: #FFFBED;
   border-color: rgba(27, 22, 17, 0.22);

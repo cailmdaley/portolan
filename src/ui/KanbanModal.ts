@@ -423,7 +423,7 @@ export class KanbanModal {
 
     const title = document.createElement('div')
     title.className = 'kbn-title'
-    title.textContent = 'Kanban'
+    appendCappedText(title, 'Kanban')
     this.subtitleEl = document.createElement('div')
     this.subtitleEl.className = 'kbn-subtitle'
     this.subtitleEl.textContent = this.subtitleText()
@@ -1077,7 +1077,7 @@ export class KanbanModal {
     strip.setAttribute('aria-hidden', collapsed ? 'false' : 'true')
     const stripLabel = document.createElement('span')
     stripLabel.className = 'kbn-section-strip-label'
-    stripLabel.textContent = label
+    appendCappedText(stripLabel, label)
     const stripCount = document.createElement('span')
     stripCount.className = 'kbn-section-strip-count'
     stripCount.textContent = count > 0 ? String(count) : '—'
@@ -1607,7 +1607,7 @@ export class KanbanModal {
     head.setAttribute('aria-label', `Drop here to move to ${title}`)
     const headTitle = document.createElement('h2')
     headTitle.className = 'kbn-col-title'
-    headTitle.textContent = title
+    appendCappedText(headTitle, title)
     const headCount = document.createElement('span')
     headCount.className = 'kbn-col-count'
     headCount.textContent = String(cards.length)
@@ -3592,6 +3592,33 @@ const SURFACE_TITLE: Record<HorizonKind, string> = {
   now: 'Now',
   soon: 'Soon',
   stashed: 'Stash',
+}
+
+/** Append `label` to `el` with the leading alphabetic character wrapped in
+ *  a `<span class="kbn-cap" data-letter="X">X</span>` so it picks up the
+ *  layered EBGI F2 + F1 dropcap treatment. Pattern adapted from
+ *  cailmdaley.github.io's science-ai.astro and vellum's .illuminated.
+ *  If the first character isn't alphabetic (or the label is empty),
+ *  falls back to plain text — the cap only earns its place when there
+ *  is an actual letter to drop. */
+function appendCappedText(el: HTMLElement, label: string): void {
+  if (!label) return
+  const first = label.charAt(0)
+  if (!/^[A-Za-z]$/.test(first)) {
+    el.textContent = label
+    return
+  }
+  const cap = document.createElement('span')
+  cap.className = 'kbn-cap'
+  const upper = first.toUpperCase()
+  cap.dataset.letter = upper
+  cap.textContent = upper
+  el.append(cap)
+  // The rest of the word picks up in the body face. We strip the leading
+  // letter (not just lowercase it) — the F2 cap supplies the capital;
+  // duplicating it as `Dafts` after the cap would read as a typo.
+  const rest = label.slice(1)
+  if (rest) el.append(document.createTextNode(rest))
 }
 
 const SECTION_COLLAPSED_STORAGE_KEY = 'portolan:kanban:collapsed-sections'
