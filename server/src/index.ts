@@ -49,6 +49,32 @@ const remoteTerminalSubscriptions = new Map<WebSocket, Map<string, {
   subscriptionId: string;
 }>>();
 
+function getRemoteTerminalSubscriptionStats(): Array<{
+  originId: string;
+  browserClients: number;
+  subscriptions: number;
+}> {
+  const byOrigin = new Map<string, { browserClients: Set<WebSocket>; subscriptions: number }>();
+  for (const [ws, perClient] of remoteTerminalSubscriptions) {
+    for (const entry of perClient.values()) {
+      let stats = byOrigin.get(entry.originId);
+      if (!stats) {
+        stats = { browserClients: new Set(), subscriptions: 0 };
+        byOrigin.set(entry.originId, stats);
+      }
+      stats.browserClients.add(ws);
+      stats.subscriptions += 1;
+    }
+  }
+  return [...byOrigin.entries()]
+    .map(([originId, stats]) => ({
+      originId,
+      browserClients: stats.browserClients.size,
+      subscriptions: stats.subscriptions,
+    }))
+    .sort((a, b) => a.originId.localeCompare(b.originId));
+}
+
 function parseRemoteAgentRuntime(value: string | null): RemoteAgentRuntime {
   return value === 'rust' ? 'rust' : 'node';
 }
@@ -265,6 +291,10 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
       remoteWorkingTimeoutActive: remoteWorkingTimeoutIntervalHandle !== null,
     },
     eventWatcher: eventWatcher.getStats(),
+    terminalStreams: {
+      local: terminalStreamManager.stats(),
+      remote: getRemoteTerminalSubscriptionStats(),
+    },
     remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
     remoteAgentRecovery: remoteAgentCoordinator.getRemoteAgentRecoveryStats(),
     remoteAgentRuntimeProfiles: remoteAgentRuntimeProfiles(),
