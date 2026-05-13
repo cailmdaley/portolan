@@ -41,6 +41,7 @@ describe('HttpApiActivation', () => {
   it('starts the Node agent with the Node runtime tmux session', async () => {
     const execFileFn = vi
       .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
@@ -59,19 +60,24 @@ describe('HttpApiActivation', () => {
       res,
     );
 
-    expect(reconnectTunnelFn).toHaveBeenCalledWith('candide');
-    expect(execFileFn).toHaveBeenCalledTimes(3);
+    expect(reconnectTunnelFn).not.toHaveBeenCalled();
+    expect(execFileFn).toHaveBeenCalledTimes(4);
     expect(execFileFn.mock.calls[0]?.[1]).toEqual([
       '-T',
       sshHost,
-      `tmux has-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null && echo running || echo stopped`,
+      'curl -sS --connect-timeout 3 http://localhost:4004/debug-runtime >/dev/null',
     ]);
     expect(execFileFn.mock.calls[1]?.[1]).toEqual([
       '-T',
       sshHost,
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null && echo running || echo stopped`,
+    ]);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      sshHost,
       `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
     ]);
-    const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
+    const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
     const expectedStartCommand = `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
     const expectedCommand = `tmux new-session -d -s ${shellEscape('portolan-agent')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
@@ -111,6 +117,7 @@ describe('HttpApiActivation', () => {
     const unsafeHost = "candide'; touch /tmp/pwn; echo 'x";
     const execFileFn = vi
       .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
@@ -128,19 +135,24 @@ describe('HttpApiActivation', () => {
       res,
     );
 
-    expect(reconnectTunnelFn).toHaveBeenCalledWith(unsafeHost);
-    expect(execFileFn).toHaveBeenCalledTimes(3);
+    expect(reconnectTunnelFn).not.toHaveBeenCalled();
+    expect(execFileFn).toHaveBeenCalledTimes(4);
     expect(execFileFn.mock.calls[0]?.[1]).toEqual([
       '-T',
       unsafeHost,
-      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
+      'curl -sS --connect-timeout 3 http://localhost:4004/debug-runtime >/dev/null',
     ]);
     expect(execFileFn.mock.calls[1]?.[1]).toEqual([
       '-T',
       unsafeHost,
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
+    ]);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      unsafeHost,
       `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
     ]);
-    const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
+    const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
     const escapedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(unsafeHost)}`;
     const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust-preview')} ${shellEscape(`bash -l -c ${shellEscape(escapedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
@@ -158,6 +170,7 @@ describe('HttpApiActivation', () => {
   it('accepts rust preview activation options from request body', async () => {
     const execFileFn = vi
       .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
@@ -179,9 +192,9 @@ describe('HttpApiActivation', () => {
 
     await api.handleActivateCity(new URL('http://localhost/activate-city'), res, body);
 
-    expect(reconnectTunnelFn).toHaveBeenCalledWith('candide');
-    expect(execFileFn).toHaveBeenCalledTimes(2);
-    const startArgs = execFileFn.mock.calls[1]?.[1] as string[];
+    expect(reconnectTunnelFn).not.toHaveBeenCalled();
+    expect(execFileFn).toHaveBeenCalledTimes(3);
+    const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
     const escapedOrigin = shellEscape(body.origin);
     const expectedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape('candide')} --origin=${escapedOrigin} --plannotator-port=${shellEscape('50055')} --once`;
     const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust-preview')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
@@ -223,8 +236,13 @@ describe('HttpApiActivation', () => {
     });
   });
 
-  it('does not start a second runtime-specific session when one is already running', async () => {
-    const execFileFn = vi.fn().mockResolvedValueOnce({ stdout: 'running\n', stderr: '' });
+  it('kickstarts the tunnel only after the remote backend probe fails', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('remote backend unavailable'))
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'running\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
     const api = new HttpApiActivation({
       cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
@@ -239,8 +257,38 @@ describe('HttpApiActivation', () => {
       res,
     );
 
-    expect(execFileFn).toHaveBeenCalledTimes(2);
-    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+    expect(reconnectTunnelFn).toHaveBeenCalledWith('candide');
+    expect(execFileFn).toHaveBeenCalledTimes(4);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'already_running',
+        message: 'Agent (rust) already running on candide',
+      },
+    });
+  });
+
+  it('does not start a second runtime-specific session when one is already running', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'running\n', stderr: '' });
+    const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn,
+      execFileFn: execFileFn as any,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city?cityId=remote-city&agentRuntime=rust'),
+      res,
+    );
+
+    expect(execFileFn).toHaveBeenCalledTimes(3);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       'candide',
       `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,

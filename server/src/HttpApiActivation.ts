@@ -16,6 +16,7 @@ interface HttpApiActivationOptions {
   getSshHost: (city: City) => string;
   reconnectTunnelFn?: (sshHost: string) => Promise<void>;
   execFileFn?: typeof execFileAsync;
+  remoteReachabilityTimeoutMs?: number;
 }
 
 type RemoteAgentRuntime = 'node' | 'rust';
@@ -119,12 +120,14 @@ export class HttpApiActivation {
   private readonly getSshHost: (city: City) => string;
   private readonly reconnectTunnelFn: (sshHost: string) => Promise<void>;
   private readonly execFileFn: typeof execFileAsync;
+  private readonly remoteReachabilityTimeoutMs: number;
 
   constructor(options: HttpApiActivationOptions) {
     this.cityLookup = options.cityLookup;
     this.getSshHost = options.getSshHost;
     this.reconnectTunnelFn = options.reconnectTunnelFn ?? reconnectTunnel;
     this.execFileFn = options.execFileFn ?? execFileAsync;
+    this.remoteReachabilityTimeoutMs = options.remoteReachabilityTimeoutMs ?? 60_000;
   }
 
   async handleActivateCity(url: URL, res: ServerResponse, body?: unknown): Promise<void> {
@@ -178,14 +181,26 @@ export class HttpApiActivation {
     const replacesRuntime = !(runtime === 'rust' && rustOptions.once);
 
     try {
-      // Reset tunnel first — kills stale ControlMaster and re-establishes
-      // RemoteForward so the agent can reach localhost:4004.
-      await this.reconnectTunnelFn(sshHost);
+      // Avoid churning a healthy reverse tunnel. Candide can impose a short
+      // SSH backoff after failed or restarted opens, so only kickstart when
+      // the remote cannot already see the local backend.
+      const tunnelAlreadyReachable = await isRemotePortolanReachable(sshHost, this.execFileFn);
+      if (!tunnelAlreadyReachable) {
+        await this.reconnectTunnelFn(sshHost);
+        const reachable = await waitForRemotePortolan(
+          sshHost,
+          this.execFileFn,
+          this.remoteReachabilityTimeoutMs,
+        );
+        if (!reachable) {
+          throw new Error(`${sshHost}: tunnel unreachable after kickstart`);
+        }
+      }
 
       const { stdout: checkOutput } = await this.execFileFn(
         'ssh',
         ['-T', sshHost, `tmux has-session -t ${exactTmuxTarget(runtimeSession)} 2>/dev/null && echo running || echo stopped`],
-        { timeout: 10000 }
+        { timeout: 60_000 }
       );
 
       if (checkOutput.trim() === 'running') {
@@ -193,7 +208,7 @@ export class HttpApiActivation {
           await this.execFileFn(
             'ssh',
             ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
-            { timeout: 10000 }
+            { timeout: 60_000 }
           );
         }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -205,7 +220,7 @@ export class HttpApiActivation {
         await this.execFileFn(
           'ssh',
           ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
-          { timeout: 10000 }
+          { timeout: 60_000 }
         );
       }
 
@@ -214,7 +229,7 @@ export class HttpApiActivation {
       await this.execFileFn(
         'ssh',
         ['-T', sshHost, remoteCommand],
-        { timeout: 30000 }
+        { timeout: 60_000 }
       );
 
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -225,4 +240,39 @@ export class HttpApiActivation {
       res.end(JSON.stringify({ error: `Failed to start agent: ${error.message}` }));
     }
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function isRemotePortolanReachable(
+  sshHost: string,
+  execFileFn: typeof execFileAsync,
+): Promise<boolean> {
+  try {
+    await execFileFn(
+      'ssh',
+      ['-T', sshHost, 'curl -sS --connect-timeout 3 http://localhost:4004/debug-runtime >/dev/null'],
+      { timeout: 60_000 },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForRemotePortolan(
+  sshHost: string,
+  execFileFn: typeof execFileAsync,
+  timeoutMs: number,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await isRemotePortolanReachable(sshHost, execFileFn)) {
+      return true;
+    }
+    await delay(1_000);
+  }
+  return false;
 }
