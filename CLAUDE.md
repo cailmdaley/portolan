@@ -136,6 +136,14 @@ Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot rev
 Port still held? `ssh <host> "fuser -k 4004/tcp"`. See fibers `gotcha-ssh-remoteforward-port`
 and `gotchas/gotcha-candide-reverse-tunnel-backoff`.
 
+For preview Rust remote-agent smoke tests, use a separate session so Node stays as fallback:
+
+- Build a Linux preview binary from macOS: `npm run native:agent:linux`
+- Install remote hooks and artifacts: `./scripts/install-remote.sh <host> --agent-runtime rust --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust`
+- Start preview runtime only: `./scripts/reset-tunnel.sh --agent-runtime rust <host>`
+
+The Node runtime remains in `portolan-agent`, while Rust preview starts in `portolan-agent-rust-preview`. Only one socket per origin is live; Rust preview temporarily owns that socket while connected, and the Node session reconnects after the preview exits.
+
 Candide-specific model: SSH is ping-gated and seems to impose a short backoff after failed opens.
 Do not hammer it. First check whether candide can see the local backend:
 `ssh candide "curl -sS --max-time 4 http://localhost:4004/debug-runtime"`.

@@ -1,21 +1,22 @@
 #!/bin/bash
-# Install portolan agent and hooks on a remote machine
+# Install portolan agent and hooks on a remote machine.
 #
-# Usage: ./scripts/install-remote.sh <ssh-host> [--start]
+# Usage: ./scripts/install-remote.sh <ssh-host> [--start] [--agent-runtime node|rust] [options]
 #
 # This script:
 # 1. Copies portolan-hook.sh to remote ~/.portolan/hooks/
-# 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js
-# 3. Creates ~/.portolan/data/ directory
-# 4. Patches ~/.claude/settings.json to add:
+# 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js (Node fallback, always kept)
+# 3. Optionally copies Rust preview binary to remote ~/.local/bin/portolan-agent-rust
+# 4. Creates ~/.portolan/data/ directory
+# 5. Patches ~/.claude/settings.json to add:
 #    - command hooks for canonical Portolan activity and file-touch tracking
-# 5. Optionally starts the agent in a tmux session
+# 6. Optionally starts a runtime in a tmux session
 #
 # Prerequisites on remote:
-# - Node.js with npm
 # - jq (for JSON patching)
 # - tmux (for running agent)
 # - Claude Code installed
+# - Node.js with npm (optional for Rust preview, but used to keep Node fallback ready)
 
 set -e
 
@@ -35,35 +36,100 @@ error() { echo -e "${RED}[portolan]${NC} $1" >&2; }
 # Parse arguments
 SSH_HOST=""
 START_AGENT=false
+AGENT_RUNTIME="node"
+RUST_AGENT_LOCAL_BINARY=""
+RUST_AGENT_SESSION="portolan-agent-rust-preview"
+NODE_AGENT_SESSION="portolan-agent"
 
-for arg in "$@"; do
-  case $arg in
+usage() {
+  cat <<EOF
+Usage: $0 <ssh-host> [--start] [--agent-runtime node|rust] [options]
+
+Options:
+  --start                 Start one runtime in tmux after installation
+  --agent-runtime VALUE   node or rust (default: node)
+  --agent-binary PATH     Local path to rust binary (defaults to crates/portolan-agent/target/release/portolan-agent-rust)
+  --agent-session NAME    Override tmux session name for rust preview runtime
+  --help, -h              Show usage
+
+Prerequisites on remote:
+  - jq
+  - tmux
+  - Claude Code
+  - Node.js + npm (optional for rust preview, but used to keep Node fallback ready)
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --start)
       START_AGENT=true
+      shift
+      ;;
+    --agent-runtime)
+      if [ "$#" -lt 2 ]; then
+        error "Missing value for --agent-runtime"
+        exit 1
+      fi
+      AGENT_RUNTIME="$2"
+      shift 2
+      ;;
+    --agent-runtime=*)
+      AGENT_RUNTIME="${1#*=}"
+      shift
+      ;;
+    --agent-binary)
+      if [ "$#" -lt 2 ]; then
+        error "Missing value for --agent-binary"
+        exit 1
+      fi
+      RUST_AGENT_LOCAL_BINARY="$2"
+      shift 2
+      ;;
+    --agent-binary=*)
+      RUST_AGENT_LOCAL_BINARY="${1#*=}"
+      shift
+      ;;
+    --agent-session)
+      if [ "$#" -lt 2 ]; then
+        error "Missing value for --agent-session"
+        exit 1
+      fi
+      RUST_AGENT_SESSION="$2"
+      shift 2
+      ;;
+    --agent-session=*)
+      RUST_AGENT_SESSION="${1#*=}"
+      shift
       ;;
     --help|-h)
-      echo "Usage: $0 <ssh-host> [--start]"
-      echo ""
-      echo "Options:"
-      echo "  --start    Start the agent in tmux after installation"
-      echo ""
-      echo "Prerequisites on remote:"
-      echo "  - Node.js with npm"
-      echo "  - jq"
-      echo "  - tmux"
-      echo "  - Claude Code"
+      usage
       exit 0
+      ;;
+    --*)
+      error "Unknown option: $1"
+      exit 1
       ;;
     *)
       if [ -z "$SSH_HOST" ]; then
-        SSH_HOST="$arg"
+        SSH_HOST="$1"
+      else
+        error "Unexpected extra argument: $1"
+        usage
+        exit 1
       fi
+      shift
       ;;
   esac
 done
 
 if [ -z "$SSH_HOST" ]; then
   error "Usage: $0 <ssh-host> [--start]"
+  exit 1
+fi
+
+if [ "$AGENT_RUNTIME" != "node" ] && [ "$AGENT_RUNTIME" != "rust" ]; then
+  error "Invalid --agent-runtime value: $AGENT_RUNTIME (must be node or rust)"
   exit 1
 fi
 
@@ -78,19 +144,19 @@ fi
 
 # Check prerequisites on remote (use login shell for nvm)
 log "Checking prerequisites..."
-ssh "$SSH_HOST" 'bash -l -c '\''
-set -e
-missing=""
-command -v node >/dev/null 2>&1 || missing="$missing node"
-command -v jq >/dev/null 2>&1 || missing="$missing jq"
-command -v tmux >/dev/null 2>&1 || missing="$missing tmux"
-[ -d ~/.claude ] || missing="$missing claude-code"
-if [ -n "$missing" ]; then
-  echo "Missing:$missing"
+ssh "$SSH_HOST" "bash -lc 'set -e
+missing=\"\"
+command -v jq >/dev/null 2>&1 || missing=\"\$missing jq\"
+command -v tmux >/dev/null 2>&1 || missing=\"\$missing tmux\"
+[ -d ~/.claude ] || missing=\"\$missing claude-code\"
+if [ \"$AGENT_RUNTIME\" = \"node\" ]; then
+  command -v node >/dev/null 2>&1 || missing=\"\$missing node\"
+fi
+if [ -n \"\$missing\" ]; then
+  echo \"Missing:\$missing\"
   exit 1
 fi
-echo "ok"
-'\'''
+echo ok'"
 
 # Create directories on remote
 log "Creating directories..."
@@ -104,6 +170,18 @@ ssh "$SSH_HOST" "chmod +x ~/.portolan/hooks/portolan-hook.sh"
 log "Copying agent.js..."
 scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/.local/bin/portolan-agent.js"
 
+if [ "$AGENT_RUNTIME" = "rust" ]; then
+  log "Copying Rust preview agent..."
+  RUST_AGENT_LOCAL_BINARY="${RUST_AGENT_LOCAL_BINARY:-$REPO_DIR/crates/portolan-agent/target/release/portolan-agent-rust}"
+  if [ ! -f "$RUST_AGENT_LOCAL_BINARY" ]; then
+    error "Rust agent binary not found: $RUST_AGENT_LOCAL_BINARY"
+    error "Run: npm run native:agent, or for Linux remotes run npm run native:agent:linux and pass --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust"
+    exit 1
+  fi
+  scp -q "$RUST_AGENT_LOCAL_BINARY" "$SSH_HOST:~/.local/bin/portolan-agent-rust"
+  ssh "$SSH_HOST" "chmod +x ~/.local/bin/portolan-agent-rust"
+fi
+
 # Older Portolan agents used a bundled TS Shuttle worker. The standalone
 # Shuttle cutover removed that script; keep install compatible with older
 # checkouts without failing current agent installs.
@@ -116,9 +194,12 @@ else
   ssh "$SSH_HOST" "rm -f ~/.portolan/bin/shuttle-worker.sh"
 fi
 
-# Install ws dependency for agent (use login shell for nvm)
-log "Installing ws package..."
-ssh "$SSH_HOST" 'bash -l -c '\''
+# Install ws dependency for the Node fallback whenever Node is available. Rust
+# preview installs should leave `portolan-agent` restartable without a second
+# install pass.
+if ssh "$SSH_HOST" 'bash -l -c "command -v node >/dev/null 2>&1"'; then
+  log "Installing ws package..."
+  ssh "$SSH_HOST" 'bash -l -c '\''
 cd ~/.local/bin
 if [ ! -f package.json ]; then
   echo "{\"type\": \"module\"}" > package.json
@@ -131,6 +212,9 @@ if [ ! -d node_modules/ws ]; then
   npm install ws --save >/dev/null 2>&1
 fi
 '\'''
+elif [ "$AGENT_RUNTIME" = "rust" ]; then
+  warn "Node not found on remote; Rust preview can run, but Node fallback is not startable until Node is installed"
+fi
 
 # Patch Claude settings
 log "Patching Claude settings..."
@@ -197,13 +281,16 @@ log "Installation complete!"
 
 # Verify installation
 log "Verifying..."
-ssh "$SSH_HOST" bash <<'VERIFY'
-echo "  Hook: $(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Agent: $(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Retired TS Shuttle worker removed: $([ ! -e ~/.portolan/bin/shuttle-worker.sh ] && echo 'OK' || echo 'STALE')"
-echo "  ws: $(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Settings: $(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
-echo "  PostToolUse JSONL hook: $(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
+ssh "$SSH_HOST" bash <<VERIFY
+echo "  Hook: \$(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
+echo "  Agent: \$(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
+echo "  Rust Agent: \$(ls ~/.local/bin/portolan-agent-rust 2>/dev/null && echo 'OK' || echo 'NOT PROVIDED')"
+echo "  Retired TS Shuttle worker removed: \$([ ! -e ~/.portolan/bin/shuttle-worker.sh ] && echo 'OK' || echo 'STALE')"
+if command -v node >/dev/null 2>&1; then
+  echo "  ws: \$(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
+fi
+echo "  Settings: \$(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
+echo "  PostToolUse JSONL hook: \$(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
 VERIFY
 
 log "Checking remote tunnel and canonical hook output..."
@@ -256,12 +343,19 @@ fi
 # Start agent if requested
 if [ "$START_AGENT" = true ]; then
   log "Starting agent..."
+  if [ "$AGENT_RUNTIME" = "rust" ]; then
+    AGENT_SESSION="$RUST_AGENT_SESSION"
+    AGENT_CMD="~/.local/bin/portolan-agent-rust connect --ssh-host=$SSH_HOST"
+  else
+    AGENT_SESSION="$NODE_AGENT_SESSION"
+    AGENT_CMD="node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST"
+  fi
   ssh "$SSH_HOST" bash <<STARTAGENT
-    # Kill existing agent if running
-    tmux kill-session -t portolan-agent 2>/dev/null || true
+    # Kill existing runtime-specific agent if running
+    tmux kill-session -t "$AGENT_SESSION" 2>/dev/null || true
     # Start new agent session
-    tmux new-session -d -s portolan-agent "bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'"
-    echo "Agent started in tmux session 'portolan-agent'"
+    tmux new-session -d -s "$AGENT_SESSION" "bash -l -c '$AGENT_CMD'"
+    echo "Agent started in tmux session '$AGENT_SESSION'"
 STARTAGENT
 fi
 
@@ -272,8 +366,17 @@ echo "       ./scripts/install-tunnels.sh $SSH_HOST"
 echo "     Fallback without launchd:"
 echo "       ./scripts/reset-tunnel.sh --manual $SSH_HOST"
 echo ""
-echo "  2. Start the agent on remote (if not using --start):"
-echo "       ssh $SSH_HOST"
-echo "       tmux new-session -d -s portolan-agent 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'"
-echo ""
-echo "  3. Restart any existing Claude Code sessions to pick up hooks"
+if [ "$AGENT_RUNTIME" = "rust" ]; then
+  echo "  2. Start the Rust preview agent on remote (session kept separate):"
+  echo "       ssh $SSH_HOST"
+  echo "       tmux new-session -d -s '$RUST_AGENT_SESSION' \"bash -l -c '~/.local/bin/portolan-agent-rust connect --ssh-host=$SSH_HOST'\""
+  echo ""
+  echo "  3. Rust preview temporarily owns the origin socket while connected."
+  echo "     Node fallback remains available in tmux session '$NODE_AGENT_SESSION' and reconnects after Rust exits:"
+  echo "       tmux new-session -d -s '$NODE_AGENT_SESSION' \"bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'\""
+else
+  echo "  2. Start the agent on remote (if not using --start):"
+  echo "       ssh $SSH_HOST"
+  echo "       tmux new-session -d -s $NODE_AGENT_SESSION \"bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'\""
+fi
+echo "  4. Restart any existing Claude Code sessions to pick up hooks"
