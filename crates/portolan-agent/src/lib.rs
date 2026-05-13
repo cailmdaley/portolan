@@ -1389,10 +1389,18 @@ fn collect_fiber_tree_delta_frame_with_snapshot(
 }
 
 fn collect_fiber_tree_files(felt_host: &Path) -> Result<Vec<FiberTreeFile>, String> {
+    collect_fiber_tree_files_with_index(felt_host, read_felt_index_json)
+}
+
+fn collect_fiber_tree_files_with_index(
+    felt_host: &Path,
+    read_index: impl Fn(&Path) -> BTreeMap<String, Value>,
+) -> Result<Vec<FiberTreeFile>, String> {
     let felt_dir = felt_host.join(".felt");
     if !felt_dir.is_dir() {
         return Err(format!("{} does not exist", felt_dir.display()));
     }
+    let indexed = read_index(felt_host);
 
     let mut paths = Vec::new();
     collect_fiber_paths(&felt_dir, &felt_dir, &mut paths);
@@ -1400,6 +1408,18 @@ fn collect_fiber_tree_files(felt_host: &Path) -> Result<Vec<FiberTreeFile>, Stri
 
     let mut files = Vec::new();
     for path in paths {
+        let Some(fiber_id) = fiber_id_from_path(&path) else {
+            continue;
+        };
+        if let Some(fiber) = indexed.get(&fiber_id) {
+            files.push(FiberTreeFile {
+                path,
+                fiber: Some(fiber.clone()),
+                content: None,
+            });
+            continue;
+        }
+
         let body = fs::read_to_string(felt_dir.join(&path))
             .map_err(|error| format!("failed to read {path}: {error}"))?;
         files.push(FiberTreeFile {
@@ -1409,6 +1429,45 @@ fn collect_fiber_tree_files(felt_host: &Path) -> Result<Vec<FiberTreeFile>, Stri
         });
     }
     Ok(files)
+}
+
+fn read_felt_index_json(felt_host: &Path) -> BTreeMap<String, Value> {
+    if !felt_host.join(".felt/index.db").is_file() {
+        return BTreeMap::new();
+    }
+
+    let output = match Command::new("felt")
+        .args([
+            "-C",
+            felt_host.to_string_lossy().as_ref(),
+            "ls",
+            "-s",
+            "all",
+            "-j",
+            "--body",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return BTreeMap::new(),
+    };
+
+    let parsed: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(parsed) => parsed,
+        Err(_) => return BTreeMap::new(),
+    };
+
+    let Some(fibers) = parsed.as_array() else {
+        return BTreeMap::new();
+    };
+
+    fibers
+        .iter()
+        .filter_map(|fiber| {
+            let id = fiber.get("id")?.as_str()?;
+            Some((id.to_string(), fiber.clone()))
+        })
+        .collect()
 }
 
 fn collect_fiber_paths(root: &Path, current: &Path, out: &mut Vec<String>) {
@@ -2074,6 +2133,57 @@ malformed
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn fiber_tree_dump_prefers_felt_json_when_indexed() {
+        let dir = temp_host("fiber-tree-indexed");
+        fs::create_dir_all(dir.join(".felt/portolan/native")).unwrap();
+        fs::write(
+            dir.join(".felt/portolan/portolan.md"),
+            "---\nname: Portolan markdown fallback\nstatus: active\n---\n\nRoot\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join(".felt/portolan/native/native.md"),
+            "---\nname: Native markdown fallback\nstatus: open\n---\n\nChild\n",
+        )
+        .unwrap();
+        let mut indexed = BTreeMap::new();
+        indexed.insert(
+            "portolan/native".to_string(),
+            json!({
+                "id": "portolan/native",
+                "name": "Native from felt JSON",
+                "status": "active",
+                "body": "indexed body\n",
+                "depends_on": [{ "id": "portolan" }]
+            }),
+        );
+
+        let files = collect_fiber_tree_files_with_index(&dir, |_| indexed.clone()).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        let indexed_file = files
+            .iter()
+            .find(|file| file.path == "portolan/native/native.md")
+            .expect("expected indexed child");
+        assert_eq!(
+            indexed_file.fiber.as_ref().unwrap()["name"],
+            json!("Native from felt JSON")
+        );
+        assert!(indexed_file.content.is_none());
+
+        let fallback_file = files
+            .iter()
+            .find(|file| file.path == "portolan/portolan.md")
+            .expect("expected fallback root");
+        assert!(fallback_file.fiber.is_none());
+        assert!(fallback_file
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("Portolan markdown fallback"));
     }
 
     #[test]
