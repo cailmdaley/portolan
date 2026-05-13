@@ -18,6 +18,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -439,25 +440,25 @@ async fn stream_tmux_control(
         );
         return;
     };
+    let last_stderr = Arc::new(Mutex::new(None::<String>));
     if let Some(stderr) = child.stderr.take() {
-        let stderr_tx = terminal_tx.clone();
-        let stderr_subscription_id = subscription_id.clone();
+        let stderr_reason = Arc::clone(&last_stderr);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
                         if !line.is_empty() {
-                            send_terminal_exit(&stderr_tx, &stderr_subscription_id, Some(line));
+                            if let Ok(mut reason) = stderr_reason.lock() {
+                                *reason = Some(line);
+                            }
                         }
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        send_terminal_exit(
-                            &stderr_tx,
-                            &stderr_subscription_id,
-                            Some(format!("tmux stderr read failed: {error}")),
-                        );
+                        if let Ok(mut reason) = stderr_reason.lock() {
+                            *reason = Some(format!("tmux stderr read failed: {error}"));
+                        }
                         break;
                     }
                 }
@@ -480,12 +481,20 @@ async fn stream_tmux_control(
         }
     }
 
-    let reason = child
+    let status_reason = child
         .wait()
         .await
         .map(|status| status.to_string())
         .unwrap_or_else(|error| format!("tmux wait failed: {error}"));
+    let stderr_reason = last_stderr.lock().ok().and_then(|reason| reason.clone());
+    let reason = terminal_exit_reason(status_reason, stderr_reason);
     send_terminal_exit(&terminal_tx, &subscription_id, Some(reason));
+}
+
+fn terminal_exit_reason(status_reason: String, stderr_reason: Option<String>) -> String {
+    stderr_reason
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or(status_reason)
 }
 
 fn handle_tmux_control_line(
@@ -915,6 +924,21 @@ mod tests {
             has_playgrounds: None,
             git_status: None,
         }
+    }
+
+    #[test]
+    fn terminal_exit_reason_prefers_stderr_without_early_exit() {
+        assert_eq!(
+            terminal_exit_reason(
+                "exit status: 1".to_string(),
+                Some("no such pane".to_string())
+            ),
+            "no such pane",
+        );
+        assert_eq!(
+            terminal_exit_reason("exit status: 0".to_string(), None),
+            "exit status: 0",
+        );
     }
 
     fn temp_events_file(tag: &str) -> PathBuf {
