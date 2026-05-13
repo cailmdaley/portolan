@@ -2159,7 +2159,8 @@ fn handle_search_files(payload: &SearchFilesRequestPayload) -> AgentFrame {
 fn search_files(payload: &SearchFilesRequestPayload) -> Result<Vec<SearchResultPayload>, String> {
     let root_path = resolve_remote_directory_path(&payload.path)?;
     let limit = payload.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
-    if payload.query.is_empty() {
+    let query = payload.query.trim().to_lowercase();
+    if query.is_empty() {
         return Ok(Vec::new());
     }
     if limit == 0 {
@@ -2167,17 +2168,16 @@ fn search_files(payload: &SearchFilesRequestPayload) -> Result<Vec<SearchResultP
     }
 
     match payload.mode {
-        SearchFilesMode::Filename => search_filenames(payload, &root_path, limit),
-        SearchFilesMode::Content => search_file_contents(payload, &root_path, limit),
+        SearchFilesMode::Filename => search_filenames(&query, &root_path, limit),
+        SearchFilesMode::Content => search_file_contents(&query, &root_path, limit),
     }
 }
 
 fn search_filenames(
-    payload: &SearchFilesRequestPayload,
+    normalized_query: &str,
     root_path: &Path,
     limit: usize,
 ) -> Result<Vec<SearchResultPayload>, String> {
-    let query = payload.query.as_str();
     let mut results = Vec::new();
     let mut directories = vec![root_path.to_path_buf()];
 
@@ -2211,7 +2211,7 @@ fn search_filenames(
                 .is_some_and(|file_type| file_type.is_dir());
             let relative_path = relative_search_path(&entry.path(), root_path)?;
 
-            if is_match(&relative_path, query) {
+            if is_match(&relative_path, normalized_query) {
                 let full_path = entry.path().to_string_lossy().into_owned();
 
                 results.push(SearchResultPayload {
@@ -2238,11 +2238,10 @@ fn search_filenames(
 }
 
 fn search_file_contents(
-    payload: &SearchFilesRequestPayload,
+    normalized_query: &str,
     root_path: &Path,
     limit: usize,
 ) -> Result<Vec<SearchResultPayload>, String> {
-    let query = payload.query.as_str();
     let mut results = Vec::new();
     let mut directories = vec![root_path.to_path_buf()];
 
@@ -2289,7 +2288,7 @@ fn search_file_contents(
             let mut matched_snippet = None;
 
             for (index, line) in content.lines().enumerate() {
-                if line.contains(query) {
+                if line.to_lowercase().contains(normalized_query) {
                     matched_line = Some(index + 1);
                     matched_snippet = Some(trim_to_snippet(line));
                     matched = true;
@@ -2322,7 +2321,7 @@ fn should_skip_search_entry(name: &str) -> bool {
 }
 
 fn is_match(candidate: &str, query: &str) -> bool {
-    candidate.contains(query)
+    candidate.to_lowercase().contains(query)
 }
 
 fn relative_search_path(path: &Path, root_path: &Path) -> Result<String, String> {
@@ -5296,6 +5295,33 @@ malformed
     }
 
     #[test]
+    fn searches_files_by_filename_case_insensitively() {
+        let dir = temp_host("search-filename-case");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("HttpApiFilesSearch.ts"), "search source\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-filename-case".to_string(),
+                path: dir.display().to_string(),
+                query: "httpapifilessearch".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(10),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.results.len(), 1);
+                assert_eq!(payload.results[0].path, "HttpApiFilesSearch.ts");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
     fn searches_files_by_content_with_first_match_per_file() {
         let dir = temp_host("search-content");
         fs::create_dir_all(&dir).unwrap();
@@ -5326,6 +5352,37 @@ malformed
                 assert_eq!(
                     payload.results[0].result_match.as_deref(),
                     Some("search hit line")
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn searches_files_by_content_case_insensitively() {
+        let dir = temp_host("search-content-case");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.md"), "Remote Workspace Search\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-content-case".to_string(),
+                path: dir.display().to_string(),
+                query: "workspace search".to_string(),
+                mode: SearchFilesMode::Content,
+                limit: Some(10),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.results.len(), 1);
+                assert_eq!(payload.results[0].line, Some(1));
+                assert_eq!(
+                    payload.results[0].result_match.as_deref(),
+                    Some("Remote Workspace Search")
                 );
             }
             other => panic!("unexpected response: {other:?}"),
