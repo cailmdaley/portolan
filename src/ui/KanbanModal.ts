@@ -396,13 +396,21 @@ export class KanbanModal {
     this.subtitleEl.className = 'kbn-subtitle'
     this.subtitleEl.textContent = this.subtitleText()
 
-    const titleWrap = document.createElement('div')
-    titleWrap.className = 'kbn-title-wrap'
-    titleWrap.append(title, this.subtitleEl)
+    // Title row (title + scope subtitle) and stats row stack vertically
+    // on the left so the header band — sized by the thumb-index — fills
+    // with content instead of leaving a horizontal stats line floating
+    // in the middle.
+    const titleRow = document.createElement('div')
+    titleRow.className = 'kbn-title-wrap'
+    titleRow.append(title, this.subtitleEl)
 
     this.statusEl = document.createElement('div')
     this.statusEl.className = 'kbn-status'
     this.statusEl.textContent = 'Loading…'
+
+    const titleBlock = document.createElement('div')
+    titleBlock.className = 'kbn-title-block'
+    titleBlock.append(titleRow, this.statusEl)
 
     // Bug 3: manual refresh button in the header. Lightens the refresh
     // affordance (faded icon) so it doesn't compete with the stash trigger.
@@ -417,7 +425,7 @@ export class KanbanModal {
       this.announce('Refreshing…')
     })
 
-    header.append(titleWrap, this.statusEl, refreshBtn)
+    header.append(titleBlock, refreshBtn)
 
     // The `⊕ Global` scope-escape affordance retired with the thumb-index
     // global-navigation constitution
@@ -676,13 +684,19 @@ export class KanbanModal {
       : ''
     const pastCount = timeline.past.length
     const soonCount = totals.futureDated + totals.anytimeSoon
-    this.statusEl.textContent =
-      remotePrefix +
-      (totals.ideas > 0 ? `${totals.ideas} ideas · ` : '') +
-      `${totals.drafts} drafts · ${totals.inFlight} in flight · ` +
-      `${totals.awaitingReview} awaiting review · ` +
-      `${pastCount} landed · ${soonCount} soon · ${totals.stash} stashed` +
-      (temperedTotal > 0 ? ` · ${temperedTotal} tempered total` : '')
+    // Stats line: only show buckets that have something. Drafts / in-flight /
+    // awaiting always render (the three Now lanes are the desk); other buckets
+    // drop out when zero so the line stays readable.
+    const parts: string[] = []
+    if (totals.ideas > 0) parts.push(`${totals.ideas} ideas`)
+    parts.push(`${totals.drafts} drafts`)
+    parts.push(`${totals.inFlight} in flight`)
+    parts.push(`${totals.awaitingReview} awaiting`)
+    if (pastCount > 0) parts.push(`${pastCount} landed`)
+    if (soonCount > 0) parts.push(`${soonCount} soon`)
+    if (totals.stash > 0) parts.push(`${totals.stash} stashed`)
+    if (temperedTotal > 0) parts.push(`${temperedTotal} tempered`)
+    this.statusEl.textContent = remotePrefix + parts.join(' · ')
 
     this.body.innerHTML = ''
     this.body.classList.remove('kbn-body-zoomed')
@@ -720,23 +734,15 @@ export class KanbanModal {
     section.setAttribute('role', 'region')
     section.setAttribute('aria-label', 'Now — the desk')
 
-    const head = document.createElement('div')
-    head.className = 'kbn-section-head'
-    const label = document.createElement('span')
-    label.className = 'kbn-section-label'
-    label.textContent = 'Now'
-    const sub = document.createElement('span')
-    sub.className = 'kbn-section-sub'
-    sub.textContent = "— what's on the desk"
-    head.append(label, sub)
-
     const board = document.createElement('div')
     board.className = 'kbn-now-board'
     for (const kind of NOW_COLUMN_ORDER) {
       board.append(this.renderColumn(kind, now[kind], staleness))
     }
 
-    section.append(head, board)
+    section.append(board)
+    const total = now.drafts.length + now.inFlight.length + now.awaitingReview.length
+    this.installSectionChrome(section, 'now', 'Now', total)
     this.installSectionDragHandlers(section, 'now')
     return section
   }
@@ -752,16 +758,6 @@ export class KanbanModal {
     section.className = 'kbn-section kbn-section-timeline'
     section.setAttribute('role', 'region')
     section.setAttribute('aria-label', 'Timeline — past and soon')
-
-    const head = document.createElement('div')
-    head.className = 'kbn-section-head kbn-timeline-head'
-    const label = document.createElement('span')
-    label.className = 'kbn-section-label'
-    label.innerHTML = '<span class="kbn-timeline-past-label">Past</span> · <span class="kbn-timeline-future-label">Soon</span>'
-    const sub = document.createElement('span')
-    sub.className = 'kbn-section-sub'
-    sub.textContent = '— the road behind and ahead'
-    head.append(label, sub)
 
     const wrap = document.createElement('div')
     wrap.className = 'kbn-timeline-wrap'
@@ -833,7 +829,9 @@ export class KanbanModal {
     this.installAnytimePoolDropHandlers(pool)
     wrap.append(pool)
 
-    section.append(head, wrap)
+    section.append(wrap)
+    const timelineCount = timeline.past.length + timeline.futureDated.length + timeline.anytimeSoon.length
+    this.installSectionChrome(section, 'timeline', 'Past · Soon', timelineCount)
     return section
   }
 
@@ -848,16 +846,6 @@ export class KanbanModal {
     section.className = 'kbn-section kbn-section-stash'
     section.setAttribute('role', 'region')
     section.setAttribute('aria-label', 'Stash — set aside, visible')
-
-    const head = document.createElement('div')
-    head.className = 'kbn-section-head'
-    const label = document.createElement('span')
-    label.className = 'kbn-section-label'
-    label.textContent = 'Stash'
-    const sub = document.createElement('span')
-    sub.className = 'kbn-section-sub'
-    sub.textContent = '— set aside, but visible at a glance'
-    head.append(label, sub)
 
     const clusters = clusterStashCards(stash)
     const warm = clusters.filter((c) => !c.cold)
@@ -881,9 +869,64 @@ export class KanbanModal {
       grid.append(empty)
     }
 
-    section.append(head, grid)
+    section.append(grid)
+    this.installSectionChrome(section, 'stash', 'Stash', stash.length)
     this.installSectionDragHandlers(section, 'stashed')
     return section
+  }
+
+  /** Section chrome shared across Now / Timeline / Stash: the section heads
+   *  retired (the layout speaks), but each section gets a subtle top-right
+   *  collapse toggle and a compact strip (label + count) that takes over
+   *  the section's footprint when collapsed. Persists per-section collapse
+   *  in localStorage so users who keep, say, Stash collapsed for drag-target
+   *  ergonomics aren't asked to re-collapse each session.
+   *
+   *  Drops still fire on the section root (and therefore on the collapsed
+   *  strip), so a drag from Now to a collapsed Stash lands cleanly. */
+  private installSectionChrome(
+    section: HTMLElement,
+    key: 'now' | 'timeline' | 'stash',
+    label: string,
+    count: number,
+  ): void {
+    const collapsed = readSectionCollapsed(key)
+    if (collapsed) section.classList.add('kbn-section-collapsed')
+
+    const strip = document.createElement('div')
+    strip.className = 'kbn-section-strip'
+    strip.setAttribute('aria-hidden', collapsed ? 'false' : 'true')
+    const stripLabel = document.createElement('span')
+    stripLabel.className = 'kbn-section-strip-label'
+    stripLabel.textContent = label
+    const stripCount = document.createElement('span')
+    stripCount.className = 'kbn-section-strip-count'
+    stripCount.textContent = count > 0 ? String(count) : '—'
+    strip.append(stripLabel, stripCount)
+    strip.addEventListener('click', () => toggle())
+    section.append(strip)
+
+    const toggleBtn = document.createElement('button')
+    toggleBtn.type = 'button'
+    toggleBtn.className = 'kbn-section-toggle'
+    const updateAria = (isCollapsed: boolean) => {
+      toggleBtn.setAttribute('aria-label', `${isCollapsed ? 'Expand' : 'Collapse'} ${label}`)
+      toggleBtn.title = isCollapsed ? `Expand ${label}` : `Collapse ${label}`
+      toggleBtn.textContent = isCollapsed ? '⌃' : '⌄'
+      strip.setAttribute('aria-hidden', isCollapsed ? 'false' : 'true')
+    }
+    updateAria(collapsed)
+    const toggle = (): void => {
+      const next = !section.classList.contains('kbn-section-collapsed')
+      section.classList.toggle('kbn-section-collapsed', next)
+      writeSectionCollapsed(key, next)
+      updateAria(next)
+    }
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      toggle()
+    })
+    section.append(toggleBtn)
   }
 
   /** Install drop handlers on a section (Now or Stash) — drop anywhere
@@ -3326,6 +3369,34 @@ const SURFACE_TITLE: Record<HorizonKind, string> = {
   now: 'Now',
   soon: 'Soon',
   stashed: 'Stash',
+}
+
+const SECTION_COLLAPSED_STORAGE_KEY = 'portolan:kanban:collapsed-sections'
+
+/** Read the persisted set of collapsed sections. Safe under SSR / private
+ *  mode (no localStorage) — returns an empty set on any failure. */
+function readSectionCollapsed(key: 'now' | 'timeline' | 'stash'): boolean {
+  try {
+    const raw = window.localStorage.getItem(SECTION_COLLAPSED_STORAGE_KEY)
+    if (!raw) return false
+    const set = new Set(JSON.parse(raw) as string[])
+    return set.has(key)
+  } catch {
+    return false
+  }
+}
+
+function writeSectionCollapsed(key: 'now' | 'timeline' | 'stash', collapsed: boolean): void {
+  try {
+    const raw = window.localStorage.getItem(SECTION_COLLAPSED_STORAGE_KEY)
+    const set = new Set(raw ? (JSON.parse(raw) as string[]) : [])
+    if (collapsed) set.add(key)
+    else set.delete(key)
+    window.localStorage.setItem(SECTION_COLLAPSED_STORAGE_KEY, JSON.stringify([...set]))
+  } catch {
+    // localStorage unavailable — silently no-op, the user will collapse again
+    // next mount; nothing else depends on persistence.
+  }
 }
 
 /** Format a Date as a stable YYYY-MM-DD ISO day. Timezone-aware (uses

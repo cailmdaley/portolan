@@ -28,8 +28,8 @@
    var isn't published yet (initial paint, before FloatingIsland's
    ResizeObserver fires). */
 .kbn-header {
-  display: flex; align-items: center; gap: 16px;
-  padding: 14px 20px 14px 44px;
+  display: flex; align-items: stretch; gap: 16px;
+  padding: 10px 20px 10px 44px;
   padding-right: calc(20px + var(--canvas-width, 360px));
   min-height: var(--thumb-index-bottom, auto);
   border-bottom: 1px solid rgba(46, 42, 38, 0.12);
@@ -37,8 +37,18 @@
   flex-shrink: 0;
   box-sizing: border-box;
 }
+/* The header's left half stacks title + scope + stats vertically so the
+   thumb-index-enforced header height fills with substance instead of
+   floating a horizontal stats strip in the middle. */
+.kbn-title-block {
+  flex: 1;
+  display: flex; flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
 .kbn-title-wrap {
-  display: flex; align-items: baseline; gap: 8px;
+  display: flex; align-items: baseline; gap: 10px;
 }
 .kbn-title {
   font-size: 22px;
@@ -54,12 +64,13 @@
   display: none;
 }
 .kbn-status {
-  flex: 1;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
   color: #7A7068;
   letter-spacing: 0.02em;
-  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Stash trigger: gold + at the header's right edge. Pairs with the
    "n" hotkey owned by KanbanHost; semantically belongs in the kanban's
@@ -158,10 +169,16 @@
   min-height: 0;
 }
 /* ── Three-surface layout: Now → Timeline → Stash ──────────────────── */
+/* Section heads retired (the layout reads on its own). Each section keeps
+   a tiny top-right collapse toggle + a `.kbn-section-strip` that takes
+   over the section's footprint when collapsed. The toggle is faded by
+   default; section-hover brightens it so the affordance is present
+   without competing for attention. */
 .kbn-section {
+  position: relative;
   display: flex;
   flex-direction: column;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
   border-radius: 3px;
   transition: background 140ms ease;
 }
@@ -170,27 +187,81 @@
   outline: 1px dashed rgba(154, 123, 53, 0.45);
   outline-offset: -2px;
 }
-.kbn-section-head {
-  display: flex;
+.kbn-section-toggle {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 4;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(122, 112, 104, 0.4);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, opacity 120ms ease;
+  /* Faintly visible at rest so the affordance is discoverable; brightens
+     on section-hover or focus. Always full opacity when the section is
+     collapsed (the chevron is the only visible-text cue that something
+     is hidden). */
+  opacity: 0.25;
+}
+.kbn-section:hover > .kbn-section-toggle,
+.kbn-section-toggle:focus-visible,
+.kbn-section-collapsed > .kbn-section-toggle {
+  opacity: 1;
+}
+.kbn-section-toggle:hover {
+  color: #7A7068;
+  background: rgba(122, 112, 104, 0.08);
+}
+.kbn-section-toggle:focus-visible {
+  outline: 1px dashed #7A7068;
+  outline-offset: 2px;
+}
+/* The collapsed-state strip — hidden when section is expanded, shown as
+   a thin small-caps row with label + count when collapsed. Click anywhere
+   on the strip re-expands; the section still accepts drops via its
+   ambient drag handlers, so a drag-from-Now to a collapsed Stash lands
+   on the strip and writes horizon=stashed without the user thinking
+   about it. */
+.kbn-section-strip {
+  display: none;
   align-items: baseline;
   gap: 10px;
-  padding: 4px 0 6px;
-  border-bottom: 1px solid rgba(122, 112, 104, 0.22);
-  margin-bottom: 10px;
-}
-.kbn-section-label {
+  padding: 6px 14px;
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 16px;
-  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.kbn-section-strip-label {
+  font-size: 13px;
   font-variant-caps: small-caps;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   color: #9A7B35;
 }
-.kbn-section-sub {
-  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-style: italic;
-  font-size: 12px;
+.kbn-section-strip-count {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
   color: #7A7068;
+}
+.kbn-section-collapsed {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  margin-bottom: 6px;
+  background: rgba(244, 240, 232, 0.7);
+  border: 1px solid rgba(46, 42, 38, 0.10);
+}
+.kbn-section-collapsed > .kbn-section-strip {
+  display: flex;
+}
+/* Everything except the strip + toggle disappears when collapsed. */
+.kbn-section-collapsed > *:not(.kbn-section-strip):not(.kbn-section-toggle) {
+  display: none !important;
 }
 .kbn-section-now {
   /* Now claims most of the modal's height by default. Timeline + Stash
@@ -214,8 +285,6 @@
   border: 1px solid rgba(46, 42, 38, 0.10);
   background: rgba(244, 240, 232, 0.45);
 }
-.kbn-timeline-head .kbn-timeline-past-label { color: #7A7068; }
-.kbn-timeline-head .kbn-timeline-future-label { color: #9A7B35; }
 .kbn-timeline-wrap {
   overflow-x: auto;
   overflow-y: hidden;

@@ -387,6 +387,47 @@ describe('KanbanModal three-surface layout', () => {
     host.remove()
   })
 
+  it('each section installs a subtle collapse toggle that persists to localStorage', async () => {
+    const response = emptyKanbanResponse()
+    response.now.drafts = [makeKanbanCard({ id: 'draft/a' })]
+    response.timeline.past = [makeKanbanCard({ id: 'past/a', closedAt: new Date().toISOString() })]
+    response.stash = [makeKanbanCard({ id: 'stash/a' })]
+    response.totals = { ...response.totals, drafts: 1, past: 1, stash: 1 }
+
+    vi.stubGlobal('fetch', mockFetch({ '/kanban': () => jsonResponse(response) }))
+    window.localStorage.removeItem('portolan:kanban:collapsed-sections')
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({ apiBase: 'http://localhost:4004', onOpenFiber: vi.fn() })
+    modal.mount(host)
+    await tick()
+
+    const toggles = host.querySelectorAll<HTMLButtonElement>('.kbn-section-toggle')
+    expect(toggles).toHaveLength(3)
+    expect(toggles[0].getAttribute('aria-label')).toBe('Collapse Now')
+    expect(toggles[1].getAttribute('aria-label')).toBe('Collapse Past · Soon')
+    expect(toggles[2].getAttribute('aria-label')).toBe('Collapse Stash')
+
+    // Collapse the stash; verify class, aria flip, and persistence.
+    toggles[2].click()
+    const stashSection = host.querySelector('.kbn-section-stash')!
+    expect(stashSection.classList.contains('kbn-section-collapsed')).toBe(true)
+    expect(toggles[2].getAttribute('aria-label')).toBe('Expand Stash')
+    const stored = JSON.parse(window.localStorage.getItem('portolan:kanban:collapsed-sections') ?? '[]')
+    expect(stored).toContain('stash')
+
+    // Re-toggle; persistence clears.
+    toggles[2].click()
+    expect(stashSection.classList.contains('kbn-section-collapsed')).toBe(false)
+    const stored2 = JSON.parse(window.localStorage.getItem('portolan:kanban:collapsed-sections') ?? '[]')
+    expect(stored2).not.toContain('stash')
+
+    modal.unmount()
+    host.remove()
+    window.localStorage.removeItem('portolan:kanban:collapsed-sections')
+  })
+
   it('timeline cards stack within a day but share rows across days (no staircase)', async () => {
     // Regression: the strip is a CSS grid with explicit columns but no
     // explicit rows. If cards omit grid-row, sparse auto-placement
