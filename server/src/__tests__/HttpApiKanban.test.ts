@@ -19,6 +19,7 @@ import YAML from 'yaml';
 import {
   HttpApiKanban,
   classifyFiber,
+  effectiveDispatchEligible,
   effectiveHorizon,
   type FeltTagEditInvocation,
   type KanbanCard,
@@ -152,8 +153,15 @@ function applyRemoteMutation(content: string, mutation: RemoteKanbanMutationRequ
       return;
     }
     if (mutation.kind === 'felt-horizon') {
-      if (mutation.horizon === null) delete doc.horizon;
-      else doc.horizon = mutation.horizon;
+      if (mutation.horizon === null) {
+        delete doc.horizon;
+        delete doc.cold;
+      } else {
+        doc.horizon = mutation.horizon;
+        if (mutation.horizon !== 'stashed') delete doc.cold;
+        else if (mutation.cold === true) doc.cold = true;
+        else if (mutation.cold === false) delete doc.cold;
+      }
       return;
     }
 
@@ -260,9 +268,9 @@ describe('effectiveHorizon', () => {
   const now = Date.parse('2026-05-12T12:00:00Z');
 
   it('uses stored valid horizons and defaults missing/unknown values to now', () => {
-    expect(effectiveHorizon({ horizon: 'later' }, now)).toEqual({
-      storedHorizon: 'later',
-      effectiveHorizon: 'later',
+    expect(effectiveHorizon({ horizon: 'stashed' }, now)).toEqual({
+      storedHorizon: 'stashed',
+      effectiveHorizon: 'stashed',
       drifted: false,
     });
     expect(effectiveHorizon({}, now)).toEqual({
@@ -277,9 +285,24 @@ describe('effectiveHorizon', () => {
     });
   });
 
+  it('treats legacy later/someday values as unknown (the migration script rewrites them)', () => {
+    // Defensive: if a fiber somehow ships with `horizon: later` or `someday`
+    // post-cutover, the kanban should fall back to effectiveHorizon=now
+    // rather than carry the legacy value into the UI. The migration
+    // script (scripts/migrate-kanban-horizon-three-surface.ts) is what
+    // makes these absent in steady state.
+    for (const legacy of ['later', 'someday']) {
+      expect(effectiveHorizon({ horizon: legacy }, now)).toEqual({
+        storedHorizon: undefined,
+        effectiveHorizon: 'now',
+        drifted: false,
+      });
+    }
+  });
+
   it('promotes due-within-seven-days cards to now and marks stored-horizon drift', () => {
-    expect(effectiveHorizon({ horizon: 'later', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
-      storedHorizon: 'later',
+    expect(effectiveHorizon({ horizon: 'stashed', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
+      storedHorizon: 'stashed',
       effectiveHorizon: 'now',
       drifted: true,
     });
@@ -306,28 +329,40 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it('returns empty columns when no .felt directory exists', async () => {
+  it('returns empty surfaces when no .felt directory exists', async () => {
     rmSync(FELT_DIR, { recursive: true, force: true });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.status).toBe(200);
-    expect(res.body.columns).toEqual({ ideas: [], drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] });
-    expect(res.body.totals).toEqual({ ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
+    expect(res.body.now).toEqual({ drafts: [], inFlight: [], awaitingReview: [] });
+    expect(res.body.timeline).toEqual({ past: [], futureDated: [], anytimeSoon: [] });
+    expect(res.body.stash).toEqual([]);
+    expect(res.body.ideas).toEqual([]);
+    expect(res.body.totals).toEqual({
+      ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0,
+      past: 0, futureDated: 0, anytimeSoon: 0, stash: 0,
+    });
   });
 
   it('skips fibers that have no shuttle: block', async () => {
     writeFib('regular-task', { name: 'Task', status: 'open', tags: ['task'], 'created-at': '2026-04-01' });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-    expect(res.body.totals).toEqual({ ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
+    expect(res.body.totals).toEqual({
+      ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0,
+      past: 0, futureDated: 0, anytimeSoon: 0, stash: 0,
+    });
   });
 
   it('includes open due-bearing human fibers as non-dispatchable drafts and surfaces horizon fields on cards', async () => {
     writeFib('human-due', {
       name: 'Human due',
       status: 'open',
+      // Past due date — past dates also fall inside the drift window
+      // (now - due <= 7d after the past-date branch normalizes the
+      // sign), so the stored horizon stashed promotes to effective now.
       due: '2020-05-15T00:00:00Z',
-      horizon: 'later',
+      horizon: 'stashed',
       'created-at': '2026-04-01',
     });
     writeFib('human-undated', {
@@ -335,32 +370,35 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       status: 'open',
       'created-at': '2026-04-02',
     });
-    writeFib('agent-later', {
-      name: 'Agent later',
+    writeFib('agent-stashed', {
+      name: 'Agent stashed (no due)',
       status: 'active',
       shuttle: SHUTTLE_INFLIGHT,
-      horizon: 'later',
+      horizon: 'stashed',
       'created-at': '2026-04-03',
     });
 
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
 
-    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['agent-later']);
-    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['human-due']);
-    expect(res.body.columns.inFlight.find((c: any) => c.id === 'human-undated')).toBeUndefined();
-    expect(res.body.columns.drafts.find((c: any) => c.id === 'human-undated')).toBeUndefined();
-    const human = res.body.columns.drafts.find((c: any) => c.id === 'human-due');
+    // The drifted human-due card lands on the desk; the agent-stashed
+    // card without a due date is auto-paused-on-defer → stash surface.
+    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual(['human-due']);
+    expect(res.body.stash.map((c: any) => c.id)).toEqual(['agent-stashed']);
+    expect(res.body.now.inFlight).toEqual([]);
+    expect(res.body.now.drafts.find((c: any) => c.id === 'human-undated')).toBeUndefined();
+    expect(res.body.stash.find((c: any) => c.id === 'human-undated')).toBeUndefined();
+    const human = res.body.now.drafts.find((c: any) => c.id === 'human-due');
     expect(human).toMatchObject({
       due: '2020-05-15T00:00:00Z',
-      storedHorizon: 'later',
+      storedHorizon: 'stashed',
       effectiveHorizon: 'now',
       drifted: true,
     });
-    const agent = res.body.columns.inFlight.find((c: any) => c.id === 'agent-later');
+    const agent = res.body.stash.find((c: any) => c.id === 'agent-stashed');
     expect(agent).toMatchObject({
-      storedHorizon: 'later',
-      effectiveHorizon: 'later',
+      storedHorizon: 'stashed',
+      effectiveHorizon: 'stashed',
       drifted: false,
     });
   });
@@ -404,11 +442,19 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.totals).toEqual({ ideas: 0, drafts: 1, inFlight: 2, awaitingReview: 1, tempered: 1, composted: 0 });
-    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['draft-one']);
-    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['active-one', 'open-one']);
-    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);
-    expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['tempered-one']);
+    expect(res.body.totals).toEqual({
+      ideas: 0, drafts: 1, inFlight: 2, awaitingReview: 1,
+      past: 1, futureDated: 0, anytimeSoon: 0, stash: 0,
+    });
+    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual(['draft-one']);
+    expect(res.body.now.inFlight.map((c: any) => c.id)).toEqual(['active-one', 'open-one']);
+    expect(res.body.now.awaitingReview.map((c: any) => c.id)).toEqual(['awaiting']);
+    // Tempered/composted fibers merge into timeline.past, sorted by
+    // closedAt desc. The card.tempered field distinguishes them on
+    // render. The historical per-bucket `temperedTotal` stays.
+    expect(res.body.timeline.past.map((c: any) => c.id)).toEqual(['tempered-one']);
+    expect(res.body.timeline.past[0].tempered).toBe(true);
+    expect(res.body.temperedTotal).toBe(1);
   });
 
   it('routes a kind:standing fiber with review.state=awaiting to awaitingReview, even though status is active', async () => {
@@ -433,13 +479,13 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['canary']);
+    expect(res.body.now.awaitingReview.map((c: any) => c.id)).toEqual(['canary']);
     // Standing roles in scheduled state are dormant (waiting for next cron),
     // so they land in drafts (sorted to the bottom) rather than crowding
     // inFlight with cards that aren't actively running. inFlight stays empty
     // here because there are no active oneshots.
-    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual([]);
-    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['canary-scheduled']);
+    expect(res.body.now.inFlight.map((c: any) => c.id)).toEqual([]);
+    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual(['canary-scheduled']);
   });
 
   it('sorts drafts with active drafts on top, dormant standing roles on bottom', async () => {
@@ -469,7 +515,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     expect(res.status).toBe(200);
-    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual([
+    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual([
       'paused-new',
       'paused-old',
       'standing-dormant',
@@ -488,8 +534,8 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
-    expect(res.body.columns.drafts).toHaveLength(0);
-    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['closed-draft']);
+    expect(res.body.now.drafts).toHaveLength(0);
+    expect(res.body.now.awaitingReview.map((c: any) => c.id)).toEqual(['closed-draft']);
   });
 
   it('sorts in-flight by running-worker-first, then createdAt desc', async () => {
@@ -503,9 +549,9 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const res = await callKanban(api);
 
     // 'a' has a running worker → active-first, then 'busy' (newer) and 'b' (older) by createdAt desc.
-    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['a', 'busy', 'b']);
-    expect(res.body.columns.inFlight[0].runningWorker).toBe('shuttle-a');
-    expect(res.body.columns.awaitingReview.map((c: any) => c.id)).toEqual(['y', 'x']);
+    expect(res.body.now.inFlight.map((c: any) => c.id)).toEqual(['a', 'busy', 'b']);
+    expect(res.body.now.inFlight[0].runningWorker).toBe('shuttle-a');
+    expect(res.body.now.awaitingReview.map((c: any) => c.id)).toEqual(['y', 'x']);
   });
 
   it('marks in-flight cards with a running Shuttle worker', async () => {
@@ -518,7 +564,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
     const res = await callKanban(api);
 
-    const cards = res.body.columns.inFlight;
+    const cards = res.body.now.inFlight;
     expect(cards.map((c: any) => c.id)).toEqual(['busy', 'idle']); // running first
     expect(cards.find((c: any) => c.id === 'busy').runningWorker).toBe('shuttle-busy');
     expect(cards.find((c: any) => c.id === 'idle').runningWorker).toBeUndefined();
@@ -554,7 +600,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
     const res = await callKanban(api);
 
-    const card = res.body.columns.inFlight.find((c: any) =>
+    const card = res.body.now.inFlight.find((c: any) =>
       c.id.endsWith('inner-fiber'),
     );
     expect(card).toBeDefined();
@@ -580,7 +626,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const downstream = res.body.columns.inFlight.find((c: any) => c.id === 'downstream');
+    const downstream = res.body.now.inFlight.find((c: any) => c.id === 'downstream');
     expect(downstream).toBeTruthy();
     expect(downstream.dependsOnSatisfied).toBe(false);
     expect(downstream.dependsOn).toEqual(['upstream']);
@@ -605,7 +651,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const downstream = res.body.columns.inFlight.find((c: any) => c.id === 'downstream');
+    const downstream = res.body.now.inFlight.find((c: any) => c.id === 'downstream');
     expect(downstream.dependsOnSatisfied).toBe(true);
   });
 
@@ -619,7 +665,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    const child = res.body.columns.inFlight.find((c: any) => c.id === 'parent/child');
+    const child = res.body.now.inFlight.find((c: any) => c.id === 'parent/child');
     expect(child).toBeTruthy();
     expect(child.path).toBe(join(TEST_DIR, '.felt', 'parent', 'child', 'child.md'));
   });
@@ -640,7 +686,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       cities: [{ id: 'self', path: TEST_DIR }],
     });
     const res = await callKanban(api);
-    const card = res.body.columns.inFlight.find((c: any) => c.id === 'parent/child');
+    const card = res.body.now.inFlight.find((c: any) => c.id === 'parent/child');
     expect(card).toBeTruthy();
     expect(card.cityId).toBe('self');
     expect(card.projectSlug).toBe('parent/child');
@@ -679,7 +725,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
     const res = await callKanban(api);
     // Loom's walk produces id="aliased/real-fiber" (loom-relative).
-    const card = res.body.columns.inFlight.find((c: any) => c.id === 'aliased/real-fiber');
+    const card = res.body.now.inFlight.find((c: any) => c.id === 'aliased/real-fiber');
     expect(card).toBeTruthy();
     // The deeper-matching city wins, with the project-relative slug
     // stripped of the loom-side prefix.
@@ -702,7 +748,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       cities: [{ id: 'unrelated', path: '/tmp/some-other-city' }],
     });
     const res = await callKanban(api);
-    const card = res.body.columns.inFlight.find((c: any) => c.id === 'orphan-fiber');
+    const card = res.body.now.inFlight.find((c: any) => c.id === 'orphan-fiber');
     expect(card).toBeTruthy();
     expect(card.cityId).toBeUndefined();
     expect(card.projectSlug).toBeUndefined();
@@ -1558,16 +1604,75 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const path = join(FELT_DIR, 'deadline', 'deadline.md');
       const before = readFileSync(path, 'utf-8');
-      const beforeWithoutHorizon = before.replace(/\n---\n\n/, '\nhorizon: later\n---\n\n');
+      const beforeWithHorizon = before.replace(/\n---\n\n/, '\nhorizon: stashed\n---\n\n');
 
       const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
       const { res, status, body } = capRes();
-      await api.handleHorizon(jsonReq({ fiberId: 'deadline', horizon: 'later' }), res);
+      await api.handleHorizon(jsonReq({ fiberId: 'deadline', horizon: 'stashed' }), res);
 
       expect(status()).toBe(200);
-      expect(body().card.storedHorizon).toBe('later');
+      expect(body().card.storedHorizon).toBe('stashed');
+      // due is in 2020 (long past); past-date drift still promotes to now.
       expect(body().card.effectiveHorizon).toBe('now');
-      expect(readFileSync(path, 'utf-8')).toBe(beforeWithoutHorizon);
+      expect(readFileSync(path, 'utf-8')).toBe(beforeWithHorizon);
+    });
+
+    it('writes cold: true alongside horizon: stashed and clears cold when horizon changes', async () => {
+      writeFib('held-open', {
+        name: 'Held open',
+        status: 'active',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+      });
+      const path = join(FELT_DIR, 'held-open', 'held-open.md');
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+
+      {
+        const { res, status, body } = capRes();
+        await api.handleHorizon(
+          jsonReq({ fiberId: 'held-open', horizon: 'stashed', cold: true }),
+          res,
+        );
+        expect(status()).toBe(200);
+        expect(body().card.storedHorizon).toBe('stashed');
+        expect(body().card.cold).toBe(true);
+        const raw = readFileSync(path, 'utf-8');
+        expect(raw).toContain('horizon: stashed');
+        expect(raw).toContain('cold: true');
+      }
+
+      // Drag back to now → cold clears.
+      {
+        const { res, status, body } = capRes();
+        await api.handleHorizon(
+          jsonReq({ fiberId: 'held-open', horizon: 'now' }),
+          res,
+        );
+        expect(status()).toBe(200);
+        expect(body().card.storedHorizon).toBe('now');
+        const raw = readFileSync(path, 'utf-8');
+        expect(raw).toContain('horizon: now');
+        expect(raw).not.toContain('cold:');
+      }
+    });
+
+    it('rejects legacy "later" / "someday" with 400 and a migration pointer', async () => {
+      writeFib('legacy-target', {
+        name: 'Legacy target',
+        status: 'active',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+      for (const horizon of ['later', 'someday']) {
+        const { res, status, body } = capRes();
+        await api.handleHorizon(
+          jsonReq({ fiberId: 'legacy-target', horizon }),
+          res,
+        );
+        expect(status()).toBe(400);
+        expect(body().error).toMatch(/legacy horizon|migrate-kanban-horizon/);
+      }
     });
 
     it('clears an existing horizon key', async () => {
@@ -1615,16 +1720,18 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         listSessions: () => [],
       });
 
-      const card = await api.applyHorizon('cmbx', 'someday');
+      const card = await api.applyHorizon('cmbx', 'stashed', true);
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({
         originId: 'remote-cineca',
         fiberId: 'cmbx',
         path: 'cmbx/cmbx.md',
         kind: 'felt-horizon',
-        horizon: 'someday',
+        horizon: 'stashed',
+        cold: true,
       });
-      expect(card.storedHorizon).toBe('someday');
+      expect(card.storedHorizon).toBe('stashed');
+      // due 2020-05-15 is in the past, which still drifts to now.
       expect(card.effectiveHorizon).toBe('now');
     });
   });
@@ -1700,9 +1807,9 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const res = await callKanban(api);
       expect(res.status).toBe(200);
-      const ids = res.body.columns.inFlight.map((c: any) => c.id);
+      const ids = res.body.now.inFlight.map((c: any) => c.id);
       expect(ids).toContain('cmbx');
-      const cmbx = res.body.columns.inFlight.find((c: any) => c.id === 'cmbx');
+      const cmbx = res.body.now.inFlight.find((c: any) => c.id === 'cmbx');
       expect(cmbx.originId).toBe('remote-cineca');
     });
 
@@ -1725,7 +1832,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const res = await callKanban(api);
       expect(res.status).toBe(200);
-      const cards = res.body.columns.inFlight;
+      const cards = res.body.now.inFlight;
       const shared = cards.find((c: any) => c.id === 'shared-id');
       expect(shared).toBeDefined();
       expect(shared.name).toBe('Local copy');
@@ -1744,7 +1851,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
       const res = await callKanban(api);
-      expect(res.body.columns.inFlight[0].originId).toBe('local');
+      expect(res.body.now.inFlight[0].originId).toBe('local');
     });
 
     it('multiple remote origins both appear', async () => {
@@ -1762,7 +1869,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       });
       const res = await callKanban(api);
       const byId = new Map<string, string>(
-        (res.body.columns.inFlight as Array<{ id: string; originId: string }>).map(c => [c.id, c.originId]),
+        (res.body.now.inFlight as Array<{ id: string; originId: string }>).map(c => [c.id, c.originId]),
       );
       expect(byId.get('cmbx')).toBe('remote-cineca');
       expect(byId.get('pure_eb')).toBe('remote-candide');
@@ -1936,7 +2043,10 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
   });
 
-  it('honors temperedLimit and reports temperedTotal separately', async () => {
+  it('emits every closed-tempered card in timeline.past, sorted by closedAt desc', async () => {
+    // The three-surface kanban dropped the temperedLimit slicing —
+    // timeline.past holds every closed fiber and the frontend caps its
+    // visible window. temperedTotal stays for legacy clients.
     for (let i = 0; i < 5; i++) {
       writeFib(`t${i}`, {
         name: `T${i}`,
@@ -1947,13 +2057,162 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         'closed-at': `2026-04-${String(10 + i).padStart(2, '0')}`,
       });
     }
-    const api = new HttpApiKanban({ feltHost: TEST_DIR, temperedLimit: 3 });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR });
     const res = await callKanban(api);
 
-    expect(res.body.totals.tempered).toBe(3);
+    expect(res.body.timeline.past).toHaveLength(5);
+    expect(res.body.timeline.past.map((c: any) => c.id)).toEqual([
+      't4', 't3', 't2', 't1', 't0',
+    ]);
+    expect(res.body.totals.past).toBe(5);
     expect(res.body.temperedTotal).toBe(5);
-    expect(res.body.columns.tempered).toHaveLength(3);
-    expect(res.body.columns.tempered.map((c: any) => c.id)).toEqual(['t4', 't3', 't2']);
+    // All in past are tempered=true (no composted in this fixture).
+    expect(res.body.timeline.past.every((c: any) => c.tempered === true)).toBe(true);
+  });
+
+  it('past sorts tempered+composted interleaved by closedAt desc', async () => {
+    writeFib('t-old', {
+      name: 't-old', status: 'closed', tempered: 'true',
+      shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01',
+      'closed-at': '2026-04-10',
+    });
+    writeFib('c-newer', {
+      name: 'c-newer', status: 'closed', tempered: 'false',
+      shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01',
+      'closed-at': '2026-04-15',
+    });
+    writeFib('t-newest', {
+      name: 't-newest', status: 'closed', tempered: 'true',
+      shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01',
+      'closed-at': '2026-04-20',
+    });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const res = await callKanban(api);
+    expect(res.body.timeline.past.map((c: any) => [c.id, c.tempered])).toEqual([
+      ['t-newest', true],
+      ['c-newer', false],
+      ['t-old', true],
+    ]);
+  });
+
+  it('soon-without-due lands in timeline.anytimeSoon; soon-with-future-due in futureDated', async () => {
+    writeFib('horizon-soon-undated', {
+      name: 'No deadline yet',
+      status: 'active',
+      shuttle: SHUTTLE_INFLIGHT,
+      horizon: 'soon',
+      'created-at': '2026-04-01',
+    });
+    writeFib('horizon-soon-dated', {
+      name: 'Far-future deadline',
+      status: 'active',
+      shuttle: SHUTTLE_INFLIGHT,
+      horizon: 'soon',
+      due: '2026-12-31T00:00:00Z',
+      'created-at': '2026-04-02',
+    });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const res = await callKanban(api);
+    expect(res.body.timeline.anytimeSoon.map((c: any) => c.id)).toEqual([
+      'horizon-soon-undated',
+    ]);
+    expect(res.body.timeline.futureDated.map((c: any) => c.id)).toEqual([
+      'horizon-soon-dated',
+    ]);
+    // Both are auto-paused-on-defer (not on now.inFlight).
+    expect(res.body.now.inFlight).toEqual([]);
+  });
+
+  it('stashed cards route to stash and carry the cold flag', async () => {
+    writeFib('warm', {
+      name: 'Warm',
+      status: 'active',
+      shuttle: SHUTTLE_INFLIGHT,
+      horizon: 'stashed',
+      'created-at': '2026-04-01',
+    });
+    writeFib('cold', {
+      name: 'Held-open',
+      status: 'active',
+      shuttle: SHUTTLE_INFLIGHT,
+      horizon: 'stashed',
+      cold: true,
+      'created-at': '2026-04-02',
+    });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR });
+    const res = await callKanban(api);
+    const byId = new Map<string, any>(
+      res.body.stash.map((c: any) => [c.id, c]),
+    );
+    expect(byId.get('warm').cold).toBeUndefined();
+    expect(byId.get('cold').cold).toBe(true);
+    expect(res.body.totals.stash).toBe(2);
+    // Auto-pause-on-defer keeps both off the desk.
+    expect(res.body.now.inFlight).toEqual([]);
+  });
+});
+
+describe('effectiveDispatchEligible', () => {
+  const now = Date.parse('2026-05-12T12:00:00Z');
+
+  it('is true for enabled + horizon=now (or absent horizon)', () => {
+    expect(effectiveDispatchEligible({ shuttleEnabled: true }, now)).toBe(true);
+    expect(
+      effectiveDispatchEligible({ shuttleEnabled: true, horizon: 'now' }, now),
+    ).toBe(true);
+  });
+
+  it('is false when shuttle.enabled=false', () => {
+    expect(effectiveDispatchEligible({ shuttleEnabled: false }, now)).toBe(false);
+    expect(
+      effectiveDispatchEligible(
+        { shuttleEnabled: false, horizon: 'now' },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('is false for enabled + deferred horizon without near due', () => {
+    expect(
+      effectiveDispatchEligible(
+        { shuttleEnabled: true, horizon: 'soon' },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      effectiveDispatchEligible(
+        { shuttleEnabled: true, horizon: 'stashed' },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('is true for enabled + deferred horizon when due is within 7 days', () => {
+    // The "human committed to a date" exception — drift promotes
+    // effectiveHorizon to now and the fiber is dispatch-eligible.
+    expect(
+      effectiveDispatchEligible(
+        {
+          shuttleEnabled: true,
+          horizon: 'stashed',
+          due: '2026-05-15T12:00:00Z',
+        },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('is false for enabled + deferred horizon when due is past the drift window', () => {
+    expect(
+      effectiveDispatchEligible(
+        {
+          shuttleEnabled: true,
+          horizon: 'soon',
+          due: '2026-05-25T12:00:00Z',
+        },
+        now,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -1990,6 +2249,29 @@ describe('classifyFiber', () => {
 
     it('enabled and not idea → inFlight', () => {
       expect(classifyFiber(fib({ shuttleEnabled: true }))).toBe('inFlight');
+    });
+
+    it('auto-pause-on-defer: enabled + horizon=soon (no due) → drafts', () => {
+      // The constitution-kanban-three-surfaces rule: "In Flight Soon" is
+      // structurally impossible. Deferring an enabled fiber via horizon
+      // routes it to drafts (specifically timeline.anytimeSoon after the
+      // handler's surface routing). The card stays shuttle.enabled=true
+      // so the underlying contract is preserved.
+      expect(classifyFiber(fib({ shuttleEnabled: true, horizon: 'soon' }))).toBe('drafts');
+    });
+
+    it('auto-pause-on-defer: enabled + horizon=stashed (no due) → drafts', () => {
+      expect(classifyFiber(fib({ shuttleEnabled: true, horizon: 'stashed' }))).toBe('drafts');
+    });
+
+    it('due-date drift overrides deferral: enabled + horizon=stashed + near due → inFlight', () => {
+      // A stashed fiber with `due` within 7 days is dispatch-eligible
+      // again. The human committed to a date and the kanban honors it
+      // without forcing the user to manually pull-forward.
+      const nearDue = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+      expect(
+        classifyFiber(fib({ shuttleEnabled: true, horizon: 'stashed', due: nearDue })),
+      ).toBe('inFlight');
     });
 
     it('open human due cards without a shuttle block → drafts', () => {

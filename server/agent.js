@@ -862,9 +862,17 @@ function diffTags(current, next) {
     };
 }
 
-const KANBAN_HORIZONS = new Set(['now', 'soon', 'later', 'someday']);
+const KANBAN_HORIZONS = new Set(['now', 'soon', 'stashed']);
 
-function rewriteHorizonFrontmatter(raw, horizon) {
+/** Rewrite top-level `horizon:` (and optionally `cold:`) in a fiber's
+ *  YAML frontmatter. Mirrors HttpApiKanban.rewriteHorizonFrontmatter
+ *  semantics so remote and local writes converge on identical bytes:
+ *   horizon=null         → clear horizon and cold
+ *   horizon='now'|'soon' → write horizon; clear cold
+ *   horizon='stashed'    → write horizon; cold=undefined leaves it
+ *                          alone, cold=true writes it, cold=false clears.
+ */
+function rewriteHorizonFrontmatter(raw, horizon, cold) {
     const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
     if (!match) throw new Error('fiber file has no YAML frontmatter');
 
@@ -877,21 +885,37 @@ function rewriteHorizonFrontmatter(raw, horizon) {
     const closingNewline = match[2] || '';
     const body = raw.slice(match[0].length);
     const lines = match[1].length > 0 ? match[1].split(/\r?\n/) : [];
-    const keyRe = /^horizon\s*:/;
     const topLevelKeyRe = /^[A-Za-z0-9_-]+\s*:/;
-    const start = lines.findIndex(line => keyRe.test(line));
-    let end = start + 1;
-    if (start !== -1) {
-        while (end < lines.length && !topLevelKeyRe.test(lines[end])) end += 1;
+
+    const editKey = (key, replacement) => {
+        const keyRe = new RegExp(`^${key}\\s*:`);
+        const start = lines.findIndex(line => keyRe.test(line));
+        let end = start + 1;
+        if (start !== -1) {
+            while (end < lines.length && !topLevelKeyRe.test(lines[end])) end += 1;
+        }
+        if (replacement === null) {
+            if (start !== -1) lines.splice(start, end - start);
+            return;
+        }
+        if (start === -1) lines.push(replacement);
+        else lines.splice(start, end - start, replacement);
+    };
+
+    if (horizon !== null && !KANBAN_HORIZONS.has(horizon)) {
+        throw new Error(`unknown horizon: ${horizon}`);
     }
 
-    if (horizon === null) {
-        if (start !== -1) lines.splice(start, end - start);
-    } else {
-        if (!KANBAN_HORIZONS.has(horizon)) throw new Error(`unknown horizon: ${horizon}`);
-        if (start === -1) lines.push(`horizon: ${horizon}`);
-        else lines.splice(start, end - start, `horizon: ${horizon}`);
-    }
+    editKey('horizon', horizon === null ? null : `horizon: ${horizon}`);
+
+    let nextColdLine = null;
+    let touchCold = true;
+    if (horizon === null) nextColdLine = null;
+    else if (horizon !== 'stashed') nextColdLine = null;
+    else if (cold === undefined) touchCold = false;
+    else if (cold === true) nextColdLine = 'cold: true';
+    else nextColdLine = null;
+    if (touchCold) editKey('cold', nextColdLine);
 
     return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
 }
@@ -968,8 +992,9 @@ async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
             throw new Error('missing horizon payload');
         }
         const horizon = payload.horizon === null ? null : String(payload.horizon);
+        const cold = typeof payload.cold === 'boolean' ? payload.cold : undefined;
         const raw = readFileSync(fullPath, 'utf-8');
-        writeFileSync(fullPath, rewriteHorizonFrontmatter(raw, horizon), 'utf-8');
+        writeFileSync(fullPath, rewriteHorizonFrontmatter(raw, horizon, cold), 'utf-8');
         return;
     }
 

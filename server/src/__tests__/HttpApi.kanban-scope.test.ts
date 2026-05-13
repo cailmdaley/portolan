@@ -178,7 +178,7 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     const res = await httpRequest(api, 'GET', '/kanban?cityId=a');
     expect(res.status).toBe(200);
     expect(res.data.feltHost).toBe(CITY_A);
-    const ids = (res.data.columns.inFlight as Array<{ id: string }>).map((c) => c.id);
+    const ids = (res.data.now.inFlight as Array<{ id: string }>).map((c) => c.id);
     expect(ids).toContain('a-only-fiber');
     expect(ids).not.toContain('b-only-fiber');
     expect(ids).not.toContain('remote-only-fiber');
@@ -188,7 +188,7 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     const res = await httpRequest(api, 'GET', '/kanban?cityId=b');
     expect(res.status).toBe(200);
     expect(res.data.feltHost).toBe(CITY_B);
-    const ids = (res.data.columns.inFlight as Array<{ id: string }>).map((c) => c.id);
+    const ids = (res.data.now.inFlight as Array<{ id: string }>).map((c) => c.id);
     expect(ids).toContain('b-only-fiber');
     expect(ids).not.toContain('a-only-fiber');
   });
@@ -232,7 +232,7 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
       originId: 'remote-elsewhere',
       hostname: 'elsewhere',
     });
-    const ids = (res.data.columns.inFlight as Array<{ id: string; originId: string }>).map((c) => [c.id, c.originId]);
+    const ids = (res.data.now.inFlight as Array<{ id: string; originId: string }>).map((c) => [c.id, c.originId]);
     expect(ids).toEqual([['remote-snapshot-fiber', 'remote-elsewhere']]);
   });
 
@@ -348,14 +348,14 @@ describe('HttpApi — /kanban ?cityId= scope', () => {
     );
 
     const before = await httpRequest(globalApi, 'GET', '/kanban');
-    const beforeCard = before.data.columns.inFlight.find((c: any) => c.id === 'ai-futures/shuttle/work');
+    const beforeCard = before.data.now.inFlight.find((c: any) => c.id === 'ai-futures/shuttle/work');
     expect(beforeCard.cityId).toBe('ai-futures');
     expect(beforeCard.projectSlug).toBe('shuttle/work');
 
     symlinkSync(join(loom, '.felt', 'ai-futures', 'shuttle'), join(shuttle, '.felt'));
 
     const after = await httpRequest(globalApi, 'GET', '/kanban');
-    const afterCard = after.data.columns.inFlight.find((c: any) => c.id === 'ai-futures/shuttle/work');
+    const afterCard = after.data.now.inFlight.find((c: any) => c.id === 'ai-futures/shuttle/work');
     expect(afterCard.cityId).toBe('shuttle');
     expect(afterCard.projectSlug).toBe('work');
   });

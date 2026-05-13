@@ -1,39 +1,56 @@
 /**
- * HttpApiKanban — global kanban view of shuttle-managed fibers.
+ * HttpApiKanban — three-surface kanban view of shuttle-managed fibers.
  *
  * Reads fibers from a felt host (defaults to ~/loom — the loom monorepo,
- * which symlinks every project's `.felt/`), filters to shuttle-managed fibers
- * plus open/active human due-date fibers, and groups by lifecycle stage.
+ * which symlinks every project's `.felt/`), filters to shuttle-managed
+ * fibers plus open/active human due-date fibers, and lays them out across
+ * three surfaces shaped for distinct cognitive modes:
+ *
+ *   • Now — the desk. Three lifecycle columns (Drafts / In Flight /
+ *     Awaiting Review) for what's actively being worked.
+ *   • Timeline — the road behind and ahead. Past landings (closed
+ *     fibers, both tempered and composted) on the left; future-dated
+ *     soon-bucketed fibers on the right; an "anytime soon" pool below
+ *     for soon fibers without a due date.
+ *   • Stash — visible cluster grid keyed on containment-path. Holds
+ *     `horizon: stashed` fibers (warm clusters first, then `cold: true`
+ *     held-open clusters).
+ *
+ * Top-level `horizon:` narrows to `now | soon | stashed`; the legacy
+ * `later`/`someday` values are rewritten by
+ * scripts/migrate-kanban-horizon-three-surface.ts before this code reads
+ * them. `cold: bool` (default false) flags a stashed fiber for
+ * held-open clustering.
+ *
+ * **Auto-pause-on-defer.** A fiber is dispatch-eligible iff
+ *
+ *     shuttle.enabled !== false  AND  effectiveHorizon === 'now'
+ *
+ * — see `effectiveDispatchEligible`. `effectiveHorizon` honors due-date
+ * drift (`due` within 7 days promotes effective horizon to `now`), so a
+ * stashed-but-deadline-bearing fiber still dispatches. classifyFiber
+ * uses this predicate to gate `inFlight`, which is why "In Flight Soon"
+ * is structurally impossible: enabled + horizon:soon lands in drafts.
+ *
  * `tempered` is a tristate verdict field — absent (no verdict yet),
- * `true` (accepted), `false` (composted: mooted / superseded / did not survive
- * review). The classifier reads all three:
+ * `true` (accepted), `false` (composted). classifyFiber emits:
  *
- *   - drafts          : human due-date cards without a shuttle: block
- *   - in-flight       : shuttle-managed status != closed (open / active / dispatchable)
- *   - awaiting-review : status == closed && tempered absent (agent-paused handoff)
- *   - tempered        : status == closed && tempered === true (human-accepted)
- *   - composted       : status == closed && tempered === false (human-rejected)
+ *   - drafts          : human due-date OR enabled-but-deferred OR
+ *                       shuttle.enabled=false OR dormant standing role
+ *   - inFlight        : enabled + effectiveHorizon=now (the only
+ *                       dispatch-eligible bucket)
+ *   - awaitingReview  : status=closed + tempered absent, OR standing
+ *                       role with review.state=awaiting
+ *   - tempered        : status=closed + tempered=true (human-accepted)
+ *   - composted       : status=closed + tempered=false (human-rejected)
+ *   - ideas           : `idea` tag, status open/active (speculative pool;
+ *                       UI keeps these off-screen-left of the three surfaces)
  *
- * The write side rescues `false` for actual composting: every non-verdict
- * transition (drafts, inFlight, awaitingReview) *clears* `tempered` rather
- * than stamping `false`. Only `tempered` and `composted` targets write the
- * field. See [[ai-futures/shuttle/constitution-kanban-compost]] for the
- * rationale.
- *
- * The "awaiting-review" column is the human-tempering action queue and the
- * primary reason this view exists. See:
- * .felt/ai-futures/portolan/shuttle/constitution-shuttle.
- *
- * Card source filter: post-migration, agent cards need a `shuttle:` block.
- * Human cards have no shuttle block and enter only when open/active with a
- * parseable top-level `due:` value. They stay in drafts: visible as human work,
- * but never presented as Shuttle-dispatchable. Top-level `horizon:` is an
- * orthogonal row axis; `classifyFiber` remains the sole source of truth for
- * columns.
- *
- * v0 is read-only — clicking a card opens the fiber's md in vellum on the
- * frontend; tempering/un-tempering happens via CLI for now. Will grow to
- * include Shuttle dispatch state and an inline temper button.
+ * The response shape mirrors the three surfaces directly so the frontend
+ * never reclassifies (see [[gotchas/gotcha-kanban-frontend-classifier-
+ * drift]] for what drift looked like). `timeline.past` merges tempered
+ * and composted; the card carries `tempered: bool` so the frontend can
+ * render the visual difference. Ideas stay alongside as their own list.
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
@@ -55,9 +72,13 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export const KANBAN_HORIZONS = ['now', 'soon', 'later', 'someday'] as const;
+export const KANBAN_HORIZONS = ['now', 'soon', 'stashed'] as const;
 export type KanbanHorizon = typeof KANBAN_HORIZONS[number];
 const HORIZON_SET = new Set<string>(KANBAN_HORIZONS);
+/** Legacy values the migration script rewrites; rejected by `POST
+ *  /kanban/horizon`. Keeping a parallel set lets validators give a
+ *  helpful "run the migration first" error rather than a bare 400. */
+const LEGACY_HORIZONS = new Set<string>(['later', 'someday']);
 const HORIZON_DRIFT_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface KanbanCard {
@@ -166,33 +187,69 @@ export interface KanbanCard {
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
   /** Raw valid `horizon:` value from fiber frontmatter, if present. */
   storedHorizon?: KanbanHorizon;
-  /** Row where this card renders after due-date promotion/defaulting. */
+  /**
+   * Surface this card lives on after due-date promotion. `now` is the
+   * desk, `soon` is the timeline, `stashed` is the cluster grid.
+   * Tempered/composted cards always carry `now` here — their placement
+   * in `timeline.past` is driven by status=closed, not horizon.
+   */
   effectiveHorizon: KanbanHorizon;
-  /** True when `due:` pulls a non-now stored horizon into Now. */
+  /** True when `due:` pulls a non-now stored horizon into the now surface. */
   drifted: boolean;
+  /**
+   * Top-level `cold:` flag (default false). When stashed, drives held-
+   * open cluster placement on the frontend. Always defined for stashed
+   * cards; we still emit it on other surfaces so a card moving between
+   * surfaces keeps a stable shape.
+   */
+  cold?: boolean;
 }
 
-export interface KanbanColumns {
+/**
+ * The Now surface — the desk. Three lifecycle columns rendered as a
+ * dense board. Cards routed here have effectiveHorizon=now AND are
+ * either open or recently closed waiting on a verdict.
+ */
+export interface KanbanNowSurface {
   /**
-   * Tagged `idea` — the speculative pre-draft column. Off-screen left at
-   * rest so drafts stay focused on actual constitutions to review.
-   * `idea` takes precedence over `draft` when both are present.
+   * Open fibers that aren't dispatch-eligible right now. Includes:
+   *   • Shuttle-managed fibers paused or in dormant standing rotation,
+   *   • Human due-date cards (no shuttle block),
+   *   • Enabled fibers whose horizon was deferred (auto-pause-on-defer:
+   *     enabled+horizon=soon|stashed lands here, not inFlight).
    */
-  ideas: KanbanCard[];
-  /** shuttle.enabled === false (paused / not yet queued). Hidden from Shuttle dispatch. */
   drafts: KanbanCard[];
-  /** Shuttle-managed open/active fibers. Queue + active are one bucket. */
+  /** The only dispatch-eligible bucket: enabled + effectiveHorizon=now. */
   inFlight: KanbanCard[];
-  /** Shuttle-block fiber, status=closed && tempered absent (the human-tempering queue). */
-  awaitingReview: KanbanCard[];
-  /** Constitution-tagged, status=closed && tempered:true (recent N). */
-  tempered: KanbanCard[];
   /**
-   * Constitution-tagged, status=closed && tempered:false — composted. The
-   * human verdict for "tried it / considered it / no longer pursuing." See
-   * [[ai-futures/shuttle/constitution-kanban-compost]].
+   * status=closed + tempered absent, OR standing role with
+   * review.state=awaiting. The "you owe a verdict" pile.
    */
-  composted: KanbanCard[];
+  awaitingReview: KanbanCard[];
+}
+
+/**
+ * The Timeline surface — the road behind and ahead. Past landings on
+ * the left, future-dated soon fibers on the right, an anytime-soon pool
+ * below for soon fibers without a due date.
+ *
+ * Tempered and composted cards are both in `past`; the frontend keys
+ * off `card.tempered` (true/false) to render the visual difference
+ * (bright vs dim+strikethrough). The cap on how far back the timeline
+ * shows is a frontend rendering concern — past holds every closed
+ * fiber in the resolved hosts.
+ */
+export interface KanbanTimelineSurface {
+  /**
+   * status=closed, both tempered=true and tempered=false, sorted by
+   * closedAt descending. The frontend caps render window (~30 days)
+   * and ignores tempered=undefined (those route to now.awaitingReview).
+   */
+  past: KanbanCard[];
+  /** horizon=soon AND due set; rendered at the due-date column. */
+  futureDated: KanbanCard[];
+  /** horizon=soon without a due date; rendered in the anytime pool. */
+  anytimeSoon: KanbanCard[];
 }
 
 /**
@@ -213,18 +270,52 @@ export interface KanbanOriginStaleness {
   staleSince?: string;
 }
 
+/**
+ * Counts for every renderable bucket. Used by the frontend chrome to
+ * print "3 drafts · 2 in flight · 19 stashed" without re-counting from
+ * the arrays. `temperedTotal` is reserved for the historical recent-N
+ * slicing logic in case it ever returns; today we emit every closed
+ * fiber in `timeline.past`.
+ */
+export interface KanbanTotals {
+  ideas: number;
+  drafts: number;
+  inFlight: number;
+  awaitingReview: number;
+  past: number;
+  futureDated: number;
+  anytimeSoon: number;
+  stash: number;
+}
+
 export interface KanbanResponse {
   feltHost: string;
-  columns: KanbanColumns;
-  totals: {
-    ideas: number;
-    drafts: number;
-    inFlight: number;
-    awaitingReview: number;
-    tempered: number;
-    composted: number;
-  };
-  /** Total tempered count *before* slicing — UI shows recent N but we surface the full count. */
+  /** Now surface — the desk (3 columns). */
+  now: KanbanNowSurface;
+  /** Timeline surface — past/future/anytime-soon, one horizontal axis. */
+  timeline: KanbanTimelineSurface;
+  /**
+   * Stash surface — `horizon: stashed`. The frontend clusters by
+   * containment-path's first meaningful project token; we emit a flat
+   * array so future cluster-key conventions don't require a server
+   * deploy. Warm clusters (`cold !== true`) and held-open clusters
+   * (`cold === true`) intermix; the frontend partitions on render.
+   */
+  stash: KanbanCard[];
+  /**
+   * Tagged `idea` — speculative pool. Off-screen-left of the three
+   * surfaces; conceptually overlaps with stash, but merging is out of
+   * scope (see constitution-kanban-three-surfaces "Out"). Eligible:
+   * status open/active and the `idea` tag is present.
+   */
+  ideas: KanbanCard[];
+  totals: KanbanTotals;
+  /**
+   * Historical: total tempered count before any recent-N slicing.
+   * Today we always emit every closed fiber in `timeline.past`, so
+   * `temperedTotal === past.filter(c => c.tempered === true).length`.
+   * Kept for client-side compatibility.
+   */
   temperedTotal: number;
   /**
    * Per-origin freshness, keyed by `originId`. Always includes `local`
@@ -427,7 +518,16 @@ export type ShuttleActionResolveRequest = {
 export type RemoteKanbanMutationInvocation =
   | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
   | { kind: 'felt-tags'; fiberId: string; path: string; tags: string[] }
-  | { kind: 'felt-horizon'; fiberId: string; path: string; horizon: KanbanHorizon | null };
+  | {
+      kind: 'felt-horizon';
+      fiberId: string;
+      path: string;
+      horizon: KanbanHorizon | null;
+      /** Optional `cold:` flag; only meaningful with horizon='stashed'.
+       *  Omit (or pass undefined) to leave the existing `cold:` line
+       *  alone; explicit `false` clears it; `true` writes/updates it. */
+      cold?: boolean;
+    };
 
 export type RemoteKanbanMutationRequest =
   RemoteKanbanMutationInvocation & { originId: string; feltHost: string };
@@ -483,47 +583,61 @@ export type KanbanColumn =
 /**
  * Classify a fiber into the kanban column it belongs in. The single source
  * of truth for "what column is this?". The rule, in plain English:
- * Horizon rows are computed separately by `effectiveHorizon`; they never
- * participate in column placement.
  *
- *   1. A standing-role fiber whose worker has finished a run (review.state
- *      = `awaiting`) sits in awaitingReview until the human accepts —
- *      regardless of `status` (standing roles stay `active` permanently;
- *      review.state replaces status as the lifecycle signal).
+ *   1. A live tmux worker for an open fiber overrides everything — the
+ *      file may not have caught up yet (workers write review.state only
+ *      on exit), and the user dragging a card and seeing it stay in
+ *      drafts is the dissonance we're avoiding.
  *
- *   2. Otherwise, status drives the open/closed split:
+ *   2. A standing-role fiber whose worker has finished a run
+ *      (review.state = `awaiting`) sits in awaitingReview until the
+ *      human accepts — regardless of `status` (standing roles stay
+ *      `active` permanently; review.state replaces status as the
+ *      lifecycle signal).
+ *
+ *   3. Otherwise, status drives the open/closed split:
  *
  *      open (status !== `closed`):
- *        - no shuttle block    → drafts     (human due-date card; visible,
- *                                            not dispatchable)
- *        - `idea` tag         → ideas      (speculative, pre-formal)
- *        - shuttle.enabled=false → drafts  (paused — has thinking, not yet
- *                                           ready to dispatch)
- *        - else              → inFlight   (dispatch-eligible)
+ *        - no shuttle block      → drafts    (human due-date card;
+ *                                             visible, not dispatchable)
+ *        - `idea` tag            → ideas     (speculative pool; UI keeps
+ *                                             these off-screen-left)
+ *        - shuttle.enabled=false → drafts    (paused — has thinking,
+ *                                             not yet ready to dispatch)
+ *        - dormant standing role → drafts    (scheduled/accepted state;
+ *                                             waiting for next cron tick)
+ *        - **not effectiveDispatchEligible** → drafts (auto-pause-on-
+ *                                             defer: enabled+horizon=soon
+ *                                             or stashed without a near
+ *                                             due-date → drafts, not
+ *                                             inFlight; see
+ *                                             effectiveDispatchEligible)
+ *        - else                  → inFlight  (enabled + horizon=now or
+ *                                             due within 7 days)
  *
  *      closed (status === `closed`):
- *        - tempered=true     → tempered   (human-accepted)
- *        - tempered=false    → composted  (human-rejected — see
- *                                           [[ai-futures/shuttle/constitution-kanban-compost]])
- *        - tempered absent   → awaitingReview (agent handed off, awaiting
- *                                              human verdict)
+ *        - tempered=true   → tempered   (human-accepted)
+ *        - tempered=false  → composted  (human-rejected, see
+ *                                        [[ai-futures/shuttle/constitution-kanban-compost]])
+ *        - tempered absent → awaitingReview (agent handed off,
+ *                                            awaiting human verdict)
  *
  * The `idea` tag takes precedence over the enabled split so flipping a
  * fiber idea→draft is a tag edit alone — no need to also touch
- * shuttle.enabled.
+ * shuttle.enabled. The horizon split lives one rung lower so an idea-
+ * tagged fiber on the timeline still routes to ideas (UI semantics
+ * survive even if a user defers an idea).
+ *
+ * The kanban response splits classifyFiber's output across three
+ * surfaces: now (drafts/inFlight/awaitingReview), timeline (past:
+ * tempered+composted), stash (horizon=stashed, drawn from drafts), and
+ * the off-screen ideas pool. The classifier itself doesn't care which
+ * surface — it produces a flat label that the handler routes.
  */
 export function classifyFiber(
   f: Fiber,
   opts: { runningWorker?: boolean } = {},
 ): KanbanColumn {
-  // A live worker overrides everything for open fibers. The kanban shows
-  // ground truth: if a tmux session is actually running, the card lives
-  // in inFlight regardless of what review.state says — the file may not
-  // have caught up yet (workers update review.state only on exit). This
-  // matters for standing roles in particular: dispatch flips review.state
-  // from scheduled to "running-in-fact" before any file write, and the
-  // user dragging a card and seeing it stay in drafts is the dissonance
-  // we're avoiding.
   if (opts.runningWorker && f.status !== 'closed' && f.hasShuttleBlock === true) {
     return 'inFlight';
   }
@@ -536,22 +650,56 @@ export function classifyFiber(
     if (f.tags?.includes('idea')) return 'ideas';
     if (f.shuttleEnabled === false) return 'drafts';
     // Standing roles in scheduled/accepted state are dispatch-eligible but
-    // dormant — they're waiting for the next cron occurrence, not actively
-    // being worked on. Route them to drafts (sorted to the bottom by the
-    // drafts comparator below) so inFlight stays focused on what's running
-    // or immediately due. The daemon's eligibility check reads the shuttle:
-    // block directly; column membership is a view-only signal.
+    // dormant — waiting for the next cron occurrence, not actively being
+    // worked on. Route them to drafts (sorted to the bottom by the drafts
+    // comparator below) so inFlight stays focused on what's running.
     if (
       f.shuttleKind === 'standing' &&
       (f.shuttleReviewState === 'scheduled' || f.shuttleReviewState === 'accepted')
     ) {
       return 'drafts';
     }
+    // Auto-pause-on-defer: a shuttle-enabled fiber whose effective
+    // horizon is anything other than `now` lands in drafts, not
+    // inFlight. The horizon was deferred (soon or stashed) without a
+    // due-date promotion, so the human took it off the desk; the
+    // kanban respects that. shuttle.enabled stays true so the
+    // underlying contract is preserved; pulling-forward to horizon=now
+    // (or a near due date) restores eligibility on the next render.
+    if (!effectiveDispatchEligible(f)) return 'drafts';
     return 'inFlight';
   }
   if (f.tempered === true) return 'tempered';
   if (f.tempered === false) return 'composted';
   return 'awaitingReview';
+}
+
+/**
+ * The single eligibility predicate: a fiber is dispatch-eligible iff
+ *
+ *     shuttle.enabled !== false  AND  effectiveHorizon === 'now'
+ *
+ * `effectiveHorizon` honors due-date drift (a `due:` within 7 days
+ * promotes effectiveHorizon to `now`), so a stashed fiber with an
+ * imminent deadline is still picked up — the human committed to a
+ * date and the kanban trusts it.
+ *
+ * NB: this predicate is the kanban view's source of truth. The Shuttle
+ * daemon (in ~/Documents/projects/shuttle/) does not currently consult
+ * `horizon:` directly; it reads `shuttle.enabled` only. That means a
+ * paused+enabled-via-horizon fiber would still get dispatched on the
+ * next daemon poll. The cleanest fix is daemon-side (extend
+ * `lib/shuttle/poller.ex eligible?/2`); until then, the kanban renders
+ * the card in drafts (so the human doesn't see it as in flight), and
+ * the existing drag-to-defer flow can compose with `shuttle-ctl pause`
+ * if the daemon's behavior becomes a problem in practice.
+ */
+export function effectiveDispatchEligible(
+  f: Pick<Fiber, 'shuttleEnabled' | 'horizon' | 'due'>,
+  nowMs: number = Date.now(),
+): boolean {
+  if (f.shuttleEnabled === false) return false;
+  return effectiveHorizon(f, nowMs).effectiveHorizon === 'now';
 }
 
 export function effectiveHorizon(
@@ -668,10 +816,19 @@ export interface KanbanTransitionRequest {
   card?: KanbanCard;
 }
 
-/** What POST /kanban/horizon expects in the body. */
+/**
+ * What POST /kanban/horizon expects in the body.
+ *
+ * `horizon: null` clears the top-level `horizon:` key (and `cold`)
+ * entirely — the fiber resolves to effectiveHorizon=now by default.
+ * `cold` is optional, only meaningful with horizon=stashed; the server
+ * writes it when present and clears it when omitted (so dragging a
+ * stash→now removes the `cold` line as well).
+ */
 export interface KanbanHorizonRequest {
   fiberId: string;
   horizon: KanbanHorizon | null;
+  cold?: boolean;
   card?: KanbanCard;
 }
 
@@ -796,7 +953,14 @@ export class HttpApiKanban {
     }
 
     if (!res.ok) {
-      throw new Error(`Shuttle action invoke returned ${res.status}`);
+      let detail = '';
+      try {
+        const body = await res.json() as { error?: unknown };
+        if (typeof body.error === 'string' && body.error.trim()) detail = `: ${body.error.trim()}`;
+      } catch {
+        // Keep the status-only fallback when the daemon returns non-JSON.
+      }
+      throw new Error(`Shuttle action invoke returned ${res.status}${detail}`);
     }
   }
 
@@ -1151,26 +1315,79 @@ export class HttpApiKanban {
       tempered.sort(byClosedAtDesc);
       composted.sort(byClosedAtDesc);
 
+      // Compose the three surfaces from the flat classifier output:
+      //   • now      : drafts + inFlight + awaitingReview (open lifecycle)
+      //   • timeline : past (closed: tempered + composted, sorted by
+      //                       closedAt desc), futureDated (soon + due),
+      //                       anytimeSoon (soon, no due)
+      //   • stash    : horizon=stashed (drawn from drafts, since deferred
+      //                fibers route to drafts in classifyFiber)
+      //
+      // Cards may appear in at most one surface. A drafts-classified card
+      // with horizon=stashed moves to stash; with horizon=soon moves to
+      // timeline.futureDated or timeline.anytimeSoon; otherwise stays in
+      // now.drafts. inFlight and awaitingReview always live on now (an
+      // enabled+soon fiber would route to drafts, not inFlight, via
+      // auto-pause-on-defer).
+      const stash: KanbanCard[] = [];
+      const futureDated: KanbanCard[] = [];
+      const anytimeSoon: KanbanCard[] = [];
+      const nowDrafts: KanbanCard[] = [];
+      for (const card of drafts) {
+        // Drifted cards (due-date within 7 days) live on the desk
+        // regardless of stored horizon — the deadline outranks the
+        // deferral. Without this branch a stashed-but-imminent card
+        // would silently hide in the stash cluster grid.
+        if (card.drifted) {
+          nowDrafts.push(card);
+          continue;
+        }
+        if (card.storedHorizon === 'stashed') {
+          stash.push(card);
+        } else if (card.storedHorizon === 'soon') {
+          // Bucketed `soon`: either future-dated (renders at a column)
+          // or anytime (renders in the pool below the timeline).
+          if (card.due) futureDated.push(card);
+          else anytimeSoon.push(card);
+        } else {
+          nowDrafts.push(card);
+        }
+      }
+      // The constitution treats `past` as both tempered and composted
+      // landings, sorted by closedAt desc. We already sorted each by
+      // closedAt; merging preserves the relative ordering inside each
+      // verdict bucket and renders consistent across redraws.
+      const past = mergeByClosedAtDesc(tempered, composted);
+
+      // futureDated sorts by due date ascending (next deadline first);
+      // anytimeSoon stays in createdAt-desc order from the source array.
+      futureDated.sort(byDueAtAsc);
+
       const temperedTotal = tempered.length;
-      const temperedSliced = tempered.slice(0, this.temperedLimit);
 
       this.json(res, 200, {
         feltHost: this.feltHost,
-        columns: {
-          ideas,
-          drafts,
+        now: {
+          drafts: nowDrafts,
           inFlight,
           awaitingReview,
-          tempered: temperedSliced,
-          composted,
         },
+        timeline: {
+          past,
+          futureDated,
+          anytimeSoon,
+        },
+        stash,
+        ideas,
         totals: {
           ideas: ideas.length,
-          drafts: drafts.length,
+          drafts: nowDrafts.length,
           inFlight: inFlight.length,
           awaitingReview: awaitingReview.length,
-          tempered: temperedSliced.length,
-          composted: composted.length,
+          past: past.length,
+          futureDated: futureDated.length,
+          anytimeSoon: anytimeSoon.length,
+          stash: stash.length,
         },
         temperedTotal,
         staleness: this.buildStaleness(),
@@ -1583,11 +1800,18 @@ export class HttpApiKanban {
 
   /**
    * POST /kanban/horizon — set or clear a card's top-level `horizon:`
-   * frontmatter key. Horizon is a Portolan-owned row axis, not a Shuttle
-   * lifecycle field, so local writes edit the fiber file directly and remote
-   * writes route through the existing agent mutation channel.
+   * (and optional `cold:`) frontmatter keys. Horizon is a Portolan-owned
+   * surface-routing axis, not a Shuttle lifecycle field, so local writes
+   * edit the fiber file directly and remote writes route through the
+   * existing agent mutation channel.
    *
-   * Body: { fiberId, horizon: 'now'|'soon'|'later'|'someday'|null, card? }
+   * Body: { fiberId, horizon: 'now'|'soon'|'stashed'|null, cold?: boolean, card? }
+   *
+   * `horizon: null` clears both `horizon` and `cold` (card returns to
+   * default Now placement). The legacy values 'later' and 'someday' are
+   * rejected with 400 — the migration script
+   * (scripts/migrate-kanban-horizon-three-surface.ts) rewrites those
+   * before the new code reads them.
    */
   async handleHorizon(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: KanbanHorizonRequest;
@@ -1602,13 +1826,32 @@ export class HttpApiKanban {
       this.json(res, 400, { error: 'fiberId and horizon are required' });
       return;
     }
-    if (body.horizon !== null && !HORIZON_SET.has(body.horizon)) {
-      this.json(res, 400, { error: `unknown horizon: ${String(body.horizon)}` });
+    if (body.horizon !== null) {
+      if (typeof body.horizon === 'string' && LEGACY_HORIZONS.has(body.horizon)) {
+        this.json(res, 400, {
+          error: `legacy horizon "${body.horizon}" is no longer supported; ` +
+            `run scripts/migrate-kanban-horizon-three-surface.ts and use ` +
+            `'stashed' (with cold: true for the held-open case)`,
+        });
+        return;
+      }
+      if (!HORIZON_SET.has(body.horizon)) {
+        this.json(res, 400, { error: `unknown horizon: ${String(body.horizon)}` });
+        return;
+      }
+    }
+    if (body.cold !== undefined && typeof body.cold !== 'boolean') {
+      this.json(res, 400, { error: 'cold must be a boolean when present' });
       return;
     }
 
     try {
-      const updated = await this.applyHorizon(body.fiberId, body.horizon, body.card);
+      const updated = await this.applyHorizon(
+        body.fiberId,
+        body.horizon,
+        body.cold,
+        body.card,
+      );
       this.json(res, 200, { ok: true, card: updated });
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err);
@@ -1620,6 +1863,7 @@ export class HttpApiKanban {
   async applyHorizon(
     fiberId: string,
     horizon: KanbanHorizon | null,
+    cold?: boolean,
     card?: KanbanCard,
   ): Promise<KanbanCard> {
     const cardEntry = entryFromLocalCard(card);
@@ -1648,6 +1892,7 @@ export class HttpApiKanban {
         path: relativeFeltPath(fiber),
         kind: 'felt-horizon',
         horizon,
+        cold,
       });
       this.clearFiberPoolCache();
       const refreshedById = new Map<string, Fiber>();
@@ -1665,7 +1910,7 @@ export class HttpApiKanban {
     const path = this.fiberPath(host, fiber);
     if (!existsSync(path)) throw new Error(`fiber file missing: ${path}`);
     const raw = await readFile(path, 'utf-8');
-    await writeFile(path, rewriteHorizonFrontmatter(raw, horizon), 'utf-8');
+    await writeFile(path, rewriteHorizonFrontmatter(raw, horizon, cold), 'utf-8');
     this.clearFiberPoolCache();
 
     const refreshed = await getFiber(host, fiberId);
@@ -2269,14 +2514,21 @@ export class HttpApiKanban {
       storedHorizon: horizon.storedHorizon,
       effectiveHorizon: horizon.effectiveHorizon,
       drifted: horizon.drifted,
+      cold: typeof f.cold === 'boolean' ? f.cold : undefined,
     };
   }
 
   private emptyResponse(): KanbanResponse {
     return {
       feltHost: this.feltHost,
-      columns: { ideas: [], drafts: [], inFlight: [], awaitingReview: [], tempered: [], composted: [] },
-      totals: { ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 },
+      now: { drafts: [], inFlight: [], awaitingReview: [] },
+      timeline: { past: [], futureDated: [], anytimeSoon: [] },
+      stash: [],
+      ideas: [],
+      totals: {
+        ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0,
+        past: 0, futureDated: 0, anytimeSoon: 0, stash: 0,
+      },
       temperedTotal: 0,
       staleness: this.buildStaleness(),
       remoteScope: this.remoteOriginFilter
@@ -2384,6 +2636,33 @@ function byClosedAtDesc(a: KanbanCard, b: KanbanCard): number {
   const aT = a.closedAt || a.createdAt || '';
   const bT = b.closedAt || b.createdAt || '';
   return bT.localeCompare(aT);
+}
+
+/** Ascending sort by `due:` (earliest deadline first). Cards without a
+ *  due date sort last; ISO timestamp string compare is order-correct. */
+function byDueAtAsc(a: KanbanCard, b: KanbanCard): number {
+  const aT = a.due ?? '';
+  const bT = b.due ?? '';
+  if (aT === bT) return 0;
+  if (!aT) return 1;
+  if (!bT) return -1;
+  return aT.localeCompare(bT);
+}
+
+/** Merge two pre-sorted-by-closedAt-desc arrays preserving the global
+ *  ordering. The two inputs are already sorted; we interleave by
+ *  comparing heads. Avoids the O(n log n) penalty of resorting the
+ *  concatenation when both inputs come straight from sort calls above. */
+function mergeByClosedAtDesc(a: KanbanCard[], b: KanbanCard[]): KanbanCard[] {
+  const out: KanbanCard[] = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (byClosedAtDesc(a[i], b[j]) <= 0) out.push(a[i++]);
+    else out.push(b[j++]);
+  }
+  while (i < a.length) out.push(a[i++]);
+  while (j < b.length) out.push(b[j++]);
+  return out;
 }
 
 function resolveRunningWorker(
@@ -2559,7 +2838,25 @@ function diffTags(current: string[], next: string[]): { add: string[]; remove: s
   };
 }
 
-function rewriteHorizonFrontmatter(raw: string, horizon: KanbanHorizon | null): string {
+/**
+ * Rewrite the top-level `horizon:` (and optionally `cold:`) keys in
+ * a fiber file's YAML frontmatter. Preserves unrelated lines byte-for-
+ * byte (we only edit the matched ranges).
+ *
+ * Semantics:
+ *   horizon=null            → remove `horizon:` and `cold:` entirely.
+ *   horizon='now'|'soon'    → write `horizon:`; remove `cold:` (a non-
+ *                             stashed card has no `cold` meaning).
+ *   horizon='stashed'       → write `horizon:`; thread cold through:
+ *     cold === undefined    → leave existing `cold:` line alone.
+ *     cold === true         → write `cold: true`.
+ *     cold === false        → remove `cold:` (default warm).
+ */
+function rewriteHorizonFrontmatter(
+  raw: string,
+  horizon: KanbanHorizon | null,
+  cold?: boolean,
+): string {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
   if (!match) throw new Error('fiber file has no YAML frontmatter');
 
@@ -2573,17 +2870,50 @@ function rewriteHorizonFrontmatter(raw: string, horizon: KanbanHorizon | null): 
   const closingNewline = match[2] ?? '';
   const body = raw.slice(match[0].length);
   const lines = frontmatter.length > 0 ? frontmatter.split(/\r?\n/) : [];
-  const range = topLevelKeyRange(lines, 'horizon');
 
+  // Rewrite `horizon:` first; rewriteOrRemove keeps lines indices coherent
+  // because it always splices in-place.
+  rewriteOrRemoveKey(lines, 'horizon', horizon === null ? null : `horizon: ${horizon}`);
+
+  // Resolve cold: nullable horizon and non-stashed horizon both imply
+  // clearing cold; for stashed we honor the explicit `cold` argument.
+  let nextColdLine: string | null = null;
+  let touchCold = true;
   if (horizon === null) {
-    if (range) lines.splice(range.start, range.end - range.start);
-  } else if (range) {
-    lines.splice(range.start, range.end - range.start, `horizon: ${horizon}`);
+    nextColdLine = null;
+  } else if (horizon !== 'stashed') {
+    nextColdLine = null;
+  } else if (cold === undefined) {
+    touchCold = false; // leave existing line alone
+  } else if (cold === true) {
+    nextColdLine = 'cold: true';
   } else {
-    lines.push(`horizon: ${horizon}`);
+    nextColdLine = null; // explicit false → remove
   }
+  if (touchCold) rewriteOrRemoveKey(lines, 'cold', nextColdLine);
 
   return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
+}
+
+/** In-place edit: when `replacement` is non-null, set the key's range to
+ *  that single line; when null, splice the existing range out entirely.
+ *  When `replacement` is non-null and the key is absent, append at the
+ *  end of the frontmatter. */
+function rewriteOrRemoveKey(
+  lines: string[],
+  key: string,
+  replacement: string | null,
+): void {
+  const range = topLevelKeyRange(lines, key);
+  if (replacement === null) {
+    if (range) lines.splice(range.start, range.end - range.start);
+    return;
+  }
+  if (range) {
+    lines.splice(range.start, range.end - range.start, replacement);
+  } else {
+    lines.push(replacement);
+  }
 }
 
 function topLevelKeyRange(

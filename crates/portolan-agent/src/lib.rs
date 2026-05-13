@@ -19,6 +19,15 @@ use std::{
 
 const DEFAULT_SERVER: &str = "localhost:4004";
 const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
+const CLI_DISCOVERY_DEPTH: usize = 4;
+const AGENT_SESSION_NAMES: &[&str] = &["portolan-agent", "portolan-agent-rust-preview"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TmuxPane {
+    tmux_session: String,
+    cwd: String,
+    pane_pid: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentCommand {
@@ -178,6 +187,189 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         _ => Vec::new(),
     }
+}
+
+pub fn collect_agent_sessions() -> Vec<portolan_agent_protocol::AgentSession> {
+    collect_agent_sessions_with_runner(run_command_for_discovery)
+}
+
+fn collect_agent_sessions_with_runner(
+    mut run_command: impl FnMut(&str, &[&str]) -> Result<String, String>,
+) -> Vec<portolan_agent_protocol::AgentSession> {
+    let output = match run_command(
+        "tmux",
+        &[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}\t#{pane_current_path}\t#{pane_pid}",
+        ],
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("[portolan-agent-rust] session discovery failed: {error}");
+            return Vec::new();
+        }
+    };
+
+    let panes = parse_tmux_panes(&output);
+    let mut sessions = Vec::new();
+    for pane in panes {
+        let cwd = pane.cwd.clone();
+        if !is_cli_tmux_pane(&pane.pane_pid, &mut run_command) {
+            continue;
+        }
+        let has_claims = detect_claims_in_cwd(&cwd);
+        let has_playgrounds = detect_playgrounds_in_cwd(&cwd);
+        sessions.push(portolan_agent_protocol::AgentSession {
+            id: None,
+            name: pane.tmux_session.clone(),
+            tmux_session: pane.tmux_session,
+            cwd,
+            status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
+            has_claims: Some(has_claims),
+            has_playgrounds: Some(has_playgrounds),
+            // Git status probing is intentionally deferred in Rust preview until we can
+            // preserve parity with the Node agent's broad and potentially expensive scan.
+            git_status: None,
+        });
+    }
+    sessions
+}
+
+fn parse_tmux_panes(raw: &str) -> Vec<TmuxPane> {
+    let fallback_cwd = env::current_dir()
+        .ok()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let tmux_session = parts.next()?.trim();
+            if tmux_session.is_empty() || is_self_session_name(tmux_session) {
+                return None;
+            }
+            let cwd = parts
+                .next()
+                .filter(|cwd| !cwd.trim().is_empty())
+                .unwrap_or(&fallback_cwd);
+            let pane_pid = parts.next().filter(|pid| !pid.trim().is_empty())?;
+            Some(TmuxPane {
+                tmux_session: tmux_session.to_string(),
+                cwd: cwd.to_string(),
+                pane_pid: pane_pid.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn is_self_session_name(tmux_session: &str) -> bool {
+    AGENT_SESSION_NAMES
+        .iter()
+        .any(|name| tmux_session == *name || tmux_session.starts_with(&format!("{name}-")))
+}
+
+fn is_cli_tmux_pane(
+    pane_pid: &str,
+    run_command: &mut impl FnMut(&str, &[&str]) -> Result<String, String>,
+) -> bool {
+    let mut frontier = vec![pane_pid.to_string()];
+    for _ in 0..CLI_DISCOVERY_DEPTH {
+        if frontier.is_empty() {
+            return false;
+        }
+        let mut next_frontier = Vec::new();
+        let mut found = false;
+
+        for pid in frontier.drain(..) {
+            if is_cli_process_in_pid_tree(pid.as_str(), run_command) {
+                found = true;
+                break;
+            }
+
+            if let Ok(child_pids) = run_command("pgrep", &["-P", pid.as_str()]) {
+                for child_pid in parse_pids(child_pids) {
+                    next_frontier.push(child_pid);
+                }
+            }
+        }
+
+        if found {
+            return true;
+        }
+        frontier = next_frontier;
+    }
+    false
+}
+
+fn is_cli_process_in_pid_tree(
+    pid: &str,
+    run_command: &mut impl FnMut(&str, &[&str]) -> Result<String, String>,
+) -> bool {
+    match run_command("ps", &["-o", "comm=", "-p", pid]) {
+        Ok(comm) if is_cli_process(&comm) => return true,
+        Ok(_) => {}
+        Err(_) => return false,
+    }
+
+    matches!(
+        run_command("ps", &["-o", "args=", "-p", pid]),
+        Ok(args) if is_cli_process(&args)
+    )
+}
+
+fn is_cli_process(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    lowered.contains("claude") || lowered.contains("codex") || lowered.contains("pi")
+}
+
+fn parse_pids(raw: String) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect()
+}
+
+fn detect_claims_in_cwd(cwd: &str) -> bool {
+    let root = Path::new(cwd);
+    root.join("workflow").join("config").exists()
+        || root.join("results").join("tapestry").exists()
+        || root.join(".felt").exists()
+}
+
+fn detect_playgrounds_in_cwd(cwd: &str) -> bool {
+    let playground_dir = Path::new(cwd).join(".portolan/playgrounds");
+    let entries = match fs::read_dir(playground_dir) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        if let Some(ext) = entry.path().extension().and_then(|value| value.to_str()) {
+            if ext == "html" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn run_command_for_discovery(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{program} command failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{program} command failed with status {}",
+            output.status
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,9 +586,10 @@ fn run_felt_horizon_kanban_mutation(
         }
         None => return Err("missing horizon payload".to_string()),
     };
+    let cold = optional_bool_field(payload, "cold")?;
     let raw = fs::read_to_string(full_path)
         .map_err(|error| format!("failed to read fiber {}: {error}", full_path.display()))?;
-    let rewritten = rewrite_horizon_frontmatter(&raw, horizon)?;
+    let rewritten = rewrite_horizon_frontmatter(&raw, horizon, cold)?;
     fs::write(full_path, rewritten)
         .map_err(|error| format!("failed to write fiber {}: {error}", full_path.display()))
 }
@@ -509,9 +702,13 @@ fn diff_tag_lists(current: &[String], next: &[String]) -> (Vec<String>, Vec<Stri
     (add, remove)
 }
 
-fn rewrite_horizon_frontmatter(raw: &str, horizon: Option<&str>) -> Result<String, String> {
+fn rewrite_horizon_frontmatter(
+    raw: &str,
+    horizon: Option<&str>,
+    cold: Option<bool>,
+) -> Result<String, String> {
     if let Some(horizon) = horizon {
-        if !matches!(horizon, "now" | "soon" | "later" | "someday") {
+        if !matches!(horizon, "now" | "soon" | "stashed") {
             return Err(format!("unknown horizon: {horizon}"));
         }
     }
@@ -535,17 +732,23 @@ fn rewrite_horizon_frontmatter(raw: &str, horizon: Option<&str>) -> Result<Strin
             .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
             .collect()
     };
-    let range = top_level_key_range(&lines, "horizon");
 
-    match (horizon, range) {
-        (None, Some((start, end))) => {
-            lines.splice(start..end, std::iter::empty());
-        }
-        (None, None) => {}
-        (Some(horizon), Some((start, end))) => {
-            lines.splice(start..end, [format!("horizon: {horizon}")]);
-        }
-        (Some(horizon), None) => lines.push(format!("horizon: {horizon}")),
+    // Edit `horizon:` first, then resolve `cold:`.
+    edit_top_level_key(
+        &mut lines,
+        "horizon",
+        horizon.map(|h| format!("horizon: {h}")),
+    );
+
+    let (touch_cold, next_cold_line) = match (horizon, cold) {
+        (None, _) => (true, None),
+        (Some("stashed"), Some(true)) => (true, Some("cold: true".to_string())),
+        (Some("stashed"), Some(false)) => (true, None),
+        (Some("stashed"), None) => (false, None),
+        (Some(_), _) => (true, None),
+    };
+    if touch_cold {
+        edit_top_level_key(&mut lines, "cold", next_cold_line);
     }
 
     let closing_newline = &raw[body_start - closing_newline_len..body_start];
@@ -554,6 +757,23 @@ fn rewrite_horizon_frontmatter(raw: &str, horizon: Option<&str>) -> Result<Strin
         "---{eol}{}{eol}---{closing_newline}{body}",
         lines.join(eol)
     ))
+}
+
+/// In-place top-level key edit: when `replacement` is `Some`, replace
+/// the key's range (or push at end if absent); when `None`, splice the
+/// existing range out entirely.
+fn edit_top_level_key(lines: &mut Vec<String>, key: &str, replacement: Option<String>) {
+    let range = top_level_key_range(lines, key);
+    match (replacement, range) {
+        (None, Some((start, end))) => {
+            lines.splice(start..end, std::iter::empty());
+        }
+        (None, None) => {}
+        (Some(line), Some((start, end))) => {
+            lines.splice(start..end, [line]);
+        }
+        (Some(line), None) => lines.push(line),
+    }
 }
 
 fn split_yaml_frontmatter(raw: &str) -> Result<(&str, usize, usize), String> {
@@ -956,6 +1176,7 @@ mod tests {
     use serde_json::json;
     use std::{
         collections::BTreeMap,
+        collections::HashMap,
         ffi::OsString,
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -1001,6 +1222,94 @@ mod tests {
                 once: true,
             })
         );
+    }
+
+    #[test]
+    fn parses_tmux_panes_and_skips_agent_sessions() {
+        let raw = "review\t/remote/review\t101\nportolan-agent\t/remote/agent\t102\nportolan-agent-rust-preview\t/remote/preview\t103\nworker\t\t104\n";
+        let panes = parse_tmux_panes(raw);
+
+        assert_eq!(panes.len(), 2);
+        assert_eq!(
+            panes
+                .iter()
+                .map(|pane| pane.tmux_session.as_str())
+                .collect::<Vec<_>>(),
+            vec!["review", "worker"]
+        );
+        assert_eq!(
+            panes[1].cwd,
+            env::current_dir().unwrap().display().to_string()
+        );
+    }
+
+    #[test]
+    fn detects_cli_process_from_descendants_without_real_tmux() {
+        let mut commands = HashMap::<(String, String), String>::new();
+        commands.insert(
+            (
+                "tmux".to_string(),
+                "list-panes\t-a\t-F\t#{session_name}\t#{pane_current_path}\t#{pane_pid}"
+                    .to_string(),
+            ),
+            "review\t/remote/review\t111\nanalysis\t/remote/analysis\t222\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t111".to_string()),
+            "bash\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\targs=\t-p\t111".to_string()),
+            "bash -c run\n".to_string(),
+        );
+        commands.insert(
+            ("pgrep".to_string(), "-P\t111".to_string()),
+            "211\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t211".to_string()),
+            "python3\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\targs=\t-p\t211".to_string()),
+            "python3 -m server\n".to_string(),
+        );
+        commands.insert(
+            ("pgrep".to_string(), "-P\t211".to_string()),
+            "311\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t311".to_string()),
+            "codex\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t222".to_string()),
+            "zsh\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\targs=\t-p\t222".to_string()),
+            "zsh -i\n".to_string(),
+        );
+        commands.insert(("pgrep".to_string(), "-P\t222".to_string()), "".to_string());
+
+        let sessions = collect_agent_sessions_with_runner(|program, args| {
+            let key = (program.to_string(), args.join("\t"));
+            commands
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| format!("unexpected command: {} {:?}", program, args))
+        });
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].tmux_session, "review");
+        assert_eq!(sessions[0].name, "review");
+        assert_eq!(
+            sessions[0].status,
+            Some(portolan_agent_protocol::AgentSessionStatus::Idle)
+        );
+        assert_eq!(sessions[0].has_claims, Some(false));
+        assert_eq!(sessions[0].has_playgrounds, Some(false));
+        assert!(sessions[0].git_status.is_none());
     }
 
     #[test]
@@ -1340,7 +1649,8 @@ mod tests {
             ("path", json!("story/story.md")),
             ("feltHost", json!(dir.display().to_string())),
             ("fiberId", json!("story")),
-            ("horizon", json!("later")),
+            ("horizon", json!("stashed")),
+            ("cold", json!(true)),
         ]);
         let mut invocations = Vec::new();
 
@@ -1350,18 +1660,30 @@ mod tests {
                 invocations.push(invocation);
                 Ok(())
             },
-            |_, fiber_id| Ok(json!({ "id": fiber_id, "horizon": "later" })),
+            |_, fiber_id| Ok(json!({ "id": fiber_id, "horizon": "stashed", "cold": true })),
         )
         .unwrap();
         let saved = fs::read_to_string(fiber_dir.join("story.md")).unwrap();
         fs::remove_dir_all(&dir).unwrap();
 
         assert!(invocations.is_empty());
-        assert_eq!(fiber["horizon"], json!("later"));
+        assert_eq!(fiber["horizon"], json!("stashed"));
+        assert_eq!(fiber["cold"], json!(true));
         assert_eq!(
             saved,
-            "---\nname: Story\nnotes: |-\n  horizon: not top-level\nhorizon: later\n---\n\nBody\n"
+            "---\nname: Story\nnotes: |-\n  horizon: not top-level\nhorizon: stashed\ncold: true\n---\n\nBody\n"
         );
+    }
+
+    #[test]
+    fn felt_horizon_rejects_legacy_values() {
+        for legacy in ["later", "someday"] {
+            let err = rewrite_horizon_frontmatter("---\n---\n\n", Some(legacy), None).unwrap_err();
+            assert!(
+                err.contains(legacy),
+                "expected error to mention {legacy}: {err}"
+            );
+        }
     }
 
     #[test]

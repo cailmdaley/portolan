@@ -18,7 +18,13 @@ export interface Fiber {
   outcome?: string;  // outcome from frontmatter
   closedAt?: string; // ISO date from frontmatter
   due?: string;       // project-owned frontmatter `due:` for human-facing deadlines
-  horizon?: string;   // project-owned frontmatter `horizon:` for kanban row grouping
+  horizon?: string;   // project-owned frontmatter `horizon:` — `now | soon | stashed`
+                      // (legacy `later`/`someday` migrated by scripts/migrate-
+                      // kanban-horizon-three-surface.ts; the kanban classifier
+                      // narrows unknown values to `now`).
+  cold?: boolean;     // project-owned frontmatter `cold:` — when true, stash
+                      // cluster renders dimmer and below warm clusters
+                      // (held-open). Default false (warm).
   tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
   tempered?: boolean;   // human-acceptance signal — agent never sets this itself; Shuttle reads it as the dependency-satisfied edge
@@ -155,6 +161,7 @@ export function mapFeltJsonToFiber(item: unknown): Fiber | null {
   const body = typeof f.body === 'string' ? f.body : undefined;
   const due = typeof f.due === 'string' && f.due.trim() ? f.due.trim() : undefined;
   const horizon = typeof f.horizon === 'string' && f.horizon.trim() ? f.horizon.trim() : undefined;
+  const cold = typeof f.cold === 'boolean' ? f.cold : undefined;
 
   // Prefer canonical *_at fields; fall back to legacy `created`/`closed`
   // for older fibers that haven't been migrated.
@@ -259,6 +266,7 @@ export function mapFeltJsonToFiber(item: unknown): Fiber | null {
     body,
     due,
     horizon,
+    cold,
     tags,
     dependsOn,
     tempered,
