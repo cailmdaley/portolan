@@ -877,11 +877,14 @@
   margin: 0;
 }
 .kbn-col-title .kbn-cap {
-  /* Cap holds at ~24px absolute. With body now 33px, the multiplier
-     drops to 24/33 ≈ 0.73em so the cap and the small-caps body
-     render at matching visual height — "D" and "rafts" (small caps)
-     read as the same letter family at the same scale, with the
-     illumination doing all the differentiation rather than size. */
+  /* Cap and small-caps body sit at matching visual height — the
+     dropcap and the small-caps trailing it read as a single uniform
+     line, with the illumination (color + F1 flourish) doing all the
+     differentiation rather than size. Deliberately breaks the
+     historical "versal initial slightly larger" convention in favor
+     of a flatter, more contemporary manuscript-line rhythm. Body
+     33px × EB Garamond's ~0.74 small-cap ratio → ~24px small-caps;
+     cap at 0.73em × 33px → ~24px. */
   font-size: 0.73em;
   vertical-align: -0.08em;
   margin-right: 0.04em;
