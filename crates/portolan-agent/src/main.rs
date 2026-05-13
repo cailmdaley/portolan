@@ -393,11 +393,10 @@ async fn stream_tmux_control(
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(b"refresh-client -C 200x50\n").await;
-        });
+    let mut control_stdin = child.stdin.take();
+    if let Some(stdin) = control_stdin.as_mut() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(b"refresh-client -C 200x50\n").await;
     }
 
     let Some(stdout) = child.stdout.take() else {
