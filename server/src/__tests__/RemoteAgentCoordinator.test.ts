@@ -129,13 +129,13 @@ describe('RemoteAgentCoordinator', () => {
     expect(coordinator.getRemoteAgentRecoveryStats()).toEqual([]);
   });
 
-  it('recovers a disconnected Rust preview agent as Rust', async () => {
+  it('recovers a disconnected Rust agent agent as Rust', async () => {
     const { originManager, callbacks, coordinator } = createCoordinator({
       recoverRemoteAgent: vi.fn().mockResolvedValue({
         sshHost: 'candide',
         tunnel: 'reachable',
         agent: 'restarted',
-        message: 'candide: tunnel reachable; restarted portolan-agent-rust-preview',
+        message: 'candide: tunnel reachable; restarted portolan-agent-rust',
       }),
     });
     const ws = { close: vi.fn() } as any;
@@ -162,13 +162,13 @@ describe('RemoteAgentCoordinator', () => {
           origin: 'candide',
         }),
         lastResult: expect.objectContaining({
-          message: expect.stringContaining('portolan-agent-rust-preview'),
+          message: expect.stringContaining('portolan-agent-rust'),
         }),
       }));
     });
   });
 
-  it('does not auto-recover one-shot Rust preview agents after disconnect', async () => {
+  it('does not auto-recover one-shot Rust agent agents after disconnect', async () => {
     const { originManager, callbacks, coordinator } = createCoordinator();
     const ws = { close: vi.fn() } as any;
 

@@ -10,18 +10,18 @@ describe('RemoteAgentRuntime', () => {
   it('keeps runtime profile diagnostics aligned with launch helpers', () => {
     expect(remoteAgentRuntimeProfiles()).toEqual([
       {
-        runtime: 'node',
-        tmuxSession: 'portolan-agent',
-        replacesTmuxSession: 'portolan-agent-rust-preview',
-        commandTemplate: remoteAgentCommand('node', '<ssh-host>'),
-        supportsOnce: false,
-      },
-      {
         runtime: 'rust',
-        tmuxSession: 'portolan-agent-rust-preview',
-        replacesTmuxSession: 'portolan-agent',
+        tmuxSession: 'portolan-agent-rust',
+        replacesTmuxSessions: ['portolan-agent', 'portolan-agent-rust-preview'],
         commandTemplate: remoteAgentCommand('rust', '<ssh-host>'),
         supportsOnce: true,
+      },
+      {
+        runtime: 'node',
+        tmuxSession: 'portolan-agent',
+        replacesTmuxSessions: ['portolan-agent-rust', 'portolan-agent-rust-preview'],
+        commandTemplate: remoteAgentCommand('node', '<ssh-host>'),
+        supportsOnce: false,
       },
     ]);
   });

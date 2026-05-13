@@ -875,7 +875,7 @@ mod tests {
 
     fn temp_events_file(tag: &str) -> PathBuf {
         env::temp_dir().join(format!(
-            "portolan-agent-rust-preview-{tag}-{}.jsonl",
+            "portolan-agent-rust-{tag}-{}.jsonl",
             process::id()
         ))
     }

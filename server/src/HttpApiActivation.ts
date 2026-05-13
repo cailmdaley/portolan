@@ -5,9 +5,9 @@ import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
 import type { RemoteAgentRuntime } from './OriginManager.js';
 import {
-  oppositeRemoteAgentTmuxSession,
   remoteAgentCommand,
   remoteAgentTmuxSession,
+  replacedRemoteAgentTmuxSessions,
   type RemoteAgentStartupOptions,
 } from './RemoteAgentRuntime.js';
 import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
@@ -163,7 +163,7 @@ export class HttpApiActivation {
     }
 
     const runtimeSession = remoteAgentTmuxSession(runtime);
-    const oppositeRuntimeSession = oppositeRemoteAgentTmuxSession(runtime);
+    const replacedRuntimeSessions = replacedRemoteAgentTmuxSessions(runtime);
     const startCommand = remoteAgentCommand(runtime, sshHost, rustOptions);
     const replacesRuntime = !(runtime === 'rust' && rustOptions.once);
 
@@ -192,11 +192,7 @@ export class HttpApiActivation {
 
       if (checkOutput.trim() === 'running') {
         if (replacesRuntime) {
-          await this.execFileFn(
-            'ssh',
-            ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
-            { timeout: 60_000 }
-          );
+          await killRemoteAgentSessions(sshHost, replacedRuntimeSessions, this.execFileFn);
           this.recordPreferredRuntime(sshHost, runtime);
         }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -209,11 +205,7 @@ export class HttpApiActivation {
       }
 
       if (replacesRuntime) {
-        await this.execFileFn(
-          'ssh',
-          ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
-          { timeout: 60_000 }
-        );
+        await killRemoteAgentSessions(sshHost, replacedRuntimeSessions, this.execFileFn);
       }
 
       console.log(`[Activate] Starting ${runtime} portolan agent on ${sshHost}...`);
@@ -272,6 +264,21 @@ export class HttpApiActivation {
       console.warn(`[Activate] Failed to persist ${sshHost} runtime preference: ${message}`);
     }
   }
+}
+
+async function killRemoteAgentSessions(
+  sshHost: string,
+  sessions: string[],
+  execFileFn: typeof execFileAsync,
+): Promise<void> {
+  if (sessions.length === 0) return;
+  await execFileFn(
+    'ssh',
+    ['-T', sshHost, sessions.map((session) => (
+      `tmux kill-session -t ${exactTmuxTarget(session)} 2>/dev/null || true`
+    )).join('; ')],
+    { timeout: 60_000 },
+  );
 }
 
 function delay(ms: number): Promise<void> {

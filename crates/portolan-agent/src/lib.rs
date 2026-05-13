@@ -28,7 +28,11 @@ use std::{
 const DEFAULT_SERVER: &str = "localhost:4004";
 const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const CLI_DISCOVERY_DEPTH: usize = 4;
-const AGENT_SESSION_NAMES: &[&str] = &["portolan-agent", "portolan-agent-rust-preview"];
+const AGENT_SESSION_NAMES: &[&str] = &[
+    "portolan-agent",
+    "portolan-agent-rust",
+    "portolan-agent-rust-preview",
+];
 const DEFAULT_SEARCH_LIMIT: usize = 50;
 pub const RUST_AGENT_READY_PREFIX: &str = "[portolan-agent-rust] READY runtime=rust";
 
@@ -1199,7 +1203,7 @@ pub fn build_shuttle_snapshot_frame(
                 reason: if live {
                     Some("adopted existing tmux session".to_string())
                 } else {
-                    Some("rust preview read-only; dispatch remains shuttle-owned".to_string())
+                    Some("rust agent read-only; dispatch remains shuttle-owned".to_string())
                 },
             }
         })
@@ -3451,7 +3455,7 @@ malformed
                         "fiberId": "portolan/idle",
                         "state": "idle",
                         "agent": "codex",
-                        "reason": "rust preview read-only; dispatch remains shuttle-owned"
+                        "reason": "rust agent read-only; dispatch remains shuttle-owned"
                     }
                 ],
                 "blocked": [],
@@ -3813,7 +3817,7 @@ malformed
     }
 
     #[test]
-    fn includes_once_in_agent_url_for_one_shot_preview_sessions() {
+    fn includes_once_in_agent_url_for_one_shot_rust_sessions() {
         let url = build_agent_url(&AgentConfig {
             server: "localhost:4004".to_string(),
             origin: "candide".to_string(),

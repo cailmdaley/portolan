@@ -20,7 +20,7 @@ function createCoordinatorFixture() {
       sshHost: 'candide',
       tunnel: 'reachable',
       agent: 'restarted',
-      message: 'candide: tunnel reachable; restarted portolan-agent-rust-preview',
+      message: 'candide: tunnel reachable; restarted portolan-agent-rust',
     }),
   };
 

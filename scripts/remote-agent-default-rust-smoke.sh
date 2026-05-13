@@ -98,6 +98,7 @@ NODE
 
 if [ "$REQUIRE_STARTED" = true ]; then
   echo "[portolan] Stopping remote Rust runtime session before activation on $HOST"
+  ssh -T "$HOST" "tmux kill-session -t '=portolan-agent-rust' 2>/dev/null || true"
   ssh -T "$HOST" "tmux kill-session -t '=portolan-agent-rust-preview' 2>/dev/null || true"
   if [ "$STOP_OPPOSITE" = true ]; then
     echo "[portolan] Stopping remote Node fallback session before activation on $HOST"
@@ -138,8 +139,8 @@ if (!String(response.message ?? '').includes('rust')) {
 }
 NODE
 
-echo "[portolan] Verifying remote tmux session portolan-agent-rust-preview on $HOST"
-ssh -T "$HOST" "tmux has-session -t '=portolan-agent-rust-preview'"
+echo "[portolan] Verifying remote tmux session portolan-agent-rust on $HOST"
+ssh -T "$HOST" "tmux has-session -t '=portolan-agent-rust'"
 
 if [ "$REQUIRE_STARTED" = true ] && [ "$STOP_OPPOSITE" = true ]; then
   echo "[portolan] Verifying remote Node fallback session stayed stopped on $HOST"

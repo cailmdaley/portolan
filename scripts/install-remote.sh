@@ -6,7 +6,7 @@
 # This script:
 # 1. Copies portolan-hook.sh to remote ~/.portolan/hooks/
 # 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js (Node fallback, always kept)
-# 3. Optionally copies Rust preview binary to remote ~/.local/bin/portolan-agent-rust
+# 3. Optionally copies Rust agent binary to remote ~/.local/bin/portolan-agent-rust
 # 4. Creates ~/.portolan/data/ directory
 # 5. Patches ~/.claude/settings.json to add:
 #    - command hooks for canonical Portolan activity and file-touch tracking
@@ -16,7 +16,7 @@
 # - jq (for JSON patching)
 # - tmux (for running agent)
 # - Claude Code installed
-# - Node.js with npm (optional for Rust preview, but used to keep Node fallback ready)
+# - Node.js with npm (optional for Rust agent, but used to keep Node fallback ready)
 
 set -e
 
@@ -38,7 +38,7 @@ SSH_HOST=""
 START_AGENT=false
 AGENT_RUNTIME="node"
 RUST_AGENT_LOCAL_BINARY=""
-RUST_AGENT_SESSION="portolan-agent-rust-preview"
+RUST_AGENT_SESSION="portolan-agent-rust"
 NODE_AGENT_SESSION="portolan-agent"
 AGENT_ORIGIN=""
 AGENT_PLANNOTATOR_PORT=""
@@ -52,17 +52,17 @@ Options:
   --start                 Start one runtime in tmux after installation
   --agent-runtime VALUE   node or rust (default: node)
   --agent-binary PATH     Local path to rust binary (defaults to crates/portolan-agent/target/release/portolan-agent-rust)
-  --agent-session NAME    Override tmux session name for rust preview runtime
-  --origin VALUE          Origin identifier for rust preview runtime (if different from hostname)
-  --plannotator-port PORT Optional plannotator socket port (rust preview only)
-  --once                  Run rust preview once (exits after disconnect)
+  --agent-session NAME    Override tmux session name for rust agent runtime
+  --origin VALUE          Origin identifier for rust agent runtime (if different from hostname)
+  --plannotator-port PORT Optional plannotator socket port (rust agent only)
+  --once                  Run rust agent once (exits after disconnect)
   --help, -h              Show usage
 
 Prerequisites on remote:
   - jq
   - tmux
   - Claude Code
-  - Node.js + npm (optional for rust preview, but used to keep Node fallback ready)
+  - Node.js + npm (optional for rust agent, but used to keep Node fallback ready)
 EOF
 }
 
@@ -300,7 +300,7 @@ log "Copying agent.js..."
 scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/.local/bin/portolan-agent.js"
 
 if [ "$AGENT_RUNTIME" = "rust" ]; then
-  log "Copying Rust preview agent..."
+  log "Copying Rust agent..."
   RUST_AGENT_LOCAL_BINARY="${RUST_AGENT_LOCAL_BINARY:-$REPO_DIR/crates/portolan-agent/target/release/portolan-agent-rust}"
   if [ ! -f "$RUST_AGENT_LOCAL_BINARY" ]; then
     error "Rust agent binary not found: $RUST_AGENT_LOCAL_BINARY"
@@ -324,7 +324,7 @@ else
 fi
 
 # Install ws dependency for the Node fallback whenever Node is available. Rust
-# preview installs should leave `portolan-agent` restartable without a second
+# Rust agent installs should leave `portolan-agent` restartable without a second
 # install pass.
 if ssh "$SSH_HOST" 'bash -l -c "command -v node >/dev/null 2>&1"'; then
   log "Installing ws package..."
@@ -342,7 +342,7 @@ if [ ! -d node_modules/ws ]; then
 fi
 '\'''
 elif [ "$AGENT_RUNTIME" = "rust" ]; then
-  warn "Node not found on remote; Rust preview can run, but Node fallback is not startable until Node is installed"
+  warn "Node not found on remote; Rust agent can run, but Node fallback is not startable until Node is installed"
 fi
 
 # Patch Claude settings
@@ -475,9 +475,11 @@ if [ "$START_AGENT" = true ]; then
   if [ "$AGENT_RUNTIME" = "rust" ]; then
     AGENT_SESSION="$RUST_AGENT_SESSION"
     OPPOSITE_AGENT_SESSION="$NODE_AGENT_SESSION"
+    OPPOSITE_AGENT_SESSIONS="$NODE_AGENT_SESSION"
   else
     AGENT_SESSION="$NODE_AGENT_SESSION"
     OPPOSITE_AGENT_SESSION="$RUST_AGENT_SESSION"
+    OPPOSITE_AGENT_SESSIONS="$RUST_AGENT_SESSION portolan-agent-rust-preview"
   fi
   REPLACES_RUNTIME=true
   if [ "$AGENT_RUNTIME" = "rust" ] && [ "$AGENT_ONCE" = true ]; then
@@ -488,10 +490,12 @@ if [ "$START_AGENT" = true ]; then
     # Kill existing runtime-specific agent if running
     tmux kill-session -t "$AGENT_SESSION" 2>/dev/null || true
     if [ "$REPLACES_RUNTIME" = true ]; then
-      tmux kill-session -t "$OPPOSITE_AGENT_SESSION" 2>/dev/null || true
-      echo "Stopped opposite runtime session '$OPPOSITE_AGENT_SESSION'"
+      for opposite_session in $OPPOSITE_AGENT_SESSIONS; do
+        tmux kill-session -t "$opposite_session" 2>/dev/null || true
+      done
+      echo "Stopped opposite runtime session(s) '$OPPOSITE_AGENT_SESSIONS'"
     else
-      echo "Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust preview"
+      echo "Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust agent"
     fi
     # Start new agent session
     tmux new-session -d -s "$AGENT_SESSION" "bash -l -c '$AGENT_CMD'"
@@ -508,12 +512,12 @@ echo "     Fallback without launchd:"
 echo "       ./scripts/reset-tunnel.sh --manual $SSH_HOST"
 echo ""
 if [ "$AGENT_RUNTIME" = "rust" ]; then
-  echo "  2. Start the Rust preview agent on remote (session kept separate):"
+  echo "  2. Start the Rust agent on remote (session kept separate):"
   echo "       ssh $SSH_HOST"
   agent_next_cmd="$(build_agent_cmd "$AGENT_RUNTIME" "$SSH_HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
   echo "       tmux new-session -d -s '$RUST_AGENT_SESSION' \"bash -l -c '$agent_next_cmd'\""
   echo ""
-  echo "  3. Rust preview temporarily owns the origin socket while connected."
+  echo "  3. Rust agent temporarily owns the origin socket while connected."
   echo "     Node fallback remains available in tmux session '$NODE_AGENT_SESSION':"
   echo "       tmux new-session -d -s '$NODE_AGENT_SESSION' \"bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'\""
   if [ "$AGENT_ONCE" = true ]; then

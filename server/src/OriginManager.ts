@@ -18,7 +18,7 @@ export interface Origin {
   type: 'local' | 'remote';
   sshHost?: string;              // SSH config host (for remote focus)
   agentRuntime?: RemoteAgentRuntime; // Runtime that currently owns this origin socket
-  agentOnce?: boolean;           // One-shot preview agents intentionally do not auto-recover
+  agentOnce?: boolean;           // One-shot Rust agents intentionally do not auto-recover
   plannotatorPort?: number;      // Port for plannotator on this origin
   position: { q: number; r: number };  // hex offset for this origin's cities
   connectedAt: number;

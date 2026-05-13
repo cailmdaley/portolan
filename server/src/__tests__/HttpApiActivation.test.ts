@@ -95,7 +95,10 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       sshHost,
-      `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      [
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null || true`,
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      ].join('; '),
     ]);
     const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
     const expectedStartCommand = `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
@@ -133,7 +136,7 @@ describe('HttpApiActivation', () => {
     });
   });
 
-  it('starts the Rust preview agent with shell-escaped remote tmux command', async () => {
+  it('starts the Rust agent with shell-escaped remote tmux command', async () => {
     const unsafeHost = "candide'; touch /tmp/pwn; echo 'x";
     const execFileFn = vi
       .fn()
@@ -165,16 +168,19 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[1]?.[1]).toEqual([
       '-T',
       unsafeHost,
-      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null && echo running || echo stopped`,
     ]);
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       unsafeHost,
-      `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+      [
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      ].join('; '),
     ]);
     const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
     const escapedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(unsafeHost)}`;
-    const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust-preview')} ${shellEscape(`bash -l -c ${shellEscape(escapedStartCommand)}`)}`;
+    const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust')} ${shellEscape(`bash -l -c ${shellEscape(escapedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
     expect(startArgs[1]).toBe(unsafeHost);
     expect(startArgs[2]).toBe(expectedRemoteCommand);
@@ -182,7 +188,7 @@ describe('HttpApiActivation', () => {
       status: 200,
       body: {
         status: 'started',
-        message: `rust agent started on ${unsafeHost} (portolan-agent-rust-preview)`,
+        message: `rust agent started on ${unsafeHost} (portolan-agent-rust)`,
       },
     });
   });
@@ -208,18 +214,21 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[1]?.[1]).toEqual([
       '-T',
       'candide',
-      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null && echo running || echo stopped`,
     ]);
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       'candide',
-      `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+      [
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      ].join('; '),
     ]);
     expect(result()).toEqual({
       status: 200,
       body: {
         status: 'started',
-        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+        message: 'rust agent started on candide (portolan-agent-rust)',
         preferredRuntime: 'rust',
       },
     });
@@ -231,7 +240,7 @@ describe('HttpApiActivation', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
-      .mockRejectedValueOnce(new Error('duplicate session: portolan-agent-rust-preview'));
+      .mockRejectedValueOnce(new Error('duplicate session: portolan-agent-rust'));
     const preferences = runtimePreferences({ candide: 'rust' });
     const api = new HttpApiActivation({
       cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
@@ -275,19 +284,19 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[1]?.[1]).toEqual([
       '-T',
       'candide',
-      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null && echo running || echo stopped`,
     ]);
     expect(result()).toEqual({
       status: 200,
       body: {
         status: 'started',
-        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+        message: 'rust agent started on candide (portolan-agent-rust)',
         preferredRuntime: 'rust',
       },
     });
   });
 
-  it('accepts rust preview activation options from request body', async () => {
+  it('accepts rust agent activation options from request body', async () => {
     const execFileFn = vi
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
@@ -317,7 +326,7 @@ describe('HttpApiActivation', () => {
     const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
     const escapedOrigin = shellEscape(body.origin);
     const expectedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape('candide')} --origin=${escapedOrigin} --plannotator-port=${shellEscape('50055')} --once`;
-    const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust-preview')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
+    const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
     expect(startArgs[1]).toBe('candide');
     expect(startArgs[2]).toBe(expectedRemoteCommand);
@@ -325,12 +334,12 @@ describe('HttpApiActivation', () => {
       status: 200,
       body: {
         status: 'started',
-        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+        message: 'rust agent started on candide (portolan-agent-rust)',
       },
     });
   });
 
-  it('does not persist one-shot Rust preview as the host preference', async () => {
+  it('does not persist one-shot Rust agent as the host preference', async () => {
     const execFileFn = vi
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
@@ -360,7 +369,7 @@ describe('HttpApiActivation', () => {
       status: 200,
       body: {
         status: 'started',
-        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+        message: 'rust agent started on candide (portolan-agent-rust)',
         preferredRuntime: 'node',
       },
     });
@@ -395,7 +404,10 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       'candide',
-      `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      [
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null || true`,
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      ].join('; '),
     ]);
     expect(result()).toEqual({
       status: 200,
@@ -407,7 +419,7 @@ describe('HttpApiActivation', () => {
     });
   });
 
-  it('rejects invalid rust preview plannotator port payload', async () => {
+  it('rejects invalid rust agent plannotator port payload', async () => {
     const api = new HttpApiActivation({
       cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
       getSshHost: () => 'candide',
@@ -488,7 +500,10 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       'candide',
-      `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+      [
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+        `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+      ].join('; '),
     ]);
     expect(result()).toEqual({
       status: 200,

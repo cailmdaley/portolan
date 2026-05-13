@@ -2,7 +2,8 @@ import type { RemoteAgentRuntime } from './OriginManager.js';
 import { shellEscape } from './ShellPathUtils.js';
 
 export const NODE_AGENT_TMUX_SESSION = 'portolan-agent';
-export const RUST_AGENT_TMUX_SESSION = 'portolan-agent-rust-preview';
+export const RUST_AGENT_TMUX_SESSION = 'portolan-agent-rust';
+export const LEGACY_RUST_AGENT_TMUX_SESSION = 'portolan-agent-rust-preview';
 
 export interface RemoteAgentStartupOptions {
   origin?: string;
@@ -13,7 +14,7 @@ export interface RemoteAgentStartupOptions {
 export interface RemoteAgentRuntimeProfile {
   runtime: RemoteAgentRuntime;
   tmuxSession: string;
-  replacesTmuxSession: string;
+  replacesTmuxSessions: string[];
   commandTemplate: string;
   supportsOnce: boolean;
 }
@@ -24,8 +25,11 @@ export function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string
   return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;
 }
 
-export function oppositeRemoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string {
-  return agentRuntime === 'rust' ? NODE_AGENT_TMUX_SESSION : RUST_AGENT_TMUX_SESSION;
+export function replacedRemoteAgentTmuxSessions(agentRuntime: RemoteAgentRuntime): string[] {
+  if (agentRuntime === 'rust') {
+    return [NODE_AGENT_TMUX_SESSION, LEGACY_RUST_AGENT_TMUX_SESSION];
+  }
+  return [RUST_AGENT_TMUX_SESSION, LEGACY_RUST_AGENT_TMUX_SESSION];
 }
 
 export function remoteAgentCommand(
@@ -41,10 +45,10 @@ export function remoteAgentCommand(
 }
 
 export function remoteAgentRuntimeProfiles(): RemoteAgentRuntimeProfile[] {
-  return (['node', 'rust'] satisfies RemoteAgentRuntime[]).map((runtime) => ({
+  return (['rust', 'node'] satisfies RemoteAgentRuntime[]).map((runtime) => ({
     runtime,
     tmuxSession: remoteAgentTmuxSession(runtime),
-    replacesTmuxSession: oppositeRemoteAgentTmuxSession(runtime),
+    replacesTmuxSessions: replacedRemoteAgentTmuxSessions(runtime),
     commandTemplate: remoteAgentCommand(runtime, TEMPLATE_SSH_HOST),
     supportsOnce: runtime === 'rust',
   }));

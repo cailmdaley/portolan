@@ -10,9 +10,9 @@ import type { AgentActivityMessage, AgentSessionsUpdateMessage } from './Message
 import { OriginManager, type Origin, type RemoteAgentRuntime } from './OriginManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
 import {
-  oppositeRemoteAgentTmuxSession,
   remoteAgentCommand,
   remoteAgentTmuxSession,
+  replacedRemoteAgentTmuxSessions,
   type RemoteAgentStartupOptions,
 } from './RemoteAgentRuntime.js';
 import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
@@ -645,7 +645,7 @@ async function startRemoteAgent(
   startupOptions: RemoteAgentStartupOptions = {},
 ): Promise<void> {
   const session = remoteAgentTmuxSession(agentRuntime);
-  const oppositeSession = oppositeRemoteAgentTmuxSession(agentRuntime);
+  const replacedSessions = replacedRemoteAgentTmuxSessions(agentRuntime);
   const agentCommand = remoteAgentCommand(agentRuntime, sshHost, startupOptions);
   const replacesRuntime = !(agentRuntime === 'rust' && startupOptions.once);
   const remoteCommands = [
@@ -653,9 +653,11 @@ async function startRemoteAgent(
   ];
 
   if (replacesRuntime) {
-    remoteCommands.push(
-      `tmux kill-session -t ${shellEscape(`=${oppositeSession}:`)} 2>/dev/null || true`,
-    );
+    for (const replacedSession of replacedSessions) {
+      remoteCommands.push(
+        `tmux kill-session -t ${shellEscape(`=${replacedSession}:`)} 2>/dev/null || true`,
+      );
+    }
   }
 
   remoteCommands.push(

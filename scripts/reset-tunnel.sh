@@ -22,9 +22,9 @@ Options:
   --manual             Bypass launchd and run the old one-shot ssh recovery path
   --agent-runtime      Select runtime to restart: node|rust (default: rust)
   --agent-session      Override tmux session name for restart target
-  --origin             Origin identifier for rust preview runtime (if different from hostname)
-  --plannotator-port   Optional plannotator socket port (rust preview only)
-  --once               Run rust preview once (exits after disconnect)
+  --origin             Origin identifier for rust agent runtime (if different from hostname)
+  --plannotator-port   Optional plannotator socket port (rust agent only)
+  --once               Run rust agent once (exits after disconnect)
   --no-agent-restart   Only reset the tunnel; do not restart the remote agent session
   -h, --help           Show this help
 USAGE
@@ -228,7 +228,7 @@ build_agent_cmd() {
 
 if [ -z "$AGENT_SESSION" ]; then
   if [ "$AGENT_RUNTIME" = "rust" ]; then
-    AGENT_SESSION="portolan-agent-rust-preview"
+    AGENT_SESSION="portolan-agent-rust"
   else
     AGENT_SESSION="portolan-agent"
   fi
@@ -241,8 +241,10 @@ if [ "$AGENT_RUNTIME" = "rust" ] && [ "$AGENT_ONCE" = true ]; then
 fi
 if [ "$AGENT_RUNTIME" = "rust" ]; then
   OPPOSITE_AGENT_SESSION="portolan-agent"
+  OPPOSITE_AGENT_SESSIONS="portolan-agent"
 else
-  OPPOSITE_AGENT_SESSION="portolan-agent-rust-preview"
+  OPPOSITE_AGENT_SESSION="portolan-agent-rust"
+  OPPOSITE_AGENT_SESSIONS="portolan-agent-rust portolan-agent-rust-preview"
 fi
 
 LABEL="com.cailmdaley.portolan-tunnel-$HOST"
@@ -312,10 +314,12 @@ fi
 echo "[$HOST] Restarting remote runtime '$AGENT_RUNTIME' in tmux session '$AGENT_SESSION'..."
 ssh "$HOST" "tmux kill-session -t '$AGENT_SESSION' 2>/dev/null; true"
 if [ "$REPLACES_RUNTIME" = true ]; then
-  echo "[$HOST] Stopping opposite runtime session '$OPPOSITE_AGENT_SESSION' to keep one live origin socket..."
-  ssh "$HOST" "tmux kill-session -t '$OPPOSITE_AGENT_SESSION' 2>/dev/null; true"
+  echo "[$HOST] Stopping opposite runtime session(s) '$OPPOSITE_AGENT_SESSIONS' to keep one live origin socket..."
+  for opposite_session in $OPPOSITE_AGENT_SESSIONS; do
+    ssh "$HOST" "tmux kill-session -t '$opposite_session' 2>/dev/null; true"
+  done
 else
-  echo "[$HOST] Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust preview"
+  echo "[$HOST] Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust agent"
 fi
 ssh "$HOST" "tmux new-session -d -s '$AGENT_SESSION' 'bash -l -c \"${AGENT_CMD}\"'"
 
