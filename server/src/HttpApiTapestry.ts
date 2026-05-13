@@ -6,7 +6,15 @@ import { readFile, rename, writeFile } from 'fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
-import { readEvidence, readEvidenceBatch, getSpecName, computeStaleness, type Evidence } from './EvidenceReader.js';
+import {
+  readEvidence,
+  readEvidenceBatch,
+  getSpecName,
+  computeStaleness,
+  type Evidence,
+  type RemoteEvidenceBatchInvocation,
+  type RemoteEvidenceBatchResult,
+} from './EvidenceReader.js';
 import { getAllFibers, mapFeltJsonToFiber, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { HttpApiFileContent, HTTP_API_MIME_TYPES } from './HttpApiFileContent.js';
@@ -32,6 +40,10 @@ interface HttpApiTapestryOptions {
   fileContentApi: HttpApiFileContent;
   getSshHost: (city: City) => string;
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  remoteCityConfigReader?: (request: { originId: string; path: string }) => Promise<string>;
+  remoteEvidenceBatchExecutor?: (
+    request: RemoteEvidenceBatchInvocation,
+  ) => Promise<RemoteEvidenceBatchResult>;
   remoteRawFiberExecutor?: (request: RemoteRawFiberInvocation) => Promise<RemoteRawFiberResult>;
   remoteFiberHistoryExecutor?: (request: RemoteFiberHistoryInvocation) => Promise<RemoteFiberHistoryResult>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
@@ -66,6 +78,8 @@ export class HttpApiTapestry {
   private readonly fileContentApi: HttpApiFileContent;
   private readonly getSshHost: (city: City) => string;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private readonly remoteCityConfigReader: HttpApiTapestryOptions['remoteCityConfigReader'];
+  private readonly remoteEvidenceBatchExecutor: HttpApiTapestryOptions['remoteEvidenceBatchExecutor'];
   private readonly remoteRawFiberExecutor: HttpApiTapestryOptions['remoteRawFiberExecutor'];
   private readonly remoteFiberHistoryExecutor: HttpApiTapestryOptions['remoteFiberHistoryExecutor'];
   private readonly sendJsonError: (res: ServerResponse, status: number, error: string) => void;
@@ -90,6 +104,8 @@ export class HttpApiTapestry {
     this.fileContentApi = options.fileContentApi;
     this.getSshHost = options.getSshHost;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
+    this.remoteCityConfigReader = options.remoteCityConfigReader;
+    this.remoteEvidenceBatchExecutor = options.remoteEvidenceBatchExecutor;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
     this.sendJsonError = options.sendJsonError;
@@ -142,8 +158,23 @@ export class HttpApiTapestry {
 
       const uniqueSpecNames = Array.from(new Set(fiberSpecMap.values()));
       let evidenceMap: Map<string, Evidence | null>;
+      const remoteEvidenceBatchReader = this.remoteEvidenceBatchExecutor;
       if (sshHost && uniqueSpecNames.length > 0) {
-        evidenceMap = await readEvidenceBatch(city.path, uniqueSpecNames, sshHost);
+        evidenceMap = await readEvidenceBatch(
+          city.path,
+          uniqueSpecNames,
+          sshHost,
+          {
+            remoteEvidenceBatchReader: remoteEvidenceBatchReader
+              ? (request) =>
+                remoteEvidenceBatchReader({
+                  ...request,
+                  originId: city.originId,
+                  feltHost: sshHost,
+                })
+              : undefined,
+          },
+        );
       } else {
         evidenceMap = new Map<string, Evidence | null>();
         await Promise.all(
@@ -213,7 +244,7 @@ export class HttpApiTapestry {
         }
       }
 
-      const config = await this.readCityConfig(city.path, sshHost);
+      const config = await this.readCityConfig(city, sshHost);
       const fibers = allFibers.map((fiber) => ({
         id: fiber.id,
         name: fiber.name,
@@ -1203,9 +1234,10 @@ export class HttpApiTapestry {
   }
 
   private async readCityConfig(
-    cityPath: string,
+    city: City,
     sshHost?: string,
   ): Promise<Record<string, string> | null> {
+    const cityPath = city.path;
     const candidates = [
       `${cityPath}/config/config.yaml`,
       `${cityPath}/workflow/config/config.yaml`,
@@ -1213,14 +1245,32 @@ export class HttpApiTapestry {
 
     try {
       let content = '';
+      if (sshHost && this.remoteCityConfigReader) {
+        for (const candidate of candidates) {
+          try {
+            content = await this.remoteCityConfigReader({
+              originId: city.originId,
+              path: candidate,
+            });
+            if (content) {
+              break;
+            }
+          } catch {
+            // Continue to SSH fallback or next candidate below.
+          }
+        }
+      }
+
       if (sshHost) {
-        const tryPaths = candidates.map((candidate) => `cat ${shellEscape(candidate)} 2>/dev/null`).join(' || ');
-        const { stdout } = await execFileAsync(
-          'ssh',
-          [sshHost, `${tryPaths} || echo ''`],
-          { maxBuffer: 1024 * 1024, timeout: 10000 }
-        );
-        content = stdout.trim();
+        if (!content) {
+          const tryPaths = candidates.map((candidate) => `cat ${shellEscape(candidate)} 2>/dev/null`).join(' || ');
+          const { stdout } = await execFileAsync(
+            'ssh',
+            [sshHost, `${tryPaths} || echo ''`],
+            { maxBuffer: 1024 * 1024, timeout: 10000 }
+          );
+          content = stdout.trim();
+        }
       } else {
         for (const candidate of candidates) {
           try {

@@ -12,10 +12,16 @@ import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { mapFeltJsonToFiber } from '../FiberReader.js';
-import { readEvidence, getSpecName, computeStaleness } from '../EvidenceReader.js';
+import {
+  readEvidence,
+  readEvidenceBatch,
+  getSpecName,
+  computeStaleness,
+} from '../EvidenceReader.js';
 import {
   httpRequest,
   makeCityLookup,
+  makeMultiCityLookup,
   writeFiber,
   stubOriginLookup,
   stubPersistenceLookup,
@@ -87,6 +93,40 @@ Just a task, no rule tag.`);
     expect(res.status).toBe(200);
     expect(res.data.nodes).toHaveLength(0);
     expect(res.data.links).toHaveLength(0);
+  });
+
+  it('uses remote city config reader before SSH for /tapestry config', async () => {
+    const cityDir = join(TEST_DIR, 'remote-config-city');
+    const cityLookup = makeMultiCityLookup([{
+      id: 'remote-config-city',
+      name: 'RemoteConfigCity',
+      path: cityDir,
+      originId: 'remote-candide',
+    }]);
+
+    const remoteCalls: Array<{ originId: string; path: string }> = [];
+    const city = cityLookup.getCityById('remote-config-city') as any;
+    const remoteApi = new HttpApi(
+      cityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteCityConfigReader: async ({ originId, path }) => {
+          remoteCalls.push({ originId, path });
+          if (path.endsWith('workflow/config/config.yaml')) {
+            return 'owner: candide\nmode: remote\n';
+          }
+          throw new Error('not this file');
+        },
+      },
+    );
+
+    const config = await (remoteApi as any).tapestryApi.readCityConfig(city, 'candide');
+    expect(remoteCalls).toEqual([
+      { originId: 'remote-candide', path: `${cityDir}/config/config.yaml` },
+      { originId: 'remote-candide', path: `${cityDir}/workflow/config/config.yaml` },
+    ]);
+    expect(config).toEqual({ owner: 'candide', mode: 'remote' });
   });
 
   // ── Fibers with tapestry: tags ───────────────────────────────────
@@ -533,6 +573,43 @@ describe('EvidenceReader', () => {
 
     it('returns first tapestry: tag', () => {
       expect(getSpecName(['tapestry:first', 'tapestry:second'])).toBe('first');
+    });
+  });
+
+  describe('readEvidenceBatch', () => {
+    const CITY = join(TEST_DIR, 'evidence-batch-city');
+
+    it('reads evidence via remote batch callback first', async () => {
+      const seen: string[][] = [];
+      const results = await readEvidenceBatch(
+        CITY,
+        ['spec_one', 'spec_missing'],
+        'remote-candide',
+        {
+          remoteEvidenceBatchReader: async (request) => {
+            seen.push(request.specNames);
+            return {
+              spec_one: {
+                evidenceJson: JSON.stringify({
+                  evidence: { pte: 0.12 },
+                  output: { figure: 'figure.png' },
+                }),
+                mtimeMs: 1234567890,
+              },
+              spec_missing: null,
+            };
+          },
+        },
+      );
+
+      expect(seen).toEqual([['spec_one', 'spec_missing']]);
+      expect(results.get('spec_one')).toMatchObject({
+        specName: 'spec_one',
+        metrics: { pte: 0.12 },
+        artifacts: { figure: 'figure.png' },
+        mtime: 1234567890,
+      });
+      expect(results.get('spec_missing')).toBeNull();
     });
   });
 

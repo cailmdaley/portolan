@@ -50,6 +50,7 @@ import {
   type RemoteRawFiberInvocation,
   type RemoteRawFiberResult,
 } from './HttpApiTapestry.js';
+import type { RemoteEvidenceBatchInvocation, RemoteEvidenceBatchResult } from './EvidenceReader.js';
 import type { MeetingBridge } from './MeetingBridge.js';
 
 // ============================================================================
@@ -116,6 +117,8 @@ export interface HttpApiOptions {
   remoteFiberHistoryExecutor?: (
     request: RemoteFiberHistoryInvocation,
   ) => Promise<RemoteFiberHistoryResult>;
+  remoteCityConfigReader?: (request: { originId: string; path: string }) => Promise<string>;
+  remoteEvidenceBatchExecutor?: (request: RemoteEvidenceBatchInvocation) => Promise<RemoteEvidenceBatchResult>;
   remoteFileContentExecutor?: (
     request: RemoteFileContentInvocation,
   ) => Promise<RemoteFileContentResult>;
@@ -171,6 +174,8 @@ export class HttpApi {
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
   private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private remoteFiberHistoryExecutor: HttpApiOptions['remoteFiberHistoryExecutor'];
+  private remoteCityConfigReader: HttpApiOptions['remoteCityConfigReader'];
+  private remoteEvidenceBatchExecutor: HttpApiOptions['remoteEvidenceBatchExecutor'];
   private remoteFileContentExecutor: HttpApiOptions['remoteFileContentExecutor'];
   private remoteProjectFileExecutor: HttpApiOptions['remoteProjectFileExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
@@ -195,6 +200,8 @@ export class HttpApi {
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
+    this.remoteCityConfigReader = options.remoteCityConfigReader;
+    this.remoteEvidenceBatchExecutor = options.remoteEvidenceBatchExecutor;
     this.remoteFileContentExecutor = options.remoteFileContentExecutor;
     this.remoteProjectFileExecutor = options.remoteProjectFileExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
@@ -258,8 +265,10 @@ export class HttpApi {
       fileContentApi: this.fileContentApi,
       getSshHost: (city) => this.getSshHost(city),
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+      remoteCityConfigReader: this.remoteCityConfigReader,
       remoteRawFiberExecutor: this.remoteRawFiberExecutor,
       remoteFiberHistoryExecutor: this.remoteFiberHistoryExecutor,
+      remoteEvidenceBatchExecutor: this.remoteEvidenceBatchExecutor,
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
     });

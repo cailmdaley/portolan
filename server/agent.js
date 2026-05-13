@@ -1276,6 +1276,67 @@ function handleFileContent(message) {
     }
 }
 
+function isSafeTapestrySpecName(specName) {
+    return typeof specName === 'string'
+        && specName.length > 0
+        && !specName.includes('..')
+        && !specName.includes('/')
+        && !specName.includes('\\');
+}
+
+export function executeTapestryEvidenceRequest(payload) {
+    const cityPath = payload?.cityPath;
+    const specs = Array.isArray(payload?.specNames) ? payload.specNames : [];
+    const cityRoot = resolveRemoteDirectoryPath(cityPath);
+    const evidences = {};
+
+    for (const specName of specs) {
+        if (!isSafeTapestrySpecName(specName)) {
+            evidences[specName] = null;
+            continue;
+        }
+
+        const evidencePath = join(cityRoot, 'results', 'tapestry', specName, 'evidence.json');
+        try {
+            const fullPath = resolveRemoteFilePath(evidencePath, true);
+            evidences[specName] = {
+                evidenceJson: readFileSync(fullPath, 'utf8'),
+                mtimeMs: statSync(fullPath).mtimeMs,
+            };
+        } catch {
+            evidences[specName] = null;
+        }
+    }
+
+    return { ok: true, evidences };
+}
+
+function handleTapestryEvidence(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('tapestry-evidence without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'tapestry-evidence-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+
+    try {
+        const result = executeTapestryEvidenceRequest(payload);
+        reply(result);
+        debug(`tapestry-evidence ok: ${payload.cityPath}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`tapestry-evidence failed (${payload.cityPath}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
 export function executeProjectFileRequest(payload) {
     const filePath = payload?.path;
     const fullPath = resolveRemoteFilePath(filePath, true);
@@ -1986,6 +2047,10 @@ function handleMessage(message) {
 
         case 'file-content':
             handleFileContent(message);
+            break;
+
+        case 'tapestry-evidence':
+            handleTapestryEvidence(message);
             break;
 
         case 'project-file':

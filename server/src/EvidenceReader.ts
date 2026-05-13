@@ -22,6 +22,24 @@ export interface Evidence {
   generated: string | null;           // ISO timestamp from evidence.json
 }
 
+export interface RemoteEvidenceBatchInvocation {
+  cityPath: string;
+  specNames: string[];
+  originId?: string;
+  feltHost?: string;
+}
+
+export interface RemoteEvidenceBatchPayload {
+  evidenceJson: string;
+  mtimeMs: number;
+}
+
+export type RemoteEvidenceBatchResult = Record<string, RemoteEvidenceBatchPayload | null>;
+
+export interface ReadEvidenceBatchOptions {
+  remoteEvidenceBatchReader?: (request: RemoteEvidenceBatchInvocation) => Promise<RemoteEvidenceBatchResult>;
+}
+
 /**
  * Read evidence for a single spec directory.
  */
@@ -29,14 +47,14 @@ export async function readEvidence(
   cityPath: string,
   specName: string,
   sshHost?: string,
+  options: ReadEvidenceBatchOptions = {},
 ): Promise<Evidence | null> {
-  const evidenceDir = `${cityPath}/results/tapestry/${specName}`;
-
   try {
     if (sshHost) {
-      return await readRemoteEvidence(sshHost, evidenceDir, specName);
+      const bySpec = await readEvidenceBatch(cityPath, [specName], sshHost, options);
+      return bySpec.get(specName) ?? null;
     }
-    return await readLocalEvidence(evidenceDir, specName);
+    return await readLocalEvidence(`${cityPath}/results/tapestry/${specName}`, specName);
   } catch {
     return null;
   }
@@ -85,33 +103,6 @@ async function readLocalEvidence(evidenceDir: string, specName: string): Promise
   return buildEvidence(specName, data, mtime);
 }
 
-async function readRemoteEvidence(
-  sshHost: string,
-  evidenceDir: string,
-  specName: string,
-): Promise<Evidence | null> {
-  const escapedPath = shellEscape(evidenceDir + '/evidence.json');
-  const cmd = [
-    `stat -c '%Y' ${escapedPath} 2>/dev/null || stat -f '%m' ${escapedPath} 2>/dev/null`,
-    `cat ${escapedPath}`,
-  ].join(' && echo "---SEPARATOR---" && ');
-
-  const { stdout } = await execFileAsync(
-    'ssh', [sshHost, cmd],
-    { maxBuffer: 5 * 1024 * 1024, timeout: 15000 },
-  );
-
-  const parts = stdout.split('---SEPARATOR---');
-  if (parts.length < 2) return null;
-
-  const mtime = parseInt(parts[0].trim(), 10) * 1000; // seconds to ms
-  if (isNaN(mtime)) return null;
-
-  const data = JSON.parse(parts[1].trim()) as Record<string, unknown>;
-
-  return buildEvidence(specName, data, mtime);
-}
-
 /**
  * Batch-read evidence for multiple specNames in a single SSH call.
  * Avoids SSH connection exhaustion from parallel per-spec calls.
@@ -120,9 +111,32 @@ export async function readEvidenceBatch(
   cityPath: string,
   specNames: string[],
   sshHost: string,
+  options: ReadEvidenceBatchOptions = {},
 ): Promise<Map<string, Evidence | null>> {
   const results = new Map<string, Evidence | null>();
   if (specNames.length === 0) return results;
+
+  if (options.remoteEvidenceBatchReader) {
+    try {
+      const remoteResult = await options.remoteEvidenceBatchReader({
+        cityPath,
+        specNames,
+      });
+      for (const specName of specNames) {
+        const payload = remoteResult[specName] ?? null;
+        if (!payload) {
+          results.set(specName, null);
+          continue;
+        }
+
+        const parsed = buildEvidenceFromRemotePayload(specName, payload);
+        results.set(specName, parsed);
+      }
+      return results;
+    } catch (err) {
+      console.warn('Evidence remote batch read failed, falling back to ssh:', err instanceof Error ? err.message : err);
+    }
+  }
 
   // Build a shell loop that emits delimited blocks per spec
   const claimsDir = shellEscape(`${cityPath}/results/tapestry`);
@@ -179,6 +193,23 @@ export async function readEvidenceBatch(
   }
 
   return results;
+}
+
+function buildEvidenceFromRemotePayload(
+  specName: string,
+  payload: RemoteEvidenceBatchPayload,
+): Evidence | null {
+  const mtime = payload.mtimeMs;
+  if (!Number.isFinite(mtime)) {
+    return null;
+  }
+
+  try {
+    const data = JSON.parse(payload.evidenceJson) as Record<string, unknown>;
+    return buildEvidence(specName, data, mtime);
+  } catch {
+    return null;
+  }
 }
 
 /**
