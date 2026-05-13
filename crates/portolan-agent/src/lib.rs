@@ -8,7 +8,8 @@ use portolan_agent_protocol::{
     FileContentOperation, FileContentRequestPayload, FileContentResultPayload,
     ListDirectoryRequestPayload, ListDirectoryResultPayload, ProjectFileRequestPayload,
     ProjectFileResultPayload, SearchFilesMode, SearchFilesRequestPayload, SearchFilesResultPayload,
-    SearchResultPayload, ShuttleSnapshotPayload,
+    SearchResultPayload, ShuttleSnapshotPayload, TerminalCaptureRequestPayload,
+    TerminalCaptureResultPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -498,6 +499,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::SearchFiles { payload } => vec![handle_search_files(payload)],
         AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
         AgentFrame::ListDirectory { payload } => vec![handle_list_directory(payload)],
+        AgentFrame::TerminalCapture { payload } => vec![handle_terminal_capture(payload)],
         _ => Vec::new(),
     }
 }
@@ -871,8 +873,7 @@ fn parse_pids(raw: String) -> Vec<String> {
 
 fn detect_claims_in_cwd(cwd: &str) -> bool {
     let root = Path::new(cwd);
-    root.join("workflow").join("config").exists()
-        || root.join(".felt").exists()
+    root.join("workflow").join("config").exists() || root.join(".felt").exists()
 }
 
 fn detect_playgrounds_in_cwd(cwd: &str) -> bool {
@@ -2304,6 +2305,86 @@ fn read_remote_directory_entries(path: &Path) -> Result<Vec<DirectoryEntryPayloa
     Ok(entries)
 }
 
+fn handle_terminal_capture(payload: &TerminalCaptureRequestPayload) -> AgentFrame {
+    match capture_terminal(payload) {
+        Ok((bytes_base64, cols, rows)) => AgentFrame::TerminalCaptureResult {
+            payload: TerminalCaptureResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                bytes_base64: Some(bytes_base64),
+                cols,
+                rows,
+            },
+        },
+        Err(error) => AgentFrame::TerminalCaptureResult {
+            payload: TerminalCaptureResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                bytes_base64: None,
+                cols: None,
+                rows: None,
+            },
+        },
+    }
+}
+
+fn capture_terminal(
+    payload: &TerminalCaptureRequestPayload,
+) -> Result<(String, Option<usize>, Option<usize>), String> {
+    if payload.tmux_session.trim().is_empty() {
+        return Err("tmux session is required".to_string());
+    }
+    let lines = payload.lines.unwrap_or(5000).clamp(1, 20_000);
+    let target = format!("={}:", payload.tmux_session);
+    let capture = Command::new("tmux")
+        .args([
+            "capture-pane",
+            "-p",
+            "-e",
+            "-J",
+            "-S",
+            &format!("-{lines}"),
+            "-t",
+            &target,
+        ])
+        .output()
+        .map_err(|error| format!("failed to run tmux capture-pane: {error}"))?;
+    if !capture.status.success() {
+        let stderr = String::from_utf8_lossy(&capture.stderr);
+        return Err(stderr.trim().to_string());
+    }
+    if capture.stdout.len() > 16 * 1024 * 1024 {
+        return Err("terminal capture exceeds 16 MB".to_string());
+    }
+
+    let size = Command::new("tmux")
+        .args([
+            "display",
+            "-p",
+            "-t",
+            &target,
+            "#{pane_width} #{pane_height}",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut parts = text.split_whitespace();
+            let cols = parts.next()?.parse::<usize>().ok()?;
+            let rows = parts.next()?.parse::<usize>().ok()?;
+            Some((cols, rows))
+        });
+
+    Ok((
+        BASE64_STANDARD.encode(capture.stdout),
+        size.map(|(cols, _)| cols),
+        size.map(|(_, rows)| rows),
+    ))
+}
+
 fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String> {
     let output = Command::new("felt")
         .args(["-C", felt_host, "show", fiber_id, "-j"])
@@ -2773,7 +2854,7 @@ mod tests {
     use super::*;
     use portolan_agent_protocol::{
         FiberRawOperation, FiberRawRequestPayload, FiberTreeHostsPayload, HexPosition,
-        SearchFilesMode, SearchFilesRequestPayload,
+        SearchFilesMode, SearchFilesRequestPayload, TerminalCaptureRequestPayload,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -4763,6 +4844,25 @@ malformed
                     .as_deref()
                     .unwrap()
                     .contains("path must be absolute"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_terminal_capture_without_tmux_session() {
+        let responses = handle_server_frame(&AgentFrame::TerminalCapture {
+            payload: TerminalCaptureRequestPayload {
+                correlation_id: "terminal-bad".to_string(),
+                tmux_session: String::new(),
+                lines: Some(5000),
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::TerminalCaptureResult { payload } => {
+                assert!(!payload.ok);
+                assert_eq!(payload.error.as_deref(), Some("tmux session is required"));
             }
             other => panic!("unexpected response: {other:?}"),
         }

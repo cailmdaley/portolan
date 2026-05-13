@@ -47,6 +47,14 @@ pub enum AgentFrame {
     },
     #[serde(rename = "list-directory-result")]
     ListDirectoryResult { payload: ListDirectoryResultPayload },
+    #[serde(rename = "terminal-capture")]
+    TerminalCapture {
+        payload: TerminalCaptureRequestPayload,
+    },
+    #[serde(rename = "terminal-capture-result")]
+    TerminalCaptureResult {
+        payload: TerminalCaptureResultPayload,
+    },
     #[serde(rename = "shuttle_snapshot")]
     ShuttleSnapshot { payload: ShuttleSnapshotPayload },
 }
@@ -76,6 +84,8 @@ impl AgentFrame {
             AgentFrame::ProjectFileResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ListDirectory { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ListDirectoryResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::TerminalCapture { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::TerminalCaptureResult { payload } => Some(payload.correlation_id.as_str()),
             _ => None,
         }
     }
@@ -90,6 +100,7 @@ impl AgentFrame {
                 | AgentFrame::SearchFiles { .. }
                 | AgentFrame::ProjectFile { .. }
                 | AgentFrame::ListDirectory { .. }
+                | AgentFrame::TerminalCapture { .. }
         )
     }
 
@@ -103,6 +114,7 @@ impl AgentFrame {
                 | AgentFrame::SearchFilesResult { .. }
                 | AgentFrame::ProjectFileResult { .. }
                 | AgentFrame::ListDirectoryResult { .. }
+                | AgentFrame::TerminalCaptureResult { .. }
         )
     }
 }
@@ -428,6 +440,30 @@ pub enum DirectoryEntryType {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCaptureRequestPayload {
+    pub correlation_id: String,
+    pub tmux_session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCaptureResultPayload {
+    pub correlation_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShuttleSnapshotPayload {
     #[serde(flatten)]
     pub fields: BTreeMap<String, Value>,
@@ -717,6 +753,45 @@ mod tests {
                 assert!(matches!(entries[0].kind, DirectoryEntryType::Dir));
                 assert_eq!(entries[1].name, "notes.md");
                 assert!(matches!(entries[1].kind, DirectoryEntryType::File));
+            }
+            _ => panic!("unexpected response: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_terminal_capture_round_trip() {
+        let request = AgentFrame::TerminalCapture {
+            payload: TerminalCaptureRequestPayload {
+                correlation_id: "corr-terminal".to_string(),
+                tmux_session: "worker".to_string(),
+                lines: Some(5000),
+            },
+        };
+        let encoded = request.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"terminal-capture""#));
+        assert!(encoded.contains(r#""correlationId":"corr-terminal""#));
+        assert!(encoded.contains(r#""tmuxSession":"worker""#));
+
+        let result = AgentFrame::parse(
+            br##"{
+              "type": "terminal-capture-result",
+              "payload": {
+                "correlationId": "corr-terminal",
+                "ok": true,
+                "bytesBase64": "aGVsbG8=",
+                "cols": 120,
+                "rows": 40
+              }
+            }"##,
+        )
+        .unwrap();
+        assert!(result.is_agent_result());
+        assert_eq!(result.correlation_id(), Some("corr-terminal"));
+        match result {
+            AgentFrame::TerminalCaptureResult { payload } => {
+                assert_eq!(payload.bytes_base64.as_deref(), Some("aGVsbG8="));
+                assert_eq!(payload.cols, Some(120));
+                assert_eq!(payload.rows, Some(40));
             }
             _ => panic!("unexpected response: {result:?}"),
         }

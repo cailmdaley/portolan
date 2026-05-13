@@ -456,6 +456,12 @@ describe('agent: remote file request helpers', () => {
       'invalid path: /tmp/../etc',
     );
   });
+
+  it('rejects terminal capture payloads without a tmux session', async () => {
+    await expect(agentMod.executeTerminalCaptureRequest({})).rejects.toThrow(
+      'tmux session is required',
+    );
+  });
 });
 
 describe('agent: computeShuttleEligibility', () => {

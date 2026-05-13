@@ -398,10 +398,12 @@ sessionTracker.onSessionsChange((localSessions) => {
 function resolveLocalTmuxSession(sessionId: string): string | null {
   const session = sessionLookup.findSession(sessionId);
   if (!session) return null;
-  // Local sessions only for this iteration. Remote origins will plumb
-  // through the agent in a successor constitution.
   if (session.originId !== LOCAL_ORIGIN_ID) return null;
   return session.tmuxSession;
+}
+
+function resolveTerminalSession(sessionId: string): Session | null {
+  return sessionLookup.findSession(sessionId) ?? null;
 }
 
 const messageRouter = new MessageRouter({
@@ -418,13 +420,46 @@ const messageRouter = new MessageRouter({
   onListDirectory: workspaceBrowser.handleListDirectory.bind(workspaceBrowser),
   onBrowserAttention: browserStateCoordinator.handleBrowserAttention.bind(browserStateCoordinator),
   onTerminalAttach: (ws, sessionId) => {
-    const tmuxSession = resolveLocalTmuxSession(sessionId);
-    if (!tmuxSession) {
+    const session = resolveTerminalSession(sessionId);
+    if (!session) {
       ws.send(JSON.stringify({
         type: 'terminal:error',
         sessionId,
         error: 'session-not-found',
       }));
+      return;
+    }
+    const tmuxSession = session.tmuxSession;
+    if (session.originId !== LOCAL_ORIGIN_ID) {
+      agentRequestCoordinator.send<{
+        bytesBase64?: string;
+        cols?: number;
+        rows?: number;
+      }>(session.originId, 'terminal-capture', {
+        tmuxSession,
+        lines: 5000,
+      }).then((result) => {
+        if (ws.readyState !== ws.OPEN) return;
+        ws.send(JSON.stringify({
+          type: 'terminal:scrollback',
+          sessionId,
+          bytes: result.bytesBase64 ?? '',
+          ...(result.cols ? { cols: result.cols } : {}),
+          ...(result.rows ? { rows: result.rows } : {}),
+        }));
+        ws.send(JSON.stringify({
+          type: 'terminal:exit',
+          sessionId,
+          reason: 'remote-live-stream-unavailable',
+        }));
+      }).catch((err) => {
+        if (ws.readyState !== ws.OPEN) return;
+        ws.send(JSON.stringify({
+          type: 'terminal:error',
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      });
       return;
     }
     // Scrollback first, then live bytes. Capture is best-effort — if the
@@ -653,6 +688,20 @@ wss.on('connection', async (ws, req) => {
           const result: Record<string, unknown> = {};
           if (results !== undefined) result.results = results;
           if (timedOut !== undefined) result.timedOut = timedOut;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'terminal-capture-result') {
+          const { correlationId, ok, error, bytesBase64, cols, rows } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            bytesBase64?: string;
+            cols?: number;
+            rows?: number;
+          };
+          const result: Record<string, unknown> = {};
+          if (bytesBase64 !== undefined) result.bytesBase64 = bytesBase64;
+          if (cols !== undefined) result.cols = cols;
+          if (rows !== undefined) result.rows = rows;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {

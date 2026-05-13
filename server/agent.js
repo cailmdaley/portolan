@@ -1249,6 +1249,66 @@ function handleListDirectory(message) {
     }
 }
 
+export async function executeTerminalCaptureRequest(payload) {
+    const tmuxSession = payload?.tmuxSession;
+    if (!tmuxSession || typeof tmuxSession !== 'string') {
+        throw new Error('tmux session is required');
+    }
+    const requestedLines = Number.isFinite(payload?.lines) ? Number(payload.lines) : 5000;
+    const lines = Math.max(1, Math.min(20_000, Math.trunc(requestedLines)));
+    const target = `=${tmuxSession}:`;
+    const { stdout } = await execFileAsync(
+        'tmux',
+        ['capture-pane', '-p', '-e', '-J', '-S', `-${lines}`, '-t', target],
+        { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 },
+    );
+    let cols;
+    let rows;
+    try {
+        const size = await execFileAsync(
+            'tmux',
+            ['display', '-p', '-t', target, '#{pane_width} #{pane_height}'],
+            { encoding: 'utf8' },
+        );
+        const [w, h] = size.stdout.trim().split(/\s+/).map((n) => parseInt(n, 10));
+        if (Number.isFinite(w) && w > 0) cols = w;
+        if (Number.isFinite(h) && h > 0) rows = h;
+    } catch {
+        // Size is helpful for wterm wrapping, but capture is the capability.
+    }
+    return {
+        ok: true,
+        bytesBase64: Buffer.from(stdout).toString('base64'),
+        ...(cols ? { cols } : {}),
+        ...(rows ? { rows } : {}),
+    };
+}
+
+function handleTerminalCapture(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('terminal-capture without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'terminal-capture-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+
+    executeTerminalCaptureRequest(payload).then((result) => {
+        reply(result);
+        debug(`terminal-capture ok: ${payload.tmuxSession}`);
+    }).catch((err) => {
+        const msg = err && err.message ? err.message : String(err);
+        log(`terminal-capture failed (${payload.tmuxSession}): ${msg}`);
+        reply({ ok: false, error: msg });
+    });
+}
+
 export function executeFileContentRequest(payload) {
     const { operation, path: filePath, content } = payload || {};
     const fullPath = resolveRemoteFilePath(filePath, operation !== 'write');
@@ -2020,6 +2080,9 @@ function handleMessage(message) {
 
         case 'list-directory':
             handleListDirectory(message);
+            break;
+        case 'terminal-capture':
+            handleTerminalCapture(message);
             break;
         case 'search-files':
             handleSearchFiles(message);
