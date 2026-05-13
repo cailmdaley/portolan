@@ -427,6 +427,34 @@ fn parse_git_porcelain(raw: &str) -> ParsedGitPorcelain {
     }
 }
 
+fn parse_git_shortstat(raw: &str) -> (u64, u64) {
+    let mut added = 0u64;
+    let mut removed = 0u64;
+    let words = raw.split_whitespace().collect::<Vec<_>>();
+
+    for (index, word) in words.iter().enumerate() {
+        let Ok(value) = word.parse::<u64>() else {
+            continue;
+        };
+        let Some(label) = words.get(index + 1) else {
+            continue;
+        };
+
+        let token = label
+            .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
+            .trim_end_matches(|c: char| !c.is_ascii_alphabetic())
+            .to_ascii_lowercase();
+
+        if token.starts_with("insertion") {
+            added = value;
+        } else if token.starts_with("deletion") {
+            removed = value;
+        }
+    }
+
+    (added, removed)
+}
+
 fn collect_git_status_for_cwd(
     cwd: &str,
     run_command: &mut impl FnMut(&str, &[&str]) -> Result<String, String>,
@@ -466,6 +494,34 @@ fn collect_git_status_for_cwd(
         Err(_) => (0, 0),
     };
 
+    let (staged_added, staged_removed) =
+        match run_command("git", &["-C", cwd, "diff", "--cached", "--shortstat"]) {
+            Ok(output) => parse_git_shortstat(&output),
+            Err(_) => (0, 0),
+        };
+    let (unstaged_added, unstaged_removed) =
+        match run_command("git", &["-C", cwd, "diff", "--shortstat"]) {
+            Ok(output) => parse_git_shortstat(&output),
+            Err(_) => (0, 0),
+        };
+
+    let (last_commit_time, last_commit_message) =
+        match run_command("git", &["-C", cwd, "log", "-1", "--format=%ct|||%s"]) {
+            Ok(output) => {
+                let mut split = output.trim().splitn(2, "|||");
+                let time = split
+                    .next()
+                    .and_then(|value| value.trim().parse::<i64>().ok());
+                let message = split
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string());
+                (time, message)
+            }
+            Err(_) => (None, None),
+        };
+
     let dirty = parsed.staged.total() > 0 || parsed.unstaged.total() > 0 || parsed.untracked > 0;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -489,10 +545,10 @@ fn collect_git_status_for_cwd(
         },
         "untracked": parsed.untracked,
         "totalFiles": parsed.staged.total() + parsed.unstaged.total() + parsed.untracked,
-        "linesAdded": 0,
-        "linesRemoved": 0,
-        "lastCommitTime": Value::Null,
-        "lastCommitMessage": Value::Null,
+        "linesAdded": staged_added + unstaged_added,
+        "linesRemoved": staged_removed + unstaged_removed,
+        "lastCommitTime": last_commit_time.map_or(Value::Null, Value::from),
+        "lastCommitMessage": last_commit_message.map_or(Value::Null, Value::from),
         "isRepo": true,
         "lastChecked": now,
     }))
@@ -1700,6 +1756,19 @@ malformed
     }
 
     #[test]
+    fn parses_git_shortstat_lines_like_git_output() {
+        assert_eq!(
+            parse_git_shortstat("1 file changed, 3 insertions(+), 1 deletion(-)"),
+            (3, 1)
+        );
+        assert_eq!(
+            parse_git_shortstat("2 files changed, 1 insertion(+), 12 deletions(-)"),
+            (1, 12)
+        );
+        assert_eq!(parse_git_shortstat(""), (0, 0));
+    }
+
+    #[test]
     fn collects_git_status_for_repo_sessions_and_leaves_session_discovery_intact_on_git_failures() {
         let mut commands = HashMap::<(String, String), String>::new();
         commands.insert(
@@ -1747,6 +1816,27 @@ malformed
             ),
             "2 3".to_string(),
         );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\tdiff\t--cached\t--shortstat".to_string(),
+            ),
+            "3 insertions(+), 1 deletion(-)".to_string(),
+        );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\tdiff\t--shortstat".to_string(),
+            ),
+            "1 insertion(+), 2 deletions(-)".to_string(),
+        );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\tlog\t-1\t--format=%ct|||%s".to_string(),
+            ),
+            "1715580000|||add demo file".to_string(),
+        );
 
         let sessions = collect_agent_sessions_with_runner(|program, args| {
             let key = (program.to_string(), args.join("\t"));
@@ -1776,6 +1866,82 @@ malformed
         );
         assert_eq!(git_status["untracked"], json!(1));
         assert_eq!(git_status["totalFiles"], json!(5));
+        assert_eq!(git_status["linesAdded"], json!(4));
+        assert_eq!(git_status["linesRemoved"], json!(3));
+        assert_eq!(git_status["lastCommitTime"], json!(1715580000));
+        assert_eq!(git_status["lastCommitMessage"], json!("add demo file"));
+
+        let mut partial_failure_commands = HashMap::<(String, String), String>::new();
+        partial_failure_commands.insert(
+            (
+                "tmux".to_string(),
+                "list-panes\t-a\t-F\t#{session_name}\t#{pane_current_path}\t#{pane_pid}"
+                    .to_string(),
+            ),
+            "worker\t/remote/worker\t111\n".to_string(),
+        );
+        partial_failure_commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t111".to_string()),
+            "codex\n".to_string(),
+        );
+        partial_failure_commands.insert(
+            ("ps".to_string(), "-o\targs=\t-p\t111".to_string()),
+            "".to_string(),
+        );
+        partial_failure_commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-parse\t--is-inside-work-tree".to_string(),
+            ),
+            "true".to_string(),
+        );
+        partial_failure_commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-parse\t--abbrev-ref\tHEAD".to_string(),
+            ),
+            "main".to_string(),
+        );
+        partial_failure_commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\tstatus\t--porcelain".to_string(),
+            ),
+            "A  added.txt".to_string(),
+        );
+        partial_failure_commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-list\t--left-right\t--count\t@{upstream}...HEAD"
+                    .to_string(),
+            ),
+            "2 1".to_string(),
+        );
+
+        let sessions_with_partial_git_failures =
+            collect_agent_sessions_with_runner(|program, args| {
+                let key = (program.to_string(), args.join("\t"));
+                if let Some(output) = partial_failure_commands.get(&key) {
+                    return Ok(output.clone());
+                }
+                if program == "git" {
+                    return Err("forced git failure".to_string());
+                }
+                Err(format!("unexpected command: {} {:?}", program, args))
+            });
+
+        assert_eq!(sessions_with_partial_git_failures.len(), 1);
+        let fallback_status = sessions_with_partial_git_failures[0]
+            .git_status
+            .as_ref()
+            .expect("expected git status when optional git calls fail");
+        assert_eq!(fallback_status["linesAdded"], json!(0));
+        assert_eq!(fallback_status["linesRemoved"], json!(0));
+        assert_eq!(fallback_status["lastCommitTime"], Value::Null);
+        assert_eq!(fallback_status["lastCommitMessage"], Value::Null);
+        assert_eq!(fallback_status["ahead"], json!(1));
+        assert_eq!(fallback_status["behind"], json!(2));
+        assert_eq!(fallback_status["dirty"], json!(true));
 
         let mut failed_commands = HashMap::<(String, String), String>::new();
         failed_commands.insert(
