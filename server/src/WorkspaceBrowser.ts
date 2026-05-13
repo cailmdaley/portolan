@@ -20,17 +20,29 @@ interface SearchResult {
   match?: string;
 }
 
+interface RemoteSearchResult {
+  results?: SearchResult[];
+  timedOut?: boolean;
+}
+
 interface DirectoryEntry {
   name: string;
   type: 'file' | 'dir';
 }
 
 type RemoteDirectoryExecutor = (originId: string, path: string) => Promise<DirectoryEntry[]>;
+type RemoteSearchExecutor = (
+  originId: string,
+  path: string,
+  query: string,
+  mode: 'filename' | 'content',
+) => Promise<RemoteSearchResult>;
+type SearchCancellationHandle = { cancel: () => void };
 
 const NON_GIT_SKIP = new Set(['.git', 'node_modules', '__pycache__', '.DS_Store']);
 
 export class WorkspaceBrowser {
-  private readonly activeSearches = new Map<string, ChildProcess>();
+  private readonly activeSearches = new Map<string, SearchCancellationHandle>();
   private readonly gitRepoCache = new Map<string, boolean>();
   private hasFd: boolean | null = null;
   private hasRg: boolean | null = null;
@@ -40,6 +52,7 @@ export class WorkspaceBrowser {
     private readonly originManager: OriginManager,
     private readonly cityPersistence: CityPersistence,
     private readonly remoteDirectoryExecutor?: RemoteDirectoryExecutor,
+    private readonly remoteSearchExecutor?: RemoteSearchExecutor,
   ) {
     void this.checkSearchTools();
   }
@@ -59,7 +72,7 @@ export class WorkspaceBrowser {
     const searchKeyPrefix = `${cityId}:${searchBase}`;
     for (const [key, proc] of this.activeSearches) {
       if (key.startsWith(`${cityId}:`) && !key.startsWith(searchKeyPrefix)) {
-        proc.kill();
+        proc.cancel();
         this.activeSearches.delete(key);
       }
     }
@@ -84,12 +97,72 @@ export class WorkspaceBrowser {
     const origin = this.originManager.getOrigin(city.originId);
     const persistedCity = this.cityPersistence.getCityById(city.id);
     const sshHost = origin?.sshHost || persistedCity?.sshHost;
+
+    const hasConnectedRemoteAgent = origin !== null
+      && origin.type === 'remote'
+      && this.originManager.isOriginConnected(origin.id);
+
+    if (this.remoteSearchExecutor && origin && hasConnectedRemoteAgent) {
+      void this.searchRemoteViaAgent(ws, origin.id, city.path, query, searchId, searchKey, mode, sshHost);
+      return;
+    }
+
     if (!sshHost) {
-      ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: 'No SSH host for remote city' }));
+      ws.send(JSON.stringify({
+        type: 'searchResults',
+        searchId,
+        results: [],
+        error: 'No SSH host for remote city',
+      }));
       return;
     }
 
     this.searchRemote(ws, sshHost, city.path, query, searchId, searchKey, mode);
+  }
+
+  private async searchRemoteViaAgent(
+    ws: WebSocket,
+    originId: string,
+    cityPath: string,
+    query: string,
+    searchId: string,
+    searchKey: string,
+    mode: 'filename' | 'content',
+    sshHost?: string,
+  ): Promise<void> {
+    this.activeSearches.set(searchKey, {
+      cancel: () => {
+        this.activeSearches.delete(searchKey);
+      },
+    });
+
+    try {
+      const result = await this.remoteSearchExecutor!(originId, cityPath, query, mode);
+      if (!this.activeSearches.has(searchKey)) return;
+      this.activeSearches.delete(searchKey);
+      ws.send(JSON.stringify({
+        type: 'searchResults',
+        searchId,
+        results: result.results ?? [],
+        timedOut: result.timedOut ?? false,
+      }));
+      return;
+    } catch (error) {
+      if (!this.activeSearches.has(searchKey)) return;
+      this.activeSearches.delete(searchKey);
+
+      if (sshHost) {
+        this.searchRemote(ws, sshHost, cityPath, query, searchId, searchKey, mode);
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        type: 'searchResults',
+        searchId,
+        results: [],
+        error: error instanceof Error ? error.message : 'Remote search failed',
+      }));
+    }
   }
 
   async handleListDirectory(ws: WebSocket, cityId: string, path: string): Promise<void> {
@@ -246,7 +319,12 @@ export class WorkspaceBrowser {
       proc = spawn('sh', ['-c', cmd], { cwd: cityPath });
     }
 
-    this.activeSearches.set(searchKey, proc);
+    this.activeSearches.set(searchKey, {
+      cancel: () => {
+        proc.kill();
+        this.activeSearches.delete(searchKey);
+      },
+    });
 
     let stdout = '';
     let timedOut = false;
@@ -262,6 +340,7 @@ export class WorkspaceBrowser {
 
     proc.on('close', () => {
       clearTimeout(timeout);
+      if (!this.activeSearches.has(searchKey)) return;
       this.activeSearches.delete(searchKey);
       const results = this.parseSearchResults(stdout, cityPath, mode);
       ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
@@ -269,6 +348,7 @@ export class WorkspaceBrowser {
 
     proc.on('error', (error) => {
       clearTimeout(timeout);
+      if (!this.activeSearches.has(searchKey)) return;
       this.activeSearches.delete(searchKey);
       console.error('Search error:', error);
       ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
@@ -297,7 +377,12 @@ export class WorkspaceBrowser {
 
     const remoteScript = `cd ${escapedPath} && ${remoteCmd}`;
     const proc = spawn('ssh', [sshHost, remoteScript]);
-    this.activeSearches.set(searchKey, proc);
+    this.activeSearches.set(searchKey, {
+      cancel: () => {
+        proc.kill('SIGTERM');
+        this.activeSearches.delete(searchKey);
+      },
+    });
 
     let stdout = '';
     let timedOut = false;
@@ -313,6 +398,7 @@ export class WorkspaceBrowser {
 
     proc.on('close', () => {
       clearTimeout(timeout);
+      if (!this.activeSearches.has(searchKey)) return;
       this.activeSearches.delete(searchKey);
       const results = this.parseSearchResults(stdout, cityPath, mode);
       ws.send(JSON.stringify({ type: 'searchResults', searchId, results, timedOut }));
@@ -320,6 +406,7 @@ export class WorkspaceBrowser {
 
     proc.on('error', (error) => {
       clearTimeout(timeout);
+      if (!this.activeSearches.has(searchKey)) return;
       this.activeSearches.delete(searchKey);
       ws.send(JSON.stringify({ type: 'searchResults', searchId, results: [], error: error.message }));
     });

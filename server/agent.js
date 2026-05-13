@@ -32,6 +32,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  realpathSync,
   statSync,
   watch,
   writeFileSync,
@@ -77,6 +78,7 @@ const CITY_FELT_DUMP_INTERVAL_MS = process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_
 const cityFeltDumpLastSent = new Map();
 const fiberTreeDumpInFlight = new Map();  // normalized feltHost -> Promise<boolean>
 const NON_GIT_SKIP = new Set(['.git', 'node_modules', '__pycache__', '.DS_Store']);
+const SEARCH_MAX_RESULTS = 50;
 
 // ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
 //
@@ -1288,6 +1290,150 @@ export function executeProjectFileRequest(payload) {
     };
 }
 
+function getSearchEntryType(dirent, candidatePath) {
+    if (dirent.isDirectory()) {
+        return 'dir';
+    }
+    if (dirent.isSymbolicLink()) {
+        try {
+            return statSync(candidatePath).isDirectory() ? 'dir' : 'file';
+        } catch {
+            return 'file';
+        }
+    }
+    return 'file';
+}
+
+function readLineMatchFromFile(filePath, normalizedNeedle) {
+    const data = readFileSync(filePath, 'utf8');
+    const lines = data.split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (line.toLowerCase().includes(normalizedNeedle)) {
+            return {
+                line: i + 1,
+                match: line.trim().slice(0, 100),
+            };
+        }
+    }
+
+    return null;
+}
+
+export function executeSearchFilesRequest(payload) {
+    const searchPath = payload?.path;
+    const query = typeof payload?.query === 'string' ? payload.query : '';
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+        return { ok: true, results: [] };
+    }
+
+    const mode = payload?.mode ?? 'filename';
+    if (mode !== 'filename' && mode !== 'content') {
+        throw new Error(`unsupported search mode: ${mode}`);
+    }
+
+    const rootPath = resolveRemoteDirectoryPath(searchPath, true);
+    const matches = [];
+    const stack = [rootPath];
+    let rootRealPath;
+    try {
+        rootRealPath = realpathSync(rootPath);
+    } catch {
+        rootRealPath = rootPath;
+    }
+    const seenPaths = new Set([rootRealPath]);
+
+    while (stack.length && matches.length < SEARCH_MAX_RESULTS) {
+        const currentPath = stack.shift();
+        if (!currentPath) {
+            continue;
+        }
+        let entries;
+        try {
+            entries = readdirSync(currentPath, { withFileTypes: true });
+        } catch (error) {
+            if (currentPath === rootPath) {
+                throw error;
+            }
+            continue;
+        }
+
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+
+        for (const entry of entries) {
+            if (NON_GIT_SKIP.has(entry.name)) {
+                continue;
+            }
+
+            const candidatePath = join(currentPath, entry.name);
+            const resultPath = relative(rootPath, candidatePath).split(sep).join('/');
+            const entryType = getSearchEntryType(entry, candidatePath);
+
+            if (entryType === 'dir') {
+                let canonicalPath = candidatePath;
+                try {
+                    canonicalPath = realpathSync(candidatePath);
+                } catch {
+                    canonicalPath = candidatePath;
+                }
+
+                if (!seenPaths.has(canonicalPath)) {
+                    seenPaths.add(canonicalPath);
+                    stack.push(candidatePath);
+                    if (mode === 'filename' && candidatePath.toLowerCase().includes(normalizedQuery)) {
+                        matches.push({
+                            type: 'dir',
+                            path: resultPath,
+                            fullPath: candidatePath,
+                        });
+                    }
+                }
+
+                if (matches.length >= SEARCH_MAX_RESULTS) {
+                    break;
+                }
+                continue;
+            }
+
+            if (mode === 'filename') {
+                if (candidatePath.toLowerCase().includes(normalizedQuery)) {
+                    matches.push({
+                        type: 'file',
+                        path: resultPath,
+                        fullPath: candidatePath,
+                    });
+                }
+                if (matches.length >= SEARCH_MAX_RESULTS) {
+                    break;
+                }
+                continue;
+            }
+
+            try {
+                const hit = readLineMatchFromFile(candidatePath, normalizedQuery);
+                if (hit) {
+                    matches.push({
+                        type: 'file',
+                        path: resultPath,
+                        fullPath: candidatePath,
+                        line: hit.line,
+                        match: hit.match,
+                    });
+                }
+            } catch {
+                // Ignore unreadable files and keep searching.
+            }
+
+            if (matches.length >= SEARCH_MAX_RESULTS) {
+                break;
+            }
+        }
+    }
+
+    return { ok: true, results: matches };
+}
+
 function handleProjectFile(message) {
     const payload = message.payload || {};
     const { correlationId } = payload;
@@ -1309,6 +1455,33 @@ function handleProjectFile(message) {
     } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         log(`project-file failed (${payload.path}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
+function handleSearchFiles(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('search-files without correlationId; ignoring');
+        return;
+    }
+
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'search-files-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+
+    try {
+        const result = executeSearchFilesRequest(payload);
+        reply(result);
+        debug(`search-files ok: ${payload.path}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`search-files failed (${payload.path}): ${msg}`);
         reply({ ok: false, error: msg });
     }
 }
@@ -1821,6 +1994,9 @@ function handleMessage(message) {
 
         case 'list-directory':
             handleListDirectory(message);
+            break;
+        case 'search-files':
+            handleSearchFiles(message);
             break;
 
         default:

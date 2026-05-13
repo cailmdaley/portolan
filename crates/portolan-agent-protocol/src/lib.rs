@@ -33,6 +33,10 @@ pub enum AgentFrame {
     FileContent { payload: FileContentRequestPayload },
     #[serde(rename = "file-content-result")]
     FileContentResult { payload: FileContentResultPayload },
+    #[serde(rename = "search-files")]
+    SearchFiles { payload: SearchFilesRequestPayload },
+    #[serde(rename = "search-files-result")]
+    SearchFilesResult { payload: SearchFilesResultPayload },
     #[serde(rename = "project-file")]
     ProjectFile { payload: ProjectFileRequestPayload },
     #[serde(rename = "project-file-result")]
@@ -66,6 +70,8 @@ impl AgentFrame {
             AgentFrame::FiberHistoryResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FileContent { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FileContentResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::SearchFiles { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::SearchFilesResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ProjectFile { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ProjectFileResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ListDirectory { payload } => Some(payload.correlation_id.as_str()),
@@ -81,6 +87,7 @@ impl AgentFrame {
                 | AgentFrame::FiberRaw { .. }
                 | AgentFrame::FiberHistory { .. }
                 | AgentFrame::FileContent { .. }
+                | AgentFrame::SearchFiles { .. }
                 | AgentFrame::ProjectFile { .. }
                 | AgentFrame::ListDirectory { .. }
         )
@@ -93,6 +100,7 @@ impl AgentFrame {
                 | AgentFrame::FiberRawResult { .. }
                 | AgentFrame::FiberHistoryResult { .. }
                 | AgentFrame::FileContentResult { .. }
+                | AgentFrame::SearchFilesResult { .. }
                 | AgentFrame::ProjectFileResult { .. }
                 | AgentFrame::ListDirectoryResult { .. }
         )
@@ -318,6 +326,50 @@ pub struct FileContentResultPayload {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFilesRequestPayload {
+    pub correlation_id: String,
+    pub path: String,
+    pub query: String,
+    pub mode: SearchFilesMode,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchFilesMode {
+    Filename,
+    Content,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFilesResultPayload {
+    pub correlation_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub results: Vec<SearchResultPayload>,
+    #[serde(default, rename = "timedOut")]
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResultPayload {
+    pub path: String,
+    pub full_path: String,
+    #[serde(rename = "type")]
+    pub kind: DirectoryEntryType,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub result_match: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -666,6 +718,54 @@ mod tests {
             }
             _ => panic!("unexpected response: {result:?}"),
         }
+    }
+
+    #[test]
+    fn parses_search_files_request_and_result() {
+        let request = AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "corr-search".to_string(),
+                path: "/home/cdaley/project".to_string(),
+                query: "summary".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(50),
+            },
+        };
+        let encoded = request.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"search-files""#));
+        assert!(encoded.contains(r#""correlationId":"corr-search""#));
+
+        let result = AgentFrame::parse(
+            br##"{
+              "type": "search-files-result",
+              "payload": {
+                "correlationId": "corr-search",
+                "ok": true,
+                "results": [
+                  {
+                    "path": "reports/notes.md",
+                    "fullPath": "/home/cdaley/project/reports/notes.md",
+                    "type": "file",
+                    "line": 5,
+                    "match": "meeting notes"
+                  }
+                ],
+                "timedOut": false
+              }
+            }"##,
+        )
+        .unwrap();
+        assert!(result.is_agent_result());
+        assert_eq!(result.correlation_id(), Some("corr-search"));
+        let AgentFrame::SearchFilesResult { payload } = result else {
+            panic!("expected search-files-result");
+        };
+        assert!(payload.ok);
+        assert!(payload.results[0].full_path.ends_with("/reports/notes.md"));
+        assert_eq!(
+            payload.results[0].result_match.as_deref(),
+            Some("meeting notes")
+        );
     }
 
     #[test]

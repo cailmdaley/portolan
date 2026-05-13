@@ -7,7 +7,8 @@ use portolan_agent_protocol::{
     FiberTreeDelta, FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
     FileContentOperation, FileContentRequestPayload, FileContentResultPayload,
     ListDirectoryRequestPayload, ListDirectoryResultPayload, ProjectFileRequestPayload,
-    ProjectFileResultPayload, ShuttleSnapshotPayload,
+    ProjectFileResultPayload, SearchFilesMode, SearchFilesRequestPayload, SearchFilesResultPayload,
+    SearchResultPayload, ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -27,6 +28,10 @@ const DEFAULT_SERVER: &str = "localhost:4004";
 const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const CLI_DISCOVERY_DEPTH: usize = 4;
 const AGENT_SESSION_NAMES: &[&str] = &["portolan-agent", "portolan-agent-rust-preview"];
+const DEFAULT_SEARCH_LIMIT: usize = 50;
+
+const SEARCH_SKIP_DIR_NAMES: &[&str] =
+    &[".git", ".felt", "node_modules", "__pycache__", ".DS_Store"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedPortolanActivity {
@@ -485,6 +490,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         AgentFrame::FiberHistory { payload } => vec![handle_fiber_history(payload)],
         AgentFrame::FileContent { payload } => vec![handle_file_content(payload)],
+        AgentFrame::SearchFiles { payload } => vec![handle_search_files(payload)],
         AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
         AgentFrame::ListDirectory { payload } => vec![handle_list_directory(payload)],
         _ => Vec::new(),
@@ -1912,6 +1918,224 @@ fn read_text_file_content(path: &str) -> Result<String, String> {
     fs::read_to_string(&full_path).map_err(|error| format!("failed to read file {path}: {error}"))
 }
 
+fn handle_search_files(payload: &SearchFilesRequestPayload) -> AgentFrame {
+    match search_files(payload) {
+        Ok(results) => AgentFrame::SearchFilesResult {
+            payload: SearchFilesResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                results,
+                timed_out: false,
+            },
+        },
+        Err(error) => AgentFrame::SearchFilesResult {
+            payload: SearchFilesResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                results: Vec::new(),
+                timed_out: false,
+            },
+        },
+    }
+}
+
+fn search_files(payload: &SearchFilesRequestPayload) -> Result<Vec<SearchResultPayload>, String> {
+    let root_path = resolve_remote_directory_path(&payload.path)?;
+    let limit = payload.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
+    if payload.query.is_empty() {
+        return Ok(Vec::new());
+    }
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    match payload.mode {
+        SearchFilesMode::Filename => search_filenames(payload, &root_path, limit),
+        SearchFilesMode::Content => search_file_contents(payload, &root_path, limit),
+    }
+}
+
+fn search_filenames(
+    payload: &SearchFilesRequestPayload,
+    root_path: &Path,
+    limit: usize,
+) -> Result<Vec<SearchResultPayload>, String> {
+    let query = payload.query.as_str();
+    let mut results = Vec::new();
+    let mut directories = vec![root_path.to_path_buf()];
+
+    while let Some(directory) = directories.pop() {
+        if results.len() >= limit {
+            break;
+        }
+
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| format!("failed to read directory {}: {error}", directory.display()))?
+            .filter_map(|entry| entry.ok())
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            if results.len() >= limit {
+                break;
+            }
+
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .unwrap_or_else(|name| name.to_string_lossy().into_owned());
+            if should_skip_search_entry(&file_name) {
+                continue;
+            }
+
+            let is_dir = entry
+                .file_type()
+                .ok()
+                .is_some_and(|file_type| file_type.is_dir());
+            let relative_path = relative_search_path(&entry.path(), root_path)?;
+
+            if is_match(&relative_path, query) {
+                let full_path = entry.path().to_string_lossy().into_owned();
+
+                results.push(SearchResultPayload {
+                    path: relative_path.clone(),
+                    full_path,
+                    kind: if is_dir {
+                        DirectoryEntryType::Dir
+                    } else {
+                        DirectoryEntryType::File
+                    },
+                    line: None,
+                    result_match: None,
+                });
+            }
+
+            if is_dir {
+                directories.push(entry.path());
+            }
+        }
+    }
+
+    sort_search_results(&mut results);
+    Ok(results)
+}
+
+fn search_file_contents(
+    payload: &SearchFilesRequestPayload,
+    root_path: &Path,
+    limit: usize,
+) -> Result<Vec<SearchResultPayload>, String> {
+    let query = payload.query.as_str();
+    let mut results = Vec::new();
+    let mut directories = vec![root_path.to_path_buf()];
+
+    while let Some(directory) = directories.pop() {
+        if results.len() >= limit {
+            break;
+        }
+
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| format!("failed to read directory {}: {error}", directory.display()))?
+            .filter_map(|entry| entry.ok())
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            if results.len() >= limit {
+                break;
+            }
+
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .unwrap_or_else(|name| name.to_string_lossy().into_owned());
+            if should_skip_search_entry(&file_name) {
+                continue;
+            }
+
+            let is_dir = entry
+                .file_type()
+                .ok()
+                .is_some_and(|file_type| file_type.is_dir());
+            if is_dir {
+                directories.push(entry.path());
+                continue;
+            }
+
+            let content = match fs::read_to_string(entry.path()) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+
+            let mut matched = false;
+            let mut matched_line = None;
+            let mut matched_snippet = None;
+
+            for (index, line) in content.lines().enumerate() {
+                if line.contains(query) {
+                    matched_line = Some(index + 1);
+                    matched_snippet = Some(trim_to_snippet(line));
+                    matched = true;
+                    break;
+                }
+            }
+
+            if !matched {
+                continue;
+            }
+
+            let full_path = entry.path().to_string_lossy().into_owned();
+            let relative_path = relative_search_path(&entry.path(), root_path)?;
+            results.push(SearchResultPayload {
+                path: relative_path,
+                full_path,
+                kind: DirectoryEntryType::File,
+                line: matched_line,
+                result_match: matched_snippet,
+            });
+        }
+    }
+
+    sort_search_results(&mut results);
+    Ok(results)
+}
+
+fn should_skip_search_entry(name: &str) -> bool {
+    SEARCH_SKIP_DIR_NAMES.contains(&name)
+}
+
+fn is_match(candidate: &str, query: &str) -> bool {
+    candidate.contains(query)
+}
+
+fn relative_search_path(path: &Path, root_path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(root_path)
+        .map_err(|error| format!("path is outside root path {}: {error}", root_path.display()))?;
+    Ok(relative
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
+fn sort_search_results(results: &mut [SearchResultPayload]) {
+    results.sort_by(|left, right| {
+        if left.kind != right.kind {
+            return if left.kind == DirectoryEntryType::Dir {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
+        }
+        left.path.cmp(&right.path)
+    });
+}
+
+fn trim_to_snippet(value: &str) -> String {
+    value.chars().take(100).collect::<String>()
+}
+
 fn write_text_file_content(payload: &FileContentRequestPayload) -> Result<(), String> {
     let content = payload
         .content
@@ -2466,6 +2690,7 @@ mod tests {
     use super::*;
     use portolan_agent_protocol::{
         FiberRawOperation, FiberRawRequestPayload, FiberTreeHostsPayload, HexPosition,
+        SearchFilesMode, SearchFilesRequestPayload,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -4410,6 +4635,104 @@ malformed
 
         match &responses[0] {
             AgentFrame::ProjectFileResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("path must be absolute"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn searches_files_by_filename_with_limit() {
+        let dir = temp_host("search-filename");
+        fs::create_dir_all(dir.join("reports")).unwrap();
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::write(dir.join("reports").join("summary.txt"), "summary line\n").unwrap();
+        fs::write(dir.join("nested").join("notes.txt"), "notes\n").unwrap();
+        fs::write(dir.join("summary_report.md"), "root summary\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-filename".to_string(),
+                path: dir.display().to_string(),
+                query: "summary".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(2),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.results.len(), 2);
+                let names = payload
+                    .results
+                    .iter()
+                    .map(|result| result.path.as_str())
+                    .collect::<Vec<_>>();
+                assert!(names.contains(&"summary_report.md"));
+                assert!(names.iter().all(|name| *name != "nested/notes.txt"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn searches_files_by_content_with_first_match_per_file() {
+        let dir = temp_host("search-content");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("alpha.md"),
+            "alpha intro\nsearch hit line\nsecond hit\n",
+        )
+        .unwrap();
+        fs::write(dir.join("beta.md"), "search hit only line\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-content".to_string(),
+                path: dir.display().to_string(),
+                query: "hit".to_string(),
+                mode: SearchFilesMode::Content,
+                limit: Some(10),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.results.len(), 2);
+                assert_eq!(payload.results[0].line, Some(2));
+                assert_eq!(payload.results[1].line, Some(1));
+                assert_eq!(
+                    payload.results[0].result_match.as_deref(),
+                    Some("search hit line")
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_search_file_paths() {
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-unsafe".to_string(),
+                path: "../escape".to_string(),
+                query: "term".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(10),
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
                 assert!(!payload.ok);
                 assert!(payload
                     .error

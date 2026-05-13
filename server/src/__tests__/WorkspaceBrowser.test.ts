@@ -90,6 +90,63 @@ describe('WorkspaceBrowser search', () => {
     expect(directoryCalls).toEqual([{ originId: origin.id, path: rootDir }])
   })
 
+  it('uses remote agent search for remote cities even without an SSH host', async () => {
+    const remoteOrigin = 'remote-no-ssh-search'
+    const remoteCity = cityManager.pinCity(rootDir, { q: 1, r: 1 }, `remote-${remoteOrigin}`, 'RemoteCity')
+    const origin = originManager.registerAgent(remoteOrigin, {} as any)
+    delete origin.sshHost
+
+    const remoteBrowser = new WorkspaceBrowser(
+      cityManager,
+      originManager,
+      new CityPersistence(),
+      undefined,
+      async (originId, path, query, mode) => {
+        expect(originId).toBe(origin.id)
+        expect(path).toBe(rootDir)
+        expect(query).toBe('summary')
+        expect(mode).toBe('filename')
+
+        return {
+          results: [{
+            type: 'file',
+            path: 'reports/summary.txt',
+            fullPath: join(rootDir, 'reports/summary.txt'),
+          }],
+          timedOut: false,
+        }
+      },
+    )
+    const searchRemoteSpy = vi.spyOn<any, any>(remoteBrowser as any, 'searchRemote')
+
+    const message = await new Promise<any>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('search timed out')), 5000)
+      const ws = {
+        readyState: 1,
+        send: (payload: string) => {
+          const message = JSON.parse(payload)
+          if (message.type === 'searchResults') {
+            clearTimeout(timeout)
+            resolve(message)
+          }
+        },
+      } as any
+
+      remoteBrowser.handleSearchFiles(ws, remoteCity.id, 'summary', 'search-agent-first', 'filename')
+    })
+
+    expect(searchRemoteSpy).not.toHaveBeenCalled()
+    expect(message).toMatchObject({
+      type: 'searchResults',
+      searchId: 'search-agent-first',
+      results: [{
+        type: 'file',
+        path: 'reports/summary.txt',
+        fullPath: join(rootDir, 'reports/summary.txt'),
+      }],
+    })
+  })
+
   it('does not require an SSH host when remote agent directory listing succeeds', async () => {
     const remoteCity = cityManager.pinCity(rootDir, { q: 1, r: 1 }, 'remote-no-ssh', 'RemoteCity')
     const origin = originManager.registerAgent('no-ssh', {} as any)
@@ -121,6 +178,73 @@ describe('WorkspaceBrowser search', () => {
       cityId: remoteCity.id,
       path: rootDir,
       entries: [{ name: 'agent-only-entry', type: 'dir' }],
+    })
+  })
+
+  it('falls back to SSH when remote agent search errors', async () => {
+    const remoteOrigin = 'remote-test'
+    const remoteCity = cityManager.pinCity(rootDir, { q: 1, r: 1 }, `remote-${remoteOrigin}`, 'RemoteCity')
+    const origin = originManager.registerAgent(remoteOrigin, {} as any)
+    const fallbackCalls: Array<{ originId: string; sshHost: string; path: string; query: string }> = []
+
+    const browserWithSearchFailure = new WorkspaceBrowser(
+      cityManager,
+      originManager,
+      new CityPersistence(),
+      undefined,
+      async () => {
+        throw new Error('agent search unavailable')
+      },
+    )
+
+    const searchRemoteSpy = vi.spyOn<any, any>(browserWithSearchFailure as any, 'searchRemote').mockImplementation((
+      _ws: any,
+      sshHost: string,
+      path: string,
+      query: string,
+      _searchId: string,
+      _searchKey: string,
+      _mode: 'filename' | 'content',
+    ) => {
+      fallbackCalls.push({ originId: origin.id, sshHost, path, query })
+      _ws.send(JSON.stringify({
+        type: 'searchResults',
+        searchId: 'search-agent-fallback',
+        results: [{
+          type: 'file',
+          path: 'fallback.txt',
+          fullPath: join(rootDir, 'fallback.txt'),
+        }],
+      }))
+    })
+
+    const message = await new Promise<any>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('search timed out')), 5000)
+      const ws = {
+        readyState: 1,
+        send: (payload: string) => {
+          const message = JSON.parse(payload)
+          if (message.type === 'searchResults') {
+            clearTimeout(timeout)
+            resolve(message)
+          }
+        },
+      } as any
+
+      browserWithSearchFailure.handleSearchFiles(ws, remoteCity.id, 'summary', 'search-agent-fallback', 'filename')
+    })
+
+    expect(searchRemoteSpy).toHaveBeenCalledTimes(1)
+    expect(fallbackCalls).toEqual([{
+      originId: origin.id,
+      sshHost: origin.sshHost,
+      path: rootDir,
+      query: 'summary',
+    }])
+    expect(message).toMatchObject({
+      type: 'searchResults',
+      searchId: 'search-agent-fallback',
+      results: [{ type: 'file', path: 'fallback.txt', fullPath: join(rootDir, 'fallback.txt') }],
     })
   })
 

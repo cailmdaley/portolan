@@ -276,11 +276,38 @@ const remoteDirectoryExecutor = async (originId: string, path: string) => {
   }>(originId, 'list-directory', { path }, 10_000);
   return result.entries ?? [];
 };
+const remoteSearchExecutor = async (
+  originId: string,
+  path: string,
+  query: string,
+  mode: 'filename' | 'content',
+) => {
+  const result = await agentRequestCoordinator.send<{
+    results?: Array<{
+      type: 'file' | 'dir';
+      path: string;
+      fullPath: string;
+      line?: number;
+      match?: string;
+    }>;
+    timedOut?: boolean;
+  }>(originId, 'search-files', {
+    path,
+    query,
+    mode,
+  }, 15_000);
+
+  return {
+    results: result.results ?? [],
+    timedOut: result.timedOut ?? false,
+  };
+};
 const workspaceBrowser = new WorkspaceBrowser(
   cityManager,
   originManager,
   cityPersistence,
   remoteDirectoryExecutor,
+  remoteSearchExecutor,
 );
 const browserStateCoordinator = new BrowserStateCoordinator({
   cityManager,
@@ -597,6 +624,24 @@ wss.on('connection', async (ws, req) => {
           };
           const result: Record<string, unknown> = {};
           if (entries !== undefined) result.entries = entries;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'search-files-result') {
+          const { correlationId, ok, error, results, timedOut } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            results?: Array<{
+              type: 'file' | 'dir';
+              path: string;
+              fullPath: string;
+              line?: number;
+              match?: string;
+            }>;
+            timedOut?: boolean;
+          };
+          const result: Record<string, unknown> = {};
+          if (results !== undefined) result.results = results;
+          if (timedOut !== undefined) result.timedOut = timedOut;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {

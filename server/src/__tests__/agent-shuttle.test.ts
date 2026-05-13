@@ -300,6 +300,83 @@ describe('agent: remote file request helpers', () => {
     );
   });
 
+  it('searches filenames recursively with relative paths and absolute full paths', () => {
+    mkdirSync(join(rootDir, 'notes'));
+    writeFileSync(join(rootDir, 'notes', 'search-note.md'), 'note');
+    writeFileSync(join(rootDir, 'notes', 'other.txt'), 'other');
+
+    const searchResult = agentMod.executeSearchFilesRequest({
+      path: rootDir,
+      query: 'search',
+      mode: 'filename',
+    });
+
+    expect(searchResult).toEqual({
+      ok: true,
+      results: [
+        {
+          type: 'file',
+          path: 'notes/search-note.md',
+          fullPath: join(rootDir, 'notes', 'search-note.md'),
+        },
+      ],
+    });
+  });
+
+  it('searches file contents and returns first matching line', () => {
+    const target = join(rootDir, 'log.txt');
+    writeFileSync(target, 'alpha\nneedle line here\nomega', 'utf8');
+
+    expect(agentMod.executeSearchFilesRequest({
+      path: rootDir,
+      query: 'line here',
+      mode: 'content',
+    })).toEqual({
+      ok: true,
+      results: [{
+        type: 'file',
+        path: 'log.txt',
+        fullPath: target,
+        line: 2,
+        match: 'needle line here',
+      }],
+    });
+  });
+
+  it('limits search results and defaults mode to filename', () => {
+    for (let i = 0; i < 100; i += 1) {
+      writeFileSync(join(rootDir, `match-${i}.md`), 'x');
+    }
+
+    const searchResult = agentMod.executeSearchFilesRequest({
+      path: rootDir,
+      query: 'match',
+    });
+
+    expect(searchResult.ok).toBe(true);
+    expect(searchResult.results).toHaveLength(50);
+  });
+
+  it('returns invalid path and mode as thrown search errors', () => {
+    expect(() => agentMod.executeSearchFilesRequest({
+      path: 'relative/path',
+      query: 'match',
+      mode: 'filename',
+    })).toThrow('path must be absolute: relative/path');
+
+    expect(() => agentMod.executeSearchFilesRequest({
+      path: '/tmp/../etc',
+      query: 'match',
+      mode: 'filename',
+    })).toThrow('invalid path: /tmp/../etc');
+
+    expect(() => agentMod.executeSearchFilesRequest({
+      path: rootDir,
+      query: 'match',
+      mode: 'weird',
+    })).toThrow('unsupported search mode: weird');
+  });
+
   it('returns sorted and filtered directory entries through list-directory requests', () => {
     mkdirSync(join(rootDir, 'alpha'));
     mkdirSync(join(rootDir, 'zeta'));
