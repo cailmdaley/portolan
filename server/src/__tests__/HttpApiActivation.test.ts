@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { City } from '../CityManager.js';
 import { HttpApiActivation } from '../HttpApiActivation.js';
+import type { RemoteAgentRuntimePreference, RemoteAgentRuntimePreferences } from '../RemoteAgentRuntimePreferenceStore.js';
 import { exactTmuxTarget, shellEscape } from '../ShellPathUtils.js';
 
 function city(overrides: Partial<City> = {}): City {
@@ -34,6 +35,21 @@ function captureResponse() {
       const raw = chunks.join('');
       return { status, body: raw ? JSON.parse(raw) : null };
     },
+  };
+}
+
+function runtimePreferences(initial: Record<string, 'node' | 'rust'> = {}): RemoteAgentRuntimePreferences {
+  const values = new Map(Object.entries(initial));
+  return {
+    getPreferredRuntime: (sshHost) => values.get(sshHost),
+    setPreferredRuntime: (sshHost, runtime) => {
+      values.set(sshHost, runtime);
+    },
+    getDiagnostics: () => Array.from(values.entries()).map(([sshHost, runtime]): RemoteAgentRuntimePreference => ({
+      sshHost,
+      runtime,
+      updatedAt: '2026-05-13T00:00:00.000Z',
+    })),
   };
 }
 
@@ -167,6 +183,44 @@ describe('HttpApiActivation', () => {
     });
   });
 
+  it('uses the host runtime preference when the request omits agentRuntime', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const preferences = runtimePreferences({ candide: 'rust' });
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+      runtimePreferences: preferences,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(new URL('http://localhost/activate-city?cityId=remote-city'), res);
+
+    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
+    ]);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      'candide',
+      `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+    ]);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'started',
+        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+        preferredRuntime: 'rust',
+      },
+    });
+  });
+
   it('accepts rust preview activation options from request body', async () => {
     const execFileFn = vi
       .fn()
@@ -206,6 +260,83 @@ describe('HttpApiActivation', () => {
       body: {
         status: 'started',
         message: 'rust agent started on candide (portolan-agent-rust-preview)',
+      },
+    });
+  });
+
+  it('does not persist one-shot Rust preview as the host preference', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const preferences = runtimePreferences({ candide: 'node' });
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+      runtimePreferences: preferences,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city'),
+      res,
+      {
+        cityId: 'remote-city',
+        agentRuntime: 'rust',
+        once: true,
+      },
+    );
+
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'started',
+        message: 'rust agent started on candide (portolan-agent-rust-preview)',
+        preferredRuntime: 'node',
+      },
+    });
+  });
+
+  it('persists explicit Node activation as rollback from a Rust preference', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const preferences = runtimePreferences({ candide: 'rust' });
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+      runtimePreferences: preferences,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city?cityId=remote-city&agentRuntime=node'),
+      res,
+    );
+
+    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null && echo running || echo stopped`,
+    ]);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      'candide',
+      `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+    ]);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'started',
+        message: 'node agent started on candide (portolan-agent)',
+        preferredRuntime: 'node',
       },
     });
   });

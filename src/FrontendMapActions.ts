@@ -80,13 +80,12 @@ export class FrontendMapActions {
 
   async activateRemoteCity(city: City, options: RemoteCityActivationOptions = {}): Promise<void> {
     try {
-      const agentRuntime = options.agentRuntime ?? 'node'
       const response = await fetch('http://localhost:4004/activate-city', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           cityId: city.id,
-          agentRuntime,
+          ...(options.agentRuntime ? { agentRuntime: options.agentRuntime } : {}),
           origin: city.originId.replace(/^remote-/, ''),
           once: options.once === true,
         }),

@@ -25,6 +25,7 @@ import { MeetingBridge } from './MeetingBridge.js';
 import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
 import { VibeVoiceTranscriptSource } from './VibeVoiceTranscriptSource.js';
 import { RemoteAgentCoordinator, recoverRemoteAgent } from './RemoteAgentCoordinator.js';
+import { RemoteAgentRuntimePreferenceStore } from './RemoteAgentRuntimePreferenceStore.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
@@ -61,6 +62,7 @@ const recentFileTracker = new RecentFileTracker();
 const recentsStore = new RecentsStore();
 const fiberTreeSnapshotStore = new FiberTreeSnapshotStore();
 const agentRequestCoordinator = new AgentRequestCoordinator(originManager);
+const remoteAgentRuntimePreferences = new RemoteAgentRuntimePreferenceStore();
 const meetingBridge = new MeetingBridge({
   sourceFactory: {
     createParakeetSource: (parakeetOptions, callbacks) =>
@@ -136,6 +138,7 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     cityManager.getCities(),
   ),
   remoteShuttleDiagnosticsProvider: () => remoteAgentCoordinator.getRemoteShuttleSnapshotStats(),
+  remoteAgentRuntimePreferences,
   // Stage 4 — remote-origin kanban mutations route through this executor.
   // Sends a `kanban-transition` payload over the agent's WebSocket via the
   // correlation-ID layer, applies the agent's reply fiber JSON as a
@@ -213,6 +216,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     eventWatcher: eventWatcher.getStats(),
     remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
     remoteAgentRecovery: remoteAgentCoordinator.getRemoteAgentRecoveryStats(),
+    remoteAgentRuntimePreferences: remoteAgentRuntimePreferences.getDiagnostics(),
     recentFiles: {
       sessionCount: recentFileTracker.getSessionCount(),
       entryCount: recentFileTracker.getTotalEntryCount(),

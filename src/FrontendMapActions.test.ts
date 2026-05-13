@@ -74,7 +74,7 @@ describe('FrontendMapActions.activateRemoteCity', () => {
     })
   })
 
-  it('preserves Node activation as the default runtime', async () => {
+  it('lets the backend choose the preferred runtime when no runtime is requested', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({ status: 'started' }),
@@ -86,9 +86,9 @@ describe('FrontendMapActions.activateRemoteCity', () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(JSON.parse(String(init.body))).toMatchObject({
       cityId: 'remote-city',
-      agentRuntime: 'node',
       origin: 'candide',
       once: false,
     })
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('agentRuntime')
   })
 })

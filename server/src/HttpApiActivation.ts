@@ -3,6 +3,7 @@ import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
+import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
 import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +18,7 @@ interface HttpApiActivationOptions {
   reconnectTunnelFn?: (sshHost: string) => Promise<void>;
   execFileFn?: typeof execFileAsync;
   remoteReachabilityTimeoutMs?: number;
+  runtimePreferences?: RemoteAgentRuntimePreferences;
 }
 
 type RemoteAgentRuntime = 'node' | 'rust';
@@ -38,8 +40,11 @@ interface RustActivationOptions {
   once?: boolean;
 }
 
-function parseAgentRuntime(value: string | null): RemoteAgentRuntime {
-  if (!value || value === 'node') {
+function parseAgentRuntime(value: string | null, fallback: RemoteAgentRuntime = 'node'): RemoteAgentRuntime {
+  if (!value) {
+    return fallback;
+  }
+  if (value === 'node') {
     return 'node';
   }
   if (value === 'rust') {
@@ -121,6 +126,7 @@ export class HttpApiActivation {
   private readonly reconnectTunnelFn: (sshHost: string) => Promise<void>;
   private readonly execFileFn: typeof execFileAsync;
   private readonly remoteReachabilityTimeoutMs: number;
+  private readonly runtimePreferences: RemoteAgentRuntimePreferences | undefined;
 
   constructor(options: HttpApiActivationOptions) {
     this.cityLookup = options.cityLookup;
@@ -128,6 +134,7 @@ export class HttpApiActivation {
     this.reconnectTunnelFn = options.reconnectTunnelFn ?? reconnectTunnel;
     this.execFileFn = options.execFileFn ?? execFileAsync;
     this.remoteReachabilityTimeoutMs = options.remoteReachabilityTimeoutMs ?? 60_000;
+    this.runtimePreferences = options.runtimePreferences;
   }
 
   async handleActivateCity(url: URL, res: ServerResponse, body?: unknown): Promise<void> {
@@ -148,9 +155,17 @@ export class HttpApiActivation {
       return;
     }
 
+    if (city.originId === 'local') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot activate local city - start a session manually' }));
+      return;
+    }
+
+    const sshHost = this.getSshHost(city);
+    const preferredRuntime = this.runtimePreferences?.getPreferredRuntime(sshHost) ?? 'node';
     let runtime: RemoteAgentRuntime;
     try {
-      runtime = parseAgentRuntime(requestedRuntime);
+      runtime = parseAgentRuntime(requestedRuntime, preferredRuntime);
     } catch (error: unknown) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: (error as Error).message }));
@@ -166,13 +181,6 @@ export class HttpApiActivation {
       return;
     }
 
-    if (city.originId === 'local') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot activate local city - start a session manually' }));
-      return;
-    }
-
-    const sshHost = this.getSshHost(city);
     const runtimeSession = agentSessionForRuntime(runtime);
     const oppositeRuntimeSession = oppositeAgentSessionForRuntime(runtime);
     const startCommand = runtime === 'rust'
@@ -210,9 +218,14 @@ export class HttpApiActivation {
             ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
             { timeout: 60_000 }
           );
+          this.recordPreferredRuntime(sshHost, runtime);
         }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ status: 'already_running', message: `Agent (${runtime}) already running on ${sshHost}` }));
+        res.end(JSON.stringify({
+          status: 'already_running',
+          message: `Agent (${runtime}) already running on ${sshHost}`,
+          ...this.preferenceResponse(sshHost),
+        }));
         return;
       }
 
@@ -231,13 +244,34 @@ export class HttpApiActivation {
         ['-T', sshHost, remoteCommand],
         { timeout: 60_000 }
       );
+      if (replacesRuntime) {
+        this.recordPreferredRuntime(sshHost, runtime);
+      }
 
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ status: 'started', message: `${runtime} agent started on ${sshHost} (${runtimeSession})` }));
+      res.end(JSON.stringify({
+        status: 'started',
+        message: `${runtime} agent started on ${sshHost} (${runtimeSession})`,
+        ...this.preferenceResponse(sshHost),
+      }));
     } catch (error: any) {
       console.error(`[Activate] Failed to start agent on ${sshHost}:`, error.message);
       res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ error: `Failed to start agent: ${error.message}` }));
+    }
+  }
+
+  private preferenceResponse(sshHost: string): { preferredRuntime?: RemoteAgentRuntime | null } {
+    if (!this.runtimePreferences) return {};
+    return { preferredRuntime: this.runtimePreferences.getPreferredRuntime(sshHost) ?? null };
+  }
+
+  private recordPreferredRuntime(sshHost: string, runtime: RemoteAgentRuntime): void {
+    try {
+      this.runtimePreferences?.setPreferredRuntime(sshHost, runtime);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Activate] Failed to persist ${sshHost} runtime preference: ${message}`);
     }
   }
 }

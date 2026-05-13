@@ -19,6 +19,7 @@ import type { Session } from './SessionTracker.js';
 import type { RecentFileTracker } from './RecentFileTracker.js';
 import type { RecentsStore } from './RecentsStore.js';
 import { HttpApiActivation } from './HttpApiActivation.js';
+import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiAstraView } from './HttpApiAstraView.js';
 import { HttpApiFileContent } from './HttpApiFileContent.js';
@@ -122,6 +123,7 @@ export interface HttpApiOptions {
     frontmatter: Record<string, unknown>;
     originId: string;
   }) => Promise<{ id: string; path?: string }>;
+  remoteAgentRuntimePreferences?: RemoteAgentRuntimePreferences;
 }
 
 // ============================================================================
@@ -212,6 +214,7 @@ export class HttpApi {
     this.activationApi = new HttpApiActivation({
       cityLookup,
       getSshHost: (city) => this.getSshHost(city),
+      runtimePreferences: options.remoteAgentRuntimePreferences,
     });
     this.playgroundApi = new HttpApiPlayground({
       cityLookup,
