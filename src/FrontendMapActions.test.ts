@@ -32,6 +32,27 @@ afterEach(() => {
 })
 
 describe('FrontendMapActions.activateRemoteCity', () => {
+  it('posts the persistent Rust preview profile as an activation body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ status: 'started' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await actions().activateRemoteCity(city(), { agentRuntime: 'rust' })
+
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:4004/activate-city', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cityId: 'remote-city',
+        agentRuntime: 'rust',
+        origin: 'candide',
+        once: false,
+      }),
+    })
+  })
+
   it('posts the Rust preview profile as an activation body', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

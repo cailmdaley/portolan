@@ -345,6 +345,7 @@ export class MapInteractionController {
         if (city.originId !== 'local') {
           items.splice(1, 0,
             { label: 'Activate Node Agent', action: () => void this.activateRemoteCity(city, { agentRuntime: 'node' }) },
+            { label: 'Activate Rust Preview', action: () => void this.activateRemoteCity(city, { agentRuntime: 'rust' }) },
             { label: 'Activate Rust Preview Once', action: () => void this.activateRemoteCity(city, { agentRuntime: 'rust', once: true }) },
           )
         }
