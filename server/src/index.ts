@@ -35,6 +35,7 @@ import { FiberTreeSnapshotStore } from './FiberTreeSnapshotStore.js';
 import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 import { publishShuttleFeltStores } from './ShuttleFeltStoresPublisher.js';
 import { visibleRemoteCityPaths, visibleRemoteSnapshots } from './RemoteSnapshotPolicy.js';
+import { RemoteTerminalSubscriptions } from './RemoteTerminalSubscriptions.js';
 
 // ============================================================================
 // Constants
@@ -44,36 +45,7 @@ const PORT = process.env.VITEST ? 4099 : 4004;
 const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 const LOCAL_ORIGIN_ID = 'local';
 let remoteWorkingTimeoutIntervalHandle: NodeJS.Timeout | null = null;
-const remoteTerminalSubscriptions = new Map<WebSocket, Map<string, {
-  originId: string;
-  subscriptionId: string;
-}>>();
-
-function getRemoteTerminalSubscriptionStats(): Array<{
-  originId: string;
-  browserClients: number;
-  subscriptions: number;
-}> {
-  const byOrigin = new Map<string, { browserClients: Set<WebSocket>; subscriptions: number }>();
-  for (const [ws, perClient] of remoteTerminalSubscriptions) {
-    for (const entry of perClient.values()) {
-      let stats = byOrigin.get(entry.originId);
-      if (!stats) {
-        stats = { browserClients: new Set(), subscriptions: 0 };
-        byOrigin.set(entry.originId, stats);
-      }
-      stats.browserClients.add(ws);
-      stats.subscriptions += 1;
-    }
-  }
-  return [...byOrigin.entries()]
-    .map(([originId, stats]) => ({
-      originId,
-      browserClients: stats.browserClients.size,
-      subscriptions: stats.subscriptions,
-    }))
-    .sort((a, b) => a.originId.localeCompare(b.originId));
-}
+const remoteTerminalSubscriptions = new RemoteTerminalSubscriptions();
 
 function parseRemoteAgentRuntime(value: string | null): RemoteAgentRuntime {
   return value === 'rust' ? 'rust' : 'node';
@@ -293,7 +265,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     eventWatcher: eventWatcher.getStats(),
     terminalStreams: {
       local: terminalStreamManager.stats(),
-      remote: getRemoteTerminalSubscriptionStats(),
+      remote: remoteTerminalSubscriptions.getStats(),
     },
     remoteAgentRequests: agentRequestCoordinator.getDiagnostics(),
     remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
@@ -463,67 +435,42 @@ function registerRemoteTerminalSubscription(
   })) {
     return null;
   }
-  let perClient = remoteTerminalSubscriptions.get(ws);
-  if (!perClient) {
-    perClient = new Map();
-    remoteTerminalSubscriptions.set(ws, perClient);
-  }
-  const previous = perClient.get(sessionId);
+  const previous = remoteTerminalSubscriptions.get(ws, sessionId);
   if (previous) {
     sendAgentFrame(previous.originId, {
       type: 'terminal-unsubscribe',
       payload: { subscriptionId: previous.subscriptionId },
     });
   }
-  perClient.set(sessionId, { originId, subscriptionId });
+  remoteTerminalSubscriptions.set(ws, sessionId, { originId, subscriptionId });
   return subscriptionId;
 }
 
 function detachRemoteTerminal(ws: WebSocket, sessionId: string): void {
-  const perClient = remoteTerminalSubscriptions.get(ws);
-  const entry = perClient?.get(sessionId);
+  const entry = remoteTerminalSubscriptions.get(ws, sessionId);
   if (!entry) return;
   sendAgentFrame(entry.originId, {
     type: 'terminal-unsubscribe',
     payload: { subscriptionId: entry.subscriptionId },
   });
-  perClient!.delete(sessionId);
-  if (perClient!.size === 0) remoteTerminalSubscriptions.delete(ws);
+  remoteTerminalSubscriptions.delete(ws, sessionId);
 }
 
 function detachAllRemoteTerminals(ws: WebSocket): void {
-  const perClient = remoteTerminalSubscriptions.get(ws);
-  if (!perClient) return;
-  for (const entry of perClient.values()) {
+  for (const entry of remoteTerminalSubscriptions.deleteClient(ws)) {
     sendAgentFrame(entry.originId, {
       type: 'terminal-unsubscribe',
       payload: { subscriptionId: entry.subscriptionId },
     });
   }
-  remoteTerminalSubscriptions.delete(ws);
 }
 
 function routeRemoteTerminalBytes(originId: string, subscriptionId: string, bytesBase64: string): void {
-  for (const [ws, perClient] of remoteTerminalSubscriptions) {
-    for (const [sessionId, entry] of perClient) {
-      if (entry.originId !== originId || entry.subscriptionId !== subscriptionId) continue;
-      if (ws.readyState !== WebSocket.OPEN) continue;
-      ws.send(JSON.stringify({ type: 'terminal:bytes', sessionId, bytes: bytesBase64 }));
-    }
-  }
+  remoteTerminalSubscriptions.routeBytes(originId, subscriptionId, bytesBase64);
 }
 
 function routeRemoteTerminalExit(originId: string, subscriptionId: string, reason?: string): void {
-  for (const [ws, perClient] of remoteTerminalSubscriptions) {
-    for (const [sessionId, entry] of [...perClient]) {
-      if (entry.originId !== originId || entry.subscriptionId !== subscriptionId) continue;
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'terminal:exit', sessionId, reason }));
-      }
-      perClient.delete(sessionId);
-    }
-    if (perClient.size === 0) remoteTerminalSubscriptions.delete(ws);
-  }
+  remoteTerminalSubscriptions.routeExit(originId, subscriptionId, reason);
 }
 
 const messageRouter = new MessageRouter({
@@ -867,6 +814,10 @@ wss.on('connection', async (ws, req) => {
         // instead of waiting for the 5s timeout. The user re-drags after
         // the agent reconnects.
         agentRequestCoordinator.drainOnDisconnect(disconnectedOrigin.id);
+        remoteTerminalSubscriptions.closeOrigin(
+          disconnectedOrigin.id,
+          `agent disconnected: ${disconnectedOrigin.name}`,
+        );
         void browserStateCoordinator.broadcastCurrentState();
       }
       console.log(`Agent disconnected: ${originName}`);
