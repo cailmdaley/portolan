@@ -65,6 +65,7 @@ interface CityLookup {
 
 interface OriginLookup {
   getOrigin(originId: string): Origin | null | undefined;
+  getConnectedRemoteAgentDiagnostics?(): import('./OriginManager.js').RemoteAgentConnectionDiagnostic[];
 }
 
 interface PersistenceLookup {
@@ -242,6 +243,7 @@ export class HttpApi {
       cityLookup,
       getSshHost: (city) => this.getSshHost(city),
       runtimePreferences: options.remoteAgentRuntimePreferences,
+      getConnectedRemoteAgents: () => originLookup.getConnectedRemoteAgentDiagnostics?.() ?? [],
     });
     this.playgroundApi = new HttpApiPlayground({
       cityLookup,

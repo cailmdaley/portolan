@@ -3,7 +3,7 @@ import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
-import type { RemoteAgentRuntime } from './OriginManager.js';
+import type { RemoteAgentConnectionDiagnostic, RemoteAgentRuntime } from './OriginManager.js';
 import {
   remoteAgentCommand,
   remoteAgentTmuxSession,
@@ -26,6 +26,7 @@ interface HttpApiActivationOptions {
   execFileFn?: typeof execFileAsync;
   remoteReachabilityTimeoutMs?: number;
   runtimePreferences?: RemoteAgentRuntimePreferences;
+  getConnectedRemoteAgents?: () => RemoteAgentConnectionDiagnostic[];
 }
 
 interface ActivationBody {
@@ -106,6 +107,7 @@ export class HttpApiActivation {
   private readonly execFileFn: typeof execFileAsync;
   private readonly remoteReachabilityTimeoutMs: number;
   private readonly runtimePreferences: RemoteAgentRuntimePreferences | undefined;
+  private readonly getConnectedRemoteAgents: (() => RemoteAgentConnectionDiagnostic[]) | undefined;
 
   constructor(options: HttpApiActivationOptions) {
     this.cityLookup = options.cityLookup;
@@ -114,6 +116,7 @@ export class HttpApiActivation {
     this.execFileFn = options.execFileFn ?? execFileAsync;
     this.remoteReachabilityTimeoutMs = options.remoteReachabilityTimeoutMs ?? 60_000;
     this.runtimePreferences = options.runtimePreferences;
+    this.getConnectedRemoteAgents = options.getConnectedRemoteAgents;
   }
 
   async handleActivateCity(url: URL, res: ServerResponse, body?: unknown): Promise<void> {
@@ -166,6 +169,20 @@ export class HttpApiActivation {
     const replacedRuntimeSessions = replacedRemoteAgentTmuxSessions(runtime);
     const startCommand = remoteAgentCommand(runtime, sshHost, rustOptions);
     const replacesRuntime = !(runtime === 'rust' && rustOptions.once);
+    const connectedAgent = this.findConnectedRemoteAgent(sshHost, runtime);
+
+    if (connectedAgent) {
+      if (replacesRuntime) {
+        this.recordPreferredRuntime(sshHost, runtime);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({
+        status: 'already_running',
+        message: `Agent (${runtime}) already connected on ${sshHost}`,
+        ...this.preferenceResponse(sshHost),
+      }));
+      return;
+    }
 
     try {
       // Avoid churning a healthy reverse tunnel. Candide can impose a short
@@ -263,6 +280,17 @@ export class HttpApiActivation {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[Activate] Failed to persist ${sshHost} runtime preference: ${message}`);
     }
+  }
+
+  private findConnectedRemoteAgent(
+    sshHost: string,
+    runtime: RemoteAgentRuntime,
+  ): RemoteAgentConnectionDiagnostic | undefined {
+    return this.getConnectedRemoteAgents?.().find((agent) => (
+      agent.sshHost === sshHost
+      && agent.agentRuntime === runtime
+      && agent.socketCount > 0
+    ));
   }
 }
 

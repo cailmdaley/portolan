@@ -234,6 +234,44 @@ describe('HttpApiActivation', () => {
     });
   });
 
+  it('short-circuits activation when the preferred runtime is already connected', async () => {
+    const execFileFn = vi.fn();
+    const reconnectTunnelFn = vi.fn();
+    const preferences = runtimePreferences({ candide: 'rust' });
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn,
+      execFileFn: execFileFn as any,
+      runtimePreferences: preferences,
+      getConnectedRemoteAgents: () => [{
+        originId: 'remote-candide',
+        name: 'candide',
+        sshHost: 'candide',
+        agentRuntime: 'rust',
+        agentOnce: false,
+        plannotatorPort: 19459,
+        socketCount: 1,
+        connectedAt: '2026-05-13T00:00:00.000Z',
+        lastSeen: '2026-05-13T00:00:01.000Z',
+      }],
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(new URL('http://localhost/activate-city?cityId=remote-city'), res);
+
+    expect(reconnectTunnelFn).not.toHaveBeenCalled();
+    expect(execFileFn).not.toHaveBeenCalled();
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'already_running',
+        message: 'Agent (rust) already connected on candide',
+        preferredRuntime: 'rust',
+      },
+    });
+  });
+
   it('treats a duplicate runtime tmux session during start as already running', async () => {
     const execFileFn = vi
       .fn()

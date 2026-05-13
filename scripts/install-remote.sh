@@ -307,8 +307,9 @@ if [ "$AGENT_RUNTIME" = "rust" ]; then
     error "Run: npm run native:agent, or for Linux remotes run npm run native:agent:linux and pass --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust"
     exit 1
   fi
-  scp -q "$RUST_AGENT_LOCAL_BINARY" "$SSH_HOST:~/.local/bin/portolan-agent-rust"
-  ssh "$SSH_HOST" "chmod +x ~/.local/bin/portolan-agent-rust"
+  remote_rust_tmp=".local/bin/portolan-agent-rust.upload.$$"
+  scp -q "$RUST_AGENT_LOCAL_BINARY" "$SSH_HOST:$remote_rust_tmp"
+  ssh "$SSH_HOST" "chmod +x ~/$remote_rust_tmp && mv -f ~/$remote_rust_tmp ~/.local/bin/portolan-agent-rust"
 fi
 
 # Remote agents still need a host-local launcher for autonomous Shuttle
@@ -419,7 +420,7 @@ if command -v node >/dev/null 2>&1; then
   echo "  ws: \$(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
 fi
 echo "  Settings: \$(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
-echo "  PostToolUse JSONL hook: \$(jq -e '[.hooks.PostToolUse[]? | select((.matcher // \"\") == \"Read|Write|Edit\") | (.hooks // [])[]? | select(.type == \"command\" and (.command | test(\"portolan-hook.sh$\")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
+echo "  PostToolUse JSONL hook: \$(jq -e '[.hooks.PostToolUse[]? | select((.matcher // "") == "Read|Write|Edit") | (.hooks // [])[]? | select(.type == "command" and (.command | endswith("portolan-hook.sh")))] | length > 0' ~/.claude/settings.json >/dev/null 2>&1 && echo 'OK' || echo 'NOT CONFIGURED')"
 VERIFY
 
 log "Checking remote tunnel and canonical hook output..."
