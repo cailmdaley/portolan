@@ -20,6 +20,7 @@ Click worker → Kitty focuses that tab. Work happens in terminal, not here.
 ./dev.sh kill               # Stop session and clear ports 5173, 4004, 4000
 npm run tauri:dev           # Native desktop shell around the same dev stack
 npm run tauri:build         # Build Portolan.app + DMG under src-tauri/target/release/bundle/
+npm run native:backend-smoke  # App-owned native backend boundary smoke without launching GUI
 ./scripts/install-tunnels.sh # Install launchd-managed autossh tunnels for candide + cineca
 cd server && npm test       # ~282 tests
 ```

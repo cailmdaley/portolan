@@ -116,6 +116,8 @@ interface CityFileIndex {
   expiresAt: number;
   durationMs: number;
   refreshCount: number;
+  visitedDirs?: number;
+  ignoredDirs?: number;
   unreadableDirs?: number;
   truncated: boolean;
   timedOut: boolean;
@@ -137,6 +139,8 @@ export interface FileWalkResult {
   entries: FileWalkEntry[];
   timedOut: boolean;
   stderr: string;
+  visitedDirs?: number;
+  ignoredDirs?: number;
   unreadableDirs?: number;
   truncated: boolean;
   indexRefreshed?: boolean;
@@ -171,6 +175,8 @@ export interface FilesSearchDiagnostics {
     cityName?: string;
     path: string;
     entries: number;
+    visitedDirs?: number;
+    ignoredDirs?: number;
     unreadableDirs?: number;
     builtAt: number;
     expiresInMs: number;
@@ -335,6 +341,8 @@ export class HttpApiFilesSearch {
       expiresInMs: Math.max(0, entry.expiresAt - now),
       durationMs: entry.durationMs,
       refreshCount: entry.refreshCount,
+      visitedDirs: entry.visitedDirs,
+      ignoredDirs: entry.ignoredDirs,
       unreadableDirs: entry.unreadableDirs,
       truncated: entry.truncated,
       timedOut: entry.timedOut,
@@ -591,6 +599,8 @@ export class HttpApiFilesSearch {
       unreadableDirs: walk.unreadableDirs,
       truncated,
       timedOut: walk.timedOut,
+      visitedDirs: walk.visitedDirs,
+      ignoredDirs: walk.ignoredDirs,
       warnings,
       indexerKind: this.indexerKind,
       mode: 'candidate-cache',
@@ -663,6 +673,8 @@ export class HttpApiFilesSearch {
       truncated: search.truncated,
       timedOut: search.timedOut,
       unreadableDirs: search.unreadableDirs,
+      visitedDirs: search.visitedDirs,
+      ignoredDirs: search.ignoredDirs,
       warnings,
       indexerKind: this.indexerKind,
       mode: 'persistent-search',

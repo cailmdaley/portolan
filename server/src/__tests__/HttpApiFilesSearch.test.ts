@@ -165,6 +165,67 @@ describe('HttpApiFilesSearch', () => {
     });
   });
 
+  it('surfaces Rust backend index health counters in files-search diagnostics', async () => {
+    const cityPath = join(TEST_ROOT, 'city-health');
+    writeFile(join(cityPath, 'src', 'SearchBackend.ts'));
+    const calls: Array<{ query: string; limit: number; maxEntries: number; refreshTtlMs: number }> = [];
+    const searchCityIndex: CityIndexSearcher = async (
+      _cityPath,
+      query,
+      limit,
+      maxEntries,
+      refreshTtlMs,
+    ) => {
+      calls.push({ query, limit, maxEntries, refreshTtlMs });
+      return {
+        entries: [{ relativePath: 'src/SearchBackend.ts', type: 'file' }],
+        truncated: false,
+        timedOut: false,
+        stderr: '',
+        visitedDirs: 17,
+        ignoredDirs: 2,
+        unreadableDirs: 1,
+        indexRefreshed: false,
+        indexAgeMs: 123,
+        databasePath: '/tmp/search-index.sqlite',
+      };
+    };
+
+    const api = new HttpApiFilesSearch({
+      cities: [{ id: 'city-a', path: cityPath, name: 'City A' }],
+      searchCityIndex,
+      indexerKind: 'mock-sqlite',
+      indexTtlMs: 60_000,
+    });
+
+    const result = await api.search('SearchBackend', 10);
+
+    expect(result.hits.map((hit) => hit.relativePath)).toEqual(['src/SearchBackend.ts']);
+    expect(calls).toEqual([
+      { query: 'SearchBackend', limit: 200, maxEntries: 20_001, refreshTtlMs: 60_000 },
+    ]);
+
+    expect(api.getDiagnostics()).toMatchObject({
+      mode: 'persistent-search',
+      cachedCities: 1,
+      totalEntries: 1,
+      cities: [
+        {
+          cityId: 'city-a',
+          cityName: 'City A',
+          mode: 'persistent-search',
+          query: 'SearchBackend',
+          visitedDirs: 17,
+          ignoredDirs: 2,
+          unreadableDirs: 1,
+          indexRefreshed: false,
+          indexAgeMs: 123,
+          databasePath: '/tmp/search-index.sqlite',
+        },
+      ],
+    });
+  });
+
   it('deduplicates identical in-flight persistent city searches', async () => {
     const cityPath = join(TEST_ROOT, 'city-a');
     writeFile(join(cityPath, 'src', 'HttpApiFilesSearch.ts'));

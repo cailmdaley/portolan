@@ -12,7 +12,6 @@ use tauri::Manager;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 4004;
-const BACKEND_URL: &str = "http://127.0.0.1:4004";
 const BACKEND_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,8 +80,12 @@ struct BackendLaunch {
 
 impl BackendBridge {
     fn start(resource_dir: Option<PathBuf>) -> Self {
+        Self::start_for_profile(resource_dir, cfg!(debug_assertions))
+    }
+
+    fn start_for_profile(resource_dir: Option<PathBuf>, debug: bool) -> Self {
         if backend_reachable() {
-            let launch = backend_launch_for_profile(resource_dir, cfg!(debug_assertions));
+            let launch = backend_launch_for_profile(resource_dir, debug);
             return Self {
                 owner: BackendOwner::External,
                 launch,
@@ -92,7 +95,7 @@ impl BackendBridge {
             };
         }
 
-        let launch = backend_launch_for_profile(resource_dir, cfg!(debug_assertions));
+        let launch = backend_launch_for_profile(resource_dir, debug);
         match launch.spawn() {
             Ok(child) => {
                 let pid = child.id();
@@ -109,7 +112,8 @@ impl BackendBridge {
                         None
                     } else {
                         Some(format!(
-                            "spawned backend process {pid}, but {BACKEND_URL} did not become reachable"
+                            "spawned backend process {pid}, but {} did not become reachable",
+                            backend_url()
                         ))
                     },
                     child: Some(child),
@@ -134,7 +138,7 @@ impl BackendBridge {
 
     fn status(&self) -> BackendStatus {
         BackendStatus {
-            url: BACKEND_URL.to_string(),
+            url: backend_url(),
             reachable: backend_reachable(),
             owner: self.owner.as_str().to_string(),
             launch_kind: self.launch.kind.clone(),
@@ -290,9 +294,25 @@ fn project_root() -> PathBuf {
 }
 
 fn backend_addr() -> SocketAddr {
-    format!("{BACKEND_HOST}:{BACKEND_PORT}")
+    format!("{BACKEND_HOST}:{}", backend_port())
         .parse()
         .expect("Portolan backend address should be a valid socket address")
+}
+
+fn backend_port() -> u16 {
+    #[cfg(test)]
+    {
+        if let Ok(raw) = std::env::var("PORTOLAN_SMOKE_BACKEND_PORT") {
+            if let Ok(port) = raw.parse::<u16>() {
+                return port;
+            }
+        }
+    }
+    BACKEND_PORT
+}
+
+fn backend_url() -> String {
+    format!("http://{BACKEND_HOST}:{}", backend_port())
 }
 
 fn backend_reachable() -> bool {
@@ -442,6 +462,8 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
 
     #[test]
     fn backend_addr_targets_portolan_backend() {
@@ -519,6 +541,149 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("test resource dir should be created");
         path
+    }
+
+    fn write_fake_dist_backend(server_root: &Path) -> io::Result<()> {
+        fs::create_dir_all(server_root.join("dist")).expect("test dist dir should be created");
+        fs::create_dir_all(server_root.join("node_modules"))
+            .expect("test node_modules dir should be created");
+        let fake_server = r#"const http = require('http');
+
+const payload = JSON.stringify({ source: 'portolan-tauri-native-smoke', ok: true });
+const backendPort = parseInt(process.env.PORTOLAN_SMOKE_BACKEND_PORT || '4004', 10);
+const server = http.createServer((req, res) => {
+  if (req.url === '/debug-runtime') {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(payload);
+    return;
+  }
+
+  res.statusCode = 404;
+  res.end('not-found');
+});
+
+server.listen(backendPort, '127.0.0.1');
+"#;
+        fs::write(dist_entry(server_root), fake_server)
+    }
+
+    fn fetch_debug_runtime(port: u16) -> io::Result<String> {
+        let mut stream = TcpStream::connect((BACKEND_HOST, port))?;
+        let request = format!(
+            "GET /debug-runtime HTTP/1.1\r\nHost: {BACKEND_HOST}:{port}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes())?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        Ok(response)
+    }
+
+    fn wait_for_debug_runtime(port: u16, timeout: Duration) -> io::Result<String> {
+        let start = Instant::now();
+        let mut last_error = None;
+        while start.elapsed() < timeout {
+            match fetch_debug_runtime(port) {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for /debug-runtime",
+            )
+        }))
+    }
+
+    fn command_exists(program: &str) -> bool {
+        Command::new(program)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    #[ignore]
+    fn native_backend_smoke_starts_resource_bound_backend_without_gui() {
+        // Deepest free boundary: launch decision + child process lifecycle in src-tauri
+        // (no Tauri app shell is started here).
+        let backend_port = free_port_for_smoke();
+
+        if !command_exists("node") {
+            eprintln!("[smoke] skipped: node not found");
+            return;
+        }
+
+        assert!(
+            !backend_reachable_on_port(backend_port),
+            "pre-existing process on port {backend_port} would mask app-owned launch path"
+        );
+
+        std::env::set_var("PORTOLAN_SMOKE_BACKEND_PORT", backend_port.to_string());
+        let _port_guard = SmokeBackendPortGuard;
+
+        let resource_dir = temp_resource_dir("native-backend-smoke");
+        let server_root = resource_dir.join("server");
+        write_fake_dist_backend(&server_root).expect("fake dist backend should be written");
+
+        let launch = backend_launch_for_profile(Some(resource_dir.clone()), false);
+        assert_eq!(launch.kind, "node-dist-resource");
+        assert_eq!(launch.resource_dir, Some(resource_dir.clone()));
+        assert_eq!(launch.cwd, server_root);
+
+        let mut bridge = BackendBridge::start_for_profile(Some(resource_dir.clone()), false);
+        let status = bridge.status();
+        assert_eq!(status.owner, "app");
+        assert_eq!(status.launch_kind, "node-dist-resource");
+        assert!(status.pid.is_some());
+        assert_eq!(status.url, format!("http://{BACKEND_HOST}:{backend_port}"));
+
+        let response = wait_for_debug_runtime(backend_port, Duration::from_secs(5))
+            .expect("fake backend should answer /debug-runtime");
+        assert!(
+            response.contains("\"source\":\"portolan-tauri-native-smoke\""),
+            "unexpected /debug-runtime payload: {response}"
+        );
+
+        bridge.shutdown();
+        assert!(
+            !backend_reachable_on_port(backend_port),
+            "backend must not remain reachable after cleanup"
+        );
+        fs::remove_dir_all(resource_dir).ok();
+    }
+
+    struct SmokeBackendPortGuard;
+
+    impl Drop for SmokeBackendPortGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("PORTOLAN_SMOKE_BACKEND_PORT");
+        }
+    }
+
+    fn free_port_for_smoke() -> u16 {
+        TcpListener::bind((BACKEND_HOST, 0))
+            .expect("smoke should bind free local port")
+            .local_addr()
+            .expect("smoke port should be readable")
+            .port()
+    }
+
+    fn backend_reachable_on_port(port: u16) -> bool {
+        TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(250),
+        )
+        .is_ok()
     }
 
     #[cfg(unix)]

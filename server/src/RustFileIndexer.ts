@@ -15,6 +15,8 @@ export interface RustFileIndexResult {
   truncated: boolean;
   timedOut: boolean;
   stderr: string;
+  visitedDirs?: number;
+  ignoredDirs?: number;
   unreadableDirs?: number;
   indexRefreshed?: boolean;
   indexAgeMs?: number;
@@ -24,6 +26,8 @@ export interface RustFileIndexResult {
 interface RustWalkPayload {
   entries?: unknown;
   truncated?: unknown;
+  visitedDirs?: unknown;
+  ignoredDirs?: unknown;
   unreadableDirs?: unknown;
   indexRefreshed?: unknown;
   indexAgeMs?: unknown;
@@ -130,8 +134,10 @@ function runIndexerCommand(
           truncated: payload.truncated === true,
           timedOut: false,
           stderr,
-          unreadableDirs: parseUnreadableDirs(payload.unreadableDirs),
-          indexRefreshed: payload.indexRefreshed === true ? true : undefined,
+          visitedDirs: parseDirectoryCount(payload.visitedDirs),
+          ignoredDirs: parseDirectoryCount(payload.ignoredDirs),
+          unreadableDirs: parseDirectoryCount(payload.unreadableDirs),
+          indexRefreshed: parseBoolean(payload.indexRefreshed),
           indexAgeMs: typeof payload.indexAgeMs === 'number' ? payload.indexAgeMs : undefined,
           databasePath:
             typeof payload.databasePath === 'string' ? payload.databasePath : undefined,
@@ -205,11 +211,15 @@ function parseEntries(value: unknown): RustIndexedFileEntry[] {
   });
 }
 
-function parseUnreadableDirs(value: unknown): number | undefined {
+function parseDirectoryCount(value: unknown): number | undefined {
   return typeof value === 'number' &&
     Number.isFinite(value) &&
     Number.isInteger(value) &&
     value >= 0
     ? value
     : undefined;
+}
+
+function parseBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
