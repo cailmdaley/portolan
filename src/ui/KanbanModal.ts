@@ -2052,6 +2052,10 @@ export class KanbanModal {
   }
 
   private stopDragAutoScroll(): void {
+    // Every dragend / drop path in the modal funnels through here. Also
+    // wind down the horizontal timeline edge-scroll so its rAF tick
+    // doesn't keep running past the drag's lifetime.
+    this.stopTimelineEdgeScroll()
     this.dragAutoScrollVelocity = 0
     if (this.dragAutoScrollFrame === null) return
     window.cancelAnimationFrame(this.dragAutoScrollFrame)
