@@ -805,11 +805,15 @@ export class KanbanModal {
     const days = buildTimelineDays(TIMELINE_PAST_DAYS, TIMELINE_FUTURE_DAYS)
     const dayIndex = new Map<string, number>(days.map((d, i) => [d.iso, i]))
 
-    // Axis row: one cell per day, today marked.
+    // Axis row: one cell per day, today marked. Held by index so each
+    // dropcol can light its matching axis cell when a drag hovers — the
+    // highlight then reads as one cell stretching up from the strip
+    // through the day-of-week label.
     const axis = document.createElement('div')
     axis.className = 'kbn-timeline-axis'
     axis.style.gridTemplateColumns = `repeat(${days.length}, ${TIMELINE_DAY_WIDTH_PX}px)`
-    for (const day of days) axis.append(buildDayCell(day))
+    const axisCells = days.map((day) => buildDayCell(day))
+    for (const cell of axisCells) axis.append(cell)
     wrap.append(axis)
 
     // Card strip: each card lives at (grid-column = day index + 1, grid-row =
@@ -830,7 +834,7 @@ export class KanbanModal {
       dropCol.className = 'kbn-timeline-dropcol'
       dropCol.style.gridColumn = String(i + 1)
       dropCol.dataset.timelineDayIso = days[i].iso
-      this.installTimelineDayDropHandlers(dropCol, days[i].iso)
+      this.installTimelineDayDropHandlers(dropCol, days[i].iso, axisCells[i])
       strip.append(dropCol)
     }
 
@@ -1137,7 +1141,11 @@ export class KanbanModal {
     })
   }
 
-  private installTimelineDayDropHandlers(dropCol: HTMLElement, iso: string): void {
+  private installTimelineDayDropHandlers(
+    dropCol: HTMLElement,
+    iso: string,
+    axisCell?: HTMLElement,
+  ): void {
     // Tempered/composted cards are historical record — not editable.
     // Awaiting-review and open cards both accept future-date drops:
     // for open cards the date is when work is planned; for awaiting-
@@ -1152,22 +1160,29 @@ export class KanbanModal {
       if (card.status === 'closed' && card.tempered !== undefined) return false
       return true
     }
+    // Highlight both the strip dropcol AND its matching axis cell so the
+    // drop target reads as one column stretching from the day-of-week
+    // label down through the card strip.
+    const setActive = (active: boolean): void => {
+      dropCol.classList.toggle('kbn-timeline-dropcol-active', active)
+      axisCell?.classList.toggle('kbn-timeline-day-drop-active', active)
+    }
     dropCol.addEventListener('dragover', (e) => {
       if (!this.dragSourceId) return
       if (!isPlanCandidate(this.dragSourceId)) return
       e.preventDefault()
       e.stopPropagation()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-      dropCol.classList.add('kbn-timeline-dropcol-active')
+      setActive(true)
     })
     dropCol.addEventListener('dragleave', () => {
-      dropCol.classList.remove('kbn-timeline-dropcol-active')
+      setActive(false)
     })
     dropCol.addEventListener('drop', (e) => {
       e.preventDefault()
       e.stopPropagation()
       const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
-      dropCol.classList.remove('kbn-timeline-dropcol-active')
+      setActive(false)
       this.dragSourceId = null
       this.stopDragAutoScroll()
       if (!fiberId) return

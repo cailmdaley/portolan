@@ -374,13 +374,18 @@
 .kbn-timeline-axis {
   display: grid;
   border-bottom: 0.5px solid rgba(122, 111, 92, 0.30);
-  margin: 0 14px 6px;
+  margin: 0 14px 2px;
 }
 .kbn-timeline-day {
-  text-align: center;
-  padding: 3px 1px 5px;
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  padding: 1px 1px 2px;
   border-right: 0.5px solid rgba(122, 111, 92, 0.18);
   position: relative;
+  line-height: 1;
 }
 .kbn-timeline-day-past { background: rgba(0, 0, 0, 0.015); }
 .kbn-timeline-day-weekend { background: rgba(0, 0, 0, 0.04); }
@@ -392,20 +397,25 @@
 .kbn-timeline-day-week-boundary {
   border-right: 1px solid rgba(122, 111, 92, 0.45);
 }
+/* Drop-target highlight extends from the strip up through the axis cell
+   when a drag hovers — feels like one column reaching from the date
+   label down through the card stack. Drop-target outline lives on the
+   strip portion only; the axis just gets the matching warm-gold tint. */
+.kbn-timeline-day-drop-active {
+  background: rgba(196, 147, 51, 0.18);
+}
 /* Day-of-week label — set as small caps in the serif rather than the
    technical mono, so the strip reads as a manuscript almanac. */
 .kbn-timeline-day-dow {
-  display: block;
-  font-size: 11px;
+  font-size: 10px;
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-variant-caps: all-small-caps;
   font-feature-settings: "smcp", "c2sc";
   color: #A89B83;
-  letter-spacing: 0.08em;
-  margin-bottom: 1px;
+  letter-spacing: 0.06em;
 }
 .kbn-timeline-day-num {
-  font-size: 14px;
+  font-size: 12px;
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-weight: 500;
   color: #2A231A;

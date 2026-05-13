@@ -300,18 +300,22 @@ describe('effectiveHorizon', () => {
     }
   });
 
-  it('promotes due-within-seven-days cards to now and marks stored-horizon drift', () => {
-    expect(effectiveHorizon({ horizon: 'stashed', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
+  it('promotes due-within-two-days cards to now and marks stored-horizon drift', () => {
+    // `now` is 2026-05-12T12:00:00Z. Due 2026-05-13T12:00:00Z is 1 day out
+    // → inside the 2-day drift window, promotes to effectiveHorizon=now.
+    expect(effectiveHorizon({ horizon: 'stashed', due: '2026-05-13T12:00:00Z' }, now)).toEqual({
       storedHorizon: 'stashed',
       effectiveHorizon: 'now',
       drifted: true,
     });
-    expect(effectiveHorizon({ horizon: 'now', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
+    expect(effectiveHorizon({ horizon: 'now', due: '2026-05-13T12:00:00Z' }, now)).toEqual({
       storedHorizon: 'now',
       effectiveHorizon: 'now',
       drifted: false,
     });
-    expect(effectiveHorizon({ horizon: 'soon', due: '2026-05-25T12:00:00Z' }, now)).toEqual({
+    // Due 2026-05-18T12:00:00Z is 6 days out → outside the 2-day window,
+    // so a `soon` stays `soon` and renders on the timeline at the date.
+    expect(effectiveHorizon({ horizon: 'soon', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
       storedHorizon: 'soon',
       effectiveHorizon: 'soon',
       drifted: false,
@@ -358,9 +362,9 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     writeFib('human-due', {
       name: 'Human due',
       status: 'open',
-      // Past due date — past dates also fall inside the drift window
-      // (now - due <= 7d after the past-date branch normalizes the
-      // sign), so the stored horizon stashed promotes to effective now.
+      // Past due date — past dates always satisfy `dueMs - nowMs <= 2d`
+      // (the difference is negative, well under the drift threshold), so
+      // the stored horizon stashed promotes to effective now.
       due: '2020-05-15T00:00:00Z',
       horizon: 'stashed',
       'created-at': '2026-04-01',
@@ -2214,15 +2218,16 @@ describe('effectiveDispatchEligible', () => {
     ).toBe(false);
   });
 
-  it('is true for enabled + deferred horizon when due is within 7 days', () => {
+  it('is true for enabled + deferred horizon when due is within 2 days', () => {
     // The "human committed to a date" exception — drift promotes
     // effectiveHorizon to now and the fiber is dispatch-eligible.
+    // 2026-05-13T12:00 is 1 day after `now` → inside the 2-day window.
     expect(
       effectiveDispatchEligible(
         {
           shuttleEnabled: true,
           horizon: 'stashed',
-          due: '2026-05-15T12:00:00Z',
+          due: '2026-05-13T12:00:00Z',
         },
         now,
       ),
@@ -2292,10 +2297,10 @@ describe('classifyFiber', () => {
     });
 
     it('due-date drift overrides deferral: enabled + horizon=stashed + near due → inFlight', () => {
-      // A stashed fiber with `due` within 7 days is dispatch-eligible
+      // A stashed fiber with `due` within 2 days is dispatch-eligible
       // again. The human committed to a date and the kanban honors it
       // without forcing the user to manually pull-forward.
-      const nearDue = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+      const nearDue = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString();
       expect(
         classifyFiber(fib({ shuttleEnabled: true, horizon: 'stashed', due: nearDue })),
       ).toBe('inFlight');
