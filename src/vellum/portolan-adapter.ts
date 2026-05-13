@@ -7,7 +7,7 @@
  *   - getAnnotations / createAnnotation etc. wrap /annotations (file-keyed today;
  *     fiber-slug keying TODO on server side)
  *   - getFiberContent hits /fiber/:slug (remark + wikilink transform on demand)
- *   - getAstraGraph hits /astra/graph?cityId=X
+ *   - getFiberGraph hits /astra/graph?cityId=X
  *   - searchFibers wraps /api/search?cityId=…&q=… (server-side substring
  *     match across name/slug/tags/outcome/body, scored)
  *   - getRawFiber / putRawFiber wrap /fiber-raw for Vellum's inline fiber
@@ -31,7 +31,7 @@ import {
 } from 'vellum/adapter';
 import type {
   Annotation,
-  AstraGraph,
+  FiberGraph,
   FiberContent,
   FileContent,
   HistoryEvent,
@@ -39,6 +39,7 @@ import type {
   LogResponse,
   RawFiber,
   SearchHit,
+  GraphNode,
 } from 'vellum';
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`;
@@ -123,6 +124,21 @@ interface GraphLinkWorld {
   source: string;
   target: string;
   kind: 'contains' | 'data-flow' | 'cites';
+}
+
+type LegacyGraphNode = GraphNode & { hasASTRA?: boolean };
+
+function normalizeFiberGraph(graph: FiberGraph): FiberGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const legacy = node as LegacyGraphNode;
+      return {
+        ...node,
+        hasStructuredData: node.hasStructuredData ?? legacy.hasASTRA,
+      };
+    }),
+  };
 }
 
 export interface PortolanAdapterOptions {
@@ -226,7 +242,7 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       return res.json() as Promise<FiberContent>;
     },
 
-    async getAstraGraph(): Promise<AstraGraph> {
+    async getFiberGraph(): Promise<FiberGraph> {
       if (!collectionId) {
         // Global vellum mode: fetch the synthetic graph from the server.
         // The response contains one node per pinned city (no per-city
@@ -258,7 +274,8 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         () => null,
       );
       if (!res || !res.ok) return { nodes: [], links: [] };
-      return res.json() as Promise<AstraGraph>;
+      const graph = await res.json() as FiberGraph;
+      return normalizeFiberGraph(graph);
     },
 
     async getRawFiber(slug: string): Promise<RawFiber | null> {
@@ -440,7 +457,7 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
   const {
     getFile,
     getFiberContent,
-    getAstraGraph,
+    getFiberGraph,
     getRawFiber,
     getAnnotations,
     searchFibers,
@@ -450,7 +467,7 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
   return {
     getFile,
     getFiberContent,
-    getAstraGraph,
+    getFiberGraph,
     getRawFiber,
     getAnnotations,
     searchFibers,
