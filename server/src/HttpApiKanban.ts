@@ -1397,6 +1397,19 @@ export class HttpApiKanban {
           nowDrafts.push(card);
         }
       }
+      // Awaiting-review cards also honor `horizon: stashed` — the user
+      // can set a closed-but-not-yet-tempered fiber aside ("I'll judge
+      // later") just like a draft. Soon/future-date routing isn't
+      // wired for awaiting-review because the calendar's future lane is
+      // about *planned work* (status=open), not *deferred judgment*; the
+      // ghost projection on the timeline at `closedAt` already gives
+      // these cards a calendar presence.
+      const nowAwaitingReview: KanbanCard[] = [];
+      for (const card of awaitingReview) {
+        if (card.storedHorizon === 'stashed') stash.push(card);
+        else nowAwaitingReview.push(card);
+      }
+
       // The constitution treats `past` as both tempered and composted
       // landings, sorted by closedAt desc. We already sorted each by
       // closedAt; merging preserves the relative ordering inside each
@@ -1414,7 +1427,7 @@ export class HttpApiKanban {
         now: {
           drafts: nowDrafts,
           inFlight,
-          awaitingReview,
+          awaitingReview: nowAwaitingReview,
         },
         timeline: {
           past,
@@ -1426,8 +1439,11 @@ export class HttpApiKanban {
         totals: {
           ideas: ideas.length,
           drafts: nowDrafts.length,
+          // (totals.awaitingReview must match the now-surface partition,
+          //  not the classifier output, so stashed awaiting-review cards
+          //  don't double-count in the header stats line.)
           inFlight: inFlight.length,
-          awaitingReview: awaitingReview.length,
+          awaitingReview: nowAwaitingReview.length,
           past: past.length,
           futureDated: futureDated.length,
           anytimeSoon: anytimeSoon.length,

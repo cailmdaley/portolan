@@ -1134,8 +1134,21 @@ export class KanbanModal {
   }
 
   private installTimelineDayDropHandlers(dropCol: HTMLElement, iso: string): void {
+    // Awaiting-review cards (closed-but-not-tempered) live in the Now lane
+    // and don't have a meaningful "future plan date" — the timeline future
+    // is about *planned work*, and the ghost projection on `closedAt`
+    // already gives these a calendar presence. The same applies to
+    // tempered/composted (past landings are history, not editable). Reject
+    // the drop visually so the user gets clear feedback instead of a
+    // silent no-op.
+    const isPlanCandidate = (id: string): boolean => {
+      const card = findCardById(this.lastResponse, id)
+      if (!card) return false
+      return card.status !== 'closed'
+    }
     dropCol.addEventListener('dragover', (e) => {
       if (!this.dragSourceId) return
+      if (!isPlanCandidate(this.dragSourceId)) return
       e.preventDefault()
       e.stopPropagation()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
@@ -1153,7 +1166,7 @@ export class KanbanModal {
       this.stopDragAutoScroll()
       if (!fiberId) return
       const card = findCardById(this.lastResponse, fiberId)
-      if (!card) return
+      if (!card || card.status === 'closed') return
       // Past-date drops are not supported (past is a record, not a plan).
       // Today's column promotes to now via horizon=now; future dates set
       // horizon=soon + the chosen due date.
