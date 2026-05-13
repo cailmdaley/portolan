@@ -29,9 +29,9 @@ import { getActivitySessionKey } from './runtime/FrontendActivityStore'
 import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
-import { UrlFragmentSync, SCOPE_GLOBAL, readUrlState, type UrlState, type VellumMode } from './runtime/UrlFragment'
+import { UrlFragmentSync, SCOPE_GLOBAL, encodeUrlState, readUrlState, type UrlState, type VellumMode } from './runtime/UrlFragment'
 import { buildVellumFiberUrl, buildVellumFileUrl } from './runtime/vellumFileLink'
-import { openNativeWorkspaceWindow } from './runtime/NativeBridge'
+import { openNativeWorkspaceWindow, recordNativeWorkspaceWindowRoute } from './runtime/NativeBridge'
 import {
   DEFAULT_FAVICON_HREF,
   buildBrowserTabTitle,
@@ -286,7 +286,17 @@ async function resolveIconHref(primary: string, fallback: string): Promise<strin
  *  convergence so the converging open paths don't double-push. */
 function pushCurrentUrl(): void {
   syncBrowserTabIdentity()
-  urlSync.push(buildCurrentUrlState())
+  const state = buildCurrentUrlState()
+  urlSync.push(state)
+  recordCurrentNativeWorkspaceRoute(state)
+}
+
+function recordCurrentNativeWorkspaceRoute(state: UrlState = buildCurrentUrlState()): void {
+  const routeUrl = encodeUrlState(state) || '#'
+  void recordNativeWorkspaceWindowRoute({
+    routeUrl,
+    title: document.title || 'Portolan',
+  }).catch(err => console.debug('[native] failed to record workspace route:', err))
 }
 
 // Wire up worker label click handlers (CSS2D labels need direct handlers)

@@ -42,6 +42,13 @@ export interface NativeWorkspaceWindowArgs {
   title?: string
 }
 
+export interface NativeWorkspaceWindowRecord {
+  label: string
+  routeUrl: string
+  title: string
+  updatedAtUnix: number
+}
+
 export async function openNativeWorkspaceWindow(
   args: NativeWorkspaceWindowArgs,
 ): Promise<string | null> {
@@ -49,4 +56,36 @@ export async function openNativeWorkspaceWindow(
 
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<string>('open_workspace_window', { ...args })
+}
+
+export async function recordNativeWorkspaceWindowRoute(
+  args: NativeWorkspaceWindowArgs,
+): Promise<boolean> {
+  if (!isNativePortolanRuntime()) return false
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('record_workspace_window_route', { ...args })
+  return true
+}
+
+export async function refreshNativeWorkspaceWindow(): Promise<boolean> {
+  if (!isNativePortolanRuntime()) return false
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('refresh_workspace_window')
+  return true
+}
+
+export async function getRecentNativeWorkspaceWindows(): Promise<NativeWorkspaceWindowRecord[] | null> {
+  if (!isNativePortolanRuntime()) return null
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<NativeWorkspaceWindowRecord[]>('recent_workspace_windows')
+}
+
+export async function restoreRecentNativeWorkspaceWindows(): Promise<string[] | null> {
+  if (!isNativePortolanRuntime()) return null
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<string[]>('restore_recent_workspace_windows')
 }

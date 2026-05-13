@@ -1,6 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
-    io,
+    collections::VecDeque,
+    fs, io,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -50,7 +51,74 @@ struct BackendStatus {
 
 struct NativeState {
     backend: Mutex<BackendBridge>,
+    windows: Mutex<WorkspaceWindowRegistry>,
     resource_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceWindowRecord {
+    label: String,
+    route_url: String,
+    title: String,
+    updated_at_unix: u64,
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceWindowRegistry {
+    recent: VecDeque<WorkspaceWindowRecord>,
+    store_path: Option<PathBuf>,
+}
+
+impl WorkspaceWindowRegistry {
+    const MAX_RECENT: usize = 16;
+
+    fn load(store_path: Option<PathBuf>) -> Self {
+        let recent = store_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|body| serde_json::from_str::<Vec<WorkspaceWindowRecord>>(&body).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .take(Self::MAX_RECENT)
+            .collect();
+        Self { recent, store_path }
+    }
+
+    fn record(&mut self, label: impl Into<String>, route_url: String, title: String) {
+        let label = label.into();
+        if let Some(index) = self.recent.iter().position(|entry| entry.label == label) {
+            self.recent.remove(index);
+        }
+        self.recent.push_front(WorkspaceWindowRecord {
+            label,
+            route_url,
+            title,
+            updated_at_unix: unix_now(),
+        });
+        while self.recent.len() > Self::MAX_RECENT {
+            self.recent.pop_back();
+        }
+        self.save();
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.store_path else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        if let Ok(body) = serde_json::to_string_pretty(&self.recent()) {
+            let _ = fs::write(path, body);
+        }
+    }
+
+    fn recent(&self) -> Vec<WorkspaceWindowRecord> {
+        self.recent.iter().cloned().collect()
+    }
 }
 
 struct BackendBridge {
@@ -429,6 +497,7 @@ fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
 #[tauri::command]
 async fn open_workspace_window(
     app: tauri::AppHandle,
+    state: tauri::State<'_, NativeState>,
     route_url: String,
     title: Option<String>,
 ) -> Result<String, String> {
@@ -445,14 +514,91 @@ async fn open_workspace_window(
         label.clone(),
         tauri::WebviewUrl::App(PathBuf::from(route)),
     )
-    .title(window_title)
+    .title(&window_title)
     .inner_size(1200.0, 860.0)
     .min_inner_size(960.0, 640.0)
     .resizable(true)
     .build()
     .map_err(|error| error.to_string())?;
 
+    state
+        .windows
+        .lock()
+        .expect("workspace window registry poisoned")
+        .record(label.clone(), route_url, window_title);
+
     Ok(label)
+}
+
+#[tauri::command]
+fn record_workspace_window_route(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, NativeState>,
+    route_url: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    let _ = workspace_route_path(&route_url)?;
+    let window_title = title
+        .as_deref()
+        .map(sanitize_window_title)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Portolan".to_string());
+    state
+        .windows
+        .lock()
+        .expect("workspace window registry poisoned")
+        .record(window.label(), route_url, window_title);
+    Ok(())
+}
+
+#[tauri::command]
+fn recent_workspace_windows(state: tauri::State<'_, NativeState>) -> Vec<WorkspaceWindowRecord> {
+    state
+        .windows
+        .lock()
+        .expect("workspace window registry poisoned")
+        .recent()
+}
+
+#[tauri::command]
+fn refresh_workspace_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .eval("window.location.reload()")
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn restore_recent_workspace_windows(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, NativeState>,
+) -> Result<Vec<String>, String> {
+    let recent = state
+        .windows
+        .lock()
+        .expect("workspace window registry poisoned")
+        .recent();
+    let mut labels = Vec::new();
+    for (index, entry) in recent.into_iter().enumerate() {
+        let label = format!("workspace-restore-{}-{index}", unix_now_millis());
+        tauri::WebviewWindowBuilder::new(
+            &app,
+            label.clone(),
+            tauri::WebviewUrl::App(PathBuf::from(workspace_route_path(&entry.route_url)?)),
+        )
+        .title(entry.title.clone())
+        .inner_size(1200.0, 860.0)
+        .min_inner_size(960.0, 640.0)
+        .resizable(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+        state
+            .windows
+            .lock()
+            .expect("workspace window registry poisoned")
+            .record(label.clone(), entry.route_url, entry.title);
+        labels.push(label);
+    }
+    Ok(labels)
 }
 
 fn shutdown_backend(app: &tauri::AppHandle) {
@@ -468,12 +614,22 @@ pub fn run() {
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             native_status,
-            open_workspace_window
+            open_workspace_window,
+            record_workspace_window_route,
+            recent_workspace_windows,
+            refresh_workspace_window,
+            restore_recent_workspace_windows
         ])
         .setup(|app| {
             let resource_dir = app.path().resource_dir().ok();
+            let window_store_path = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|dir| dir.join("workspace-windows.json"));
             app.manage(NativeState {
                 backend: Mutex::new(BackendBridge::start(resource_dir.clone())),
+                windows: Mutex::new(WorkspaceWindowRegistry::load(window_store_path)),
                 resource_dir,
             });
             if cfg!(debug_assertions) {
@@ -571,6 +727,61 @@ mod tests {
             sanitize_window_title("  Portolan\nWindow\t  "),
             "PortolanWindow"
         );
+    }
+
+    #[test]
+    fn workspace_window_registry_keeps_recent_routes_bounded() {
+        let mut registry = WorkspaceWindowRegistry::default();
+        for index in 0..20 {
+            registry.record(
+                format!("workspace-{index}"),
+                format!("#city=portolan&mode=narrative&fiber={index}"),
+                format!("Portolan - {index}"),
+            );
+        }
+
+        let recent = registry.recent();
+        assert_eq!(recent.len(), WorkspaceWindowRegistry::MAX_RECENT);
+        assert_eq!(recent[0].label, "workspace-19");
+        assert_eq!(recent.last().unwrap().label, "workspace-4");
+    }
+
+    #[test]
+    fn workspace_window_registry_updates_existing_label_to_front() {
+        let mut registry = WorkspaceWindowRegistry::default();
+        registry.record("main", "#city=portolan".to_string(), "Portolan".to_string());
+        registry.record(
+            "workspace-1",
+            "#city=portolan&mode=find".to_string(),
+            "Portolan - Find".to_string(),
+        );
+        registry.record(
+            "main",
+            "#city=portolan&mode=kanban".to_string(),
+            "Portolan - Kanban".to_string(),
+        );
+
+        let recent = registry.recent();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].label, "main");
+        assert_eq!(recent[0].route_url, "#city=portolan&mode=kanban");
+    }
+
+    #[test]
+    fn workspace_window_registry_persists_recent_routes() {
+        let dir = temp_resource_dir("workspace-window-registry");
+        let store = dir.join("workspace-windows.json");
+        let mut registry = WorkspaceWindowRegistry::load(Some(store.clone()));
+        registry.record(
+            "main",
+            "#city=portolan&mode=find".to_string(),
+            "Portolan - Find".to_string(),
+        );
+
+        let restored = WorkspaceWindowRegistry::load(Some(store));
+        assert_eq!(restored.recent()[0].route_url, "#city=portolan&mode=find");
+
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

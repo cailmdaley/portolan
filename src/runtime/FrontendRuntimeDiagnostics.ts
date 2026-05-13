@@ -4,7 +4,14 @@ import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
 import type { getArtifactMediaCacheStats } from '../ui/ArtifactMedia'
 import type { FrontendRenderLoopStats } from './FrontendAppRuntime'
-import { getNativePortolanStatus, type NativePortolanStatus } from './NativeBridge'
+import {
+  getNativePortolanStatus,
+  getRecentNativeWorkspaceWindows,
+  refreshNativeWorkspaceWindow,
+  restoreRecentNativeWorkspaceWindows,
+  type NativePortolanStatus,
+  type NativeWorkspaceWindowRecord,
+} from './NativeBridge'
 
 export type DebugRuntimeWindow = Window & {
   zoneRenderer: ZoneRenderer
@@ -12,6 +19,9 @@ export type DebugRuntimeWindow = Window & {
   debugArtifactCaches: () => void
   getFrontendRuntimeDiagnostics: () => FrontendRuntimeDiagnostics
   debugNativePortolan: () => Promise<NativePortolanStatus | null>
+  debugNativeWorkspaceWindows: () => Promise<NativeWorkspaceWindowRecord[] | null>
+  refreshNativeWorkspaceWindow: () => Promise<boolean>
+  restoreNativeWorkspaceWindows: () => Promise<string[] | null>
   debugRuntime: () => Promise<{
     frontend: FrontendRuntimeDiagnostics
     server: unknown | null
@@ -125,6 +135,13 @@ export function installFrontendRuntimeDiagnostics(
     console.log('[debugNativePortolan] snapshot', native)
     return native
   }
+  debugWindow.debugNativeWorkspaceWindows = async () => {
+    const windows = await getRecentNativeWorkspaceWindows()
+    console.log('[debugNativeWorkspaceWindows] snapshot', windows)
+    return windows
+  }
+  debugWindow.refreshNativeWorkspaceWindow = refreshNativeWorkspaceWindow
+  debugWindow.restoreNativeWorkspaceWindows = restoreRecentNativeWorkspaceWindows
   debugWindow.getFrontendRuntimeDiagnostics = () => {
     const activity = options.getActivityStats()
     const webglInfo = options.renderer.info
