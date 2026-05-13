@@ -2151,13 +2151,30 @@
   <body>
     <canvas id="canvas" role="img" aria-label="Portolan map — cities and workers"></canvas>
     <script>
-      // Boot-eager hide of the map canvas when the URL deep-links to a
-      // global vellum surface. Runs before main.ts evaluates so the
-      // canvas is hidden through the entire boot → mount window — the
-      // user sees the parchment body background, then the modal lands.
-      // Cleared in main.ts handleWorkspaceClosed when the user closes
-      // the modal (or by main.ts on any close path). Mirrors the
-      // eager-open logic at the bottom of main.ts.
+      // Boot-eager open: when the URL deep-links to a global vellum
+      // surface, race the data fetch + modal mount against the
+      // WebSocket connect and the rest of main.ts.
+      //
+      // Three things happen in this block:
+      //
+      //   1. Hide the canvas via `html.boot-vellum-eager` so the user
+      //      doesn't see the map render during the boot → mount window.
+      //      Cleared in main.ts handleWorkspaceClosed when the user
+      //      closes the modal.
+      //
+      //   2. Prefetch the modal's primary data fetch (/kanban or
+      //      /global-graph) and stash the Promise on
+      //      `window.__bootPrefetch__`. The modal's fetcher (see
+      //      `src/runtime/bootPrefetch.ts` + KanbanModal /
+      //      portolan-adapter) picks it up once and skips its own
+      //      initial round-trip.
+      //
+      //   3. Hint to the browser that we're about to dynamic-import
+      //      `vellum/mount` so it starts fetching the chunk in
+      //      parallel with main.ts instead of waiting for main.ts
+      //      to hit line 20.
+      //
+      // Mirrors the eager-open URL parse at the bottom of main.ts.
       (function () {
         var hash = window.location.hash.replace(/^#/, '')
         if (!hash) return
@@ -2166,6 +2183,20 @@
         if (mode !== 'kanban' && mode !== 'find' && mode !== 'narrative') return
         if (params.get('city') || params.get('fiber') || params.get('file')) return
         document.documentElement.classList.add('boot-vellum-eager')
+
+        var apiBase = 'http://' + window.location.hostname + ':4004'
+        var prefetchUrl = null
+        if (mode === 'kanban') prefetchUrl = apiBase + '/kanban'
+        else if (mode === 'narrative') prefetchUrl = apiBase + '/global-graph'
+        // Find has no global aggregate fetch — search fires on keystroke.
+        if (prefetchUrl) {
+          window.__bootPrefetch__ = { url: prefetchUrl, promise: fetch(prefetchUrl) }
+        }
+
+        var preload = document.createElement('link')
+        preload.rel = 'modulepreload'
+        preload.href = '/src/vellum/mount.tsx'
+        document.head.appendChild(preload)
       })()
     </script>
     <script type="module" src="/src/main.ts"></script>

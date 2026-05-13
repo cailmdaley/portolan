@@ -41,6 +41,7 @@ import type {
   SearchHit,
   GraphNode,
 } from 'vellum';
+import { fetchWithBootPrefetch } from '../runtime/bootPrefetch';
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`;
 
@@ -247,7 +248,9 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
         // Global vellum mode: fetch the synthetic graph from the server.
         // The response contains one node per pinned city (no per-city
         // root fibers — see HttpApiGlobalSearch.globalGraph for why).
-        const res = await fetch(`${API_BASE}/global-graph`).catch(() => null);
+        // First call on a `#mode=narrative` cold-load deep link picks
+        // up the boot-stashed prefetch from index.html's inline script.
+        const res = await fetchWithBootPrefetch(`${API_BASE}/global-graph`).catch(() => null);
         if (!res || !res.ok) return { nodes: [], links: [] };
         const graph = await res.json() as { nodes: GraphNodeWorld[]; links: GraphLinkWorld[] };
         // Map server types to vellum's GraphNode/GraphLink. The fields

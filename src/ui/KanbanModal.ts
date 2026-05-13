@@ -33,6 +33,7 @@
 import './KanbanModal.css'
 import { renderMarkdown } from './utils.js'
 import { shouldRunVisiblePoll } from '../runtime/PageAttention'
+import { fetchWithBootPrefetch } from '../runtime/bootPrefetch'
 
 /** Column identifier within the Now surface — also doubles as the API target. */
 type ColumnKind = 'ideas' | 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
@@ -653,7 +654,11 @@ export class KanbanModal {
     const token = ++this.inflightFetchToken
     if (this.statusEl) this.statusEl.textContent = 'Loading…'
     try {
-      const res = await fetch(this.kanbanUrl())
+      // First mount on a `#mode=kanban` deep link picks up the
+      // boot-stashed prefetch (kicked off from index.html's inline
+      // script). Subsequent fetches (15s poll, scope swap) hit the
+      // fallthrough `fetch()` directly.
+      const res = await fetchWithBootPrefetch(this.kanbanUrl())
       if (token !== this.inflightFetchToken) return
       if (!res.ok) {
         this.renderError(`Server returned ${res.status}`)
