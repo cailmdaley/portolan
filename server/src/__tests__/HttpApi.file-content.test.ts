@@ -168,6 +168,68 @@ $$
     expect(serialized).toContain('katex-html');
   });
 
+  it('reads remote text file content through the remote agent executor', async () => {
+    const calls: unknown[] = [];
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteFileContentExecutor: async (request) => {
+          calls.push(request);
+          return { content: '# Remote\n\nBody\n' };
+        },
+      },
+    );
+
+    const remotePath = '/home/cdaley/project/remote.md';
+    const res = await httpRequest(
+      api,
+      'GET',
+      `/file-content?originId=remote-candide&path=${encodeURIComponent(remotePath)}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([{
+      originId: 'remote-candide',
+      path: remotePath,
+      operation: 'read',
+    }]);
+    expect(res.data.content).toBe('# Remote\n\nBody\n');
+    expect(JSON.stringify(res.data.mdast)).toContain('"type":"heading"');
+  });
+
+  it('writes remote text files through the remote agent executor', async () => {
+    const calls: unknown[] = [];
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteFileContentExecutor: async (request) => {
+          calls.push(request);
+          return {};
+        },
+      },
+    );
+
+    const remotePath = '/home/cdaley/project/remote.md';
+    const res = await httpRequest(api, 'POST', '/save-file', {
+      originId: 'remote-candide',
+      path: remotePath,
+      content: 'updated\n',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.data).toEqual({ success: true, path: remotePath });
+    expect(calls).toEqual([{
+      originId: 'remote-candide',
+      path: remotePath,
+      operation: 'write',
+      content: 'updated\n',
+    }]);
+  });
+
   it('streams project files with content types inferred from extension', async () => {
     const htmlPath = join(TEST_DIR, 'slides deck', 'index.html');
     mkdirSync(join(TEST_DIR, 'slides deck'), { recursive: true });

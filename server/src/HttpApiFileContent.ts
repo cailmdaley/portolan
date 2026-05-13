@@ -158,11 +158,23 @@ interface OriginLookup {
   getOrigin(originId: string): Origin | null | undefined;
 }
 
+export interface RemoteFileContentInvocation {
+  originId: string;
+  path: string;
+  operation: 'read' | 'write';
+  content?: string;
+}
+
+export interface RemoteFileContentResult {
+  content?: string;
+}
+
 interface HttpApiFileContentDeps {
   originLookup: OriginLookup;
   parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
+  remoteFileContentExecutor?: (request: RemoteFileContentInvocation) => Promise<RemoteFileContentResult>;
   /**
    * Override the felt root the `/static/.felt/<rest>` route resolves
    * against. Defaults to `<projectRoot>/.felt` (computed from this
@@ -176,6 +188,7 @@ export class HttpApiFileContent {
   private parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
   private sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   private sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
+  private remoteFileContentExecutor: HttpApiFileContentDeps['remoteFileContentExecutor'];
   private feltRoot: string;
 
   constructor(deps: HttpApiFileContentDeps) {
@@ -183,6 +196,7 @@ export class HttpApiFileContent {
     this.parseJsonBody = deps.parseJsonBody;
     this.sendJsonError = deps.sendJsonError;
     this.sendJsonSuccess = deps.sendJsonSuccess;
+    this.remoteFileContentExecutor = deps.remoteFileContentExecutor;
     this.feltRoot = resolvePath(deps.feltRoot ?? DEFAULT_FELT_ROOT);
   }
 
@@ -222,18 +236,7 @@ export class HttpApiFileContent {
       if (!originId || originId === 'local') {
         content = await readFile(filePath, 'utf-8');
       } else {
-        const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Origin not found or not connected' }));
-          return;
-        }
-
-        const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, `cat ${shellEscape(filePath)}`],
-          { maxBuffer: 10 * 1024 * 1024, timeout: 10000 }
-        );
-        content = stdout;
+        content = await this.readTextFile(filePath, originId);
       }
 
       const language = this.extToLanguage(ext);
@@ -267,9 +270,11 @@ export class HttpApiFileContent {
       res.end(JSON.stringify({ content, language, path: filePath, mdast, frontmatter }));
     } catch (error: any) {
       console.error('Failed to fetch file content:', error.message);
-      const statusCode = error.code === 'ENOENT' ? 404 : 500;
+      const statusCode = typeof error.statusCode === 'number'
+        ? error.statusCode
+        : (error.code === 'ENOENT' ? 404 : 500);
       res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.code === 'ENOENT' ? 'File not found' : 'Failed to read file' }));
+      res.end(JSON.stringify({ error: statusCode === 404 ? 'File not found' : 'Failed to read file' }));
     }
   }
 
@@ -428,19 +433,14 @@ export class HttpApiFileContent {
       if (!originId || originId === 'local') {
         await writeFile(filePath, content, 'utf-8');
       } else {
-        const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
-          this.sendJsonError(res, 404, 'Origin not found or not connected');
-          return;
-        }
-
-        await this.writeRemoteFile(origin.sshHost, filePath, content);
+        await this.writeRemoteTextFile(originId, filePath, content);
       }
 
       this.sendJsonSuccess(res, { success: true, path: filePath });
     } catch (error: any) {
       console.error('Failed to save file:', error.message);
-      this.sendJsonError(res, 500, 'Failed to save file: ' + error.message);
+      const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500;
+      this.sendJsonError(res, statusCode, 'Failed to save file: ' + error.message);
     }
   }
 
@@ -477,6 +477,18 @@ export class HttpApiFileContent {
       return readFile(filePath, 'utf-8');
     }
 
+    if (this.remoteFileContentExecutor) {
+      const result = await this.remoteFileContentExecutor({
+        originId,
+        path: filePath,
+        operation: 'read',
+      });
+      if (typeof result.content !== 'string') {
+        throw this.makeHttpError('Remote agent did not return file content', 502);
+      }
+      return result.content;
+    }
+
     const origin = this.originLookup.getOrigin(originId);
     if (!origin?.sshHost) {
       const error = new Error('Origin not found or not connected') as Error & { statusCode?: number };
@@ -489,6 +501,25 @@ export class HttpApiFileContent {
       { maxBuffer: 10 * 1024 * 1024, timeout: 10000 }
     );
     return stdout;
+  }
+
+  private async writeRemoteTextFile(originId: string, filePath: string, content: string): Promise<void> {
+    if (this.remoteFileContentExecutor) {
+      await this.remoteFileContentExecutor({
+        originId,
+        path: filePath,
+        operation: 'write',
+        content,
+      });
+      return;
+    }
+
+    const origin = this.originLookup.getOrigin(originId);
+    if (!origin?.sshHost) {
+      throw this.makeHttpError('Origin not found or not connected', 404);
+    }
+
+    await this.writeRemoteFile(origin.sshHost, filePath, content);
   }
 
   private injectHtmlBridge(content: string): string {

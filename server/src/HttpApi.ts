@@ -22,7 +22,11 @@ import { HttpApiActivation } from './HttpApiActivation.js';
 import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
 import { HttpApiAnnotations } from './HttpApiAnnotations.js';
 import { HttpApiAstraView } from './HttpApiAstraView.js';
-import { HttpApiFileContent } from './HttpApiFileContent.js';
+import {
+  HttpApiFileContent,
+  type RemoteFileContentInvocation,
+  type RemoteFileContentResult,
+} from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiRecents } from './HttpApiRecents.js';
 import {
@@ -106,6 +110,9 @@ export interface HttpApiOptions {
   remoteFiberHistoryExecutor?: (
     request: RemoteFiberHistoryInvocation,
   ) => Promise<RemoteFiberHistoryResult>;
+  remoteFileContentExecutor?: (
+    request: RemoteFileContentInvocation,
+  ) => Promise<RemoteFileContentResult>;
   /**
    * Override felt root for the `/static/.felt/<rest>` asset route. Defaults
    * to `<projectRoot>/.felt`; tests inject an isolated tmpdir.
@@ -154,6 +161,7 @@ export class HttpApi {
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
   private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private remoteFiberHistoryExecutor: HttpApiOptions['remoteFiberHistoryExecutor'];
+  private remoteFileContentExecutor: HttpApiOptions['remoteFileContentExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
   private feltEditFn: HttpApiOptions['feltEditFn'];
   private globalKanbanApiCache: CachedApi<HttpApiKanban> | null = null;
@@ -175,6 +183,7 @@ export class HttpApi {
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
+    this.remoteFileContentExecutor = options.remoteFileContentExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
     this.feltEditFn = options.feltEditFn;
     this.annotationsApi = new HttpApiAnnotations({
@@ -191,6 +200,7 @@ export class HttpApi {
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
+      remoteFileContentExecutor: this.remoteFileContentExecutor,
       feltRoot: options.feltRoot,
     });
     this.astraViewApi = new HttpApiAstraView({ originLookup });

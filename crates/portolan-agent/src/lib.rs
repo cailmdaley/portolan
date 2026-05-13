@@ -3,7 +3,8 @@ use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
     AgentSession, FiberHistoryRequestPayload, FiberHistoryResultPayload, FiberRawOperation,
     FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta, FiberTreeDeltaOp,
-    FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile, ShuttleSnapshotPayload,
+    FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile, FileContentOperation,
+    FileContentRequestPayload, FileContentResultPayload, ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -480,6 +481,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         }
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         AgentFrame::FiberHistory { payload } => vec![handle_fiber_history(payload)],
+        AgentFrame::FileContent { payload } => vec![handle_file_content(payload)],
         _ => Vec::new(),
     }
 }
@@ -1874,6 +1876,49 @@ fn write_raw_fiber_with_snapshot(
     Ok((sha256_hex(body), fiber))
 }
 
+fn handle_file_content(payload: &FileContentRequestPayload) -> AgentFrame {
+    let result = match payload.operation {
+        FileContentOperation::Read => read_text_file_content(&payload.path).map(Some),
+        FileContentOperation::Write => write_text_file_content(payload).map(|_| None),
+    };
+
+    match result {
+        Ok(content) => AgentFrame::FileContentResult {
+            payload: FileContentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                content,
+            },
+        },
+        Err(error) => AgentFrame::FileContentResult {
+            payload: FileContentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                content: None,
+            },
+        },
+    }
+}
+
+fn read_text_file_content(path: &str) -> Result<String, String> {
+    let full_path = resolve_remote_file_path(path, true)?;
+    fs::read_to_string(&full_path).map_err(|error| format!("failed to read file {path}: {error}"))
+}
+
+fn write_text_file_content(payload: &FileContentRequestPayload) -> Result<(), String> {
+    let content = payload
+        .content
+        .as_deref()
+        .ok_or_else(|| "missing content".to_string())?;
+    if content.len() > 10 * 1024 * 1024 {
+        return Err("file content exceeds 10 MB".to_string());
+    }
+    let full_path = resolve_remote_file_path(&payload.path, false)?;
+    write_atomic(&full_path, content)
+}
+
 fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String> {
     let output = Command::new("felt")
         .args(["-C", felt_host, "show", fiber_id, "-j"])
@@ -2190,6 +2235,34 @@ fn resolve_remote_fiber_file(felt_host: &str, rel_path: &str) -> Result<PathBuf,
         return Err(format!("fiber file missing: {rel_path}"));
     }
     Ok(full_path)
+}
+
+fn resolve_remote_file_path(path: &str, require_existing: bool) -> Result<PathBuf, String> {
+    let full_path = Path::new(path);
+    if !full_path.is_absolute() {
+        return Err(format!("path must be absolute: {path}"));
+    }
+    if full_path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!("invalid path: {path}"));
+    }
+    if require_existing && !full_path.exists() {
+        return Err(format!("file missing: {path}"));
+    }
+    if full_path.exists() && !full_path.is_file() {
+        return Err(format!("path is not a file: {path}"));
+    }
+    if !require_existing {
+        let parent = full_path
+            .parent()
+            .ok_or_else(|| format!("path has no parent: {path}"))?;
+        if !parent.is_dir() {
+            return Err(format!("parent directory missing: {path}"));
+        }
+    }
+    Ok(full_path.to_path_buf())
 }
 
 fn normalize_host_path(path: &str) -> PathBuf {
@@ -4024,6 +4097,83 @@ malformed
             AgentFrame::FiberHistoryResult { payload } => {
                 assert!(!payload.ok);
                 assert!(payload.error.as_deref().unwrap().contains("invalid slug"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reads_text_file_content() {
+        let dir = temp_host("file-content-read");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("notes.md");
+        fs::write(&file_path, "# Notes\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::FileContent {
+            payload: FileContentRequestPayload {
+                correlation_id: "file-read".to_string(),
+                operation: FileContentOperation::Read,
+                path: file_path.display().to_string(),
+                content: None,
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::FileContentResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.content.as_deref(), Some("# Notes\n"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn writes_text_file_content() {
+        let dir = temp_host("file-content-write");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("notes.md");
+
+        let responses = handle_server_frame(&AgentFrame::FileContent {
+            payload: FileContentRequestPayload {
+                correlation_id: "file-write".to_string(),
+                operation: FileContentOperation::Write,
+                path: file_path.display().to_string(),
+                content: Some("updated\n".to_string()),
+            },
+        });
+        let body = fs::read_to_string(&file_path).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::FileContentResult { payload } => {
+                assert!(payload.ok);
+                assert!(payload.content.is_none());
+                assert_eq!(body, "updated\n");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_file_content_paths() {
+        let responses = handle_server_frame(&AgentFrame::FileContent {
+            payload: FileContentRequestPayload {
+                correlation_id: "file-bad".to_string(),
+                operation: FileContentOperation::Read,
+                path: "../escape.md".to_string(),
+                content: None,
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::FileContentResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("path must be absolute"));
             }
             other => panic!("unexpected response: {other:?}"),
         }

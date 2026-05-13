@@ -186,6 +186,15 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     );
     return { events: result.events };
   },
+  remoteFileContentExecutor: async ({ originId, ...payload }) => {
+    const result = await agentRequestCoordinator.send<{ content?: string }>(
+      originId,
+      'file-content',
+      payload,
+      10_000,
+    );
+    return { content: result.content };
+  },
 });
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
@@ -533,6 +542,16 @@ wss.on('connection', async (ws, req) => {
           };
           const result: Record<string, unknown> = {};
           if (events !== undefined) result.events = events;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'file-content-result') {
+          const { correlationId, ok, error, content } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            content?: string;
+          };
+          const result: Record<string, unknown> = {};
+          if (content !== undefined) result.content = content;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {
