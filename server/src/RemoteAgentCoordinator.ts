@@ -688,17 +688,22 @@ export async function recoverRemoteAgent(
   agentRuntime: RemoteAgentRuntime = 'node',
   startupOptions: RemoteAgentStartupOptions = {},
 ): Promise<RemoteAgentRecoveryResult> {
-  await reconnectTunnel(sshHost);
   const session = remoteAgentTmuxSession(agentRuntime);
+  let tunnelState = 'already reachable';
 
-  const reachable = await waitForRemotePortolan(sshHost);
-  if (!reachable) {
-    return {
-      sshHost,
-      tunnel: 'unreachable',
-      agent: 'failed',
-      message: `${sshHost}: tunnel unreachable after kickstart; ${session} was not restarted`,
-    };
+  if (!(await isRemotePortolanReachable(sshHost))) {
+    tunnelState = 'reachable';
+    await reconnectTunnel(sshHost);
+
+    const reachable = await waitForRemotePortolan(sshHost);
+    if (!reachable) {
+      return {
+        sshHost,
+        tunnel: 'unreachable',
+        agent: 'failed',
+        message: `${sshHost}: tunnel unreachable after kickstart; ${session} was not restarted`,
+      };
+    }
   }
 
   try {
@@ -707,14 +712,14 @@ export async function recoverRemoteAgent(
       sshHost,
       tunnel: 'reachable',
       agent: 'restarted',
-      message: `${sshHost}: tunnel reachable; restarted ${session}`,
+      message: `${sshHost}: tunnel ${tunnelState}; restarted ${session}`,
     };
   } catch (error) {
     return {
       sshHost,
       tunnel: 'reachable',
       agent: 'failed',
-      message: `${sshHost}: tunnel reachable; failed to restart ${session}: ${errorMessage(error)}`,
+      message: `${sshHost}: tunnel ${tunnelState}; failed to restart ${session}: ${errorMessage(error)}`,
     };
   }
 }

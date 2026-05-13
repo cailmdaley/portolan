@@ -27,7 +27,7 @@
  *     shuttle.enabled !== false  AND  effectiveHorizon === 'now'
  *
  * — see `effectiveDispatchEligible`. `effectiveHorizon` honors due-date
- * drift (`due` within 2 days promotes effective horizon to `now`), so a
+ * drift (`due` within 7 days promotes effective horizon to `now`), so a
  * stashed-but-deadline-bearing fiber still dispatches. classifyFiber
  * uses this predicate to gate `inFlight`, which is why "In Flight Soon"
  * is structurally impossible: enabled + horizon:soon lands in drafts.
@@ -86,8 +86,8 @@ const LEGACY_HORIZONS = new Set<string>(['later', 'someday']);
 // calendar — instead of crowding the desk. The two failure modes the
 // drift window has to balance: an overwhelming desk that hides what
 // actually matters, vs. quietly-soon deadlines that get missed because
-// they live on the calendar alone. Two days threads that gap.
-const HORIZON_DRIFT_MS = 2 * 24 * 60 * 60 * 1000;
+// they live on the calendar alone. Seven days threads that gap.
+const HORIZON_DRIFT_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface KanbanCard {
   id: string;
@@ -648,7 +648,7 @@ export type KanbanColumn =
  *                                             inFlight; see
  *                                             effectiveDispatchEligible)
  *        - else                  → inFlight  (enabled + horizon=now or
- *                                             due within 2 days)
+ *                                             due within 7 days)
  *
  *      closed (status === `closed`):
  *        - tempered=true   → tempered   (human-accepted)
@@ -714,7 +714,7 @@ export function classifyFiber(
  *
  *     shuttle.enabled !== false  AND  effectiveHorizon === 'now'
  *
- * `effectiveHorizon` honors due-date drift (a `due:` within 2 days
+ * `effectiveHorizon` honors due-date drift (a `due:` within 7 days
  * promotes effectiveHorizon to `now`), so a stashed fiber with an
  * imminent deadline is still picked up — the human committed to a
  * date and the kanban trusts it.
@@ -1378,7 +1378,7 @@ export class HttpApiKanban {
       const anytimeSoon: KanbanCard[] = [];
       const nowDrafts: KanbanCard[] = [];
       for (const card of drafts) {
-        // Drifted cards (due-date within 2 days) live on the desk
+        // Drifted cards (due-date within 7 days) live on the desk
         // regardless of stored horizon — the deadline outranks the
         // deferral. Without this branch a stashed-but-imminent card
         // would silently hide in the stash cluster grid.
