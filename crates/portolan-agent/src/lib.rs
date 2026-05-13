@@ -2,6 +2,7 @@ use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
     AgentSession, FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
     FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
+    ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -889,6 +890,284 @@ pub struct FiberTreeFileEvent {
     pub op: FiberTreeFileOp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShuttleFiberProjection {
+    pub id: String,
+    pub status: Option<String>,
+    pub tags: Vec<String>,
+    pub has_shuttle_block: bool,
+    pub shuttle_enabled: Option<bool>,
+    pub depends_on: Vec<String>,
+    pub tempered: Option<bool>,
+    pub agent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShuttleEligibility {
+    pub eligible: Vec<ShuttleFiberProjection>,
+    pub blocked: Vec<ShuttleBlockedFiber>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShuttleBlockedFiber {
+    pub fiber_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShuttleReadOnlyEntry {
+    pub fiber_id: String,
+    pub tmux_session: Option<String>,
+    pub state: String,
+    pub started_at: Option<i64>,
+    pub agent: String,
+    pub reason: Option<String>,
+}
+
+pub fn collect_shuttle_snapshot_frame(prefixes: &[String]) -> Result<AgentFrame, String> {
+    let felt_host = default_felt_host();
+    let fibers = collect_shuttle_fibers_from_felt(&felt_host)?;
+    let live_sessions = list_shuttle_sessions();
+    Ok(build_shuttle_snapshot_frame(
+        &fibers,
+        prefixes,
+        &live_sessions,
+        now_millis(),
+    ))
+}
+
+pub fn collect_shuttle_fibers_from_felt(
+    felt_host: &str,
+) -> Result<Vec<ShuttleFiberProjection>, String> {
+    let output = Command::new("felt")
+        .args(["-C", felt_host, "ls", "-s", "all", "-j"])
+        .output()
+        .map_err(|error| format!("failed to run felt: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("felt ls failed: {}", stderr.trim()));
+    }
+    let parsed: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("failed to parse felt JSON: {error}"))?;
+    let Some(fibers) = parsed.as_array() else {
+        return Err("felt JSON was not an array".to_string());
+    };
+    Ok(fibers.iter().filter_map(project_shuttle_fiber).collect())
+}
+
+pub fn project_shuttle_fiber(fiber: &Value) -> Option<ShuttleFiberProjection> {
+    let id = fiber.get("id")?.as_str()?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let tags = fiber
+        .get("tags")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let depends_on = fiber
+        .get("depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|dependency| {
+            dependency
+                .as_str()
+                .or_else(|| dependency.get("id").and_then(Value::as_str))
+        })
+        .filter(|dependency| !dependency.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let shuttle = fiber.get("shuttle").filter(|shuttle| shuttle.is_object());
+    let agent = shuttle
+        .and_then(|shuttle| shuttle.get("agent"))
+        .and_then(Value::as_str)
+        .filter(|agent| !agent.is_empty())
+        .map(str::to_string);
+
+    Some(ShuttleFiberProjection {
+        id,
+        status: fiber
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tags,
+        has_shuttle_block: shuttle.is_some(),
+        shuttle_enabled: shuttle
+            .and_then(|shuttle| shuttle.get("enabled"))
+            .and_then(Value::as_bool),
+        depends_on,
+        tempered: fiber.get("tempered").and_then(Value::as_bool),
+        agent,
+    })
+}
+
+pub fn compute_shuttle_eligibility(
+    fibers: &[ShuttleFiberProjection],
+    prefixes: &[String],
+) -> ShuttleEligibility {
+    let by_id = fibers
+        .iter()
+        .map(|fiber| (fiber.id.as_str(), fiber))
+        .collect::<BTreeMap<_, _>>();
+    let in_scope = |id: &str| {
+        prefixes.is_empty()
+            || prefixes
+                .iter()
+                .any(|prefix| id == prefix || id.starts_with(&format!("{prefix}/")))
+    };
+    let mut eligible = Vec::new();
+    let mut blocked = Vec::new();
+
+    for fiber in fibers {
+        if !fiber.has_shuttle_block || !in_scope(&fiber.id) {
+            continue;
+        }
+        if fiber.shuttle_enabled != Some(true) {
+            blocked.push(ShuttleBlockedFiber {
+                fiber_id: fiber.id.clone(),
+                reason: "shuttle.enabled: false".to_string(),
+            });
+            continue;
+        }
+        if !matches!(fiber.status.as_deref(), Some("active" | "open")) {
+            blocked.push(ShuttleBlockedFiber {
+                fiber_id: fiber.id.clone(),
+                reason: format!("status: {}", fiber.status.as_deref().unwrap_or("missing")),
+            });
+            continue;
+        }
+        let unsatisfied = fiber
+            .depends_on
+            .iter()
+            .filter(|dependency| match by_id.get(dependency.as_str()) {
+                Some(dependency) => dependency.tempered != Some(true),
+                None => true,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unsatisfied.is_empty() {
+            blocked.push(ShuttleBlockedFiber {
+                fiber_id: fiber.id.clone(),
+                reason: format!("blocked on: {}", unsatisfied.join(", ")),
+            });
+            continue;
+        }
+        eligible.push(fiber.clone());
+    }
+
+    ShuttleEligibility { eligible, blocked }
+}
+
+pub fn build_shuttle_snapshot_frame(
+    fibers: &[ShuttleFiberProjection],
+    prefixes: &[String],
+    live_sessions: &[String],
+    poll_at: i64,
+) -> AgentFrame {
+    let eligibility = compute_shuttle_eligibility(fibers, prefixes);
+    let entries = eligibility
+        .eligible
+        .iter()
+        .map(|fiber| {
+            let expected_session = shuttle_session_name(&fiber.id);
+            let live = live_sessions
+                .iter()
+                .any(|session| session == &expected_session);
+            ShuttleReadOnlyEntry {
+                fiber_id: fiber.id.clone(),
+                tmux_session: live.then_some(expected_session),
+                state: if live { "running" } else { "idle" }.to_string(),
+                started_at: None,
+                agent: agent_for_shuttle_fiber(fiber),
+                reason: if live {
+                    Some("adopted existing tmux session".to_string())
+                } else {
+                    Some("rust preview read-only; dispatch remains shuttle-owned".to_string())
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let tracked_sessions = entries
+        .iter()
+        .filter_map(|entry| entry.tmux_session.as_ref())
+        .collect::<Vec<_>>();
+    let orphans = live_sessions
+        .iter()
+        .filter(|session| !tracked_sessions.contains(session))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "snapshot".to_string(),
+        json!({
+            "pollAt": poll_at,
+            "eligible": entries.iter().map(shuttle_entry_json).collect::<Vec<_>>(),
+            "blocked": eligibility.blocked.iter().map(|blocked| json!({
+                "fiberId": blocked.fiber_id,
+                "reason": blocked.reason,
+            })).collect::<Vec<_>>(),
+            "orphans": orphans,
+        }),
+    );
+    AgentFrame::ShuttleSnapshot {
+        payload: ShuttleSnapshotPayload { fields },
+    }
+}
+
+fn list_shuttle_sessions() -> Vec<String> {
+    match Command::new("tmux")
+        .args(["ls", "-F", "#{session_name}"])
+        .output()
+    {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|session| session.starts_with("shuttle-"))
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn shuttle_entry_json(entry: &ShuttleReadOnlyEntry) -> Value {
+    let mut value = json!({
+        "fiberId": entry.fiber_id,
+        "state": entry.state,
+        "agent": entry.agent,
+    });
+    if let Value::Object(ref mut object) = value {
+        if let Some(session) = &entry.tmux_session {
+            object.insert("tmuxSession".to_string(), Value::String(session.clone()));
+        }
+        if let Some(started_at) = entry.started_at {
+            object.insert("startedAt".to_string(), Value::from(started_at));
+        }
+        if let Some(reason) = &entry.reason {
+            object.insert("reason".to_string(), Value::String(reason.clone()));
+        }
+    }
+    value
+}
+
+fn shuttle_session_name(fiber_id: &str) -> String {
+    format!("shuttle-{fiber_id}")
+}
+
+fn agent_for_shuttle_fiber(fiber: &ShuttleFiberProjection) -> String {
+    fiber.agent.clone().unwrap_or_else(|| {
+        if fiber.tags.iter().any(|tag| tag == "codex") {
+            "codex".to_string()
+        } else {
+            "claude".to_string()
+        }
+    })
+}
+
 fn handle_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
     match run_kanban_transition(payload) {
         Ok(fiber) => AgentFrame::KanbanTransitionResult {
@@ -1732,6 +2011,13 @@ fn sha256_hex(body: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub fn fiber_id_from_path(path: &str) -> Option<String> {
     let cleaned = path.strip_prefix("./").unwrap_or(path);
     let no_ext = cleaned.strip_suffix(".md")?;
@@ -1960,6 +2246,188 @@ malformed
         assert!(report.contains("felt host: /Users/cail/loom (.felt missing)"));
         assert!(report.contains("active city felt hosts: none"));
         assert!(report.ends_with("No Claude/Codex/Pi sessions found"));
+    }
+
+    #[test]
+    fn projects_shuttle_fiber_fields_from_felt_json() {
+        let fiber = project_shuttle_fiber(&json!({
+            "id": "portolan/native",
+            "status": "active",
+            "tags": ["constitution", "rust"],
+            "depends_on": [{"id": "portolan/tauri"}, "portolan/index"],
+            "tempered": false,
+            "shuttle": {"enabled": true, "agent": "codex"}
+        }))
+        .expect("expected projection");
+
+        assert_eq!(fiber.id, "portolan/native");
+        assert_eq!(fiber.status.as_deref(), Some("active"));
+        assert_eq!(fiber.tags, vec!["constitution", "rust"]);
+        assert!(fiber.has_shuttle_block);
+        assert_eq!(fiber.shuttle_enabled, Some(true));
+        assert_eq!(fiber.depends_on, vec!["portolan/tauri", "portolan/index"]);
+        assert_eq!(fiber.tempered, Some(false));
+        assert_eq!(fiber.agent.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn computes_read_only_shuttle_eligibility_from_current_shuttle_contract() {
+        let fibers = vec![
+            ShuttleFiberProjection {
+                id: "portolan/ready".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["draft".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                depends_on: vec!["portolan/dep".to_string()],
+                tempered: None,
+                agent: Some("pi-gpt-5.4".to_string()),
+            },
+            ShuttleFiberProjection {
+                id: "portolan/dep".to_string(),
+                status: Some("closed".to_string()),
+                tags: vec!["finding".to_string()],
+                has_shuttle_block: false,
+                shuttle_enabled: None,
+                depends_on: vec![],
+                tempered: Some(true),
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/disabled".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(false),
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/closed".to_string(),
+                status: Some("closed".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/blocked".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                depends_on: vec!["portolan/missing".to_string()],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "other/ignored".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/no-block".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: false,
+                shuttle_enabled: None,
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+        ];
+
+        let eligibility = compute_shuttle_eligibility(&fibers, &["portolan".to_string()]);
+
+        assert_eq!(
+            eligibility
+                .eligible
+                .iter()
+                .map(|fiber| fiber.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["portolan/ready"]
+        );
+        assert_eq!(
+            eligibility
+                .blocked
+                .iter()
+                .map(|blocked| (blocked.fiber_id.as_str(), blocked.reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("portolan/disabled", "shuttle.enabled: false"),
+                ("portolan/closed", "status: closed"),
+                ("portolan/blocked", "blocked on: portolan/missing"),
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_server_compatible_read_only_shuttle_snapshot_frame() {
+        let frame = build_shuttle_snapshot_frame(
+            &[
+                ShuttleFiberProjection {
+                    id: "portolan/running".to_string(),
+                    status: Some("active".to_string()),
+                    tags: vec!["constitution".to_string()],
+                    has_shuttle_block: true,
+                    shuttle_enabled: Some(true),
+                    depends_on: vec![],
+                    tempered: None,
+                    agent: Some("codex".to_string()),
+                },
+                ShuttleFiberProjection {
+                    id: "portolan/idle".to_string(),
+                    status: Some("active".to_string()),
+                    tags: vec!["constitution".to_string(), "codex".to_string()],
+                    has_shuttle_block: true,
+                    shuttle_enabled: Some(true),
+                    depends_on: vec![],
+                    tempered: None,
+                    agent: None,
+                },
+            ],
+            &["portolan".to_string()],
+            &[
+                "shuttle-portolan/running".to_string(),
+                "shuttle-portolan/orphan".to_string(),
+            ],
+            1234,
+        );
+
+        let AgentFrame::ShuttleSnapshot { payload } = frame else {
+            panic!("expected shuttle snapshot");
+        };
+        assert_eq!(
+            payload.fields["snapshot"],
+            json!({
+                "pollAt": 1234,
+                "eligible": [
+                    {
+                        "fiberId": "portolan/running",
+                        "tmuxSession": "shuttle-portolan/running",
+                        "state": "running",
+                        "agent": "codex",
+                        "reason": "adopted existing tmux session"
+                    },
+                    {
+                        "fiberId": "portolan/idle",
+                        "state": "idle",
+                        "agent": "codex",
+                        "reason": "rust preview read-only; dispatch remains shuttle-owned"
+                    }
+                ],
+                "blocked": [],
+                "orphans": ["shuttle-portolan/orphan"]
+            })
+        );
     }
 
     #[test]

@@ -2,9 +2,10 @@ use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
     active_city_felt_hosts, build_agent_url, collect_agent_sessions, collect_agent_status_snapshot,
-    collect_fiber_tree_delta_frame, events_file_path, format_status_report, handle_server_frame,
-    normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args, AgentCommand,
-    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
+    collect_fiber_tree_delta_frame, collect_shuttle_snapshot_frame, events_file_path,
+    format_status_report, handle_server_frame, normalize_felt_host,
+    parse_activity_frames_from_events_jsonl, parse_args, AgentCommand, AgentConfig,
+    FiberTreeFileEvent, FiberTreeFileOp,
 };
 use portolan_agent_protocol::{
     AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
@@ -23,6 +24,7 @@ const DEFAULT_FELT_WATCH_DEBOUNCE_MS: u64 = 250;
 const DEFAULT_FELT_POLL_MS: u64 = 5_000;
 const DEFAULT_SESSION_POLL_MS: u64 = 5_000;
 const DEFAULT_EVENT_POLL_MS: u64 = 1_000;
+const DEFAULT_SHUTTLE_POLL_MS: u64 = 30_000;
 
 #[tokio::main]
 async fn main() {
@@ -76,6 +78,10 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
     session_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut events_poll_interval = tokio::time::interval(events_poll_interval());
     events_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let shuttle_enabled = shuttle_enabled();
+    let shuttle_prefixes = shuttle_prefixes();
+    let mut shuttle_poll_interval = tokio::time::interval(shuttle_poll_interval());
+    shuttle_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let events_file = events_file_path();
     let mut last_events_char_position = initial_file_position(&events_file);
     let mut events_file_started = false;
@@ -130,6 +136,12 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
                     send_agent_frame(&mut write, &frame).await?;
                 }
             }
+            _ = shuttle_poll_interval.tick(), if shuttle_enabled => {
+                match collect_shuttle_snapshot_frame(&shuttle_prefixes) {
+                    Ok(frame) => send_agent_frame(&mut write, &frame).await?,
+                    Err(error) => eprintln!("[portolan-agent-rust] shuttle snapshot skipped: {error}"),
+                }
+            }
             maybe_message = read.next() => {
                 let Some(message) = maybe_message else { return Ok(()); };
                 let message = message.map_err(|error| format!("websocket read failed: {error}"))?;
@@ -159,6 +171,30 @@ fn events_poll_interval() -> Duration {
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_EVENT_POLL_MS))
+}
+
+fn shuttle_enabled() -> bool {
+    env::var("PORTOLAN_SHUTTLE_ENABLED").ok().as_deref() == Some("1")
+}
+
+fn shuttle_prefixes() -> Vec<String> {
+    env::var("PORTOLAN_SHUTTLE_PREFIXES")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn shuttle_poll_interval() -> Duration {
+    env::var("PORTOLAN_SHUTTLE_INTERVAL_MS")
+        .or_else(|_| env::var("PORTOLAN_SHUTTLE_POLL_MS"))
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_SHUTTLE_POLL_MS))
 }
 
 fn poll_events_file(
