@@ -22,6 +22,7 @@ interface MapInteractionControllerOptions {
   handleDeepCityPress: (city: City) => void
   promptNewWorker: (city: City) => void | Promise<void>
   promptAddCity: (hex: HexCoord) => void
+  activateRemoteCity: (city: City, options?: { agentRuntime?: 'node' | 'rust'; once?: boolean }) => void | Promise<void>
   unpinCity: (cityId: string) => void
   focusKittyTab: (sessionId: string) => void
   killWorker: (sessionId: string) => void
@@ -44,6 +45,7 @@ export class MapInteractionController {
   private readonly handleDeepCityPress: (city: City) => void
   private readonly promptNewWorker: (city: City) => void | Promise<void>
   private readonly promptAddCity: (hex: HexCoord) => void
+  private readonly activateRemoteCity: (city: City, options?: { agentRuntime?: 'node' | 'rust'; once?: boolean }) => void | Promise<void>
   private readonly unpinCity: (cityId: string) => void
   private readonly focusKittyTab: (sessionId: string) => void
   private readonly killWorker: (sessionId: string) => void
@@ -72,6 +74,7 @@ export class MapInteractionController {
     this.handleDeepCityPress = options.handleDeepCityPress
     this.promptNewWorker = options.promptNewWorker
     this.promptAddCity = options.promptAddCity
+    this.activateRemoteCity = options.activateRemoteCity
     this.unpinCity = options.unpinCity
     this.focusKittyTab = options.focusKittyTab
     this.killWorker = options.killWorker
@@ -334,11 +337,18 @@ export class MapInteractionController {
     if (cityHit) {
       const city = this.getCities().find(c => c.id === cityHit.entityId)
       if (city) {
-        this.contextMenu.show(clientX, clientY, [
+        const items = [
           { label: 'New Worker', action: () => void this.promptNewWorker(city) },
           { label: 'Move City', action: () => this.startMoveCity(city.id) },
           { label: 'Remove City', action: () => this.unpinCity(city.id), danger: true },
-        ])
+        ]
+        if (city.originId !== 'local') {
+          items.splice(1, 0,
+            { label: 'Activate Node Agent', action: () => void this.activateRemoteCity(city, { agentRuntime: 'node' }) },
+            { label: 'Activate Rust Preview Once', action: () => void this.activateRemoteCity(city, { agentRuntime: 'rust', once: true }) },
+          )
+        }
+        this.contextMenu.show(clientX, clientY, items)
       }
       return
     }

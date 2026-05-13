@@ -7,6 +7,11 @@ interface FrontendMapActionsOptions {
   getWebSocketState: () => 'missing' | 'connecting' | 'open' | 'closing' | 'closed'
 }
 
+export interface RemoteCityActivationOptions {
+  agentRuntime?: 'node' | 'rust'
+  once?: boolean
+}
+
 export class FrontendMapActions {
   private newWorkerDialog: NewWorkerDialog
   private sendMessage: (message: unknown) => boolean
@@ -73,10 +78,18 @@ export class FrontendMapActions {
     this.sendMessage({ type: 'focus', sessionId })
   }
 
-  async activateRemoteCity(city: City): Promise<void> {
+  async activateRemoteCity(city: City, options: RemoteCityActivationOptions = {}): Promise<void> {
     try {
-      const response = await fetch(`http://localhost:4004/activate-city?cityId=${city.id}`, {
+      const agentRuntime = options.agentRuntime ?? 'node'
+      const response = await fetch('http://localhost:4004/activate-city', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cityId: city.id,
+          agentRuntime,
+          origin: city.originId.replace(/^remote-/, ''),
+          once: options.once === true,
+        }),
       })
 
       const result = await response.json()

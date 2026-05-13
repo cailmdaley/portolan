@@ -1632,6 +1632,7 @@ const mapInteractions = new MapInteractionController({
   },
   promptNewWorker: (city) => mapActions!.promptNewWorker(city),
   promptAddCity: (hex) => mapActions!.promptAddCity(hex),
+  activateRemoteCity: (city, options) => mapActions!.activateRemoteCity(city, options),
   unpinCity: (cityId) => mapActions!.unpinCity(cityId),
   focusKittyTab: (sessionId) => mapActions!.focusKittyTab(sessionId),
   killWorker: (sessionId) => mapActions!.killWorker(sessionId),
