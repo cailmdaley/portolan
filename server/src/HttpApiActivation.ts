@@ -3,6 +3,7 @@ import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
+import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -13,6 +14,8 @@ interface CityLookup {
 interface HttpApiActivationOptions {
   cityLookup: CityLookup;
   getSshHost: (city: City) => string;
+  reconnectTunnelFn?: (sshHost: string) => Promise<void>;
+  execFileFn?: typeof execFileAsync;
 }
 
 type RemoteAgentRuntime = 'node' | 'rust';
@@ -36,18 +39,22 @@ function agentSessionForRuntime(runtime: RemoteAgentRuntime): string {
 
 function agentStartCommand(runtime: RemoteAgentRuntime, sshHost: string): string {
   if (runtime === 'rust') {
-    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${sshHost}`;
+    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}`;
   }
-  return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${sshHost}`;
+  return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
 }
 
 export class HttpApiActivation {
   private readonly cityLookup: CityLookup;
   private readonly getSshHost: (city: City) => string;
+  private readonly reconnectTunnelFn: (sshHost: string) => Promise<void>;
+  private readonly execFileFn: typeof execFileAsync;
 
   constructor(options: HttpApiActivationOptions) {
     this.cityLookup = options.cityLookup;
     this.getSshHost = options.getSshHost;
+    this.reconnectTunnelFn = options.reconnectTunnelFn ?? reconnectTunnel;
+    this.execFileFn = options.execFileFn ?? execFileAsync;
   }
 
   async handleActivateCity(url: URL, res: ServerResponse): Promise<void> {
@@ -88,11 +95,11 @@ export class HttpApiActivation {
     try {
       // Reset tunnel first — kills stale ControlMaster and re-establishes
       // RemoteForward so the agent can reach localhost:4004.
-      await reconnectTunnel(sshHost);
+      await this.reconnectTunnelFn(sshHost);
 
-      const { stdout: checkOutput } = await execFileAsync(
+      const { stdout: checkOutput } = await this.execFileFn(
         'ssh',
-        ['-T', sshHost, `tmux has-session -t '=${runtimeSession}' 2>/dev/null && echo running || echo stopped`],
+        ['-T', sshHost, `tmux has-session -t ${exactTmuxTarget(runtimeSession)} 2>/dev/null && echo running || echo stopped`],
         { timeout: 10000 }
       );
 
@@ -103,13 +110,10 @@ export class HttpApiActivation {
       }
 
       console.log(`[Activate] Starting ${runtime} portolan agent on ${sshHost}...`);
-      await execFileAsync(
+      const remoteCommand = `tmux new-session -d -s ${shellEscape(runtimeSession)} ${shellEscape(`bash -l -c ${shellEscape(startCommand)}`)}`;
+      await this.execFileFn(
         'ssh',
-        [
-          '-T',
-          sshHost,
-          `tmux new-session -d -s ${runtimeSession} "bash -l -c \\"${startCommand}\\""`
-        ],
+        ['-T', sshHost, remoteCommand],
         { timeout: 30000 }
       );
 
