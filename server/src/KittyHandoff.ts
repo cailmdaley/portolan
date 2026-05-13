@@ -43,7 +43,9 @@ export class KittyHandoff {
 
     const socket = this.getSocket();
     const escapedCwd = shellEscape(cityPath);
-    const tmuxSession = fiberId;
+    // Use just the leaf of the fiber id — the full nested path looks identical
+    // when the tmux name is truncated in kitty's tab strip / status line.
+    const tmuxSession = fiberId.split('/').pop() || fiberId;
     const escapedSession = shellEscape(tmuxSession);
     const exactSessionTarget = exactTmuxTarget(tmuxSession);
 
