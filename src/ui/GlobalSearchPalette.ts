@@ -894,7 +894,7 @@ export class GlobalSearchPalette {
         font-size: 10.5px;
         font-weight: 400;
         letter-spacing: 0.04em;
-        color: var(--ink-faded, #7A7368);
+        color: var(--ink-faded, #7A6F5C);
         margin-left: 8px;
         vertical-align: baseline;
       }
@@ -1064,7 +1064,7 @@ export class GlobalSearchPalette {
       .gs-fiber-meta {
         font-family: var(--font-mono, 'JetBrains Mono', monospace);
         font-size: 10px;
-        color: var(--ink-faded, #7A7368);
+        color: var(--ink-faded, #7A6F5C);
         letter-spacing: 0.04em;
         white-space: nowrap;
         overflow: hidden;

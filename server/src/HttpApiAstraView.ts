@@ -267,11 +267,11 @@ function stubHtml(title: string, body: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
-  body { font-family: 'EB Garamond', Georgia, serif; max-width: 640px; margin: 8vh auto; padding: 0 24px; color: #2E2A26; background: #EDE8E0; line-height: 1.6; }
+  body { font-family: 'EB Garamond', Georgia, serif; max-width: 640px; margin: 8vh auto; padding: 0 24px; color: #2E2A26; background: #EDE2CE; line-height: 1.6; }
   h1 { font-variant: small-caps; letter-spacing: 0.04em; font-weight: 600; }
   code, pre { font-family: 'JetBrains Mono', monospace; font-size: 0.9em; background: rgba(0,0,0,0.05); padding: 2px 6px; border-radius: 3px; }
   pre { padding: 12px; overflow-x: auto; }
-  .hint { color: #7A7368; font-size: 0.95em; margin-top: 1.5em; }
+  .hint { color: #7A6F5C; font-size: 0.95em; margin-top: 1.5em; }
 </style></head><body><h1>${escapeHtml(title)}</h1>${body}</body></html>`;
 }
 
@@ -986,13 +986,13 @@ export class HttpApiAstraView {
 <html><head><meta charset="utf-8"><title>${escapeHtml(basename(filePath))}</title>
 <style>
   html, body { height: 100%; margin: 0; }
-  body { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.55; color: #2E2A26; background: #EDE8E0; }
+  body { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.55; color: #2E2A26; background: #EDE2CE; }
   pre { margin: 0; padding: 16px 24px; white-space: pre; tab-size: 2; overflow: auto; height: 100%; box-sizing: border-box; }
   /* Subtle YAML-ish colouring: keys get a bit of weight, comments fade. */
   .y-key   { color: #6E5837; font-weight: 600; }
   .y-str   { color: #4A6C3F; }
   .y-comm  { color: #A39580; font-style: italic; }
-  .y-marker{ color: #9A7B35; }
+  .y-marker{ color: #C49333; }
 </style></head><body><pre>${highlightYaml(content)}</pre></body></html>`;
 
     res.writeHead(200, {

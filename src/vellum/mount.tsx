@@ -1194,7 +1194,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
     border: '1px solid transparent',
     borderRadius: '4px',
     background: 'transparent',
-    color: 'var(--text-muted, #7A7368)',
+    color: 'var(--text-muted, #7A6F5C)',
     cursor: 'pointer',
     fontSize: '17px',
     lineHeight: '1',
@@ -1210,7 +1210,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   closeBtn.addEventListener('mouseleave', () => {
     closeBtn.style.background = 'transparent'
     closeBtn.style.borderColor = 'transparent'
-    closeBtn.style.color = 'var(--text-muted, #7A7368)'
+    closeBtn.style.color = 'var(--text-muted, #7A6F5C)'
   })
   closeBtn.addEventListener('click', () => close())
   container.appendChild(closeBtn)

@@ -32,7 +32,7 @@ export class ContextMenu {
       position: fixed;
       display: none;
       min-width: 160px;
-      background: var(--bg-card, #EDE8E0);
+      background: var(--bg-card, #EDE2CE);
       border: 1px solid var(--border, #8B7355);
       border-radius: 4px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -59,12 +59,12 @@ export class ContextMenu {
 
       const dangerColor = '#A03030'
       const normalColor = item.danger ? dangerColor : 'var(--text-primary, #2E2A26)'
-      const hoverBg = item.danger ? dangerColor : 'var(--gold, #9A7B35)'
+      const hoverBg = item.danger ? dangerColor : 'var(--gold, #C49333)'
 
       menuItem.style.cssText = `
         padding: 8px 16px;
         cursor: ${item.disabled ? 'default' : 'pointer'};
-        color: ${item.disabled ? 'var(--text-muted, #7A7368)' : normalColor};
+        color: ${item.disabled ? 'var(--text-muted, #7A6F5C)' : normalColor};
         opacity: ${item.disabled ? '0.5' : '1'};
         transition: background 0.1s;
         outline: none;

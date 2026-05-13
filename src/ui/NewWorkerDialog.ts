@@ -72,7 +72,7 @@ export class NewWorkerDialog {
     const dialog = document.createElement('div')
     dialog.className = 'new-worker-dialog'
     dialog.style.cssText = `
-      background: var(--bg-card, #EDE8E0);
+      background: var(--bg-card, #EDE2CE);
       border: 1px solid var(--border, #8B7355);
       border-radius: 8px;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
@@ -94,7 +94,7 @@ export class NewWorkerDialog {
           display: block;
           margin-bottom: 6px;
           font-size: 14px;
-          color: var(--text-muted, #7A7368);
+          color: var(--text-muted, #7A6F5C);
         ">Name (optional)</label>
         <input type="text" class="worker-name-input" placeholder="Auto-generated if empty" style="
           width: 100%;
@@ -116,7 +116,7 @@ export class NewWorkerDialog {
           display: block;
           margin-bottom: 6px;
           font-size: 14px;
-          color: var(--text-muted, #7A7368);
+          color: var(--text-muted, #7A6F5C);
         ">CLI</label>
         <select class="cli-select" style="
           width: 100%;
@@ -227,7 +227,7 @@ export class NewWorkerDialog {
           font-size: 14px;
           border: none;
           border-radius: 4px;
-          background: var(--gold, #9A7B35);
+          background: var(--gold, #C49333);
           color: white;
           cursor: pointer;
           transition: background 0.15s;
@@ -241,8 +241,8 @@ export class NewWorkerDialog {
       const visual = dialog.querySelector(`.${visualClass}`) as HTMLElement
       checkbox.addEventListener('change', () => {
         if (checkbox.checked) {
-          visual.style.background = 'var(--gold, #9A7B35)'
-          visual.style.borderColor = 'var(--gold, #9A7B35)'
+          visual.style.background = 'var(--gold, #C49333)'
+          visual.style.borderColor = 'var(--gold, #C49333)'
           visual.innerHTML = `<svg viewBox="0 0 16 16" style="width: 16px; height: 16px; display: block;"><path fill="white" d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`
         } else {
           visual.style.background = 'var(--bg-elevated, #FAF8F5)'
@@ -257,7 +257,7 @@ export class NewWorkerDialog {
     // Input focus styles
     const input = dialog.querySelector('.worker-name-input') as HTMLInputElement
     input.addEventListener('focus', () => {
-      input.style.borderColor = 'var(--gold, #9A7B35)'
+      input.style.borderColor = 'var(--gold, #C49333)'
     })
     input.addEventListener('blur', () => {
       input.style.borderColor = 'var(--border, #8B7355)'
@@ -279,7 +279,7 @@ export class NewWorkerDialog {
       createBtn.style.background = '#7A6228'
     })
     createBtn.addEventListener('mouseleave', () => {
-      createBtn.style.background = 'var(--gold, #9A7B35)'
+      createBtn.style.background = 'var(--gold, #C49333)'
     })
     createBtn.addEventListener('click', () => this.confirm())
 

@@ -338,7 +338,7 @@ function FileTreeRow({
           color:
             data.kind === 'error'
               ? 'var(--text-error, #B5402F)'
-              : 'var(--text-muted, #7A7368)',
+              : 'var(--text-muted, #7A6F5C)',
           fontStyle: 'italic',
           whiteSpace: 'nowrap',
           overflow: 'hidden',

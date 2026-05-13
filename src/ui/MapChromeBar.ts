@@ -554,7 +554,7 @@ export class MapChromeBar {
         min-width: 14px;
         height: 14px;
         padding: 0 3px;
-        background: #9A7B35;
+        background: #C49333;
         color: #FBF7F0;
         border-radius: 7px;
         font-family: var(--font-mono, 'JetBrains Mono', monospace);

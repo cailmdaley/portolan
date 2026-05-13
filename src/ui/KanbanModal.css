@@ -12,7 +12,15 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  background: #EDE2CE;
+  /* Pigment & Parchment warm-cool wash — the page is *lit*, not glowing.
+     Two soft radial pools: a warm cinnabar/ochre breath upper-left, a
+     cool cobalt breath lower-right. Saturation kept low so the
+     temperature differential reads as illumination, never as haze. */
+  background-color: #EDE2CE;
+  background-image:
+    radial-gradient(ellipse 90% 60% at 12% -8%, rgba(196, 147, 51, 0.13), transparent 58%),
+    radial-gradient(ellipse 100% 60% at 88% 108%, rgba(61, 91, 160, 0.07), transparent 62%);
+  background-attachment: fixed, fixed;
   display: flex; flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
   color: #1B1611;
@@ -50,15 +58,30 @@
 .kbn-title-wrap {
   display: flex; align-items: baseline; gap: 10px;
 }
+/* Kanban masthead — set in EB Garamond display with a single cinnabar
+   rubricated initial. The K is the page's first stamp. */
 .kbn-title {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 24px;
+  font-weight: 500;
+  font-variant-caps: normal;
+  letter-spacing: 0.005em;
+  color: #1B1611;
+}
+.kbn-title::first-letter {
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 1.25em;
+  font-weight: 500;
+  color: #BC4538;
+  letter-spacing: 0;
+  margin-right: 1px;
 }
 .kbn-subtitle {
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-style: italic;
   font-size: 14px;
   color: #7A6F5C;
+  letter-spacing: 0.01em;
 }
 .kbn-subtitle:empty {
   display: none;
@@ -239,16 +262,46 @@
   cursor: pointer;
   user-select: none;
 }
+/* Section strip — visible only when the section is collapsed.
+   Treated like a manuscript catch-line: italic small caps with a
+   cinnabar rubricated initial. Reads like a marginal tab. */
 .kbn-section-strip-label {
-  font-size: 13px;
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 14px;
+  font-style: italic;
   font-variant-caps: small-caps;
-  letter-spacing: 0.04em;
-  color: #C49333;
+  font-feature-settings: "smcp";
+  letter-spacing: 0.06em;
+  color: #2A231A;
+}
+.kbn-section-strip-label::first-letter {
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 1.7em;
+  font-style: normal;
+  font-variant-caps: normal;
+  font-weight: 500;
+  color: #BC4538;
+  line-height: 0.8;
+  letter-spacing: 0;
+  margin-right: 2px;
+  vertical-align: -1px;
 }
 .kbn-section-strip-count {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
   color: #7A6F5C;
+  letter-spacing: 0.04em;
+}
+/* A small fleuron at the end of the strip — the printer's ornament
+   that closes a catch-line. Set in ochre at the same height as the
+   small-caps body so it reads as type, not graphic. */
+.kbn-section-strip::after {
+  content: '❦';
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 12px;
+  color: #C49333;
+  opacity: 0.55;
+  margin-left: 6px;
 }
 .kbn-section-collapsed {
   flex: 0 0 auto !important;
@@ -397,6 +450,22 @@
 .kbn-tl-card-composted .kbn-tl-card-title {
   text-decoration: line-through;
   text-decoration-thickness: 0.5px;
+}
+/* Ghost variant: closed-but-not-tempered ("awaiting review") cards
+   projected onto their closedAt day. Dashed outline + paper-white
+   background mark them as in-flux — they live in the Now → Awaiting
+   Review lane and will solidify into a past card when tempered. */
+.kbn-tl-card-awaiting {
+  background: rgba(255, 252, 246, 0.55);
+  border: 0.5px dashed rgba(154, 123, 53, 0.55);
+  border-left: 2px dashed #9A7B35;
+  opacity: 0.85;
+}
+.kbn-tl-card-awaiting .kbn-tl-card-title {
+  color: #2A231A;
+}
+.kbn-tl-card-awaiting .kbn-tl-card-glyph {
+  color: #9A7B35;
 }
 .kbn-tl-card-glyph {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
@@ -615,13 +684,41 @@
   font-family: inherit;
   cursor: pointer;
 }
+/* Column title — small caps in EB Garamond rather than the previous
+   uppercase. The shape reads as a section in a manuscript header rather
+   than a database column. ::first-letter receives the rubricated
+   treatment: a single cinnabar glyph at the head of each title, set
+   slightly above the baseline of the small caps that follow. One
+   manuscript second-color gesture per column. */
 .kbn-col-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 15px;
+  font-weight: 500;
+  font-variant-caps: all-small-caps;
+  font-feature-settings: "smcp", "c2sc";
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: #1B1611;
   margin: 0;
 }
+.kbn-col-title::first-letter {
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 1.55em;
+  font-weight: 500;
+  font-variant-caps: normal;
+  color: #BC4538;
+  /* Slight optical lift — the cinnabar capital should sit a hair above
+     the small-caps line, the way a rubricated initial would. */
+  line-height: 0.85;
+  letter-spacing: 0;
+  margin-right: 1px;
+  /* Cinnabar inks the *whole* first letter, not just its outline. */
+  padding-right: 0;
+}
+.kbn-col-awaiting .kbn-col-title::first-letter { color: #C49333; }
+.kbn-col-tempered .kbn-col-title::first-letter { color: #3F8278; }
+.kbn-col-composted .kbn-col-title::first-letter { color: #7A6F5C; }
+.kbn-col-drafts .kbn-col-title::first-letter { color: #7A6F5C; opacity: 0.85; }
 .kbn-col-awaiting .kbn-col-title { color: #C49333; }
 .kbn-col-tempered .kbn-col-title { color: #3F8278; }
 .kbn-col-count {
@@ -636,13 +733,29 @@
   display: flex; flex-direction: column;
   gap: 8px;
 }
+/* Empty column — a quiet marginal line, set in italic with a small
+   fleuron to make absence feel intentional rather than missing. */
 .kbn-empty {
   text-align: center;
-  color: #B8AC9A;
+  color: #A89B83;
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-style: italic;
-  padding: 24px 8px;
   font-size: 13px;
+  padding: 24px 8px;
   flex-grow: 0;
+  letter-spacing: 0.01em;
+}
+.kbn-empty::before {
+  content: '✶  ';
+  color: #C49333;
+  opacity: 0.55;
+  font-style: normal;
+}
+.kbn-empty::after {
+  content: '  ✶';
+  color: #C49333;
+  opacity: 0.55;
+  font-style: normal;
 }
 .kbn-card {
   background: #FBF6E9;

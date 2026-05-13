@@ -544,7 +544,7 @@ function Eyebrow({
             textTransform: 'uppercase',
             background: 'transparent',
             border: '1px solid var(--border-muted, #D8D2C8)',
-            color: 'var(--text-muted, #7A7368)',
+            color: 'var(--text-muted, #7A6F5C)',
             padding: '0.25rem 0.55rem',
             borderRadius: '3px',
             cursor: 'pointer',
@@ -627,7 +627,7 @@ function SearchBar({
             background: 'transparent',
             border: 'none',
             cursor: 'pointer',
-            color: 'var(--text-muted, #7A7368)',
+            color: 'var(--text-muted, #7A6F5C)',
             fontSize: '0.85rem',
             padding: 0,
           }}
@@ -1580,7 +1580,7 @@ function GitHeaderInline({ status }: { status: CityGitStatus }): JSX.Element {
         opacity: 0.85,
       }}
     >
-      <span style={{ color: 'var(--text-muted, #7A7368)' }}>{status.branch}</span>
+      <span style={{ color: 'var(--text-muted, #7A6F5C)' }}>{status.branch}</span>
       {parts}
     </span>
   )
@@ -1661,7 +1661,7 @@ function GitDetailRows({ status }: { status: CityGitStatus }): JSX.Element {
         key="untracked"
         label="untracked"
         value={
-          <span style={{ color: 'var(--text-muted, #7A7368)' }}>
+          <span style={{ color: 'var(--text-muted, #7A6F5C)' }}>
             {status.untracked} file{status.untracked !== 1 ? 's' : ''}
           </span>
         }
@@ -1723,7 +1723,7 @@ function GitDetailRows({ status }: { status: CityGitStatus }): JSX.Element {
           {msg}
         </span>
         {time && (
-          <span style={{ color: 'var(--text-muted, #7A7368)', fontSize: '0.7rem' }}>
+          <span style={{ color: 'var(--text-muted, #7A6F5C)', fontSize: '0.7rem' }}>
             {time}
           </span>
         )}
@@ -1751,7 +1751,7 @@ function DetailRow({
         lineHeight: 1.5,
       }}
     >
-      <span style={{ color: 'var(--text-muted, #7A7368)', minWidth: '4rem' }}>
+      <span style={{ color: 'var(--text-muted, #7A6F5C)', minWidth: '4rem' }}>
         {label}
       </span>
       <span
@@ -1777,7 +1777,7 @@ function GitFileCounts({
   const color =
     accent === 'success'
       ? 'var(--text-success, #5a8a5a)'
-      : 'var(--text-muted, #7A7368)'
+      : 'var(--text-muted, #7A6F5C)'
   const parts: string[] = []
   if (counts.added > 0) parts.push(`+${counts.added}`)
   if (counts.modified > 0) parts.push(`~${counts.modified}`)
@@ -2637,7 +2637,7 @@ function CombinedDirectoryBrowser({
           gap: '0.5rem',
           padding: '0.35rem 0.45rem',
           borderBottom: '1px solid var(--border-muted, #E5DFD5)',
-          color: 'var(--text-muted, #7A7368)',
+          color: 'var(--text-muted, #7A6F5C)',
         }}
       >
         <span
@@ -2755,7 +2755,7 @@ function DirectoryBrowseStatus({
       style={{
         padding: '0.55rem 0.5rem',
         fontSize: '0.78rem',
-        color: tone === 'error' ? 'var(--text-error, #B5402F)' : 'var(--text-muted, #7A7368)',
+        color: tone === 'error' ? 'var(--text-error, #B5402F)' : 'var(--text-muted, #7A6F5C)',
       }}
     >
       {children}
@@ -3046,7 +3046,7 @@ export function injectFindHostStyles(): void {
       background: var(--surface-hover, rgba(0, 0, 0, 0.04));
     }
     .${FIND_SEARCH_INPUT_CLASS}::placeholder {
-      color: var(--text-muted, #7A7368);
+      color: var(--text-muted, #7A6F5C);
       opacity: 0.55;
     }
   `

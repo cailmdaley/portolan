@@ -713,7 +713,7 @@ export class KanbanModal {
     this.body.classList.remove('kbn-body-zoomed')
 
     this.body.append(this.renderNowSection(now, staleness))
-    this.body.append(this.renderTimelineSection(timeline, staleness))
+    this.body.append(this.renderTimelineSection(timeline, now.awaitingReview, staleness))
     this.body.append(this.renderStashSection(stash, staleness))
 
     this.restoreScrollSnapshot(scrollSnapshot)
@@ -761,6 +761,7 @@ export class KanbanModal {
    *  right, and an anytime-soon pool below. */
   private renderTimelineSection(
     timeline: KanbanResponse['timeline'],
+    awaitingReview: KanbanCard[],
     staleness: Record<string, KanbanOriginStaleness>,
   ): HTMLElement {
     const section = document.createElement('section')
@@ -816,6 +817,15 @@ export class KanbanModal {
       const col = dayIndexForIso(card.closedAt, dayIndex)
       if (col === null) continue
       strip.append(this.renderTimelineCard(card, col, nextRow(col), 'past', staleness[card.originId]))
+    }
+    // Awaiting-review cards project onto their closedAt day as ghosts. They
+    // still live in the Now → Awaiting Review column; the timeline ghost is
+    // a preview of where the card will land when tempered — answering "what
+    // happened today/yesterday?" without lying that the work is settled.
+    for (const card of awaitingReview) {
+      const col = dayIndexForIso(card.closedAt, dayIndex)
+      if (col === null) continue
+      strip.append(this.renderTimelineCard(card, col, nextRow(col), 'awaiting', staleness[card.originId]))
     }
     for (const card of timeline.futureDated) {
       const col = dayIndexForIso(card.due, dayIndex)
@@ -1174,14 +1184,16 @@ export class KanbanModal {
     card: KanbanCard,
     column: number,
     row: number,
-    kind: 'past' | 'future',
+    kind: 'past' | 'future' | 'awaiting',
     staleness: KanbanOriginStaleness | undefined,
   ): HTMLElement {
     const isStale = staleness?.status === 'stale'
     const isComposted = kind === 'past' && card.tempered === false
     const variantClass = kind === 'past'
       ? (isComposted ? 'kbn-tl-card-composted' : 'kbn-tl-card-past')
-      : (isAgentCard(card) ? 'kbn-tl-card-agent' : 'kbn-tl-card-human')
+      : kind === 'awaiting'
+        ? 'kbn-tl-card-awaiting'
+        : (isAgentCard(card) ? 'kbn-tl-card-agent' : 'kbn-tl-card-human')
 
     const el = document.createElement('div')
     el.className = `kbn-tl-card ${variantClass}${isStale ? ' kbn-card--stale' : ''}`
@@ -1211,7 +1223,9 @@ export class KanbanModal {
     glyph.className = 'kbn-tl-card-glyph'
     glyph.textContent = kind === 'past'
       ? (isComposted ? '✗' : '✓')
-      : (isAgentCard(card) ? '◐' : '✓')
+      : kind === 'awaiting'
+        ? '◌'
+        : (isAgentCard(card) ? '◐' : '✓')
     const title = document.createElement('span')
     title.className = 'kbn-tl-card-title'
     title.textContent = card.name
@@ -1221,7 +1235,9 @@ export class KanbanModal {
       if ((e.target as HTMLElement).closest('button')) return
       const colKind: ColumnKind = kind === 'past'
         ? (isComposted ? 'composted' : 'tempered')
-        : 'drafts'
+        : kind === 'awaiting'
+          ? 'awaitingReview'
+          : 'drafts'
       this.detailModal?.open(card, this.cityScope?.cityId, colKind)
     })
     return el

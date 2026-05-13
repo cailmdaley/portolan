@@ -919,7 +919,7 @@ export function injectStashFormStyles(): void {
       font-weight: 600;
       letter-spacing: 0.18em;
       text-transform: uppercase;
-      color: #9A7B35;
+      color: #C49333;
       flex: none;
     }
     .stash-section-rule {
@@ -1024,7 +1024,7 @@ export function injectStashFormStyles(): void {
     .stash-tag-input:focus,
     .stash-select:focus {
       outline: none;
-      border-color: #9A7B35;
+      border-color: #C49333;
       box-shadow: 0 0 0 2px rgba(154, 123, 53, 0.18);
     }
     .stash-hint {
@@ -1064,7 +1064,7 @@ export function injectStashFormStyles(): void {
     .stash-receipt-key {
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      color: #9A7B35;
+      color: #C49333;
       font-size: 9.5px;
     }
     .stash-receipt-sep {
@@ -1092,7 +1092,7 @@ export function injectStashFormStyles(): void {
       min-height: 34px;
     }
     .stash-chips:focus-within {
-      border-color: #9A7B35;
+      border-color: #C49333;
       box-shadow: 0 0 0 2px rgba(154, 123, 53, 0.18);
     }
     .stash-chip {
@@ -1228,7 +1228,7 @@ export function injectStashFormStyles(): void {
       border-radius: 3px;
     }
     .stash-segmented:focus-within {
-      border-color: #9A7B35;
+      border-color: #C49333;
       box-shadow: 0 0 0 2px rgba(154, 123, 53, 0.18);
     }
     .stash-segment {
@@ -1347,7 +1347,7 @@ export function injectStashFormStyles(): void {
       color: #2E2A26;
     }
     .stash-btn-save {
-      background: #9A7B35;
+      background: #C49333;
       color: #FFFFFF;
       border-color: #7A6028;
       box-shadow: 0 1px 0 rgba(255, 252, 245, 0.25) inset;

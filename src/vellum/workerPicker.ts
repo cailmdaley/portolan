@@ -52,7 +52,7 @@ export function openWorkerPicker(options: OpenWorkerPickerOptions): void {
     maxWidth: '320px',
     maxHeight: '60vh',
     overflowY: 'auto',
-    background: 'var(--bg-card, #EDE8E0)',
+    background: 'var(--bg-card, #EDE2CE)',
     border: '1px solid var(--border, #8B7355)',
     borderRadius: '4px',
     boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
@@ -74,7 +74,7 @@ export function openWorkerPicker(options: OpenWorkerPickerOptions): void {
       padding: '6px 12px',
       cursor: 'pointer',
       color: emphasis === 'accent'
-        ? 'var(--accent-gold, #9A7B35)'
+        ? 'var(--accent-gold, #C49333)'
         : 'var(--text-primary, #2E2A26)',
       transition: 'background 0.1s',
     })
@@ -87,7 +87,7 @@ export function openWorkerPicker(options: OpenWorkerPickerOptions): void {
       subEl.textContent = sub
       Object.assign(subEl.style, {
         fontSize: '11px',
-        color: 'var(--text-muted, #7A7368)',
+        color: 'var(--text-muted, #7A6F5C)',
         fontFamily: "'JetBrains Mono', monospace",
       })
       item.appendChild(subEl)
@@ -128,7 +128,7 @@ export function openWorkerPicker(options: OpenWorkerPickerOptions): void {
     empty.textContent = 'No workers available'
     Object.assign(empty.style, {
       padding: '6px 12px',
-      color: 'var(--text-muted, #7A7368)',
+      color: 'var(--text-muted, #7A6F5C)',
       fontStyle: 'italic',
       fontSize: '12px',
     })
