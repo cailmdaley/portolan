@@ -304,6 +304,49 @@ describe('agent: remote file request helpers', () => {
     });
   });
 
+  it('reads mechanical felt history through the Node fallback agent', async () => {
+    mockExecFile.mockImplementationOnce((
+      command: string,
+      args: string[] = [],
+      optionsOrCallback: Record<string, unknown> | ((err: Error | null, result?: unknown) => void) | undefined,
+      callbackMaybe: ((err: Error | null, result?: unknown) => void) | undefined,
+    ) => {
+      const options = typeof optionsOrCallback === 'object' && optionsOrCallback !== null
+        ? optionsOrCallback
+        : undefined;
+      mockExecFileCalls.push({ command, args, options });
+      callbackMaybe?.(null, {
+        stdout: JSON.stringify([{ kind: 'edit', summary: 'landed' }]),
+        stderr: '',
+      });
+      return {} as Record<string, unknown>;
+    });
+
+    await expect(agentMod.executeFiberHistoryRequest({
+      slug: 'work/fiber',
+      feltHost: '/remote/loom',
+    })).resolves.toEqual({
+      ok: true,
+      events: [{ kind: 'edit', summary: 'landed' }],
+    });
+    expect(mockExecFileCalls[0]).toEqual({
+      command: 'felt',
+      args: ['-C', '/remote/loom', 'history', 'work/fiber', '--mechanical', '-j'],
+      options: expect.objectContaining({
+        cwd: '/remote/loom',
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      }),
+    });
+  });
+
+  it('rejects unsafe fiber history slugs', async () => {
+    await expect(agentMod.executeFiberHistoryRequest({
+      slug: '../escape',
+      feltHost: '/remote/loom',
+    })).rejects.toThrow('invalid slug: ../escape');
+  });
+
   it('derives an outer namespace prefix for symlinked project .felt dirs', () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'portolan-agent-felt-symlink-'));
     const scopedFelt = join(rootDir, 'loom', '.felt', 'science', 'pure_eb');

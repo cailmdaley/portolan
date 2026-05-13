@@ -1730,6 +1730,58 @@ async function handleFiberRaw(message) {
     }
 }
 
+export async function executeFiberHistoryRequest(payload) {
+    const slug = payload?.slug;
+    if (!isSafeRemoteFiberPath(slug)) {
+        throw new Error(`invalid slug: ${slug}`);
+    }
+    const feltHost = typeof payload.feltHost === 'string'
+        ? normalizeHostPath(payload.feltHost)
+        : normalizeHostPath(FELT_HOST);
+    const { stdout, stderr } = await execFileAsync(
+        'felt',
+        ['-C', feltHost, 'history', slug, '--mechanical', '-j'],
+        {
+            cwd: feltHost,
+            timeout: 10_000,
+            maxBuffer: 1024 * 1024,
+        },
+    );
+    if (typeof stderr === 'string' && stderr.toLowerCase().includes('index busy')) {
+        throw new Error(stderr.trim());
+    }
+    const parsed = JSON.parse(stdout || '[]');
+    if (!Array.isArray(parsed)) {
+        throw new Error('felt history JSON was not an array');
+    }
+    return { ok: true, events: parsed };
+}
+
+async function handleFiberHistory(message) {
+    const payload = message.payload || {};
+    const { correlationId, slug } = payload;
+    if (!correlationId) {
+        debug('fiber-history without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'fiber-history-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+    try {
+        const result = await executeFiberHistoryRequest(payload);
+        reply(result);
+        debug(`fiber-history ok: ${slug}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`fiber-history failed (${slug}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
 // ============================================================================
 // Shuttle on the agent (constitution-shuttle-remote-dispatch)
 // ============================================================================
@@ -2173,6 +2225,9 @@ function handleMessage(message) {
 
         case 'fiber-raw':
             handleFiberRaw(message);
+            break;
+        case 'fiber-history':
+            handleFiberHistory(message);
             break;
 
         case 'file-content':
