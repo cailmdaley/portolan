@@ -110,13 +110,9 @@ curl http://localhost:4004/debug-runtime       # runtime state and map sizes
 curl 'http://localhost:4004/recent-files?sessionId=X'  # recent file touches for a worker
 printf '%s\n' '{"hook_event_name":"PostToolUse","session_id":"test","tool_name":"Read","tool_input":{"file_path":"/tmp/test.ts"},"cwd":"/tmp"}' \
   | PORTOLAN_EVENTS_FILE=/tmp/portolan-events-smoke.jsonl server/hooks/portolan-hook.sh
-curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
+curl 'http://localhost:4004/fiber-graph?cityId=X'  # Vellum graph: fibers + links
 curl 'http://localhost:4004/project-file/local/path/to/file.html'  # serve project file (also: /project-file/{originId}/path)
-# The astra endpoints below are dormant: the frontend no longer consumes them after the Vellum disentanglement pass.
-curl 'http://localhost:4004/astra-paper-view/local/abs/path/to/astra.yaml'  # dormant legacy lightcone paper-view route
-curl 'http://localhost:4004/astra-bundle/local/abs/path/to/astra.yaml'      # dormant JSON Bundle route retained server-side
-curl 'http://localhost:4004/astra-mtime/local/abs/path/to/astra.yaml'       # dormant staleness-token route retained server-side
-curl 'http://localhost:4004/astra/asset/vellum.css'                         # dormant paper-view CSS/JS sidecars retained server-side
+# The ASTRA paper-view routes are extension stubs now; Portolan core returns 501 for them.
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
 
@@ -205,7 +201,6 @@ Core doc fibers. For more: `felt ls -s all pattern` or `felt ls -s all gotcha`.
 | Remote Agent | `hexarchy-remote-agent-setup-ssh` |
 | Remote Proxying | `pattern-hexarchy-remote-content` |
 | Worker Swarms | `murmuration-workers` |
-| Tapestry → Vellum | `tapestry-dissolves` |
-| DAG Export (/tapestry) | `absorb-claims-dashboard-into` |
+| Graph Export (/fiber-graph) | `absorb-claims-dashboard-into` |
 | Extraction Pattern | `extraction-pattern` |
 | Voice Ingress | `constitution-portolan-voice-ingress`; Parakeet live mic daemon at `server/voice-ingress/parakeet_daemon.py` / `server/src/ParakeetTranscriptSource.ts`; VibeVoice-ASR file/batch daemon at `server/voice-ingress/vibevoice_asr_daemon.py` / `server/src/VibeVoiceTranscriptSource.ts` |
