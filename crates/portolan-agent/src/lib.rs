@@ -1365,13 +1365,18 @@ where
     ];
 
     match verb {
-        "pause" | "reopen" | "accept" => {}
+        "pause" | "reopen" | "accept" | "resume" => {}
         "close" => {
             if let Some(tempered) = optional_bool_field(payload, "tempered")? {
                 args.push(format!(
                     "--tempered={}",
                     if tempered { "true" } else { "false" }
                 ));
+            }
+        }
+        "dispatch" => {
+            if optional_bool_field(payload, "adHoc")? == Some(true) {
+                args.push("--ad-hoc".to_string());
             }
         }
         "set-outcome" => {
@@ -3455,16 +3460,24 @@ malformed
             ("verb", json!("dispatch")),
             ("adHoc", json!(true)),
         ]);
-        let dispatch_err = run_kanban_transition_with(
+        run_kanban_transition_with(
             &dispatch,
             |invocation| {
-                panic!("dispatch should be rejected, got invocation: {invocation:?}");
+                invocations.push(invocation);
+                Ok(())
             },
             |_, fiber_id| Ok(json!({ "id": fiber_id })),
-        );
+        )
+        .unwrap();
         assert_eq!(
-            dispatch_err,
-            Err("unknown shuttle verb: dispatch".to_string())
+            invocations[1].args,
+            vec![
+                "--felt-store",
+                dir.to_str().unwrap(),
+                "dispatch",
+                "story",
+                "--ad-hoc"
+            ]
         );
 
         let resume = kanban_payload(&[
@@ -3474,14 +3487,19 @@ malformed
             ("fiberId", json!("story")),
             ("verb", json!("resume")),
         ]);
-        let resume_err = run_kanban_transition_with(
+        run_kanban_transition_with(
             &resume,
             |invocation| {
-                panic!("resume should be rejected, got invocation: {invocation:?}");
+                invocations.push(invocation);
+                Ok(())
             },
             |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        )
+        .unwrap();
+        assert_eq!(
+            invocations[2].args,
+            vec!["--felt-store", dir.to_str().unwrap(), "resume", "story"]
         );
-        assert_eq!(resume_err, Err("unknown shuttle verb: resume".to_string()));
         fs::remove_dir_all(&dir).unwrap();
     }
 
