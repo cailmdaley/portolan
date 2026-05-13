@@ -193,8 +193,13 @@
   color: #7A7068;
 }
 .kbn-section-now {
-  flex: 1 1 0;
-  min-height: 0;
+  /* Now claims most of the modal's height by default. Timeline + Stash
+     sit below the fold by design — visible as a "peek" at the bottom
+     of the initial viewport, fully reachable by scrolling the body.
+     Falls back to `flex: 1` when the modal is short enough that
+     Timeline + Stash fit naturally above the fold. */
+  flex: 1 1 auto;
+  min-height: min(78vh, calc(100% - 240px));
 }
 .kbn-now-board {
   display: grid;
