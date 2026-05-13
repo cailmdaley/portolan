@@ -428,32 +428,40 @@ function registerRemoteTerminalSubscription(
   originId: string,
   tmuxSession: string,
 ): string | null {
-  const subscriptionId = randomUUID();
-  if (!sendAgentFrame(originId, {
-    type: 'terminal-subscribe',
-    payload: { subscriptionId, tmuxSession },
-  })) {
-    return null;
-  }
   const previous = remoteTerminalSubscriptions.get(ws, sessionId);
-  if (previous) {
-    sendAgentFrame(previous.originId, {
+  const existingSubscriptionId = remoteTerminalSubscriptions.getTargetSubscriptionId(originId, tmuxSession);
+  const subscriptionId = previous?.originId === originId && previous.tmuxSession === tmuxSession
+    ? previous.subscriptionId
+    : existingSubscriptionId
+      ? existingSubscriptionId
+    : randomUUID();
+  const needsAgentSubscribe = !existingSubscriptionId;
+
+  if (needsAgentSubscribe) {
+    if (!sendAgentFrame(originId, {
+      type: 'terminal-subscribe',
+      payload: { subscriptionId, tmuxSession },
+    })) {
+      return null;
+    }
+  }
+  const obsolete = remoteTerminalSubscriptions.set(ws, sessionId, { originId, subscriptionId, tmuxSession });
+  if (obsolete) {
+    sendAgentFrame(obsolete.originId, {
       type: 'terminal-unsubscribe',
-      payload: { subscriptionId: previous.subscriptionId },
+      payload: { subscriptionId: obsolete.subscriptionId },
     });
   }
-  remoteTerminalSubscriptions.set(ws, sessionId, { originId, subscriptionId });
   return subscriptionId;
 }
 
 function detachRemoteTerminal(ws: WebSocket, sessionId: string): void {
-  const entry = remoteTerminalSubscriptions.get(ws, sessionId);
-  if (!entry) return;
-  sendAgentFrame(entry.originId, {
+  const obsolete = remoteTerminalSubscriptions.delete(ws, sessionId);
+  if (!obsolete) return;
+  sendAgentFrame(obsolete.originId, {
     type: 'terminal-unsubscribe',
-    payload: { subscriptionId: entry.subscriptionId },
+    payload: { subscriptionId: obsolete.subscriptionId },
   });
-  remoteTerminalSubscriptions.delete(ws, sessionId);
 }
 
 function detachAllRemoteTerminals(ws: WebSocket): void {

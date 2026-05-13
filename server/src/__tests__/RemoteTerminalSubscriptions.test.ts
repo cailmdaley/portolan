@@ -22,8 +22,8 @@ describe('RemoteTerminalSubscriptions', () => {
     const first = fakeSocket();
     const second = fakeSocket();
 
-    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-a' });
-    table.set(second, 'session-b', { originId: 'remote-candide', subscriptionId: 'sub-b' });
+    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker-a' });
+    table.set(second, 'session-b', { originId: 'remote-candide', subscriptionId: 'sub-b', tmuxSession: 'worker-b' });
 
     table.routeBytes('remote-candide', 'sub-a', 'Ynl0ZXM=');
     table.routeExit('remote-candide', 'sub-a', 'pane exited');
@@ -35,9 +35,54 @@ describe('RemoteTerminalSubscriptions', () => {
     expect(sentFrames(second)).toEqual([]);
     expect(table.getStats()).toEqual([{
       originId: 'remote-candide',
+      tmuxSession: 'worker-b',
       browserClients: 1,
+      browserSessions: 1,
       subscriptions: 1,
     }]);
+  });
+
+  it('fans one remote backing subscription out to multiple browser sessions', () => {
+    const table = new RemoteTerminalSubscriptions();
+    const first = fakeSocket();
+    const second = fakeSocket();
+
+    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+    table.set(first, 'session-a-copy', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+    table.set(second, 'session-b', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+
+    table.routeBytes('remote-candide', 'sub-a', 'Ynl0ZXM=');
+
+    expect(sentFrames(first)).toEqual([
+      { type: 'terminal:bytes', sessionId: 'session-a', bytes: 'Ynl0ZXM=' },
+      { type: 'terminal:bytes', sessionId: 'session-a-copy', bytes: 'Ynl0ZXM=' },
+    ]);
+    expect(sentFrames(second)).toEqual([
+      { type: 'terminal:bytes', sessionId: 'session-b', bytes: 'Ynl0ZXM=' },
+    ]);
+    expect(table.getStats()).toEqual([{
+      originId: 'remote-candide',
+      tmuxSession: 'worker',
+      browserClients: 2,
+      browserSessions: 3,
+      subscriptions: 1,
+    }]);
+  });
+
+  it('only returns an unsubscribe entry when the last browser session detaches', () => {
+    const table = new RemoteTerminalSubscriptions();
+    const first = fakeSocket();
+    const second = fakeSocket();
+
+    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+    table.set(second, 'session-b', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+
+    expect(table.delete(first, 'session-a')).toBeUndefined();
+    expect(table.delete(second, 'session-b')).toEqual({
+      originId: 'remote-candide',
+      subscriptionId: 'sub-a',
+      tmuxSession: 'worker',
+    });
   });
 
   it('closes every subscription for a disconnected agent origin', () => {
@@ -45,9 +90,9 @@ describe('RemoteTerminalSubscriptions', () => {
     const first = fakeSocket();
     const second = fakeSocket();
 
-    table.set(first, 'candide-a', { originId: 'remote-candide', subscriptionId: 'sub-a' });
-    table.set(first, 'cineca-a', { originId: 'remote-cineca', subscriptionId: 'sub-c' });
-    table.set(second, 'candide-b', { originId: 'remote-candide', subscriptionId: 'sub-b' });
+    table.set(first, 'candide-a', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker-a' });
+    table.set(first, 'cineca-a', { originId: 'remote-cineca', subscriptionId: 'sub-c', tmuxSession: 'worker-c' });
+    table.set(second, 'candide-b', { originId: 'remote-candide', subscriptionId: 'sub-b', tmuxSession: 'worker-b' });
 
     table.closeOrigin('remote-candide', 'agent disconnected: candide');
 
@@ -59,7 +104,9 @@ describe('RemoteTerminalSubscriptions', () => {
     ]);
     expect(table.getStats()).toEqual([{
       originId: 'remote-cineca',
+      tmuxSession: 'worker-c',
       browserClients: 1,
+      browserSessions: 1,
       subscriptions: 1,
     }]);
   });
