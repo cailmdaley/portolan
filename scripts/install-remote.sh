@@ -311,16 +311,16 @@ if [ "$AGENT_RUNTIME" = "rust" ]; then
   ssh "$SSH_HOST" "chmod +x ~/.local/bin/portolan-agent-rust"
 fi
 
-# Older Portolan agents used a bundled TS Shuttle worker. The standalone
-# Shuttle cutover removed that script; keep install compatible with older
-# checkouts without failing current agent installs.
+# Remote agents still need a host-local launcher for autonomous Shuttle
+# dispatch while the laptop-side Shuttle daemon is disconnected. The launcher
+# is intentionally small; standalone Shuttle remains the authoritative local
+# dispatcher.
 if [ -f "$REPO_DIR/server/src/shuttle-worker.sh" ]; then
   log "Copying shuttle-worker.sh..."
   scp -q "$REPO_DIR/server/src/shuttle-worker.sh" "$SSH_HOST:~/.portolan/bin/"
   ssh "$SSH_HOST" "chmod +x ~/.portolan/bin/shuttle-worker.sh"
 else
-  warn "shuttle-worker.sh not present; skipping retired TS Shuttle worker install"
-  ssh "$SSH_HOST" "rm -f ~/.portolan/bin/shuttle-worker.sh"
+  warn "shuttle-worker.sh not present; remote Shuttle dispatch will report spawn failures"
 fi
 
 # Install ws dependency for the Node fallback whenever Node is available. Rust
@@ -414,7 +414,7 @@ ssh "$SSH_HOST" bash <<VERIFY
 echo "  Hook: \$(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  Agent: \$(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
 echo "  Rust Agent: \$(ls ~/.local/bin/portolan-agent-rust 2>/dev/null && echo 'OK' || echo 'NOT PROVIDED')"
-echo "  Retired TS Shuttle worker removed: \$([ ! -e ~/.portolan/bin/shuttle-worker.sh ] && echo 'OK' || echo 'STALE')"
+echo "  Shuttle worker: \$(test -x ~/.portolan/bin/shuttle-worker.sh && echo 'OK' || echo 'MISSING')"
 if command -v node >/dev/null 2>&1; then
   echo "  ws: \$(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
 fi
