@@ -859,7 +859,11 @@ export class KanbanModal {
     for (const card of timeline.futureDated) {
       const col = dayIndexForIso(card.due, dayIndex)
       if (col === null) continue
-      strip.append(this.renderTimelineCard(card, col, nextRow(col), 'future', staleness[card.originId]))
+      // Closed-but-not-tempered cards on a future date are scheduled
+      // judgments — same gold-dashed treatment as the closedAt ghost,
+      // but at `due` rather than `closedAt`.
+      const kind = card.status === 'closed' ? 'awaiting' : 'future'
+      strip.append(this.renderTimelineCard(card, col, nextRow(col), kind, staleness[card.originId]))
     }
     wrap.append(strip)
 
@@ -1134,17 +1138,19 @@ export class KanbanModal {
   }
 
   private installTimelineDayDropHandlers(dropCol: HTMLElement, iso: string): void {
-    // Awaiting-review cards (closed-but-not-tempered) live in the Now lane
-    // and don't have a meaningful "future plan date" — the timeline future
-    // is about *planned work*, and the ghost projection on `closedAt`
-    // already gives these a calendar presence. The same applies to
-    // tempered/composted (past landings are history, not editable). Reject
-    // the drop visually so the user gets clear feedback instead of a
-    // silent no-op.
+    // Tempered/composted cards are historical record — not editable.
+    // Awaiting-review and open cards both accept future-date drops:
+    // for open cards the date is when work is planned; for awaiting-
+    // review it's when judgment is planned. Past-date drops are rejected
+    // for all card kinds.
     const isPlanCandidate = (id: string): boolean => {
       const card = findCardById(this.lastResponse, id)
       if (!card) return false
-      return card.status !== 'closed'
+      // tempered=true|false means the human verdict is in; the card is
+      // history. status='closed' with tempered absent is awaiting review
+      // and *is* plannable (the judgment is the work).
+      if (card.status === 'closed' && card.tempered !== undefined) return false
+      return true
     }
     dropCol.addEventListener('dragover', (e) => {
       if (!this.dragSourceId) return
@@ -1166,7 +1172,8 @@ export class KanbanModal {
       this.stopDragAutoScroll()
       if (!fiberId) return
       const card = findCardById(this.lastResponse, fiberId)
-      if (!card || card.status === 'closed') return
+      if (!card) return
+      if (card.status === 'closed' && card.tempered !== undefined) return
       // Past-date drops are not supported (past is a record, not a plan).
       // Today's column promotes to now via horizon=now; future dates set
       // horizon=soon + the chosen due date.
@@ -1308,12 +1315,19 @@ export class KanbanModal {
     el.className = `kbn-tl-card ${variantClass}${isStale ? ' kbn-card--stale' : ''}`
     el.style.gridColumn = String(column + 1)
     el.style.gridRow = String(row)
-    el.draggable = !isStale && kind === 'future'
+    // Draggable: future-planned work, and future-scheduled awaiting-review
+    // judgments. Past landings (kind='past') and closedAt ghosts
+    // (kind='awaiting' with no `due`) are non-draggable: history doesn't
+    // move, and a closedAt ghost has no future to drag onto a different
+    // day.
+    const isFutureAwaiting = kind === 'awaiting' && !!card.due
+    const isDraggable = !isStale && (kind === 'future' || isFutureAwaiting)
+    el.draggable = isDraggable
     el.dataset.fiberId = card.id
     el.title = card.name
     el.setAttribute('role', 'listitem')
 
-    if (!isStale && kind === 'future') {
+    if (isDraggable) {
       el.addEventListener('dragstart', (e) => {
         this.dragSourceId = card.id
         el.classList.add('kbn-card-dragging')

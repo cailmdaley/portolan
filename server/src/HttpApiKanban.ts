@@ -1397,17 +1397,26 @@ export class HttpApiKanban {
           nowDrafts.push(card);
         }
       }
-      // Awaiting-review cards also honor `horizon: stashed` — the user
-      // can set a closed-but-not-yet-tempered fiber aside ("I'll judge
-      // later") just like a draft. Soon/future-date routing isn't
-      // wired for awaiting-review because the calendar's future lane is
-      // about *planned work* (status=open), not *deferred judgment*; the
-      // ghost projection on the timeline at `closedAt` already gives
-      // these cards a calendar presence.
+      // Awaiting-review cards honor the same horizon routing as drafts:
+      //   • horizon=stashed       → stash ("I'll judge later, off my desk")
+      //   • horizon=soon + due    → timeline.futureDated ("I'll judge on date X")
+      //   • horizon=soon, no due  → timeline.anytimeSoon ("I'll judge soon-ish")
+      //   • otherwise             → now.awaitingReview (the desk)
+      // The future-date case treats "due" as the human's planned review
+      // date — judgment is real work the user often has to schedule. The
+      // frontend renders closed cards in futureDated with the same
+      // gold-dashed "awaiting" treatment as the closedAt ghost so the
+      // calendar reads cleanly across past/present/future for these.
       const nowAwaitingReview: KanbanCard[] = [];
       for (const card of awaitingReview) {
-        if (card.storedHorizon === 'stashed') stash.push(card);
-        else nowAwaitingReview.push(card);
+        if (card.storedHorizon === 'stashed') {
+          stash.push(card);
+        } else if (card.storedHorizon === 'soon') {
+          if (card.due) futureDated.push(card);
+          else anytimeSoon.push(card);
+        } else {
+          nowAwaitingReview.push(card);
+        }
       }
 
       // The constitution treats `past` as both tempered and composted
