@@ -8,12 +8,14 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HttpApi } from '../HttpApi.js';
+import { FiberTreeSnapshotStore } from '../FiberTreeSnapshotStore.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import {
   httpRequest,
   makeCityLookup,
+  makeMultiCityLookup,
   writeFiber,
   stubOriginLookup,
   stubPersistenceLookup,
@@ -379,6 +381,93 @@ created-at: 2026-01-01T00:00:00Z
     const res = await httpRequest(api, 'GET', '/fiber-graph?cityId=test');
     const stripped = stripAugmentation(res.data);
     expect(stripped.links.filter((l: any) => l.kind === 'contains')).toEqual([]);
+  });
+
+  it('builds remote fiber graphs from pushed agent snapshots without SSH', async () => {
+    const remoteStore = new FiberTreeSnapshotStore();
+    remoteStore.upsertFullDump('remote-candide', CITY_DIR, [
+      {
+        path: 'remote-root/remote-root.md',
+        fiber: {
+          id: 'remote-root',
+          name: 'Remote Root',
+          status: 'active',
+          tags: ['remote'],
+          created_at: '2026-05-14T00:00:00Z',
+        },
+      },
+      {
+        path: 'remote-root/child/child.md',
+        fiber: {
+          id: 'remote-root/child',
+          name: 'Remote Child',
+          status: 'open',
+          tags: [],
+          created_at: '2026-05-14T00:01:00Z',
+        },
+      },
+    ]);
+    const remoteApi = new HttpApi(
+      makeMultiCityLookup([
+        { id: 'remote-city', path: CITY_DIR, name: 'remote-root', originId: 'remote-candide' },
+      ]) as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      { remoteSnapshotsProvider: () => remoteStore.getAllSnapshots() },
+    );
+
+    const res = await httpRequest(remoteApi, 'GET', '/fiber-graph?cityId=remote-city');
+
+    expect(res.status).toBe(200);
+    const stripped = stripAugmentation(res.data);
+    expect(stripped.nodes.map((n: any) => n.id).sort()).toEqual(['remote-root', 'remote-root/child']);
+    expect(stripped.links).toContainEqual({
+      source: 'remote-root',
+      target: 'remote-root/child',
+      kind: 'contains',
+    });
+  });
+
+  it('searches remote city fibers from pushed agent snapshots without SSH', async () => {
+    const remoteStore = new FiberTreeSnapshotStore();
+    remoteStore.upsertFullDump('remote-candide', CITY_DIR, [
+      {
+        path: 'remote-root/remote-root.md',
+        fiber: {
+          id: 'remote-root',
+          name: 'Remote Root',
+          status: 'active',
+          body: 'The native agent snapshot carries this telescope clue.',
+        },
+      },
+      {
+        path: 'elsewhere/elsewhere.md',
+        fiber: {
+          id: 'elsewhere',
+          name: 'Elsewhere',
+          status: 'open',
+          body: 'No match here.',
+        },
+      },
+    ]);
+    const remoteApi = new HttpApi(
+      makeMultiCityLookup([
+        { id: 'remote-city', path: CITY_DIR, name: 'remote-root', originId: 'remote-candide' },
+      ]) as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      { remoteSnapshotsProvider: () => remoteStore.getAllSnapshots() },
+    );
+
+    const res = await httpRequest(remoteApi, 'GET', '/api/search?cityId=remote-city&q=telescope');
+
+    expect(res.status).toBe(200);
+    expect(res.data.hits).toHaveLength(1);
+    expect(res.data.hits[0]).toMatchObject({
+      id: 'remote-root',
+      title: 'Remote Root',
+    });
+    expect(res.data.hits[0].snippet).toContain('telescope clue');
   });
 });
 

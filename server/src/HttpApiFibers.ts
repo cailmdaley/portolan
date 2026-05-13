@@ -168,7 +168,7 @@ export class HttpApiFibers {
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
     try {
-      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const allFibers = await this.getAllCityFibers(city.path, sshHost, { originId: city.originId });
       const fiberIds = new Set(allFibers.map((fiber) => fiber.id));
 
       const nodes: Array<{
@@ -367,7 +367,7 @@ export class HttpApiFibers {
     const sshHost = city.originId !== 'local' ? this.getSshHost(city) : undefined;
 
     try {
-      const allFibers = await this.getAllCityFibers(city.path, sshHost);
+      const allFibers = await this.getAllCityFibers(city.path, sshHost, { originId: city.originId });
       const fiberIds = new Set(allFibers.map((fiber) => fiber.id));
       const rootSlug = resolveRootSlug(city.name, fiberIds, allFibers);
       this.sendJsonSuccess(res, { rootSlug });
@@ -811,7 +811,7 @@ export class HttpApiFibers {
     try {
       // Search uses fiber body for snippet generation and body-includes scoring
       // (line ~430, ~454-462), so we need the body-bearing variant.
-      const fibers = await this.getAllCityFibers(city.path, sshHost, { withBody: true });
+      const fibers = await this.getAllCityFibers(city.path, sshHost, { withBody: true, originId: city.originId });
       const needle = q.toLowerCase();
 
       const hits = fibers
@@ -1002,9 +1002,14 @@ export class HttpApiFibers {
   private async getAllCityFibers(
     cityPath: string,
     sshHost?: string,
-    opts: { withBody?: boolean } = {},
+    opts: { withBody?: boolean; originId?: string } = {},
   ): Promise<Fiber[]> {
     const withBody = opts.withBody ?? false;
+    const remoteSnapshot = sshHost ? this.findRemoteSnapshot(cityPath, opts.originId) : null;
+    if (remoteSnapshot) {
+      return remoteSnapshot.fibers;
+    }
+
     const host = sshHost ?? 'local';
     const cacheKey = `${host}::${cityPath}::${withBody ? 'body' : 'meta'}`;
     const cached = this.fiberListCache.get(cacheKey);
@@ -1040,6 +1045,15 @@ export class HttpApiFibers {
       expiresAt: Date.now() + HttpApiFibers.FIBER_LIST_TTL_MS,
     });
     return fibers;
+  }
+
+  private findRemoteSnapshot(cityPath: string, originId?: string): FiberTreeSnapshot | null {
+    if (!this.remoteSnapshotsProvider) return null;
+    const snapshots = this.remoteSnapshotsProvider();
+    return snapshots.find((snap) => (
+      (!originId || snap.originId === originId) &&
+      normalizeRemoteHost(snap.feltHost) === normalizeRemoteHost(cityPath)
+    )) ?? null;
   }
 
   private async resolveRawFiber(
@@ -1093,11 +1107,7 @@ export class HttpApiFibers {
     city: City,
     slug: string,
   ): { kind: 'remote'; city: City; originId: string; feltHost: string; path: string } | null {
-    if (!this.remoteSnapshotsProvider) return null;
-    const snapshots = this.remoteSnapshotsProvider();
-    const snapshot = snapshots.find((snap) =>
-      snap.originId === city.originId && normalizeRemoteHost(snap.feltHost) === normalizeRemoteHost(city.path)
-    );
+    const snapshot = this.findRemoteSnapshot(city.path, city.originId);
     const fiber = snapshot?.fibers.find((f) => f.id === slug);
     if (!snapshot || !fiber) return null;
     return {
