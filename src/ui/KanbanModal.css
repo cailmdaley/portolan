@@ -13,14 +13,18 @@
   width: 100%;
   height: 100%;
   /* Pigment & Parchment warm-cool wash — the page is *lit*, not glowing.
-     Two soft radial pools: a warm cinnabar/ochre breath upper-left, a
-     cool cobalt breath lower-right. Saturation kept low so the
-     temperature differential reads as illumination, never as haze. */
+     A warm ochre/cinnabar breath at the upper-left, a cool cobalt
+     breath at the lower-right, and a faint parchment-tooth grain on
+     top so the substrate has texture rather than reading as a flat
+     fill. Pigments hold their saturation against the warmth rather
+     than dissolving into it. */
   background-color: #EDE2CE;
   background-image:
-    radial-gradient(ellipse 90% 60% at 12% -8%, rgba(196, 147, 51, 0.13), transparent 58%),
-    radial-gradient(ellipse 100% 60% at 88% 108%, rgba(61, 91, 160, 0.07), transparent 62%);
-  background-attachment: fixed, fixed;
+    radial-gradient(ellipse 85% 55% at 10% -10%, rgba(196, 147, 51, 0.18), transparent 60%),
+    radial-gradient(ellipse 100% 60% at 92% 110%, rgba(61, 91, 160, 0.09), transparent 62%),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='kbn'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0.55 0 0 0 0.08  0.48 0 0 0 0.05  0.32 0 0 0 0.02  0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23kbn)' opacity='0.05'/%3E%3C/svg%3E");
+  background-attachment: fixed, fixed, fixed;
+  background-size: auto, auto, 256px;
   display: flex; flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
   color: #1B1611;
@@ -35,15 +39,37 @@
    The min-height falls back to the natural header height when the
    var isn't published yet (initial paint, before FloatingIsland's
    ResizeObserver fires). */
+/* Header band — the manuscript's top edge. Slightly deeper parchment
+   than the page beneath, with a warm ochre rule separating it from the
+   columns. A small cinnabar fleuron sits over the rule at the centre:
+   a single printer's ornament announcing the page's vocabulary. */
 .kbn-header {
   display: flex; align-items: stretch; gap: 16px;
-  padding: 10px 20px 10px 44px;
+  padding: 12px 20px 14px 44px;
   padding-right: calc(20px + var(--canvas-width, 360px));
   min-height: var(--thumb-index-bottom, auto);
-  border-bottom: 1px solid rgba(27, 22, 17, 0.12);
-  background: #DCCFB4;
+  border-bottom: 1px solid rgba(196, 147, 51, 0.35);
+  background:
+    linear-gradient(180deg, rgba(220, 207, 180, 0.55) 0%, rgba(237, 226, 206, 0.20) 100%),
+    #DCCFB4;
   flex-shrink: 0;
   box-sizing: border-box;
+  position: relative;
+}
+.kbn-header::after {
+  content: '❦';
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  transform: translateX(-50%);
+  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
+  font-size: 14px;
+  color: #BC4538;
+  background: #EDE2CE;
+  padding: 0 10px;
+  line-height: 1;
+  pointer-events: none;
+  opacity: 0.7;
 }
 /* The header's left half stacks title + scope + stats vertically so the
    thumb-index-enforced header height fills with substance instead of
@@ -640,11 +666,19 @@
      can stretch unboundedly. The horizon-row's flex:1 still ensures the
      row fills the board height. */
   max-height: min(72vh, 760px);
-  background: #EDE2CE;
-  border: 1px solid rgba(27, 22, 17, 0.10);
+  /* Each column reads as a sheet of rag laid on the parchment desk — a
+     touch warmer-bright than the page beneath, with a hairline ochre
+     rule rather than the previous near-invisible ink border. */
+  background: #F2E8D2;
+  border: 1px solid rgba(196, 147, 51, 0.22);
   border-radius: 3px;
   overflow: hidden;
   transition: background 150ms ease, border-color 150ms ease;
+  /* A whisper-of-shadow so the column lifts off the parchment without
+     reading as a UI panel. Inset highlight + minimal drop. */
+  box-shadow:
+    0 1px 0 rgba(255, 251, 237, 0.55) inset,
+    0 1px 3px rgba(27, 22, 17, 0.04);
 }
 .kbn-col-awaitingReview {
   border-color: rgba(196, 147, 51, 0.55);
@@ -676,13 +710,24 @@
 .kbn-col-head {
   display: flex; align-items: baseline; justify-content: space-between;
   width: 100%;
-  padding: 10px 14px 4px;
+  padding: 11px 14px 6px;
   border: none;
-  border-bottom: 1px solid rgba(27, 22, 17, 0.06);
+  /* Single hairline rule under the head — a touch warmer than the
+     previous near-invisible setting so it reads as a deliberate stroke,
+     not a soft fade. */
+  border-bottom: 1px solid rgba(196, 147, 51, 0.32);
   background: transparent;
   color: inherit;
   font-family: inherit;
   cursor: pointer;
+  outline: none;
+}
+.kbn-col-head:focus { outline: none; }
+.kbn-col-head:focus-visible {
+  /* Manuscript focus — cinnabar dashed inset so it reads as a ruled
+     mark rather than a browser-default selection ring. */
+  outline: 1px dashed rgba(188, 69, 56, 0.55);
+  outline-offset: -2px;
 }
 /* Column title — small caps in EB Garamond rather than the previous
    uppercase. The shape reads as a section in a manuscript header rather
