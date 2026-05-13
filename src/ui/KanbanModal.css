@@ -858,7 +858,12 @@
    the layered F2 body + F1 flourish dropcap. */
 .kbn-col-title {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 27px;
+  /* Body font-size is sized so the small-caps glyph height matches
+     the dropcap's visible height (~24px). EB Garamond's small-cap
+     ratio runs ~0.73, so 33px body → ~24px small-cap glyphs →
+     uniform "D-R-A-F-T-S" visual rhythm with the dropcap rather than
+     the previous dropcap-above-small-trailer feel. */
+  font-size: 33px;
   /* Tight line-height keeps the head box hugging the illuminated
      character; the cap's F1 flourish extends a touch above the cap
      line so even 1.0 leaves a hair of breathing room. */
@@ -872,16 +877,12 @@
   margin: 0;
 }
 .kbn-col-title .kbn-cap {
-  /* Body grew 1.5×; the illuminated F2+F1 dropcap stays at the same
-     absolute size it was tuned to (~24px). Reducing the em multiplier
-     from 1.35em (body 18px) to 0.9em (body 27px) keeps that fixed
-     while letting the small-caps body grow up to meet it. The cap
-     still reads as the decorated initial — its visual weight comes
-     from the F1 flourish overlay + tinted F2 body, not just size.
-
-     Vertical-align dropped from -0.04em to -0.08em so the cap sits on
-     the body baseline rather than floating slightly above it. */
-  font-size: 0.9em;
+  /* Cap holds at ~24px absolute. With body now 33px, the multiplier
+     drops to 24/33 ≈ 0.73em so the cap and the small-caps body
+     render at matching visual height — "D" and "rafts" (small caps)
+     read as the same letter family at the same scale, with the
+     illumination doing all the differentiation rather than size. */
+  font-size: 0.73em;
   vertical-align: -0.08em;
   margin-right: 0.04em;
   line-height: 0.82;
