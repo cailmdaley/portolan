@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import { isAbsolute } from 'path';
+import { performance } from 'perf_hooks';
 import { promisify } from 'util';
 
 import { WebSocket } from 'ws';
@@ -108,12 +109,30 @@ interface BrowserStateMessageStats {
   lastSuppressedAt: number | null;
 }
 
+interface DurationStats {
+  count: number;
+  lastMs: number;
+  totalMs: number;
+  maxMs: number;
+  averageMs: number;
+  lastCompletedAt: number | null;
+}
+
 export interface BrowserStateBroadcastStats {
   clients: number;
   clientAttention: Record<BrowserAttentionState, number>;
   stateBuilds: {
     withActivities: number;
     withoutActivities: number;
+    timings: {
+      withActivities: DurationStats;
+      withoutActivities: DurationStats;
+    };
+  };
+  statePipeline: {
+    canonicalize: DurationStats;
+    payloadPrepare: DurationStats;
+    payloadStringify: DurationStats;
   };
   state: BrowserStateMessageStats;
   activity: BrowserStateMessageStats;
@@ -141,6 +160,30 @@ function createMessageStats(): BrowserStateMessageStats {
   };
 }
 
+function createDurationStats(): DurationStats {
+  return {
+    count: 0,
+    lastMs: 0,
+    totalMs: 0,
+    maxMs: 0,
+    averageMs: 0,
+    lastCompletedAt: null,
+  };
+}
+
+function snapshotDurationStats(stats: DurationStats): DurationStats {
+  return { ...stats };
+}
+
+function recordDuration(stats: DurationStats, durationMs: number): void {
+  stats.count += 1;
+  stats.lastMs = Number(durationMs.toFixed(3));
+  stats.totalMs = Number((stats.totalMs + durationMs).toFixed(3));
+  stats.maxMs = Number(Math.max(stats.maxMs, durationMs).toFixed(3));
+  stats.averageMs = Number((stats.totalMs / stats.count).toFixed(3));
+  stats.lastCompletedAt = Date.now();
+}
+
 export class BrowserStateCoordinator {
   private readonly clients = new Set<WebSocket>();
   private readonly clientAttention = new Map<WebSocket, BrowserAttentionState>();
@@ -152,6 +195,11 @@ export class BrowserStateCoordinator {
   private readonly countOpenFibers: (cityPath: string) => Promise<number>;
   private readonly stateMessageStats: BrowserStateMessageStats = createMessageStats();
   private readonly activityMessageStats: BrowserStateMessageStats = createMessageStats();
+  private readonly stateBuildTimingWithActivities = createDurationStats();
+  private readonly stateBuildTimingWithoutActivities = createDurationStats();
+  private readonly stateCanonicalizeTiming = createDurationStats();
+  private readonly statePayloadPrepareTiming = createDurationStats();
+  private readonly statePayloadStringifyTiming = createDurationStats();
   private stateBuildsWithActivities = 0;
   private stateBuildsWithoutActivities = 0;
   private lastBroadcastMessage: string | null = null;
@@ -177,6 +225,15 @@ export class BrowserStateCoordinator {
       stateBuilds: {
         withActivities: this.stateBuildsWithActivities,
         withoutActivities: this.stateBuildsWithoutActivities,
+        timings: {
+          withActivities: snapshotDurationStats(this.stateBuildTimingWithActivities),
+          withoutActivities: snapshotDurationStats(this.stateBuildTimingWithoutActivities),
+        },
+      },
+      statePipeline: {
+        canonicalize: snapshotDurationStats(this.stateCanonicalizeTiming),
+        payloadPrepare: snapshotDurationStats(this.statePayloadPrepareTiming),
+        payloadStringify: snapshotDurationStats(this.statePayloadStringifyTiming),
       },
       state: { ...this.stateMessageStats },
       activity: { ...this.activityMessageStats },
@@ -251,6 +308,7 @@ export class BrowserStateCoordinator {
   }
 
   async buildState(options: BuildStateOptions = {}): Promise<StateUpdate> {
+    const startedAt = performance.now();
     const includeActivities = options.includeActivities ?? true;
     if (includeActivities) {
       this.stateBuildsWithActivities += 1;
@@ -326,19 +384,29 @@ export class BrowserStateCoordinator {
       state.activities = activities;
     }
 
+    recordDuration(
+      includeActivities ? this.stateBuildTimingWithActivities : this.stateBuildTimingWithoutActivities,
+      performance.now() - startedAt,
+    );
     return state;
   }
 
   broadcast(state: StateUpdate): void {
+    const canonicalizeStartedAt = performance.now();
     const canonicalState = JSON.stringify(state);
+    recordDuration(this.stateCanonicalizeTiming, performance.now() - canonicalizeStartedAt);
     if (canonicalState === this.lastBroadcastMessage) {
       this.stateMessageStats.duplicateBroadcastsSuppressed += 1;
       this.stateMessageStats.lastSuppressedAt = Date.now();
       this.lastBroadcastState = state;
       return;
     }
+    const payloadPrepareStartedAt = performance.now();
     const { payload, payloadKind } = this.createBroadcastPayload(state);
+    recordDuration(this.statePayloadPrepareTiming, performance.now() - payloadPrepareStartedAt);
+    const payloadStringifyStartedAt = performance.now();
     const message = JSON.stringify(payload);
+    recordDuration(this.statePayloadStringifyTiming, performance.now() - payloadStringifyStartedAt);
 
     let recipients = 0;
     let hiddenRecipientsSkipped = 0;

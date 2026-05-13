@@ -221,6 +221,22 @@ describe('BrowserStateCoordinator', () => {
     expect(stats.state.lastPayloadBytes).toBeGreaterThan(0);
     expect(stats.state.approxBytesSent).toBeGreaterThanOrEqual(stats.state.lastPayloadBytes);
     expect(stats.state.lastSentAt).toEqual(expect.any(Number));
+    expect(stats.stateBuilds.timings.withActivities).toMatchObject({
+      count: 1,
+      lastCompletedAt: expect.any(Number),
+    });
+    expect(stats.statePipeline.canonicalize).toMatchObject({
+      count: 1,
+      lastCompletedAt: expect.any(Number),
+    });
+    expect(stats.statePipeline.payloadPrepare).toMatchObject({
+      count: 1,
+      lastCompletedAt: expect.any(Number),
+    });
+    expect(stats.statePipeline.payloadStringify).toMatchObject({
+      count: 1,
+      lastCompletedAt: expect.any(Number),
+    });
   });
 
   it('suppresses duplicate full-state broadcasts after the first send', async () => {
