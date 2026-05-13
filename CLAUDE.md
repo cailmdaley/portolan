@@ -129,7 +129,7 @@ only the remote `portolan-agent` tmux session. Check `/debug-runtime` under
 `runtime.remoteAgentRecovery` and the backend log lines prefixed `[RemoteAgent]` to
 distinguish tunnel-unreachable from tunnel-reachable-agent-restarted.
 
-**Quick fix:** `./scripts/reset-tunnel.sh <host>` — `launchctl kickstart -k` for the tunnel, then restarts agent.
+**Quick fix:** `./scripts/reset-tunnel.sh <host>` — `launchctl kickstart -k` for the tunnel, then restarts the default Rust agent.
 Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot reverse tunnel.
 Port still held? `ssh <host> "fuser -k 4004/tcp"`. See fibers `gotcha-ssh-remoteforward-port`
 and `gotchas/gotcha-candide-reverse-tunnel-backoff`.
@@ -144,7 +144,7 @@ For Rust preview smoke tests, use a separate runtime session so Node stays as fa
     - `--plannotator-port <port>` (pass this through to Rust with `--plannotator-port=<port>`)
     - `--once` (exit after one disconnect)
 - Start or restart the preview runtime:
-  - `./scripts/reset-tunnel.sh --agent-runtime rust <host>`
+  - `./scripts/reset-tunnel.sh <host>` (or `./scripts/reset-tunnel.sh --agent-runtime rust <host>` when being explicit)
   - `./scripts/reset-tunnel.sh --agent-runtime rust --origin <origin> --plannotator-port <port> --once <host>`
 - Both commands print the resolved runtime command and a short session log tail so you can confirm the preview attached and which runtime/socket flags were applied during remote smokes.
 

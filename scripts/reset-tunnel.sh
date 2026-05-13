@@ -7,7 +7,7 @@ set -euo pipefail
 
 MANUAL=false
 RESTART_AGENT=true
-AGENT_RUNTIME="node"
+AGENT_RUNTIME="rust"
 AGENT_SESSION=""
 AGENT_ORIGIN=""
 AGENT_PLANNOTATOR_PORT=""
@@ -20,7 +20,7 @@ Usage: ./scripts/reset-tunnel.sh [options] <ssh-host>
 
 Options:
   --manual             Bypass launchd and run the old one-shot ssh recovery path
-  --agent-runtime      Select runtime to restart: node|rust (default: node)
+  --agent-runtime      Select runtime to restart: node|rust (default: rust)
   --agent-session      Override tmux session name for restart target
   --origin             Origin identifier for rust preview runtime (if different from hostname)
   --plannotator-port   Optional plannotator socket port (rust preview only)
