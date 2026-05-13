@@ -170,6 +170,63 @@ pub struct AgentConfig {
     pub once: bool,
 }
 
+pub fn format_status_report(sessions: &[portolan_agent_protocol::AgentSession]) -> String {
+    if sessions.is_empty() {
+        return "No Claude/Codex/Pi sessions found".to_string();
+    }
+
+    let mut lines = vec![format!(
+        "Found {} Claude/Codex/Pi session(s):",
+        sessions.len()
+    )];
+    for session in sessions {
+        lines.push(String::new());
+        lines.push(format!("  {}", session.tmux_session));
+        lines.push(format!("    cwd: {}", session.cwd));
+        if let Some(git_status) = &session.git_status {
+            let branch = git_status
+                .get("branch")
+                .and_then(Value::as_str)
+                .filter(|branch| !branch.is_empty())
+                .unwrap_or("unknown");
+            let dirty = git_status
+                .get("dirty")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let total_files = git_status
+                .get("totalFiles")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let ahead = git_status.get("ahead").and_then(Value::as_u64).unwrap_or(0);
+            let behind = git_status
+                .get("behind")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+
+            lines.push(format!(
+                "    git: {branch}{}{}{}",
+                if dirty {
+                    format!(" dirty({total_files})")
+                } else {
+                    " clean".to_string()
+                },
+                if ahead > 0 {
+                    format!(" ahead({ahead})")
+                } else {
+                    String::new()
+                },
+                if behind > 0 {
+                    format!(" behind({behind})")
+                } else {
+                    String::new()
+                },
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
 pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<AgentCommand, String> {
     let mut args = args.into_iter();
     let Some(command) = args.next().and_then(os_string_into_string) else {
@@ -1733,6 +1790,51 @@ malformed
                 reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
                 once: true,
             })
+        );
+    }
+
+    #[test]
+    fn formats_status_report_from_discovered_sessions() {
+        let report = format_status_report(&[
+            portolan_agent_protocol::AgentSession {
+                id: None,
+                name: "review".to_string(),
+                tmux_session: "review".to_string(),
+                cwd: "/remote/review".to_string(),
+                status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
+                has_claims: Some(true),
+                has_playgrounds: Some(false),
+                git_status: Some(json!({
+                    "branch": "main",
+                    "dirty": true,
+                    "totalFiles": 3,
+                    "ahead": 1,
+                    "behind": 2
+                })),
+            },
+            portolan_agent_protocol::AgentSession {
+                id: None,
+                name: "scratch".to_string(),
+                tmux_session: "scratch".to_string(),
+                cwd: "/tmp/scratch".to_string(),
+                status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
+                has_claims: Some(false),
+                has_playgrounds: Some(false),
+                git_status: None,
+            },
+        ]);
+
+        assert!(report.contains("Found 2 Claude/Codex/Pi session(s):"));
+        assert!(report.contains("  review\n    cwd: /remote/review"));
+        assert!(report.contains("    git: main dirty(3) ahead(1) behind(2)"));
+        assert!(report.contains("  scratch\n    cwd: /tmp/scratch"));
+    }
+
+    #[test]
+    fn formats_empty_status_report() {
+        assert_eq!(
+            format_status_report(&[]),
+            "No Claude/Codex/Pi sessions found"
         );
     }
 

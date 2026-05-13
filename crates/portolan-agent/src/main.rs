@@ -1,9 +1,9 @@
 use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
-    build_agent_url, collect_agent_sessions, collect_fiber_tree_delta_frame, handle_server_frame,
-    normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args, AgentCommand,
-    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
+    build_agent_url, collect_agent_sessions, collect_fiber_tree_delta_frame, format_status_report,
+    handle_server_frame, normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args,
+    AgentCommand, AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
 };
 use portolan_agent_protocol::{
     AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
@@ -36,9 +36,7 @@ async fn main() {
     match command {
         AgentCommand::Connect(config) => run_connect_loop(config).await,
         AgentCommand::Status => {
-            println!(
-                "rust portolan-agent preview installed; Node server/agent.js remains authoritative"
-            );
+            println!("{}", format_status_report(&collect_agent_sessions()));
         }
     }
 }
