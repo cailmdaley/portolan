@@ -25,6 +25,7 @@ import { MeetingBridge } from './MeetingBridge.js';
 import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
 import { VibeVoiceTranscriptSource } from './VibeVoiceTranscriptSource.js';
 import { RemoteAgentCoordinator, recoverRemoteAgent } from './RemoteAgentCoordinator.js';
+import { remoteAgentRuntimeProfiles } from './RemoteAgentRuntime.js';
 import { RemoteAgentRuntimePreferenceStore } from './RemoteAgentRuntimePreferenceStore.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
@@ -216,6 +217,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     eventWatcher: eventWatcher.getStats(),
     remoteWorkingSessions: remoteAgentCoordinator.getRemoteWorkingStats(),
     remoteAgentRecovery: remoteAgentCoordinator.getRemoteAgentRecoveryStats(),
+    remoteAgentRuntimeProfiles: remoteAgentRuntimeProfiles(),
     remoteAgentRuntimePreferences: remoteAgentRuntimePreferences.getDiagnostics(),
     recentFiles: {
       sessionCount: recentFileTracker.getSessionCount(),

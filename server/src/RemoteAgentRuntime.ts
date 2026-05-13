@@ -10,6 +10,16 @@ export interface RemoteAgentStartupOptions {
   once?: boolean;
 }
 
+export interface RemoteAgentRuntimeProfile {
+  runtime: RemoteAgentRuntime;
+  tmuxSession: string;
+  replacesTmuxSession: string;
+  commandTemplate: string;
+  supportsOnce: boolean;
+}
+
+const TEMPLATE_SSH_HOST = '<ssh-host>';
+
 export function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string {
   return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;
 }
@@ -28,6 +38,16 @@ export function remoteAgentCommand(
   }
 
   return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
+}
+
+export function remoteAgentRuntimeProfiles(): RemoteAgentRuntimeProfile[] {
+  return (['node', 'rust'] satisfies RemoteAgentRuntime[]).map((runtime) => ({
+    runtime,
+    tmuxSession: remoteAgentTmuxSession(runtime),
+    replacesTmuxSession: oppositeRemoteAgentTmuxSession(runtime),
+    commandTemplate: remoteAgentCommand(runtime, TEMPLATE_SSH_HOST),
+    supportsOnce: runtime === 'rust',
+  }));
 }
 
 function rustRemoteAgentCommand(
