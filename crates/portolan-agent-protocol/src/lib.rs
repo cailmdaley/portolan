@@ -29,6 +29,10 @@ pub enum AgentFrame {
     FiberHistory { payload: FiberHistoryRequestPayload },
     #[serde(rename = "fiber-history-result")]
     FiberHistoryResult { payload: FiberHistoryResultPayload },
+    #[serde(rename = "felt-comment")]
+    FeltComment { payload: AgentRequestPayload },
+    #[serde(rename = "felt-comment-result")]
+    FeltCommentResult { payload: AgentResultPayload },
     #[serde(rename = "file-content")]
     FileContent { payload: FileContentRequestPayload },
     #[serde(rename = "file-content-result")]
@@ -84,6 +88,8 @@ impl AgentFrame {
             AgentFrame::FiberRawResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FiberHistory { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FiberHistoryResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::FeltComment { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::FeltCommentResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FileContent { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FileContentResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::SearchFiles { payload } => Some(payload.correlation_id.as_str()),
@@ -104,6 +110,7 @@ impl AgentFrame {
             AgentFrame::KanbanTransition { .. }
                 | AgentFrame::FiberRaw { .. }
                 | AgentFrame::FiberHistory { .. }
+                | AgentFrame::FeltComment { .. }
                 | AgentFrame::FileContent { .. }
                 | AgentFrame::SearchFiles { .. }
                 | AgentFrame::ProjectFile { .. }
@@ -120,6 +127,7 @@ impl AgentFrame {
             AgentFrame::KanbanTransitionResult { .. }
                 | AgentFrame::FiberRawResult { .. }
                 | AgentFrame::FiberHistoryResult { .. }
+                | AgentFrame::FeltCommentResult { .. }
                 | AgentFrame::FileContentResult { .. }
                 | AgentFrame::SearchFilesResult { .. }
                 | AgentFrame::ProjectFileResult { .. }
@@ -698,6 +706,43 @@ mod tests {
         .unwrap();
         assert!(result.is_agent_result());
         assert_eq!(result.correlation_id(), Some("corr-history"));
+    }
+
+    #[test]
+    fn parses_felt_comment_round_trip() {
+        let frame = AgentFrame::parse(
+            br#"{
+              "type": "felt-comment",
+              "payload": {
+                "correlationId": "corr-comment",
+                "feltHost": "/home/cdaley/loom",
+                "claimId": "claim-1",
+                "comment": "Promote this note"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(frame.is_server_request());
+        assert_eq!(frame.correlation_id(), Some("corr-comment"));
+        let AgentFrame::FeltComment { payload } = frame else {
+            panic!("expected felt-comment request");
+        };
+        assert_eq!(payload.fields["claimId"], "claim-1");
+        assert_eq!(payload.fields["comment"], "Promote this note");
+
+        let result = AgentFrame::parse(
+            br#"{
+              "type": "felt-comment-result",
+              "payload": {
+                "correlationId": "corr-comment",
+                "ok": true
+              }
+            }"#,
+        )
+        .unwrap();
+        assert!(result.is_agent_result());
+        assert_eq!(result.correlation_id(), Some("corr-comment"));
     }
 
     #[test]

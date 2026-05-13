@@ -1782,6 +1782,54 @@ async function handleFiberHistory(message) {
     }
 }
 
+async function executeFeltCommentRequest(payload) {
+    const { claimId, comment } = payload || {};
+    if (typeof claimId !== 'string' || claimId.trim().length === 0) {
+        throw new Error('missing claimId');
+    }
+    if (typeof comment !== 'string' || comment.trim().length === 0) {
+        throw new Error('missing comment');
+    }
+    const feltHost = typeof payload.feltHost === 'string'
+        ? normalizeHostPath(payload.feltHost)
+        : normalizeHostPath(FELT_HOST);
+    await execFileAsync(
+        'felt',
+        ['-C', feltHost, 'comment', claimId, comment],
+        {
+            cwd: feltHost,
+            timeout: 10_000,
+            maxBuffer: 1024 * 1024,
+        },
+    );
+    return { ok: true };
+}
+
+async function handleFeltComment(message) {
+    const payload = message.payload || {};
+    const { correlationId, claimId } = payload;
+    if (!correlationId) {
+        debug('felt-comment without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'felt-comment-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+    try {
+        const result = await executeFeltCommentRequest(payload);
+        reply(result);
+        debug(`felt-comment ok: ${claimId}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`felt-comment failed (${claimId}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
 // ============================================================================
 // Shuttle on the agent (constitution-shuttle-remote-dispatch)
 // ============================================================================
@@ -2228,6 +2276,9 @@ function handleMessage(message) {
             break;
         case 'fiber-history':
             handleFiberHistory(message);
+            break;
+        case 'felt-comment':
+            handleFeltComment(message);
             break;
 
         case 'file-content':

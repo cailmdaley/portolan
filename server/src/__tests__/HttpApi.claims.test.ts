@@ -7,7 +7,7 @@
  * - formatClaimsAnnotationsForClaude output format
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';
 import { shellEscape } from '../ShellPathUtils.js';
@@ -18,6 +18,7 @@ import {
   makePersistence as _makePersistence,
   httpRequest,
   makeCityLookup,
+  makeMultiCityLookup,
   writeFiber,
   stubOriginLookup,
   stubPersistenceLookup,
@@ -536,6 +537,71 @@ describe('HttpApi — claims annotations', () => {
 
       expect(res.status).toBe(404);
       expect(res.data.error).toMatch(/City not found/i);
+    });
+
+    it('routes remote city promotions through remoteFeltCommentExecutor', async () => {
+      const remoteCityPath = '/home/cdaley/projects/remote-city';
+      const remoteFeltCommentExecutor = vi.fn().mockResolvedValue(undefined);
+      const remoteApi = new HttpApi(
+        makeMultiCityLookup([
+          {
+            id: 'remote-city',
+            path: remoteCityPath,
+            originId: 'remote-candide',
+            name: 'Remote City',
+          },
+        ]) as any,
+        {
+          getOrigin: () => ({ id: 'remote-candide', name: 'Candide', sshHost: 'candide' }),
+        } as any,
+        stubPersistenceLookup as any,
+        {
+          remoteFeltCommentExecutor,
+        },
+      );
+      const requestPayload = {
+        claimId: 'claim-remote',
+        comment: 'Remote review should go through connected agent',
+        cityId: 'remote-city',
+      };
+
+      const res = await httpRequest(remoteApi, 'POST', '/promote-to-felt', requestPayload);
+
+      expect(res.status).toBe(200);
+      expect(res.data).toEqual({ success: true });
+      expect(remoteFeltCommentExecutor).toHaveBeenCalledTimes(1);
+      expect(remoteFeltCommentExecutor).toHaveBeenCalledWith({
+        originId: 'remote-candide',
+        feltHost: remoteCityPath,
+        claimId: requestPayload.claimId,
+        comment: requestPayload.comment,
+      });
+    });
+
+    it('errors when remote city promotions lack an executor', async () => {
+      const remoteApi = new HttpApi(
+        makeMultiCityLookup([
+          {
+            id: 'remote-city',
+            path: '/home/cdaley/projects/remote-city',
+            originId: 'remote-candide',
+            name: 'Remote City',
+          },
+        ]) as any,
+        {
+          getOrigin: () => ({ id: 'remote-candide', name: 'Candide', sshHost: 'candide' }),
+        } as any,
+        stubPersistenceLookup as any,
+      );
+
+      const res = await httpRequest(remoteApi, 'POST', '/promote-to-felt', {
+        claimId: 'claim-remote',
+        comment: 'No executor wired',
+        cityId: 'remote-city',
+      });
+
+      expect(res.status).toBe(500);
+      expect(res.data.error).toMatch(/remote-origin felt comments require remoteFeltCommentExecutor wiring/i);
     });
   });
 

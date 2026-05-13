@@ -143,6 +143,12 @@ export interface HttpApiOptions {
     frontmatter: Record<string, unknown>;
     originId: string;
   }) => Promise<{ id: string; path?: string }>;
+  remoteFeltCommentExecutor?: (request: {
+    originId: string;
+    feltHost: string;
+    claimId: string;
+    comment: string;
+  }) => Promise<void>;
   remoteAgentRuntimePreferences?: RemoteAgentRuntimePreferences;
 }
 
@@ -200,11 +206,11 @@ export class HttpApi {
     this.annotationsApi = new HttpApiAnnotations({
       cityLookup,
       originLookup,
-      getSshHost: (city) => this.getSshHost(city),
       parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => this.parseJsonBody<T>(req, res),
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
       shuttleFiberCreateFn: options.shuttleFiberCreateFn,
+      remoteFeltCommentExecutor: options.remoteFeltCommentExecutor,
     });
     this.fileContentApi = new HttpApiFileContent({
       originLookup,

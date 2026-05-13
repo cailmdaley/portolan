@@ -211,6 +211,14 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     );
     return { events: result.events };
   },
+  remoteFeltCommentExecutor: async ({ originId, feltHost, claimId, comment }) => {
+    await agentRequestCoordinator.send(
+      originId,
+      'felt-comment',
+      { feltHost, claimId, comment },
+      10_000,
+    );
+  },
   remoteFileContentExecutor,
   remoteDirectoryExecutor,
   remoteProjectFileExecutor: async ({ originId, ...payload }) => {
@@ -721,6 +729,13 @@ wss.on('connection', async (ws, req) => {
           const result: Record<string, unknown> = {};
           if (events !== undefined) result.events = events;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'felt-comment-result') {
+          const { correlationId, ok, error } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+          };
+          agentRequestCoordinator.handleResult(correlationId, !!ok, {}, error);
         } else if (message.type === 'file-content-result') {
           const { correlationId, ok, error, content, mtimeMs } = message.payload as {
             correlationId: string;

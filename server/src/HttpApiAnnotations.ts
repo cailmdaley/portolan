@@ -1,4 +1,4 @@
-import { exec, execFile } from 'child_process';
+import { exec } from 'child_process';
 import { IncomingMessage, ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { Annotation, AnnotationPersistence } from './AnnotationPersistence.js';
@@ -9,7 +9,6 @@ import { shellEscape } from './ShellPathUtils.js';
 import { TmuxSessionMessenger } from './TmuxSessionMessenger.js';
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
 interface CityLookup {
   getCityById(cityId: string): City | null;
@@ -108,22 +107,29 @@ function trimTrailingSlash(value: string): string {
 interface HttpApiAnnotationsOptions {
   cityLookup: CityLookup;
   originLookup: OriginLookup;
-  getSshHost: (city: City) => string;
   parseJsonBody: JsonBodyParser;
   sendJsonError: JsonErrorSender;
   sendJsonSuccess: JsonSuccessSender;
   shuttleFiberCreateFn?: (request: ShuttleFiberCreateRequest) => Promise<ShuttleFiberCreateResponse>;
+  remoteFeltCommentExecutor?: (request: {
+    originId: string;
+    feltHost: string;
+    claimId: string;
+    comment: string;
+  }) => Promise<void>;
 }
 
 export class HttpApiAnnotations {
   private readonly cityLookup: CityLookup;
   private readonly originLookup: OriginLookup;
-  private readonly getSshHost: (city: City) => string;
   private readonly parseJsonBody: JsonBodyParser;
   private readonly sendJsonError: JsonErrorSender;
   private readonly sendJsonSuccess: JsonSuccessSender;
   private readonly shuttleFiberCreateFn:
     | ((request: ShuttleFiberCreateRequest) => Promise<ShuttleFiberCreateResponse>)
+    | undefined;
+  private readonly remoteFeltCommentExecutor:
+    | HttpApiAnnotationsOptions['remoteFeltCommentExecutor']
     | undefined;
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
@@ -139,11 +145,11 @@ export class HttpApiAnnotations {
   constructor(options: HttpApiAnnotationsOptions) {
     this.cityLookup = options.cityLookup;
     this.originLookup = options.originLookup;
-    this.getSshHost = options.getSshHost;
     this.parseJsonBody = options.parseJsonBody;
     this.sendJsonError = options.sendJsonError;
     this.sendJsonSuccess = options.sendJsonSuccess;
     this.shuttleFiberCreateFn = options.shuttleFiberCreateFn;
+    this.remoteFeltCommentExecutor = options.remoteFeltCommentExecutor;
   }
 
   setAnnotationPersistence(persistence: AnnotationPersistence): void {
@@ -738,8 +744,15 @@ export class HttpApiAnnotations {
       if (!isRemote) {
         await execAsync(feltCmd, { timeout: 10000 });
       } else {
-        const sshHost = this.getSshHost(city);
-        await execFileAsync('ssh', [sshHost, feltCmd], { timeout: 30000 });
+        if (!this.remoteFeltCommentExecutor) {
+          throw new Error(`remote-origin felt comments require remoteFeltCommentExecutor wiring (city ${cityId})`);
+        }
+        await this.remoteFeltCommentExecutor({
+          originId: city.originId!,
+          feltHost: cityPath,
+          claimId,
+          comment,
+        });
       }
 
       this.sendJsonSuccess(res, { success: true });

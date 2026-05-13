@@ -499,6 +499,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         }
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         AgentFrame::FiberHistory { payload } => vec![handle_fiber_history(payload)],
+        AgentFrame::FeltComment { payload } => vec![handle_felt_comment(payload)],
         AgentFrame::FileContent { payload } => vec![handle_file_content(payload)],
         AgentFrame::SearchFiles { payload } => vec![handle_search_files(payload)],
         AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
@@ -1475,12 +1476,63 @@ fn handle_kanban_transition(payload: &AgentRequestPayload) -> AgentFrame {
     }
 }
 
+fn handle_felt_comment(payload: &AgentRequestPayload) -> AgentFrame {
+    match run_felt_comment(payload) {
+        Ok(()) => AgentFrame::FeltCommentResult {
+            payload: AgentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                fiber: None,
+                fields: Default::default(),
+            },
+        },
+        Err(error) => AgentFrame::FeltCommentResult {
+            payload: AgentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                fiber: None,
+                fields: Default::default(),
+            },
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcessInvocation {
     program: String,
     args: Vec<String>,
     cwd: PathBuf,
     envs: BTreeMap<String, String>,
+}
+
+fn run_felt_comment(payload: &AgentRequestPayload) -> Result<(), String> {
+    run_felt_comment_with(payload, run_process)
+}
+
+fn run_felt_comment_with<R>(payload: &AgentRequestPayload, mut run_process: R) -> Result<(), String>
+where
+    R: FnMut(ProcessInvocation) -> Result<(), String>,
+{
+    let claim_id = required_string_field(payload, "claimId")?;
+    let comment = required_string_field(payload, "comment")?;
+    let felt_host = optional_string_field(payload, "feltHost")
+        .map(str::to_string)
+        .unwrap_or_else(default_felt_host);
+
+    run_process(ProcessInvocation {
+        program: "felt".to_string(),
+        args: vec![
+            "-C".to_string(),
+            felt_host.clone(),
+            "comment".to_string(),
+            claim_id.to_string(),
+            comment.to_string(),
+        ],
+        cwd: normalize_host_path(&felt_host),
+        envs: process_env_for_felt_host(&felt_host),
+    })
 }
 
 fn run_kanban_transition(payload: &AgentRequestPayload) -> Result<Value, String> {
@@ -4778,6 +4830,39 @@ malformed
                 "idea"
             ]
         );
+    }
+
+    #[test]
+    fn felt_comment_request_runs_felt_comment_in_host() {
+        let dir = temp_host("felt-comment");
+        fs::create_dir_all(&dir).unwrap();
+        let payload = kanban_payload(&[
+            ("feltHost", json!(dir.display().to_string())),
+            ("claimId", json!("claim-1")),
+            ("comment", json!("Needs follow-up")),
+        ]);
+        let mut invocations = Vec::new();
+
+        run_felt_comment_with(&payload, |invocation| {
+            invocations.push(invocation);
+            Ok(())
+        })
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].program, "felt");
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "-C",
+                dir.to_str().unwrap(),
+                "comment",
+                "claim-1",
+                "Needs follow-up"
+            ]
+        );
+        assert_eq!(invocations[0].cwd, dir);
     }
 
     #[test]
