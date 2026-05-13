@@ -284,9 +284,9 @@ pub fn build_agent_url(config: &AgentConfig) -> String {
     url.push_str("agent=true&origin=");
     url.push_str(&urlencoding::encode(&config.origin));
 
-    if let Some(ssh_host) = &config.ssh_host {
+    if let Some(ssh_host) = effective_ssh_host(config) {
         url.push_str("&sshHost=");
-        url.push_str(&urlencoding::encode(ssh_host));
+        url.push_str(&urlencoding::encode(&ssh_host));
     }
     if let Some(plannotator_port) = config.plannotator_port {
         url.push_str("&plannotatorPort=");
@@ -294,6 +294,32 @@ pub fn build_agent_url(config: &AgentConfig) -> String {
     }
 
     url
+}
+
+fn effective_ssh_host(config: &AgentConfig) -> Option<String> {
+    let base = config.ssh_host.as_ref()?.trim();
+    if base.is_empty() {
+        return None;
+    }
+
+    let Some(login_node) = login_node_from_origin(&config.origin) else {
+        return Some(base.to_string());
+    };
+    if base.ends_with(&format!("-{login_node}")) {
+        Some(base.to_string())
+    } else {
+        Some(format!("{base}-{login_node}"))
+    }
+}
+
+fn login_node_from_origin(origin: &str) -> Option<&str> {
+    let first = origin.split('.').next()?;
+    let suffix = first.strip_prefix("login")?;
+    if !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(first)
+    } else {
+        None
+    }
 }
 
 pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
@@ -2059,6 +2085,57 @@ malformed
         assert_eq!(
             url,
             "ws://localhost:4004/?agent=true&origin=login%2001&sshHost=cineca-login01&plannotatorPort=4008"
+        );
+    }
+
+    #[test]
+    fn qualifies_login_node_ssh_hosts_like_node_agent() {
+        let url = build_agent_url(&AgentConfig {
+            server: "localhost:4004".to_string(),
+            origin: "login05.leonardo.local".to_string(),
+            ssh_host: Some("cineca".to_string()),
+            plannotator_port: None,
+            reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
+            once: false,
+        });
+
+        assert_eq!(
+            url,
+            "ws://localhost:4004/?agent=true&origin=login05.leonardo.local&sshHost=cineca-login05"
+        );
+    }
+
+    #[test]
+    fn leaves_already_qualified_login_node_ssh_hosts_alone() {
+        let url = build_agent_url(&AgentConfig {
+            server: "localhost:4004".to_string(),
+            origin: "login05.leonardo.local".to_string(),
+            ssh_host: Some("cineca-login05".to_string()),
+            plannotator_port: None,
+            reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
+            once: false,
+        });
+
+        assert_eq!(
+            url,
+            "ws://localhost:4004/?agent=true&origin=login05.leonardo.local&sshHost=cineca-login05"
+        );
+    }
+
+    #[test]
+    fn leaves_non_login_ssh_hosts_alone() {
+        let url = build_agent_url(&AgentConfig {
+            server: "localhost:4004".to_string(),
+            origin: "candide".to_string(),
+            ssh_host: Some("candide".to_string()),
+            plannotator_port: None,
+            reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
+            once: false,
+        });
+
+        assert_eq!(
+            url,
+            "ws://localhost:4004/?agent=true&origin=candide&sshHost=candide"
         );
     }
 
