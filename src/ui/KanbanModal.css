@@ -12,10 +12,10 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  background: #EDE8E0;
+  background: #EDE2CE;
   display: flex; flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
-  color: #2E2A26;
+  color: #1B1611;
   overflow: hidden;
 }
 /* Header band aligns with vellum's thumb-index: bottom edge meets
@@ -32,8 +32,8 @@
   padding: 10px 20px 10px 44px;
   padding-right: calc(20px + var(--canvas-width, 360px));
   min-height: var(--thumb-index-bottom, auto);
-  border-bottom: 1px solid rgba(46, 42, 38, 0.12);
-  background: #E5DED2;
+  border-bottom: 1px solid rgba(27, 22, 17, 0.12);
+  background: #DCCFB4;
   flex-shrink: 0;
   box-sizing: border-box;
 }
@@ -58,7 +58,7 @@
 .kbn-subtitle {
   font-style: italic;
   font-size: 14px;
-  color: #7A7068;
+  color: #7A6F5C;
 }
 .kbn-subtitle:empty {
   display: none;
@@ -66,7 +66,7 @@
 .kbn-status {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
-  color: #7A7068;
+  color: #7A6F5C;
   letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
@@ -82,10 +82,10 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #9A7B35;
+  background: #C49333;
   color: #FFFFFF;
-  border: 1px solid #7A6028;
-  box-shadow: 0 2px 4px rgba(46, 42, 38, 0.18);
+  border: 1px solid #8C6A24;
+  box-shadow: 0 2px 4px rgba(27, 22, 17, 0.18);
   font-size: 18px;
   line-height: 1;
   font-family: var(--font-main, 'EB Garamond', serif);
@@ -97,12 +97,12 @@
 }
 .kbn-stash-btn:hover,
 .kbn-stash-btn:focus-visible {
-  background: #B08D3D;
+  background: #D2A648;
   transform: scale(1.06);
   outline: none;
 }
 .kbn-stash-btn:focus-visible {
-  box-shadow: 0 0 0 3px rgba(154, 123, 53, 0.36);
+  box-shadow: 0 0 0 3px rgba(196, 147, 51, 0.36);
 }
 /* Refresh ↻ button in the header. Faded, low-prominence. */
 .kbn-refresh-btn {
@@ -116,18 +116,18 @@
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 14px;
   line-height: 1;
-  color: rgba(122, 112, 104, 0.55);
+  color: rgba(122, 111, 92, 0.55);
   cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease;
 }
 .kbn-refresh-btn:hover,
 .kbn-refresh-btn:focus-visible {
-  color: #7A7068;
-  border-color: rgba(122, 112, 104, 0.22);
+  color: #7A6F5C;
+  border-color: rgba(122, 111, 92, 0.22);
   outline: none;
 }
 .kbn-refresh-btn:focus-visible {
-  outline: 1px dashed #7A7068;
+  outline: 1px dashed #7A6F5C;
   outline-offset: 2px;
 }
 /* aria-live region — invisible but observable in the a11y tree. */
@@ -142,17 +142,17 @@
 .kbn-banner {
   margin: 0 20px;
   padding: 8px 12px;
-  background: rgba(154, 123, 53, 0.12);
-  border: 1px solid rgba(154, 123, 53, 0.4);
-  color: #6B5520;
+  background: rgba(196, 147, 51, 0.12);
+  border: 1px solid rgba(196, 147, 51, 0.4);
+  color: #8C6A24;
   font-size: 13px;
   border-radius: 2px;
   margin-top: 8px;
 }
 .kbn-banner-error {
-  background: rgba(178, 78, 60, 0.12);
-  border-color: rgba(178, 78, 60, 0.5);
-  color: #8B3A28;
+  background: rgba(188, 69, 56, 0.12);
+  border-color: rgba(188, 69, 56, 0.5);
+  color: #A2362A;
 }
 /* Horizon rows: Now expanded by default, future rows as thin foldable
    headers. The board scrolls vertically; each lifecycle cell handles
@@ -178,13 +178,14 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  margin-bottom: 12px;
   border-radius: 3px;
   transition: background 140ms ease;
+  /* Spacing between sections lives on `.kbn-body { gap }` — no margin
+     here so the Now grid sits flush against the timeline strip. */
 }
 .kbn-section-drop {
-  background: rgba(154, 123, 53, 0.08);
-  outline: 1px dashed rgba(154, 123, 53, 0.45);
+  background: rgba(196, 147, 51, 0.08);
+  outline: 1px dashed rgba(196, 147, 51, 0.45);
   outline-offset: -2px;
 }
 .kbn-section-toggle {
@@ -201,7 +202,7 @@
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 12px;
   line-height: 1;
-  color: rgba(122, 112, 104, 0.4);
+  color: rgba(122, 111, 92, 0.4);
   cursor: pointer;
   transition: color 120ms ease, background 120ms ease, opacity 120ms ease;
   /* Faintly visible at rest so the affordance is discoverable; brightens
@@ -216,11 +217,11 @@
   opacity: 1;
 }
 .kbn-section-toggle:hover {
-  color: #7A7068;
-  background: rgba(122, 112, 104, 0.08);
+  color: #7A6F5C;
+  background: rgba(122, 111, 92, 0.08);
 }
 .kbn-section-toggle:focus-visible {
-  outline: 1px dashed #7A7068;
+  outline: 1px dashed #7A6F5C;
   outline-offset: 2px;
 }
 /* The collapsed-state strip — hidden when section is expanded, shown as
@@ -242,19 +243,19 @@
   font-size: 13px;
   font-variant-caps: small-caps;
   letter-spacing: 0.04em;
-  color: #9A7B35;
+  color: #C49333;
 }
 .kbn-section-strip-count {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
-  color: #7A7068;
+  color: #7A6F5C;
 }
 .kbn-section-collapsed {
   flex: 0 0 auto !important;
   min-height: 0 !important;
   margin-bottom: 6px;
-  background: rgba(244, 240, 232, 0.7);
-  border: 1px solid rgba(46, 42, 38, 0.10);
+  background: rgba(237, 226, 206, 0.7);
+  border: 1px solid rgba(27, 22, 17, 0.10);
 }
 .kbn-section-collapsed > .kbn-section-strip {
   display: flex;
@@ -282,24 +283,24 @@
 
 /* Timeline */
 .kbn-section-timeline {
-  border: 1px solid rgba(46, 42, 38, 0.10);
-  background: rgba(244, 240, 232, 0.45);
+  border: 1px solid rgba(27, 22, 17, 0.10);
+  background: rgba(237, 226, 206, 0.45);
 }
 .kbn-timeline-wrap {
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 6px 0 10px;
+  padding: 2px 0 6px;
 }
 .kbn-timeline-axis {
   display: grid;
-  border-bottom: 0.5px solid rgba(122, 112, 104, 0.30);
+  border-bottom: 0.5px solid rgba(122, 111, 92, 0.30);
   margin: 0 14px 6px;
 }
 .kbn-timeline-day {
   text-align: center;
   padding: 3px 1px 5px;
-  border-right: 0.5px solid rgba(122, 112, 104, 0.18);
+  border-right: 0.5px solid rgba(122, 111, 92, 0.18);
   position: relative;
 }
 .kbn-timeline-day-past { background: rgba(0, 0, 0, 0.015); }
@@ -310,7 +311,7 @@
   border-right: 1.5px solid #BC4538;
 }
 .kbn-timeline-day-week-boundary {
-  border-right: 1px solid rgba(122, 112, 104, 0.45);
+  border-right: 1px solid rgba(122, 111, 92, 0.45);
 }
 .kbn-timeline-day-dow {
   display: block;
@@ -324,7 +325,7 @@
   font-size: 11px;
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-weight: 500;
-  color: #3A332A;
+  color: #2A231A;
 }
 .kbn-timeline-day-today .kbn-timeline-day-num,
 .kbn-timeline-day-today .kbn-timeline-day-dow {
@@ -335,9 +336,15 @@
   display: grid;
   grid-auto-rows: min-content;
   position: relative;
-  min-height: 36px;
+  min-height: 28px;
   padding: 0 14px;
   align-content: start;
+  /* Strip height is set imperatively by installAdaptiveStripHeight() to
+     fit the tallest stack among visible columns; transition keeps the
+     resize from snapping during a horizontal scroll. Overflow:hidden
+     clips off-screen cards that sit below the visible-window cap. */
+  overflow: hidden;
+  transition: height 160ms ease-out;
 }
 .kbn-timeline-dropcol {
   /* Span the full strip height; `1 / -1` is a no-op without
@@ -347,15 +354,15 @@
   pointer-events: auto;
 }
 .kbn-timeline-dropcol-active {
-  background: rgba(154, 123, 53, 0.10);
-  outline: 1px dashed rgba(154, 123, 53, 0.45);
+  background: rgba(196, 147, 51, 0.10);
+  outline: 1px dashed rgba(196, 147, 51, 0.45);
   outline-offset: -2px;
 }
 .kbn-tl-card {
   position: relative;
   z-index: 1;
-  background: rgba(255, 252, 246, 0.95);
-  border: 0.5px solid rgba(122, 112, 104, 0.30);
+  background: rgba(255, 251, 237, 0.95);
+  border: 0.5px solid rgba(122, 111, 92, 0.30);
   border-left: 2px solid #3D5BA0;
   border-radius: 2px;
   padding: 1px 6px 2px;
@@ -374,13 +381,13 @@
 .kbn-tl-card-human { border-left-color: #3F8278; }
 .kbn-tl-card-agent { border-left-color: #3D5BA0; }
 .kbn-tl-card-past {
-  background: rgba(244, 240, 232, 0.6);
-  border-color: rgba(122, 112, 104, 0.20);
+  background: rgba(237, 226, 206, 0.6);
+  border-color: rgba(122, 111, 92, 0.20);
   border-left-color: #3F8278;
   opacity: 0.78;
 }
 .kbn-tl-card-past .kbn-tl-card-title {
-  color: #3A332A;
+  color: #2A231A;
   font-style: italic;
 }
 .kbn-tl-card-composted {
@@ -399,9 +406,9 @@
 }
 .kbn-tl-card-human .kbn-tl-card-glyph { color: #3F8278; }
 .kbn-tl-card-past .kbn-tl-card-glyph { color: #3F8278; }
-.kbn-tl-card-composted .kbn-tl-card-glyph { color: #7A7068; }
+.kbn-tl-card-composted .kbn-tl-card-glyph { color: #7A6F5C; }
 .kbn-tl-card-title {
-  color: #2E2A26;
+  color: #1B1611;
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-serif, 'EB Garamond', serif);
@@ -409,30 +416,30 @@
 .kbn-anytime-pool {
   margin: 4px 14px 10px;
   padding-top: 10px;
-  border-top: 0.5px dashed rgba(122, 112, 104, 0.30);
+  border-top: 0.5px dashed rgba(122, 111, 92, 0.30);
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 .kbn-anytime-pool-drop {
-  background: rgba(154, 123, 53, 0.08);
-  outline: 1px dashed rgba(154, 123, 53, 0.45);
+  background: rgba(196, 147, 51, 0.08);
+  outline: 1px dashed rgba(196, 147, 51, 0.45);
   outline-offset: -2px;
 }
 .kbn-anytime-pool-label {
   font-family: var(--font-serif, 'EB Garamond', serif);
   font-style: italic;
   font-size: 11px;
-  color: #7A7068;
+  color: #7A6F5C;
   flex-shrink: 0;
   margin-right: 4px;
 }
 .kbn-anytime-pool-card {
   padding: 2px 8px;
-  border: 0.5px solid rgba(122, 112, 104, 0.30);
+  border: 0.5px solid rgba(122, 111, 92, 0.30);
   border-radius: 12px;
-  background: rgba(255, 252, 246, 0.78);
+  background: rgba(255, 251, 237, 0.78);
   font-size: 12px;
   cursor: pointer;
   display: inline-flex;
@@ -454,14 +461,14 @@
   gap: 10px;
 }
 .kbn-cluster {
-  background: rgba(255, 252, 246, 0.78);
-  border: 0.5px solid rgba(122, 112, 104, 0.30);
+  background: rgba(255, 251, 237, 0.78);
+  border: 0.5px solid rgba(122, 111, 92, 0.30);
   border-radius: 3px;
   padding: 7px 9px 8px;
 }
 .kbn-cluster-cold {
-  background: rgba(244, 236, 216, 0.40);
-  border-color: rgba(122, 112, 104, 0.20);
+  background: rgba(232, 220, 193, 0.40);
+  border-color: rgba(122, 111, 92, 0.20);
 }
 .kbn-cluster-head {
   display: flex;
@@ -469,15 +476,15 @@
   gap: 6px;
   margin-bottom: 4px;
   padding-bottom: 3px;
-  border-bottom: 0.5px solid rgba(122, 112, 104, 0.20);
+  border-bottom: 0.5px solid rgba(122, 111, 92, 0.20);
 }
 .kbn-cluster-name {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-size: 13px;
   font-weight: 500;
-  color: #2E2A26;
+  color: #1B1611;
 }
-.kbn-cluster-cold .kbn-cluster-name { color: #7A7068; }
+.kbn-cluster-cold .kbn-cluster-name { color: #7A6F5C; }
 .kbn-cluster-count {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 9px;
@@ -518,17 +525,17 @@
   padding: 3px 2px;
   font-family: var(--font-serif, 'EB Garamond', serif);
   font-size: 12.5px;
-  color: #3A332A;
+  color: #2A231A;
   cursor: pointer;
   line-height: 1.28;
 }
 .kbn-cluster-item:hover {
-  color: #2E2A26;
-  background: rgba(244, 236, 216, 0.5);
+  color: #1B1611;
+  background: rgba(232, 220, 193, 0.5);
   border-radius: 2px;
 }
 .kbn-cluster-cold .kbn-cluster-item {
-  color: #7A7068;
+  color: #7A6F5C;
   font-style: italic;
 }
 .kbn-cluster-item-glyph {
@@ -564,45 +571,45 @@
      can stretch unboundedly. The horizon-row's flex:1 still ensures the
      row fills the board height. */
   max-height: min(72vh, 760px);
-  background: #F4F0E8;
-  border: 1px solid rgba(46, 42, 38, 0.10);
+  background: #EDE2CE;
+  border: 1px solid rgba(27, 22, 17, 0.10);
   border-radius: 3px;
   overflow: hidden;
   transition: background 150ms ease, border-color 150ms ease;
 }
 .kbn-col-awaitingReview {
-  border-color: rgba(154, 123, 53, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(154, 123, 53, 0.18);
+  border-color: rgba(196, 147, 51, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(196, 147, 51, 0.18);
 }
 .kbn-col-drafts {
-  background: #F0EDE6;
+  background: #E8DCC1;
   border-style: dashed;
   opacity: 0.92;
 }
-.kbn-col-drafts .kbn-col-title { color: #7A7068; font-style: italic; }
+.kbn-col-drafts .kbn-col-title { color: #7A6F5C; font-style: italic; }
 /* Composted column: desaturated Earth tone, visually sits at the
    boundary between Tempered and "the unbuilt" (Drafts on wrap). */
 .kbn-col-composted {
-  background: #EAE6DE;
-  border-color: rgba(122, 112, 104, 0.35);
-  box-shadow: inset 0 0 0 1px rgba(122, 112, 104, 0.12);
+  background: #E0D4B8;
+  border-color: rgba(122, 111, 92, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(122, 111, 92, 0.12);
 }
-.kbn-col-composted .kbn-col-title { color: #7A7068; font-style: italic; }
+.kbn-col-composted .kbn-col-title { color: #7A6F5C; font-style: italic; }
 .kbn-col-tempered {
-  background: #EFEBE3;
+  background: #E8DCC1;
 }
 /* Active drop target while a drag is in progress. */
 .kbn-col-drop {
-  background: rgba(154, 123, 53, 0.10);
-  border-color: rgba(154, 123, 53, 0.55);
-  box-shadow: inset 0 0 0 2px rgba(154, 123, 53, 0.45);
+  background: rgba(196, 147, 51, 0.10);
+  border-color: rgba(196, 147, 51, 0.55);
+  box-shadow: inset 0 0 0 2px rgba(196, 147, 51, 0.45);
 }
 .kbn-col-head {
   display: flex; align-items: baseline; justify-content: space-between;
   width: 100%;
   padding: 10px 14px 4px;
   border: none;
-  border-bottom: 1px solid rgba(46, 42, 38, 0.06);
+  border-bottom: 1px solid rgba(27, 22, 17, 0.06);
   background: transparent;
   color: inherit;
   font-family: inherit;
@@ -615,12 +622,12 @@
   text-transform: uppercase;
   margin: 0;
 }
-.kbn-col-awaiting .kbn-col-title { color: #9A7B35; }
-.kbn-col-tempered .kbn-col-title { color: #5A7B7B; }
+.kbn-col-awaiting .kbn-col-title { color: #C49333; }
+.kbn-col-tempered .kbn-col-title { color: #3F8278; }
 .kbn-col-count {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 12px;
-  color: #7A7068;
+  color: #7A6F5C;
 }
 .kbn-col-list {
   flex: 1;
@@ -631,15 +638,15 @@
 }
 .kbn-empty {
   text-align: center;
-  color: #B8AC9E;
+  color: #B8AC9A;
   font-style: italic;
   padding: 24px 8px;
   font-size: 13px;
   flex-grow: 0;
 }
 .kbn-card {
-  background: #FBF7F0;
-  border: 1px solid rgba(46, 42, 38, 0.12);
+  background: #FBF6E9;
+  border: 1px solid rgba(27, 22, 17, 0.12);
   border-radius: 3px;
   padding: 10px 12px;
   text-align: left;
@@ -659,8 +666,8 @@
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
 }
 .kbn-card:hover {
-  background: #FFFCF6;
-  border-color: rgba(46, 42, 38, 0.22);
+  background: #FFFBED;
+  border-color: rgba(27, 22, 17, 0.22);
   transform: translateY(-1px);
 }
 .kbn-card:active { cursor: grabbing; }
@@ -670,12 +677,12 @@
   cursor: grabbing;
 }
 .kbn-card-awaitingReview {
-  border-color: rgba(154, 123, 53, 0.45);
+  border-color: rgba(196, 147, 51, 0.45);
 }
 .kbn-card-composted {
   padding: 6px 10px;
   gap: 4px;
-  background: #F2EEE6;
+  background: #E0D4B8;
   border-style: dashed;
 }
 .kbn-card-composted .kbn-card-name {
@@ -684,13 +691,13 @@
 }
 .kbn-card-composted .kbn-card-outcome {
   font-size: 11.5px;
-  color: #6A645E;
+  color: #5A4F3A;
 }
 /* Tempered cards are smaller — they're for the record, not the focus. */
 .kbn-card-tempered {
   padding: 6px 10px;
   gap: 4px;
-  background: #F7F3EA;
+  background: #E8DCC1;
 }
 .kbn-card-header {
   display: flex;
@@ -704,10 +711,10 @@
   font-size: 12px;
   line-height: 1;
   text-align: center;
-  color: #9A7B35;
+  color: #C49333;
 }
 .kbn-card-glyph-human {
-  color: #5A7B7B;
+  color: #3F8278;
 }
 .kbn-card-name {
   flex: 1;
@@ -730,7 +737,7 @@
 .kbn-card-name:hover { text-decoration: underline; }
 .kbn-card-name:focus { outline: none; }
 .kbn-card-name:focus-visible {
-  outline: 1px dashed #7A7068;
+  outline: 1px dashed #7A6F5C;
   outline-offset: 2px;
   border-radius: 1px;
 }
@@ -745,34 +752,34 @@
   flex-shrink: 0;
 }
 .kbn-pill-open {
-  background: rgba(154, 123, 53, 0.12);
-  color: #9A7B35;
-  border: 1px solid rgba(154, 123, 53, 0.3);
+  background: rgba(196, 147, 51, 0.12);
+  color: #C49333;
+  border: 1px solid rgba(196, 147, 51, 0.3);
 }
 .kbn-pill-active {
-  background: rgba(154, 123, 53, 0.25);
-  color: #6B5520;
-  border: 1px solid rgba(154, 123, 53, 0.45);
+  background: rgba(196, 147, 51, 0.25);
+  color: #8C6A24;
+  border: 1px solid rgba(196, 147, 51, 0.45);
 }
 .kbn-pill-closed {
-  background: rgba(122, 112, 104, 0.15);
-  color: #7A7068;
-  border: 1px solid rgba(122, 112, 104, 0.35);
+  background: rgba(122, 111, 92, 0.15);
+  color: #7A6F5C;
+  border: 1px solid rgba(122, 111, 92, 0.35);
 }
 .kbn-pill-tempered {
-  background: rgba(90, 123, 123, 0.18);
-  color: #4A6868;
-  border: 1px solid rgba(90, 123, 123, 0.4);
+  background: rgba(63, 130, 120, 0.18);
+  color: #2E6862;
+  border: 1px solid rgba(63, 130, 120, 0.4);
 }
 .kbn-pill-composted {
-  background: rgba(122, 112, 104, 0.12);
-  color: #8A7E72;
-  border: 1px solid rgba(122, 112, 104, 0.3);
+  background: rgba(122, 111, 92, 0.12);
+  color: #7A6F5C;
+  border: 1px solid rgba(122, 111, 92, 0.3);
 }
 .kbn-card-id {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
-  color: #B8AC9E;
+  color: #B8AC9A;
   letter-spacing: 0.01em;
   word-break: break-all;
   /* Tuck the slug under the title so the breadcrumb reads as part of
@@ -784,7 +791,7 @@
 .kbn-card-outcome {
   font-size: 12.5px;
   line-height: 1.4;
-  color: #4A4540;
+  color: #3A332A;
   /* Truncate at N lines with an ellipsis. Aligns the cutoff to a line
      boundary (no half-cropped letters) and signals truncation explicitly.
      N defaults to 4 but JS expands it post-render when a column has
@@ -837,13 +844,13 @@
   padding: 0;
 }
 .kbn-card-outcome a {
-  color: #7B6024;
+  color: #8C6A24;
   text-decoration: underline;
   text-decoration-thickness: 1px;
 }
 .kbn-card-tempered .kbn-card-outcome {
   font-size: 11.5px;
-  color: #6A645E;
+  color: #5A4F3A;
 }
 .kbn-card-meta {
   display: flex; align-items: center;
@@ -855,7 +862,7 @@
   display: flex; gap: 6px; flex-wrap: wrap;
   padding-top: 6px;
   margin-top: 2px;
-  border-top: 1px dashed rgba(46, 42, 38, 0.10);
+  border-top: 1px dashed rgba(27, 22, 17, 0.10);
 }
 .kbn-card-tempered .kbn-card-actions {
   padding-top: 4px;
@@ -866,63 +873,63 @@
   font-size: 10.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  background: rgba(46, 42, 38, 0.04);
-  border: 1px solid rgba(46, 42, 38, 0.18);
-  color: #4A4540;
+  background: rgba(27, 22, 17, 0.04);
+  border: 1px solid rgba(27, 22, 17, 0.18);
+  color: #3A332A;
   padding: 3px 8px;
   border-radius: 2px;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 .kbn-action:hover {
-  background: rgba(46, 42, 38, 0.10);
-  color: #2E2A26;
-  border-color: rgba(46, 42, 38, 0.30);
+  background: rgba(27, 22, 17, 0.10);
+  color: #1B1611;
+  border-color: rgba(27, 22, 17, 0.30);
 }
 .kbn-action:focus { outline: none; }
 .kbn-action:focus-visible {
-  outline: 1px dashed #7A7068;
+  outline: 1px dashed #7A6F5C;
   outline-offset: 1px;
 }
 .kbn-action-tempered {
-  background: rgba(90, 123, 123, 0.10);
-  color: #4A6868;
-  border-color: rgba(90, 123, 123, 0.40);
+  background: rgba(63, 130, 120, 0.10);
+  color: #2E6862;
+  border-color: rgba(63, 130, 120, 0.40);
 }
 .kbn-action-tempered:hover {
-  background: rgba(90, 123, 123, 0.20);
-  color: #2E4848;
+  background: rgba(63, 130, 120, 0.20);
+  color: #1E5852;
 }
 .kbn-action-awaitingReview {
-  background: rgba(154, 123, 53, 0.10);
-  color: #6B5520;
-  border-color: rgba(154, 123, 53, 0.45);
+  background: rgba(196, 147, 51, 0.10);
+  color: #8C6A24;
+  border-color: rgba(196, 147, 51, 0.45);
 }
 .kbn-action-awaitingReview:hover {
-  background: rgba(154, 123, 53, 0.20);
-  color: #4A3810;
+  background: rgba(196, 147, 51, 0.20);
+  color: #5C4810;
 }
 .kbn-action-inFlight {
-  background: rgba(90, 123, 123, 0.08);
-  color: #4A6868;
-  border-color: rgba(90, 123, 123, 0.35);
+  background: rgba(63, 130, 120, 0.08);
+  color: #2E6862;
+  border-color: rgba(63, 130, 120, 0.35);
 }
 .kbn-action-inFlight:hover {
-  background: rgba(90, 123, 123, 0.18);
+  background: rgba(63, 130, 120, 0.18);
 }
 .kbn-action-drafts {
-  background: rgba(122, 112, 104, 0.08);
-  color: #7A7068;
-  border-color: rgba(122, 112, 104, 0.30);
+  background: rgba(122, 111, 92, 0.08);
+  color: #7A6F5C;
+  border-color: rgba(122, 111, 92, 0.30);
   font-style: italic;
 }
 .kbn-action-drafts:hover {
-  background: rgba(122, 112, 104, 0.18);
-  color: #2E2A26;
+  background: rgba(122, 111, 92, 0.18);
+  color: #1B1611;
 }
 /* Subtler card style inside the drafts column. */
 .kbn-card-drafts {
-  background: #F8F4EC;
+  background: #E8DCC1;
   border-style: dashed;
 }
 .kbn-card-tags {
@@ -931,8 +938,8 @@
 .kbn-tag {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 9.5px;
-  color: #7A7068;
-  background: rgba(46, 42, 38, 0.05);
+  color: #7A6F5C;
+  background: rgba(27, 22, 17, 0.05);
   padding: 1px 5px;
   border-radius: 2px;
 }
@@ -950,20 +957,20 @@
   border-radius: 3px;
   font-size: 11px;
   line-height: 1;
-  color: #C8BFB3;
+  color: #C5B89E;
   cursor: pointer;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
   flex-shrink: 0;
 }
 .kbn-tag-edit-btn:hover,
 .kbn-tag-edit-btn:focus-visible {
-  color: #7A7068;
-  background: rgba(46, 42, 38, 0.08);
-  border-color: rgba(122, 112, 104, 0.3);
+  color: #7A6F5C;
+  background: rgba(27, 22, 17, 0.08);
+  border-color: rgba(122, 111, 92, 0.3);
   outline: none;
 }
 .kbn-tag-edit-btn:focus-visible {
-  outline: 1px dashed #7A7068;
+  outline: 1px dashed #7A6F5C;
   outline-offset: 1px;
 }
 /* Tag editor: inline card-level editor for adding/removing tags */
@@ -983,7 +990,7 @@
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  background: rgba(46, 42, 38, 0.07);
+  background: rgba(27, 22, 17, 0.07);
   padding: 1px 2px 1px 5px;
 }
 .kbn-tag-remove {
@@ -999,14 +1006,14 @@
   border-radius: 2px;
   font-size: 11px;
   line-height: 1;
-  color: #9A7068;
+  color: #BC4538;
   cursor: pointer;
   transition: color 120ms ease, background 120ms ease;
 }
 .kbn-tag-remove:hover,
 .kbn-tag-remove:focus-visible {
-  color: #A03030;
-  background: rgba(160, 48, 48, 0.10);
+  color: #BC4538;
+  background: rgba(188, 69, 56, 0.10);
   outline: none;
 }
 .kbn-tag-add-input {
@@ -1015,20 +1022,20 @@
   max-width: 120px;
   height: 18px;
   padding: 0 5px;
-  border: 1px solid rgba(122, 112, 104, 0.22);
+  border: 1px solid rgba(122, 111, 92, 0.22);
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.6);
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10px;
-  color: #2E2A26;
+  color: #1B1611;
   outline: none;
 }
 .kbn-tag-add-input:focus {
-  border-color: rgba(122, 112, 104, 0.5);
+  border-color: rgba(122, 111, 92, 0.5);
   background: #FFFFFF;
 }
 .kbn-tag-add-input::placeholder {
-  color: #C8BFB3;
+  color: #C5B89E;
 }
 .kbn-tag-editor-actions {
   display: flex;
@@ -1037,7 +1044,7 @@
 .kbn-card-date {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
-  color: #B8AC9E;
+  color: #B8AC9A;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -1050,25 +1057,25 @@
   flex-shrink: 0;
 }
 .kbn-card-actor {
-  color: #4A6868;
+  color: #2E6862;
 }
 .kbn-card-actor-agent {
-  color: #6B5520;
+  color: #8C6A24;
 }
 .kbn-card-actor-human {
-  color: #4A6868;
+  color: #2E6862;
 }
 .kbn-card-due {
-  color: #7A7068;
-  background: rgba(46, 42, 38, 0.045);
-  border: 1px solid rgba(46, 42, 38, 0.10);
+  color: #7A6F5C;
+  background: rgba(27, 22, 17, 0.045);
+  border: 1px solid rgba(27, 22, 17, 0.10);
   border-radius: 2px;
   padding: 1px 5px;
 }
 .kbn-card-drift {
-  color: #9A7B35;
-  background: rgba(154, 123, 53, 0.12);
-  border: 1px solid rgba(154, 123, 53, 0.28);
+  color: #C49333;
+  background: rgba(196, 147, 51, 0.12);
+  border: 1px solid rgba(196, 147, 51, 0.28);
   border-radius: 50%;
   width: 17px;
   height: 17px;
@@ -1080,8 +1087,8 @@
 .kbn-card-blocked {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
-  color: #9A7B35;
-  background: rgba(154, 123, 53, 0.10);
+  color: #C49333;
+  background: rgba(196, 147, 51, 0.10);
   padding: 4px 6px;
   border-radius: 2px;
   margin-top: 2px;
@@ -1095,8 +1102,8 @@
   font-size: 9.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #4A6868;
-  background: rgba(90, 123, 123, 0.10);
+  color: #2E6862;
+  background: rgba(63, 130, 120, 0.10);
   padding: 2px 7px;
   border-radius: 2px;
   margin-left: auto;
@@ -1111,12 +1118,12 @@
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 .kbn-card-worker:hover {
-  color: #2E4848;
-  border-color: rgba(90, 123, 123, 0.55);
+  color: #1E5852;
+  border-color: rgba(63, 130, 120, 0.55);
 }
 .kbn-card-worker:focus { outline: none; }
 .kbn-card-worker:focus-visible {
-  outline: 1px dashed #4A6868;
+  outline: 1px dashed #2E6862;
   outline-offset: 2px;
 }
 /* When .kbn-card-worker is followed by .kbn-card-date, zero the date's
@@ -1126,8 +1133,8 @@
   margin-left: 0;
 }
 @keyframes kbn-pulse {
-  0%, 100% { background: rgba(90, 123, 123, 0.10); }
-  50% { background: rgba(90, 123, 123, 0.22); }
+  0%, 100% { background: rgba(63, 130, 120, 0.10); }
+  50% { background: rgba(63, 130, 120, 0.22); }
 }
 /* Stale-origin card: the originating agent is disconnected. The
    snapshot is preserved (last-known-good) so the card still reads
@@ -1137,17 +1144,17 @@
    handle. */
 .kbn-card--stale {
   opacity: 0.62;
-  background: #F4F0E8;
+  background: #EDE2CE;
   border-style: dashed;
   cursor: default;
 }
 .kbn-card--stale:hover {
-  background: #F4F0E8;
-  border-color: rgba(46, 42, 38, 0.18);
+  background: #EDE2CE;
+  border-color: rgba(27, 22, 17, 0.18);
   transform: none;
 }
 .kbn-card--stale:active { cursor: default; }
-.kbn-card--stale .kbn-card-name { color: #6A645E; }
+.kbn-card--stale .kbn-card-name { color: #5A4F3A; }
 /* The waiting badge sits in the same band as kbn-card-blocked /
    kbn-card-worker — runtime-state info that depends on connection,
    not on fiber content. Cool grey-blue distinguishes "stale" from
@@ -1156,9 +1163,9 @@
 .kbn-card-waiting {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
-  color: #5A6A78;
-  background: rgba(90, 110, 130, 0.10);
-  border: 1px dashed rgba(90, 110, 130, 0.35);
+  color: #3D5BA0;
+  background: rgba(61, 91, 160, 0.10);
+  border: 1px dashed rgba(61, 91, 160, 0.35);
   padding: 4px 6px;
   border-radius: 2px;
   margin-top: 2px;
@@ -1167,9 +1174,9 @@
 .kbn-error {
   margin: 24px;
   padding: 16px;
-  border: 1px solid rgba(154, 123, 53, 0.4);
-  background: rgba(154, 123, 53, 0.08);
-  color: #6B5520;
+  border: 1px solid rgba(196, 147, 51, 0.4);
+  background: rgba(196, 147, 51, 0.08);
+  color: #8C6A24;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 13px;
 }
@@ -1212,7 +1219,7 @@
 /* ── Fiber Detail Modal ──────────────────────────────────────────────── */
 /* Fixed-position overlay with a centered dialog. Opens on card click as
    a lightweight alternative to full vellum. Styled to match the kanban's
-   warm-paper palette: #EDE8E0 body, #E5DED2 header, gold accents. */
+   warm-paper palette: #EDE2CE body, #DCCFB4 header, gold accents. */
 /* ── Detail modal ─────────────────────────────────────────────────────────
    An editorial card pulled from a curator's filing drawer. Outcome reads as
    prose on parchment (no frame, no fill); sections separated by hairline
@@ -1221,7 +1228,7 @@
 .kbn-detail-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(46, 42, 38, 0.38);
+  background: rgba(27, 22, 17, 0.38);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1230,13 +1237,13 @@
   box-sizing: border-box;
 }
 .kbn-detail-dialog {
-  background: #EDE8E0;
-  border: 1px solid rgba(46, 42, 38, 0.16);
+  background: #EDE2CE;
+  border: 1px solid rgba(27, 22, 17, 0.16);
   border-radius: 2px;
   box-shadow:
-    0 1px 0 rgba(255, 252, 246, 0.6) inset,
-    0 14px 38px rgba(46, 42, 38, 0.22),
-    0 3px 10px rgba(46, 42, 38, 0.10);
+    0 1px 0 rgba(255, 251, 237, 0.6) inset,
+    0 14px 38px rgba(27, 22, 17, 0.22),
+    0 3px 10px rgba(27, 22, 17, 0.10);
   /* Two-column card. Generous on width — outcome gets a long
      reading measure, history gets room to breathe — backgrounded by
      the rest of the kanban only as a thin border around the card. */
@@ -1247,15 +1254,15 @@
   display: flex;
   flex-direction: column;
   font-family: var(--font-main, 'EB Garamond', serif);
-  color: #2E2A26;
+  color: #1B1611;
   overflow: hidden;
   /* Soft tonal mottling instead of a regular dot grid — large, low-
      contrast radial pools at the corners give the parchment uneven
      warmth like aged paper without creating a moiré against the type. */
   background-image:
-    radial-gradient(ellipse 800px 500px at 18% 12%, rgba(255, 252, 246, 0.55), transparent 65%),
-    radial-gradient(ellipse 700px 500px at 88% 88%, rgba(46, 42, 38, 0.035), transparent 60%),
-    radial-gradient(ellipse 600px 400px at 70% 25%, rgba(154, 123, 53, 0.025), transparent 60%);
+    radial-gradient(ellipse 800px 500px at 18% 12%, rgba(255, 251, 237, 0.55), transparent 65%),
+    radial-gradient(ellipse 700px 500px at 88% 88%, rgba(27, 22, 17, 0.035), transparent 60%),
+    radial-gradient(ellipse 600px 400px at 70% 25%, rgba(196, 147, 51, 0.025), transparent 60%);
 }
 .kbn-detail-header {
   display: flex;
@@ -1283,7 +1290,7 @@
   font-weight: 600;
   line-height: 1.22;
   letter-spacing: -0.005em;
-  color: #2E2A26;
+  color: #1B1611;
 }
 /* Status as an ink-stamped mark — slight letterpress, hairline border,
    small rotation gives it the "applied by hand" feel of a curator's
@@ -1298,7 +1305,7 @@
   flex-shrink: 0;
   margin-top: 6px;
   transform: rotate(-1.5deg);
-  box-shadow: 0 0 0 0.5px rgba(154, 123, 53, 0.18) inset;
+  box-shadow: 0 0 0 0.5px rgba(196, 147, 51, 0.18) inset;
 }
 .kbn-detail-close {
   flex-shrink: 0;
@@ -1312,7 +1319,7 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 18px;
   line-height: 1;
-  color: #B8AC9E;
+  color: #B8AC9A;
   cursor: pointer;
   transition: color 160ms ease, background 160ms ease;
   display: flex;
@@ -1321,14 +1328,14 @@
 }
 .kbn-detail-close:hover,
 .kbn-detail-close:focus-visible {
-  color: #2E2A26;
-  background: rgba(46, 42, 38, 0.06);
+  color: #1B1611;
+  background: rgba(27, 22, 17, 0.06);
   outline: none;
 }
 .kbn-detail-id {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
-  color: #A89E91;
+  color: #A89B83;
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: color 160ms ease;
@@ -1337,7 +1344,7 @@
 }
 .kbn-detail-id:hover,
 .kbn-detail-id:focus-visible {
-  color: #6B5520;
+  color: #8C6A24;
   outline: none;
 }
 /* Header bottom-padding pulls the body away from the id breadcrumb;
@@ -1375,12 +1382,12 @@
    right column won't push back against the left column's basis. */
 .kbn-detail-col-left {
   flex: 0 0 720px;
-  border-right: 1px solid rgba(46, 42, 38, 0.10);
+  border-right: 1px solid rgba(27, 22, 17, 0.10);
 }
 .kbn-detail-col-right {
   flex: 1 1 0;
   min-width: 360px;
-  background: rgba(232, 225, 213, 0.35);
+  background: rgba(220, 207, 180, 0.35);
 }
 /* Cap content widths inside the right column so wide viewports don't
    create comically-stretched textareas and selects. The right
@@ -1412,7 +1419,7 @@
     order: 1;
     flex: 0 0 auto;
     min-width: 0;
-    border-bottom: 1px solid rgba(46, 42, 38, 0.10);
+    border-bottom: 1px solid rgba(27, 22, 17, 0.10);
   }
 
   .kbn-detail-col-left {
@@ -1449,7 +1456,7 @@
 .kbn-detail-rule {
   height: 1px;
   margin: 0 22px;
-  background: rgba(46, 42, 38, 0.10);
+  background: rgba(27, 22, 17, 0.10);
   flex-shrink: 0;
 }
 /* Section: a labelled block with breathable padding. The label itself
@@ -1499,7 +1506,7 @@
   left: 2px;
   top: -2px;
   font-size: 16px;
-  color: #B8AC9E;
+  color: #B8AC9A;
   line-height: 1;
 }
 .kbn-detail-history-event-meta {
@@ -1508,12 +1515,12 @@
   gap: 8px;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10px;
-  color: #A89E91;
+  color: #A89B83;
   flex-wrap: wrap;
   letter-spacing: 0.02em;
 }
 .kbn-detail-history-event-time {
-  color: #8A7E72;
+  color: #7A6F5C;
 }
 .kbn-detail-history-event-kind {
   font-size: 9px;
@@ -1523,7 +1530,7 @@
   padding: 0;
   border-radius: 0;
   background: transparent;
-  color: #9A7B35;
+  color: #C49333;
   position: relative;
   padding-left: 8px;
 }
@@ -1531,16 +1538,16 @@
   content: '·';
   position: absolute;
   left: 0;
-  color: #C8BFB3;
+  color: #C5B89E;
 }
 .kbn-detail-history-event-kind.kbn-detail-history-event-kind-editorial {
   background: transparent;
-  color: #7A7068;
+  color: #7A6F5C;
 }
 .kbn-detail-history-event-summary {
   font-size: 12.5px;
   line-height: 1.45;
-  color: #2E2A26;
+  color: #1B1611;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 9em;
@@ -1555,7 +1562,7 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 11.5px;
   font-style: italic;
-  color: #9A7B35;
+  color: #C49333;
   background: transparent;
   border: none;
   padding: 0;
@@ -1563,12 +1570,12 @@
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
-  text-decoration-color: rgba(154, 123, 53, 0.4);
+  text-decoration-color: rgba(196, 147, 51, 0.4);
 }
-.kbn-detail-history-event-toggle:hover { color: #6B5520; }
+.kbn-detail-history-event-toggle:hover { color: #8C6A24; }
 .kbn-detail-history-empty {
   font-size: 12.5px;
-  color: #B8AC9E;
+  color: #B8AC9A;
   font-style: italic;
   padding: 8px 0;
 }
@@ -1582,7 +1589,7 @@
   font-feature-settings: "smcp", "c2sc";
   font-weight: 500;
   letter-spacing: 0.06em;
-  color: #2E2A26;
+  color: #1B1611;
   margin-bottom: 14px;
   flex-shrink: 0;
 }
@@ -1593,13 +1600,13 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 15px;
   line-height: 1.6;
-  color: #2E2A26;
+  color: #1B1611;
   background: transparent;
   border: none;
   padding: 0;
 }
 .kbn-detail-outcome-view.kbn-detail-outcome-empty {
-  color: #B8AC9E;
+  color: #B8AC9A;
   font-style: italic;
   font-size: 13.5px;
 }
@@ -1616,7 +1623,7 @@
 }
 .kbn-detail-outcome-view h1 { font-size: 1.15em; }
 .kbn-detail-outcome-view h2 { font-size: 1.08em; }
-.kbn-detail-outcome-view h3 { font-size: 1.0em; color: #5A4F40; }
+.kbn-detail-outcome-view h3 { font-size: 1.0em; color: #3A332A; }
 .kbn-detail-outcome-view code {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 0.88em;
@@ -1638,15 +1645,15 @@
 }
 .kbn-detail-outcome-view li { margin: 0.2em 0; }
 .kbn-detail-outcome-view a {
-  color: #9A7B35;
+  color: #C49333;
   text-decoration: underline;
   text-decoration-thickness: 1px;
 }
 .kbn-detail-outcome-view blockquote {
   margin: 0.6em 0;
   padding: 4px 0 4px 10px;
-  border-left: 2px solid rgba(154, 123, 53, 0.45);
-  color: #5A4F40;
+  border-left: 2px solid rgba(196, 147, 51, 0.45);
+  color: #3A332A;
   font-style: italic;
 }
 .kbn-detail-outcome-view img {
@@ -1662,7 +1669,7 @@
 }
 .kbn-detail-outcome-view th, .kbn-detail-outcome-view td {
   padding: 4px 8px;
-  border: 1px solid rgba(122, 112, 104, 0.3);
+  border: 1px solid rgba(122, 111, 92, 0.3);
 }
 .kbn-detail-outcome-view th { background: rgba(0, 0, 0, 0.04); font-weight: 600; }
 /* Control rows — label-on-the-left + control. Tighter row gap, smaller
@@ -1678,7 +1685,7 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 12.5px;
   font-style: italic;
-  color: #8A7E72;
+  color: #7A6F5C;
   width: 56px;
   flex-shrink: 0;
 }
@@ -1689,12 +1696,12 @@
   flex: 1;
   padding: 4px 4px 4px 0;
   border: none;
-  border-bottom: 1px solid rgba(122, 112, 104, 0.30);
+  border-bottom: 1px solid rgba(122, 111, 92, 0.30);
   border-radius: 0;
   background: transparent;
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 13.5px;
-  color: #2E2A26;
+  color: #1B1611;
   outline: none;
   cursor: pointer;
   transition: border-color 200ms ease;
@@ -1708,17 +1715,17 @@
 }
 .kbn-detail-select:focus,
 .kbn-detail-select:hover {
-  border-bottom-color: rgba(154, 123, 53, 0.65);
+  border-bottom-color: rgba(196, 147, 51, 0.65);
 }
 .kbn-detail-current-parent {
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 13.5px;
-  color: #5A4F40;
+  color: #3A332A;
   margin-bottom: 6px;
   letter-spacing: 0.01em;
 }
 .kbn-detail-current-parent.kbn-detail-pending-change {
-  color: #9A7B35;
+  color: #C49333;
   font-style: italic;
 }
 .kbn-detail-parent-wrap {
@@ -1735,22 +1742,22 @@
   box-sizing: border-box;
   padding: 4px 4px 4px 0;
   border: none;
-  border-bottom: 1px solid rgba(122, 112, 104, 0.30);
+  border-bottom: 1px solid rgba(122, 111, 92, 0.30);
   border-radius: 0;
   background: transparent;
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 13.5px;
-  color: #2E2A26;
+  color: #1B1611;
   outline: none;
   transition: border-color 200ms ease;
 }
 .kbn-detail-parent-input:focus,
 .kbn-detail-input:focus {
-  border-bottom-color: rgba(154, 123, 53, 0.65);
+  border-bottom-color: rgba(196, 147, 51, 0.65);
 }
 .kbn-detail-parent-input::placeholder,
 .kbn-detail-input::placeholder {
-  color: #C8BFB3;
+  color: #C5B89E;
   font-style: italic;
 }
 .kbn-detail-input-mono {
@@ -1785,7 +1792,7 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 12.5px;
   letter-spacing: 0.04em;
-  color: #A89E91;
+  color: #A89B83;
   transition: color 200ms ease;
   position: relative;
 }
@@ -1793,19 +1800,19 @@
   content: '·';
   position: absolute;
   left: -2px;
-  color: #C8BFB3;
+  color: #C5B89E;
 }
-.kbn-detail-segment:hover { color: #2E2A26; }
+.kbn-detail-segment:hover { color: #1B1611; }
 .kbn-detail-segment-active {
-  color: #6B5520;
+  color: #8C6A24;
   font-weight: 600;
   text-decoration: underline;
-  text-decoration-color: rgba(154, 123, 53, 0.5);
+  text-decoration-color: rgba(196, 147, 51, 0.5);
   text-decoration-thickness: 1px;
   text-underline-offset: 4px;
 }
 .kbn-detail-segment-active:hover {
-  color: #4A3810;
+  color: #5C4810;
 }
 .kbn-detail-segment-name {
   display: inline-block;
@@ -1816,10 +1823,10 @@
   top: calc(100% + 2px);
   left: 0;
   right: 0;
-  background: #FAF8F5;
-  border: 1px solid rgba(122, 112, 104, 0.28);
+  background: #FBF6E9;
+  border: 1px solid rgba(122, 111, 92, 0.28);
   border-radius: 2px;
-  box-shadow: 0 4px 12px rgba(46, 42, 38, 0.14);
+  box-shadow: 0 4px 12px rgba(27, 22, 17, 0.14);
   max-height: 200px;
   overflow-y: auto;
   z-index: 10000;
@@ -1833,7 +1840,7 @@
   padding: 7px 10px;
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(46, 42, 38, 0.06);
+  border-bottom: 1px solid rgba(27, 22, 17, 0.06);
   cursor: pointer;
   font-family: inherit;
   transition: background 80ms ease;
@@ -1841,7 +1848,7 @@
 .kbn-detail-parent-option:last-child { border-bottom: none; }
 .kbn-detail-parent-option:hover,
 .kbn-detail-parent-option:focus {
-  background: rgba(154, 123, 53, 0.08);
+  background: rgba(196, 147, 51, 0.08);
   outline: none;
 }
 .kbn-detail-parent-option[data-depth="1"] .kbn-detail-parent-option-name {
@@ -1849,16 +1856,16 @@
 }
 .kbn-detail-parent-option-name {
   font-size: 13px;
-  color: #2E2A26;
+  color: #1B1611;
 }
 .kbn-detail-parent-option-id {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10px;
-  color: #B8AC9E;
+  color: #B8AC9A;
 }
 .kbn-detail-parent-empty {
   font-size: 12.5px;
-  color: #B8AC9E;
+  color: #B8AC9A;
   font-style: italic;
   cursor: default;
 }
@@ -1868,24 +1875,24 @@
   width: 100%;
   box-sizing: border-box;
   padding: 8px 10px;
-  border: 1px solid rgba(122, 112, 104, 0.30);
+  border: 1px solid rgba(122, 111, 92, 0.30);
   border-radius: 1px;
-  background: rgba(255, 252, 246, 0.55);
+  background: rgba(255, 251, 237, 0.55);
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 13.5px;
   line-height: 1.5;
-  color: #2E2A26;
+  color: #1B1611;
   outline: none;
   resize: vertical;
   margin-bottom: 10px;
   transition: border-color 200ms ease, background 200ms ease;
 }
 .kbn-detail-directive:focus {
-  border-color: rgba(154, 123, 53, 0.55);
-  background: #FFFCF6;
+  border-color: rgba(196, 147, 51, 0.55);
+  background: #FFFBED;
 }
 .kbn-detail-directive::placeholder {
-  color: #B8AC9E;
+  color: #B8AC9A;
   font-style: italic;
 }
 /* Autonomous | Interactive segmented control. Sits between the message
@@ -1896,10 +1903,10 @@
   display: inline-flex;
   align-items: stretch;
   margin-bottom: 10px;
-  border: 1px solid rgba(122, 112, 104, 0.30);
+  border: 1px solid rgba(122, 111, 92, 0.30);
   border-radius: 2px;
   overflow: hidden;
-  background: rgba(255, 252, 246, 0.45);
+  background: rgba(255, 251, 237, 0.45);
 }
 .kbn-detail-mode-btn {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
@@ -1910,25 +1917,25 @@
   padding: 4px 12px 3px;
   background: transparent;
   border: none;
-  color: #7A7068;
+  color: #7A6F5C;
   cursor: pointer;
   transition: background 160ms ease, color 160ms ease;
 }
 .kbn-detail-mode-btn:hover {
-  background: rgba(154, 123, 53, 0.08);
-  color: #2E2A26;
+  background: rgba(196, 147, 51, 0.08);
+  color: #1B1611;
 }
 .kbn-detail-mode-btn[aria-checked="true"] {
-  background: rgba(154, 123, 53, 0.18);
-  color: #6B5520;
+  background: rgba(196, 147, 51, 0.18);
+  color: #8C6A24;
 }
 .kbn-detail-mode-btn:focus { outline: none; }
 .kbn-detail-mode-btn:focus-visible {
-  outline: 1px dashed #9A7B35;
+  outline: 1px dashed #C49333;
   outline-offset: -2px;
 }
 .kbn-detail-mode-btn + .kbn-detail-mode-btn {
-  border-left: 1px solid rgba(122, 112, 104, 0.20);
+  border-left: 1px solid rgba(122, 111, 92, 0.20);
 }
 .kbn-detail-actions-row {
   display: flex;
@@ -1951,16 +1958,16 @@
   transition: background 160ms ease, color 160ms ease, border-color 160ms ease,
               transform 80ms ease;
   box-shadow:
-    0 1px 0 rgba(255, 252, 246, 0.6) inset,
-    0 -1px 0 rgba(46, 42, 38, 0.04) inset;
+    0 1px 0 rgba(255, 251, 237, 0.6) inset,
+    0 -1px 0 rgba(27, 22, 17, 0.04) inset;
 }
 .kbn-detail-action-btn:active {
   transform: translateY(0.5px);
-  box-shadow: 0 1px 0 rgba(46, 42, 38, 0.08) inset;
+  box-shadow: 0 1px 0 rgba(27, 22, 17, 0.08) inset;
 }
 .kbn-detail-action-btn:focus { outline: none; }
 .kbn-detail-action-btn:focus-visible {
-  outline: 1px dashed #9A7B35;
+  outline: 1px dashed #C49333;
   outline-offset: 2px;
 }
 .kbn-detail-action-btn:disabled {
@@ -1968,33 +1975,33 @@
   opacity: 0.45;
 }
 .kbn-detail-action-primary {
-  color: #4A3810;
-  background: rgba(154, 123, 53, 0.12);
-  border: 1px solid rgba(154, 123, 53, 0.50);
+  color: #5C4810;
+  background: rgba(196, 147, 51, 0.12);
+  border: 1px solid rgba(196, 147, 51, 0.50);
 }
 .kbn-detail-action-primary:hover:not(:disabled) {
-  background: rgba(154, 123, 53, 0.22);
-  border-color: rgba(154, 123, 53, 0.70);
-  color: #2E2410;
+  background: rgba(196, 147, 51, 0.22);
+  border-color: rgba(196, 147, 51, 0.70);
+  color: #3C2E0E;
 }
 .kbn-detail-action-tempered {
-  color: #2E4848;
-  background: rgba(90, 123, 123, 0.10);
-  border: 1px solid rgba(90, 123, 123, 0.45);
+  color: #1E5852;
+  background: rgba(63, 130, 120, 0.10);
+  border: 1px solid rgba(63, 130, 120, 0.45);
 }
 .kbn-detail-action-tempered:hover:not(:disabled) {
-  background: rgba(90, 123, 123, 0.22);
-  border-color: rgba(90, 123, 123, 0.65);
+  background: rgba(63, 130, 120, 0.22);
+  border-color: rgba(63, 130, 120, 0.65);
 }
 .kbn-detail-action-composted {
-  color: #5A4F40;
-  background: rgba(122, 112, 104, 0.08);
-  border: 1px solid rgba(122, 112, 104, 0.40);
+  color: #3A332A;
+  background: rgba(122, 111, 92, 0.08);
+  border: 1px solid rgba(122, 111, 92, 0.40);
 }
 .kbn-detail-action-composted:hover:not(:disabled) {
-  background: rgba(122, 112, 104, 0.18);
-  border-color: rgba(122, 112, 104, 0.60);
-  color: #2E2A26;
+  background: rgba(122, 111, 92, 0.18);
+  border-color: rgba(122, 111, 92, 0.60);
+  color: #1B1611;
 }
 /* Dispatch-now button styles removed: the Dispatch Now action was merged
    into the Resubmit/Resqueue handler and no longer needs dedicated styles. */
@@ -2013,9 +2020,9 @@
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
   letter-spacing: 0.02em;
-  color: #5A4F40;
-  background: rgba(154, 123, 53, 0.08);
-  border: 1px solid rgba(154, 123, 53, 0.28);
+  color: #3A332A;
+  background: rgba(196, 147, 51, 0.08);
+  border: 1px solid rgba(196, 147, 51, 0.28);
   border-radius: 1px;
   padding: 2px 4px 2px 8px;
 }
@@ -2023,33 +2030,33 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 14px;
   line-height: 1;
-  color: #A89E91;
+  color: #A89B83;
   background: transparent;
   border: none;
   padding: 0 4px;
   cursor: pointer;
   transition: color 160ms ease;
 }
-.kbn-detail-tag-remove:hover { color: #8B3A28; }
+.kbn-detail-tag-remove:hover { color: #A2362A; }
 .kbn-detail-tag-input {
   flex: 1;
   min-width: 100px;
   padding: 3px 4px 3px 0;
   border: none;
-  border-bottom: 1px solid rgba(122, 112, 104, 0.30);
+  border-bottom: 1px solid rgba(122, 111, 92, 0.30);
   border-radius: 0;
   background: transparent;
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 13px;
-  color: #2E2A26;
+  color: #1B1611;
   outline: none;
   transition: border-color 200ms ease;
 }
 .kbn-detail-tag-input:focus {
-  border-bottom-color: rgba(154, 123, 53, 0.65);
+  border-bottom-color: rgba(196, 147, 51, 0.65);
 }
 .kbn-detail-tag-input::placeholder {
-  color: #C8BFB3;
+  color: #C5B89E;
   font-style: italic;
 }
 /* Footer: hairline-separated, parchment-toned. Vellum link on the left,
@@ -2059,7 +2066,7 @@
   align-items: center;
   gap: 16px;
   padding: 14px 28px 18px;
-  border-top: 1px solid rgba(46, 42, 38, 0.10);
+  border-top: 1px solid rgba(27, 22, 17, 0.10);
   background: transparent;
   flex-shrink: 0;
 }
@@ -2067,7 +2074,7 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 14px;
   font-style: italic;
-  color: #9A7B35;
+  color: #C49333;
   background: transparent;
   border: none;
   padding: 0;
@@ -2075,15 +2082,15 @@
   transition: color 160ms ease, letter-spacing 200ms ease;
   text-decoration: underline;
   text-underline-offset: 3px;
-  text-decoration-color: rgba(154, 123, 53, 0.4);
+  text-decoration-color: rgba(196, 147, 51, 0.4);
 }
 .kbn-detail-vellum-btn:hover {
-  color: #6B5520;
+  color: #8C6A24;
   letter-spacing: 0.012em;
 }
 .kbn-detail-vellum-btn:focus { outline: none; }
 .kbn-detail-vellum-btn:focus-visible {
-  outline: 1px dashed #9A7B35;
+  outline: 1px dashed #C49333;
   outline-offset: 3px;
 }
 .kbn-detail-error {
@@ -2091,7 +2098,7 @@
   font-family: var(--font-main, 'EB Garamond', serif);
   font-size: 12.5px;
   font-style: italic;
-  color: #8B3A28;
+  color: #A2362A;
   background: transparent;
   border: none;
   padding: 0;
@@ -2107,30 +2114,30 @@
   font-weight: 500;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: #4A3810;
-  background: rgba(154, 123, 53, 0.10);
-  border: 1px solid rgba(154, 123, 53, 0.45);
+  color: #5C4810;
+  background: rgba(196, 147, 51, 0.10);
+  border: 1px solid rgba(196, 147, 51, 0.45);
   border-radius: 1px;
   padding: 6px 18px 5px;
   cursor: pointer;
   transition: background 160ms ease, color 160ms ease, border-color 160ms ease,
               transform 80ms ease;
   box-shadow:
-    0 1px 0 rgba(255, 252, 246, 0.6) inset,
-    0 -1px 0 rgba(46, 42, 38, 0.04) inset;
+    0 1px 0 rgba(255, 251, 237, 0.6) inset,
+    0 -1px 0 rgba(27, 22, 17, 0.04) inset;
 }
 .kbn-detail-save-btn:hover {
-  background: rgba(154, 123, 53, 0.18);
-  border-color: rgba(154, 123, 53, 0.65);
-  color: #2E2410;
+  background: rgba(196, 147, 51, 0.18);
+  border-color: rgba(196, 147, 51, 0.65);
+  color: #3C2E0E;
 }
 .kbn-detail-save-btn:active {
   transform: translateY(0.5px);
-  box-shadow: 0 1px 0 rgba(46, 42, 38, 0.08) inset;
+  box-shadow: 0 1px 0 rgba(27, 22, 17, 0.08) inset;
 }
 .kbn-detail-save-btn:focus { outline: none; }
 .kbn-detail-save-btn:focus-visible {
-  outline: 1px dashed #9A7B35;
+  outline: 1px dashed #C49333;
   outline-offset: 2px;
 }
 .kbn-detail-save-btn:disabled {

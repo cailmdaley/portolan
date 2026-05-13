@@ -295,6 +295,10 @@ export class KanbanModal {
   private pollTimer: number | null = null
   private readonly pollIntervalMs = 15_000
   private lastFetchStartedAt: number | null = null
+  /** Disconnects ResizeObserver + scroll listener installed by the timeline
+   *  strip's adaptive-height handler. Called at the start of each render
+   *  (the strip gets rebuilt) and on unmount. */
+  private timelineAdaptiveCleanup: (() => void) | null = null
   /** Intermediate fiber-detail modal — one instance, re-used across opens. */
   private detailModal: FiberDetailModal | null = null
 
@@ -358,6 +362,8 @@ export class KanbanModal {
       this.resizeRaf = null
     }
     this.stopPolling()
+    this.timelineAdaptiveCleanup?.()
+    this.timelineAdaptiveCleanup = null
     this.container.remove()
     this.teardownState()
   }
@@ -698,6 +704,11 @@ export class KanbanModal {
     if (temperedTotal > 0) parts.push(`${temperedTotal} tempered`)
     this.statusEl.textContent = remotePrefix + parts.join(' · ')
 
+    // Tear down any per-render observers from the previous strip before we
+    // throw away the DOM nodes they observed.
+    this.timelineAdaptiveCleanup?.()
+    this.timelineAdaptiveCleanup = null
+
     this.body.innerHTML = ''
     this.body.classList.remove('kbn-body-zoomed')
 
@@ -741,8 +752,6 @@ export class KanbanModal {
     }
 
     section.append(board)
-    const total = now.drafts.length + now.inFlight.length + now.awaitingReview.length
-    this.installSectionChrome(section, 'now', 'Now', total)
     this.installSectionDragHandlers(section, 'now')
     return section
   }
@@ -815,6 +824,13 @@ export class KanbanModal {
     }
     wrap.append(strip)
 
+    // Adaptive strip height: the strip shrinks to fit the tallest card stack
+    // among horizontally-visible day-columns. Most viewports show ~11 days at
+    // a time; without this the strip is sized by the absolute tallest stack
+    // in the full ±14d window, wasting vertical space whenever the busiest
+    // day is off-screen. Recomputed on scroll (rAF-debounced) and on resize.
+    this.installAdaptiveStripHeight(wrap, strip, rowByCol, days.length)
+
     // Anytime-soon pool below the strip.
     const pool = document.createElement('div')
     pool.className = 'kbn-anytime-pool'
@@ -833,6 +849,56 @@ export class KanbanModal {
     const timelineCount = timeline.past.length + timeline.futureDated.length + timeline.anytimeSoon.length
     this.installSectionChrome(section, 'timeline', 'Past · Soon', timelineCount)
     return section
+  }
+
+  /** Bind a scroll + resize listener that sizes the strip to fit the max
+   *  card stack among horizontally-visible day-columns. Reasoning: the
+   *  strip's natural CSS-Grid height is set by the absolute tallest stack
+   *  anywhere in the ±14d window, which wastes vertical space whenever the
+   *  busiest day is scrolled off-screen. Cleanup is stored on
+   *  `this.timelineAdaptiveCleanup` so renderResponse() can disconnect
+   *  before throwing away the strip. */
+  private installAdaptiveStripHeight(
+    wrap: HTMLElement,
+    strip: HTMLElement,
+    rowByCol: Map<number, number>,
+    totalDays: number,
+  ): void {
+    const ROW_PX = 20
+    const STRIP_PADDING_PX = 6
+    const recompute = (): void => {
+      const sLeft = wrap.scrollLeft
+      const sRight = sLeft + wrap.clientWidth
+      const firstCol = Math.max(0, Math.floor(sLeft / TIMELINE_DAY_WIDTH_PX))
+      const lastCol = Math.min(totalDays - 1, Math.floor((sRight - 1) / TIMELINE_DAY_WIDTH_PX))
+      let maxRows = 1
+      for (let c = firstCol; c <= lastCol; c += 1) {
+        const r = rowByCol.get(c)
+        if (r !== undefined && r > maxRows) maxRows = r
+      }
+      strip.style.height = `${maxRows * ROW_PX + STRIP_PADDING_PX}px`
+    }
+    let rafScheduled = false
+    const schedule = (): void => {
+      if (rafScheduled) return
+      rafScheduled = true
+      window.requestAnimationFrame(() => {
+        rafScheduled = false
+        recompute()
+      })
+    }
+    wrap.addEventListener('scroll', schedule, { passive: true })
+    // ResizeObserver isn't always present (older test envs / jsdom);
+    // scroll + RAF still give a good experience without it.
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null
+    ro?.observe(wrap)
+    // Initial measurement once layout has settled.
+    window.requestAnimationFrame(recompute)
+
+    this.timelineAdaptiveCleanup = () => {
+      wrap.removeEventListener('scroll', schedule)
+      ro?.disconnect()
+    }
   }
 
   /** Render the Stash surface: cluster grid keyed by containment-path's
@@ -870,7 +936,6 @@ export class KanbanModal {
     }
 
     section.append(grid)
-    this.installSectionChrome(section, 'stash', 'Stash', stash.length)
     this.installSectionDragHandlers(section, 'stashed')
     return section
   }

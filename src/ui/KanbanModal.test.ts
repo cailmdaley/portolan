@@ -387,7 +387,9 @@ describe('KanbanModal three-surface layout', () => {
     host.remove()
   })
 
-  it('each section installs a subtle collapse toggle that persists to localStorage', async () => {
+  it('only the timeline gets a collapse toggle; state persists to localStorage', async () => {
+    // Drafts and Stash live above/below the timeline and are reachable
+    // by scroll; only the in-between Past · Soon strip needs collapse.
     const response = emptyKanbanResponse()
     response.now.drafts = [makeKanbanCard({ id: 'draft/a' })]
     response.timeline.past = [makeKanbanCard({ id: 'past/a', closedAt: new Date().toISOString() })]
@@ -404,24 +406,20 @@ describe('KanbanModal three-surface layout', () => {
     await tick()
 
     const toggles = host.querySelectorAll<HTMLButtonElement>('.kbn-section-toggle')
-    expect(toggles).toHaveLength(3)
-    expect(toggles[0].getAttribute('aria-label')).toBe('Collapse Now')
-    expect(toggles[1].getAttribute('aria-label')).toBe('Collapse Past · Soon')
-    expect(toggles[2].getAttribute('aria-label')).toBe('Collapse Stash')
+    expect(toggles).toHaveLength(1)
+    expect(toggles[0].getAttribute('aria-label')).toBe('Collapse Past · Soon')
 
-    // Collapse the stash; verify class, aria flip, and persistence.
-    toggles[2].click()
-    const stashSection = host.querySelector('.kbn-section-stash')!
-    expect(stashSection.classList.contains('kbn-section-collapsed')).toBe(true)
-    expect(toggles[2].getAttribute('aria-label')).toBe('Expand Stash')
+    toggles[0].click()
+    const timelineSection = host.querySelector('.kbn-section-timeline')!
+    expect(timelineSection.classList.contains('kbn-section-collapsed')).toBe(true)
+    expect(toggles[0].getAttribute('aria-label')).toBe('Expand Past · Soon')
     const stored = JSON.parse(window.localStorage.getItem('portolan:kanban:collapsed-sections') ?? '[]')
-    expect(stored).toContain('stash')
+    expect(stored).toContain('timeline')
 
-    // Re-toggle; persistence clears.
-    toggles[2].click()
-    expect(stashSection.classList.contains('kbn-section-collapsed')).toBe(false)
+    toggles[0].click()
+    expect(timelineSection.classList.contains('kbn-section-collapsed')).toBe(false)
     const stored2 = JSON.parse(window.localStorage.getItem('portolan:kanban:collapsed-sections') ?? '[]')
-    expect(stored2).not.toContain('stash')
+    expect(stored2).not.toContain('timeline')
 
     modal.unmount()
     host.remove()
