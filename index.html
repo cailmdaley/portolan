@@ -130,6 +130,15 @@
         width: 100vw;
         height: 100vh;
       }
+      /* Boot-eager open: a URL deep-link to a global vellum surface
+       * (kanban / find / narrative-index) hides the canvas until the
+       * modal mounts. The Three.js scene keeps rendering into the
+       * WebGL context — we just don't show it. The body's parchment
+       * background fills the viewport, then vellum's scrim lands on
+       * top when it mounts. Removed by handleWorkspaceClosed in
+       * main.ts when the user closes the modal.
+       */
+      html.boot-vellum-eager #canvas { visibility: hidden; }
 
       /* ═══════════════════════════════════════════════════════════
          CSS2D LABELS — HTML overlays for proper OpenType features
@@ -2141,6 +2150,24 @@
   </head>
   <body>
     <canvas id="canvas" role="img" aria-label="Portolan map — cities and workers"></canvas>
+    <script>
+      // Boot-eager hide of the map canvas when the URL deep-links to a
+      // global vellum surface. Runs before main.ts evaluates so the
+      // canvas is hidden through the entire boot → mount window — the
+      // user sees the parchment body background, then the modal lands.
+      // Cleared in main.ts handleWorkspaceClosed when the user closes
+      // the modal (or by main.ts on any close path). Mirrors the
+      // eager-open logic at the bottom of main.ts.
+      (function () {
+        var hash = window.location.hash.replace(/^#/, '')
+        if (!hash) return
+        var params = new URLSearchParams(hash)
+        var mode = params.get('mode')
+        if (mode !== 'kanban' && mode !== 'find' && mode !== 'narrative') return
+        if (params.get('city') || params.get('fiber') || params.get('file')) return
+        document.documentElement.classList.add('boot-vellum-eager')
+      })()
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

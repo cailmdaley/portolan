@@ -751,6 +751,11 @@ function handleFindScopeChange(newScope: string | null | undefined): void {
  * we never wipe a freshly-installed reference.
  */
 function handleWorkspaceClosed(): void {
+  // Boot-eager open hid the canvas via `html.boot-vellum-eager` (see
+  // index.html). Now that vellum is gone, restore the map. Cheap no-op
+  // when the class wasn't set (most opens don't go through the eager
+  // path).
+  document.documentElement.classList.remove('boot-vellum-eager')
   activeWorkspaceCityId = null
   activeWorkspaceHandle = null
   vellumOpenIntent = false
@@ -1930,6 +1935,17 @@ if (bootEagerCanOpen && bootEagerOpenUrl.mode === 'kanban') {
 } else if (bootEagerCanOpen && bootEagerOpenUrl.mode === 'narrative') {
   openGlobalVellumIndex()
   bootEagerOpenMode = 'narrative'
+}
+
+// Divergence safety: the HTML inline script in index.html added
+// `boot-vellum-eager` (hiding the canvas) based on its own parse of
+// `window.location`. If our parse here disagreed (e.g., query-param
+// fallback resolving a cityId the HTML script didn't see), we won't
+// eager-open and the modal won't mount — so the class would stick and
+// the canvas would stay hidden forever. Clear it now in that case so
+// the map appears.
+if (bootEagerOpenMode == null) {
+  document.documentElement.classList.remove('boot-vellum-eager')
 }
 
 stateSync.connect()
