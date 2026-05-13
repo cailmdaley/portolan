@@ -1355,6 +1355,35 @@ describe('FiberDetailModal dispatch — 500 daemon error', () => {
   })
 })
 
+describe('FiberDetailModal dispatch — URL target (regression: Tauri IPv6 trap)', () => {
+  // The Shuttle daemon binds 127.0.0.1:4000 (IPv4-only on BEAM). Tauri's
+  // WKWebView resolves `localhost` IPv6-first and hits ECONNREFUSED on
+  // `::1:4000`, reporting "Load failed" instead of falling back to IPv4.
+  // The fix: the frontend must always target `127.0.0.1:4000` directly,
+  // never deriving the hostname from apiBase. See
+  // gotchas/ipv6-localhost-vs-ipv4-shuttle-daemon.
+  it('dispatches to 127.0.0.1:4000, not derived from apiBase hostname', async () => {
+    const capturedUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/api/v1/dispatch')) {
+        capturedUrls.push(urlStr)
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/x' }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { dispatchBtn } = await openDispatchModal(makeInFlightCard())
+    dispatchBtn.click()
+    await tick()
+
+    expect(capturedUrls).toHaveLength(1)
+    // Hardcoded 127.0.0.1, not 'localhost' (apiBase host) — the whole point.
+    expect(capturedUrls[0]).toBe('http://127.0.0.1:4000/api/v1/dispatch')
+    expect(capturedUrls[0]).not.toContain('localhost')
+  })
+})
+
 describe('FiberDetailModal dispatch — network / CORS failure', () => {
   it('shows "Couldn\'t reach daemon" instead of a generic browser error', async () => {
     vi.stubGlobal('fetch', vi.fn((url: string) => {

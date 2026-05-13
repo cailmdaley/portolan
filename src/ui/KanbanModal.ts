@@ -3206,16 +3206,16 @@ export class FiberDetailModal {
     btn.textContent = 'Dispatching…'
     errorEl.style.display = 'none'
 
-    // Derive the shuttle daemon URL (port 4000) from the portolan API base
-    // (port 4004), keeping the same hostname. Falls back to 127.0.0.1 if
-    // the API base hostname can't be parsed.
-    let shuttleBase: string
-    try {
-      const u = new URL(this.apiBase)
-      shuttleBase = `${u.protocol}//${u.hostname}:4000`
-    } catch {
-      shuttleBase = 'http://127.0.0.1:4000'
-    }
+    // The Shuttle daemon is local-only by design — it binds 127.0.0.1:4000
+    // (IPv4-only listener on BEAM). Always target 127.0.0.1 explicitly rather
+    // than deriving the hostname from `apiBase`: in the Tauri webview,
+    // `localhost` resolves IPv6-first (`::1`), hits ECONNREFUSED against the
+    // IPv4-only listener, and reports "Load failed" without retrying IPv4.
+    // The server-side `shuttleBaseUrlForOrigin` already hardcodes `127.0.0.1`
+    // for the same reason; remote-origin dispatches reach the local daemon
+    // and the daemon forwards via its own origin registry. See
+    // gotchas/ipv6-localhost-vs-ipv4-shuttle-daemon.
+    const shuttleBase = 'http://127.0.0.1:4000'
     const dispatchFiberId = card.shuttleFiberId ?? card.id
 
     // Distinguish network failures (fetch never completed) from HTTP errors
