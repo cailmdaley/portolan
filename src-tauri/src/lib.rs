@@ -30,6 +30,7 @@ struct NativeAppStatus {
     profile: String,
     frontend_dist: String,
     project_root: String,
+    resource_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +41,9 @@ struct BackendStatus {
     owner: String,
     launch_kind: String,
     process_group: bool,
+    cwd: String,
+    entry: Option<String>,
+    resource_dir: Option<String>,
     pid: Option<u32>,
     started_at_unix: Option<u64>,
     last_error: Option<String>,
@@ -47,11 +51,12 @@ struct BackendStatus {
 
 struct NativeState {
     backend: Mutex<BackendBridge>,
+    resource_dir: Option<PathBuf>,
 }
 
 struct BackendBridge {
     owner: BackendOwner,
-    launch_kind: String,
+    launch: BackendLaunch,
     started_at_unix: Option<u64>,
     last_error: Option<String>,
     child: Option<Child>,
@@ -65,26 +70,29 @@ enum BackendOwner {
 }
 
 struct BackendLaunch {
-    kind: &'static str,
+    kind: String,
     program: PathBuf,
     args: Vec<String>,
     cwd: PathBuf,
+    entry: Option<PathBuf>,
+    resource_dir: Option<PathBuf>,
     process_group: bool,
 }
 
 impl BackendBridge {
-    fn start() -> Self {
+    fn start(resource_dir: Option<PathBuf>) -> Self {
         if backend_reachable() {
+            let launch = backend_launch_for_profile(resource_dir, cfg!(debug_assertions));
             return Self {
                 owner: BackendOwner::External,
-                launch_kind: "already-running".to_string(),
+                launch,
                 started_at_unix: None,
                 last_error: None,
                 child: None,
             };
         }
 
-        let launch = backend_launch();
+        let launch = backend_launch_for_profile(resource_dir, cfg!(debug_assertions));
         match launch.spawn() {
             Ok(child) => {
                 let pid = child.id();
@@ -95,7 +103,7 @@ impl BackendBridge {
                     } else {
                         BackendOwner::Failed
                     },
-                    launch_kind: launch.kind.to_string(),
+                    launch,
                     started_at_unix: Some(unix_now()),
                     last_error: if reachable {
                         None
@@ -107,17 +115,20 @@ impl BackendBridge {
                     child: Some(child),
                 }
             }
-            Err(error) => Self {
-                owner: BackendOwner::Failed,
-                launch_kind: launch.kind.to_string(),
-                started_at_unix: Some(unix_now()),
-                last_error: Some(format!(
+            Err(error) => {
+                let last_error = Some(format!(
                     "failed to spawn `{}` in {}: {error}",
                     launch.program.display(),
                     launch.cwd.display()
-                )),
-                child: None,
-            },
+                ));
+                Self {
+                    owner: BackendOwner::Failed,
+                    launch,
+                    started_at_unix: Some(unix_now()),
+                    last_error,
+                    child: None,
+                }
+            }
         }
     }
 
@@ -126,8 +137,19 @@ impl BackendBridge {
             url: BACKEND_URL.to_string(),
             reachable: backend_reachable(),
             owner: self.owner.as_str().to_string(),
-            launch_kind: self.launch_kind.clone(),
+            launch_kind: self.launch.kind.clone(),
             process_group: backend_uses_process_group(),
+            cwd: self.launch.cwd.display().to_string(),
+            entry: self
+                .launch
+                .entry
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            resource_dir: self
+                .launch
+                .resource_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
             pid: self.child.as_ref().map(Child::id),
             started_at_unix: self.started_at_unix,
             last_error: self.last_error.clone(),
@@ -168,9 +190,13 @@ impl BackendLaunch {
             .args(&self.args)
             .current_dir(&self.cwd)
             .env("PORTOLAN_NATIVE", "1")
+            .env("PORTOLAN_NATIVE_BACKEND_ROOT", &self.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(resource_dir) = &self.resource_dir {
+            command.env("PORTOLAN_NATIVE_RESOURCE_DIR", resource_dir);
+        }
         if self.process_group {
             configure_backend_process_group(&mut command);
         }
@@ -178,29 +204,45 @@ impl BackendLaunch {
     }
 }
 
-fn backend_launch() -> BackendLaunch {
-    let cwd = project_root().join("server");
-    let dist_entry = cwd.join("dist").join("index.js");
+fn backend_launch_for_profile(resource_dir: Option<PathBuf>, debug: bool) -> BackendLaunch {
+    if !debug {
+        if let Some(server_root) = bundled_server_root(resource_dir.as_deref()) {
+            return node_backend_launch("node-dist-resource", server_root, resource_dir);
+        }
+    }
 
-    if cfg!(debug_assertions) || !dist_entry.exists() {
-        return BackendLaunch {
-            kind: "npm-dev",
-            program: resolve_program(
-                "npm",
-                &[
-                    "/opt/homebrew/bin/npm",
-                    "/usr/local/bin/npm",
-                    "/usr/bin/npm",
-                ],
-            ),
-            args: vec!["run".to_string(), "dev".to_string()],
-            cwd,
-            process_group: backend_uses_process_group(),
-        };
+    let source_server_root = project_root().join("server");
+    let source_dist_entry = dist_entry(&source_server_root);
+
+    if !debug && source_dist_entry.exists() {
+        return node_backend_launch("node-dist-source", source_server_root, None);
     }
 
     BackendLaunch {
-        kind: "node-dist",
+        kind: "npm-dev".to_string(),
+        program: resolve_program(
+            "npm",
+            &[
+                "/opt/homebrew/bin/npm",
+                "/usr/local/bin/npm",
+                "/usr/bin/npm",
+            ],
+        ),
+        args: vec!["run".to_string(), "dev".to_string()],
+        cwd: source_server_root,
+        entry: None,
+        resource_dir: None,
+        process_group: backend_uses_process_group(),
+    }
+}
+
+fn node_backend_launch(
+    kind: impl Into<String>,
+    server_root: PathBuf,
+    resource_dir: Option<PathBuf>,
+) -> BackendLaunch {
+    BackendLaunch {
+        kind: kind.into(),
         program: resolve_program(
             "node",
             &[
@@ -209,10 +251,27 @@ fn backend_launch() -> BackendLaunch {
                 "/usr/bin/node",
             ],
         ),
-        args: vec!["dist/index.js".to_string()],
-        cwd,
+        args: vec![dist_entry(&server_root).display().to_string()],
+        entry: Some(dist_entry(&server_root)),
+        cwd: server_root,
+        resource_dir,
         process_group: backend_uses_process_group(),
     }
+}
+
+fn bundled_server_root(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let server_root = resource_dir?.join("server");
+    let has_server_entry = dist_entry(&server_root).exists();
+    let has_dependencies = server_root.join("node_modules").is_dir();
+    if has_server_entry && has_dependencies {
+        Some(server_root)
+    } else {
+        None
+    }
+}
+
+fn dist_entry(server_root: &Path) -> PathBuf {
+    server_root.join("dist").join("index.js")
 }
 
 fn resolve_program(name: &str, candidates: &[&str]) -> PathBuf {
@@ -332,6 +391,10 @@ fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
             .to_string(),
             frontend_dist: "../dist".to_string(),
             project_root: project_root().display().to_string(),
+            resource_dir: state
+                .resource_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
         },
         backend: backend.status(),
     }
@@ -350,8 +413,10 @@ pub fn run() {
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![native_status])
         .setup(|app| {
+            let resource_dir = app.path().resource_dir().ok();
             app.manage(NativeState {
-                backend: Mutex::new(BackendBridge::start()),
+                backend: Mutex::new(BackendBridge::start(resource_dir.clone())),
+                resource_dir,
             });
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -376,6 +441,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn backend_addr_targets_portolan_backend() {
@@ -393,10 +459,46 @@ mod tests {
 
     #[test]
     fn backend_launch_uses_server_directory() {
-        let launch = backend_launch();
+        let launch = backend_launch_for_profile(None, cfg!(debug_assertions));
         assert_eq!(launch.cwd, project_root().join("server"));
-        assert!(matches!(launch.kind, "npm-dev" | "node-dist"));
+        assert!(matches!(
+            launch.kind.as_str(),
+            "npm-dev" | "node-dist-source" | "node-dist-resource"
+        ));
         assert_eq!(launch.process_group, cfg!(unix));
+    }
+
+    #[test]
+    fn release_backend_launch_prefers_bundled_server_resources() {
+        let resource_dir = temp_resource_dir("bundled-server");
+        let server_root = resource_dir.join("server");
+        fs::create_dir_all(server_root.join("dist")).expect("test dist should be created");
+        fs::create_dir_all(server_root.join("node_modules")).expect("test deps should be created");
+        fs::write(dist_entry(&server_root), "console.log('portolan')\n")
+            .expect("test entry should be written");
+
+        let launch = backend_launch_for_profile(Some(resource_dir.clone()), false);
+        assert_eq!(launch.kind, "node-dist-resource");
+        assert_eq!(launch.cwd, server_root);
+        assert_eq!(launch.resource_dir, Some(resource_dir.clone()));
+        assert_eq!(launch.entry, Some(dist_entry(&server_root)));
+
+        fs::remove_dir_all(resource_dir).ok();
+    }
+
+    #[test]
+    fn release_backend_launch_ignores_incomplete_bundled_server_resources() {
+        let resource_dir = temp_resource_dir("incomplete-bundled-server");
+        let server_root = resource_dir.join("server");
+        fs::create_dir_all(server_root.join("dist")).expect("test dist should be created");
+        fs::write(dist_entry(&server_root), "console.log('missing deps')\n")
+            .expect("test entry should be written");
+
+        let launch = backend_launch_for_profile(Some(resource_dir.clone()), false);
+        assert_ne!(launch.kind, "node-dist-resource");
+        assert_ne!(launch.cwd, server_root);
+
+        fs::remove_dir_all(resource_dir).ok();
     }
 
     #[test]
@@ -405,6 +507,18 @@ mod tests {
             resolve_program("missing-portolan-tool", &["/definitely/missing"]),
             PathBuf::from("missing-portolan-tool")
         );
+    }
+
+    fn temp_resource_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "portolan-tauri-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("test resource dir should be created");
+        path
     }
 
     #[cfg(unix)]

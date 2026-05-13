@@ -5,6 +5,7 @@ export interface NativePortolanStatus {
     profile: string
     frontendDist: string
     projectRoot: string
+    resourceDir: string | null
   }
   backend: {
     url: string
@@ -12,6 +13,9 @@ export interface NativePortolanStatus {
     owner: 'app' | 'external' | 'failed'
     launchKind: string
     processGroup: boolean
+    cwd: string
+    entry: string | null
+    resourceDir: string | null
     pid: number | null
     startedAtUnix: number | null
     lastError: string | null
