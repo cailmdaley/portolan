@@ -1877,11 +1877,6 @@ const appRuntime = new FrontendAppRuntime({
   // path above, which already runs whenever sessions change.
   updateWorkerHud: () => mapChromeBar.update(cities, sessions),
   isWorkerHudVisible: () => true,
-  applyMockState: (mockCities, mockSessions) => {
-    cities = mockCities
-    sessions = mockSessions
-    zoneRenderer.updateState(cities, sessions)
-  },
   onFrame: () => {
     if (camera.cameraRevision === lastCameraRevision) return
     lastCameraRevision = camera.cameraRevision

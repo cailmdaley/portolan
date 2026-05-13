@@ -106,7 +106,6 @@ function makeMockOptions(): RuntimeOptions {
     getCities: vi.fn().mockReturnValue([]),
     updateWorkerHud: vi.fn(),
     isWorkerHudVisible: vi.fn().mockReturnValue(false),
-    applyMockState: vi.fn(),
   }
 }
 
