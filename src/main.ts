@@ -29,7 +29,7 @@ import { getActivitySessionKey } from './runtime/FrontendActivityStore'
 import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
-import { UrlFragmentSync, SCOPE_GLOBAL, type UrlState, type VellumMode } from './runtime/UrlFragment'
+import { UrlFragmentSync, SCOPE_GLOBAL, readUrlState, type UrlState, type VellumMode } from './runtime/UrlFragment'
 import { buildVellumFileUrl } from './runtime/vellumFileLink'
 import {
   DEFAULT_FAVICON_HREF,
@@ -1211,6 +1211,12 @@ let sessions: Session[] = []
 let origins: ServerOrigin[] = []
 let selectedHex: { q: number; r: number } | null = null
 let mapActions: FrontendMapActions | null = null
+// Tracks which (if any) global vellum surface was opened from the URL
+// fragment at boot *before* the WebSocket delivered initial state.
+// Used by onStateChange's initial-state branch to skip the otherwise-
+// redundant applyUrlState call that would bump workspaceOpenToken and
+// invalidate the in-flight eager mount.
+let bootEagerOpenMode: VellumMode | null = null
 
 // Stage G of constitution-portolan-navigation-layer: HTTP base for the
 // recents endpoints. Tracks `window.location.hostname` so dev-server
@@ -1398,9 +1404,25 @@ const stateSync = new FrontendStateSync({
     // overwrite the mode/fiber/scope/file the user actually asked for via
     // the typed deep link. applyUrlState's internal runSuppressed nests
     // fine; both layers share the depth counter.
+    // If the boot-time eager open already mounted the same global
+    // surface this urlState resolves to, the modal is up (or in-flight)
+    // and matches — skip applyUrlState so we don't bump
+    // workspaceOpenToken and invalidate the eager mount. Camera focus
+    // still runs.
+    const matchesBootEager =
+      bootEagerOpenMode != null
+      && urlState != null
+      && urlState.mode === bootEagerOpenMode
+      && !urlState.cityId
+      && !urlState.fiberSlug
+      && !urlState.filePath
     void urlSync.runSuppressed(async () => {
       handleCityClick(targetCity)
-      if (urlState && (urlState.mode || urlState.fiberSlug || urlState.filePath)) {
+      if (
+        urlState
+        && (urlState.mode || urlState.fiberSlug || urlState.filePath)
+        && !matchesBootEager
+      ) {
         await applyUrlState(urlState, { cities, fallbackCity: targetCity })
       }
     })
@@ -1883,6 +1905,32 @@ installFrontendRuntimeDiagnostics({
   getHudStats: () => appRuntime.getHudStats(),
   getRenderLoopStats: () => appRuntime.getRenderLoopStats(),
 })
+
+// Eager URL-driven open: a deep-link to a global vellum surface
+// (kanban / find / global narrative index) can be honored *before* the
+// WebSocket delivers the first state — the modal's data fetches are
+// server-driven and don't need cities/sessions in hand. Kick off the
+// mount now so it races the WebSocket connect rather than waiting for
+// it. The map continues to render in parallel via appRuntime.start().
+//
+// Only global-mode deep links eager-open: city-scoped or fiber-pinned
+// URLs need the cities list to resolve their target, so they stay on
+// the onStateChange path.
+const bootEagerOpenUrl = readUrlState()
+const bootEagerCanOpen =
+  !bootEagerOpenUrl.cityId
+  && !bootEagerOpenUrl.fiberSlug
+  && !bootEagerOpenUrl.filePath
+if (bootEagerCanOpen && bootEagerOpenUrl.mode === 'kanban') {
+  openGlobalKanban()
+  bootEagerOpenMode = 'kanban'
+} else if (bootEagerCanOpen && bootEagerOpenUrl.mode === 'find') {
+  openGlobalFind()
+  bootEagerOpenMode = 'find'
+} else if (bootEagerCanOpen && bootEagerOpenUrl.mode === 'narrative') {
+  openGlobalVellumIndex()
+  bootEagerOpenMode = 'narrative'
+}
 
 stateSync.connect()
 appRuntime.start()
