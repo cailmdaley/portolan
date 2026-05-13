@@ -235,6 +235,15 @@ if [ -z "$AGENT_SESSION" ]; then
 fi
 
 AGENT_CMD="$(build_agent_cmd "$AGENT_RUNTIME" "$HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
+REPLACES_RUNTIME=true
+if [ "$AGENT_RUNTIME" = "rust" ] && [ "$AGENT_ONCE" = true ]; then
+  REPLACES_RUNTIME=false
+fi
+if [ "$AGENT_RUNTIME" = "rust" ]; then
+  OPPOSITE_AGENT_SESSION="portolan-agent"
+else
+  OPPOSITE_AGENT_SESSION="portolan-agent-rust-preview"
+fi
 
 LABEL="com.cailmdaley.portolan-tunnel-$HOST"
 TARGET="gui/$(id -u)/$LABEL"
@@ -302,6 +311,12 @@ fi
 
 echo "[$HOST] Restarting remote runtime '$AGENT_RUNTIME' in tmux session '$AGENT_SESSION'..."
 ssh "$HOST" "tmux kill-session -t '$AGENT_SESSION' 2>/dev/null; true"
+if [ "$REPLACES_RUNTIME" = true ]; then
+  echo "[$HOST] Stopping opposite runtime session '$OPPOSITE_AGENT_SESSION' to keep one live origin socket..."
+  ssh "$HOST" "tmux kill-session -t '$OPPOSITE_AGENT_SESSION' 2>/dev/null; true"
+else
+  echo "[$HOST] Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust preview"
+fi
 ssh "$HOST" "tmux new-session -d -s '$AGENT_SESSION' 'bash -l -c \"${AGENT_CMD}\"'"
 
 wait_for_agent_connect "$HOST" "$AGENT_SESSION" "$AGENT_RUNTIME" "$AGENT_CMD" || true

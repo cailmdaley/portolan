@@ -151,7 +151,7 @@ For Rust preview smoke tests, use a separate runtime session so Node stays as fa
 Node fallback remains explicit and unchanged:
 - Node runtime is still in session `portolan-agent`.
 - Rust preview runtime is still in session `portolan-agent-rust-preview`.
-- Only one socket per origin is active at a time; with `--once`, Rust preview exits cleanly.
+- Normal restarts stop the opposite runtime session so only one socket per origin is active at a time; with `--once`, Rust preview runs side-by-side and exits cleanly.
 - Resume Node fallback with `./scripts/reset-tunnel.sh --agent-runtime node <host>` (or let normal self-recovery bring Node back when needed).
 
 Candide-specific model: SSH is ping-gated and seems to impose a short backoff after failed opens.

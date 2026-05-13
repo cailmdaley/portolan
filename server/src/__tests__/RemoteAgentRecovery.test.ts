@@ -49,6 +49,29 @@ describe('recoverRemoteAgent', () => {
       'candide',
       [
         `tmux kill-session -t ${shellEscape(`=${RUST_AGENT_SESSION}:`)} 2>/dev/null || true`,
+        `tmux kill-session -t ${shellEscape(`=${NODE_AGENT_SESSION}:`)} 2>/dev/null || true`,
+        `tmux new-session -d -s ${shellEscape(RUST_AGENT_SESSION)} ${shellEscape(`bash -l -c ${shellEscape(expectedAgentCommand)}`)}`,
+      ].join('; '),
+    ]);
+  });
+
+  it('keeps the Node fallback session alive for one-shot Rust preview recovery', async () => {
+    mockExecFile.mockImplementation(resolveExec());
+
+    const result = await recoverRemoteAgent('candide', 'rust', { origin: 'candide', once: true });
+
+    expect(result).toEqual({
+      sshHost: 'candide',
+      tunnel: 'reachable',
+      agent: 'restarted',
+      message: 'candide: tunnel already reachable; restarted portolan-agent-rust-preview',
+    });
+    const expectedAgentCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape('candide')} --origin=${shellEscape('candide')} --once`;
+    expect(mockExecFile.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      [
+        `tmux kill-session -t ${shellEscape(`=${RUST_AGENT_SESSION}:`)} 2>/dev/null || true`,
         `tmux new-session -d -s ${shellEscape(RUST_AGENT_SESSION)} ${shellEscape(`bash -l -c ${shellEscape(expectedAgentCommand)}`)}`,
       ].join('; '),
     ]);
@@ -73,6 +96,9 @@ describe('recoverRemoteAgent', () => {
     expect(mockExecFile.mock.calls.some((call) => call[0] === 'launchctl')).toBe(false);
     expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
       `tmux kill-session -t ${shellEscape(`=${NODE_AGENT_SESSION}:`)} 2>/dev/null || true`,
+    );
+    expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
+      `tmux kill-session -t ${shellEscape(`=${RUST_AGENT_SESSION}:`)} 2>/dev/null || true`,
     );
   });
 });

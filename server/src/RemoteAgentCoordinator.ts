@@ -10,6 +10,7 @@ import type { AgentActivityMessage, AgentSessionsUpdateMessage } from './Message
 import { OriginManager, type Origin, type RemoteAgentRuntime } from './OriginManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
 import {
+  oppositeRemoteAgentTmuxSession,
   remoteAgentCommand,
   remoteAgentTmuxSession,
   type RemoteAgentStartupOptions,
@@ -644,13 +645,24 @@ async function startRemoteAgent(
   startupOptions: RemoteAgentStartupOptions = {},
 ): Promise<void> {
   const session = remoteAgentTmuxSession(agentRuntime);
+  const oppositeSession = oppositeRemoteAgentTmuxSession(agentRuntime);
   const agentCommand = remoteAgentCommand(agentRuntime, sshHost, startupOptions);
-  const remoteCommand = [
+  const replacesRuntime = !(agentRuntime === 'rust' && startupOptions.once);
+  const remoteCommands = [
     `tmux kill-session -t ${shellEscape(`=${session}:`)} 2>/dev/null || true`,
-    `tmux new-session -d -s ${shellEscape(session)} ${shellEscape(`bash -l -c ${shellEscape(agentCommand)}`)}`,
-  ].join('; ');
+  ];
 
-  await execFileAsync('ssh', ['-T', sshHost, remoteCommand], { timeout: 30_000 });
+  if (replacesRuntime) {
+    remoteCommands.push(
+      `tmux kill-session -t ${shellEscape(`=${oppositeSession}:`)} 2>/dev/null || true`,
+    );
+  }
+
+  remoteCommands.push(
+    `tmux new-session -d -s ${shellEscape(session)} ${shellEscape(`bash -l -c ${shellEscape(agentCommand)}`)}`,
+  );
+
+  await execFileAsync('ssh', ['-T', sshHost, remoteCommands.join('; ')], { timeout: 30_000 });
 }
 
 export async function recoverRemoteAgent(
