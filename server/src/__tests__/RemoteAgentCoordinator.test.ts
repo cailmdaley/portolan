@@ -158,4 +158,67 @@ describe('RemoteAgentCoordinator', () => {
       }));
     });
   });
+
+  it('retains latest remote shuttle snapshot diagnostics', () => {
+    const { coordinator } = createCoordinator();
+
+    coordinator.handleShuttleSnapshot('remote-candide', {
+      snapshot: {
+        pollAt: 1234,
+        eligible: [{ fiberId: 'work', state: 'idle' }],
+        blocked: [{ fiberId: 'blocked', reason: 'dependency dep is not tempered' }],
+        orphans: ['shuttle-ghost'],
+      },
+    });
+
+    expect(coordinator.getRemoteShuttleSnapshotStats()).toEqual([
+      expect.objectContaining({
+        originId: 'remote-candide',
+        eligibleCount: 1,
+        blockedCount: 1,
+        orphanCount: 1,
+        snapshot: expect.objectContaining({
+          pollAt: 1234,
+          eligible: [{ fiberId: 'work', state: 'idle' }],
+        }),
+      }),
+    ]);
+  });
+
+  it('accepts flattened shuttle snapshot payloads', () => {
+    const { coordinator } = createCoordinator();
+
+    coordinator.handleShuttleSnapshot('remote-rust', {
+      eligible: [],
+      blocked: [],
+      orphans: [],
+    });
+
+    expect(coordinator.getRemoteShuttleSnapshotStats()[0]).toEqual(expect.objectContaining({
+      originId: 'remote-rust',
+      eligibleCount: 0,
+      blockedCount: 0,
+      orphanCount: 0,
+      snapshot: {
+        eligible: [],
+        blocked: [],
+        orphans: [],
+      },
+    }));
+  });
+
+  it('clears shuttle diagnostics when the remote agent disconnects', () => {
+    const { originManager, coordinator } = createCoordinator();
+    const ws = { close: vi.fn() } as any;
+
+    originManager.registerAgent('candide', ws, 'candide');
+    coordinator.handleShuttleSnapshot('remote-candide', {
+      snapshot: { eligible: [], blocked: [], orphans: [] },
+    });
+    const disconnectedOrigin = originManager.handleDisconnect(ws)!;
+
+    coordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
+
+    expect(coordinator.getRemoteShuttleSnapshotStats()).toEqual([]);
+  });
 });

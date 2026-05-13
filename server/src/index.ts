@@ -218,15 +218,12 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     },
     filesSearch: httpApi.getFilesSearchDiagnostics(),
     meetingBridge: meetingBridge.getState(),
-    // Constitution `shuttle-remote-dispatch` — composite of local
-    // Shuttle's last tick and every connected remote agent's pushed
-    // shuttle_snapshot. Useful for confirming that a fiber on (e.g.)
-    // candide is dispatching there rather than locally.
-    // Stage 6 cutover — local Shuttle engine retired. Remote snapshot
-    // composition deferred to BEAM-distribution phase (see constitution-
-    // shuttle-standalone § Stage 7). Debug view no longer shows composite
-    // dispatch state; use `shuttle snapshot` CLI against the Elixir daemon.
-    shuttle: null,
+    // Remote agents may publish read-only `shuttle_snapshot` diagnostics.
+    // Dispatch remains owned by Shuttle; this only makes remote observability
+    // visible through /debug-runtime while the Rust agent grows parity.
+    shuttle: {
+      remoteSnapshots: remoteAgentCoordinator.getRemoteShuttleSnapshotStats(),
+    },
   };
 });
 httpApi.setMeetingBridge(meetingBridge);
@@ -477,6 +474,8 @@ wss.on('connection', async (ws, req) => {
             deltas: Array<{ path: string; op: 'upsert' | 'delete'; fiber?: unknown }>;
           };
           fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? [], feltHost);
+        } else if (message.type === 'shuttle_snapshot') {
+          remoteAgentCoordinator.handleShuttleSnapshot(origin.id, message.payload);
         } else if (message.type === 'kanban-transition-result') {
           // Stage 4 — agent's reply to a `kanban-transition` round-trip.
           // Resolves or rejects the matching pending entry in the

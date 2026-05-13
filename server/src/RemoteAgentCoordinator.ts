@@ -52,12 +52,22 @@ interface RemoteAgentRecoveryState {
   inFlight?: boolean;
 }
 
+export interface RemoteShuttleSnapshotStats {
+  originId: string;
+  receivedAt: string;
+  eligibleCount: number | null;
+  blockedCount: number | null;
+  orphanCount: number | null;
+  snapshot: unknown;
+}
+
 export class RemoteAgentCoordinator {
   private remoteSessions = new Map<string, Map<string, Session>>();
   private remoteGitStatuses = new Map<string, GitStatus>();
   private remoteActivities = new Map<string, ActivityEvent[]>();
   private remoteWorkingSessions = new RemoteWorkingSessionTracker();
   private recoveryStates = new Map<string, RemoteAgentRecoveryState>();
+  private shuttleSnapshots = new Map<string, { receivedAt: number; snapshot: unknown }>();
 
   constructor(
     private cityManager: CityManager,
@@ -129,6 +139,20 @@ export class RemoteAgentCoordinator {
       lastResult: state.lastResult ?? null,
       lastError: state.lastError ?? null,
     }));
+  }
+
+  getRemoteShuttleSnapshotStats(): RemoteShuttleSnapshotStats[] {
+    return Array.from(this.shuttleSnapshots.entries()).map(([originId, entry]) => {
+      const snapshot = snapshotObject(entry.snapshot);
+      return {
+        originId,
+        receivedAt: new Date(entry.receivedAt).toISOString(),
+        eligibleCount: arrayLength(snapshot?.eligible),
+        blockedCount: arrayLength(snapshot?.blocked),
+        orphanCount: arrayLength(snapshot?.orphans),
+        snapshot: entry.snapshot,
+      };
+    });
   }
 
   getGitStatus(originId: string, path: string): GitStatus | undefined {
@@ -287,6 +311,14 @@ export class RemoteAgentCoordinator {
     this.callbacks.broadcastActivity(activity, originId);
   }
 
+  handleShuttleSnapshot(originId: string, payload: unknown): void {
+    const snapshot = snapshotFromPayload(payload);
+    this.shuttleSnapshots.set(originId, {
+      receivedAt: Date.now(),
+      snapshot,
+    });
+  }
+
   handleAgentDisconnect(
     originId: string,
     sshHost?: string,
@@ -314,6 +346,7 @@ export class RemoteAgentCoordinator {
 
     this.pruneRemoteGitStatus(originId, new Set<string>());
     this.remoteWorkingSessions.clearOrigin(originId);
+    this.shuttleSnapshots.delete(originId);
 
     this.remoteSessions.delete(originId);
     this.callbacks.rebuildCities();
@@ -467,6 +500,23 @@ export class RemoteAgentCoordinator {
       this.remoteGitStatuses.delete(key);
     }
   }
+}
+
+function snapshotFromPayload(payload: unknown): unknown {
+  if (!isRecord(payload)) return payload;
+  return Object.hasOwn(payload, 'snapshot') ? payload.snapshot : payload;
+}
+
+function snapshotObject(snapshot: unknown): Record<string, unknown> | null {
+  return isRecord(snapshot) ? snapshot : null;
+}
+
+function arrayLength(value: unknown): number | null {
+  return Array.isArray(value) ? value.length : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function portolanTunnelLabel(sshHost: string): string {
