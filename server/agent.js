@@ -26,7 +26,7 @@ import { exec, execFile, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, readFileSync, readdirSync, renameSync, watch, writeFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, watch, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, resolve, join, relative, sep } from 'path';
 
 const execAsync = promisify(exec);
@@ -1071,6 +1071,37 @@ function isPathInside(root, target) {
     return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
+export function resolveRemoteFilePath(pathToRead, requireExisting = true) {
+    if (typeof pathToRead !== 'string' || !pathToRead.length) {
+        throw new Error(`path must be absolute: ${pathToRead}`);
+    }
+    if (!isAbsolute(pathToRead)) {
+        throw new Error(`path must be absolute: ${pathToRead}`);
+    }
+    if (pathToRead.split(sep).includes('..')) {
+        throw new Error(`invalid path: ${pathToRead}`);
+    }
+    const fullPath = resolve(pathToRead);
+    if (!existsSync(fullPath)) {
+        if (requireExisting) {
+            throw new Error(`file missing: ${pathToRead}`);
+        }
+        const parent = dirname(fullPath);
+        if (!existsSync(parent)) {
+            throw new Error(`parent directory missing: ${pathToRead}`);
+        }
+        if (!lstatSync(parent).isDirectory()) {
+            throw new Error(`parent directory missing: ${pathToRead}`);
+        }
+        return fullPath;
+    }
+
+    if (!lstatSync(fullPath).isFile()) {
+        throw new Error(`path is not a file: ${pathToRead}`);
+    }
+    return fullPath;
+}
+
 export function isSafeRemoteFiberPath(relPath) {
     if (typeof relPath !== 'string' || relPath.length === 0) return false;
     if (isAbsolute(relPath)) return false;
@@ -1096,6 +1127,97 @@ function writeAtomicSync(target, content) {
     const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${Date.now()}.tmp`);
     writeFileSync(tmp, content, 'utf8');
     renameSync(tmp, target);
+}
+
+export function executeFileContentRequest(payload) {
+    const { operation, path: filePath, content } = payload || {};
+    const fullPath = resolveRemoteFilePath(filePath, operation !== 'write');
+
+    if (operation === 'read') {
+        const body = readFileSync(fullPath, 'utf8');
+        return { ok: true, content: body };
+    }
+
+    if (operation === 'write') {
+        if (typeof content !== 'string') {
+            throw new Error('missing content');
+        }
+        if (content.length > 10 * 1024 * 1024) {
+            throw new Error('file content exceeds 10 MB');
+        }
+        writeAtomicSync(fullPath, content);
+        return { ok: true };
+    }
+
+    throw new Error(`unknown file-content operation: ${operation}`);
+}
+
+function handleFileContent(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('file-content without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'file-content-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+    try {
+        const result = executeFileContentRequest(payload);
+        reply(result);
+        if (result.content !== undefined) {
+            debug(`file-content read ok: ${payload.path}`);
+        } else {
+            debug(`file-content write ok: ${payload.path}`);
+        }
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`file-content failed (${payload.path}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
+export function executeProjectFileRequest(payload) {
+    const filePath = payload?.path;
+    const fullPath = resolveRemoteFilePath(filePath, true);
+    const data = readFileSync(fullPath);
+    if (data.length > 50 * 1024 * 1024) {
+        throw new Error('project file exceeds 50 MB');
+    }
+    return {
+        ok: true,
+        contentBase64: data.toString('base64'),
+        byteLength: data.length,
+    };
+}
+
+function handleProjectFile(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('project-file without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'project-file-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+    try {
+        const result = executeProjectFileRequest(payload);
+        reply(result);
+        debug(`project-file ok: ${payload.path}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`project-file failed (${payload.path}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
 }
 
 /**
@@ -1594,6 +1716,14 @@ function handleMessage(message) {
 
         case 'fiber-raw':
             handleFiberRaw(message);
+            break;
+
+        case 'file-content':
+            handleFileContent(message);
+            break;
+
+        case 'project-file':
+            handleProjectFile(message);
             break;
 
         default:

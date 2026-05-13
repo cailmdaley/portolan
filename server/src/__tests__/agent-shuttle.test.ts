@@ -17,6 +17,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
 
 const mockExecFileCalls: Array<{
   command: string;
@@ -201,6 +209,81 @@ describe('agent: isSafeRemoteFiberPath', () => {
     expect(agentMod.isSafeRemoteFiberPath('/tmp/cmbx.md')).toBe(false);
     expect(agentMod.isSafeRemoteFiberPath('../cmbx.md')).toBe(false);
     expect(agentMod.isSafeRemoteFiberPath('cmbx/../cmbx.md')).toBe(false);
+  });
+});
+
+describe('agent: remote file request helpers', () => {
+  let rootDir: string;
+
+  beforeEach(() => {
+    rootDir = mkdtempSync(join(tmpdir(), 'portolan-agent-file-'));
+  });
+
+  afterEach(() => {
+    rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it('rejects relative, traversing, missing, and directory file paths', () => {
+    expect(() => agentMod.resolveRemoteFilePath('not-absolute.md')).toThrow(
+      'path must be absolute: not-absolute.md',
+    );
+    expect(() => agentMod.resolveRemoteFilePath('/tmp/../etc')).toThrow(
+      'invalid path: /tmp/../etc',
+    );
+
+    const missing = join(rootDir, 'missing.md');
+    expect(() => agentMod.resolveRemoteFilePath(missing)).toThrow(`file missing: ${missing}`);
+
+    const dirPath = join(rootDir, 'folder');
+    mkdirSync(dirPath);
+    expect(() => agentMod.resolveRemoteFilePath(dirPath)).toThrow(
+      `path is not a file: ${dirPath}`,
+    );
+  });
+
+  it('reads and writes text through file-content request payloads', () => {
+    const source = join(rootDir, 'source.md');
+    writeFileSync(source, '# Notes\n');
+
+    expect(agentMod.executeFileContentRequest({
+      operation: 'read',
+      path: source,
+    })).toEqual({ ok: true, content: '# Notes\n' });
+
+    const target = join(rootDir, 'target.md');
+    expect(agentMod.executeFileContentRequest({
+      operation: 'write',
+      path: target,
+      content: 'updated\n',
+    })).toEqual({ ok: true });
+    expect(readFileSync(target, 'utf8')).toBe('updated\n');
+  });
+
+  it('returns binary project files as base64 plus byte length', () => {
+    const filePath = join(rootDir, 'figure.png');
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    writeFileSync(filePath, bytes);
+
+    expect(agentMod.executeProjectFileRequest({ path: filePath })).toEqual({
+      ok: true,
+      contentBase64: 'iVBORw==',
+      byteLength: 4,
+    });
+  });
+
+  it('reports file-content and project-file size errors before replying', () => {
+    const writePath = join(rootDir, 'large.txt');
+    expect(() => agentMod.executeFileContentRequest({
+      operation: 'write',
+      path: writePath,
+      content: 'x'.repeat(10 * 1024 * 1024 + 1),
+    })).toThrow('file content exceeds 10 MB');
+
+    const projectPath = join(rootDir, 'large.bin');
+    writeFileSync(projectPath, Buffer.alloc(50 * 1024 * 1024 + 1));
+    expect(() => agentMod.executeProjectFileRequest({ path: projectPath })).toThrow(
+      'project file exceeds 50 MB',
+    );
   });
 });
 
