@@ -241,6 +241,20 @@ describe('agent: remote file request helpers', () => {
     );
   });
 
+  it('validates directory listing paths are absolute and safe', () => {
+    expect(() => agentMod.resolveRemoteDirectoryPath('relative/path')).toThrow(
+      'path must be absolute: relative/path',
+    );
+    expect(() => agentMod.resolveRemoteDirectoryPath('/tmp/../etc')).toThrow(
+      'invalid path: /tmp/../etc',
+    );
+
+    const missing = join(rootDir, 'missing-dir');
+    expect(() => agentMod.resolveRemoteDirectoryPath(missing)).toThrow(
+      `directory missing: ${missing}`,
+    );
+  });
+
   it('reads and writes text through file-content request payloads', () => {
     const source = join(rootDir, 'source.md');
     writeFileSync(source, '# Notes\n');
@@ -283,6 +297,34 @@ describe('agent: remote file request helpers', () => {
     writeFileSync(projectPath, Buffer.alloc(50 * 1024 * 1024 + 1));
     expect(() => agentMod.executeProjectFileRequest({ path: projectPath })).toThrow(
       'project file exceeds 50 MB',
+    );
+  });
+
+  it('returns sorted and filtered directory entries through list-directory requests', () => {
+    mkdirSync(join(rootDir, 'alpha'));
+    mkdirSync(join(rootDir, 'zeta'));
+    writeFileSync(join(rootDir, 'b.txt'), 'file b');
+    writeFileSync(join(rootDir, 'a.txt'), 'file a');
+    mkdirSync(join(rootDir, '.git'));
+    writeFileSync(join(rootDir, '.DS_Store'), 'skip me');
+
+    expect(agentMod.executeListDirectoryRequest({ path: rootDir })).toEqual({
+      ok: true,
+      entries: [
+        { name: 'alpha', type: 'dir' },
+        { name: 'zeta', type: 'dir' },
+        { name: 'a.txt', type: 'file' },
+        { name: 'b.txt', type: 'file' },
+      ],
+    });
+  });
+
+  it('rejects invalid list-directory paths', () => {
+    expect(() => agentMod.executeListDirectoryRequest({ path: 'relative/path' })).toThrow(
+      'path must be absolute: relative/path',
+    );
+    expect(() => agentMod.executeListDirectoryRequest({ path: '/tmp/../etc' })).toThrow(
+      'invalid path: /tmp/../etc',
     );
   });
 });

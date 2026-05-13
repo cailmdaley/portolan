@@ -26,7 +26,16 @@ import { exec, execFile, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { hostname, homedir } from 'os';
 import { promisify } from 'util';
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, watch, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  watch,
+  writeFileSync,
+} from 'fs';
 import { basename, dirname, isAbsolute, resolve, join, relative, sep } from 'path';
 
 const execAsync = promisify(exec);
@@ -67,6 +76,7 @@ const CITY_FELT_DUMP_INTERVAL_MS = process.env.PORTOLAN_CITY_FELT_DUMP_INTERVAL_
   : 10 * 60_000;
 const cityFeltDumpLastSent = new Map();
 const fiberTreeDumpInFlight = new Map();  // normalized feltHost -> Promise<boolean>
+const NON_GIT_SKIP = new Set(['.git', 'node_modules', '__pycache__', '.DS_Store']);
 
 // ─── Shuttle on the agent (constitution-shuttle-remote-dispatch) ─────────────
 //
@@ -1129,6 +1139,89 @@ function writeAtomicSync(target, content) {
     renameSync(tmp, target);
 }
 
+export function resolveRemoteDirectoryPath(dirPath, requireExisting = true) {
+    if (typeof dirPath !== 'string' || !dirPath.length) {
+        throw new Error(`path must be absolute: ${dirPath}`);
+    }
+    if (!isAbsolute(dirPath)) {
+        throw new Error(`path must be absolute: ${dirPath}`);
+    }
+    if (dirPath.split(sep).includes('..')) {
+        throw new Error(`invalid path: ${dirPath}`);
+    }
+    const fullPath = resolve(dirPath);
+    if (!existsSync(fullPath)) {
+        if (requireExisting) {
+            throw new Error(`directory missing: ${dirPath}`);
+        }
+        if (!existsSync(dirname(fullPath))) {
+            throw new Error(`parent directory missing: ${dirPath}`);
+        }
+        return fullPath;
+    }
+
+    if (!statSync(fullPath).isDirectory()) {
+        throw new Error(`path is not a directory: ${dirPath}`);
+    }
+    return fullPath;
+}
+
+export function executeListDirectoryRequest(payload) {
+    const directoryPath = payload?.path;
+    const fullPath = resolveRemoteDirectoryPath(directoryPath, true);
+    const dirents = readdirSync(fullPath, { withFileTypes: true });
+    const entries = dirents
+        .filter((entry) => !NON_GIT_SKIP.has(entry.name))
+        .map((entry) => {
+            let kind = 'file';
+            if (entry.isDirectory()) {
+                kind = 'dir';
+            } else if (entry.isSymbolicLink()) {
+                try {
+                    kind = statSync(join(fullPath, entry.name)).isDirectory() ? 'dir' : 'file';
+                } catch {
+                    kind = 'file';
+                }
+            }
+            return {
+                name: entry.name,
+                type: kind,
+            };
+        })
+        .sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
+
+    return { ok: true, entries };
+}
+
+function handleListDirectory(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('list-directory without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'list-directory-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+
+    try {
+        const result = executeListDirectoryRequest(payload);
+        reply(result);
+        debug(`list-directory ok: ${payload.path}`);
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        log(`list-directory failed (${payload.path}): ${msg}`);
+        reply({ ok: false, error: msg });
+    }
+}
+
 export function executeFileContentRequest(payload) {
     const { operation, path: filePath, content } = payload || {};
     const fullPath = resolveRemoteFilePath(filePath, operation !== 'write');
@@ -1724,6 +1817,10 @@ function handleMessage(message) {
 
         case 'project-file':
             handleProjectFile(message);
+            break;
+
+        case 'list-directory':
+            handleListDirectory(message);
             break;
 
         default:

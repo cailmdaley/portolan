@@ -37,6 +37,12 @@ pub enum AgentFrame {
     ProjectFile { payload: ProjectFileRequestPayload },
     #[serde(rename = "project-file-result")]
     ProjectFileResult { payload: ProjectFileResultPayload },
+    #[serde(rename = "list-directory")]
+    ListDirectory {
+        payload: ListDirectoryRequestPayload,
+    },
+    #[serde(rename = "list-directory-result")]
+    ListDirectoryResult { payload: ListDirectoryResultPayload },
     #[serde(rename = "shuttle_snapshot")]
     ShuttleSnapshot { payload: ShuttleSnapshotPayload },
 }
@@ -62,6 +68,8 @@ impl AgentFrame {
             AgentFrame::FileContentResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ProjectFile { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::ProjectFileResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::ListDirectory { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::ListDirectoryResult { payload } => Some(payload.correlation_id.as_str()),
             _ => None,
         }
     }
@@ -74,6 +82,7 @@ impl AgentFrame {
                 | AgentFrame::FiberHistory { .. }
                 | AgentFrame::FileContent { .. }
                 | AgentFrame::ProjectFile { .. }
+                | AgentFrame::ListDirectory { .. }
         )
     }
 
@@ -85,6 +94,7 @@ impl AgentFrame {
                 | AgentFrame::FiberHistoryResult { .. }
                 | AgentFrame::FileContentResult { .. }
                 | AgentFrame::ProjectFileResult { .. }
+                | AgentFrame::ListDirectoryResult { .. }
         )
     }
 }
@@ -328,6 +338,39 @@ pub struct ProjectFileResultPayload {
     pub content_base64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byte_length: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDirectoryRequestPayload {
+    pub correlation_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDirectoryResultPayload {
+    pub correlation_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub entries: Option<Vec<DirectoryEntryPayload>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryEntryPayload {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: DirectoryEntryType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DirectoryEntryType {
+    File,
+    Dir,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -582,6 +625,47 @@ mod tests {
         .unwrap();
         assert!(result.is_agent_result());
         assert_eq!(result.correlation_id(), Some("corr-project-file"));
+    }
+
+    #[test]
+    fn parses_list_directory_round_trip() {
+        let request = AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "corr-list-dir".to_string(),
+                path: "/home/cdaley/project".to_string(),
+            },
+        };
+        let encoded = request.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"list-directory""#));
+        assert!(encoded.contains(r#""correlationId":"corr-list-dir""#));
+
+        let result = AgentFrame::parse(
+            br##"{
+              "type": "list-directory-result",
+              "payload": {
+                "correlationId": "corr-list-dir",
+                "ok": true,
+                "entries": [
+                  { "name": "reports", "type": "dir" },
+                  { "name": "notes.md", "type": "file" }
+                ]
+              }
+            }"##,
+        )
+        .unwrap();
+        assert!(result.is_agent_result());
+        assert_eq!(result.correlation_id(), Some("corr-list-dir"));
+        match result {
+            AgentFrame::ListDirectoryResult { payload } => {
+                let entries = payload.entries.unwrap();
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].name, "reports");
+                assert!(matches!(entries[0].kind, DirectoryEntryType::Dir));
+                assert_eq!(entries[1].name, "notes.md");
+                assert!(matches!(entries[1].kind, DirectoryEntryType::File));
+            }
+            _ => panic!("unexpected response: {result:?}"),
+        }
     }
 
     #[test]

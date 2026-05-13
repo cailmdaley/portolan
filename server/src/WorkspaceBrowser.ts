@@ -25,6 +25,8 @@ interface DirectoryEntry {
   type: 'file' | 'dir';
 }
 
+type RemoteDirectoryExecutor = (originId: string, path: string) => Promise<DirectoryEntry[]>;
+
 const NON_GIT_SKIP = new Set(['.git', 'node_modules', '__pycache__', '.DS_Store']);
 
 export class WorkspaceBrowser {
@@ -37,6 +39,7 @@ export class WorkspaceBrowser {
     private readonly cityManager: CityManager,
     private readonly originManager: OriginManager,
     private readonly cityPersistence: CityPersistence,
+    private readonly remoteDirectoryExecutor?: RemoteDirectoryExecutor,
   ) {
     void this.checkSearchTools();
   }
@@ -110,10 +113,29 @@ export class WorkspaceBrowser {
         const origin = this.originManager.getOrigin(city.originId);
         const persistedCity = this.cityPersistence.getCityById(city.id);
         const sshHost = origin?.sshHost || persistedCity?.sshHost;
-        if (!sshHost) {
-          throw new Error('No SSH host for remote city');
+        let remoteExecutorUsed = false;
+        let remoteExecutorError: Error | null = null;
+        if (this.remoteDirectoryExecutor && origin) {
+          try {
+            entries = await this.remoteDirectoryExecutor(origin.id, safePath);
+            remoteExecutorUsed = true;
+          } catch (error) {
+            remoteExecutorError = error instanceof Error ? error : new Error(String(error));
+            console.warn(
+              '[WorkspaceBrowser] remote directory listing via agent failed; falling back to SSH',
+              remoteExecutorError.message,
+            );
+          }
         }
-        entries = await this.listRemoteDirectory(sshHost, safePath);
+        if (!remoteExecutorUsed) {
+          if (!sshHost) {
+            if (remoteExecutorError) {
+              throw new Error(`Remote agent listing failed and no SSH host is configured: ${remoteExecutorError.message}`);
+            }
+            throw new Error('No SSH host for remote city');
+          }
+          entries = await this.listRemoteDirectory(sshHost, safePath);
+        }
       }
 
       ws.send(JSON.stringify({ type: 'directoryListing', cityId, path: safePath, entries }));

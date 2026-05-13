@@ -2,10 +2,11 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::DateTime;
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
-    AgentSession, FiberHistoryRequestPayload, FiberHistoryResultPayload, FiberRawOperation,
-    FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta, FiberTreeDeltaOp,
-    FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile, FileContentOperation,
-    FileContentRequestPayload, FileContentResultPayload, ProjectFileRequestPayload,
+    AgentSession, DirectoryEntryPayload, DirectoryEntryType, FiberHistoryRequestPayload,
+    FiberHistoryResultPayload, FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload,
+    FiberTreeDelta, FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
+    FileContentOperation, FileContentRequestPayload, FileContentResultPayload,
+    ListDirectoryRequestPayload, ListDirectoryResultPayload, ProjectFileRequestPayload,
     ProjectFileResultPayload, ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
@@ -485,6 +486,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::FiberHistory { payload } => vec![handle_fiber_history(payload)],
         AgentFrame::FileContent { payload } => vec![handle_file_content(payload)],
         AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
+        AgentFrame::ListDirectory { payload } => vec![handle_list_directory(payload)],
         _ => Vec::new(),
     }
 }
@@ -1956,6 +1958,85 @@ fn read_project_file(payload: &ProjectFileRequestPayload) -> Result<(String, usi
     Ok((BASE64_STANDARD.encode(bytes), byte_length))
 }
 
+fn handle_list_directory(payload: &ListDirectoryRequestPayload) -> AgentFrame {
+    match list_directory(payload) {
+        Ok(entries) => AgentFrame::ListDirectoryResult {
+            payload: ListDirectoryResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                entries: Some(entries),
+            },
+        },
+        Err(error) => AgentFrame::ListDirectoryResult {
+            payload: ListDirectoryResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                entries: None,
+            },
+        },
+    }
+}
+
+fn list_directory(
+    payload: &ListDirectoryRequestPayload,
+) -> Result<Vec<DirectoryEntryPayload>, String> {
+    let full_path = resolve_remote_directory_path(&payload.path)?;
+    let mut entries = read_remote_directory_entries(&full_path)?;
+    entries.sort_by(|left, right| {
+        if left.kind != right.kind {
+            return if matches!(left.kind, DirectoryEntryType::Dir) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
+        }
+        left.name.cmp(&right.name)
+    });
+    Ok(entries)
+}
+
+fn read_remote_directory_entries(path: &Path) -> Result<Vec<DirectoryEntryPayload>, String> {
+    let entries = fs::read_dir(path)
+        .map_err(|error| format!("failed to read directory {}: {error}", path.display()))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .unwrap_or_else(|name| name.to_string_lossy().into_owned());
+            if matches!(
+                file_name.as_str(),
+                ".git" | "node_modules" | "__pycache__" | ".DS_Store"
+            ) {
+                return None;
+            }
+
+            let is_dir = match entry.file_type().ok()? {
+                file_type if file_type.is_dir() => true,
+                file_type if file_type.is_file() => false,
+                file_type if file_type.is_symlink() => match entry.metadata() {
+                    Ok(metadata) => metadata.is_dir(),
+                    Err(_) => false,
+                },
+                _ => false,
+            };
+
+            Some(DirectoryEntryPayload {
+                name: file_name,
+                kind: if is_dir {
+                    DirectoryEntryType::Dir
+                } else {
+                    DirectoryEntryType::File
+                },
+            })
+        })
+        .collect();
+
+    Ok(entries)
+}
+
 fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String> {
     let output = Command::new("felt")
         .args(["-C", felt_host, "show", fiber_id, "-j"])
@@ -2298,6 +2379,26 @@ fn resolve_remote_file_path(path: &str, require_existing: bool) -> Result<PathBu
         if !parent.is_dir() {
             return Err(format!("parent directory missing: {path}"));
         }
+    }
+    Ok(full_path.to_path_buf())
+}
+
+fn resolve_remote_directory_path(path: &str) -> Result<PathBuf, String> {
+    let full_path = Path::new(path);
+    if !full_path.is_absolute() {
+        return Err(format!("path must be absolute: {path}"));
+    }
+    if full_path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!("invalid path: {path}"));
+    }
+    if !full_path.exists() {
+        return Err(format!("directory missing: {path}"));
+    }
+    if !full_path.is_dir() {
+        return Err(format!("path is not a directory: {path}"));
     }
     Ok(full_path.to_path_buf())
 }
@@ -4185,6 +4286,63 @@ malformed
                 assert!(payload.ok);
                 assert_eq!(payload.content_base64.as_deref(), Some("iVBORw=="));
                 assert_eq!(payload.byte_length, Some(4));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lists_directory_entries_with_dir_first_sorting() {
+        let dir = temp_host("list-dir");
+        fs::create_dir_all(dir.join("reports")).unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::write(dir.join("notes.md"), "# notes\n").unwrap();
+        fs::write(dir.join("a.txt"), "x\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "list-dir".to_string(),
+                path: dir.display().to_string(),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].correlation_id(), Some("list-dir"));
+        match &responses[0] {
+            AgentFrame::ListDirectoryResult { payload } => {
+                assert!(payload.ok);
+                assert!(payload.error.is_none());
+                let entries = payload.entries.as_ref().unwrap();
+                assert_eq!(entries.len(), 3);
+                assert_eq!(entries[0].name, "reports");
+                assert!(matches!(entries[0].kind, DirectoryEntryType::Dir));
+                assert_eq!(entries[1].name, "a.txt");
+                assert!(matches!(entries[1].kind, DirectoryEntryType::File));
+                assert_eq!(entries[2].name, "notes.md");
+                assert!(matches!(entries[2].kind, DirectoryEntryType::File));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_list_directory_paths() {
+        let responses = handle_server_frame(&AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "list-dir-bad".to_string(),
+                path: "../escape".to_string(),
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::ListDirectoryResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("path must be absolute"));
             }
             other => panic!("unexpected response: {other:?}"),
         }

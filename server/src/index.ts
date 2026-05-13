@@ -270,7 +270,18 @@ const kitty = new KittyIntegration(sessionLookup, originManager, cityLookup);
 // interface through the portolan-agent tailer. See
 // constitution-terminals-in-map.
 const terminalStreamManager = new TerminalStreamManager();
-const workspaceBrowser = new WorkspaceBrowser(cityManager, originManager, cityPersistence);
+const remoteDirectoryExecutor = async (originId: string, path: string) => {
+  const result = await agentRequestCoordinator.send<{
+    entries?: Array<{ name: string; type: 'file' | 'dir' }>;
+  }>(originId, 'list-directory', { path }, 10_000);
+  return result.entries ?? [];
+};
+const workspaceBrowser = new WorkspaceBrowser(
+  cityManager,
+  originManager,
+  cityPersistence,
+  remoteDirectoryExecutor,
+);
 const browserStateCoordinator = new BrowserStateCoordinator({
   cityManager,
   cityPersistence,
@@ -576,6 +587,16 @@ wss.on('connection', async (ws, req) => {
           const result: Record<string, unknown> = {};
           if (contentBase64 !== undefined) result.contentBase64 = contentBase64;
           if (byteLength !== undefined) result.byteLength = byteLength;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'list-directory-result') {
+          const { correlationId, ok, error, entries } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            entries?: Array<{ name: string; type: 'file' | 'dir' }>;
+          };
+          const result: Record<string, unknown> = {};
+          if (entries !== undefined) result.entries = entries;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {
