@@ -2174,20 +2174,38 @@
       //      parallel with main.ts instead of waiting for main.ts
       //      to hit line 20.
       //
-      // Mirrors the eager-open URL parse at the bottom of main.ts.
+      // Any URL with `mode=kanban|find|narrative` is going to open a
+      // vellum modal; city-scoped URLs (`#city=X&mode=kanban`) are the
+      // typical case — bare global-mode URLs are the exception. The
+      // canvas-hide / prefetch / modulepreload all apply regardless of
+      // whether a city/fiber is also pinned. The class is cleared in
+      // main.ts via vellumMountPromise.then() after the modal mounts.
       (function () {
         var hash = window.location.hash.replace(/^#/, '')
         if (!hash) return
         var params = new URLSearchParams(hash)
         var mode = params.get('mode')
         if (mode !== 'kanban' && mode !== 'find' && mode !== 'narrative') return
-        if (params.get('city') || params.get('fiber') || params.get('file')) return
+
         document.documentElement.classList.add('boot-vellum-eager')
 
         var apiBase = 'http://' + window.location.hostname + ':4004'
+        var cityId = params.get('city')
+        var fiber = params.get('fiber')
+        var file = params.get('file')
         var prefetchUrl = null
-        if (mode === 'kanban') prefetchUrl = apiBase + '/kanban'
-        else if (mode === 'narrative') prefetchUrl = apiBase + '/global-graph'
+        if (mode === 'kanban') {
+          prefetchUrl = apiBase + '/kanban'
+          if (cityId) prefetchUrl += '?cityId=' + encodeURIComponent(cityId)
+        } else if (mode === 'narrative') {
+          if (cityId) {
+            prefetchUrl = apiBase + '/fiber-graph?cityId=' + encodeURIComponent(cityId)
+          } else if (!fiber && !file) {
+            prefetchUrl = apiBase + '/global-graph'
+          }
+          // narrative + fiber (no city) needs a /fiber-locate hop first
+          // before the graph URL is known — skip prefetch for now.
+        }
         // Find has no global aggregate fetch — search fires on keystroke.
         if (prefetchUrl) {
           window.__bootPrefetch__ = { url: prefetchUrl, promise: fetch(prefetchUrl) }

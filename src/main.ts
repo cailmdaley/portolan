@@ -1932,16 +1932,20 @@ if (bootEagerCanOpen && bootEagerOpenUrl.mode === 'kanban') {
   bootEagerOpenMode = 'narrative'
 }
 
-// Divergence safety: the HTML inline script in index.html added
-// `boot-vellum-eager` (hiding the canvas) based on its own parse of
-// `window.location`. If our parse here disagreed (e.g., query-param
-// fallback resolving a cityId the HTML script didn't see), we won't
-// eager-open and the modal won't mount — so the class would stick and
-// the canvas would stay hidden forever. Clear it now in that case so
-// the map appears.
-if (bootEagerOpenMode == null) {
-  document.documentElement.classList.remove('boot-vellum-eager')
-}
+// Boot canvas-hide cleanup. The inline script in index.html added
+// `boot-vellum-eager` if the URL is going to open a vellum modal
+// (any `mode=kanban|find|narrative`). Drop the class after the vellum
+// bundle is loaded and one frame has passed — by then either:
+//   - a modal mount fired (eager open or via applyUrlState) and its
+//     scrim z-index already covers the canvas, so revealing the
+//     canvas is a no-op visually, or
+//   - no modal mounted (URL parse divergence, error) and the user
+//     gets the map back instead of a forever-hidden canvas.
+void vellumMountPromise.then(() => {
+  requestAnimationFrame(() => {
+    document.documentElement.classList.remove('boot-vellum-eager')
+  })
+})
 
 stateSync.connect()
 appRuntime.start()
