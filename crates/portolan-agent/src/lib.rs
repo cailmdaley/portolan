@@ -2507,12 +2507,14 @@ fn collect_fiber_tree_delta_frame_with_snapshot(
 ) -> Option<AgentFrame> {
     let normalized_host = normalize_felt_host(felt_host);
     let felt_dir = Path::new(&normalized_host).join(".felt");
+    let path_prefix = canonical_felt_path_prefix(&felt_dir);
     let mut deltas = Vec::new();
 
     for (path, op) in pending {
+        let wire_path = prefixed_felt_path(path_prefix.as_deref(), path);
         match op {
             FiberTreeFileOp::Delete => deltas.push(FiberTreeDelta {
-                path: path.clone(),
+                path: wire_path,
                 op: FiberTreeDeltaOp::Delete,
                 fiber: None,
                 content: None,
@@ -2521,7 +2523,7 @@ fn collect_fiber_tree_delta_frame_with_snapshot(
                 let full_path = felt_dir.join(path);
                 if !full_path.exists() {
                     deltas.push(FiberTreeDelta {
-                        path: path.clone(),
+                        path: wire_path,
                         op: FiberTreeDeltaOp::Delete,
                         fiber: None,
                         content: None,
@@ -2533,7 +2535,7 @@ fn collect_fiber_tree_delta_frame_with_snapshot(
                 };
                 if let Ok(fiber) = read_snapshot(&normalized_host, &fiber_id) {
                     deltas.push(FiberTreeDelta {
-                        path: path.clone(),
+                        path: wire_path,
                         op: FiberTreeDeltaOp::Upsert,
                         fiber: Some(fiber),
                         content: None,
@@ -2568,6 +2570,7 @@ fn collect_fiber_tree_files_with_index(
         return Err(format!("{} does not exist", felt_dir.display()));
     }
     let indexed = read_index(felt_host);
+    let path_prefix = canonical_felt_path_prefix(&felt_dir);
 
     let mut paths = Vec::new();
     collect_fiber_paths(&felt_dir, &felt_dir, &mut paths);
@@ -2580,7 +2583,7 @@ fn collect_fiber_tree_files_with_index(
         };
         if let Some(fiber) = indexed.get(&fiber_id) {
             files.push(FiberTreeFile {
-                path,
+                path: prefixed_felt_path(path_prefix.as_deref(), &path),
                 fiber: Some(fiber.clone()),
                 content: None,
             });
@@ -2590,12 +2593,38 @@ fn collect_fiber_tree_files_with_index(
         let body = fs::read_to_string(felt_dir.join(&path))
             .map_err(|error| format!("failed to read {path}: {error}"))?;
         files.push(FiberTreeFile {
-            path,
+            path: prefixed_felt_path(path_prefix.as_deref(), &path),
             fiber: None,
             content: Some(body),
         });
     }
     Ok(files)
+}
+
+fn canonical_felt_path_prefix(felt_dir: &Path) -> Option<String> {
+    let real = fs::canonicalize(felt_dir).ok()?;
+    let components = real
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let felt_idx = components.iter().rposition(|part| part == ".felt")?;
+    let prefix = components[felt_idx + 1..]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.join("/"))
+    }
+}
+
+fn prefixed_felt_path(prefix: Option<&str>, path: &str) -> String {
+    match prefix.filter(|value| !value.is_empty()) {
+        Some(prefix) => format!("{prefix}/{}", path.trim_start_matches('/')),
+        None => path.to_string(),
+    }
 }
 
 fn read_felt_index_json(felt_host: &Path) -> BTreeMap<String, Value> {
@@ -3961,6 +3990,46 @@ malformed
             .as_deref()
             .unwrap()
             .contains("Portolan markdown fallback"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fiber_tree_dump_prefixes_symlinked_project_felt_with_outer_namespace() {
+        let root = temp_host("fiber-tree-symlink");
+        let loom = root.join("loom");
+        let project = root.join("project");
+        let scoped_felt = loom.join(".felt/science/pure_eb");
+        fs::create_dir_all(scoped_felt.join("aa-submission/fabbro-referee-comments")).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            scoped_felt.join("aa-submission/fabbro-referee-comments/fabbro-referee-comments.md"),
+            "---\nname: Fabbro referee comments\nstatus: active\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&scoped_felt, project.join(".felt")).unwrap();
+
+        let mut indexed = BTreeMap::new();
+        indexed.insert(
+            "aa-submission/fabbro-referee-comments".to_string(),
+            json!({
+                "id": "aa-submission/fabbro-referee-comments",
+                "name": "Fabbro referee comments",
+                "status": "active",
+            }),
+        );
+
+        let files = collect_fiber_tree_files_with_index(&project, |_| indexed.clone()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].path,
+            "science/pure_eb/aa-submission/fabbro-referee-comments/fabbro-referee-comments.md"
+        );
+        assert_eq!(
+            files[0].fiber.as_ref().unwrap()["id"],
+            json!("aa-submission/fabbro-referee-comments")
+        );
     }
 
     #[test]

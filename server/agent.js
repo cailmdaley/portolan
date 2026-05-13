@@ -594,6 +594,23 @@ function collectFeltFiberPaths(dir) {
     return out;
 }
 
+export function canonicalFeltPathPrefix(feltDir) {
+    let real;
+    try {
+        real = realpathSync(feltDir);
+    } catch {
+        return null;
+    }
+    const parts = real.split(sep).filter(Boolean);
+    const feltIdx = parts.lastIndexOf('.felt');
+    if (feltIdx < 0 || feltIdx === parts.length - 1) return null;
+    return parts.slice(feltIdx + 1).join('/');
+}
+
+export function prefixedFeltPath(prefix, path) {
+    return prefix ? `${prefix}/${path.replace(/^\/+/, '')}` : path;
+}
+
 async function readFeltFiberJson(fiberId, feltHost = FELT_HOST) {
     try {
         const { stdout } = await execFileAsync(
@@ -611,6 +628,7 @@ async function readFeltFiberJson(fiberId, feltHost = FELT_HOST) {
 async function collectFiberTreeFiles(feltHost = FELT_HOST) {
     const feltDir = join(feltHost, '.felt');
     const paths = collectFeltFiberPaths(feltDir);
+    const pathPrefix = canonicalFeltPathPrefix(feltDir);
     const indexed = new Map();
 
     try {
@@ -637,7 +655,7 @@ async function collectFiberTreeFiles(feltHost = FELT_HOST) {
         if (!id) continue;
         const fiber = indexed.get(id) ?? await readFeltFiberJson(id, feltHost);
         if (!fiber) continue;
-        files.push({ path, fiber });
+        files.push({ path: prefixedFeltPath(pathPrefix, path), fiber });
     }
     return files;
 }
@@ -796,24 +814,26 @@ async function flushFiberTreeDeltas(feltHost = FELT_HOST) {
     if (!pending || pending.size === 0) return;
     const feltDir = join(normalizedHost, '.felt');
     const deltas = [];
+    const pathPrefix = canonicalFeltPathPrefix(feltDir);
     for (const [path, op] of pending) {
+        const wirePath = prefixedFeltPath(pathPrefix, path);
         const fullPath = join(feltDir, path);
         if (op === 'upsert') {
             if (!existsSync(fullPath)) {
-                deltas.push({ path, op: 'delete' });
+                deltas.push({ path: wirePath, op: 'delete' });
                 continue;
             }
             const id = shuttleIdFromPath(path);
             const fiber = id ? await readFeltFiberJson(id, normalizedHost) : null;
             if (fiber) {
-                deltas.push({ path, op: 'upsert', fiber });
+                deltas.push({ path: wirePath, op: 'upsert', fiber });
             } else {
                 // If felt can't read the file yet, let the next reconnect dump
                 // recover it rather than shipping a half-parsed fallback.
                 debug(`Skipping fiber_tree_delta upsert for ${path}: felt show failed`);
             }
         } else {
-            deltas.push({ path, op: 'delete' });
+            deltas.push({ path: wirePath, op: 'delete' });
         }
     }
     fiberTreePending.delete(normalizedHost);

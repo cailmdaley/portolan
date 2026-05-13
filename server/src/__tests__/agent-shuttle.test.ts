@@ -22,6 +22,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import { homedir, tmpdir } from 'os';
@@ -285,6 +286,23 @@ describe('agent: remote file request helpers', () => {
       contentBase64: 'iVBORw==',
       byteLength: 4,
     });
+  });
+
+  it('derives an outer namespace prefix for symlinked project .felt dirs', () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'portolan-agent-felt-symlink-'));
+    const scopedFelt = join(rootDir, 'loom', '.felt', 'science', 'pure_eb');
+    const project = join(rootDir, 'project');
+    mkdirSync(scopedFelt, { recursive: true });
+    mkdirSync(project, { recursive: true });
+    symlinkSync(scopedFelt, join(project, '.felt'));
+    try {
+      expect(agentMod.canonicalFeltPathPrefix(join(project, '.felt'))).toBe('science/pure_eb');
+      expect(agentMod.prefixedFeltPath('science/pure_eb', 'aa/aa.md')).toBe(
+        'science/pure_eb/aa/aa.md',
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
   });
 
   it('expands ~/ paths for remote project-file reads', () => {
