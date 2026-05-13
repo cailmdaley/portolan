@@ -14,9 +14,40 @@
  * server's `computeEligibility`.
  */
 
-import { describe, it, expect } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+
+const mockExecFileCalls: Array<{
+  command: string;
+  args: string[];
+  options: Record<string, unknown> | undefined;
+}> = [];
+
+const mockExecFile = vi.fn(
+  (
+    command: string,
+    args: string[] = [],
+    optionsOrCallback: Record<string, unknown> | ((err: Error | null, result?: unknown) => void) | undefined,
+    callbackMaybe: ((err: Error | null, result?: unknown) => void) | undefined,
+  ) => {
+    const hasOptionsObject = typeof optionsOrCallback === 'object' && optionsOrCallback !== null;
+    const options = hasOptionsObject ? optionsOrCallback : undefined;
+    const callback = hasOptionsObject ? callbackMaybe : optionsOrCallback as
+      | ((err: Error | null, result?: unknown) => void)
+      | undefined;
+    mockExecFileCalls.push({ command, args, options });
+    if (typeof callback === 'function') {
+      callback(null, { stdout: '', stderr: '' });
+    }
+    return {} as Record<string, unknown>;
+  },
+);
+
+vi.mock('child_process', () => ({
+  execFile: mockExecFile,
+  exec: vi.fn(),
+}));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -29,7 +60,50 @@ beforeAll(async () => {
   agentMod = await import(AGENT_PATH);
 });
 
-import { beforeAll } from 'vitest';
+beforeEach(() => {
+  mockExecFile.mockClear();
+  mockExecFileCalls.length = 0;
+});
+
+describe('agent: runKanbanMutation shuttle verbs', () => {
+  it('passes explicit felt-host mutation shape for shuttle verbs', async () => {
+    await agentMod.runKanbanMutation(
+      { kind: 'shuttle', verb: 'pause', fiberId: 'shuttle/fiber' },
+      '/tmp/felt/.felt/shuttle/fiber.md',
+      '/remote/felt/host',
+    );
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(mockExecFileCalls[0]).toEqual({
+      command: 'shuttle-ctl',
+      args: ['--felt-store', '/remote/felt/host', 'pause', 'shuttle/fiber'],
+      options: expect.objectContaining({
+        cwd: '/remote/felt/host',
+        env: expect.objectContaining({
+          LOOM_HOME: '/remote/felt/host',
+          HOME: expect.any(String),
+        }),
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      }),
+    });
+  });
+
+  it('preserves per-verb shuttle args while still threading felt-store', async () => {
+    await agentMod.runKanbanMutation(
+      { kind: 'shuttle', verb: 'set-outcome', fiberId: 'shuttle/fiber', outcome: 'done' },
+      '/tmp/felt/.felt/shuttle/fiber.md',
+      '/remote/felt/host',
+    );
+    expect(mockExecFileCalls[0].args).toEqual([
+      '--felt-store',
+      '/remote/felt/host',
+      'set-outcome',
+      'shuttle/fiber',
+      '--outcome',
+      'done',
+    ]);
+  });
+});
 
 describe('agent: shuttleFiberFromFeltJson', () => {
   it('projects a fully-populated felt fiber JSON onto the eligibility shape', () => {

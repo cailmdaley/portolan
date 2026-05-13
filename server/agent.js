@@ -926,7 +926,7 @@ function rewriteHorizonFrontmatter(raw, horizon, cold, due) {
     return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
 }
 
-async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
+export async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
     const env = {
         ...process.env,
         LOOM_HOME: feltHost,
@@ -937,7 +937,7 @@ async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
         if (typeof payload.fiberId !== 'string' || payload.fiberId.length === 0) {
             throw new Error('missing shuttle fiberId');
         }
-        const args = [payload.verb, payload.fiberId];
+        const args = ['--felt-store', feltHost, payload.verb, payload.fiberId];
         switch (payload.verb) {
             case 'pause':
             case 'reopen':
