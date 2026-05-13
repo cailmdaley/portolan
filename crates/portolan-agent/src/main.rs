@@ -407,6 +407,31 @@ async fn stream_tmux_control(
         );
         return;
     };
+    if let Some(stderr) = child.stderr.take() {
+        let stderr_tx = terminal_tx.clone();
+        let stderr_subscription_id = subscription_id.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        if !line.is_empty() {
+                            send_terminal_exit(&stderr_tx, &stderr_subscription_id, Some(line));
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        send_terminal_exit(
+                            &stderr_tx,
+                            &stderr_subscription_id,
+                            Some(format!("tmux stderr read failed: {error}")),
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
     let mut lines = BufReader::new(stdout).lines();
     loop {
         match lines.next_line().await {
