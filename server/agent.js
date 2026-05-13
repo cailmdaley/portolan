@@ -864,15 +864,19 @@ function diffTags(current, next) {
 
 const KANBAN_HORIZONS = new Set(['now', 'soon', 'stashed']);
 
-/** Rewrite top-level `horizon:` (and optionally `cold:`) in a fiber's
- *  YAML frontmatter. Mirrors HttpApiKanban.rewriteHorizonFrontmatter
+/** Rewrite top-level `horizon:`, `cold:`, and `due:` in a fiber's YAML
+ *  frontmatter. Mirrors HttpApiKanban.rewriteHorizonFrontmatter
  *  semantics so remote and local writes converge on identical bytes:
  *   horizon=null         → clear horizon and cold
  *   horizon='now'|'soon' → write horizon; clear cold
  *   horizon='stashed'    → write horizon; cold=undefined leaves it
  *                          alone, cold=true writes it, cold=false clears.
+ *
+ *   due=undefined        → leave due alone
+ *   due=null             → clear due
+ *   due='2026-…'         → write due
  */
-function rewriteHorizonFrontmatter(raw, horizon, cold) {
+function rewriteHorizonFrontmatter(raw, horizon, cold, due) {
     const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
     if (!match) throw new Error('fiber file has no YAML frontmatter');
 
@@ -916,6 +920,8 @@ function rewriteHorizonFrontmatter(raw, horizon, cold) {
     else if (cold === true) nextColdLine = 'cold: true';
     else nextColdLine = null;
     if (touchCold) editKey('cold', nextColdLine);
+
+    if (due !== undefined) editKey('due', due === null ? null : `due: ${due}`);
 
     return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
 }
@@ -993,8 +999,11 @@ async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
         }
         const horizon = payload.horizon === null ? null : String(payload.horizon);
         const cold = typeof payload.cold === 'boolean' ? payload.cold : undefined;
+        const due = 'due' in payload
+            ? (payload.due === null ? null : String(payload.due))
+            : undefined;
         const raw = readFileSync(fullPath, 'utf-8');
-        writeFileSync(fullPath, rewriteHorizonFrontmatter(raw, horizon, cold), 'utf-8');
+        writeFileSync(fullPath, rewriteHorizonFrontmatter(raw, horizon, cold, due), 'utf-8');
         return;
     }
 

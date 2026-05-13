@@ -527,6 +527,10 @@ export type RemoteKanbanMutationInvocation =
        *  Omit (or pass undefined) to leave the existing `cold:` line
        *  alone; explicit `false` clears it; `true` writes/updates it. */
       cold?: boolean;
+      /** Optional `due:` ISO timestamp. Omit to leave alone; `null` to
+       *  clear; a string to write. Lets timeline-date drags carry the
+       *  due date through the same atomic write as the surface change. */
+      due?: string | null;
     };
 
 export type RemoteKanbanMutationRequest =
@@ -824,11 +828,18 @@ export interface KanbanTransitionRequest {
  * `cold` is optional, only meaningful with horizon=stashed; the server
  * writes it when present and clears it when omitted (so dragging a
  * stash→now removes the `cold` line as well).
+ *
+ * `due` is optional. When present (string or null), it co-writes the
+ * top-level `due:` key alongside the surface change — so dragging a
+ * card onto a timeline date column writes both `horizon: soon` and
+ * `due: <iso>` atomically. Omit `due` to leave the existing `due:`
+ * line alone; `due: null` clears it; a string sets it.
  */
 export interface KanbanHorizonRequest {
   fiberId: string;
   horizon: KanbanHorizon | null;
   cold?: boolean;
+  due?: string | null;
   card?: KanbanCard;
 }
 
@@ -1844,12 +1855,17 @@ export class HttpApiKanban {
       this.json(res, 400, { error: 'cold must be a boolean when present' });
       return;
     }
+    if (body.due !== undefined && body.due !== null && typeof body.due !== 'string') {
+      this.json(res, 400, { error: 'due must be a string or null when present' });
+      return;
+    }
 
     try {
       const updated = await this.applyHorizon(
         body.fiberId,
         body.horizon,
         body.cold,
+        body.due,
         body.card,
       );
       this.json(res, 200, { ok: true, card: updated });
@@ -1864,6 +1880,7 @@ export class HttpApiKanban {
     fiberId: string,
     horizon: KanbanHorizon | null,
     cold?: boolean,
+    due?: string | null,
     card?: KanbanCard,
   ): Promise<KanbanCard> {
     const cardEntry = entryFromLocalCard(card);
@@ -1893,6 +1910,7 @@ export class HttpApiKanban {
         kind: 'felt-horizon',
         horizon,
         cold,
+        due,
       });
       this.clearFiberPoolCache();
       const refreshedById = new Map<string, Fiber>();
@@ -1910,7 +1928,7 @@ export class HttpApiKanban {
     const path = this.fiberPath(host, fiber);
     if (!existsSync(path)) throw new Error(`fiber file missing: ${path}`);
     const raw = await readFile(path, 'utf-8');
-    await writeFile(path, rewriteHorizonFrontmatter(raw, horizon, cold), 'utf-8');
+    await writeFile(path, rewriteHorizonFrontmatter(raw, horizon, cold, due), 'utf-8');
     this.clearFiberPoolCache();
 
     const refreshed = await getFiber(host, fiberId);
@@ -2839,8 +2857,8 @@ function diffTags(current: string[], next: string[]): { add: string[]; remove: s
 }
 
 /**
- * Rewrite the top-level `horizon:` (and optionally `cold:`) keys in
- * a fiber file's YAML frontmatter. Preserves unrelated lines byte-for-
+ * Rewrite the top-level `horizon:`, `cold:`, and `due:` keys in a
+ * fiber file's YAML frontmatter. Preserves unrelated lines byte-for-
  * byte (we only edit the matched ranges).
  *
  * Semantics:
@@ -2851,11 +2869,16 @@ function diffTags(current: string[], next: string[]): { add: string[]; remove: s
  *     cold === undefined    → leave existing `cold:` line alone.
  *     cold === true         → write `cold: true`.
  *     cold === false        → remove `cold:` (default warm).
+ *
+ *   due === undefined       → leave existing `due:` line alone.
+ *   due === null            → remove `due:`.
+ *   due === '2026-…'        → write `due: <value>`.
  */
 function rewriteHorizonFrontmatter(
   raw: string,
   horizon: KanbanHorizon | null,
   cold?: boolean,
+  due?: string | null,
 ): string {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
   if (!match) throw new Error('fiber file has no YAML frontmatter');
@@ -2891,6 +2914,11 @@ function rewriteHorizonFrontmatter(
     nextColdLine = null; // explicit false → remove
   }
   if (touchCold) rewriteOrRemoveKey(lines, 'cold', nextColdLine);
+
+  // `due` rewrite: omit → no touch; null → clear; string → write.
+  if (due !== undefined) {
+    rewriteOrRemoveKey(lines, 'due', due === null ? null : `due: ${due}`);
+  }
 
   return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
 }

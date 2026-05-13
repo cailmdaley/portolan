@@ -111,21 +111,27 @@ function jsonResponse(body: unknown, status = 200): Response {
 function emptyKanbanResponse() {
   return {
     feltHost: '/tmp/felt',
-    columns: {
-      ideas: [] as ReturnType<typeof makeKanbanCard>[],
+    now: {
       drafts: [] as ReturnType<typeof makeKanbanCard>[],
       inFlight: [] as ReturnType<typeof makeKanbanCard>[],
       awaitingReview: [] as ReturnType<typeof makeKanbanCard>[],
-      tempered: [] as ReturnType<typeof makeKanbanCard>[],
-      composted: [] as ReturnType<typeof makeKanbanCard>[],
     },
+    timeline: {
+      past: [] as ReturnType<typeof makeKanbanCard>[],
+      futureDated: [] as ReturnType<typeof makeKanbanCard>[],
+      anytimeSoon: [] as ReturnType<typeof makeKanbanCard>[],
+    },
+    stash: [] as ReturnType<typeof makeKanbanCard>[],
+    ideas: [] as ReturnType<typeof makeKanbanCard>[],
     totals: {
       ideas: 0,
       drafts: 0,
       inFlight: 0,
       awaitingReview: 0,
-      tempered: 0,
-      composted: 0,
+      past: 0,
+      futureDated: 0,
+      anytimeSoon: 0,
+      stash: 0,
     },
     temperedTotal: 0,
     staleness: { local: { status: 'fresh' } },
@@ -277,8 +283,8 @@ describe('KanbanModal chrome', () => {
 
 // ── Horizon rows ────────────────────────────────────────────────────────────
 
-describe('KanbanModal horizon rows', () => {
-  it('renders four horizon rows with Now expanded and future horizons collapsed by default', async () => {
+describe('KanbanModal three-surface layout', () => {
+  it('renders Now, Timeline, and Stash sections top-to-bottom', async () => {
     vi.stubGlobal('fetch', mockFetch({
       '/kanban': () => jsonResponse(emptyKanbanResponse()),
     }))
@@ -292,58 +298,32 @@ describe('KanbanModal horizon rows', () => {
     modal.mount(host)
     await tick()
 
-    expect(host.querySelectorAll('.kbn-horizon-row')).toHaveLength(4)
-    expect(host.querySelector('.kbn-horizon-row-now')?.classList.contains('kbn-horizon-row-collapsed')).toBe(false)
-    expect(host.querySelector('.kbn-horizon-row-soon')?.classList.contains('kbn-horizon-row-collapsed')).toBe(true)
-    expect(host.querySelector('.kbn-horizon-row-later')?.classList.contains('kbn-horizon-row-collapsed')).toBe(true)
-    expect(host.querySelector('.kbn-horizon-row-someday')?.classList.contains('kbn-horizon-row-collapsed')).toBe(true)
-    expect(host.querySelector('.kbn-horizon-row-now .kbn-horizon-head')?.getAttribute('aria-expanded')).toBe('true')
-    expect(host.querySelector('.kbn-horizon-row-later .kbn-horizon-head')?.getAttribute('aria-expanded')).toBe('false')
+    const sections = host.querySelectorAll('.kbn-section')
+    expect(sections).toHaveLength(3)
+    expect(sections[0].classList.contains('kbn-section-now')).toBe(true)
+    expect(sections[1].classList.contains('kbn-section-timeline')).toBe(true)
+    expect(sections[2].classList.contains('kbn-section-stash')).toBe(true)
+
+    // Now-board has exactly the three lifecycle columns.
+    const nowCols = host.querySelectorAll('.kbn-section-now .kbn-col')
+    expect(nowCols).toHaveLength(3)
+    expect(nowCols[0].getAttribute('data-column')).toBe('drafts')
+    expect(nowCols[1].getAttribute('data-column')).toBe('inFlight')
+    expect(nowCols[2].getAttribute('data-column')).toBe('awaitingReview')
 
     modal.unmount()
     host.remove()
   })
 
-  it('persists horizon fold state in localStorage', async () => {
-    vi.stubGlobal('fetch', mockFetch({
-      '/kanban': () => jsonResponse(emptyKanbanResponse()),
-    }))
-    const host = document.createElement('div')
-    document.body.append(host)
-    const modal = new KanbanModal({
-      apiBase: 'http://localhost:4004',
-      onOpenFiber: vi.fn(),
-    })
-
-    modal.mount(host)
-    await tick()
-    host.querySelector<HTMLButtonElement>('.kbn-horizon-row-later .kbn-horizon-head')?.click()
-
-    expect(host.querySelector('.kbn-horizon-row-later')?.classList.contains('kbn-horizon-row-collapsed')).toBe(false)
-
-    modal.unmount()
-    const modal2 = new KanbanModal({
-      apiBase: 'http://localhost:4004',
-      onOpenFiber: vi.fn(),
-    })
-    modal2.mount(host)
-    await tick()
-
-    expect(host.querySelector('.kbn-horizon-row-later')?.classList.contains('kbn-horizon-row-collapsed')).toBe(false)
-
-    modal2.unmount()
-    host.remove()
-  })
-
-  it('groups cards by effective horizon inside lifecycle cells', async () => {
+  it('renders Now cards in their server-assigned columns', async () => {
     const response = emptyKanbanResponse()
-    response.columns.drafts = [makeKanbanCard({ id: 'test/now-draft', name: 'Now draft' })]
-    response.columns.inFlight = [
+    response.now.drafts = [makeKanbanCard({ id: 'test/now-draft', name: 'Now draft' })]
+    response.now.inFlight = [
       makeKanbanCard({
-        id: 'test/later-active',
-        name: 'Later active',
-        storedHorizon: 'later',
-        effectiveHorizon: 'later',
+        id: 'test/now-active',
+        name: 'Now active',
+        storedHorizon: 'now',
+        effectiveHorizon: 'now',
       }),
     ]
     response.totals = { ...response.totals, drafts: 1, inFlight: 1 }
@@ -359,25 +339,98 @@ describe('KanbanModal horizon rows', () => {
 
     modal.mount(host)
     await tick()
-    host.querySelector<HTMLButtonElement>('.kbn-horizon-row-later .kbn-horizon-head')?.click()
 
-    expect(host.querySelector('.kbn-horizon-row-now .kbn-col-drafts')?.textContent).toContain('Now draft')
-    expect(host.querySelector('.kbn-horizon-row-later .kbn-col-inFlight')?.textContent).toContain('Later active')
-    expect(host.querySelector('.kbn-horizon-row-now .kbn-col-inFlight')?.textContent).not.toContain('Later active')
+    expect(host.querySelector('.kbn-section-now .kbn-col-drafts')?.textContent).toContain('Now draft')
+    expect(host.querySelector('.kbn-section-now .kbn-col-inFlight')?.textContent).toContain('Now active')
 
     modal.unmount()
     host.remove()
   })
 
-  it('dragging a card to another horizon row posts /kanban/horizon', async () => {
+  it('renders timeline.past cards with composted variant when tempered=false', async () => {
+    const today = new Date().toISOString()
+    const response = emptyKanbanResponse()
+    response.timeline.past = [
+      makeKanbanCard({
+        id: 'test/landed',
+        name: 'Landed yesterday',
+        closedAt: today,
+        tempered: true,
+      }),
+      makeKanbanCard({
+        id: 'test/composted',
+        name: 'Composted',
+        closedAt: today,
+        tempered: false,
+      }),
+    ]
+    response.totals = { ...response.totals, past: 2 }
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(response),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    const past = host.querySelector('[data-fiber-id="test/landed"]') as HTMLElement | null
+    const composted = host.querySelector('[data-fiber-id="test/composted"]') as HTMLElement | null
+    expect(past?.classList.contains('kbn-tl-card-past')).toBe(true)
+    expect(composted?.classList.contains('kbn-tl-card-composted')).toBe(true)
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('clusters stash cards by containment-path; held-open below warm', async () => {
+    const response = emptyKanbanResponse()
+    response.stash = [
+      makeKanbanCard({ id: 'ai-futures/portolan/warm-one', name: 'Warm in portolan' }),
+      makeKanbanCard({ id: 'ai-futures/portolan/warm-two', name: 'Also portolan' }),
+      makeKanbanCard({ id: 'ai-futures/vellum-reader/held', name: 'Held open in vellum', cold: true }),
+    ]
+    response.totals = { ...response.totals, stash: 3 }
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(response),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    const clusters = host.querySelectorAll('.kbn-cluster')
+    expect(clusters.length).toBeGreaterThanOrEqual(2)
+    // First cluster is the warm `portolan` (containment skips ai-futures).
+    expect(clusters[0].getAttribute('data-cluster-key')).toBe('portolan')
+    expect(clusters[0].classList.contains('kbn-cluster-cold')).toBe(false)
+    // Held-open cluster appears after a divider, key `vellum-reader`, cold.
+    const cold = host.querySelector('.kbn-cluster.kbn-cluster-cold')
+    expect(cold?.getAttribute('data-cluster-key')).toBe('vellum-reader')
+    expect(cold?.textContent).toContain('held open')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('dragging a Now card into the stash posts /kanban/horizon with horizon=stashed', async () => {
     const response = emptyKanbanResponse()
     const card = makeKanbanCard({
-      id: 'test/horizon-card',
-      name: 'Horizon Card',
+      id: 'test/drag-to-stash',
+      name: 'Drag to stash',
       shuttleKind: 'oneshot',
       shuttleAgent: 'pi-sonnet',
     })
-    response.columns.inFlight = [card]
+    response.now.inFlight = [card]
     response.totals = { ...response.totals, inFlight: 1 }
     const horizonBodies: unknown[] = []
     vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
@@ -386,7 +439,7 @@ describe('KanbanModal horizon rows', () => {
         horizonBodies.push(JSON.parse(String(init?.body ?? '{}')))
         return Promise.resolve(jsonResponse({
           ok: true,
-          card: { ...card, storedHorizon: 'later', effectiveHorizon: 'later' },
+          card: { ...card, storedHorizon: 'stashed', effectiveHorizon: 'stashed' },
         }))
       }
       if (urlStr.includes('/kanban')) return Promise.resolve(jsonResponse(response))
@@ -401,29 +454,80 @@ describe('KanbanModal horizon rows', () => {
 
     modal.mount(host)
     await tick()
-    host.querySelector<HTMLButtonElement>('.kbn-horizon-row-later .kbn-horizon-head')?.click()
 
-    const cardEl = host.querySelector<HTMLElement>('[data-fiber-id="test/horizon-card"]')
-    const laterBody = host.querySelector<HTMLElement>('.kbn-horizon-row-later .kbn-horizon-body')
-    if (!cardEl || !laterBody) throw new Error('drag fixtures not found')
+    const cardEl = host.querySelector<HTMLElement>('[data-fiber-id="test/drag-to-stash"]')
+    const stashSection = host.querySelector<HTMLElement>('.kbn-section-stash')
+    if (!cardEl || !stashSection) throw new Error('drag fixtures not found')
     const dt = mockDataTransfer()
     dispatchDrag(cardEl, 'dragstart', dt)
-    dispatchDrag(laterBody, 'drop', dt)
+    dispatchDrag(stashSection, 'drop', dt)
     await tick()
     await tick()
 
     expect(horizonBodies).toHaveLength(1)
     expect(horizonBodies[0]).toMatchObject({
-      fiberId: 'test/horizon-card',
-      horizon: 'later',
+      fiberId: 'test/drag-to-stash',
+      horizon: 'stashed',
     })
-    expect((horizonBodies[0] as { card?: { name?: string } }).card?.name).toBe('Horizon Card')
 
     modal.unmount()
     host.remove()
   })
 
-  it('dropping on a lifecycle cell header still posts /kanban/transition', async () => {
+  it('dragging a Now card onto a future timeline date column posts horizon=soon + due', async () => {
+    const response = emptyKanbanResponse()
+    const card = makeKanbanCard({
+      id: 'test/drag-to-timeline',
+      name: 'Drag to timeline',
+      shuttleKind: 'oneshot',
+      shuttleAgent: 'pi-sonnet',
+    })
+    response.now.inFlight = [card]
+    response.totals = { ...response.totals, inFlight: 1 }
+    const horizonBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/horizon')) {
+        horizonBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true, card }))
+      }
+      if (urlStr.includes('/kanban')) return Promise.resolve(jsonResponse(response))
+      return Promise.resolve(jsonResponse({}))
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    const cardEl = host.querySelector<HTMLElement>('[data-fiber-id="test/drag-to-timeline"]')
+    // Pick a future-day drop column 3 days out.
+    const future = new Date(Date.now() + 3 * 86_400_000)
+    const futureIso = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, '0')}-${String(future.getDate()).padStart(2, '0')}`
+    const dropCol = host.querySelector<HTMLElement>(`[data-timeline-day-iso="${futureIso}"]`)
+    if (!cardEl || !dropCol) throw new Error('drag fixtures not found')
+    const dt = mockDataTransfer()
+    dispatchDrag(cardEl, 'dragstart', dt)
+    dispatchDrag(dropCol, 'drop', dt)
+    await tick()
+    await tick()
+
+    expect(horizonBodies).toHaveLength(1)
+    expect(horizonBodies[0]).toMatchObject({
+      fiberId: 'test/drag-to-timeline',
+      horizon: 'soon',
+      due: futureIso,
+    })
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('dropping on a lifecycle column header still posts /kanban/transition', async () => {
     const response = emptyKanbanResponse()
     const card = makeKanbanCard({
       id: 'test/transition-card',
@@ -431,7 +535,7 @@ describe('KanbanModal horizon rows', () => {
       shuttleKind: 'oneshot',
       shuttleAgent: 'pi-sonnet',
     })
-    response.columns.inFlight = [card]
+    response.now.inFlight = [card]
     response.totals = { ...response.totals, inFlight: 1 }
     const transitionBodies: unknown[] = []
     const horizonBodies: unknown[] = []
@@ -459,7 +563,7 @@ describe('KanbanModal horizon rows', () => {
     await tick()
 
     const cardEl = host.querySelector<HTMLElement>('[data-fiber-id="test/transition-card"]')
-    const awaitingHead = host.querySelector<HTMLElement>('.kbn-horizon-row-now .kbn-col-awaitingReview .kbn-col-head')
+    const awaitingHead = host.querySelector<HTMLElement>('.kbn-section-now .kbn-col-awaitingReview .kbn-col-head')
     if (!cardEl || !awaitingHead) throw new Error('transition fixtures not found')
     const dt = mockDataTransfer()
     dispatchDrag(cardEl, 'dragstart', dt)

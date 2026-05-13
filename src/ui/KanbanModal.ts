@@ -1,23 +1,42 @@
 /**
- * KanbanModal — global view of Shuttle-managed fibers grouped by lifecycle.
+ * KanbanModal — three-surface view of Shuttle-managed fibers.
  *
- * Four horizon rows: Now → Soon → Later → Someday. Each expanded row contains
- * the server-owned lifecycle columns Drafts → In flight → Awaiting → Tempered.
- * Now starts expanded; the other horizons start collapsed and persist that
- * fold state in localStorage.
+ * Top-to-bottom on a long page:
  *
- * Interaction: drag a card to a horizon row body to POST /kanban/horizon.
- * Drop on a lifecycle cell header to preserve the existing column transition
- * path via POST /kanban/transition. Click a card body to open its detail modal.
+ *   Now      — the desk. Three lifecycle columns (Drafts | In flight |
+ *              Awaiting review). The dense workflow board for what's
+ *              actively being worked.
+ *   Timeline — the road behind and ahead. Past landings on the left,
+ *              future-dated soon fibers on the right, an anytime-soon
+ *              pool below for soon fibers without a due date. One
+ *              horizontal axis, scrollable.
+ *   Stash    — visible cluster grid keyed on containment-path's first
+ *              meaningful project token. Held-open clusters (cold:true)
+ *              appear below warm clusters in a dimmer style.
+ *
+ * Interaction:
+ *   • Drag a card down onto a timeline date column → horizon=soon,
+ *     due=that date.
+ *   • Drag onto the anytime-soon pool → horizon=soon, due cleared.
+ *   • Drag into the stash → horizon=stashed.
+ *   • Drag back up to the now-board → horizon=now (cold clears,
+ *     due preserved so a deadline-bearing fiber stays drift-eligible).
+ *   • Drop on a now-board column header preserves the existing
+ *     /kanban/transition lifecycle path.
+ *   • Click a card body to open its detail modal.
+ *
+ * The frontend never reclassifies — column placement is the server's
+ * `classifyFiber`, and the response groups cards by surface. The drag
+ * handler's only knob is which (horizon, due, cold) tuple to POST.
  */
 
 import './KanbanModal.css'
 import { renderMarkdown } from './utils.js'
 import { shouldRunVisiblePoll } from '../runtime/PageAttention'
 
-/** Column identifier — also doubles as the API target. */
+/** Column identifier within the Now surface — also doubles as the API target. */
 type ColumnKind = 'ideas' | 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
-type HorizonKind = 'now' | 'soon' | 'later' | 'someday'
+type HorizonKind = 'now' | 'soon' | 'stashed'
 
 const COLUMN_TITLES: Record<ColumnKind, string> = {
   ideas: 'Ideas',
@@ -28,16 +47,23 @@ const COLUMN_TITLES: Record<ColumnKind, string> = {
   composted: 'Composted',
 }
 
-const HORIZON_TITLES: Record<HorizonKind, string> = {
-  now: 'Now',
-  soon: 'Soon',
-  later: 'Later',
-  someday: 'Someday',
-}
+type NowColumnKind = 'drafts' | 'inFlight' | 'awaitingReview'
+const NOW_COLUMN_ORDER: NowColumnKind[] = ['drafts', 'inFlight', 'awaitingReview']
 
-const HORIZON_ORDER: HorizonKind[] = ['now', 'soon', 'later', 'someday']
-const HORIZON_COLUMN_ORDER: ColumnKind[] = ['drafts', 'inFlight', 'awaitingReview', 'tempered']
-const HORIZON_FOLD_STORAGE_KEY = 'portolan.kanban.horizonFoldState.v1'
+/** How far back / forward the timeline renders by default. The
+ *  constitution caps past at ~30 days; we go ~14d either way so the
+ *  visible window stays compact while leaving room to scroll. Older
+ *  closed fibers exist in the response but rely on scroll-to-see. */
+const TIMELINE_PAST_DAYS = 14
+const TIMELINE_FUTURE_DAYS = 14
+const TIMELINE_DAY_WIDTH_PX = 145
+
+/** Stash cluster-key derivation: skip umbrella roots (`ai-futures`,
+ *  `ai`) and use the first project-level segment instead. Containment-
+ *  path remains the load-bearing axis (always present, no user
+ *  effort); the skip list is empirically-noisy umbrellas that don't
+ *  carry meaning for the user. */
+const CLUSTER_KEY_SKIP_ROOTS = new Set<string>(['ai-futures', 'ai'])
 
 // (Action-button helpers removed — drag is the only transition surface for
 // now. The DnD drop handler reads `target` from the column the card lands
@@ -128,10 +154,12 @@ interface KanbanCard {
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted'
   /** Raw valid top-level `horizon:` value from fiber frontmatter, if present. */
   storedHorizon?: HorizonKind
-  /** Row where this card renders after due-date promotion/defaulting. */
+  /** Surface this card lives on after due-date promotion. */
   effectiveHorizon: HorizonKind
   /** True when `due:` promotes a non-now stored horizon into Now. */
   drifted: boolean
+  /** Top-level `cold:` flag; held-open cluster marker on stashed cards. */
+  cold?: boolean
 }
 
 /**
@@ -153,21 +181,40 @@ interface KanbanOriginStaleness {
 
 interface KanbanResponse {
   feltHost: string
-  columns: {
-    ideas: KanbanCard[]
+  /** Now surface — the desk (3 columns). */
+  now: {
     drafts: KanbanCard[]
     inFlight: KanbanCard[]
     awaitingReview: KanbanCard[]
-    tempered: KanbanCard[]
-    composted: KanbanCard[]
   }
-  totals: { ideas: number; drafts: number; inFlight: number; awaitingReview: number; tempered: number; composted: number }
+  /** Timeline surface — past, future-dated, anytime-soon. */
+  timeline: {
+    past: KanbanCard[]
+    futureDated: KanbanCard[]
+    anytimeSoon: KanbanCard[]
+  }
+  /** Stash surface — horizon=stashed; frontend clusters by containment path. */
+  stash: KanbanCard[]
+  /** Speculative pool — off-screen of the three surfaces, unchanged behavior. */
+  ideas: KanbanCard[]
+  totals: {
+    ideas: number
+    drafts: number
+    inFlight: number
+    awaitingReview: number
+    past: number
+    futureDated: number
+    anytimeSoon: number
+    stash: number
+  }
+  /** Historical: total tempered count. Equals
+   *  `timeline.past.filter(c => c.tempered === true).length`. */
   temperedTotal: number
   /**
-   * Per-origin freshness, keyed by `originId`. Always includes `local` and
-   * an entry for every remote origin with a snapshot in the store. The
-   * frontend reads this to render the "waiting on `<hostname>`" stale
-   * badge and to disable drag for stale-origin cards.
+   * Per-origin freshness, keyed by `originId`. Always includes `local`
+   * and an entry for every remote origin with a snapshot in the store.
+   * The frontend reads this to render the "waiting on `<hostname>`"
+   * stale badge and to disable drag for stale-origin cards.
    */
   staleness: Record<string, KanbanOriginStaleness>
   remoteScope?: {
@@ -212,10 +259,15 @@ interface KanbanScrollSnapshot {
   bodyLeft: number
   bodyTop: number
   columns: Partial<Record<ColumnKind, number>>
+  timelineLeft?: number
 }
 
-type HorizonCellMap = Record<ColumnKind, KanbanCard[]>
-type HorizonRows = Record<HorizonKind, HorizonCellMap>
+/** Stash cluster: project key + warmth + cards under that key. */
+interface StashCluster {
+  key: string
+  cold: boolean
+  cards: KanbanCard[]
+}
 
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
@@ -245,7 +297,6 @@ export class KanbanModal {
   private lastFetchStartedAt: number | null = null
   /** Intermediate fiber-detail modal — one instance, re-used across opens. */
   private detailModal: FiberDetailModal | null = null
-  private horizonFoldState: Record<HorizonKind, boolean> = loadHorizonFoldState()
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
@@ -492,39 +543,48 @@ export class KanbanModal {
   }
 
   /**
-   * POST a stored-horizon edit. The server immediately re-applies due-date
-   * drift when it refreshes, so a deadline-promoted card dragged out of Now
-   * visibly returns there with its drift marker intact.
+   * POST a surface edit. Threads horizon + optional cold + optional due
+   * through `/kanban/horizon` so the drag is one atomic write.
+   *
+   *   • Drag onto a timeline date column → setSurface(card, 'soon', { due }).
+   *   • Drag onto the anytime-soon pool   → setSurface(card, 'soon', { due: null }).
+   *   • Drag into stash                   → setSurface(card, 'stashed', { cold? }).
+   *   • Drag back up to now               → setSurface(card, 'now').
+   *
+   * When `opts.due` is omitted the existing `due:` is preserved; pass
+   * `null` to clear it explicitly (e.g. on the anytime-soon pool drop).
    */
-  private async setHorizon(card: KanbanCard, horizon: HorizonKind): Promise<void> {
-    if (card.effectiveHorizon === horizon && card.storedHorizon === horizon) return
+  private async setSurface(
+    card: KanbanCard,
+    horizon: HorizonKind,
+    opts: { cold?: boolean; due?: string | null } = {},
+  ): Promise<void> {
+    const wantsCold = horizon === 'stashed' ? (opts.cold ?? false) : undefined
+    const sameHorizon =
+      card.storedHorizon === horizon && (card.cold ?? false) === (opts.cold ?? false)
+    const sameDue = opts.due === undefined || (card.due ?? null) === opts.due
+    if (sameHorizon && sameDue) return
 
     try {
+      const payload: Record<string, unknown> = { fiberId: card.id, horizon, card }
+      if (wantsCold !== undefined) payload.cold = wantsCold
+      if (opts.due !== undefined) payload.due = opts.due
       const res = await fetch(this.horizonUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, horizon, card }),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
-        throw new Error(errBody.error || `Horizon edit failed: ${res.status}`)
+        throw new Error(errBody.error || `Surface edit failed: ${res.status}`)
       }
-      this.announce(`Moved “${card.name}” to ${HORIZON_TITLES[horizon]}.`)
+      this.announce(`Moved “${card.name}” to ${SURFACE_TITLE[horizon]}.`)
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err)
-      this.showBanner(`Couldn't move “${card.name}” to ${HORIZON_TITLES[horizon]}: ${msg}`, 'error')
-      this.announce(`Horizon move failed: ${msg}`)
+      this.showBanner(`Couldn't move “${card.name}” to ${SURFACE_TITLE[horizon]}: ${msg}`, 'error')
+      this.announce(`Surface move failed: ${msg}`)
     }
     await this.fetchAndRender()
-  }
-
-  private toggleHorizon(horizon: HorizonKind): void {
-    this.horizonFoldState = {
-      ...this.horizonFoldState,
-      [horizon]: !this.horizonFoldState[horizon],
-    }
-    saveHorizonFoldState(this.horizonFoldState)
-    if (this.lastResponse) this.render(this.lastResponse)
   }
 
   private announce(msg: string): void {
@@ -581,16 +641,15 @@ export class KanbanModal {
   }
 
   private computeResponseSignature(data: KanbanResponse): string {
-    // JSON.stringify on { columns, totals, temperedTotal } is sufficient —
-    // structural equality of the rendered surface. Skips `generatedAt`
-    // (changes every poll) and `staleness` (often flickers on remote
-    // origins). If staleness rendering becomes load-bearing later, fold
-    // in a stable subset of those fields here.
+    // Hash the three surfaces + totals — that's the rendered surface;
+    // generatedAt and staleness flicker per poll even on no-op refreshes.
     return JSON.stringify({
-      c: data.columns,
+      n: data.now,
+      tl: data.timeline,
+      s: data.stash,
+      i: data.ideas,
       t: data.totals,
       tt: data.temperedTotal,
-      h: this.horizonFoldState,
     })
   }
 
@@ -608,40 +667,492 @@ export class KanbanModal {
     if (!this.body || !this.statusEl) return
 
     const scrollSnapshot = this.captureScrollSnapshot()
-    const { columns, totals, temperedTotal, staleness } = data
+    const { now, timeline, stash, totals, temperedTotal, staleness } = data
     const remoteState = data.remoteScope
       ? staleness[data.remoteScope.originId]
       : undefined
     const remotePrefix = data.remoteScope && remoteState?.status === 'stale'
       ? remoteDisconnectedText(data, remoteState)
       : ''
+    const pastCount = timeline.past.length
+    const soonCount = totals.futureDated + totals.anytimeSoon
     this.statusEl.textContent =
       remotePrefix +
       (totals.ideas > 0 ? `${totals.ideas} ideas · ` : '') +
       `${totals.drafts} drafts · ${totals.inFlight} in flight · ` +
-      `${totals.awaitingReview} awaiting review · ${totals.tempered}/${temperedTotal} tempered` +
-      (totals.composted > 0 ? ` · ${totals.composted} composted` : '')
+      `${totals.awaitingReview} awaiting review · ` +
+      `${pastCount} landed · ${soonCount} soon · ${totals.stash} stashed` +
+      (temperedTotal > 0 ? ` · ${temperedTotal} tempered total` : '')
 
     this.body.innerHTML = ''
     this.body.classList.remove('kbn-body-zoomed')
 
-    const rows = groupCardsByHorizon(columns)
-    for (const horizon of HORIZON_ORDER) {
-      this.body.append(this.renderHorizonRow(horizon, rows[horizon], staleness, temperedTotal))
-    }
+    this.body.append(this.renderNowSection(now, staleness))
+    this.body.append(this.renderTimelineSection(timeline, staleness))
+    this.body.append(this.renderStashSection(stash, staleness))
 
     this.restoreScrollSnapshot(scrollSnapshot)
     this.claimInitialFocus()
     this.updateBodyScrollAffordance()
     window.requestAnimationFrame(() => this.updateBodyScrollAffordance())
-    // Expand line-clamp on outcomes in columns with spare vertical space.
-    // Two RAFs: the first lets layout settle so scrollHeight reflects the
-    // initial 4-line clamp; the second applies the bump and we let the
-    // browser re-layout from there.
+    // Expand line-clamp on outcomes in now-section columns with spare
+    // vertical space. Two RAFs let layout settle at the 4-line default
+    // before measuring scrollHeight.
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => this.expandOutcomesToFillSpace())
     })
+    // Scroll the timeline strip so today sits ~28% from the left on
+    // initial render, matching the playground reference. Skipped when
+    // the snapshot already had a horizontal scroll position.
+    if (!scrollSnapshot?.timelineLeft) {
+      window.requestAnimationFrame(() => this.scrollTimelineToToday())
+    }
     this.lastResponse = data
+  }
+
+  /** Render the Now surface: section header + 3-column board. */
+  private renderNowSection(
+    now: KanbanResponse['now'],
+    staleness: Record<string, KanbanOriginStaleness>,
+  ): HTMLElement {
+    const section = document.createElement('section')
+    section.className = 'kbn-section kbn-section-now'
+    section.setAttribute('role', 'region')
+    section.setAttribute('aria-label', 'Now — the desk')
+
+    const head = document.createElement('div')
+    head.className = 'kbn-section-head'
+    const label = document.createElement('span')
+    label.className = 'kbn-section-label'
+    label.textContent = 'Now'
+    const sub = document.createElement('span')
+    sub.className = 'kbn-section-sub'
+    sub.textContent = "— what's on the desk"
+    head.append(label, sub)
+
+    const board = document.createElement('div')
+    board.className = 'kbn-now-board'
+    for (const kind of NOW_COLUMN_ORDER) {
+      board.append(this.renderColumn(kind, now[kind], staleness))
+    }
+
+    section.append(head, board)
+    this.installSectionDragHandlers(section, 'now')
+    return section
+  }
+
+  /** Render the Timeline surface: scrollable day-column grid with past
+   *  landings on the left, today centered, future-dated cards on the
+   *  right, and an anytime-soon pool below. */
+  private renderTimelineSection(
+    timeline: KanbanResponse['timeline'],
+    staleness: Record<string, KanbanOriginStaleness>,
+  ): HTMLElement {
+    const section = document.createElement('section')
+    section.className = 'kbn-section kbn-section-timeline'
+    section.setAttribute('role', 'region')
+    section.setAttribute('aria-label', 'Timeline — past and soon')
+
+    const head = document.createElement('div')
+    head.className = 'kbn-section-head kbn-timeline-head'
+    const label = document.createElement('span')
+    label.className = 'kbn-section-label'
+    label.innerHTML = '<span class="kbn-timeline-past-label">Past</span> · <span class="kbn-timeline-future-label">Soon</span>'
+    const sub = document.createElement('span')
+    sub.className = 'kbn-section-sub'
+    sub.textContent = '— the road behind and ahead'
+    head.append(label, sub)
+
+    const wrap = document.createElement('div')
+    wrap.className = 'kbn-timeline-wrap'
+    wrap.dataset.timelineWrap = '1'
+
+    const days = buildTimelineDays(TIMELINE_PAST_DAYS, TIMELINE_FUTURE_DAYS)
+    const dayIndex = new Map<string, number>(days.map((d, i) => [d.iso, i]))
+
+    // Axis row: one cell per day, today marked.
+    const axis = document.createElement('div')
+    axis.className = 'kbn-timeline-axis'
+    axis.style.gridTemplateColumns = `repeat(${days.length}, ${TIMELINE_DAY_WIDTH_PX}px)`
+    for (const day of days) axis.append(buildDayCell(day))
+    wrap.append(axis)
+
+    // Card strip: each card grid-column = its day's index+1.
+    const strip = document.createElement('div')
+    strip.className = 'kbn-timeline-strip'
+    strip.style.gridTemplateColumns = `repeat(${days.length}, ${TIMELINE_DAY_WIDTH_PX}px)`
+
+    // Drag drop targets: one transparent column per day so dragover/drop
+    // can resolve to a specific date. Sit behind the cards (z-index in CSS).
+    for (let i = 0; i < days.length; i += 1) {
+      const dropCol = document.createElement('div')
+      dropCol.className = 'kbn-timeline-dropcol'
+      dropCol.style.gridColumn = String(i + 1)
+      dropCol.dataset.timelineDayIso = days[i].iso
+      this.installTimelineDayDropHandlers(dropCol, days[i].iso)
+      strip.append(dropCol)
+    }
+
+    for (const card of timeline.past) {
+      const col = dayIndexForIso(card.closedAt, dayIndex)
+      if (col === null) continue
+      strip.append(this.renderTimelineCard(card, col, 'past', staleness[card.originId]))
+    }
+    for (const card of timeline.futureDated) {
+      const col = dayIndexForIso(card.due, dayIndex)
+      if (col === null) continue
+      strip.append(this.renderTimelineCard(card, col, 'future', staleness[card.originId]))
+    }
+    wrap.append(strip)
+
+    // Anytime-soon pool below the strip.
+    const pool = document.createElement('div')
+    pool.className = 'kbn-anytime-pool'
+    pool.dataset.anytimePool = '1'
+    const poolLabel = document.createElement('span')
+    poolLabel.className = 'kbn-anytime-pool-label'
+    poolLabel.textContent = 'anytime soon'
+    pool.append(poolLabel)
+    for (const card of timeline.anytimeSoon) {
+      pool.append(this.renderPoolCard(card, staleness[card.originId]))
+    }
+    this.installAnytimePoolDropHandlers(pool)
+    wrap.append(pool)
+
+    section.append(head, wrap)
+    return section
+  }
+
+  /** Render the Stash surface: cluster grid keyed by containment-path's
+   *  first meaningful project segment. Warm clusters first, then a
+   *  divider, then held-open clusters in a dimmer style. */
+  private renderStashSection(
+    stash: KanbanCard[],
+    staleness: Record<string, KanbanOriginStaleness>,
+  ): HTMLElement {
+    const section = document.createElement('section')
+    section.className = 'kbn-section kbn-section-stash'
+    section.setAttribute('role', 'region')
+    section.setAttribute('aria-label', 'Stash — set aside, visible')
+
+    const head = document.createElement('div')
+    head.className = 'kbn-section-head'
+    const label = document.createElement('span')
+    label.className = 'kbn-section-label'
+    label.textContent = 'Stash'
+    const sub = document.createElement('span')
+    sub.className = 'kbn-section-sub'
+    sub.textContent = '— set aside, but visible at a glance'
+    head.append(label, sub)
+
+    const clusters = clusterStashCards(stash)
+    const warm = clusters.filter((c) => !c.cold)
+    const cold = clusters.filter((c) => c.cold)
+
+    const grid = document.createElement('div')
+    grid.className = 'kbn-cluster-grid'
+    for (const c of warm) grid.append(this.renderCluster(c, staleness))
+    if (cold.length > 0) {
+      const divider = document.createElement('div')
+      divider.className = 'kbn-cluster-divider'
+      divider.setAttribute('aria-hidden', 'true')
+      divider.textContent = '— held open —'
+      grid.append(divider)
+      for (const c of cold) grid.append(this.renderCluster(c, staleness))
+    }
+    if (clusters.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'kbn-cluster-empty'
+      empty.textContent = '— nothing stashed —'
+      grid.append(empty)
+    }
+
+    section.append(head, grid)
+    this.installSectionDragHandlers(section, 'stashed')
+    return section
+  }
+
+  /** Install drop handlers on a section (Now or Stash) — drop anywhere
+   *  inside the section that isn't a column header writes the surface
+   *  horizon for the card. Now writes 'now'; Stash writes 'stashed'. */
+  private installSectionDragHandlers(section: HTMLElement, horizon: 'now' | 'stashed'): void {
+    section.addEventListener('dragover', (e) => {
+      if (!this.dragSourceId) return
+      // Column header drops still mean "transition to this lifecycle
+      // bucket" — handled by the head's own drop listener.
+      if ((e.target as HTMLElement).closest('.kbn-col-head')) return
+      // Timeline date columns inside Timeline shouldn't trigger this
+      // section handler — the section is Now/Stash only.
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      section.classList.add('kbn-section-drop')
+    })
+    section.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && section.contains(e.relatedTarget as Node)) return
+      section.classList.remove('kbn-section-drop')
+    })
+    section.addEventListener('drop', (e) => {
+      if ((e.target as HTMLElement).closest('.kbn-col-head')) return
+      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
+      section.classList.remove('kbn-section-drop')
+      this.dragSourceId = null
+      this.stopDragAutoScroll()
+      if (!fiberId) return
+      e.preventDefault()
+      const card = findCardById(this.lastResponse, fiberId)
+      if (!card) return
+      void this.setSurface(card, horizon)
+    })
+  }
+
+  private installTimelineDayDropHandlers(dropCol: HTMLElement, iso: string): void {
+    dropCol.addEventListener('dragover', (e) => {
+      if (!this.dragSourceId) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      dropCol.classList.add('kbn-timeline-dropcol-active')
+    })
+    dropCol.addEventListener('dragleave', () => {
+      dropCol.classList.remove('kbn-timeline-dropcol-active')
+    })
+    dropCol.addEventListener('drop', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
+      dropCol.classList.remove('kbn-timeline-dropcol-active')
+      this.dragSourceId = null
+      this.stopDragAutoScroll()
+      if (!fiberId) return
+      const card = findCardById(this.lastResponse, fiberId)
+      if (!card) return
+      // Past-date drops are not supported (past is a record, not a plan).
+      // Today's column promotes to now via horizon=now; future dates set
+      // horizon=soon + the chosen due date.
+      const today = isoDay(new Date())
+      if (iso < today) return
+      if (iso === today) {
+        void this.setSurface(card, 'now', { due: null })
+      } else {
+        void this.setSurface(card, 'soon', { due: iso })
+      }
+    })
+  }
+
+  private installAnytimePoolDropHandlers(pool: HTMLElement): void {
+    pool.addEventListener('dragover', (e) => {
+      if (!this.dragSourceId) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      pool.classList.add('kbn-anytime-pool-drop')
+    })
+    pool.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && pool.contains(e.relatedTarget as Node)) return
+      pool.classList.remove('kbn-anytime-pool-drop')
+    })
+    pool.addEventListener('drop', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
+      pool.classList.remove('kbn-anytime-pool-drop')
+      this.dragSourceId = null
+      this.stopDragAutoScroll()
+      if (!fiberId) return
+      const card = findCardById(this.lastResponse, fiberId)
+      if (!card) return
+      void this.setSurface(card, 'soon', { due: null })
+    })
+  }
+
+  /** Render a single cluster (project name + count + items list). */
+  private renderCluster(
+    cluster: StashCluster,
+    staleness: Record<string, KanbanOriginStaleness>,
+  ): HTMLElement {
+    const el = document.createElement('div')
+    el.className = cluster.cold ? 'kbn-cluster kbn-cluster-cold' : 'kbn-cluster'
+    el.dataset.clusterKey = cluster.key
+
+    const head = document.createElement('div')
+    head.className = 'kbn-cluster-head'
+    const name = document.createElement('span')
+    name.className = 'kbn-cluster-name'
+    name.textContent = cluster.key
+    const count = document.createElement('span')
+    count.className = 'kbn-cluster-count'
+    count.textContent = String(cluster.cards.length)
+    head.append(name, count)
+    if (cluster.cold) {
+      const tag = document.createElement('span')
+      tag.className = 'kbn-cluster-tag'
+      tag.textContent = 'held open'
+      head.append(tag)
+    }
+    el.append(head)
+
+    for (const card of cluster.cards) {
+      el.append(this.renderClusterItem(card, staleness[card.originId]))
+    }
+    return el
+  }
+
+  private renderClusterItem(
+    card: KanbanCard,
+    staleness: KanbanOriginStaleness | undefined,
+  ): HTMLElement {
+    const isStale = staleness?.status === 'stale'
+    const el = document.createElement('div')
+    el.className = isAgentCard(card) ? 'kbn-cluster-item kbn-cluster-item-agent' : 'kbn-cluster-item kbn-cluster-item-human'
+    el.draggable = !isStale
+    el.dataset.fiberId = card.id
+    el.title = card.name
+    el.setAttribute('role', 'listitem')
+    el.setAttribute('aria-label', card.name)
+
+    if (!isStale) {
+      el.addEventListener('dragstart', (e) => {
+        this.dragSourceId = card.id
+        el.classList.add('kbn-card-dragging')
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/x-fiber-id', card.id)
+        }
+      })
+      el.addEventListener('dragend', () => {
+        el.classList.remove('kbn-card-dragging')
+        this.dragSourceId = null
+      })
+    }
+
+    const glyph = document.createElement('span')
+    glyph.className = 'kbn-cluster-item-glyph'
+    glyph.textContent = isAgentCard(card) ? '◐' : '✓'
+    const title = document.createElement('span')
+    title.className = 'kbn-cluster-item-title'
+    // Show the leaf segment of the id rather than the full name for
+    // cluster items — the cluster header already names the project,
+    // so the leaf is the disambiguator.
+    title.textContent = card.name
+    el.append(glyph, title)
+
+    el.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) return
+      this.detailModal?.open(card, this.cityScope?.cityId, 'drafts')
+    })
+    return el
+  }
+
+  /** Compact card variant for the timeline strip — single-line with
+   *  glyph + title, color-coded by past/future/agent/human. */
+  private renderTimelineCard(
+    card: KanbanCard,
+    column: number,
+    kind: 'past' | 'future',
+    staleness: KanbanOriginStaleness | undefined,
+  ): HTMLElement {
+    const isStale = staleness?.status === 'stale'
+    const isComposted = kind === 'past' && card.tempered === false
+    const variantClass = kind === 'past'
+      ? (isComposted ? 'kbn-tl-card-composted' : 'kbn-tl-card-past')
+      : (isAgentCard(card) ? 'kbn-tl-card-agent' : 'kbn-tl-card-human')
+
+    const el = document.createElement('div')
+    el.className = `kbn-tl-card ${variantClass}${isStale ? ' kbn-card--stale' : ''}`
+    el.style.gridColumn = String(column + 1)
+    el.draggable = !isStale && kind === 'future'
+    el.dataset.fiberId = card.id
+    el.title = card.name
+    el.setAttribute('role', 'listitem')
+
+    if (!isStale && kind === 'future') {
+      el.addEventListener('dragstart', (e) => {
+        this.dragSourceId = card.id
+        el.classList.add('kbn-card-dragging')
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/x-fiber-id', card.id)
+        }
+      })
+      el.addEventListener('dragend', () => {
+        el.classList.remove('kbn-card-dragging')
+        this.dragSourceId = null
+      })
+    }
+
+    const glyph = document.createElement('span')
+    glyph.className = 'kbn-tl-card-glyph'
+    glyph.textContent = kind === 'past'
+      ? (isComposted ? '✗' : '✓')
+      : (isAgentCard(card) ? '◐' : '✓')
+    const title = document.createElement('span')
+    title.className = 'kbn-tl-card-title'
+    title.textContent = card.name
+    el.append(glyph, title)
+
+    el.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) return
+      const colKind: ColumnKind = kind === 'past'
+        ? (isComposted ? 'composted' : 'tempered')
+        : 'drafts'
+      this.detailModal?.open(card, this.cityScope?.cityId, colKind)
+    })
+    return el
+  }
+
+  private renderPoolCard(
+    card: KanbanCard,
+    staleness: KanbanOriginStaleness | undefined,
+  ): HTMLElement {
+    const isStale = staleness?.status === 'stale'
+    const el = document.createElement('span')
+    el.className = isAgentCard(card)
+      ? 'kbn-anytime-pool-card kbn-anytime-pool-card-agent'
+      : 'kbn-anytime-pool-card kbn-anytime-pool-card-human'
+    el.draggable = !isStale
+    el.dataset.fiberId = card.id
+    el.title = card.name
+
+    if (!isStale) {
+      el.addEventListener('dragstart', (e) => {
+        this.dragSourceId = card.id
+        el.classList.add('kbn-card-dragging')
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/x-fiber-id', card.id)
+        }
+      })
+      el.addEventListener('dragend', () => {
+        el.classList.remove('kbn-card-dragging')
+        this.dragSourceId = null
+      })
+    }
+
+    const glyph = document.createElement('span')
+    glyph.className = 'kbn-anytime-pool-card-glyph'
+    glyph.textContent = isAgentCard(card) ? '◐' : '✓'
+    const title = document.createElement('span')
+    title.className = 'kbn-anytime-pool-card-title'
+    title.textContent = card.name
+    el.append(glyph, title)
+
+    el.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) return
+      this.detailModal?.open(card, this.cityScope?.cityId, 'drafts')
+    })
+    return el
+  }
+
+  /** Position the timeline horizontal scroll so today sits at ~28% from
+   *  the left, matching the playground reference. Skipped when the
+   *  snapshot already had a horizontal scroll position. */
+  private scrollTimelineToToday(): void {
+    if (!this.body) return
+    const wrap = this.body.querySelector<HTMLElement>('[data-timeline-wrap]')
+    if (!wrap) return
+    const todayOffset = TIMELINE_PAST_DAYS * TIMELINE_DAY_WIDTH_PX
+    const target = todayOffset - wrap.clientWidth * 0.28
+    wrap.scrollLeft = Math.max(0, target)
   }
 
   /**
@@ -760,8 +1271,13 @@ export class KanbanModal {
       const list = col.querySelector<HTMLElement>('.kbn-col-list')
       if (kind && list) columns[kind] = list.scrollTop
     }
-
-    return { bodyLeft: this.body.scrollLeft, bodyTop: this.body.scrollTop, columns }
+    const timeline = this.body.querySelector<HTMLElement>('[data-timeline-wrap]')
+    return {
+      bodyLeft: this.body.scrollLeft,
+      bodyTop: this.body.scrollTop,
+      columns,
+      timelineLeft: timeline?.scrollLeft,
+    }
   }
 
   private restoreScrollSnapshot(snapshot: KanbanScrollSnapshot | null): void {
@@ -775,6 +1291,10 @@ export class KanbanModal {
         const list = this.body.querySelector<HTMLElement>(`.kbn-col[data-column="${kind}"] .kbn-col-list`)
         if (list) list.scrollTop = scrollTop
       }
+      if (snapshot.timelineLeft !== undefined) {
+        const timeline = this.body.querySelector<HTMLElement>('[data-timeline-wrap]')
+        if (timeline) timeline.scrollLeft = snapshot.timelineLeft
+      }
       this.updateBodyScrollAffordance()
     }
 
@@ -782,95 +1302,20 @@ export class KanbanModal {
     window.requestAnimationFrame(restore)
   }
 
-  private renderHorizonRow(
-    horizon: HorizonKind,
-    cells: HorizonCellMap,
-    staleness: Record<string, KanbanOriginStaleness>,
-    temperedTotal: number,
-  ): HTMLElement {
-    const title = HORIZON_TITLES[horizon]
-    const row = document.createElement('section')
-    row.className = `kbn-horizon-row kbn-horizon-row-${horizon}`
-    row.setAttribute('role', 'region')
-    row.setAttribute('aria-label', `${title} horizon`)
-    row.dataset.horizon = horizon
-
-    const collapsed = this.horizonFoldState[horizon]
-    row.classList.toggle('kbn-horizon-row-collapsed', collapsed)
-
-    const head = document.createElement('button')
-    head.type = 'button'
-    head.className = 'kbn-horizon-head'
-    head.setAttribute('aria-expanded', String(!collapsed))
-
-    const arrow = document.createElement('span')
-    arrow.className = 'kbn-horizon-arrow'
-    arrow.textContent = '▾'
-    const name = document.createElement('span')
-    name.className = 'kbn-horizon-title'
-    name.textContent = title
-    const rule = document.createElement('span')
-    rule.className = 'kbn-horizon-rule'
-    const count = document.createElement('span')
-    count.className = 'kbn-horizon-count'
-    count.textContent = String(countHorizonCards(cells))
-
-    head.append(arrow, name, rule, count)
-    head.addEventListener('click', () => this.toggleHorizon(horizon))
-
-    const body = document.createElement('div')
-    body.className = 'kbn-horizon-body'
-    body.dataset.horizon = horizon
-
-    body.addEventListener('dragover', (e) => {
-      if (!this.dragSourceId) return
-      if ((e.target as HTMLElement).closest('.kbn-col-head')) return
-      e.preventDefault()
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-      row.classList.add('kbn-horizon-drop')
-    })
-    body.addEventListener('dragleave', (e) => {
-      if (e.relatedTarget && body.contains(e.relatedTarget as Node)) return
-      row.classList.remove('kbn-horizon-drop')
-    })
-    body.addEventListener('drop', (e) => {
-      if ((e.target as HTMLElement).closest('.kbn-col-head')) return
-      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
-      row.classList.remove('kbn-horizon-drop')
-      this.dragSourceId = null
-      this.stopDragAutoScroll()
-      if (!fiberId) return
-      e.preventDefault()
-      const card = findCardById(this.lastResponse, fiberId)
-      if (!card) return
-      void this.setHorizon(card, horizon)
-    })
-
-    for (const kind of HORIZON_COLUMN_ORDER) {
-      body.append(
-        this.renderColumn(kind, cells[kind], staleness, kind === 'tempered' ? temperedTotal : undefined),
-      )
-    }
-
-    row.append(head, body)
-    return row
-  }
-
   /**
-   * Render one lifecycle cell within a horizon row. The cell header is the
-   * lifecycle-transition drop target; the row body around it is the horizon
-   * drop target. Keeping those targets distinct preserves the server-owned
-   * column classifier while adding the row axis without a second classifier.
+   * Render one Now-surface column (Drafts / In Flight / Awaiting). The
+   * column header doubles as the lifecycle-transition drop target;
+   * card-body drops on the column itself are absorbed by the section's
+   * drop handler (which writes horizon=now via setSurface).
    */
   private renderColumn(
     kind: ColumnKind,
     cards: KanbanCard[],
     staleness: Record<string, KanbanOriginStaleness>,
-    temperedTotal?: number,
   ): HTMLElement {
     const title = COLUMN_TITLES[kind]
     const col = document.createElement('section')
-    col.className = `kbn-col kbn-horizon-cell kbn-col-${kind}`
+    col.className = `kbn-col kbn-col-${kind}`
     col.setAttribute('role', 'region')
     col.setAttribute('aria-label', `${title} (${cards.length})`)
     col.dataset.column = kind
@@ -884,9 +1329,7 @@ export class KanbanModal {
     headTitle.textContent = title
     const headCount = document.createElement('span')
     headCount.className = 'kbn-col-count'
-    headCount.textContent = kind === 'tempered' && temperedTotal !== undefined
-      ? `${cards.length}/${temperedTotal}`
-      : String(cards.length)
+    headCount.textContent = String(cards.length)
     head.append(headTitle, headCount)
 
     const onHeaderDragOver = (e: DragEvent): void => {
@@ -915,6 +1358,33 @@ export class KanbanModal {
     head.addEventListener('dragover', onHeaderDragOver)
     head.addEventListener('dragleave', onHeaderDragLeave)
     head.addEventListener('drop', onHeaderDrop)
+
+    const onColumnDragOver = (e: DragEvent): void => {
+      if (!this.dragSourceId) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      col.classList.add('kbn-col-drop')
+    }
+    const onColumnDragLeave = (e: DragEvent): void => {
+      if (e.relatedTarget && col.contains(e.relatedTarget as Node)) return
+      col.classList.remove('kbn-col-drop')
+    }
+    const onColumnDrop = (e: DragEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
+      col.classList.remove('kbn-col-drop')
+      this.dragSourceId = null
+      this.stopDragAutoScroll()
+      if (!fiberId) return
+      const card = findCardById(this.lastResponse, fiberId)
+      if (!card) return
+      void this.transition(card, kind)
+    }
+    col.addEventListener('dragover', onColumnDragOver)
+    col.addEventListener('dragleave', onColumnDragLeave)
+    col.addEventListener('drop', onColumnDrop)
 
     const list = document.createElement('div')
     list.className = 'kbn-col-list'
@@ -1179,6 +1649,7 @@ export class KanbanModal {
     if (!this.cityScope) return base
     return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
   }
+
 
   /** POST endpoint for review comments, with `?cityId=` when scoped. */
   private reviewCommentUrl(cityId: string | undefined): string {
@@ -2831,66 +3302,131 @@ export class FiberDetailModal {
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-function defaultHorizonFoldState(): Record<HorizonKind, boolean> {
-  return { now: false, soon: true, later: true, someday: true }
+/** Skim-able title for surface affordance announcements. */
+const SURFACE_TITLE: Record<HorizonKind, string> = {
+  now: 'Now',
+  soon: 'Soon',
+  stashed: 'Stash',
 }
 
-function loadHorizonFoldState(): Record<HorizonKind, boolean> {
-  const fallback = defaultHorizonFoldState()
-  try {
-    const raw = window.localStorage.getItem(HORIZON_FOLD_STORAGE_KEY)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw) as Partial<Record<HorizonKind, unknown>>
-    return {
-      now: typeof parsed.now === 'boolean' ? parsed.now : fallback.now,
-      soon: typeof parsed.soon === 'boolean' ? parsed.soon : fallback.soon,
-      later: typeof parsed.later === 'boolean' ? parsed.later : fallback.later,
-      someday: typeof parsed.someday === 'boolean' ? parsed.someday : fallback.someday,
+/** Format a Date as a stable YYYY-MM-DD ISO day. Timezone-aware (uses
+ *  local midnight), so a card's due/closedAt rendered into a calendar
+ *  column lands on the right local day. */
+function isoDay(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+interface TimelineDay {
+  iso: string
+  label: string
+  weekdayLabel: string
+  isToday: boolean
+  isPast: boolean
+  isWeekend: boolean
+  weekBoundary: boolean
+}
+
+function buildTimelineDays(past: number, future: number): TimelineDay[] {
+  const days: TimelineDay[] = []
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  for (let offset = -past; offset <= future; offset += 1) {
+    const d = new Date(today.getTime() + offset * 86_400_000)
+    const dow = d.getDay()
+    days.push({
+      iso: isoDay(d),
+      label: String(d.getDate()),
+      weekdayLabel: d.toLocaleDateString(undefined, { weekday: 'short' }),
+      isToday: offset === 0,
+      isPast: offset < 0,
+      isWeekend: dow === 0 || dow === 6,
+      // Week boundary marker: end of Sunday (so the visual rule lands
+      // between Sunday and Monday).
+      weekBoundary: dow === 0,
+    })
+  }
+  return days
+}
+
+function buildDayCell(day: TimelineDay): HTMLElement {
+  const el = document.createElement('div')
+  const classes = ['kbn-timeline-day']
+  if (day.isToday) classes.push('kbn-timeline-day-today')
+  if (day.isPast) classes.push('kbn-timeline-day-past')
+  if (day.isWeekend) classes.push('kbn-timeline-day-weekend')
+  if (day.weekBoundary) classes.push('kbn-timeline-day-week-boundary')
+  el.className = classes.join(' ')
+  el.dataset.dayIso = day.iso
+
+  const dow = document.createElement('span')
+  dow.className = 'kbn-timeline-day-dow'
+  dow.textContent = day.isToday ? 'today' : day.weekdayLabel
+  const num = document.createElement('span')
+  num.className = 'kbn-timeline-day-num'
+  num.textContent = day.label
+  el.append(dow, num)
+  return el
+}
+
+/** Resolve an ISO-8601 timestamp to a column index within the timeline
+ *  day map. Returns null when the timestamp falls outside the visible
+ *  window or is malformed. */
+function dayIndexForIso(
+  iso: string | undefined,
+  dayIndex: Map<string, number>,
+): number | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return dayIndex.get(isoDay(d)) ?? null
+}
+
+/** Cluster stash cards by containment-path's first meaningful project
+ *  token. Skips umbrella roots (CLUSTER_KEY_SKIP_ROOTS). Warm clusters
+ *  are emitted before cold; within each warmth, clusters sort by
+ *  most-recent-card descending (the empirical "what did I touch last?"
+ *  ordering — beats alphabetical for retrieval). */
+function clusterStashCards(stash: KanbanCard[]): StashCluster[] {
+  const byKey = new Map<string, StashCluster>()
+  for (const card of stash) {
+    const key = stashClusterKey(card.id)
+    const cold = card.cold === true
+    const composite = `${key}::${cold ? 'cold' : 'warm'}`
+    let cluster = byKey.get(composite)
+    if (!cluster) {
+      cluster = { key, cold, cards: [] }
+      byKey.set(composite, cluster)
     }
-  } catch {
-    return fallback
+    cluster.cards.push(card)
   }
+  const out = [...byKey.values()]
+  // Sort within cluster by createdAt desc, then sort clusters by
+  // most-recent-touch desc (use the first card's createdAt after the
+  // inner sort).
+  for (const c of out) {
+    c.cards.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  }
+  out.sort((a, b) => {
+    if (a.cold !== b.cold) return a.cold ? 1 : -1
+    const aT = a.cards[0]?.createdAt ?? ''
+    const bT = b.cards[0]?.createdAt ?? ''
+    return bT.localeCompare(aT)
+  })
+  return out
 }
 
-function saveHorizonFoldState(state: Record<HorizonKind, boolean>): void {
-  try {
-    window.localStorage.setItem(HORIZON_FOLD_STORAGE_KEY, JSON.stringify(state))
-  } catch {
-    // localStorage can be unavailable in privacy modes; folding still works
-    // for the current render.
+/** First meaningful project segment of a fiber id. Skips umbrella
+ *  roots so `ai-futures/portolan/...` clusters under `portolan`.
+ *  Falls back to the leaf when no segment passes the filter. */
+function stashClusterKey(id: string): string {
+  const segments = id.split('/').filter(Boolean)
+  for (const seg of segments) {
+    if (!CLUSTER_KEY_SKIP_ROOTS.has(seg)) return seg
   }
-}
-
-function emptyHorizonCellMap(): HorizonCellMap {
-  return {
-    ideas: [],
-    drafts: [],
-    inFlight: [],
-    awaitingReview: [],
-    tempered: [],
-    composted: [],
-  }
-}
-
-function groupCardsByHorizon(columns: KanbanResponse['columns']): HorizonRows {
-  const rows = {
-    now: emptyHorizonCellMap(),
-    soon: emptyHorizonCellMap(),
-    later: emptyHorizonCellMap(),
-    someday: emptyHorizonCellMap(),
-  }
-
-  for (const kind of HORIZON_COLUMN_ORDER) {
-    for (const card of columns[kind]) {
-      rows[card.effectiveHorizon ?? 'now'][kind].push(card)
-    }
-  }
-
-  return rows
-}
-
-function countHorizonCards(cells: HorizonCellMap): number {
-  return HORIZON_COLUMN_ORDER.reduce((sum, kind) => sum + cells[kind].length, 0)
+  return segments[segments.length - 1] ?? id
 }
 
 function isAgentCard(card: KanbanCard): boolean {
@@ -2934,27 +3470,34 @@ export function dispatchIneligibleReason(reason: string | undefined): string {
 }
 
 /**
- * Find which column the server has placed a card in, per the last response.
- * The server's classification (in HttpApiKanban.handleKanban) keys off
- * `shuttle.enabled`, `idea` tag, `tempered`, standing-role review state, and
- * other shuttle-block fields. Mirroring all of that on the frontend is a
- * standing source of drift; instead, we trust the placement on the response
- * and look up which bucket the card landed in. Returns null when the card
- * isn't in the response (just-created, just-deleted, or stale local view).
+ * Find which Now-surface column the server has placed a card in, per
+ * the last response. Used by the lifecycle drop handler to derive the
+ * transition target. Returns null when the card lives outside the now
+ * surface (or isn't in the response at all). Surface routing (now /
+ * timeline / stash) is handled by `findCardSurface`.
  */
-const ALL_COLUMN_KINDS: ColumnKind[] = ['ideas', 'drafts', 'inFlight', 'awaitingReview', 'tempered', 'composted']
 function findCardColumn(resp: KanbanResponse | null, id: string): ColumnKind | null {
   if (!resp) return null
-  for (const kind of ALL_COLUMN_KINDS) {
-    if (resp.columns[kind].some(c => c.id === id)) return kind
+  for (const kind of NOW_COLUMN_ORDER) {
+    if (resp.now[kind].some((c) => c.id === id)) return kind
+  }
+  if (resp.ideas.some((c) => c.id === id)) return 'ideas'
+  // Past landings are surfaced as tempered/composted via the card's
+  // tempered field; the column placement still matches.
+  for (const c of resp.timeline.past) {
+    if (c.id === id) return c.tempered === false ? 'composted' : 'tempered'
   }
   return null
 }
 
 function findCardById(resp: KanbanResponse | null, id: string): KanbanCard | null {
   if (!resp) return null
-  for (const kind of ALL_COLUMN_KINDS) {
-    const hit = resp.columns[kind].find(c => c.id === id)
+  for (const kind of NOW_COLUMN_ORDER) {
+    const hit = resp.now[kind].find((c) => c.id === id)
+    if (hit) return hit
+  }
+  for (const list of [resp.timeline.past, resp.timeline.futureDated, resp.timeline.anytimeSoon, resp.stash, resp.ideas]) {
+    const hit = list.find((c) => c.id === id)
     if (hit) return hit
   }
   return null
@@ -2968,7 +3511,8 @@ function remoteDisconnectedText(
   const totals = data.totals
   const hasCards =
     totals.ideas + totals.drafts + totals.inFlight +
-    totals.awaitingReview + totals.tempered + totals.composted > 0
+    totals.awaitingReview + totals.past + totals.futureDated +
+    totals.anytimeSoon + totals.stash > 0
   return hasCards
     ? `Remote city ${hostname} disconnected; showing last snapshot · `
     : `Remote city ${hostname} disconnected; no Kanban snapshot yet · `

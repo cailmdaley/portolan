@@ -712,11 +712,29 @@ fn run_felt_horizon_kanban_mutation(
         None => return Err("missing horizon payload".to_string()),
     };
     let cold = optional_bool_field(payload, "cold")?;
+    // due: missing → Keep; null → Clear; string → Set(value).
+    let due = match payload.fields.get("due") {
+        None => DueOp::Keep,
+        Some(Value::Null) => DueOp::Clear,
+        Some(Value::String(value)) => DueOp::Set(value.clone()),
+        Some(other) => {
+            return Err(format!(
+                "invalid due payload: expected string or null, got {other}"
+            ))
+        }
+    };
     let raw = fs::read_to_string(full_path)
         .map_err(|error| format!("failed to read fiber {}: {error}", full_path.display()))?;
-    let rewritten = rewrite_horizon_frontmatter(&raw, horizon, cold)?;
+    let rewritten = rewrite_horizon_frontmatter(&raw, horizon, cold, due)?;
     fs::write(full_path, rewritten)
         .map_err(|error| format!("failed to write fiber {}: {error}", full_path.display()))
+}
+
+#[derive(Debug, Clone)]
+enum DueOp {
+    Keep,
+    Clear,
+    Set(String),
 }
 
 fn run_process(invocation: ProcessInvocation) -> Result<(), String> {
@@ -831,6 +849,7 @@ fn rewrite_horizon_frontmatter(
     raw: &str,
     horizon: Option<&str>,
     cold: Option<bool>,
+    due: DueOp,
 ) -> Result<String, String> {
     if let Some(horizon) = horizon {
         if !matches!(horizon, "now" | "soon" | "stashed") {
@@ -858,7 +877,7 @@ fn rewrite_horizon_frontmatter(
             .collect()
     };
 
-    // Edit `horizon:` first, then resolve `cold:`.
+    // Edit `horizon:` first, then resolve `cold:` and `due:`.
     edit_top_level_key(
         &mut lines,
         "horizon",
@@ -874,6 +893,12 @@ fn rewrite_horizon_frontmatter(
     };
     if touch_cold {
         edit_top_level_key(&mut lines, "cold", next_cold_line);
+    }
+
+    match due {
+        DueOp::Keep => {}
+        DueOp::Clear => edit_top_level_key(&mut lines, "due", None),
+        DueOp::Set(value) => edit_top_level_key(&mut lines, "due", Some(format!("due: {value}"))),
     }
 
     let closing_newline = &raw[body_start - closing_newline_len..body_start];
@@ -1888,7 +1913,8 @@ malformed
     #[test]
     fn felt_horizon_rejects_legacy_values() {
         for legacy in ["later", "someday"] {
-            let err = rewrite_horizon_frontmatter("---\n---\n\n", Some(legacy), None).unwrap_err();
+            let err = rewrite_horizon_frontmatter("---\n---\n\n", Some(legacy), None, DueOp::Keep)
+                .unwrap_err();
             assert!(
                 err.contains(legacy),
                 "expected error to mention {legacy}: {err}"
