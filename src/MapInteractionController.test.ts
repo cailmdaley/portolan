@@ -79,7 +79,7 @@ afterEach(() => {
 })
 
 describe('MapInteractionController remote activation menu', () => {
-  it('offers preferred, explicit, and one-shot activation commands for remote cities', () => {
+  it('offers Rust-default, one-shot, and Node fallback activation commands for remote cities', () => {
     const { canvas, contextMenu, activateRemoteCity, controller } = makeController()
 
     canvas.dispatchEvent(new MouseEvent('contextmenu', {
@@ -89,19 +89,19 @@ describe('MapInteractionController remote activation menu', () => {
     }))
 
     const items = (contextMenu.show as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as MenuItem[]
-    expect(items.map((item) => item.label)).toContain('Activate Agent')
-    expect(items.map((item) => item.label)).toContain('Activate Node Agent')
-    expect(items.map((item) => item.label)).toContain('Activate Rust Preview')
-    expect(items.map((item) => item.label)).toContain('Activate Rust Preview Once')
+    expect(items.map((item) => item.label)).toContain('Activate Rust Agent')
+    expect(items.map((item) => item.label)).toContain('Activate Rust Once')
+    expect(items.map((item) => item.label)).toContain('Activate Node Fallback')
+    expect(items.map((item) => item.label)).not.toContain('Activate Rust Preview')
 
-    items.find((item) => item.label === 'Activate Agent')?.action()
+    items.find((item) => item.label === 'Activate Rust Agent')?.action()
     expect(activateRemoteCity).toHaveBeenCalledWith(city())
 
-    items.find((item) => item.label === 'Activate Rust Preview')?.action()
-    expect(activateRemoteCity).toHaveBeenCalledWith(city(), { agentRuntime: 'rust' })
-
-    items.find((item) => item.label === 'Activate Rust Preview Once')?.action()
+    items.find((item) => item.label === 'Activate Rust Once')?.action()
     expect(activateRemoteCity).toHaveBeenCalledWith(city(), { agentRuntime: 'rust', once: true })
+
+    items.find((item) => item.label === 'Activate Node Fallback')?.action()
+    expect(activateRemoteCity).toHaveBeenCalledWith(city(), { agentRuntime: 'node' })
 
     controller.dispose()
   })
@@ -118,9 +118,9 @@ describe('MapInteractionController remote activation menu', () => {
     }))
 
     const items = (contextMenu.show as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as MenuItem[]
-    expect(items.map((item) => item.label)).not.toContain('Activate Agent')
-    expect(items.map((item) => item.label)).not.toContain('Activate Rust Preview')
-    expect(items.map((item) => item.label)).not.toContain('Activate Rust Preview Once')
+    expect(items.map((item) => item.label)).not.toContain('Activate Rust Agent')
+    expect(items.map((item) => item.label)).not.toContain('Activate Rust Once')
+    expect(items.map((item) => item.label)).not.toContain('Activate Node Fallback')
 
     controller.dispose()
   })
