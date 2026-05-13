@@ -21,6 +21,7 @@ import {
   classifyFiber,
   effectiveDispatchEligible,
   effectiveHorizon,
+  type FeltStatusEditInvocation,
   type FeltTagEditInvocation,
   type KanbanCard,
   type RemoteKanbanMutationRequest,
@@ -1253,24 +1254,67 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(after).toMatch(/^tempered: true$/m);
     });
 
-    it('refuses to mutate fibers that have no shuttle: block', async () => {
+    it('closes human cards (no shuttle: block) by writing status=closed via felt edit', async () => {
+      // Human-card path: dragging a non-shuttle todo to tempered/composted
+      // means "I'm done with this." Reduces to a status close — no shuttle
+      // verdict, no tempered field, just felt edit --status closed. The
+      // closed fiber drops off the next /kanban response via
+      // shouldIncludeInKanban (which gates non-shuttle fibers on
+      // status ∈ {open, active}).
       writeFib('plain-task', {
         name: 'Plain',
         status: 'open',
         tags: ['task'],
+        due: '2026-04-05',
+        'created-at': '2026-04-01',
+      });
+      const feltStatusCalls: FeltStatusEditInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        feltStatusEditFn: async (inv) => {
+          feltStatusCalls.push(inv);
+          // Mirror the real felt edit behavior: flip status in the file.
+          const path = join(FELT_DIR, 'plain-task', 'plain-task.md');
+          const before = readFileSync(path, 'utf-8');
+          writeFileSync(path, before.replace(/^status: open$/m, `status: ${inv.status}`));
+        },
+      });
+      const { res, status } = capRes();
+      await api.handleTransition(jsonReq({ fiberId: 'plain-task', target: 'tempered' }), res);
+
+      expect(status()).toBe(200);
+      expect(feltStatusCalls).toEqual([
+        { host: TEST_DIR, fiberId: 'plain-task', status: 'closed' },
+      ]);
+      const after = readFileSync(join(FELT_DIR, 'plain-task', 'plain-task.md'), 'utf-8');
+      expect(after).toMatch(/^status: closed$/m);
+      // No `tempered:` field — human cards don't carry the shuttle-verdict
+      // tristate. The kanban classifier treats absent `tempered` on a
+      // closed shuttle fiber as awaitingReview, but human fibers don't
+      // reach the classifier at all (filtered out earlier).
+      expect(after).not.toMatch(/^tempered:/m);
+    });
+
+    it('rejects unsupported targets for human cards (no shuttle: block)', async () => {
+      // Only ideas / tempered / composted make sense for a card with no
+      // shuttle contract. drafts / inFlight / awaitingReview are shuttle
+      // lifecycle verbs — surface a clear error rather than silently fail.
+      writeFib('plain-task', {
+        name: 'Plain',
+        status: 'open',
+        tags: ['task'],
+        due: '2026-04-05',
         'created-at': '2026-04-01',
       });
       const api = new HttpApiKanban({ feltHost: TEST_DIR });
       const { res, status, body } = capRes();
-      await api.handleTransition(jsonReq({ fiberId: 'plain-task', target: 'tempered' }), res);
+      await api.handleTransition(jsonReq({ fiberId: 'plain-task', target: 'inFlight' }), res);
 
       expect(status()).toBe(500);
-      expect(body().error).toMatch(/shuttle/);
-
-      // File is byte-identical.
+      expect(body().error).toMatch(/human cards.*only support ideas \/ tempered \/ composted/);
+      // File untouched.
       const after = readFileSync(join(FELT_DIR, 'plain-task', 'plain-task.md'), 'utf-8');
       expect(after).toMatch(/^status: open$/m);
-      expect(after).not.toMatch(/^tempered:/m);
     });
 
     it('composts a fiber — closed with tempered:false', async () => {

@@ -492,7 +492,18 @@ interface HttpApiKanbanOptions {
    * Receives the exact add/remove diff the server would shell out.
    */
   feltEditFn?: (invocation: FeltTagEditInvocation) => Promise<void>;
+  /**
+   * Test seam: override the local `felt edit --status` spawn for human-card
+   * close transitions. Receives the host + fiber id + target status.
+   */
+  feltStatusEditFn?: (invocation: FeltStatusEditInvocation) => Promise<void>;
 }
+
+export type FeltStatusEditInvocation = {
+  host: string;
+  fiberId: string;
+  status: 'open' | 'active' | 'closed';
+};
 
 export interface RemoteShuttleSnapshotDiagnostic {
   originId: string;
@@ -917,6 +928,7 @@ export class HttpApiKanban {
   private readonly shuttleActionInvokerFn: HttpApiKanbanOptions['shuttleActionInvokerFn'];
   private readonly shuttleActionResolverFn: HttpApiKanbanOptions['shuttleActionResolverFn'];
   private readonly feltEditFn: HttpApiKanbanOptions['feltEditFn'];
+  private readonly feltStatusEditFn: HttpApiKanbanOptions['feltStatusEditFn'];
 
   /**
    * Run a shuttle-ctl lifecycle invocation against an explicit
@@ -963,6 +975,32 @@ export class HttpApiKanban {
     const args = ['-C', invocation.host, 'edit', invocation.fiberId];
     for (const tag of invocation.remove) args.push('--untag', tag);
     for (const tag of invocation.add) args.push('--tag', tag);
+
+    try {
+      await execFileAsync('felt', args, {
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err: any) {
+      const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+      throw new Error(`felt ${args.join(' ')} failed: ${msg}`);
+    }
+  }
+
+  /**
+   * Set a fiber's `status:` via `felt edit --status`. Used by the human-card
+   * close path in `applyTransition` (no shuttle: block, dragging to
+   * tempered/composted means "I'm done with this human todo"). felt owns
+   * the native `status:` field, so this stays a thin felt-CLI invocation —
+   * no shuttle-ctl involvement, no daemon round-trip.
+   */
+  private async runFeltStatusEdit(invocation: FeltStatusEditInvocation): Promise<void> {
+    if (this.feltStatusEditFn) {
+      await this.feltStatusEditFn(invocation);
+      return;
+    }
+
+    const args = ['-C', invocation.host, 'edit', invocation.fiberId, '--status', invocation.status];
 
     try {
       await execFileAsync('felt', args, {
@@ -1100,6 +1138,7 @@ export class HttpApiKanban {
     this.shuttleActionInvokerFn = opts.shuttleActionInvokerFn;
     this.shuttleActionResolverFn = opts.shuttleActionResolverFn;
     this.feltEditFn = opts.feltEditFn;
+    this.feltStatusEditFn = opts.feltStatusEditFn;
   }
 
   /**
@@ -1649,9 +1688,48 @@ export class HttpApiKanban {
       : pool?.merged.find(({ fiber }) => fiber.id === fiberId);
     if (!entry) throw new Error(`fiber not found: ${fiberId}`);
     const { fiber, host, originId } = entry;
+
+    // Human cards (no shuttle: block — pulled in by `shouldIncludeInKanban`'s
+    // open/active + due rule) get a thin lifecycle path. There's no daemon
+    // to gate, so shuttle-ctl verbs (pause / reopen / dispatch) don't apply.
+    // What DOES apply:
+    //   • → ideas               : add the `idea` tag (a tag edit, not a
+    //                             lifecycle verb — classifyFiber routes
+    //                             idea-tagged fibers to the ideas pool).
+    //   • → tempered / composted: set `status: closed` via felt edit.
+    //                             The human "did" or "dropped" verdict
+    //                             reduces to a status close for non-shuttle
+    //                             fibers; `shouldIncludeInKanban` then
+    //                             excludes the card on the next render
+    //                             (closed human cards drop off the board).
+    // Other targets (drafts / inFlight / awaitingReview) have no meaning
+    // for a card with no shuttle contract — reject with a clear message
+    // rather than silently no-op.
     if (fiber.hasShuttleBlock !== true) {
+      if (originId !== 'local') {
+        throw new Error(
+          `remote human-card transitions are not yet supported ` +
+            `(fiber ${fiberId} is on origin '${originId}'). ` +
+            `Close it via felt edit on the host directly, or add a shuttle: block.`,
+        );
+      }
+      const currentTags = normalizeTagList(fiber.tags ?? []);
+      if (target === 'ideas') {
+        if (currentTags.includes('idea')) return this.applyTags(fiberId, currentTags);
+        return this.applyTags(fiberId, [...currentTags, 'idea']);
+      }
+      if (target === 'tempered' || target === 'composted') {
+        await this.runFeltStatusEdit({ host, fiberId, status: 'closed' });
+        this.clearFiberPoolCache();
+        const refreshed = await getFiber(host, fiberId);
+        if (!refreshed) {
+          throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
+        }
+        return this.toCard(refreshed, host, originId, new Map([[fiberId, refreshed]]));
+      }
       throw new Error(
-        `kanban only mutates shuttle-managed fibers; ${fiberId} has no shuttle: block`,
+        `human cards (no shuttle: block) only support ideas / tempered / composted ` +
+          `transitions; got target '${target}' for fiber ${fiberId}`,
       );
     }
 
