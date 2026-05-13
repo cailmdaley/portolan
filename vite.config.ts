@@ -4,22 +4,23 @@ import { fileURLToPath, URL } from 'node:url'
 import { realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-// node_modules/vellum is a symlink to the lightcone repo. Vite resolves
-// symlinks before checking fs.allow, so the real path (and its siblings like
-// lightcone/node_modules for react-tweet, pdfjs-dist) fall outside the default
-// allowlist. Resolve the symlink and allow the whole lightcone project root.
-const vellumRealPath = realpathSync(fileURLToPath(new URL('./node_modules/vellum', import.meta.url)))
-const lightconeRoot = dirname(vellumRealPath)
+// vellum-reader ships its TS source in the npm package, so resolve via
+// node_modules in the standard way. If the package is npm-linked from a
+// sibling checkout (common during local development of vellum itself),
+// fs.allow still needs to cover the symlink's real path so Vite doesn't
+// reject reads outside its default allowlist.
+const vellumRealPath = realpathSync(fileURLToPath(new URL('./node_modules/vellum-reader', import.meta.url)))
+const vellumPackageRoot = dirname(vellumRealPath)
 
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   resolve: {
     alias: {
-      // Vellum's internals import via `~/...` (alias for vellum's own src/).
-      // Mirror the alias so portolan's bundle resolves vellum components that
-      // rely on the alias. Points at the symlinked vellum package's src.
-      '~': fileURLToPath(new URL('./node_modules/vellum/src', import.meta.url)),
+      // vellum-reader's internals import via `~/...` (alias for its own src/).
+      // Mirror the alias so portolan's bundle resolves vellum-reader components
+      // that rely on it. Points at the npm-installed package's src.
+      '~': fileURLToPath(new URL('./node_modules/vellum-reader/src', import.meta.url)),
     },
   },
   server: {
@@ -39,11 +40,12 @@ export default defineConfig({
       ignored: ['**/src-tauri/**'],
     },
     // Disable the error overlay which uses an iframe
-    // Serve .portolan directory for city sprites, and the real path of the
-    // vellum symlink (node_modules/vellum → ../../lightcone/vellum) so Vite
-    // doesn't reject those files as outside the allow list.
+    // Serve .portolan directory for city sprites, and the real path of
+    // node_modules/vellum-reader (which may be a symlink during local
+    // development against a sibling checkout) so Vite doesn't reject those
+    // files as outside the allow list.
     fs: {
-      allow: ['.', '.portolan', lightconeRoot]
+      allow: ['.', '.portolan', vellumPackageRoot]
     },
     // Proxy server-side asset routes (project-file artifacts, paper PDFs,
     // astra view templates, and friends) to the portolan backend on :4004.

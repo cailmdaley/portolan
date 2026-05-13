@@ -28,7 +28,7 @@ import {
   type ReadOnlyAdapter,
   type ReadOnlyAdapterError,
   type SaveFileOptions,
-} from 'vellum/adapter';
+} from 'vellum-reader/adapter';
 import type {
   Annotation,
   FiberGraph,
@@ -40,7 +40,7 @@ import type {
   RawFiber,
   SearchHit,
   GraphNode,
-} from 'vellum';
+} from 'vellum-reader';
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`;
 

@@ -36,8 +36,8 @@ import {
   type Annotation,
   type AnnotationBulkAction,
   type WorkspaceMountApi,
-} from 'vellum'
-import 'vellum/css'
+} from 'vellum-reader'
+import 'vellum-reader/css'
 import { KanbanModal } from '../ui/KanbanModal'
 import { createPortolanAdapter } from './portolan-adapter'
 import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'

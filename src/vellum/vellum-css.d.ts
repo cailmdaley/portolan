@@ -1,1 +1,1 @@
-declare module 'vellum/css';
+declare module 'vellum-reader/css';
