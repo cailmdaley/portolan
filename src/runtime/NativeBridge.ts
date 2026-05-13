@@ -11,6 +11,7 @@ export interface NativePortolanStatus {
     reachable: boolean
     owner: 'app' | 'external' | 'failed'
     launchKind: string
+    processGroup: boolean
     pid: number | null
     startedAtUnix: number | null
     lastError: string | null

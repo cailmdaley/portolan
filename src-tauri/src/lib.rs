@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::{
+    io,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -12,6 +13,7 @@ use tauri::Manager;
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 4004;
 const BACKEND_URL: &str = "http://127.0.0.1:4004";
+const BACKEND_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +39,7 @@ struct BackendStatus {
     reachable: bool,
     owner: String,
     launch_kind: String,
+    process_group: bool,
     pid: Option<u32>,
     started_at_unix: Option<u64>,
     last_error: Option<String>,
@@ -66,6 +69,7 @@ struct BackendLaunch {
     program: PathBuf,
     args: Vec<String>,
     cwd: PathBuf,
+    process_group: bool,
 }
 
 impl BackendBridge {
@@ -123,6 +127,7 @@ impl BackendBridge {
             reachable: backend_reachable(),
             owner: self.owner.as_str().to_string(),
             launch_kind: self.launch_kind.clone(),
+            process_group: backend_uses_process_group(),
             pid: self.child.as_ref().map(Child::id),
             started_at_unix: self.started_at_unix,
             last_error: self.last_error.clone(),
@@ -135,8 +140,7 @@ impl BackendBridge {
         }
 
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = terminate_backend_child(&mut child);
         }
     }
 }
@@ -159,14 +163,18 @@ impl BackendOwner {
 
 impl BackendLaunch {
     fn spawn(&self) -> std::io::Result<Child> {
-        Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .args(&self.args)
             .current_dir(&self.cwd)
             .env("PORTOLAN_NATIVE", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+            .stderr(Stdio::null());
+        if self.process_group {
+            configure_backend_process_group(&mut command);
+        }
+        command.spawn()
     }
 }
 
@@ -187,6 +195,7 @@ fn backend_launch() -> BackendLaunch {
             ),
             args: vec!["run".to_string(), "dev".to_string()],
             cwd,
+            process_group: backend_uses_process_group(),
         };
     }
 
@@ -202,6 +211,7 @@ fn backend_launch() -> BackendLaunch {
         ),
         args: vec!["dist/index.js".to_string()],
         cwd,
+        process_group: backend_uses_process_group(),
     }
 }
 
@@ -239,6 +249,65 @@ fn wait_for_backend(timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+fn backend_uses_process_group() -> bool {
+    cfg!(unix)
+}
+
+fn configure_backend_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<bool> {
+    let start = Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        if start.elapsed() >= timeout {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn terminate_backend_child(child: &mut Child) -> io::Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as libc::pid_t;
+        unsafe {
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        if wait_for_child_exit(child, BACKEND_SHUTDOWN_GRACE)? {
+            return Ok(());
+        }
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        let _ = child.wait();
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        child.kill()?;
+        let _ = child.wait();
+        Ok(())
+    }
 }
 
 fn unix_now() -> u64 {
@@ -327,6 +396,7 @@ mod tests {
         let launch = backend_launch();
         assert_eq!(launch.cwd, project_root().join("server"));
         assert!(matches!(launch.kind, "npm-dev" | "node-dist"));
+        assert_eq!(launch.process_group, cfg!(unix));
     }
 
     #[test]
@@ -335,5 +405,56 @@ mod tests {
             resolve_program("missing-portolan-tool", &["/definitely/missing"]),
             PathBuf::from("missing-portolan-tool")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_backend_child_stops_descendants_in_process_group() {
+        use std::io::{BufRead, BufReader};
+        use std::time::Duration;
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & echo $!; wait")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        configure_backend_process_group(&mut command);
+
+        let mut child = command.spawn().expect("test backend process should spawn");
+        let stdout = child
+            .stdout
+            .take()
+            .expect("test process should pipe stdout");
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("test process should print descendant pid");
+        let descendant_pid: libc::pid_t = line
+            .trim()
+            .parse()
+            .expect("descendant pid should be numeric");
+
+        terminate_backend_child(&mut child).expect("process group should terminate");
+        assert!(
+            wait_for_process_gone(descendant_pid, Duration::from_secs(2)),
+            "descendant process should be gone after process-group shutdown"
+        );
+    }
+
+    #[cfg(unix)]
+    fn wait_for_process_gone(pid: libc::pid_t, timeout: Duration) -> bool {
+        let start = Instant::now();
+        loop {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 }
