@@ -2057,8 +2057,14 @@ mod tests {
         env,
         ffi::OsString,
         fs,
+        sync::{Mutex, MutexGuard, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
@@ -2188,7 +2194,34 @@ malformed
     }
 
     #[test]
+    fn parses_connect_default_server_with_once_without_positionals() {
+        let _guard = env_lock();
+        let previous = env::var_os("PLANNOTATOR_PORT");
+        env::remove_var("PLANNOTATOR_PORT");
+
+        let command = parse_args(args(&["connect", "--once"])).unwrap();
+
+        assert_eq!(
+            command,
+            AgentCommand::Connect(AgentConfig {
+                server: DEFAULT_SERVER.to_string(),
+                origin: default_origin(),
+                ssh_host: None,
+                plannotator_port: None,
+                reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
+                once: true,
+            })
+        );
+
+        match previous {
+            Some(previous) => env::set_var("PLANNOTATOR_PORT", previous),
+            None => env::remove_var("PLANNOTATOR_PORT"),
+        }
+    }
+
+    #[test]
     fn parses_connect_defaults_plannotator_port_from_env() {
+        let _guard = env_lock();
         let previous = env::var_os("PLANNOTATOR_PORT");
         env::set_var("PLANNOTATOR_PORT", "1738");
 
@@ -2212,6 +2245,24 @@ malformed
         match previous {
             Some(previous) => env::set_var("PLANNOTATOR_PORT", previous),
             None => env::remove_var("PLANNOTATOR_PORT"),
+        }
+    }
+
+    #[test]
+    fn parses_connect_default_origin_from_env() {
+        let _guard = env_lock();
+        let previous = env::var_os("PORTOLAN_ORIGIN");
+        env::set_var("PORTOLAN_ORIGIN", "preview-login.local");
+
+        let command = parse_args(args(&["connect", "--ssh-host=remote-login"])).unwrap();
+        let AgentCommand::Connect(config) = command else {
+            panic!("expected connect command");
+        };
+        assert_eq!(config.origin, "preview-login.local");
+
+        match previous {
+            Some(previous) => env::set_var("PORTOLAN_ORIGIN", previous),
+            None => env::remove_var("PORTOLAN_ORIGIN"),
         }
     }
 
@@ -3195,6 +3246,61 @@ malformed
         );
         assert_eq!(resume_err, Err("unknown shuttle verb: resume".to_string()));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shuttle_kanban_transition_defaults_felt_host_from_env() {
+        let _guard = env_lock();
+        let dir = temp_host("kanban-shuttle-default-felt-host");
+        fs::create_dir_all(dir.join(".felt/story")).unwrap();
+        fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
+
+        let previous = env::var_os("PORTOLAN_FELT_HOST");
+        env::set_var("PORTOLAN_FELT_HOST", dir.to_str().unwrap());
+
+        let payload = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("fiberId", json!("story")),
+            ("verb", json!("set-outcome")),
+            ("outcome", json!("Default host was used")),
+        ]);
+        let mut invocations = Vec::new();
+
+        let fiber = run_kanban_transition_with(
+            &payload,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(fiber["id"], json!("story"));
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].program, "shuttle-ctl");
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "--felt-store",
+                dir.to_str().unwrap(),
+                "set-outcome",
+                "story",
+                "--outcome",
+                "Default host was used"
+            ]
+        );
+        assert_eq!(
+            invocations[0].envs.get("LOOM_HOME"),
+            Some(&dir.to_string_lossy().into_owned())
+        );
+
+        match previous {
+            Some(previous) => env::set_var("PORTOLAN_FELT_HOST", previous),
+            None => env::remove_var("PORTOLAN_FELT_HOST"),
+        }
     }
 
     #[test]

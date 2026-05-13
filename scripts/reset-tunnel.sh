@@ -171,7 +171,7 @@ wait_for_agent_connect() {
   echo "[$host] Runtime command: $command"
   echo "[$host] Verifying session '$session'..."
   for attempt in $(seq 1 10); do
-    session_log="$(ssh "$host" "tmux capture-pane -t '$session' -p" 2>/dev/null || true)"
+    session_log="$(ssh "$host" "tmux capture-pane -t $(shell_quote_word "$session") -p" 2>/dev/null || true)"
     if echo "$session_log" | grep -Eq "$marker_pattern"; then
       connected=true
       break

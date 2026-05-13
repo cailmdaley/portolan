@@ -38,6 +38,70 @@ function captureResponse() {
 }
 
 describe('HttpApiActivation', () => {
+  it('starts the Node agent with the Node runtime tmux session', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
+    const remoteCity = city();
+    const sshHost = 'candide';
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(remoteCity) },
+      getSshHost: () => sshHost,
+      reconnectTunnelFn,
+      execFileFn: execFileFn as any,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city?cityId=remote-city&agentRuntime=node'),
+      res,
+    );
+
+    expect(reconnectTunnelFn).toHaveBeenCalledWith('candide');
+    expect(execFileFn).toHaveBeenCalledTimes(2);
+    expect(execFileFn.mock.calls[0]?.[1]).toEqual([
+      '-T',
+      sshHost,
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null && echo running || echo stopped`,
+    ]);
+    const startArgs = execFileFn.mock.calls[1]?.[1] as string[];
+    const expectedStartCommand = `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
+    const expectedCommand = `tmux new-session -d -s ${shellEscape('portolan-agent')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
+    expect(startArgs[0]).toBe('-T');
+    expect(startArgs[1]).toBe(sshHost);
+    expect(startArgs[2]).toBe(expectedCommand);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'started',
+        message: `node agent started on ${sshHost} (portolan-agent)`,
+      },
+    });
+  });
+
+  it('rejects unsupported runtime identifiers', async () => {
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      execFileFn: vi.fn() as any,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city?cityId=remote-city&agentRuntime=python'),
+      res,
+    );
+
+    expect(result()).toEqual({
+      status: 400,
+      body: {
+        error: 'Invalid agent runtime: python',
+      },
+    });
+  });
+
   it('starts the Rust preview agent with shell-escaped remote tmux command', async () => {
     const unsafeHost = "candide'; touch /tmp/pwn; echo 'x";
     const execFileFn = vi
