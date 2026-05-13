@@ -5,7 +5,9 @@ use portolan_agent::{
     normalize_felt_host, parse_activity_frames_from_events_jsonl, parse_args, AgentCommand,
     AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
 };
-use portolan_agent_protocol::{AgentFrame, AgentSessionsUpdatePayload};
+use portolan_agent_protocol::{
+    AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
+};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
@@ -66,6 +68,7 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
     let mut fiber_watchers = FiberTreeWatcherSet::new(watch_tx);
     let mut pending_fiber_deltas = BTreeMap::<String, BTreeMap<String, FiberTreeFileOp>>::new();
+    let mut active_city_felt_dump_hosts = HashSet::<String>::new();
     let mut flush_interval = tokio::time::interval(fiber_tree_watch_debounce());
     flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut poll_interval = tokio::time::interval(fiber_tree_poll_interval());
@@ -78,7 +81,14 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
     let mut last_events_char_position = initial_file_position(&events_file);
     let mut events_file_started = false;
 
-    send_agent_session_update(&mut write).await?;
+    let sessions = send_agent_session_update(&mut write).await?;
+    send_active_city_fiber_tree_dumps(
+        &mut write,
+        &mut fiber_watchers,
+        &mut active_city_felt_dump_hosts,
+        &sessions,
+    )
+    .await?;
 
     loop {
         tokio::select! {
@@ -106,7 +116,14 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
                 }
             }
             _ = session_poll_interval.tick() => {
-                send_agent_session_update(&mut write).await?;
+                let sessions = send_agent_session_update(&mut write).await?;
+                send_active_city_fiber_tree_dumps(
+                    &mut write,
+                    &mut fiber_watchers,
+                    &mut active_city_felt_dump_hosts,
+                    &sessions,
+                )
+                .await?;
             }
             _ = events_poll_interval.tick() => {
                 let frames = poll_events_file(&events_file, &mut last_events_char_position, &mut events_file_started);
@@ -281,16 +298,92 @@ fn session_poll_interval() -> Duration {
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_SESSION_POLL_MS))
 }
 
-async fn send_agent_session_update<W>(write: &mut W) -> Result<(), String>
+async fn send_agent_session_update<W>(write: &mut W) -> Result<Vec<AgentSession>, String>
 where
     W: futures_util::Sink<Message> + Unpin,
     <W as futures_util::Sink<Message>>::Error: std::fmt::Display,
 {
     let sessions = collect_agent_sessions();
     let frame = AgentFrame::AgentSessionsUpdate {
-        payload: AgentSessionsUpdatePayload { sessions },
+        payload: AgentSessionsUpdatePayload {
+            sessions: sessions.clone(),
+        },
     };
-    send_agent_frame(write, &frame).await
+    send_agent_frame(write, &frame).await?;
+    Ok(sessions)
+}
+
+async fn send_active_city_fiber_tree_dumps<W>(
+    write: &mut W,
+    fiber_watchers: &mut FiberTreeWatcherSet,
+    sent_hosts: &mut HashSet<String>,
+    sessions: &[AgentSession],
+) -> Result<(), String>
+where
+    W: futures_util::Sink<Message> + Unpin,
+    <W as futures_util::Sink<Message>>::Error: std::fmt::Display,
+{
+    let active_hosts =
+        active_city_felt_hosts_with_probe(sessions, &default_felt_host_path(), |felt_dir| {
+            felt_dir.is_dir()
+        });
+    let active_host_set = active_hosts.iter().cloned().collect::<HashSet<_>>();
+    sent_hosts.retain(|host| active_host_set.contains(host));
+
+    for host in active_hosts {
+        if let Err(error) = fiber_watchers.watch_host(&host) {
+            eprintln!("[portolan-agent-rust] fiber-tree watcher skipped for {host}: {error}");
+        }
+        if !sent_hosts.insert(host.clone()) {
+            continue;
+        }
+        let frame = AgentFrame::FiberTreeHosts {
+            payload: FiberTreeHostsPayload {
+                felt_hosts: vec![host],
+            },
+        };
+        send_responses(write, handle_server_frame(&frame)).await?;
+    }
+    Ok(())
+}
+
+fn active_city_felt_hosts_with_probe<F>(
+    sessions: &[AgentSession],
+    default_felt_host: &Path,
+    felt_dir_exists: F,
+) -> Vec<String>
+where
+    F: Fn(&Path) -> bool,
+{
+    let default_host = normalize_felt_host(&default_felt_host.to_string_lossy());
+    let mut hosts = Vec::new();
+    let mut seen = HashSet::new();
+    for session in sessions {
+        if session.cwd.is_empty() {
+            continue;
+        }
+        let host = normalize_felt_host(&session.cwd);
+        if host == default_host || !felt_dir_exists(&Path::new(&host).join(".felt")) {
+            continue;
+        }
+        if seen.insert(host.clone()) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+fn default_felt_host_path() -> PathBuf {
+    env::var("PORTOLAN_FELT_HOST")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var("HOME")
+                .ok()
+                .map(|home| Path::new(&home).join("loom"))
+        })
+        .unwrap_or_else(|| PathBuf::from("loom"))
 }
 
 fn fiber_tree_poll_interval() -> Duration {
@@ -510,6 +603,19 @@ fn watched_path_to_fiber_event(
 mod tests {
     use super::*;
 
+    fn session(cwd: &str) -> AgentSession {
+        AgentSession {
+            id: None,
+            name: "worker".to_string(),
+            tmux_session: "worker".to_string(),
+            cwd: cwd.to_string(),
+            status: None,
+            has_claims: None,
+            has_playgrounds: None,
+            git_status: None,
+        }
+    }
+
     fn temp_events_file(tag: &str) -> PathBuf {
         env::temp_dir().join(format!(
             "portolan-agent-rust-preview-{tag}-{}.jsonl",
@@ -590,5 +696,36 @@ mod tests {
         assert_eq!(activity.tool, "Edit");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn active_city_felt_hosts_skip_default_and_missing_felt_dirs() {
+        let default_host = Path::new("/Users/cail/loom");
+        let sessions = vec![
+            session("/Users/cail/loom"),
+            session("/work/project-a"),
+            session("/work/project-b"),
+            session("/work/project-a"),
+            session(""),
+        ];
+
+        let hosts = active_city_felt_hosts_with_probe(&sessions, default_host, |felt_dir| {
+            felt_dir == Path::new("/work/project-a/.felt")
+        });
+
+        assert_eq!(hosts, vec!["/work/project-a"]);
+    }
+
+    #[test]
+    fn active_city_felt_hosts_normalize_relative_cwds() {
+        let default_host = Path::new("/Users/cail/loom");
+        let sessions = vec![session("./relative-city")];
+        let normalized = normalize_felt_host("./relative-city");
+
+        let hosts = active_city_felt_hosts_with_probe(&sessions, default_host, |felt_dir| {
+            felt_dir == Path::new(&normalized).join(".felt")
+        });
+
+        assert_eq!(hosts, vec![normalized]);
     }
 }
