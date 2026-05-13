@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import type { ActivityEvent } from './EventWatcher.js';
 import type { GitStatus } from './GitStatusManager.js';
 import type { AgentActivityMessage, AgentSessionsUpdateMessage } from './MessageRouter.js';
-import { OriginManager } from './OriginManager.js';
+import { OriginManager, type RemoteAgentRuntime } from './OriginManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
 import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
@@ -16,7 +16,8 @@ import { CityManager, type City } from './CityManager.js';
 
 const ACTIVITY_PERSISTENCE_PATH = join(homedir(), '.portolan', 'remote-activities.json');
 const MAX_REMOTE_ACTIVITIES = 50;
-const REMOTE_AGENT_TMUX_SESSION = 'portolan-agent';
+const NODE_AGENT_TMUX_SESSION = 'portolan-agent';
+const RUST_AGENT_TMUX_SESSION = 'portolan-agent-rust-preview';
 const REMOTE_AGENT_RECOVERY_COOLDOWN_MS = 60_000;
 const execFileAsync = promisify(execFile);
 
@@ -30,7 +31,7 @@ interface RemoteAgentCoordinatorCallbacks {
   broadcastActivity(activity: ActivityEvent, originId: string): void;
   broadcastState(): void;
   rebuildCities(): void;
-  recoverRemoteAgent(sshHost: string): Promise<RemoteAgentRecoveryResult>;
+  recoverRemoteAgent(sshHost: string, agentRuntime?: RemoteAgentRuntime): Promise<RemoteAgentRecoveryResult>;
 }
 
 export interface RemoteAgentRecoveryResult {
@@ -43,6 +44,7 @@ export interface RemoteAgentRecoveryResult {
 interface RemoteAgentRecoveryState {
   originId: string;
   sshHost: string;
+  agentRuntime: RemoteAgentRuntime;
   disconnectedAt: number;
   lastAttemptAt?: number;
   lastResult?: RemoteAgentRecoveryResult;
@@ -120,6 +122,7 @@ export class RemoteAgentCoordinator {
     return Array.from(this.recoveryStates.values()).map((state) => ({
       originId: state.originId,
       sshHost: state.sshHost,
+      agentRuntime: state.agentRuntime,
       disconnectedAt: new Date(state.disconnectedAt).toISOString(),
       lastAttemptAt: state.lastAttemptAt ? new Date(state.lastAttemptAt).toISOString() : null,
       inFlight: !!state.inFlight,
@@ -284,7 +287,11 @@ export class RemoteAgentCoordinator {
     this.callbacks.broadcastActivity(activity, originId);
   }
 
-  handleAgentDisconnect(originId: string, sshHost?: string): void {
+  handleAgentDisconnect(
+    originId: string,
+    sshHost?: string,
+    agentRuntime: RemoteAgentRuntime = 'node',
+  ): void {
     const originSessionsMap = this.remoteSessions.get(originId);
     if (this.originManager.isOriginConnected(originId)) return;
 
@@ -316,9 +323,10 @@ export class RemoteAgentCoordinator {
       this.recoveryStates.set(originId, {
         originId,
         sshHost,
+        agentRuntime,
         disconnectedAt: Date.now(),
       });
-      void this.recoverRemoteAgent(originId, sshHost);
+      void this.recoverRemoteAgent(originId, sshHost, Date.now(), agentRuntime);
     }
   }
 
@@ -330,16 +338,23 @@ export class RemoteAgentCoordinator {
       const state = this.recoveryStates.get(origin.id);
       if (!state) continue;
       if (now - state.disconnectedAt < 15_000) continue;
-      void this.recoverRemoteAgent(origin.id, origin.sshHost, now);
+      void this.recoverRemoteAgent(origin.id, origin.sshHost, now, origin.agentRuntime ?? 'node');
     }
   }
 
-  private async recoverRemoteAgent(originId: string, sshHost: string, now = Date.now()): Promise<void> {
+  private async recoverRemoteAgent(
+    originId: string,
+    sshHost: string,
+    now = Date.now(),
+    agentRuntime: RemoteAgentRuntime = 'node',
+  ): Promise<void> {
     const existing = this.recoveryStates.get(originId) ?? {
       originId,
       sshHost,
+      agentRuntime,
       disconnectedAt: now,
     };
+    existing.agentRuntime = agentRuntime;
     if (existing.inFlight) return;
     if (existing.lastAttemptAt && now - existing.lastAttemptAt < REMOTE_AGENT_RECOVERY_COOLDOWN_MS) {
       return;
@@ -351,8 +366,8 @@ export class RemoteAgentCoordinator {
     this.recoveryStates.set(originId, existing);
 
     try {
-      console.log(`[RemoteAgent] ${sshHost}: tunnel/agent recovery starting`);
-      existing.lastResult = await this.callbacks.recoverRemoteAgent(sshHost);
+      console.log(`[RemoteAgent] ${sshHost}: tunnel/${agentRuntime} agent recovery starting`);
+      existing.lastResult = await this.callbacks.recoverRemoteAgent(sshHost, agentRuntime);
       console.log(`[RemoteAgent] ${sshHost}: ${existing.lastResult.message}`);
     } catch (error) {
       existing.lastError = errorMessage(error);
@@ -542,18 +557,34 @@ async function waitForRemotePortolan(sshHost: string, timeoutMs = 20_000): Promi
   return false;
 }
 
-async function startRemoteAgent(sshHost: string): Promise<void> {
-  const agentCommand = `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
+function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string {
+  return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;
+}
+
+function remoteAgentCommand(agentRuntime: RemoteAgentRuntime, sshHost: string): string {
+  if (agentRuntime === 'rust') {
+    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}`;
+  }
+  return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
+}
+
+async function startRemoteAgent(sshHost: string, agentRuntime: RemoteAgentRuntime): Promise<void> {
+  const session = remoteAgentTmuxSession(agentRuntime);
+  const agentCommand = remoteAgentCommand(agentRuntime, sshHost);
   const remoteCommand = [
-    `tmux kill-session -t ${shellEscape(`=${REMOTE_AGENT_TMUX_SESSION}:`)} 2>/dev/null || true`,
-    `tmux new-session -d -s ${shellEscape(REMOTE_AGENT_TMUX_SESSION)} ${shellEscape(`bash -l -c ${shellEscape(agentCommand)}`)}`,
+    `tmux kill-session -t ${shellEscape(`=${session}:`)} 2>/dev/null || true`,
+    `tmux new-session -d -s ${shellEscape(session)} ${shellEscape(`bash -l -c ${shellEscape(agentCommand)}`)}`,
   ].join('; ');
 
   await execFileAsync('ssh', ['-T', sshHost, remoteCommand], { timeout: 30_000 });
 }
 
-export async function recoverRemoteAgent(sshHost: string): Promise<RemoteAgentRecoveryResult> {
+export async function recoverRemoteAgent(
+  sshHost: string,
+  agentRuntime: RemoteAgentRuntime = 'node',
+): Promise<RemoteAgentRecoveryResult> {
   await reconnectTunnel(sshHost);
+  const session = remoteAgentTmuxSession(agentRuntime);
 
   const reachable = await waitForRemotePortolan(sshHost);
   if (!reachable) {
@@ -561,24 +592,24 @@ export async function recoverRemoteAgent(sshHost: string): Promise<RemoteAgentRe
       sshHost,
       tunnel: 'unreachable',
       agent: 'failed',
-      message: `${sshHost}: tunnel unreachable after kickstart; portolan-agent was not restarted`,
+      message: `${sshHost}: tunnel unreachable after kickstart; ${session} was not restarted`,
     };
   }
 
   try {
-    await startRemoteAgent(sshHost);
+    await startRemoteAgent(sshHost, agentRuntime);
     return {
       sshHost,
       tunnel: 'reachable',
       agent: 'restarted',
-      message: `${sshHost}: tunnel reachable; restarted ${REMOTE_AGENT_TMUX_SESSION}`,
+      message: `${sshHost}: tunnel reachable; restarted ${session}`,
     };
   } catch (error) {
     return {
       sshHost,
       tunnel: 'reachable',
       agent: 'failed',
-      message: `${sshHost}: tunnel reachable; failed to restart ${REMOTE_AGENT_TMUX_SESSION}: ${errorMessage(error)}`,
+      message: `${sshHost}: tunnel reachable; failed to restart ${session}: ${errorMessage(error)}`,
     };
   }
 }

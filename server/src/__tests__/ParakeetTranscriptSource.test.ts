@@ -134,17 +134,21 @@ describeIfPython('ParakeetTranscriptSource (script-mode daemon)', () => {
     const errors: Error[] = [];
     const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve) => {
-        const source = new ParakeetTranscriptSource(
+        let source: ParakeetTranscriptSource;
+        source = new ParakeetTranscriptSource(
           { mode: 'script', scriptPath: fixtureLongScriptPath, pythonPath },
           {
-            onChunk: (chunk) => chunks.push(chunk as { text: string; status: string }),
+            onChunk: (chunk) => {
+              chunks.push(chunk as { text: string; status: string });
+              if (chunks.length === 2) {
+                source.stop();
+              }
+            },
             onError: (error) => errors.push(error),
             onExit: (code, signal) => resolve({ code, signal }),
           },
         );
         source.start();
-        // Let the two quick emits flow, then stop before the 5s-delayed third.
-        setTimeout(() => source.stop(), 200);
       },
     );
 

@@ -11,7 +11,7 @@ import { WebSocketServer } from 'ws';
 
 import { SessionTracker, Session } from './SessionTracker.js';
 import { CityManager, City } from './CityManager.js';
-import { OriginManager } from './OriginManager.js';
+import { OriginManager, type RemoteAgentRuntime } from './OriginManager.js';
 import { CityPersistence } from './CityPersistence.js';
 import { AnnotationPersistence } from './AnnotationPersistence.js';
 import { GitStatusManager } from './GitStatusManager.js';
@@ -41,6 +41,10 @@ const PORT = process.env.VITEST ? 4099 : 4004;
 const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 const LOCAL_ORIGIN_ID = 'local';
 let remoteWorkingTimeoutIntervalHandle: NodeJS.Timeout | null = null;
+
+function parseRemoteAgentRuntime(value: string | null): RemoteAgentRuntime {
+  return value === 'rust' ? 'rust' : 'node';
+}
 
 // ============================================================================
 // Initialization
@@ -419,6 +423,7 @@ wss.on('connection', async (ws, req) => {
   const isAgent = url.searchParams.get('agent') === 'true';
   const originName = url.searchParams.get('origin');
   const sshHost = url.searchParams.get('sshHost') || undefined;
+  const agentRuntime = parseRemoteAgentRuntime(url.searchParams.get('agentRuntime'));
   const plannotatorPortParam = url.searchParams.get('plannotatorPort');
   const plannotatorPort = plannotatorPortParam ? parseInt(plannotatorPortParam, 10) : undefined;
 
@@ -426,7 +431,7 @@ wss.on('connection', async (ws, req) => {
     // Agent connection — normalize origin name using sshHost when available
     // so different login nodes (login07.leonardo.local) map to the same origin (cineca).
     const effectiveOriginName = sshHost ? sshHost.replace(/-login\d+$/, '') : originName;
-    const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort);
+    const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort, agentRuntime);
     cityManager.setOriginPosition(origin.id, origin.position);
     // Track sshHost for city key normalization (so different login nodes share cities)
     if (sshHost) {
@@ -512,7 +517,11 @@ wss.on('connection', async (ws, req) => {
     ws.on('close', () => {
       const disconnectedOrigin = originManager.handleDisconnect(ws);
       if (disconnectedOrigin) {
-        remoteAgentCoordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
+        remoteAgentCoordinator.handleAgentDisconnect(
+          disconnectedOrigin.id,
+          disconnectedOrigin.sshHost,
+          disconnectedOrigin.agentRuntime,
+        );
         // Stage 3a — flag the origin's fiber-tree snapshot stale (kept,
         // not cleared, so the kanban can render last-known-good cards
         // with a "waiting on <hostname>" badge). Stage 3b wires the UI;

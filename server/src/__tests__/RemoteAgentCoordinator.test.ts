@@ -86,12 +86,13 @@ describe('RemoteAgentCoordinator', () => {
     coordinator.handleAgentDisconnect(disconnectedOrigin!.id, disconnectedOrigin!.sshHost);
 
     await vi.waitFor(() => {
-      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide');
+      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'node');
     });
     await vi.waitFor(() => {
       expect(coordinator.getRemoteAgentRecoveryStats()[0]).toEqual(expect.objectContaining({
         originId: 'remote-candide',
         sshHost: 'candide',
+        agentRuntime: 'node',
         inFlight: false,
         lastResult: expect.objectContaining({
           tunnel: 'reachable',
@@ -110,7 +111,7 @@ describe('RemoteAgentCoordinator', () => {
     coordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
 
     await vi.waitFor(() => {
-      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide');
+      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'node');
     });
 
     coordinator.handleAgentSessionsUpdate('remote-candide', [
@@ -122,5 +123,39 @@ describe('RemoteAgentCoordinator', () => {
     ]);
 
     expect(coordinator.getRemoteAgentRecoveryStats()).toEqual([]);
+  });
+
+  it('recovers a disconnected Rust preview agent as Rust', async () => {
+    const { originManager, callbacks, coordinator } = createCoordinator({
+      recoverRemoteAgent: vi.fn().mockResolvedValue({
+        sshHost: 'candide',
+        tunnel: 'reachable',
+        agent: 'restarted',
+        message: 'candide: tunnel reachable; restarted portolan-agent-rust-preview',
+      }),
+    });
+    const ws = { close: vi.fn() } as any;
+
+    originManager.registerAgent('candide', ws, 'candide', undefined, 'rust');
+    const disconnectedOrigin = originManager.handleDisconnect(ws)!;
+    coordinator.handleAgentDisconnect(
+      disconnectedOrigin.id,
+      disconnectedOrigin.sshHost,
+      disconnectedOrigin.agentRuntime,
+    );
+
+    await vi.waitFor(() => {
+      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'rust');
+    });
+    await vi.waitFor(() => {
+      expect(coordinator.getRemoteAgentRecoveryStats()[0]).toEqual(expect.objectContaining({
+        originId: 'remote-candide',
+        sshHost: 'candide',
+        agentRuntime: 'rust',
+        lastResult: expect.objectContaining({
+          message: expect.stringContaining('portolan-agent-rust-preview'),
+        }),
+      }));
+    });
   });
 });

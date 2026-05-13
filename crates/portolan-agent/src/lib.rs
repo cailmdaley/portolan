@@ -281,7 +281,7 @@ pub fn build_agent_url(config: &AgentConfig) -> String {
 
     let separator = if url.contains('?') { '&' } else { '?' };
     url.push(separator);
-    url.push_str("agent=true&origin=");
+    url.push_str("agent=true&agentRuntime=rust&origin=");
     url.push_str(&urlencoding::encode(&config.origin));
 
     if let Some(ssh_host) = effective_ssh_host(config) {
@@ -2084,7 +2084,7 @@ malformed
 
         assert_eq!(
             url,
-            "ws://localhost:4004/?agent=true&origin=login%2001&sshHost=cineca-login01&plannotatorPort=4008"
+            "ws://localhost:4004/?agent=true&agentRuntime=rust&origin=login%2001&sshHost=cineca-login01&plannotatorPort=4008"
         );
     }
 
@@ -2101,7 +2101,7 @@ malformed
 
         assert_eq!(
             url,
-            "ws://localhost:4004/?agent=true&origin=login05.leonardo.local&sshHost=cineca-login05"
+            "ws://localhost:4004/?agent=true&agentRuntime=rust&origin=login05.leonardo.local&sshHost=cineca-login05"
         );
     }
 
@@ -2118,7 +2118,7 @@ malformed
 
         assert_eq!(
             url,
-            "ws://localhost:4004/?agent=true&origin=login05.leonardo.local&sshHost=cineca-login05"
+            "ws://localhost:4004/?agent=true&agentRuntime=rust&origin=login05.leonardo.local&sshHost=cineca-login05"
         );
     }
 
@@ -2135,7 +2135,7 @@ malformed
 
         assert_eq!(
             url,
-            "ws://localhost:4004/?agent=true&origin=candide&sshHost=candide"
+            "ws://localhost:4004/?agent=true&agentRuntime=rust&origin=candide&sshHost=candide"
         );
     }
 

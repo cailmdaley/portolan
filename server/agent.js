@@ -1518,7 +1518,7 @@ function connect(serverUrl, sshHost) {
     const specificSshHost = buildSpecificSshHost(sshHost);
 
     // Build URL with query params
-    let url = `ws://${serverUrl}?agent=true&origin=${encodeURIComponent(ORIGIN_NAME)}`;
+    let url = `ws://${serverUrl}?agent=true&agentRuntime=node&origin=${encodeURIComponent(ORIGIN_NAME)}`;
     if (specificSshHost) {
         url += `&sshHost=${encodeURIComponent(specificSshHost)}`;
     }

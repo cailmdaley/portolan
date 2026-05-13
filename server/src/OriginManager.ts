@@ -17,12 +17,15 @@ export interface Origin {
   name: string;                  // hostname
   type: 'local' | 'remote';
   sshHost?: string;              // SSH config host (for remote focus)
+  agentRuntime?: RemoteAgentRuntime; // Runtime that currently owns this origin socket
   plannotatorPort?: number;      // Port for plannotator on this origin
   position: { q: number; r: number };  // hex offset for this origin's cities
   connectedAt: number;
   lastSeen: number;
   agentSockets: Set<WebSocket>;  // all agent connections for this origin
 }
+
+export type RemoteAgentRuntime = 'node' | 'rust';
 
 // ============================================================================
 // OriginManager
@@ -50,7 +53,13 @@ export class OriginManager {
    * Register or reconnect an origin when an agent connects.
    * Returns the origin object.
    */
-  registerAgent(originName: string, ws: WebSocket, sshHost?: string, plannotatorPort?: number): Origin {
+  registerAgent(
+    originName: string,
+    ws: WebSocket,
+    sshHost?: string,
+    plannotatorPort?: number,
+    agentRuntime: RemoteAgentRuntime = 'node',
+  ): Origin {
     const originId = `remote-${originName}`;
     let origin = this.origins.get(originId);
 
@@ -62,6 +71,7 @@ export class OriginManager {
         name: originName,
         type: 'remote',
         sshHost: sshHost || originName,
+        agentRuntime,
         plannotatorPort,
         position: this.getCompassPosition(this.nextPositionIndex),
         connectedAt: Date.now(),
@@ -76,6 +86,7 @@ export class OriginManager {
       if (sshHost) {
         origin.sshHost = sshHost;
       }
+      origin.agentRuntime = agentRuntime;
       if (plannotatorPort) {
         origin.plannotatorPort = plannotatorPort;
       }
