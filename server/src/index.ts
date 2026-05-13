@@ -135,6 +135,7 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     fiberTreeSnapshotStore.getAllSnapshots(),
     cityManager.getCities(),
   ),
+  remoteShuttleDiagnosticsProvider: () => remoteAgentCoordinator.getRemoteShuttleSnapshotStats(),
   // Stage 4 — remote-origin kanban mutations route through this executor.
   // Sends a `kanban-transition` payload over the agent's WebSocket via the
   // correlation-ID layer, applies the agent's reply fiber JSON as a

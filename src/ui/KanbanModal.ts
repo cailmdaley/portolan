@@ -220,11 +220,27 @@ interface KanbanResponse {
    * stale badge and to disable drag for stale-origin cards.
    */
   staleness: Record<string, KanbanOriginStaleness>
+  shuttleDiagnostics?: {
+    remoteSnapshots: RemoteShuttleSnapshotDiagnostic[]
+  }
   remoteScope?: {
     originId: string
     hostname: string
   }
+  tagIndex?: string[]
   generatedAt: number
+}
+
+type LegacyKanbanResponse = Partial<KanbanResponse> & {
+  columns?: Partial<Record<ColumnKind, KanbanCard[]>>
+}
+
+interface RemoteShuttleSnapshotDiagnostic {
+  originId: string
+  receivedAt: string
+  eligibleCount: number | null
+  blockedCount: number | null
+  orphanCount: number | null
 }
 
 interface KanbanModalOptions {
@@ -289,6 +305,13 @@ export class KanbanModal {
   private dragSourceId: string | null = null
   private dragAutoScrollFrame: number | null = null
   private dragAutoScrollVelocity = 0
+  /** Horizontal edge-scroll for the timeline wrap during drag. Lets the
+   *  user drag a card from Now toward the timeline's left/right edge to
+   *  auto-scroll into off-screen days. Separate from the body's vertical
+   *  drag scroll so they can run concurrently. */
+  private timelineEdgeScrollFrame: number | null = null
+  private timelineEdgeScrollVelocity = 0
+  private timelineEdgeScrollTarget: HTMLElement | null = null
   private bannerTimer: number | null = null
   private hasClaimedInitialFocus = false
   /** Null = global (default). Set by mount(...{cityScope}); cleared by
@@ -636,7 +659,7 @@ export class KanbanModal {
         this.renderError(`Server returned ${res.status}`)
         return
       }
-      const data = (await res.json()) as KanbanResponse
+      const data = normalizeKanbanResponse(await res.json())
       if (token !== this.inflightFetchToken) return
       // Skip re-render when the response is semantically unchanged —
       // every 15-second poll otherwise tears down ~50 cards × ~30 nodes
@@ -667,6 +690,7 @@ export class KanbanModal {
       i: data.ideas,
       t: data.totals,
       tt: data.temperedTotal,
+      sd: shuttleDiagnosticsSignature(data.shuttleDiagnostics),
     })
   }
 
@@ -705,6 +729,8 @@ export class KanbanModal {
     if (soonCount > 0) parts.push(`${soonCount} soon`)
     if (totals.stash > 0) parts.push(`${totals.stash} stashed`)
     if (temperedTotal > 0) parts.push(`${temperedTotal} tempered`)
+    const remoteShuttleText = formatRemoteShuttleDiagnostics(data.shuttleDiagnostics)
+    if (remoteShuttleText) parts.push(remoteShuttleText)
     this.statusEl.textContent = remotePrefix + parts.join(' · ')
 
     // Tear down any per-render observers from the previous strip before we
@@ -844,6 +870,11 @@ export class KanbanModal {
     // day is off-screen. Recomputed on scroll (rAF-debounced) and on resize.
     this.installAdaptiveStripHeight(wrap, strip, rowByCol, days.length)
 
+    // Edge-scroll on horizontal drag: dragging a card near the left/right
+    // edge of the wrap auto-scrolls into off-screen days so the user can
+    // drop on Mon-the-18th without having to scroll first.
+    this.installTimelineEdgeScroll(wrap)
+
     // Anytime-soon pool below the strip.
     const pool = document.createElement('div')
     pool.className = 'kbn-anytime-pool'
@@ -912,6 +943,68 @@ export class KanbanModal {
       wrap.removeEventListener('scroll', schedule)
       ro?.disconnect()
     }
+  }
+
+  /** Edge-scroll the timeline wrap when a drag approaches its left or
+   *  right edge. Mirrors the body's vertical drag-scroll: a soft 80-px
+   *  edge zone, velocity scaled by `pressure^1.35` so the closer to the
+   *  edge the user gets, the faster the strip scrolls. Listeners live
+   *  on `wrap` and tear down naturally when the strip is re-rendered. */
+  private installTimelineEdgeScroll(wrap: HTMLElement): void {
+    const EDGE_PX = 80
+    const MAX_STEP_PX = 28
+    const onDragOver = (e: DragEvent): void => {
+      if (!this.dragSourceId) return
+      // The dropcols inside the wrap have their own dragover handler with
+      // `preventDefault + stopPropagation`. We're listening on the wrap
+      // *before* those bubble back up to body — and we still want the day
+      // drop targets to be "the drop target." So we just compute velocity
+      // here and let dropcol handlers continue to claim the drop itself.
+      const r = wrap.getBoundingClientRect()
+      const leftPressure = Math.max(0, EDGE_PX - (e.clientX - r.left))
+      const rightPressure = Math.max(0, EDGE_PX - (r.right - e.clientX))
+      const direction = rightPressure > 0 ? 1 : leftPressure > 0 ? -1 : 0
+      const pressure = Math.max(leftPressure, rightPressure) / EDGE_PX
+      this.timelineEdgeScrollVelocity = direction === 0
+        ? 0
+        : direction * Math.max(6, Math.round(Math.pow(pressure, 1.35) * MAX_STEP_PX))
+      if (this.timelineEdgeScrollVelocity === 0) {
+        this.stopTimelineEdgeScroll()
+        return
+      }
+      this.timelineEdgeScrollTarget = wrap
+      this.startTimelineEdgeScroll()
+    }
+    const onDragLeave = (e: DragEvent): void => {
+      if (e.relatedTarget && wrap.contains(e.relatedTarget as Node)) return
+      this.stopTimelineEdgeScroll()
+    }
+    const onDrop = (): void => this.stopTimelineEdgeScroll()
+    wrap.addEventListener('dragover', onDragOver)
+    wrap.addEventListener('dragleave', onDragLeave)
+    wrap.addEventListener('drop', onDrop)
+  }
+
+  private startTimelineEdgeScroll(): void {
+    if (this.timelineEdgeScrollFrame !== null) return
+    const tick = (): void => {
+      const target = this.timelineEdgeScrollTarget
+      if (!target || !this.dragSourceId || this.timelineEdgeScrollVelocity === 0) {
+        this.stopTimelineEdgeScroll()
+        return
+      }
+      target.scrollLeft += this.timelineEdgeScrollVelocity
+      this.timelineEdgeScrollFrame = window.requestAnimationFrame(tick)
+    }
+    this.timelineEdgeScrollFrame = window.requestAnimationFrame(tick)
+  }
+
+  private stopTimelineEdgeScroll(): void {
+    this.timelineEdgeScrollVelocity = 0
+    this.timelineEdgeScrollTarget = null
+    if (this.timelineEdgeScrollFrame === null) return
+    window.cancelAnimationFrame(this.timelineEdgeScrollFrame)
+    this.timelineEdgeScrollFrame = null
   }
 
   /** Render the Stash surface: cluster grid keyed by containment-path's
@@ -3677,6 +3770,84 @@ function findCardById(resp: KanbanResponse | null, id: string): KanbanCard | nul
   return null
 }
 
+function normalizeKanbanResponse(raw: unknown): KanbanResponse {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Kanban response was not an object')
+  }
+
+  const data = raw as LegacyKanbanResponse
+  if (!isRecord(data.now) && !isRecord(data.columns)) {
+    throw new Error('Kanban response missing board columns')
+  }
+
+  const nowSource: Record<string, unknown> = isRecord(data.now) ? data.now : {}
+  const legacyColumns: Record<string, unknown> = isRecord(data.columns) ? data.columns : {}
+  const timelineSource: Record<string, unknown> = isRecord(data.timeline) ? data.timeline : {}
+  const past = listFrom<KanbanCard>(
+    timelineSource['past'],
+    ...listFrom<KanbanCard>(legacyColumns['tempered']),
+    ...listFrom<KanbanCard>(legacyColumns['composted']),
+  )
+  const now = {
+    drafts: listFrom<KanbanCard>(nowSource['drafts'], ...listFrom<KanbanCard>(legacyColumns['drafts'])),
+    inFlight: listFrom<KanbanCard>(nowSource['inFlight'], ...listFrom<KanbanCard>(legacyColumns['inFlight'])),
+    awaitingReview: listFrom<KanbanCard>(nowSource['awaitingReview'], ...listFrom<KanbanCard>(legacyColumns['awaitingReview'])),
+  }
+  const timeline = {
+    past,
+    futureDated: listFrom<KanbanCard>(timelineSource['futureDated']),
+    anytimeSoon: listFrom<KanbanCard>(timelineSource['anytimeSoon']),
+  }
+  const stash = listFrom<KanbanCard>(data.stash)
+  const ideas = listFrom<KanbanCard>(data.ideas, ...listFrom<KanbanCard>(legacyColumns['ideas']))
+  const totalsSource: Record<string, unknown> = isRecord(data.totals) ? data.totals : {}
+  const staleness =
+    isRecord(data.staleness)
+      ? data.staleness as Record<string, KanbanOriginStaleness>
+      : { local: { status: 'fresh' as const } }
+
+  return {
+    feltHost: typeof data.feltHost === 'string' ? data.feltHost : '',
+    now,
+    timeline,
+    stash,
+    ideas,
+    totals: {
+      ideas: numeric(totalsSource['ideas'], ideas.length),
+      drafts: numeric(totalsSource['drafts'], now.drafts.length),
+      inFlight: numeric(totalsSource['inFlight'], now.inFlight.length),
+      awaitingReview: numeric(totalsSource['awaitingReview'], now.awaitingReview.length),
+      past: numeric(totalsSource['past'], timeline.past.length),
+      futureDated: numeric(totalsSource['futureDated'], timeline.futureDated.length),
+      anytimeSoon: numeric(totalsSource['anytimeSoon'], timeline.anytimeSoon.length),
+      stash: numeric(totalsSource['stash'], stash.length),
+    },
+    temperedTotal: numeric(
+      data.temperedTotal,
+      timeline.past.filter((card) => card.tempered === true).length,
+    ),
+    staleness,
+    shuttleDiagnostics: {
+      remoteSnapshots: listFrom(data.shuttleDiagnostics?.remoteSnapshots),
+    },
+    remoteScope: data.remoteScope,
+    tagIndex: listFrom(data.tagIndex).filter((tag): tag is string => typeof tag === 'string'),
+    generatedAt: numeric(data.generatedAt, Date.now()),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function listFrom<T = any>(value: unknown, ...fallback: T[]): T[] {
+  return Array.isArray(value) ? value as T[] : fallback
+}
+
+function numeric(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
 function remoteDisconnectedText(
   data: KanbanResponse,
   state: KanbanOriginStaleness,
@@ -3690,6 +3861,41 @@ function remoteDisconnectedText(
   return hasCards
     ? `Remote city ${hostname} disconnected; showing last snapshot · `
     : `Remote city ${hostname} disconnected; no Kanban snapshot yet · `
+}
+
+function shuttleDiagnosticsSignature(
+  diagnostics: KanbanResponse['shuttleDiagnostics'] | undefined,
+): Array<Pick<RemoteShuttleSnapshotDiagnostic, 'originId' | 'receivedAt' | 'eligibleCount' | 'blockedCount' | 'orphanCount'>> {
+  return (diagnostics?.remoteSnapshots ?? [])
+    .map(({ originId, receivedAt, eligibleCount, blockedCount, orphanCount }) => ({
+      originId,
+      receivedAt,
+      eligibleCount,
+      blockedCount,
+      orphanCount,
+    }))
+    .sort((a, b) => a.originId.localeCompare(b.originId))
+}
+
+function formatRemoteShuttleDiagnostics(
+  diagnostics: KanbanResponse['shuttleDiagnostics'] | undefined,
+): string {
+  const snapshots = diagnostics?.remoteSnapshots ?? []
+  if (snapshots.length === 0) return ''
+
+  return snapshots
+    .slice()
+    .sort((a, b) => a.originId.localeCompare(b.originId))
+    .map((entry) => {
+      const host = entry.originId.replace(/^remote-/, '')
+      const eligible = entry.eligibleCount ?? '?'
+      const blocked = entry.blockedCount ?? '?'
+      const orphan = entry.orphanCount ?? '?'
+      const age = formatRelative(entry.receivedAt)
+      const suffix = age ? ` @ ${age}` : ''
+      return `Shuttle ${host}: ${eligible}/${blocked}/${orphan}${suffix}`
+    })
+    .join(' · ')
 }
 
 /**

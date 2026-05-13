@@ -28,6 +28,7 @@ import {
   HttpApiKanban,
   type FeltTagEditInvocation,
   type RemoteKanbanMutationRequest,
+  type RemoteShuttleSnapshotDiagnostic,
   type ShuttleCtlInvocation,
 } from './HttpApiKanban.js';
 import { HttpApiGlobalSearch } from './HttpApiGlobalSearch.js';
@@ -96,6 +97,7 @@ interface CachedApi<T> {
  */
 export interface HttpApiOptions {
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  remoteShuttleDiagnosticsProvider?: () => RemoteShuttleSnapshotDiagnostic[];
   remoteTransitionExecutor?: (args: RemoteKanbanMutationRequest) => Promise<void>;
   remoteRawFiberExecutor?: (request: RemoteRawFiberInvocation) => Promise<RemoteRawFiberResult>;
   /**
@@ -141,6 +143,7 @@ export class HttpApi {
   private playgroundApi: HttpApiPlayground;
   private tapestryApi: HttpApiTapestry;
   private remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private remoteShuttleDiagnosticsProvider: (() => RemoteShuttleSnapshotDiagnostic[]) | undefined;
   private remoteTransitionExecutor: HttpApiOptions['remoteTransitionExecutor'];
   private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
@@ -160,6 +163,7 @@ export class HttpApi {
     this.originLookup = originLookup;
     this.persistenceLookup = persistenceLookup;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
+    this.remoteShuttleDiagnosticsProvider = options.remoteShuttleDiagnosticsProvider;
     this.remoteTransitionExecutor = options.remoteTransitionExecutor;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
@@ -183,6 +187,7 @@ export class HttpApi {
     this.astraViewApi = new HttpApiAstraView({ originLookup });
     this.kanbanApi = new HttpApiKanban({
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+      remoteShuttleDiagnosticsProvider: this.remoteShuttleDiagnosticsProvider,
       remoteTransitionExecutor: this.remoteTransitionExecutor,
       cacheTtlMs: 5000,
       shuttleCtlFn: this.shuttleCtlFn,
@@ -770,6 +775,7 @@ export class HttpApi {
         feltHosts: localPins,
         cities: localCities,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+        remoteShuttleDiagnosticsProvider: this.remoteShuttleDiagnosticsProvider,
         remoteTransitionExecutor: this.remoteTransitionExecutor,
         cacheTtlMs: 5000,
         shuttleCtlFn: this.shuttleCtlFn,
@@ -790,6 +796,7 @@ export class HttpApi {
       const api = new HttpApiKanban({
         feltHost: city.path,
         remoteSnapshotsProvider: this.remoteSnapshotsProvider,
+        remoteShuttleDiagnosticsProvider: this.remoteShuttleDiagnosticsProvider,
         remoteOriginFilter: city.originId,
         remoteFeltHostFilter: city.path,
         remoteTransitionExecutor: this.remoteTransitionExecutor,

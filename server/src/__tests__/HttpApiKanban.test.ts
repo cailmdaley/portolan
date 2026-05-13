@@ -1943,6 +1943,33 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       expect(res.body.staleness).toEqual({ local: { status: 'fresh' } });
     });
 
+    it('surfaces remote shuttle diagnostics without adding board cards', async () => {
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        listSessions: () => [],
+        remoteShuttleDiagnosticsProvider: () => [{
+          originId: 'remote-candide',
+          receivedAt: '2026-05-13T10:00:00.000Z',
+          eligibleCount: 2,
+          blockedCount: 5,
+          orphanCount: 1,
+          snapshot: { eligible: [], blocked: [], orphans: [] },
+        }],
+      });
+      const res = await callKanban(api);
+      expect(res.body.totals.inFlight).toBe(0);
+      expect(res.body.shuttleDiagnostics).toEqual({
+        remoteSnapshots: [{
+          originId: 'remote-candide',
+          receivedAt: '2026-05-13T10:00:00.000Z',
+          eligibleCount: 2,
+          blockedCount: 5,
+          orphanCount: 1,
+          snapshot: { eligible: [], blocked: [], orphans: [] },
+        }],
+      });
+    });
+
     it('applyTransition routes remote-origin writes through remoteTransitionExecutor', async () => {
       const store = new FiberTreeSnapshotStore();
       store.upsertFullDump('remote-cineca', '/leonardo/loom', [

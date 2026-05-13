@@ -135,6 +135,15 @@ function emptyKanbanResponse() {
     },
     temperedTotal: 0,
     staleness: { local: { status: 'fresh' } },
+    shuttleDiagnostics: {
+      remoteSnapshots: [] as Array<{
+        originId: string
+        receivedAt: string
+        eligibleCount: number | null
+        blockedCount: number | null
+        orphanCount: number | null
+      }>,
+    },
   }
 }
 
@@ -342,6 +351,86 @@ describe('KanbanModal three-surface layout', () => {
 
     expect(host.querySelector('.kbn-section-now .kbn-col-drafts')?.textContent).toContain('Now draft')
     expect(host.querySelector('.kbn-section-now .kbn-col-inFlight')?.textContent).toContain('Now active')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('renders remote Shuttle diagnostics in the masthead status line', async () => {
+    const response = emptyKanbanResponse()
+    response.shuttleDiagnostics.remoteSnapshots = [{
+      originId: 'remote-candide',
+      receivedAt: new Date().toISOString(),
+      eligibleCount: 2,
+      blockedCount: 5,
+      orphanCount: 1,
+    }]
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(response),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    expect(host.querySelector('.kbn-status')?.textContent).toContain('Shuttle candide: 2/5/1')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('renders a legacy native-bundled /kanban columns response', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse({
+        feltHost: '/tmp/felt',
+        columns: {
+          drafts: [makeKanbanCard({ id: 'legacy/draft', name: 'Legacy draft' })],
+          inFlight: [makeKanbanCard({ id: 'legacy/live', name: 'Legacy live' })],
+          awaitingReview: [],
+          tempered: [],
+          composted: [],
+        },
+        totals: { drafts: 1, inFlight: 1, awaitingReview: 0 },
+        temperedTotal: 0,
+      }),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    expect(host.querySelector('.kbn-section-now .kbn-col-drafts')?.textContent).toContain('Legacy draft')
+    expect(host.querySelector('.kbn-section-now .kbn-col-inFlight')?.textContent).toContain('Legacy live')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('reports malformed /kanban payloads without throwing from render', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse({ ok: true }),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    expect(host.textContent).toContain('Failed to load kanban: Kanban response missing board columns')
 
     modal.unmount()
     host.remove()
