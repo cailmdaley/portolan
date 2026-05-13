@@ -169,12 +169,23 @@ export interface RemoteFileContentResult {
   content?: string;
 }
 
+export interface RemoteProjectFileInvocation {
+  originId: string;
+  path: string;
+}
+
+export interface RemoteProjectFileResult {
+  contentBase64?: string;
+  byteLength?: number;
+}
+
 interface HttpApiFileContentDeps {
   originLookup: OriginLookup;
   parseJsonBody: <T>(req: IncomingMessage, res: ServerResponse) => Promise<T | null>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
   remoteFileContentExecutor?: (request: RemoteFileContentInvocation) => Promise<RemoteFileContentResult>;
+  remoteProjectFileExecutor?: (request: RemoteProjectFileInvocation) => Promise<RemoteProjectFileResult>;
   /**
    * Override the felt root the `/static/.felt/<rest>` route resolves
    * against. Defaults to `<projectRoot>/.felt` (computed from this
@@ -189,6 +200,7 @@ export class HttpApiFileContent {
   private sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   private sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
   private remoteFileContentExecutor: HttpApiFileContentDeps['remoteFileContentExecutor'];
+  private remoteProjectFileExecutor: HttpApiFileContentDeps['remoteProjectFileExecutor'];
   private feltRoot: string;
 
   constructor(deps: HttpApiFileContentDeps) {
@@ -197,6 +209,7 @@ export class HttpApiFileContent {
     this.sendJsonError = deps.sendJsonError;
     this.sendJsonSuccess = deps.sendJsonSuccess;
     this.remoteFileContentExecutor = deps.remoteFileContentExecutor;
+    this.remoteProjectFileExecutor = deps.remoteProjectFileExecutor;
     this.feltRoot = resolvePath(deps.feltRoot ?? DEFAULT_FELT_ROOT);
   }
 
@@ -307,11 +320,11 @@ export class HttpApiFileContent {
 
       if (originId && originId !== 'local') {
         const origin = this.originLookup.getOrigin(originId);
-        if (!origin?.sshHost) {
+        if (!origin?.sshHost && !this.remoteProjectFileExecutor) {
           this.sendProjectFileError(res, 400, 'Unknown origin');
           return;
         }
-        await this.streamRemoteBinaryFile(origin.sshHost, filePath, mimeType, 'no-cache', 30_000, res);
+        await this.streamRemoteProjectFile(originId, origin?.sshHost, filePath, mimeType, 'no-cache', 30_000, res);
       } else {
         await this.streamLocalBinaryFile(filePath, mimeType, 'no-cache', res);
       }
@@ -459,14 +472,26 @@ export class HttpApiFileContent {
     }
 
     const origin = this.originLookup.getOrigin(originId);
-    if (!origin?.sshHost) {
+    if (!origin?.sshHost && !this.remoteProjectFileExecutor) {
       const error = new Error('Origin not found or not connected') as Error & { statusCode?: number };
       error.statusCode = 404;
       throw error;
     }
 
+    if (this.remoteProjectFileExecutor) {
+      try {
+        return await this.readRemoteProjectFileBuffer(originId, filePath);
+      } catch (error) {
+        if (!origin?.sshHost) throw error;
+      }
+    }
+
+    const sshHost = origin?.sshHost;
+    if (!sshHost) {
+      throw this.makeHttpError('Origin not found or not connected', 404);
+    }
     const result = await execFileAsync(
-      'ssh', [origin.sshHost, `cat ${shellEscape(filePath)}`],
+      'ssh', [sshHost, `cat ${shellEscape(filePath)}`],
       { maxBuffer, timeout, encoding: 'buffer' as BufferEncoding },
     );
     return Buffer.from(result.stdout as unknown as Buffer);
@@ -761,6 +786,48 @@ export class HttpApiFileContent {
     });
   }
 
+  private async streamRemoteProjectFile(
+    originId: string,
+    sshHost: string | undefined,
+    filePath: string,
+    mimeType: string,
+    cacheControl: string,
+    timeout: number,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (this.remoteProjectFileExecutor) {
+      try {
+        const data = await this.readRemoteProjectFileBuffer(originId, filePath);
+        if (res.destroyed || res.writableEnded) return;
+        res.writeHead(200, this.streamHeaders(mimeType, cacheControl));
+        res.end(data);
+        return;
+      } catch (error) {
+        if (!sshHost) throw error;
+      }
+    }
+
+    if (!sshHost) {
+      throw this.makeHttpError('Origin not found or not connected', 404);
+    }
+    await this.streamRemoteBinaryFile(sshHost, filePath, mimeType, cacheControl, timeout, res);
+  }
+
+  private async readRemoteProjectFileBuffer(originId: string, filePath: string): Promise<Buffer> {
+    if (!this.remoteProjectFileExecutor) {
+      throw this.makeHttpError('Remote project-file executor is not configured', 500);
+    }
+    const result = await this.remoteProjectFileExecutor({ originId, path: filePath });
+    if (typeof result.contentBase64 !== 'string') {
+      throw this.makeHttpError('Remote agent did not return project-file content', 502);
+    }
+    const data = Buffer.from(result.contentBase64, 'base64');
+    if (typeof result.byteLength === 'number' && data.length !== result.byteLength) {
+      throw this.makeHttpError('Remote agent returned truncated project-file content', 502);
+    }
+    return data;
+  }
+
   private async handleBinaryContent(
     filePath: string,
     originId: string | null,
@@ -812,10 +879,18 @@ export class HttpApiFileContent {
       }
 
       const origin = this.originLookup.getOrigin(originId);
-      if (!origin?.sshHost) {
+      if (!origin?.sshHost && !this.remoteProjectFileExecutor) {
         throw this.makeHttpError('Origin not found or not connected', 404);
       }
-      await this.streamRemoteBinaryFile(origin.sshHost, filePath, mimeType, 'public, max-age=3600', timeout, res);
+      await this.streamRemoteProjectFile(
+        originId,
+        origin?.sshHost,
+        filePath,
+        mimeType,
+        'public, max-age=3600',
+        timeout,
+        res,
+      );
     } catch (error: any) {
       if (res.headersSent || res.writableEnded) {
         return;

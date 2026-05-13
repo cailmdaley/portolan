@@ -243,6 +243,81 @@ $$
     expect(new TextDecoder().decode(res.body)).toContain('slides.css');
   });
 
+  it('streams remote project files through the remote agent executor', async () => {
+    const calls: unknown[] = [];
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteProjectFileExecutor: async (request) => {
+          calls.push(request);
+          return {
+            contentBase64: pngBytes.toString('base64'),
+            byteLength: pngBytes.length,
+          };
+        },
+      },
+    );
+
+    const remotePath = '/home/cdaley/project/figure.png';
+    const encodedPath = remotePath.split('/').map(encodeURIComponent).join('/');
+    const res = await rawRequest(api, `/project-file/remote-candide${encodedPath}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('image/png');
+    expect(Buffer.from(res.body)).toEqual(pngBytes);
+    expect(calls).toEqual([{ originId: 'remote-candide', path: remotePath }]);
+  });
+
+  it('streams remote raw binary file-content through the remote agent executor', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteProjectFileExecutor: async () => ({
+          contentBase64: pngBytes.toString('base64'),
+          byteLength: pngBytes.length,
+        }),
+      },
+    );
+
+    const remotePath = '/home/cdaley/project/figure.png';
+    const res = await rawRequest(
+      api,
+      `/file-content?originId=remote-candide&path=${encodeURIComponent(remotePath)}&raw=true`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('image/png');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=3600');
+    expect(Buffer.from(res.body)).toEqual(pngBytes);
+  });
+
+  it('rejects truncated remote project-file agent responses', async () => {
+    api = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteProjectFileExecutor: async () => ({
+          contentBase64: Buffer.from([0x89, 0x50]).toString('base64'),
+          byteLength: 4,
+        }),
+      },
+    );
+
+    const remotePath = '/home/cdaley/project/figure.png';
+    const encodedPath = remotePath.split('/').map(encodeURIComponent).join('/');
+    const res = await rawRequest(api, `/project-file/remote-candide${encodedPath}`);
+
+    expect(res.status).toBe(502);
+    expect(new TextDecoder().decode(res.body)).toContain('Failed to read file');
+  });
+
   it('injects the HTML location bridge into project HTML files', async () => {
     const htmlPath = join(TEST_DIR, 'deck.html');
     writeFileSync(htmlPath, '<!doctype html><html><head><title>Deck</title></head><body>slides</body></html>');

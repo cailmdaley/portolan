@@ -26,6 +26,8 @@ import {
   HttpApiFileContent,
   type RemoteFileContentInvocation,
   type RemoteFileContentResult,
+  type RemoteProjectFileInvocation,
+  type RemoteProjectFileResult,
 } from './HttpApiFileContent.js';
 import { HttpApiHooksRuntime } from './HttpApiHooksRuntime.js';
 import { HttpApiRecents } from './HttpApiRecents.js';
@@ -113,6 +115,9 @@ export interface HttpApiOptions {
   remoteFileContentExecutor?: (
     request: RemoteFileContentInvocation,
   ) => Promise<RemoteFileContentResult>;
+  remoteProjectFileExecutor?: (
+    request: RemoteProjectFileInvocation,
+  ) => Promise<RemoteProjectFileResult>;
   /**
    * Override felt root for the `/static/.felt/<rest>` asset route. Defaults
    * to `<projectRoot>/.felt`; tests inject an isolated tmpdir.
@@ -162,6 +167,7 @@ export class HttpApi {
   private remoteRawFiberExecutor: HttpApiOptions['remoteRawFiberExecutor'];
   private remoteFiberHistoryExecutor: HttpApiOptions['remoteFiberHistoryExecutor'];
   private remoteFileContentExecutor: HttpApiOptions['remoteFileContentExecutor'];
+  private remoteProjectFileExecutor: HttpApiOptions['remoteProjectFileExecutor'];
   private shuttleCtlFn: HttpApiOptions['shuttleCtlFn'];
   private feltEditFn: HttpApiOptions['feltEditFn'];
   private globalKanbanApiCache: CachedApi<HttpApiKanban> | null = null;
@@ -184,6 +190,7 @@ export class HttpApi {
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
     this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
     this.remoteFileContentExecutor = options.remoteFileContentExecutor;
+    this.remoteProjectFileExecutor = options.remoteProjectFileExecutor;
     this.shuttleCtlFn = options.shuttleCtlFn;
     this.feltEditFn = options.feltEditFn;
     this.annotationsApi = new HttpApiAnnotations({
@@ -201,6 +208,7 @@ export class HttpApi {
       sendJsonError: (res, status, error) => this.sendJsonError(res, status, error),
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
       remoteFileContentExecutor: this.remoteFileContentExecutor,
+      remoteProjectFileExecutor: this.remoteProjectFileExecutor,
       feltRoot: options.feltRoot,
     });
     this.astraViewApi = new HttpApiAstraView({ originLookup });

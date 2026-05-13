@@ -1,10 +1,12 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::DateTime;
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
     AgentSession, FiberHistoryRequestPayload, FiberHistoryResultPayload, FiberRawOperation,
     FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta, FiberTreeDeltaOp,
     FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile, FileContentOperation,
-    FileContentRequestPayload, FileContentResultPayload, ShuttleSnapshotPayload,
+    FileContentRequestPayload, FileContentResultPayload, ProjectFileRequestPayload,
+    ProjectFileResultPayload, ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -482,6 +484,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
         AgentFrame::FiberHistory { payload } => vec![handle_fiber_history(payload)],
         AgentFrame::FileContent { payload } => vec![handle_file_content(payload)],
+        AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
         _ => Vec::new(),
     }
 }
@@ -1917,6 +1920,40 @@ fn write_text_file_content(payload: &FileContentRequestPayload) -> Result<(), St
     }
     let full_path = resolve_remote_file_path(&payload.path, false)?;
     write_atomic(&full_path, content)
+}
+
+fn handle_project_file(payload: &ProjectFileRequestPayload) -> AgentFrame {
+    match read_project_file(payload) {
+        Ok((content_base64, byte_length)) => AgentFrame::ProjectFileResult {
+            payload: ProjectFileResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                content_base64: Some(content_base64),
+                byte_length: Some(byte_length),
+            },
+        },
+        Err(error) => AgentFrame::ProjectFileResult {
+            payload: ProjectFileResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                content_base64: None,
+                byte_length: None,
+            },
+        },
+    }
+}
+
+fn read_project_file(payload: &ProjectFileRequestPayload) -> Result<(String, usize), String> {
+    let full_path = resolve_remote_file_path(&payload.path, true)?;
+    let bytes = fs::read(&full_path)
+        .map_err(|error| format!("failed to read project file {}: {error}", payload.path))?;
+    if bytes.len() > 50 * 1024 * 1024 {
+        return Err("project file exceeds 50 MB".to_string());
+    }
+    let byte_length = bytes.len();
+    Ok((BASE64_STANDARD.encode(bytes), byte_length))
 }
 
 fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String> {
@@ -4129,6 +4166,31 @@ malformed
     }
 
     #[test]
+    fn reads_project_file_as_base64() {
+        let dir = temp_host("project-file-read");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("figure.png");
+        fs::write(&file_path, [0x89, 0x50, 0x4e, 0x47]).unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::ProjectFile {
+            payload: ProjectFileRequestPayload {
+                correlation_id: "project-file-read".to_string(),
+                path: file_path.display().to_string(),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::ProjectFileResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.content_base64.as_deref(), Some("iVBORw=="));
+                assert_eq!(payload.byte_length, Some(4));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
     fn writes_text_file_content() {
         let dir = temp_host("file-content-write");
         fs::create_dir_all(&dir).unwrap();
@@ -4168,6 +4230,28 @@ malformed
 
         match &responses[0] {
             AgentFrame::FileContentResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("path must be absolute"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_project_file_paths() {
+        let responses = handle_server_frame(&AgentFrame::ProjectFile {
+            payload: ProjectFileRequestPayload {
+                correlation_id: "project-file-bad".to_string(),
+                path: "../escape.png".to_string(),
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::ProjectFileResult { payload } => {
                 assert!(!payload.ok);
                 assert!(payload
                     .error

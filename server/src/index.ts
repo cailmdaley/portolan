@@ -195,6 +195,18 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     );
     return { content: result.content };
   },
+  remoteProjectFileExecutor: async ({ originId, ...payload }) => {
+    const result = await agentRequestCoordinator.send<{
+      contentBase64?: string;
+      byteLength?: number;
+    }>(
+      originId,
+      'project-file',
+      payload,
+      30_000,
+    );
+    return { contentBase64: result.contentBase64, byteLength: result.byteLength };
+  },
 });
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
@@ -552,6 +564,18 @@ wss.on('connection', async (ws, req) => {
           };
           const result: Record<string, unknown> = {};
           if (content !== undefined) result.content = content;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'project-file-result') {
+          const { correlationId, ok, error, contentBase64, byteLength } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            contentBase64?: string;
+            byteLength?: number;
+          };
+          const result: Record<string, unknown> = {};
+          if (contentBase64 !== undefined) result.contentBase64 = contentBase64;
+          if (byteLength !== undefined) result.byteLength = byteLength;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {

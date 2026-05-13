@@ -33,6 +33,10 @@ pub enum AgentFrame {
     FileContent { payload: FileContentRequestPayload },
     #[serde(rename = "file-content-result")]
     FileContentResult { payload: FileContentResultPayload },
+    #[serde(rename = "project-file")]
+    ProjectFile { payload: ProjectFileRequestPayload },
+    #[serde(rename = "project-file-result")]
+    ProjectFileResult { payload: ProjectFileResultPayload },
     #[serde(rename = "shuttle_snapshot")]
     ShuttleSnapshot { payload: ShuttleSnapshotPayload },
 }
@@ -56,6 +60,8 @@ impl AgentFrame {
             AgentFrame::FiberHistoryResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FileContent { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FileContentResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::ProjectFile { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::ProjectFileResult { payload } => Some(payload.correlation_id.as_str()),
             _ => None,
         }
     }
@@ -67,6 +73,7 @@ impl AgentFrame {
                 | AgentFrame::FiberRaw { .. }
                 | AgentFrame::FiberHistory { .. }
                 | AgentFrame::FileContent { .. }
+                | AgentFrame::ProjectFile { .. }
         )
     }
 
@@ -77,6 +84,7 @@ impl AgentFrame {
                 | AgentFrame::FiberRawResult { .. }
                 | AgentFrame::FiberHistoryResult { .. }
                 | AgentFrame::FileContentResult { .. }
+                | AgentFrame::ProjectFileResult { .. }
         )
     }
 }
@@ -303,6 +311,26 @@ pub struct FileContentResultPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileRequestPayload {
+    pub correlation_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileResultPayload {
+    pub correlation_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_length: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShuttleSnapshotPayload {
     #[serde(flatten)]
     pub fields: BTreeMap<String, Value>,
@@ -526,6 +554,34 @@ mod tests {
         .unwrap();
         assert!(result.is_agent_result());
         assert_eq!(result.correlation_id(), Some("corr-file"));
+    }
+
+    #[test]
+    fn parses_project_file_round_trip() {
+        let request = AgentFrame::ProjectFile {
+            payload: ProjectFileRequestPayload {
+                correlation_id: "corr-project-file".to_string(),
+                path: "/home/cdaley/project/figure.png".to_string(),
+            },
+        };
+        let encoded = request.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"project-file""#));
+        assert!(encoded.contains(r#""correlationId":"corr-project-file""#));
+
+        let result = AgentFrame::parse(
+            br#"{
+              "type": "project-file-result",
+              "payload": {
+                "correlationId": "corr-project-file",
+                "ok": true,
+                "contentBase64": "iVBORw==",
+                "byteLength": 4
+              }
+            }"#,
+        )
+        .unwrap();
+        assert!(result.is_agent_result());
+        assert_eq!(result.correlation_id(), Some("corr-project-file"));
     }
 
     #[test]
