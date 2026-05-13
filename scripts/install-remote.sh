@@ -193,6 +193,42 @@ shell_quote_word() {
   printf "%q" "$1"
 }
 
+wait_for_agent_connect() {
+  local host="$1"
+  local session="$2"
+  local runtime="$3"
+  local command="$4"
+  local attempt
+  local session_log=""
+  local connected=false
+  local marker_pattern="Connected|registered as|agentRuntime=${runtime}"
+
+  log "Runtime command: $command"
+  log "Verifying session '$session'..."
+  for attempt in $(seq 1 10); do
+    session_log="$(ssh "$host" "tmux capture-pane -t '$session' -p" 2>/dev/null || true)"
+    if echo "$session_log" | grep -Eq "$marker_pattern"; then
+      connected=true
+      break
+    fi
+    sleep 1
+  done
+
+  if [ -n "$session_log" ]; then
+    log "Recent session output:"
+    echo "$session_log" | tail -n 12
+  else
+    warn "Session output unavailable yet"
+  fi
+
+  if [ "$connected" = true ]; then
+    log "Agent connected"
+  else
+    warn "Agent may not have connected yet; check: ssh $host 'tmux attach -t $session'"
+    return 1
+  fi
+}
+
 build_agent_cmd() {
   local runtime="$1"
   local host="$2"
@@ -440,6 +476,7 @@ if [ "$START_AGENT" = true ]; then
     tmux new-session -d -s "$AGENT_SESSION" "bash -l -c '$AGENT_CMD'"
     echo "Agent started in tmux session '$AGENT_SESSION'"
 STARTAGENT
+  wait_for_agent_connect "$SSH_HOST" "$AGENT_SESSION" "$AGENT_RUNTIME" "$AGENT_CMD" || true
 fi
 
 echo ""

@@ -149,6 +149,7 @@ For Rust preview smoke tests, use a separate runtime session so Node stays as fa
 - Start or restart the preview runtime:
   - `./scripts/reset-tunnel.sh --agent-runtime rust <host>`
   - `./scripts/reset-tunnel.sh --agent-runtime rust --origin <origin> --plannotator-port <port> --once <host>`
+- Both commands print the resolved runtime command and a short session log tail so you can confirm the preview attached and which runtime/socket flags were applied during remote smokes.
 
 Node fallback remains explicit and unchanged:
 - Node runtime is still in session `portolan-agent`.
