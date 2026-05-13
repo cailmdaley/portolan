@@ -396,7 +396,7 @@
    technical mono, so the strip reads as a manuscript almanac. */
 .kbn-timeline-day-dow {
   display: block;
-  font-size: 9px;
+  font-size: 11px;
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-variant-caps: all-small-caps;
   font-feature-settings: "smcp", "c2sc";
@@ -405,7 +405,7 @@
   margin-bottom: 1px;
 }
 .kbn-timeline-day-num {
-  font-size: 12px;
+  font-size: 14px;
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
   font-weight: 500;
   color: #2A231A;
@@ -454,14 +454,14 @@
   border: 0.5px solid rgba(122, 111, 92, 0.30);
   border-left: 2px solid #3D5BA0;
   border-radius: 2px;
-  padding: 1px 6px 2px;
+  padding: 2px 8px 3px;
   margin: 1px 2px;
-  font-size: 11px;
-  line-height: 1.18;
+  font-size: 13px;
+  line-height: 1.2;
   cursor: pointer;
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  gap: 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -505,7 +505,7 @@
 }
 .kbn-tl-card-glyph {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 9px;
+  font-size: 11px;
   flex-shrink: 0;
   color: #3D5BA0;
 }

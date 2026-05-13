@@ -56,7 +56,10 @@ const NOW_COLUMN_ORDER: NowColumnKind[] = ['drafts', 'inFlight', 'awaitingReview
  *  closed fibers exist in the response but rely on scroll-to-see. */
 const TIMELINE_PAST_DAYS = 14
 const TIMELINE_FUTURE_DAYS = 14
-const TIMELINE_DAY_WIDTH_PX = 145
+// 225px per day column → ~7 days visible at a time in the standard
+// kanban modal viewport (~1574px wide). The wrap stays horizontally
+// scrollable for the full ±14d range.
+const TIMELINE_DAY_WIDTH_PX = 225
 
 /** Stash cluster-key derivation: skip umbrella roots (`ai-futures`,
  *  `ai`) and use the first project-level segment instead. Containment-
@@ -874,7 +877,7 @@ export class KanbanModal {
     rowByCol: Map<number, number>,
     totalDays: number,
   ): void {
-    const ROW_PX = 20
+    const ROW_PX = 22
     const STRIP_PADDING_PX = 6
     const recompute = (): void => {
       const sLeft = wrap.scrollLeft
