@@ -40,6 +40,9 @@ AGENT_RUNTIME="node"
 RUST_AGENT_LOCAL_BINARY=""
 RUST_AGENT_SESSION="portolan-agent-rust-preview"
 NODE_AGENT_SESSION="portolan-agent"
+AGENT_ORIGIN=""
+AGENT_PLANNOTATOR_PORT=""
+AGENT_ONCE=false
 
 usage() {
   cat <<EOF
@@ -50,6 +53,9 @@ Options:
   --agent-runtime VALUE   node or rust (default: node)
   --agent-binary PATH     Local path to rust binary (defaults to crates/portolan-agent/target/release/portolan-agent-rust)
   --agent-session NAME    Override tmux session name for rust preview runtime
+  --origin VALUE          Origin identifier for rust preview runtime (if different from hostname)
+  --plannotator-port PORT Optional plannotator socket port (rust preview only)
+  --once                  Run rust preview once (exits after disconnect)
   --help, -h              Show usage
 
 Prerequisites on remote:
@@ -102,6 +108,34 @@ while [ "$#" -gt 0 ]; do
       RUST_AGENT_SESSION="${1#*=}"
       shift
       ;;
+    --origin)
+      if [ "$#" -lt 2 ]; then
+        error "Missing value for --origin"
+        exit 1
+      fi
+      AGENT_ORIGIN="$2"
+      shift 2
+      ;;
+    --origin=*)
+      AGENT_ORIGIN="${1#*=}"
+      shift
+      ;;
+    --plannotator-port)
+      if [ "$#" -lt 2 ]; then
+        error "Missing value for --plannotator-port"
+        exit 1
+      fi
+      AGENT_PLANNOTATOR_PORT="$2"
+      shift 2
+      ;;
+    --plannotator-port=*)
+      AGENT_PLANNOTATOR_PORT="${1#*=}"
+      shift
+      ;;
+    --once)
+      AGENT_ONCE=true
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -132,6 +166,56 @@ if [ "$AGENT_RUNTIME" != "node" ] && [ "$AGENT_RUNTIME" != "rust" ]; then
   error "Invalid --agent-runtime value: $AGENT_RUNTIME (must be node or rust)"
   exit 1
 fi
+
+if [ -n "$AGENT_PLANNOTATOR_PORT" ] && ! echo "$AGENT_PLANNOTATOR_PORT" | grep -Eq '^[0-9]+$'; then
+  error "--plannotator-port must be numeric"
+  exit 1
+fi
+
+if [ -n "$AGENT_PLANNOTATOR_PORT" ] && { [ "$AGENT_PLANNOTATOR_PORT" -lt 1 ] || [ "$AGENT_PLANNOTATOR_PORT" -gt 65535 ]; }; then
+  error "--plannotator-port must be in the range 1-65535"
+  exit 1
+fi
+
+if [ "$AGENT_RUNTIME" != "rust" ]; then
+  if [ -n "$AGENT_ORIGIN" ]; then
+    warn "Ignoring --origin for node runtime (unsupported)"
+  fi
+  if [ -n "$AGENT_PLANNOTATOR_PORT" ]; then
+    warn "Ignoring --plannotator-port for node runtime (unsupported)"
+  fi
+  if [ "$AGENT_ONCE" = true ]; then
+    warn "Ignoring --once for node runtime (unsupported)"
+  fi
+fi
+
+shell_quote_word() {
+  printf "%q" "$1"
+}
+
+build_agent_cmd() {
+  local runtime="$1"
+  local host="$2"
+  local origin="$3"
+  local plannotator_port="$4"
+  local once="$5"
+
+  if [ "$runtime" = "rust" ]; then
+    local cmd="~/.local/bin/portolan-agent-rust connect --ssh-host=$(shell_quote_word "$host")"
+    if [ -n "$origin" ]; then
+      cmd="$cmd --origin=$(shell_quote_word "$origin")"
+    fi
+    if [ -n "$plannotator_port" ]; then
+      cmd="$cmd --plannotator-port=$(shell_quote_word "$plannotator_port")"
+    fi
+    if [ "$once" = true ]; then
+      cmd="$cmd --once"
+    fi
+    echo "$cmd"
+  else
+    echo "node ~/.local/bin/portolan-agent.js connect --ssh-host=$(shell_quote_word "$host")"
+  fi
+}
 
 log "Installing portolan on $SSH_HOST..."
 
@@ -345,11 +429,10 @@ if [ "$START_AGENT" = true ]; then
   log "Starting agent..."
   if [ "$AGENT_RUNTIME" = "rust" ]; then
     AGENT_SESSION="$RUST_AGENT_SESSION"
-    AGENT_CMD="~/.local/bin/portolan-agent-rust connect --ssh-host=$SSH_HOST"
   else
     AGENT_SESSION="$NODE_AGENT_SESSION"
-    AGENT_CMD="node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST"
   fi
+  AGENT_CMD="$(build_agent_cmd "$AGENT_RUNTIME" "$SSH_HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
   ssh "$SSH_HOST" bash <<STARTAGENT
     # Kill existing runtime-specific agent if running
     tmux kill-session -t "$AGENT_SESSION" 2>/dev/null || true
@@ -369,11 +452,15 @@ echo ""
 if [ "$AGENT_RUNTIME" = "rust" ]; then
   echo "  2. Start the Rust preview agent on remote (session kept separate):"
   echo "       ssh $SSH_HOST"
-  echo "       tmux new-session -d -s '$RUST_AGENT_SESSION' \"bash -l -c '~/.local/bin/portolan-agent-rust connect --ssh-host=$SSH_HOST'\""
+  agent_next_cmd="$(build_agent_cmd "$AGENT_RUNTIME" "$SSH_HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
+  echo "       tmux new-session -d -s '$RUST_AGENT_SESSION' \"bash -l -c '$agent_next_cmd'\""
   echo ""
   echo "  3. Rust preview temporarily owns the origin socket while connected."
-  echo "     Node fallback remains available in tmux session '$NODE_AGENT_SESSION' and reconnects after Rust exits:"
+  echo "     Node fallback remains available in tmux session '$NODE_AGENT_SESSION':"
   echo "       tmux new-session -d -s '$NODE_AGENT_SESSION' \"bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'\""
+  if [ "$AGENT_ONCE" = true ]; then
+    echo "     Start Rust with --once to test a one-shot promotion/demotion cycle."
+  fi
 else
   echo "  2. Start the agent on remote (if not using --start):"
   echo "       ssh $SSH_HOST"

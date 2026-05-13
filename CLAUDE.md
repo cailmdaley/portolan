@@ -137,13 +137,24 @@ Manual fallback: `./scripts/reset-tunnel.sh --manual <host>` runs a one-shot rev
 Port still held? `ssh <host> "fuser -k 4004/tcp"`. See fibers `gotcha-ssh-remoteforward-port`
 and `gotchas/gotcha-candide-reverse-tunnel-backoff`.
 
-For preview Rust remote-agent smoke tests, use a separate session so Node stays as fallback:
+For Rust preview smoke tests, use a separate runtime session so Node stays as fallback:
 
 - Build a Linux preview binary from macOS: `npm run native:agent:linux`
-- Install remote hooks and artifacts: `./scripts/install-remote.sh <host> --agent-runtime rust --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust`
-- Start preview runtime only: `./scripts/reset-tunnel.sh --agent-runtime rust <host>`
+- Install remote hooks and artifacts:
+  - `./scripts/install-remote.sh <host> --agent-runtime rust --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust`
+  - Optional session knobs:
+    - `--origin <origin>` (defaults to `<host>`)
+    - `--plannotator-port <port>` (pass this through to Rust with `--plannotator-port=<port>`)
+    - `--once` (exit after one disconnect)
+- Start or restart the preview runtime:
+  - `./scripts/reset-tunnel.sh --agent-runtime rust <host>`
+  - `./scripts/reset-tunnel.sh --agent-runtime rust --origin <origin> --plannotator-port <port> --once <host>`
 
-The Node runtime remains in `portolan-agent`, while Rust preview starts in `portolan-agent-rust-preview`. Only one socket per origin is live; Rust preview temporarily owns that socket while connected, and the Node session reconnects after the preview exits.
+Node fallback remains explicit and unchanged:
+- Node runtime is still in session `portolan-agent`.
+- Rust preview runtime is still in session `portolan-agent-rust-preview`.
+- Only one socket per origin is active at a time; with `--once`, Rust preview exits cleanly.
+- Resume Node fallback with `./scripts/reset-tunnel.sh --agent-runtime node <host>` (or let normal self-recovery bring Node back when needed).
 
 Candide-specific model: SSH is ping-gated and seems to impose a short backoff after failed opens.
 Do not hammer it. First check whether candide can see the local backend:

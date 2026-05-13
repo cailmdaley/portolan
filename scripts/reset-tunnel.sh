@@ -9,6 +9,9 @@ MANUAL=false
 RESTART_AGENT=true
 AGENT_RUNTIME="node"
 AGENT_SESSION=""
+AGENT_ORIGIN=""
+AGENT_PLANNOTATOR_PORT=""
+AGENT_ONCE=false
 HOST=""
 
 usage() {
@@ -19,6 +22,9 @@ Options:
   --manual             Bypass launchd and run the old one-shot ssh recovery path
   --agent-runtime      Select runtime to restart: node|rust (default: node)
   --agent-session      Override tmux session name for restart target
+  --origin             Origin identifier for rust preview runtime (if different from hostname)
+  --plannotator-port   Optional plannotator socket port (rust preview only)
+  --once               Run rust preview once (exits after disconnect)
   --no-agent-restart   Only reset the tunnel; do not restart the remote agent session
   -h, --help           Show this help
 USAGE
@@ -41,6 +47,36 @@ while [ "$#" -gt 0 ]; do
       ;;
     --agent-runtime=*)
       AGENT_RUNTIME="${1#*=}"
+      shift
+      ;;
+    --origin)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --origin" >&2
+        usage >&2
+        exit 1
+      fi
+      AGENT_ORIGIN="$2"
+      shift 2
+      ;;
+    --origin=*)
+      AGENT_ORIGIN="${1#*=}"
+      shift
+      ;;
+    --plannotator-port)
+      if [ "$#" -lt 2 ]; then
+        echo "Missing value for --plannotator-port" >&2
+        usage >&2
+        exit 1
+      fi
+      AGENT_PLANNOTATOR_PORT="$2"
+      shift 2
+      ;;
+    --plannotator-port=*)
+      AGENT_PLANNOTATOR_PORT="${1#*=}"
+      shift
+      ;;
+    --once)
+      AGENT_ONCE=true
       shift
       ;;
     --no-agent-restart)
@@ -92,6 +128,58 @@ if [ "$AGENT_RUNTIME" != "node" ] && [ "$AGENT_RUNTIME" != "rust" ]; then
   exit 1
 fi
 
+if [ -n "$AGENT_PLANNOTATOR_PORT" ] && ! echo "$AGENT_PLANNOTATOR_PORT" | grep -Eq '^[0-9]+$'; then
+  echo "--plannotator-port must be numeric" >&2
+  usage >&2
+  exit 1
+fi
+
+if [ -n "$AGENT_PLANNOTATOR_PORT" ] && { [ "$AGENT_PLANNOTATOR_PORT" -lt 1 ] || [ "$AGENT_PLANNOTATOR_PORT" -gt 65535 ]; }; then
+  echo "--plannotator-port must be in range 1-65535" >&2
+  usage >&2
+  exit 1
+fi
+
+if [ "$AGENT_RUNTIME" != "rust" ]; then
+  if [ -n "$AGENT_ORIGIN" ]; then
+    echo "Ignoring --origin for node runtime (unsupported)" >&2
+  fi
+  if [ -n "$AGENT_PLANNOTATOR_PORT" ]; then
+    echo "Ignoring --plannotator-port for node runtime (unsupported)" >&2
+  fi
+  if [ "$AGENT_ONCE" = true ]; then
+    echo "Ignoring --once for node runtime (unsupported)" >&2
+  fi
+fi
+
+shell_quote_word() {
+  printf "%q" "$1"
+}
+
+build_agent_cmd() {
+  local runtime="$1"
+  local host="$2"
+  local origin="$3"
+  local plannotator_port="$4"
+  local once="$5"
+
+  if [ "$runtime" = "rust" ]; then
+    local cmd="~/.local/bin/portolan-agent-rust connect --ssh-host=$(shell_quote_word "$host")"
+    if [ -n "$origin" ]; then
+      cmd="$cmd --origin=$(shell_quote_word "$origin")"
+    fi
+    if [ -n "$plannotator_port" ]; then
+      cmd="$cmd --plannotator-port=$(shell_quote_word "$plannotator_port")"
+    fi
+    if [ "$once" = true ]; then
+      cmd="$cmd --once"
+    fi
+    echo "$cmd"
+  else
+    echo "node ~/.local/bin/portolan-agent.js connect --ssh-host=$(shell_quote_word "$host")"
+  fi
+}
+
 if [ -z "$AGENT_SESSION" ]; then
   if [ "$AGENT_RUNTIME" = "rust" ]; then
     AGENT_SESSION="portolan-agent-rust-preview"
@@ -100,11 +188,7 @@ if [ -z "$AGENT_SESSION" ]; then
   fi
 fi
 
-if [ "$AGENT_RUNTIME" = "rust" ]; then
-  AGENT_CMD="~/.local/bin/portolan-agent-rust connect --ssh-host=$HOST"
-else
-  AGENT_CMD="node ~/.local/bin/portolan-agent.js connect --ssh-host=$HOST"
-fi
+AGENT_CMD="$(build_agent_cmd "$AGENT_RUNTIME" "$HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
 
 LABEL="com.cailmdaley.portolan-tunnel-$HOST"
 TARGET="gui/$(id -u)/$LABEL"
