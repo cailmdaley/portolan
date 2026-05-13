@@ -8,6 +8,8 @@ interface NativeBackendDiagnostics {
   backendRoot?: string;
   resourceDir?: string;
   launchKind?: string;
+  supervised?: boolean;
+  processGroup?: boolean;
 }
 
 interface HttpApiHooksRuntimeDeps {
@@ -95,6 +97,13 @@ export class HttpApiHooksRuntime {
       backendRoot: process.env.PORTOLAN_NATIVE_BACKEND_ROOT || undefined,
       resourceDir: process.env.PORTOLAN_NATIVE_RESOURCE_DIR || undefined,
       launchKind: process.env.PORTOLAN_NATIVE_LAUNCH_KIND || undefined,
+      supervised: parseBoolEnv(process.env.PORTOLAN_NATIVE_BACKEND_SUPERVISED),
+      processGroup: parseBoolEnv(process.env.PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP),
     };
   }
+}
+
+function parseBoolEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  return value === '1' || value.toLowerCase() === 'true';
 }

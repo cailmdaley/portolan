@@ -13,7 +13,7 @@
     "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
-      "~/*": ["node_modules/vellum/src/*"]
+      "~/*": ["node_modules/vellum-reader/src/*"]
     },
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

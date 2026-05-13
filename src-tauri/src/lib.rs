@@ -196,6 +196,11 @@ impl BackendLaunch {
             .env("PORTOLAN_NATIVE", "1")
             .env("PORTOLAN_NATIVE_BACKEND_ROOT", &self.cwd)
             .env("PORTOLAN_NATIVE_LAUNCH_KIND", &self.kind)
+            .env("PORTOLAN_NATIVE_BACKEND_SUPERVISED", "1")
+            .env(
+                "PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP",
+                if self.process_group { "1" } else { "0" },
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

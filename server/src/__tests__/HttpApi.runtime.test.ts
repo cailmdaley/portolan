@@ -46,6 +46,8 @@ describe('HttpApi — /debug-runtime endpoint', () => {
     backendRoot?: string;
     resourceDir?: string;
     launchKind?: string;
+    supervised?: string;
+    processGroup?: string;
   };
 
   beforeEach(() => {
@@ -54,11 +56,15 @@ describe('HttpApi — /debug-runtime endpoint', () => {
       backendRoot: process.env.PORTOLAN_NATIVE_BACKEND_ROOT,
       resourceDir: process.env.PORTOLAN_NATIVE_RESOURCE_DIR,
       launchKind: process.env.PORTOLAN_NATIVE_LAUNCH_KIND,
+      supervised: process.env.PORTOLAN_NATIVE_BACKEND_SUPERVISED,
+      processGroup: process.env.PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP,
     };
     delete process.env.PORTOLAN_NATIVE;
     delete process.env.PORTOLAN_NATIVE_BACKEND_ROOT;
     delete process.env.PORTOLAN_NATIVE_RESOURCE_DIR;
     delete process.env.PORTOLAN_NATIVE_LAUNCH_KIND;
+    delete process.env.PORTOLAN_NATIVE_BACKEND_SUPERVISED;
+    delete process.env.PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP;
     api = new HttpApi(
       stubCityLookup as any,
       stubOriginLookup as any,
@@ -75,6 +81,10 @@ describe('HttpApi — /debug-runtime endpoint', () => {
     else process.env.PORTOLAN_NATIVE_RESOURCE_DIR = previousNativeEnv.resourceDir;
     if (previousNativeEnv.launchKind === undefined) delete process.env.PORTOLAN_NATIVE_LAUNCH_KIND;
     else process.env.PORTOLAN_NATIVE_LAUNCH_KIND = previousNativeEnv.launchKind;
+    if (previousNativeEnv.supervised === undefined) delete process.env.PORTOLAN_NATIVE_BACKEND_SUPERVISED;
+    else process.env.PORTOLAN_NATIVE_BACKEND_SUPERVISED = previousNativeEnv.supervised;
+    if (previousNativeEnv.processGroup === undefined) delete process.env.PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP;
+    else process.env.PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP = previousNativeEnv.processGroup;
   });
 
   it('returns process diagnostics when no runtime provider is set', async () => {
@@ -108,6 +118,8 @@ describe('HttpApi — /debug-runtime endpoint', () => {
     process.env.PORTOLAN_NATIVE_BACKEND_ROOT = '/tmp/Portolan.app/Contents/Resources/server';
     process.env.PORTOLAN_NATIVE_RESOURCE_DIR = '/tmp/Portolan.app/Contents/Resources';
     process.env.PORTOLAN_NATIVE_LAUNCH_KIND = 'node-dist-resource';
+    process.env.PORTOLAN_NATIVE_BACKEND_SUPERVISED = '1';
+    process.env.PORTOLAN_NATIVE_BACKEND_PROCESS_GROUP = '1';
     api.setRuntimeDiagnosticsProvider(() => ({
       sessions: { local: 1 },
     }));
@@ -122,6 +134,8 @@ describe('HttpApi — /debug-runtime endpoint', () => {
         backendRoot: '/tmp/Portolan.app/Contents/Resources/server',
         resourceDir: '/tmp/Portolan.app/Contents/Resources',
         launchKind: 'node-dist-resource',
+        supervised: true,
+        processGroup: true,
       },
     });
   });
