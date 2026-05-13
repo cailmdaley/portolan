@@ -224,6 +224,19 @@ describe('HttpApi — /fiber-raw remote endpoint', () => {
           created_at: '2026-05-09T00:00:00Z',
         },
       },
+      {
+        path: 'remote-note/remote-note.md',
+        fiber: {
+          id: 'remote-note',
+          name: 'Remote Note',
+          status: 'active',
+          kind: 'finding',
+          tags: ['remote', 'vellum'],
+          depends_on: [{ id: 'editable' }],
+          created_at: '2026-05-10T00:00:00Z',
+          body: 'Remote body with [[editable]].',
+        },
+      },
     ]);
     calls = [];
     historyCalls = [];
@@ -325,5 +338,18 @@ describe('HttpApi — /fiber-raw remote endpoint', () => {
         slug: 'editable',
       },
     ]);
+  });
+
+  it('renders remote fiber content from the agent snapshot without SSH', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber/remote-note?cityId=remote-city');
+
+    expect(res.status).toBe(200);
+    expect(res.data.slug).toBe('remote-note');
+    expect(res.data.kind).toBe('finding');
+    expect(res.data.frontmatter.name).toBe('Remote Note');
+    expect(res.data.frontmatter.tags).toEqual(['remote', 'vellum']);
+    expect(res.data.dependencies).toEqual(['editable']);
+    expect(res.data.mdast).toBeTruthy();
+    expect(JSON.stringify(res.data.mdast)).toContain('editable');
   });
 });

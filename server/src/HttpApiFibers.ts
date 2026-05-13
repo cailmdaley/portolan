@@ -408,7 +408,7 @@ export class HttpApiFibers {
 
     try {
       const fiber = sshHost
-        ? await this.readRemoteFiberJson(city.path, slug, sshHost)
+        ? await this.readRemoteFiberJson(city.path, slug, sshHost, city.originId)
         : await this.readLocalFiberJson(city.path, slug);
       if (!fiber) {
         this.sendJsonError(res, 404, `Fiber "${slug}" not found in city`);
@@ -898,10 +898,17 @@ export class HttpApiFibers {
     cityPath: string,
     slug: string,
     sshHost: string,
+    originId?: string,
   ): Promise<Record<string, unknown> | null> {
     if (!/^[A-Za-z0-9_-][A-Za-z0-9_\-./]*$/.test(slug) || slug.includes('..')) {
       return null;
     }
+    const snapshot = this.findRemoteSnapshot(cityPath, originId);
+    const snapshotFiber = snapshot?.byId.get(slug);
+    if (snapshotFiber) {
+      return feltJsonFromSnapshotFiber(snapshotFiber);
+    }
+
     try {
       const command = `cd ${shellEscape(cityPath)} && felt show ${shellEscape(slug)} -j 2>/dev/null || echo ''`;
       const { stdout } = await execFileAsync(
@@ -1206,6 +1213,34 @@ function frontmatterFromFeltJson(fiber: Record<string, unknown>): Record<string,
   }
 
   return frontmatter;
+}
+
+function feltJsonFromSnapshotFiber(fiber: Fiber): Record<string, unknown> {
+  return {
+    id: fiber.id,
+    name: fiber.name,
+    status: fiber.status,
+    kind: fiber.kind,
+    priority: fiber.priority,
+    created_at: fiber.createdAt,
+    closed_at: fiber.closedAt,
+    body: fiber.body,
+    outcome: fiber.outcome,
+    tags: fiber.tags,
+    depends_on: fiber.dependsOn,
+    tempered: fiber.tempered,
+    due: fiber.due,
+    horizon: fiber.horizon,
+    cold: fiber.cold,
+    shuttle: fiber.hasShuttleBlock ? {
+      enabled: fiber.shuttleEnabled,
+      kind: fiber.shuttleKind,
+      review: fiber.shuttleReviewState ? { state: fiber.shuttleReviewState } : undefined,
+      session: fiber.shuttleSessionId ? { id: fiber.shuttleSessionId } : undefined,
+      agent: fiber.shuttleAgent,
+      schedule: fiber.shuttleSchedule,
+    } : undefined,
+  };
 }
 
 function dependencyIdsFromValue(value: unknown): string[] {
