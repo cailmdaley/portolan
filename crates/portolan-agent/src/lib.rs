@@ -310,7 +310,7 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<AgentComma
     match command.as_str() {
         "connect" => parse_connect_args(args),
         "status" => Ok(AgentCommand::Status),
-        "--help" | "-h" => Err(usage()),
+        "help" | "--help" | "-h" => Err(usage()),
         _ => Err(format!("unknown command `{command}`\n{}", usage())),
     }
 }
@@ -319,7 +319,7 @@ fn parse_connect_args(args: impl Iterator<Item = OsString>) -> Result<AgentComma
     let mut server = None;
     let mut origin = None;
     let mut ssh_host = None;
-    let mut plannotator_port = None;
+    let mut plannotator_port = env_plannotator_port()?;
     let mut once = false;
     let mut pending = args.peekable();
 
@@ -385,6 +385,14 @@ fn parse_port(value: &str) -> Result<u16, String> {
 
 fn os_string_into_string(value: OsString) -> Option<String> {
     value.into_string().ok()
+}
+
+fn env_plannotator_port() -> Result<Option<u16>, String> {
+    env::var("PLANNOTATOR_PORT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| parse_port(value.trim()).map(Some))
+        .unwrap_or(Ok(None))
 }
 
 fn default_origin() -> String {
@@ -2032,7 +2040,7 @@ pub fn fiber_id_from_path(path: &str) -> Option<String> {
 }
 
 fn usage() -> String {
-    "usage: portolan-agent-rust connect [host:port] [--ssh-host <name>] [--origin <name>] [--plannotator-port <port>] [--once]\n       portolan-agent-rust status".to_string()
+    "usage: portolan-agent-rust connect [host:port] [--ssh-host <name>] [--origin <name>] [--plannotator-port <port>] [--once]\n       portolan-agent-rust status\n       portolan-agent-rust help".to_string()
 }
 
 #[cfg(test)]
@@ -2046,6 +2054,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         collections::HashMap,
+        env,
         ffi::OsString,
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -2176,6 +2185,40 @@ malformed
                 once: true,
             })
         );
+    }
+
+    #[test]
+    fn parses_connect_defaults_plannotator_port_from_env() {
+        let previous = env::var_os("PLANNOTATOR_PORT");
+        env::set_var("PLANNOTATOR_PORT", "1738");
+
+        let command = parse_args(args(&["connect", "--ssh-host=candide"])).unwrap();
+
+        let AgentCommand::Connect(config) = command else {
+            panic!("expected connect command");
+        };
+        assert_eq!(
+            config,
+            AgentConfig {
+                server: DEFAULT_SERVER.to_string(),
+                origin: default_origin(),
+                ssh_host: Some("candide".to_string()),
+                plannotator_port: Some(1738),
+                reconnect_interval: DEFAULT_RECONNECT_INTERVAL,
+                once: false,
+            }
+        );
+
+        match previous {
+            Some(previous) => env::set_var("PLANNOTATOR_PORT", previous),
+            None => env::remove_var("PLANNOTATOR_PORT"),
+        }
+    }
+
+    #[test]
+    fn parses_help_command_alias() {
+        let error = parse_args(args(&["help"])).unwrap_err();
+        assert!(error.contains("portolan-agent-rust connect"));
     }
 
     #[test]
