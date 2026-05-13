@@ -3,7 +3,7 @@ use portolan_agent_protocol::{
     FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
     FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -346,6 +346,7 @@ fn collect_agent_sessions_with_runner(
         }
         let has_claims = detect_claims_in_cwd(&cwd);
         let has_playgrounds = detect_playgrounds_in_cwd(&cwd);
+        let git_status = collect_git_status_for_cwd(&cwd, &mut run_command);
         sessions.push(portolan_agent_protocol::AgentSession {
             id: None,
             name: pane.tmux_session.clone(),
@@ -354,12 +355,147 @@ fn collect_agent_sessions_with_runner(
             status: Some(portolan_agent_protocol::AgentSessionStatus::Idle),
             has_claims: Some(has_claims),
             has_playgrounds: Some(has_playgrounds),
-            // Git status probing is intentionally deferred in Rust preview until we can
-            // preserve parity with the Node agent's broad and potentially expensive scan.
-            git_status: None,
+            git_status,
         });
     }
     sessions
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitFileCounts {
+    added: u64,
+    modified: u64,
+    deleted: u64,
+}
+
+impl GitFileCounts {
+    fn new() -> Self {
+        Self {
+            added: 0,
+            modified: 0,
+            deleted: 0,
+        }
+    }
+
+    fn total(&self) -> u64 {
+        self.added + self.modified + self.deleted
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedGitPorcelain {
+    staged: GitFileCounts,
+    unstaged: GitFileCounts,
+    untracked: u64,
+}
+
+fn parse_git_porcelain(raw: &str) -> ParsedGitPorcelain {
+    let mut staged = GitFileCounts::new();
+    let mut unstaged = GitFileCounts::new();
+    let mut untracked = 0u64;
+
+    for line in raw.lines() {
+        if line.len() < 2 {
+            continue;
+        }
+        let staged_mark = line.as_bytes()[0] as char;
+        let unstaged_mark = line.as_bytes()[1] as char;
+
+        match staged_mark {
+            'A' => staged.added += 1,
+            'M' => staged.modified += 1,
+            'D' => staged.deleted += 1,
+            _ => {}
+        }
+
+        match unstaged_mark {
+            'A' => unstaged.added += 1,
+            'M' => unstaged.modified += 1,
+            'D' => unstaged.deleted += 1,
+            _ => {}
+        }
+
+        if staged_mark == '?' && unstaged_mark == '?' {
+            untracked += 1;
+        }
+    }
+
+    ParsedGitPorcelain {
+        staged,
+        unstaged,
+        untracked,
+    }
+}
+
+fn collect_git_status_for_cwd(
+    cwd: &str,
+    run_command: &mut impl FnMut(&str, &[&str]) -> Result<String, String>,
+) -> Option<Value> {
+    let in_repo = match run_command("git", &["-C", cwd, "rev-parse", "--is-inside-work-tree"]) {
+        Ok(result) => result.trim() == "true",
+        Err(_) => return None,
+    };
+    if !in_repo {
+        return None;
+    }
+
+    let branch = match run_command("git", &["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"]) {
+        Ok(output) => output.trim().to_string(),
+        Err(_) => String::new(),
+    };
+
+    let porcelain = run_command("git", &["-C", cwd, "status", "--porcelain"]).unwrap_or_default();
+    let parsed = parse_git_porcelain(&porcelain);
+    let (ahead, behind) = match run_command(
+        "git",
+        &[
+            "-C",
+            cwd,
+            "rev-list",
+            "--left-right",
+            "--count",
+            "@{upstream}...HEAD",
+        ],
+    ) {
+        Ok(output) => {
+            let mut split = output.split_whitespace();
+            let behind = split.next().and_then(|value| value.parse::<u64>().ok());
+            let ahead = split.next().and_then(|value| value.parse::<u64>().ok());
+            (ahead.unwrap_or(0), behind.unwrap_or(0))
+        }
+        Err(_) => (0, 0),
+    };
+
+    let dirty = parsed.staged.total() > 0 || parsed.unstaged.total() > 0 || parsed.untracked > 0;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_millis() as i64)
+        .unwrap_or(0);
+
+    Some(json!({
+        "branch": branch,
+        "ahead": ahead,
+        "behind": behind,
+        "dirty": dirty,
+        "staged": {
+            "added": parsed.staged.added,
+            "modified": parsed.staged.modified,
+            "deleted": parsed.staged.deleted,
+        },
+        "unstaged": {
+            "added": parsed.unstaged.added,
+            "modified": parsed.unstaged.modified,
+            "deleted": parsed.unstaged.deleted,
+        },
+        "untracked": parsed.untracked,
+        "totalFiles": parsed.staged.total() + parsed.unstaged.total() + parsed.untracked,
+        "linesAdded": 0,
+        "linesRemoved": 0,
+        "lastCommitTime": Value::Null,
+        "lastCommitMessage": Value::Null,
+        "isRepo": true,
+        "lastChecked": now,
+    }))
 }
 
 fn parse_tmux_panes(raw: &str) -> Vec<TmuxPane> {
@@ -1545,6 +1681,143 @@ malformed
         assert_eq!(sessions[0].has_claims, Some(false));
         assert_eq!(sessions[0].has_playgrounds, Some(false));
         assert!(sessions[0].git_status.is_none());
+    }
+
+    #[test]
+    fn parses_git_porcelain_status_into_file_buckets() {
+        let raw = "A  added.txt\n M unstaged-mod.txt\nD  staged-del.txt\n D unstaged-del.txt\n?? untracked.txt";
+        let parsed = parse_git_porcelain(raw);
+
+        assert_eq!(parsed.staged.added, 1);
+        assert_eq!(parsed.staged.modified, 0);
+        assert_eq!(parsed.staged.deleted, 1);
+        assert_eq!(parsed.unstaged.added, 0);
+        assert_eq!(parsed.unstaged.modified, 1);
+        assert_eq!(parsed.unstaged.deleted, 1);
+        assert_eq!(parsed.untracked, 1);
+        assert_eq!(parsed.staged.total(), 2);
+        assert_eq!(parsed.unstaged.total(), 2);
+    }
+
+    #[test]
+    fn collects_git_status_for_repo_sessions_and_leaves_session_discovery_intact_on_git_failures() {
+        let mut commands = HashMap::<(String, String), String>::new();
+        commands.insert(
+            (
+                "tmux".to_string(),
+                "list-panes\t-a\t-F\t#{session_name}\t#{pane_current_path}\t#{pane_pid}"
+                    .to_string(),
+            ),
+            "worker\t/remote/worker\t111\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t111".to_string()),
+            "claude\n".to_string(),
+        );
+        commands.insert(
+            ("ps".to_string(), "-o\targs=\t-p\t111".to_string()),
+            "claude --version\n".to_string(),
+        );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-parse\t--is-inside-work-tree".to_string(),
+            ),
+            "true".to_string(),
+        );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-parse\t--abbrev-ref\tHEAD".to_string(),
+            ),
+            "main".to_string(),
+        );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\tstatus\t--porcelain".to_string(),
+            ),
+            "A  added.txt\n M unstaged-mod.txt\nD  staged-del.txt\n D unstaged-del.txt\n?? untracked.txt".to_string(),
+        );
+        commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-list\t--left-right\t--count\t@{upstream}...HEAD"
+                    .to_string(),
+            ),
+            "2 3".to_string(),
+        );
+
+        let sessions = collect_agent_sessions_with_runner(|program, args| {
+            let key = (program.to_string(), args.join("\t"));
+            commands
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| format!("unexpected command: {} {:?}", program, args))
+        });
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].tmux_session, "worker");
+        let git_status = sessions[0]
+            .git_status
+            .as_ref()
+            .expect("expected git status for repo session");
+        assert_eq!(git_status["branch"], json!("main"));
+        assert_eq!(git_status["ahead"], json!(3));
+        assert_eq!(git_status["behind"], json!(2));
+        assert_eq!(git_status["dirty"], json!(true));
+        assert_eq!(
+            git_status["staged"],
+            json!({ "added": 1, "modified": 0, "deleted": 1 })
+        );
+        assert_eq!(
+            git_status["unstaged"],
+            json!({ "added": 0, "modified": 1, "deleted": 1 })
+        );
+        assert_eq!(git_status["untracked"], json!(1));
+        assert_eq!(git_status["totalFiles"], json!(5));
+
+        let mut failed_commands = HashMap::<(String, String), String>::new();
+        failed_commands.insert(
+            (
+                "tmux".to_string(),
+                "list-panes\t-a\t-F\t#{session_name}\t#{pane_current_path}\t#{pane_pid}"
+                    .to_string(),
+            ),
+            "worker\t/remote/worker\t111\n".to_string(),
+        );
+        failed_commands.insert(
+            ("ps".to_string(), "-o\tcomm=\t-p\t111".to_string()),
+            "codex\n".to_string(),
+        );
+        failed_commands.insert(
+            ("ps".to_string(), "-o\targs=\t-p\t111".to_string()),
+            "".to_string(),
+        );
+        failed_commands.insert(
+            (
+                "git".to_string(),
+                "-C\t/remote/worker\trev-parse\t--is-inside-work-tree".to_string(),
+            ),
+            "fatal: not a git repository".to_string(),
+        );
+
+        let sessions_with_no_repo = collect_agent_sessions_with_runner(|program, args| {
+            let key = (program.to_string(), args.join("\t"));
+            match failed_commands.get(&key) {
+                Some(output) => {
+                    if program == "git" {
+                        Err("not a repo".to_string())
+                    } else {
+                        Ok(output.clone())
+                    }
+                }
+                None => Err(format!("unexpected command: {} {:?}", program, args)),
+            }
+        });
+
+        assert_eq!(sessions_with_no_repo.len(), 1);
+        assert!(sessions_with_no_repo[0].git_status.is_none());
     }
 
     #[test]
