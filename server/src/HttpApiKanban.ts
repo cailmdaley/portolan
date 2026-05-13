@@ -137,7 +137,7 @@ export interface KanbanCard {
   /**
    * Slug relative to the owning city's `.felt/` root (e.g.
    * `vellum-reader/constitution-vellum-kanban`). Pairs with `cityId`. The
-   * vellum collection's astra graph is keyed by these project-relative
+   * vellum collection's fiber graph is keyed by these project-relative
    * slugs, so this is what the frontend hands to `navigate()`.
    */
   projectSlug?: string;
@@ -517,6 +517,14 @@ export interface RemoteShuttleSnapshotDiagnostic {
 export type ShuttleCtlInvocation =
   | { host: string; verb: 'pause' | 'reopen' | 'accept' | 'resume'; fiberId: string }
   | { host: string; verb: 'close'; fiberId: string; tempered?: boolean }
+  | {
+      host: string;
+      verb: 'install';
+      fiberId: string;
+      agent?: string;
+      disabled?: boolean;
+      projectDir?: string;
+    }
   | { host: string; verb: 'set-outcome'; fiberId: string; outcome: string }
   // dispatch with adHoc:true for standing roles fires a manual run that
   // does not consume the next scheduled occurrence (synthetic adhoc-* run
@@ -893,6 +901,15 @@ export interface KanbanHorizonRequest {
   card?: KanbanCard;
 }
 
+/** What POST /kanban/promote-to-shuttle expects in the body. */
+export interface KanbanPromoteToShuttleRequest {
+  fiberId: string;
+  /** Agent id to write into the newly-installed shuttle block. */
+  agent: string;
+  /** Optional current card snapshot to preserve host-resolution correctness. */
+  card?: KanbanCard;
+}
+
 /** What POST /kanban/review-comment expects in the body. */
 export interface KanbanReviewCommentRequest {
   fiberId: string;
@@ -946,6 +963,11 @@ export class HttpApiKanban {
     const args = shuttleCtlArgs(invocation.host, invocation.verb, invocation.fiberId);
     if (invocation.verb === 'close' && invocation.tempered !== undefined) {
       args.push(`--tempered=${invocation.tempered ? 'true' : 'false'}`);
+    }
+    if (invocation.verb === 'install') {
+      if (invocation.disabled) args.push('--disabled');
+      if (invocation.projectDir) args.push('--project-dir', invocation.projectDir);
+      if (invocation.agent) args.push('--model', invocation.agent);
     }
     if (invocation.verb === 'set-outcome') {
       args.push('--outcome', invocation.outcome);
@@ -1948,6 +1970,138 @@ export class HttpApiKanban {
     let canonicalAfter: string | undefined;
     try {
       canonicalAfter = realpathSync(path);
+    } catch {
+      canonicalAfter = undefined;
+    }
+    return this.toCard(refreshed, host, originId, refreshedById, undefined, canonicalAfter);
+  }
+
+  /**
+   * POST /kanban/promote-to-shuttle — install a paused one-shot shuttle
+   * block on a human card (a visible fiber with no existing shuttle block).
+   *
+   * Body: { fiberId, agent, card? }
+   *
+   * Promotion routes through `shuttle-ctl install --disabled` rather than a
+   * bespoke frontmatter writer: the CLI already validates the agent id and
+   * preserves unrelated frontmatter bytes while appending the `shuttle:`
+   * block. The newly-promoted card lands in Drafts (`enabled: false`) until
+   * the human drags it into In Flight or resumes it from the modal.
+   */
+  async handlePromoteToShuttle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: KanbanPromoteToShuttleRequest;
+    try {
+      body = await readJsonBody<KanbanPromoteToShuttleRequest>(req);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 400, { error: `bad request body: ${msg}` });
+      return;
+    }
+    if (!body || typeof body.fiberId !== 'string' || typeof body.agent !== 'string') {
+      this.json(res, 400, { error: 'fiberId and agent are required' });
+      return;
+    }
+
+    try {
+      const updated = await this.applyPromoteToShuttle(
+        body.fiberId,
+        body.agent.trim(),
+        body.card,
+      );
+      this.json(res, 200, { ok: true, card: updated });
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      const status =
+        msg.startsWith('fiber not found:') ? 404
+        : msg.includes('agent is required') ||
+            msg.includes('already has a shuttle: block') ||
+            msg.includes('kanban only promotes visible human cards')
+          ? 400
+          : 500;
+      console.error('[Kanban] promote-to-shuttle failed:', msg);
+      this.json(res, status, { error: msg });
+    }
+  }
+
+  async applyPromoteToShuttle(
+    fiberId: string,
+    agent: string,
+    card?: KanbanCard,
+  ): Promise<KanbanCard> {
+    if (!agent) throw new Error('agent is required');
+
+    const cardEntry = entryFromLocalCard(card);
+    const canUseCardEntry =
+      cardEntry !== null &&
+      cardEntry.fiber.id === fiberId &&
+      cardEntry.fiber.hasShuttleBlock !== true;
+
+    const pool = canUseCardEntry ? null : await this.collectFibers();
+    const entry = canUseCardEntry
+      ? cardEntry
+      : pool?.merged.find(({ fiber }) => fiber.id === fiberId);
+    if (!entry) throw new Error(`fiber not found: ${fiberId}`);
+    const { fiber, host, originId } = entry;
+
+    if (!shouldIncludeInKanban(fiber) || fiber.hasShuttleBlock === true) {
+      if (fiber.hasShuttleBlock === true) {
+        throw new Error(
+          `fiber ${fiberId} already has a shuttle: block; use kanban transitions instead`,
+        );
+      }
+      throw new Error(
+        `kanban only promotes visible human cards; ${fiberId} is not currently a human card`,
+      );
+    }
+
+    if (originId !== 'local') {
+      if (!this.remoteTransitionExecutor) {
+        throw new Error(
+          `remote-origin promotion requires remoteTransitionExecutor wiring ` +
+            `(fiber ${fiberId} is on origin '${originId}')`,
+        );
+      }
+      await this.remoteTransitionExecutor({
+        originId,
+        feltHost: host,
+        host,
+        fiberId,
+        path: relativeFeltPath(fiber),
+        kind: 'shuttle',
+        verb: 'install',
+        agent,
+        disabled: true,
+      });
+      this.clearFiberPoolCache();
+      const refreshedById = new Map<string, Fiber>();
+      if (this.remoteSnapshotsProvider) {
+        for (const snap of this.remoteSnapshotsProvider()) {
+          if (snap.originId !== originId || normalizeRemotePath(snap.feltHost) !== normalizeRemotePath(host)) continue;
+          for (const f of snap.fibers) refreshedById.set(f.id, f);
+        }
+      }
+      const refreshed = refreshedById.get(fiberId);
+      if (!refreshed) throw new Error(`remote fiber disappeared: ${fiberId}`);
+      return this.toCard(refreshed, host, originId, refreshedById);
+    }
+
+    const ref = canonicalRefForEntry(entry);
+    await this.runShuttleCtl({
+      host: ref.host,
+      verb: 'install',
+      fiberId: ref.fiberId,
+      agent,
+      disabled: true,
+    });
+    this.clearFiberPoolCache();
+
+    const refreshed = await getFiber(host, fiberId);
+    if (!refreshed) throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
+    const refreshedById = new Map(pool?.merged.map(({ fiber: f }) => [f.id, f]) ?? []);
+    refreshedById.set(fiberId, refreshed);
+    let canonicalAfter: string | undefined;
+    try {
+      canonicalAfter = realpathSync(this.fiberPath(host, refreshed));
     } catch {
       canonicalAfter = undefined;
     }

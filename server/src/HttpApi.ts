@@ -480,6 +480,15 @@ export class HttpApi {
       return true;
     }
 
+    // POST /kanban/promote-to-shuttle — install a paused shuttle block on a
+    // human card (visible because it's open+due, but not yet shuttle-managed).
+    if (url.pathname === '/kanban/promote-to-shuttle' && req.method === 'POST') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handlePromoteToShuttle(req, res);
+      return true;
+    }
+
     // POST /kanban/horizon — write Portolan's top-level `horizon:` row axis.
     // Same city-scope resolution as the kanban read and other mutation routes.
     if (url.pathname === '/kanban/horizon' && req.method === 'POST') {

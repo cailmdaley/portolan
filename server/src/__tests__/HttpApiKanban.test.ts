@@ -96,6 +96,28 @@ function rewriteFrontmatter(raw: string, mutate: (doc: Record<string, any>) => v
   return `---\n${YAML.stringify(doc).trimEnd()}\n---\n${after}`;
 }
 
+function installShuttleBlockPreservingBytes(
+  raw: string,
+  opts: { enabled: boolean; agent?: string },
+): string {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
+  if (!match) throw new Error('file has no YAML frontmatter');
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const frontmatter = match[1];
+  const closingNewline = match[2] ?? '';
+  const body = raw.slice(match[0].length);
+  const shuttleLines = [
+    'shuttle:',
+    `  enabled: ${opts.enabled ? 'true' : 'false'}`,
+    '  kind: oneshot',
+    ...(opts.agent ? [`  agent: ${opts.agent}`] : []),
+  ];
+  const nextFrontmatter = frontmatter.length > 0
+    ? `${frontmatter}${eol}${shuttleLines.join(eol)}`
+    : shuttleLines.join(eol);
+  return `---${eol}${nextFrontmatter}${eol}---${closingNewline}${body}`;
+}
+
 function normalizeTags(tags: string[]): string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -111,6 +133,13 @@ function normalizeTags(tags: string[]): string[] {
 function applyShuttleCtlInvocation(invocation: ShuttleCtlInvocation, nowIso = '2026-05-03T16:00:00.000Z'): void {
   const path = mdPathForFiberId(invocation.host, invocation.fiberId);
   const raw = readFileSync(path, 'utf-8');
+  if (invocation.verb === 'install') {
+    writeFileSync(path, installShuttleBlockPreservingBytes(raw, {
+      enabled: invocation.disabled !== true,
+      agent: invocation.agent,
+    }), 'utf-8');
+    return;
+  }
   const updated = rewriteFrontmatter(raw, (doc) => {
     switch (invocation.verb) {
       case 'pause':
@@ -161,6 +190,12 @@ function applyFeltTagEditInvocation(invocation: FeltTagEditInvocation): void {
 }
 
 function applyRemoteMutation(content: string, mutation: RemoteKanbanMutationRequest, nowIso = '2026-05-03T16:00:00.000Z'): string {
+  if (mutation.kind === 'shuttle' && mutation.verb === 'install') {
+    return installShuttleBlockPreservingBytes(content, {
+      enabled: mutation.disabled !== true,
+      agent: mutation.agent,
+    });
+  }
   return rewriteFrontmatter(content, (doc) => {
     if (mutation.kind === 'felt-tags') {
       doc.tags = normalizeTags(mutation.tags);
@@ -1702,6 +1737,123 @@ describe('HttpApiKanban — /kanban endpoint', () => {
           },
         },
       ]);
+    });
+  });
+
+  describe('handlePromoteToShuttle', () => {
+    it('installs a paused shuttle block on a human card while preserving other frontmatter bytes', async () => {
+      const dir = join(FELT_DIR, 'human-card');
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, 'human-card.md');
+      const before = [
+        '---',
+        'name: Human card',
+        'status: open',
+        'due: 2026-05-20',
+        'notes: |-',
+        '  shuttle: not top-level',
+        'tags:',
+        '  - todo',
+        'created-at: 2026-04-01T00:00:00Z',
+        '---',
+        '',
+        'Body',
+      ].join('\n');
+      writeFileSync(path, before, 'utf-8');
+
+      const shuttleCalls: ShuttleCtlInvocation[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        shuttleCtlFn: makeShuttleCtlStub(shuttleCalls),
+        listSessions: () => [],
+      });
+
+      const { res, status, body } = capRes();
+      await api.handlePromoteToShuttle(
+        jsonReq({ fiberId: 'human-card', agent: 'pi-sonnet' }),
+        res,
+      );
+
+      expect(status()).toBe(200);
+      expect(body().card.shuttleEnabled).toBe(false);
+      expect(body().card.shuttleKind).toBe('oneshot');
+      expect(body().card.shuttleAgent).toBe('pi-sonnet');
+      expect(shuttleCalls).toEqual([
+        { host: TEST_DIR, verb: 'install', fiberId: 'human-card', agent: 'pi-sonnet', disabled: true },
+      ]);
+      expect(readFileSync(path, 'utf-8')).toBe(
+        before.replace(
+          '\n---\n\n',
+          '\nshuttle:\n  enabled: false\n  kind: oneshot\n  agent: pi-sonnet\n---\n\n',
+        ),
+      );
+    });
+
+    it('rejects promotion when the fiber already has a shuttle block', async () => {
+      writeFib('managed-card', {
+        name: 'Managed card',
+        status: 'open',
+        due: '2026-05-20',
+        shuttle: SHUTTLE_INFLIGHT,
+        'created-at': '2026-04-01T00:00:00Z',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+
+      const { res, status, body } = capRes();
+      await api.handlePromoteToShuttle(
+        jsonReq({ fiberId: 'managed-card', agent: 'pi-sonnet' }),
+        res,
+      );
+
+      expect(status()).toBe(400);
+      expect(body().error).toMatch(/already has a shuttle: block/);
+    });
+
+    it('routes remote promotion through remoteTransitionExecutor', async () => {
+      const store = new FiberTreeSnapshotStore();
+      const content = [
+        '---',
+        'name: cmbx',
+        'status: open',
+        'due: 2026-05-20',
+        'created-at: 2026-04-15T00:00:00Z',
+        '---',
+        '',
+        'body',
+      ].join('\n');
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content },
+      ]);
+      const calls: RemoteKanbanMutationRequest[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async (args) => {
+          calls.push(args);
+          store.applyDelta(args.originId, [
+            { path: args.path, op: 'upsert', content: applyRemoteMutation(content, args) },
+          ], args.feltHost);
+        },
+        listSessions: () => [],
+      });
+
+      const card = await api.applyPromoteToShuttle('cmbx', 'pi-sonnet');
+      expect(calls).toEqual([
+        {
+          originId: 'remote-cineca',
+          feltHost: '/leonardo/loom',
+          host: '/leonardo/loom',
+          fiberId: 'cmbx',
+          path: 'cmbx/cmbx.md',
+          kind: 'shuttle',
+          verb: 'install',
+          agent: 'pi-sonnet',
+          disabled: true,
+        },
+      ]);
+      expect(card.shuttleEnabled).toBe(false);
+      expect(card.shuttleKind).toBe('oneshot');
+      expect(card.shuttleAgent).toBe('pi-sonnet');
     });
   });
 

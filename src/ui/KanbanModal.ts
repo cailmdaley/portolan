@@ -106,7 +106,7 @@ interface KanbanCard {
   cityId?: string
   /**
    * Slug relative to the owning city's `.felt/` root. The vellum collection's
-   * astra graph is keyed by these project-relative slugs, so this is what
+   * fiber graph is keyed by these project-relative slugs, so this is what
    * the frontend hands to `navigate()` once it's pivoted to `cityId`.
    */
   projectSlug?: string
@@ -2284,6 +2284,7 @@ export class FiberDetailModal {
     // Routing scope: parent kanban's view scope (NOT card.cityId).
     // See open()'s docstring for why these differ on the global kanban.
     const scope = scopeCityId ?? undefined
+    const shuttleManaged = isAgentCard(card)
 
     // ── Next dispatch (message + mode + action buttons) ──────────────────────
     // One canonical surface for "what happens when this fiber dispatches next."
@@ -2291,7 +2292,7 @@ export class FiberDetailModal {
     // toggle determines whether the worker exits at the end of its initial
     // task (autonomous, default) or stays alive for a human to attach
     // (interactive — shuttle injects a "don't kill PPID" prelude).
-    const actionsSec = this.buildSection('Next dispatch')
+    const actionsSec = this.buildSection(shuttleManaged ? 'Next dispatch' : 'Actions')
     const actionsErr = document.createElement('div')
     actionsErr.className = 'kbn-detail-error'
     actionsErr.style.display = 'none'
@@ -2350,58 +2351,62 @@ export class FiberDetailModal {
     const actionsRow = document.createElement('div')
     actionsRow.className = 'kbn-detail-actions-row'
 
-    const requeueBtn = this.buildActionBtn('New session ▸', 'primary')
-    requeueBtn.title = 'Dispatch a fresh worker; outcome preserved'
-
-    const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
-    resumeBtn.title = 'Try to resume the previous worker session; outcome preserved'
-    const canResumePrevious = typeof card.sessionId === 'string' && card.sessionId.trim() !== ''
-    if (!canResumePrevious) {
-      resumeBtn.disabled = true
-      resumeBtn.title = 'No previous worker session is recorded; start a new session instead'
-      resumeBtn.setAttribute('aria-disabled', 'true')
-    }
-
     const temperBtn = this.buildActionBtn('Temper', 'tempered')
     temperBtn.title = 'Close as tempered (human-accepted)'
 
     const compostBtn = this.buildActionBtn('Compost', 'composted')
     compostBtn.title = 'Close as composted (human-rejected)'
 
-    actionsRow.append(requeueBtn, resumeBtn, temperBtn, compostBtn)
+    if (shuttleManaged) {
+      const requeueBtn = this.buildActionBtn('New session ▸', 'primary')
+      requeueBtn.title = 'Dispatch a fresh worker; outcome preserved'
 
-    requeueBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      const message = messageTa.value.trim()
-      const interactive = interactiveState.value
-      const needsResumeTransition =
-        card.shuttleKind === 'standing' && card.shuttleReviewState === 'awaiting'
-      if (message === '' && !needsResumeTransition && !interactive) {
-        // Empty message + autonomous + already dispatch-eligible -> immediate
-        // dispatch, no review-comment needed.
-        void this.runDispatchNow(card, requeueBtn, actionsErr, interactive)
-      } else {
-        // Non-empty message, interactive mode (we want it persisted on the
-        // review-comment so the worker reads it), or standing role in
-        // awaiting state (needs shuttle-ctl resume to transition state
-        // while preserving outcome) -> runRequeue, which handles the
-        // review-comment + optional state transition + dispatch.
-        void this.runRequeue(card, message, 'fresh', scope, requeueBtn, actionsErr, interactive)
+      const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
+      resumeBtn.title = 'Try to resume the previous worker session; outcome preserved'
+      const canResumePrevious = typeof card.sessionId === 'string' && card.sessionId.trim() !== ''
+      if (!canResumePrevious) {
+        resumeBtn.disabled = true
+        resumeBtn.title = 'No previous worker session is recorded; start a new session instead'
+        resumeBtn.setAttribute('aria-disabled', 'true')
       }
-    })
-    resumeBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      if (!canResumePrevious) return
-      void this.runRequeue(
-        card,
-        messageTa.value.trim(),
-        'previous',
-        scope,
-        resumeBtn,
-        actionsErr,
-        interactiveState.value,
-      )
-    })
+
+      actionsRow.append(requeueBtn, resumeBtn, temperBtn, compostBtn)
+
+      requeueBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const message = messageTa.value.trim()
+        const interactive = interactiveState.value
+        const needsResumeTransition =
+          card.shuttleKind === 'standing' && card.shuttleReviewState === 'awaiting'
+        if (message === '' && !needsResumeTransition && !interactive) {
+          // Empty message + autonomous + already dispatch-eligible -> immediate
+          // dispatch, no review-comment needed.
+          void this.runDispatchNow(card, requeueBtn, actionsErr, interactive)
+        } else {
+          // Non-empty message, interactive mode (we want it persisted on the
+          // review-comment so the worker reads it), or standing role in
+          // awaiting state (needs shuttle-ctl resume to transition state
+          // while preserving outcome) -> runRequeue, which handles the
+          // review-comment + optional state transition + dispatch.
+          void this.runRequeue(card, message, 'fresh', scope, requeueBtn, actionsErr, interactive)
+        }
+      })
+      resumeBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        if (!canResumePrevious) return
+        void this.runRequeue(
+          card,
+          messageTa.value.trim(),
+          'previous',
+          scope,
+          resumeBtn,
+          actionsErr,
+          interactiveState.value,
+        )
+      })
+    } else {
+      actionsRow.append(temperBtn, compostBtn)
+    }
 
     void this.loadHistory(card.id, scope, historyList)
     temperBtn.addEventListener('click', (e) => {
@@ -2413,7 +2418,8 @@ export class FiberDetailModal {
       void this.runTransition(card, 'composted', scope, compostBtn, actionsErr)
     })
 
-    actionsSec.append(messageTa, modeRow, actionsRow, actionsErr)
+    if (shuttleManaged) actionsSec.append(messageTa, modeRow, actionsRow, actionsErr)
+    else actionsSec.append(actionsRow, actionsErr)
 
     // ── Tags ────────────────────────────────────────────────────────────────
     // Chip editor matching the kanban grid card's inline tag editor. Adding
@@ -2500,7 +2506,11 @@ export class FiberDetailModal {
     let selectedSchedule = originalSchedule
     let selectedTz = originalTz
 
-    const dispatchSec = this.buildSection('Worker')
+    const dispatchSec = this.buildSection(shuttleManaged ? 'Worker' : 'Promote to shuttle')
+    const promoteBtn = shuttleManaged ? null : this.buildActionBtn('Promote to shuttle', 'primary')
+    const promoteErr = document.createElement('div')
+    promoteErr.className = 'kbn-detail-error'
+    promoteErr.style.display = 'none'
 
     // Row 1: agent
     const agentRow = document.createElement('div')
@@ -2573,7 +2583,7 @@ export class FiberDetailModal {
           sibling.classList.toggle('kbn-detail-segment-active', isActive)
           sibling.setAttribute('aria-checked', isActive ? 'true' : 'false')
         }
-        scheduleRow.style.display = value === 'standing' ? '' : 'none'
+        scheduleRow.style.display = shuttleManaged && value === 'standing' ? '' : 'none'
         // Surface a sensible cron + tz default when promoting to standing
         // for the first time so the user has something to edit rather than
         // an empty input that fails validation on save.
@@ -2595,6 +2605,7 @@ export class FiberDetailModal {
     const standingBtn = buildKindBtn('standing', 'Standing', 'Recurring cron-scheduled role')
     kindSegmented.append(oneshotBtn, standingBtn)
     kindRow.append(kindLabel, kindSegmented)
+    kindRow.style.display = shuttleManaged ? '' : 'none'
     dispatchSec.append(kindRow)
 
     // Row 3: schedule + tz (visible only when kind=standing)
@@ -2630,8 +2641,9 @@ export class FiberDetailModal {
     tzInput.addEventListener('click', (e) => e.stopPropagation())
 
     scheduleRow.append(scheduleLabel, scheduleInput, tzInput)
-    scheduleRow.style.display = selectedKind === 'standing' ? '' : 'none'
+    scheduleRow.style.display = shuttleManaged && selectedKind === 'standing' ? '' : 'none'
     dispatchSec.append(scheduleRow)
+    if (promoteBtn) dispatchSec.append(promoteBtn, promoteErr)
 
     // ── Parent fiber ──────────────────────────────────────────────────────────
     // Shows the current parent (derived from the id path) and an autocomplete
@@ -2798,7 +2810,7 @@ export class FiberDetailModal {
         parentId?: string | null
       } = {}
 
-      if (agentSelect) {
+      if (agentSelect && shuttleManaged) {
         const newAgent = agentSelect.value
         if (newAgent && newAgent !== originalAgent) changes.shuttleAgent = newAgent
       }
@@ -2839,6 +2851,22 @@ export class FiberDetailModal {
 
       void this.save(card.id, scope, changes, saveBtn, errorEl)
     })
+
+    if (promoteBtn) {
+      promoteBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const agent = agentSelect?.value.trim() ?? ''
+        if (!agent) {
+          promoteErr.textContent = 'Choose an agent to promote this card.'
+          promoteErr.style.display = ''
+          return
+        }
+        promoteBtn.disabled = true
+        promoteBtn.textContent = 'Promoting…'
+        promoteErr.style.display = 'none'
+        void this.promoteToShuttle(card, scope, agent, promoteBtn, promoteErr)
+      })
+    }
 
     footer.append(vellumBtn, errorEl, saveBtn)
 
@@ -3465,11 +3493,16 @@ export class FiberDetailModal {
         select.append(opt)
         return
       }
+      const defaultAgent = currentAgent
+        ? undefined
+        : data.agents.find((agent) => agent.default)?.id
       for (const agent of data.agents) {
         const opt = document.createElement('option')
         opt.value = agent.id
         opt.textContent = agent.model ? `${agent.id} (${agent.model})` : agent.id
-        if (agent.id === currentAgent) opt.selected = true
+        if (agent.id === currentAgent || (!currentAgent && agent.id === defaultAgent)) {
+          opt.selected = true
+        }
         select.append(opt)
       }
       // If no match, try to keep current agent as a custom entry.
@@ -3539,6 +3572,37 @@ export class FiberDetailModal {
     } catch {
       dropdown.innerHTML = '<div class="kbn-detail-parent-option kbn-detail-parent-empty">Search failed</div>'
       dropdown.style.display = ''
+    }
+  }
+
+  private async promoteToShuttle(
+    card: KanbanCard,
+    cityId: string | undefined,
+    agent: string,
+    saveBtn: HTMLButtonElement,
+    errorEl: HTMLElement,
+  ): Promise<void> {
+    try {
+      const url = cityId
+        ? `${this.apiBase}/kanban/promote-to-shuttle?cityId=${encodeURIComponent(cityId)}`
+        : `${this.apiBase}/kanban/promote-to-shuttle`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, agent, card }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
+        throw new Error(err.error || `Promote failed: ${res.status}`)
+      }
+      this.close()
+      this.onSaved()
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      errorEl.textContent = msg
+      errorEl.style.display = ''
+      saveBtn.disabled = false
+      saveBtn.textContent = 'Promote to shuttle'
     }
   }
 

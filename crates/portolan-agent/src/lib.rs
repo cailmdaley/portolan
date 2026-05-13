@@ -1385,6 +1385,27 @@ where
 
     match verb {
         "pause" | "reopen" | "accept" | "resume" => {}
+        "install" => {
+            let disabled = optional_bool_field(payload, "disabled")? == Some(true);
+            if disabled {
+                args.push("--disabled".to_string());
+            }
+            if let Some(project_dir) = optional_string_field(payload, "projectDir") {
+                if !project_dir.trim().is_empty() {
+                    args.push("--project-dir".to_string());
+                    args.push(project_dir.to_string());
+                }
+            } else if !disabled {
+                args.push("--project-dir".to_string());
+                args.push(felt_host.to_string());
+            }
+            if let Some(agent) = optional_string_field(payload, "agent") {
+                if !agent.trim().is_empty() {
+                    args.push("--model".to_string());
+                    args.push(agent.to_string());
+                }
+            }
+        }
         "close" => {
             if let Some(tempered) = optional_bool_field(payload, "tempered")? {
                 args.push(format!(
@@ -4114,6 +4135,37 @@ malformed
             ]
         );
 
+        let install = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("verb", json!("install")),
+            ("disabled", json!(true)),
+            ("agent", json!("pi-sonnet")),
+        ]);
+        run_kanban_transition_with(
+            &install,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        )
+        .unwrap();
+        assert_eq!(
+            invocations[1].args,
+            vec![
+                "--felt-store",
+                dir.to_str().unwrap(),
+                "install",
+                "story",
+                "--disabled",
+                "--model",
+                "pi-sonnet"
+            ]
+        );
+
         let dispatch = kanban_payload(&[
             ("kind", json!("shuttle")),
             ("path", json!("story/story.md")),
@@ -4132,7 +4184,7 @@ malformed
         )
         .unwrap();
         assert_eq!(
-            invocations[1].args,
+            invocations[2].args,
             vec![
                 "--felt-store",
                 dir.to_str().unwrap(),
@@ -4159,7 +4211,7 @@ malformed
         )
         .unwrap();
         assert_eq!(
-            invocations[2].args,
+            invocations[3].args,
             vec!["--felt-store", dir.to_str().unwrap(), "resume", "story"]
         );
         fs::remove_dir_all(&dir).unwrap();

@@ -223,6 +223,33 @@ async function openDispatchModal(card: ReturnType<typeof makeInFlightCard>): Pro
   return { modal, dispatchBtn, resumeBtn, directiveTa, errorEl, onSaved }
 }
 
+async function openPromoteModal(card: ReturnType<typeof makeKanbanCard> = makeKanbanCard({ due: '2026-05-20' })): Promise<{
+  modal: FiberDetailModal
+  promoteBtn: HTMLButtonElement
+  agentSelect: HTMLSelectElement
+  errorEl: HTMLElement
+  onSaved: ReturnType<typeof vi.fn>
+}> {
+  const onSaved = vi.fn()
+  const modal = new FiberDetailModal(
+    'http://localhost:4004',
+    vi.fn(),
+    onSaved,
+  )
+  modal.open(card, undefined, 'drafts')
+  await tick()
+
+  const promoteBtn = Array.from(document.querySelectorAll<HTMLButtonElement>('.kbn-detail-action-btn'))
+    .find((candidate) => candidate.textContent?.trim() === 'Promote to shuttle')
+  if (!promoteBtn) throw new Error('Promote button not found')
+  const agentSelect = document.querySelector('#kbn-detail-agent') as HTMLSelectElement | null
+  if (!agentSelect) throw new Error('Agent select not found')
+  const errorEl = document.querySelector('.kbn-detail-section[data-section="promote to shuttle"] .kbn-detail-error') as HTMLElement | null
+  if (!errorEl) throw new Error('Promote error element not found')
+
+  return { modal, promoteBtn, agentSelect, errorEl, onSaved }
+}
+
 function detailActionButton(label: string): HTMLButtonElement {
   const btn = Array.from(document.querySelectorAll<HTMLButtonElement>('.kbn-detail-action-btn'))
     .find((candidate) => candidate.textContent?.trim() === label)
@@ -1141,6 +1168,47 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     expect(errorEl.textContent).toContain('missing_session_id')
     expect(document.querySelector('.kbn-detail-overlay')).not.toBeNull()
     expect(onSaved).not.toHaveBeenCalled()
+  })
+})
+
+describe('FiberDetailModal human-card promotion', () => {
+  it('posts the selected agent to /kanban/promote-to-shuttle', async () => {
+    const promoteBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/shuttle/agents')) {
+        return Promise.resolve(jsonResponse({
+          agents: [
+            { id: 'pi-sonnet', default: true },
+            { id: 'claude-sonnet' },
+          ],
+        }))
+      }
+      if (urlStr.includes('/kanban/promote-to-shuttle')) {
+        promoteBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/kanban/fiber-history')) {
+        return Promise.resolve(jsonResponse({ events: [] }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { promoteBtn, agentSelect, onSaved } = await openPromoteModal()
+    expect(promoteBtn.textContent).toContain('Promote')
+    expect(agentSelect.value).toBe('pi-sonnet')
+
+    promoteBtn.click()
+    await tick()
+
+    expect(promoteBodies).toHaveLength(1)
+    expect(promoteBodies[0]).toMatchObject({
+      fiberId: 'test/my-constitution',
+      agent: 'pi-sonnet',
+      card: { id: 'test/my-constitution' },
+    })
+    expect(document.querySelector('.kbn-detail-overlay')).toBeNull()
+    expect(onSaved).toHaveBeenCalledOnce()
   })
 })
 
