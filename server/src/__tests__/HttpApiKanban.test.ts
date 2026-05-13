@@ -54,6 +54,20 @@ async function callKanban(api: HttpApiKanban): Promise<CapturedResponse> {
   return { status, body: raw ? JSON.parse(raw) : null };
 }
 
+function jsonReq(body: unknown): IncomingMessage {
+  return Readable.from([Buffer.from(JSON.stringify(body), 'utf-8')]) as unknown as IncomingMessage;
+}
+
+function capRes(): { res: ServerResponse; status: () => number; body: () => any } {
+  let status = 0;
+  const chunks: string[] = [];
+  const res = {
+    writeHead(s: number) { status = s; },
+    end(c?: string) { if (c) chunks.push(c); },
+  } as unknown as ServerResponse;
+  return { res, status: () => status, body: () => (chunks.length ? JSON.parse(chunks.join('')) : null) };
+}
+
 /**
  * Reconstruct a fiber's `.felt/`-relative path from its id + isRoot flag.
  * Mirrors the agent-side and HttpApiKanban's `relativeFeltPath` for use in
@@ -162,6 +176,9 @@ function applyRemoteMutation(content: string, mutation: RemoteKanbanMutationRequ
         else if (mutation.cold === true) doc.cold = true;
         else if (mutation.cold === false) delete doc.cold;
       }
+      return;
+    }
+    if (mutation.kind === 'felt-history') {
       return;
     }
 
@@ -1583,21 +1600,68 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
   });
 
+  describe('handleReviewComment', () => {
+    it('routes remote review comments through remoteTransitionExecutor', async () => {
+      const store = new FiberTreeSnapshotStore();
+      const content = [
+        '---',
+        'name: cmbx',
+        'status: active',
+        'tags:',
+        '  - constitution',
+        'shuttle:',
+        '  enabled: true',
+        '  kind: oneshot',
+        'created-at: 2026-04-15T00:00:00Z',
+        '---',
+        '',
+        'body',
+      ].join('\n');
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content },
+      ]);
+      const calls: RemoteKanbanMutationRequest[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async (args) => {
+          calls.push(args);
+        },
+        listSessions: () => [],
+      });
+
+      const { res, status, body } = capRes();
+      await api.handleReviewComment(
+        jsonReq({
+          fiberId: 'cmbx',
+          directive: 'Use a fresh worker',
+          resumeMode: 'fresh',
+          interactive: true,
+        }),
+        res,
+      );
+
+      expect(status()).toBe(200);
+      expect(body()).toEqual({ ok: true });
+      expect(calls).toEqual([
+        {
+          originId: 'remote-cineca',
+          feltHost: '/leonardo/loom',
+          kind: 'felt-history',
+          fiberId: 'cmbx',
+          path: 'cmbx/cmbx.md',
+          historyKind: 'review-comment',
+          summary: 'Use a fresh worker',
+          historyFields: {
+            resume_mode: 'fresh',
+            interactive: 'true',
+          },
+        },
+      ]);
+    });
+  });
+
   describe('handleHorizon', () => {
-    function jsonReq(body: unknown): IncomingMessage {
-      return Readable.from([Buffer.from(JSON.stringify(body), 'utf-8')]) as unknown as IncomingMessage;
-    }
-
-    function capRes(): { res: ServerResponse; status: () => number; body: () => any } {
-      let status = 0;
-      const chunks: string[] = [];
-      const res = {
-        writeHead(s: number) { status = s; },
-        end(c?: string) { if (c) chunks.push(c); },
-      } as unknown as ServerResponse;
-      return { res, status: () => status, body: () => (chunks.length ? JSON.parse(chunks.join('')) : null) };
-    }
-
     it('writes the top-level horizon key while preserving unrelated frontmatter bytes', async () => {
       writeFib('deadline', {
         name: 'Deadline',

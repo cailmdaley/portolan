@@ -550,6 +550,14 @@ export type RemoteKanbanMutationInvocation =
   | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
   | { kind: 'felt-tags'; fiberId: string; path: string; tags: string[] }
   | {
+      kind: 'felt-history';
+      fiberId: string;
+      path: string;
+      historyKind: string;
+      summary: string;
+      historyFields?: Record<string, string>;
+    }
+  | {
       kind: 'felt-horizon';
       fiberId: string;
       path: string;
@@ -2067,14 +2075,16 @@ export class HttpApiKanban {
     // empty-summary directive blocks.
     const directive = body.directive.trim();
 
+    let entry: KanbanFiberEntry;
     let ref: { host: string; fiberId: string };
     try {
       const { merged } = await this.collectFibers();
-      const entry = merged.find(({ fiber }) => fiber.id === body.fiberId);
-      if (!entry) {
+      const found = merged.find(({ fiber }) => fiber.id === body.fiberId);
+      if (!found) {
         this.json(res, 404, { error: `fiber not found: ${body.fiberId}` });
         return;
       }
+      entry = found;
       ref = canonicalRefForEntry(entry);
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? String(err);
@@ -2096,6 +2106,30 @@ export class HttpApiKanban {
       // the dispatcher injects a "don't kill PPID" prelude so the worker
       // stays alive for the human to attach mid-conversation.
       const interactive = body.interactive === true;
+      const historyFields = {
+        resume_mode: body.resumeMode,
+        ...(interactive ? { interactive: 'true' } : {}),
+      };
+      if (entry.originId !== 'local') {
+        if (!this.remoteTransitionExecutor) {
+          throw new Error(
+            `remote-origin review comments require remoteTransitionExecutor wiring ` +
+              `(fiber ${body.fiberId} is on origin '${entry.originId}')`,
+          );
+        }
+        await this.remoteTransitionExecutor({
+          originId: entry.originId,
+          feltHost: ref.host,
+          kind: 'felt-history',
+          path: relativeFeltPath(entry.fiber),
+          fiberId: ref.fiberId,
+          historyKind: 'review-comment',
+          summary: directive,
+          historyFields,
+        });
+        this.json(res, 200, { ok: true });
+        return;
+      }
       const feltArgs = [
         '-C', ref.host,
         'history', 'append', ref.fiberId,

@@ -1339,6 +1339,7 @@ where
 {
     match required_string_field(payload, "kind")? {
         "shuttle" => run_shuttle_kanban_mutation(payload, felt_host, run_process),
+        "felt-history" => run_felt_history_kanban_mutation(payload, felt_host, run_process),
         "felt-tags" => {
             run_felt_tags_kanban_mutation(payload, felt_host, run_process, read_snapshot)
         }
@@ -1389,6 +1390,67 @@ where
 
     run_process(ProcessInvocation {
         program: "shuttle-ctl".to_string(),
+        args,
+        cwd: normalize_host_path(felt_host),
+        envs: process_env_for_felt_host(felt_host),
+    })
+}
+
+fn run_felt_history_kanban_mutation<R>(
+    payload: &AgentRequestPayload,
+    felt_host: &str,
+    run_process: &mut R,
+) -> Result<(), String>
+where
+    R: FnMut(ProcessInvocation) -> Result<(), String>,
+{
+    let fiber_id = required_string_field(payload, "fiberId")?;
+    let history_kind = required_string_field(payload, "historyKind")?;
+    let summary = required_string_field(payload, "summary")?;
+    let mut args = vec![
+        "-C".to_string(),
+        felt_host.to_string(),
+        "history".to_string(),
+        "append".to_string(),
+        fiber_id.to_string(),
+        "--kind".to_string(),
+        history_kind.to_string(),
+        "--summary".to_string(),
+        summary.to_string(),
+    ];
+
+    if let Some(fields) = payload.fields.get("historyFields") {
+        let fields = fields
+            .as_object()
+            .ok_or_else(|| "invalid historyFields: expected object".to_string())?;
+        let mut normalized = fields
+            .iter()
+            .map(|(key, value)| {
+                if key.trim().is_empty() || key.contains('=') {
+                    return Err(format!("invalid historyFields key: {key}"));
+                }
+                let value = match value {
+                    Value::String(value) => value.clone(),
+                    Value::Bool(value) => value.to_string(),
+                    Value::Number(value) => value.to_string(),
+                    _ => {
+                        return Err(format!(
+                            "invalid historyFields.{key}: expected string, boolean, or number"
+                        ))
+                    }
+                };
+                Ok((key.clone(), value))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        normalized.sort_by(|left, right| left.0.cmp(&right.0));
+        for (key, value) in normalized {
+            args.push("--field".to_string());
+            args.push(format!("{key}={value}"));
+        }
+    }
+
+    run_process(ProcessInvocation {
+        program: "felt".to_string(),
         args,
         cwd: normalize_host_path(felt_host),
         envs: process_env_for_felt_host(felt_host),
@@ -3501,6 +3563,63 @@ malformed
             vec!["--felt-store", dir.to_str().unwrap(), "resume", "story"]
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn felt_history_kanban_transition_appends_review_comments() {
+        let dir = temp_host("kanban-felt-history");
+        fs::create_dir_all(dir.join(".felt/story")).unwrap();
+        fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
+        let payload = kanban_payload(&[
+            ("kind", json!("felt-history")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("historyKind", json!("review-comment")),
+            ("summary", json!("Resume the previous run")),
+            (
+                "historyFields",
+                json!({
+                    "resume_mode": "previous",
+                    "interactive": true,
+                }),
+            ),
+        ]);
+        let mut invocations = Vec::new();
+
+        let fiber = run_kanban_transition_with(
+            &payload,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        )
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(fiber["id"], json!("story"));
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].program, "felt");
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "-C",
+                dir.to_str().unwrap(),
+                "history",
+                "append",
+                "story",
+                "--kind",
+                "review-comment",
+                "--summary",
+                "Resume the previous run",
+                "--field",
+                "interactive=true",
+                "--field",
+                "resume_mode=previous",
+            ]
+        );
+        assert_eq!(invocations[0].cwd, dir);
     }
 
     #[test]
