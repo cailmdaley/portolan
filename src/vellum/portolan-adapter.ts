@@ -21,11 +21,9 @@
 
 import {
   type Adapter,
-  type AstraBundleResult,
   type CreateAnnotationInput,
   type FrontmatterPatch,
   type GetAnnotationsOptions,
-  type GetAstraBundleOptions,
   type GetFileOptions,
   type ReadOnlyAdapter,
   type ReadOnlyAdapterError,
@@ -42,16 +40,11 @@ import type {
   RawFiber,
   SearchHit,
 } from 'vellum';
-import type { Bundle } from 'lightcone-ui-core';
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`;
 
 function encodeSlug(slug: string): string {
   return slug.split('/').map(encodeURIComponent).join('%2F');
-}
-
-function isAstraPath(path: string): boolean {
-  return /(?:^|\/)astra\.ya?ml$/i.test(path) || /\.astra\.ya?ml$/i.test(path);
 }
 
 function classifyFile(path: string): FileContent['kind'] {
@@ -60,86 +53,7 @@ function classifyFile(path: string): FileContent['kind'] {
   if (ext === '.pdf') return 'pdf';
   if (ext === '.html') return 'html';
   if (['.md', '.markdown'].includes(ext)) return 'markdown';
-  // astra.yaml is rendered as the lightcone-ui paper view in an iframe;
-  // classify as 'html' so vellum embeds the URL we hand back via getFile,
-  // which points at portolan's /astra-paper-view server endpoint instead
-  // of the raw YAML. See server/src/HttpApiAstraView.ts.
-  if (isAstraPath(path)) return 'html';
   return 'text';
-}
-
-function buildAstraViewUrl(path: string, originId: string, cacheBust?: boolean): string {
-  const origin = originId || 'local';
-  const absPath = path.startsWith('/') ? path : `/${path}`;
-  const encodedPath = absPath
-    .split('/')
-    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
-    .join('/');
-  let url = `${API_BASE}/astra-paper-view/${encodeURIComponent(origin)}${encodedPath}`;
-  if (cacheBust) url += `?_t=${Date.now()}`;
-  return url;
-}
-
-/**
- * Fetch the JSON bundle for an astra.yaml from portolan's `/astra-bundle`
- * endpoint. Returns the rewritten Bundle (artifact paths point at
- * `/project-file/...`) plus inlined CSV previews, or `null` if the server
- * couldn't build it (404, 500, network error). Vellum-native astra
- * renderers consume this so they can run their own React rendering over
- * the same data the iframe paper view sees — see
- * `vellum-reader/vellum-native-astra-renderer`.
- *
- * Typed loosely (`unknown` bundle/csvs) at this seam so the adapter file
- * doesn't pull lightcone-ui-core's `Bundle` into portolan; consumers
- * import that type directly and cast at the call site, just as the
- * iframe path treats `window.__BUNDLE__` as opaque JSON.
- */
-export async function fetchAstraBundle(
-  path: string,
-  originId: string = 'local',
-  options: { universe?: string; cacheBust?: boolean } = {},
-): Promise<{ bundle: unknown; csvs: Record<string, string>; mtime?: string | null } | null> {
-  const absPath = path.startsWith('/') ? path : `/${path}`;
-  const encodedPath = absPath
-    .split('/')
-    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
-    .join('/');
-  const params = new URLSearchParams();
-  if (options.universe) params.set('universe', options.universe);
-  if (options.cacheBust) params.set('_t', String(Date.now()));
-  const qs = params.toString();
-  const url = `${API_BASE}/astra-bundle/${encodeURIComponent(originId)}${encodedPath}${qs ? `?${qs}` : ''}`;
-  const res = await fetch(url).catch(() => null);
-  if (!res || !res.ok) return null;
-  return (await res.json()) as {
-    bundle: unknown;
-    csvs: Record<string, string>;
-    mtime?: string | null;
-  };
-}
-
-/**
- * Cheap mtime probe for an astra.yaml. Hits portolan's `/astra-mtime` route
- * which short-circuits the buildBundle pipeline — local: a single fs.stat;
- * remote: a single SSH stat. Returns null when the server can't stat the
- * file (404, network error, remote disconnected). Used by vellum's
- * focus-staleness check to decide whether the panel needs to re-fetch
- * the bundle. See `vellum-reader/vellum-native-astra-renderer`.
- */
-export async function fetchAstraMtime(
-  path: string,
-  originId: string = 'local',
-): Promise<string | null> {
-  const absPath = path.startsWith('/') ? path : `/${path}`;
-  const encodedPath = absPath
-    .split('/')
-    .map((seg) => (seg ? encodeURIComponent(seg) : seg))
-    .join('/');
-  const url = `${API_BASE}/astra-mtime/${encodeURIComponent(originId)}${encodedPath}`;
-  const res = await fetch(url).catch(() => null);
-  if (!res || !res.ok) return null;
-  const data = await res.json().catch(() => null);
-  return data && typeof data.mtime === 'string' ? data.mtime : null;
 }
 
 function buildRawFileUrl(path: string, originId: string, cacheBust?: boolean): string {
@@ -240,19 +154,14 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       const originId = options.originId ?? defaultOriginId;
       const kind = classifyFile(path);
 
-      // Binary kinds: return url, no content body. astra.yaml rides the
-      // 'html' kind but routes through the dedicated paper-view endpoint
-      // rather than /project-file (which would stream raw YAML).
+      // Binary kinds: return url, no content body.
       if (kind === 'pdf' || kind === 'image' || kind === 'html') {
-        const url = isAstraPath(path)
-          ? buildAstraViewUrl(path, originId, options.cacheBust)
-          : buildRawFileUrl(path, originId, options.cacheBust);
         return {
           path,
           kind,
           language: '',
           content: '',
-          url,
+          url: buildRawFileUrl(path, originId, options.cacheBust),
         };
       }
 
@@ -428,60 +337,6 @@ export function createPortolanAdapter(opts: PortolanAdapterOptions = {}): Adapte
       };
     },
 
-    async getAstraBundle(
-      path: string,
-      bundleOpts: GetAstraBundleOptions = {},
-    ): Promise<AstraBundleResult | null> {
-      const result = await fetchAstraBundle(path, bundleOpts.originId ?? defaultOriginId, {
-        universe: bundleOpts.universe,
-        cacheBust: bundleOpts.cacheBust,
-      });
-      // fetchAstraBundle types the bundle as `unknown` at the package
-      // boundary so this file doesn't drag lightcone-ui-core's types into
-      // the adapter's general API. Cast at this single call site —
-      // /astra-bundle's contract is the rewritten Bundle shape, server-side.
-      return result
-        ? { bundle: result.bundle as Bundle, csvs: result.csvs, mtime: result.mtime ?? null }
-        : null;
-    },
-
-    async getAstraBundleMtime(
-      path: string,
-      bundleOpts: GetAstraBundleOptions = {},
-    ): Promise<string | null> {
-      return fetchAstraMtime(path, bundleOpts.originId ?? defaultOriginId);
-    },
-
-    /**
-     * Resolve a server-relative asset path (`/project-file/...`,
-     * `/papers/<cache_key>/paper.pdf`) into a fully-qualified URL pointing
-     * at portolan's HTTP server (`API_BASE`, e.g. `http://localhost:4004`).
-     *
-     * The server-rewritten Bundle ships these as relative URLs intentionally
-     * — the iframe paper-view shares portolan's origin, so relative paths
-     * work there. The vellum-native render runs on the SPA origin (Vite dev
-     * at :5173 in development), so without this hook a relative
-     * `/project-file/...png` path would hit Vite, get the SPA index.html,
-     * and either render as a broken image or — in the PdfReader's case —
-     * error with "Invalid PDF structure". See
-     * `vellum-reader/vellum-native-astra-renderer`.
-     */
-    resolveAssetUrl(path: string): string {
-      if (!path.startsWith('/')) return path;
-      return `${API_BASE}${path}`;
-    },
-
-    async getAstraSource(path: string, opts: GetFileOptions = {}): Promise<string | null> {
-      const originId = opts.originId ?? defaultOriginId;
-      const bust = opts.cacheBust ? `&_t=${Date.now()}` : '';
-      const res = await fetch(
-        `${API_BASE}/file-content?path=${encodeURIComponent(path)}&originId=${encodeURIComponent(originId)}${bust}`,
-      ).catch(() => null);
-      if (!res || !res.ok) return null;
-      const data = await res.json().catch(() => null);
-      return data && typeof data.content === 'string' ? data.content : null;
-    },
-
     async createAnnotation(input: CreateAnnotationInput): Promise<Annotation | null> {
       // Translate vellum's CreateAnnotationInput (slug-keyed, paragraphIndex) to
       // portolan's file-keyed schema. `slug` is the file path when called from
@@ -591,9 +446,6 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     searchFibers,
     getDeltaSince,
     getFiberHistory,
-    getAstraBundle,
-    getAstraBundleMtime,
-    getAstraSource,
   } = full;
   return {
     getFile,
@@ -604,9 +456,6 @@ export function createPortolanReadOnlyAdapter(opts: PortolanAdapterOptions = {})
     searchFibers,
     getDeltaSince,
     getFiberHistory,
-    getAstraBundle,
-    getAstraBundleMtime,
-    getAstraSource,
   };
 }
 

@@ -112,10 +112,11 @@ printf '%s\n' '{"hook_event_name":"PostToolUse","session_id":"test","tool_name":
   | PORTOLAN_EVENTS_FILE=/tmp/portolan-events-smoke.jsonl server/hooks/portolan-hook.sh
 curl 'http://localhost:4004/tapestry?cityId=X'  # full DAG: fibers, evidence, staleness
 curl 'http://localhost:4004/project-file/local/path/to/file.html'  # serve project file (also: /project-file/{originId}/path)
-curl 'http://localhost:4004/astra-paper-view/local/abs/path/to/astra.yaml'  # render astra.yaml as lightcone paper view (local only)
-curl 'http://localhost:4004/astra-bundle/local/abs/path/to/astra.yaml'      # JSON Bundle + csvs (vellum-native astra renderer feeds off this; response also carries mtime token)
-curl 'http://localhost:4004/astra-mtime/local/abs/path/to/astra.yaml'       # cheap stat token (no buildBundle); vellum's focus-staleness probe
-curl 'http://localhost:4004/astra/asset/vellum.css'                         # paper-view CSS/JS sidecars (paper-viewer.js, vellum.css)
+# The astra endpoints below are dormant: the frontend no longer consumes them after the Vellum disentanglement pass.
+curl 'http://localhost:4004/astra-paper-view/local/abs/path/to/astra.yaml'  # dormant legacy lightcone paper-view route
+curl 'http://localhost:4004/astra-bundle/local/abs/path/to/astra.yaml'      # dormant JSON Bundle route retained server-side
+curl 'http://localhost:4004/astra-mtime/local/abs/path/to/astra.yaml'       # dormant staleness-token route retained server-side
+curl 'http://localhost:4004/astra/asset/vellum.css'                         # dormant paper-view CSS/JS sidecars retained server-side
 tail -f /tmp/portolan-hook-debug.log           # hook script debug output
 ```
 
