@@ -7,7 +7,7 @@ import type { MapInteractionController } from '../MapInteractionController'
 import type { ContextMenu } from '../ui/ContextMenu'
 import type { NewWorkerDialog } from '../ui/NewWorkerDialog'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
-import type { City, Session } from '../state/types'
+import type { City } from '../state/types'
 import {
   getPageAttention,
   type PageAttentionState,
@@ -55,7 +55,6 @@ interface FrontendAppRuntimeOptions {
    *  kept for symmetry with the pre-Stage-I HUD-visibility gate, which a
    *  future on-demand-render strategy could re-introduce. */
   isWorkerHudVisible: () => boolean
-  applyMockState: (cities: City[], sessions: Session[]) => void
   /** Optional per-frame hook, called after scene render. Useful for DOM
    *  overlays that need to track world-anchored points through camera changes
    *  (e.g. pin hover tooltip re-anchoring during pan/zoom). */
@@ -67,7 +66,6 @@ export class FrontendAppRuntime {
   private runtimeDisposed = false
   private animationFrameId: number | null = null
   private unfocusedFrameTimeoutId: number | null = null
-  private mockDataTimeout: ReturnType<typeof setTimeout> | null = null
   private workerHudUpdateFrameId: number | null = null
   private hasRuntimeCleanupRun = false
   private totalWorkerHudUpdates = 0
@@ -93,7 +91,6 @@ export class FrontendAppRuntime {
     // not fire. Resume the full-rate RAF loop immediately when focus returns.
     window.addEventListener('focus', this.onWindowFocus)
     this.animate()
-    this.scheduleMockDataFallback()
   }
 
   dispose(): void {
@@ -108,10 +105,6 @@ export class FrontendAppRuntime {
     if (this.unfocusedFrameTimeoutId !== null) {
       window.clearTimeout(this.unfocusedFrameTimeoutId)
       this.unfocusedFrameTimeoutId = null
-    }
-    if (this.mockDataTimeout) {
-      clearTimeout(this.mockDataTimeout)
-      this.mockDataTimeout = null
     }
     if (this.workerHudUpdateFrameId !== null) {
       cancelAnimationFrame(this.workerHudUpdateFrameId)
@@ -281,23 +274,4 @@ export class FrontendAppRuntime {
     return 'paused'
   }
 
-  private scheduleMockDataFallback(): void {
-    this.mockDataTimeout = setTimeout(() => {
-      if (this.options.getCities().length === 0) {
-        this.options.applyMockState(
-          [
-            { id: '1', name: 'portolan-v2', path: '/projects/portolan-v2', hex: { q: 0, r: 0 }, fiberCount: 3, hasClaims: false, hasPlaygrounds: true, isDormant: false, originId: 'local' },
-            { id: '2', name: 'loom', path: '/projects/loom', hex: { q: 2, r: -1 }, fiberCount: 7, hasClaims: true, hasPlaygrounds: false, isDormant: false, originId: 'local' },
-            { id: '3', name: 'pure-eb', path: '/projects/pure-eb', hex: { q: -2, r: 1 }, fiberCount: 0, hasClaims: true, hasPlaygrounds: false, isDormant: true, originId: 'remote-candide' },
-          ],
-          [
-            { id: 's1', name: 'claude-0', tmuxSession: 'mock-0', cityId: '1', hex: { q: 1, r: 0 }, status: 'working', originId: 'local', lastActivity: Date.now() },
-            { id: 's2', name: 'claude-1', tmuxSession: 'mock-1', cityId: '1', hex: { q: 0, r: 1 }, status: 'idle', originId: 'local', lastActivity: Date.now() },
-            { id: 's3', name: 'claude-2', tmuxSession: 'mock-2', cityId: '2', hex: { q: 3, r: -1 }, status: 'idle', originId: 'local', lastActivity: Date.now() },
-          ],
-        )
-      }
-      this.mockDataTimeout = null
-    }, 1000)
-  }
 }
