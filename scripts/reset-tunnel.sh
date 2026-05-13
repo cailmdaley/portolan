@@ -175,7 +175,7 @@ ssh "$HOST" "tmux kill-session -t '$AGENT_SESSION' 2>/dev/null; true"
 ssh "$HOST" "tmux new-session -d -s '$AGENT_SESSION' 'bash -l -c \"${AGENT_CMD}\"'"
 sleep 2
 
-if ssh "$HOST" "tmux capture-pane -t '$AGENT_SESSION' -p" 2>/dev/null | grep -q "Connected"; then
+if ssh "$HOST" "tmux capture-pane -t '$AGENT_SESSION' -p" 2>/dev/null | grep -Eq "Connected|registered as"; then
   echo "[$HOST] Agent connected"
 else
   echo "[$HOST] WARNING: agent may not have connected; check: ssh $HOST 'tmux attach -t $AGENT_SESSION'"
