@@ -423,10 +423,15 @@
   min-height: 28px;
   padding: 0 14px;
   align-content: start;
-  /* Strip height is set imperatively by installAdaptiveStripHeight() to
-     fit the tallest stack among visible columns; transition keeps the
-     resize from snapping during a horizontal scroll. Overflow:hidden
-     clips off-screen cards that sit below the visible-window cap. */
+  /* `width: max-content` is the workaround that lets `overflow: hidden`
+     vertically clip rows beyond the adaptive height without collapsing
+     the strip's horizontal footprint. `overflow: hidden` establishes a
+     block-formatting context which would otherwise constrain width to
+     the parent wrap (1574px); with an explicit max-content width the
+     strip stays 29×145px wide and the wrap scrolls horizontally
+     normally. The adaptive height is set imperatively by
+     `installAdaptiveStripHeight()`. */
+  width: max-content;
   overflow: hidden;
   transition: height 160ms ease-out;
 }
