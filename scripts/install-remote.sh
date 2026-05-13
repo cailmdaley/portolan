@@ -474,13 +474,25 @@ if [ "$START_AGENT" = true ]; then
   log "Starting agent..."
   if [ "$AGENT_RUNTIME" = "rust" ]; then
     AGENT_SESSION="$RUST_AGENT_SESSION"
+    OPPOSITE_AGENT_SESSION="$NODE_AGENT_SESSION"
   else
     AGENT_SESSION="$NODE_AGENT_SESSION"
+    OPPOSITE_AGENT_SESSION="$RUST_AGENT_SESSION"
+  fi
+  REPLACES_RUNTIME=true
+  if [ "$AGENT_RUNTIME" = "rust" ] && [ "$AGENT_ONCE" = true ]; then
+    REPLACES_RUNTIME=false
   fi
   AGENT_CMD="$(build_agent_cmd "$AGENT_RUNTIME" "$SSH_HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
   ssh "$SSH_HOST" bash <<STARTAGENT
     # Kill existing runtime-specific agent if running
     tmux kill-session -t "$AGENT_SESSION" 2>/dev/null || true
+    if [ "$REPLACES_RUNTIME" = true ]; then
+      tmux kill-session -t "$OPPOSITE_AGENT_SESSION" 2>/dev/null || true
+      echo "Stopped opposite runtime session '$OPPOSITE_AGENT_SESSION'"
+    else
+      echo "Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust preview"
+    fi
     # Start new agent session
     tmux new-session -d -s "$AGENT_SESSION" "bash -l -c '$AGENT_CMD'"
     echo "Agent started in tmux session '$AGENT_SESSION'"
