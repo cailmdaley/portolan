@@ -9,6 +9,11 @@ import type { GitStatus } from './GitStatusManager.js';
 import type { AgentActivityMessage, AgentSessionsUpdateMessage } from './MessageRouter.js';
 import { OriginManager, type Origin, type RemoteAgentRuntime } from './OriginManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
+import {
+  remoteAgentCommand,
+  remoteAgentTmuxSession,
+  type RemoteAgentStartupOptions,
+} from './RemoteAgentRuntime.js';
 import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
 import type { Session } from './SessionTracker.js';
@@ -16,8 +21,6 @@ import { CityManager, type City } from './CityManager.js';
 
 const ACTIVITY_PERSISTENCE_PATH = join(homedir(), '.portolan', 'remote-activities.json');
 const MAX_REMOTE_ACTIVITIES = 50;
-const NODE_AGENT_TMUX_SESSION = 'portolan-agent';
-const RUST_AGENT_TMUX_SESSION = 'portolan-agent-rust-preview';
 const REMOTE_AGENT_RECOVERY_COOLDOWN_MS = 60_000;
 const execFileAsync = promisify(execFile);
 
@@ -36,12 +39,6 @@ interface RemoteAgentCoordinatorCallbacks {
     agentRuntime?: RemoteAgentRuntime,
     startupOptions?: RemoteAgentStartupOptions,
   ): Promise<RemoteAgentRecoveryResult>;
-}
-
-interface RemoteAgentStartupOptions {
-  origin?: string;
-  plannotatorPort?: number;
-  once?: boolean;
 }
 
 export interface RemoteAgentRecoveryResult {
@@ -639,33 +636,6 @@ async function waitForRemotePortolan(sshHost: string, timeoutMs = 20_000): Promi
     await delay(1_000);
   }
   return false;
-}
-
-function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string {
-  return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;
-}
-
-function buildRustRemoteCommand(
-  sshHost: string,
-  options: RemoteAgentStartupOptions = {},
-): string {
-  const origin = options.origin ? ` --origin=${shellEscape(options.origin)}` : '';
-  const plannotatorPort = options.plannotatorPort !== undefined
-    ? ` --plannotator-port=${shellEscape(String(options.plannotatorPort))}`
-    : '';
-  const once = options.once ? ' --once' : '';
-  return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}${origin}${plannotatorPort}${once}`;
-}
-
-function remoteAgentCommand(
-  agentRuntime: RemoteAgentRuntime,
-  sshHost: string,
-  startupOptions: RemoteAgentStartupOptions = {},
-): string {
-  if (agentRuntime === 'rust') {
-    return buildRustRemoteCommand(sshHost, startupOptions);
-  }
-  return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
 }
 
 async function startRemoteAgent(

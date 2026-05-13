@@ -3,6 +3,13 @@ import type { ServerResponse } from 'http';
 import { promisify } from 'util';
 import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
+import type { RemoteAgentRuntime } from './OriginManager.js';
+import {
+  oppositeRemoteAgentTmuxSession,
+  remoteAgentCommand,
+  remoteAgentTmuxSession,
+  type RemoteAgentStartupOptions,
+} from './RemoteAgentRuntime.js';
 import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
 import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
@@ -21,22 +28,11 @@ interface HttpApiActivationOptions {
   runtimePreferences?: RemoteAgentRuntimePreferences;
 }
 
-type RemoteAgentRuntime = 'node' | 'rust';
-
-const NODE_AGENT_SESSION = 'portolan-agent';
-const RUST_AGENT_SESSION = 'portolan-agent-rust-preview';
-
 interface ActivationBody {
   cityId?: string;
   agentRuntime?: string;
   origin?: string;
   plannotatorPort?: number | string;
-  once?: boolean;
-}
-
-interface RustActivationOptions {
-  origin?: string;
-  plannotatorPort?: number;
   once?: boolean;
 }
 
@@ -51,14 +47,6 @@ function parseAgentRuntime(value: string | null, fallback: RemoteAgentRuntime = 
     return 'rust';
   }
   throw new Error(`Invalid agent runtime: ${value}`);
-}
-
-function agentSessionForRuntime(runtime: RemoteAgentRuntime): string {
-  return runtime === 'rust' ? RUST_AGENT_SESSION : NODE_AGENT_SESSION;
-}
-
-function oppositeAgentSessionForRuntime(runtime: RemoteAgentRuntime): string {
-  return runtime === 'rust' ? NODE_AGENT_SESSION : RUST_AGENT_SESSION;
 }
 
 function parseActivationBody(body: unknown): ActivationBody {
@@ -86,7 +74,7 @@ function parsePlannotatorPort(value: unknown): number | undefined {
   throw new Error(`Invalid plannotatorPort: ${String(value)}`);
 }
 
-function parseRustActivationOptions(body: ActivationBody, runtime: RemoteAgentRuntime): RustActivationOptions {
+function parseRustActivationOptions(body: ActivationBody, runtime: RemoteAgentRuntime): RemoteAgentStartupOptions {
   if (runtime !== 'rust') {
     return {};
   }
@@ -99,25 +87,11 @@ function parseRustActivationOptions(body: ActivationBody, runtime: RemoteAgentRu
     throw new Error(`Invalid once flag: ${String(once)}`);
   }
 
-  const options: RustActivationOptions = {};
+  const options: RemoteAgentStartupOptions = {};
   if (origin) options.origin = origin;
   if (plannotatorPort !== undefined) options.plannotatorPort = plannotatorPort;
   if (once === true) options.once = once;
   return options;
-}
-
-function agentStartCommand(runtime: RemoteAgentRuntime, sshHost: string, options: RustActivationOptions = {}): string {
-  if (runtime === 'rust') {
-    const origin = options.origin
-      ? ` --origin=${shellEscape(options.origin)}`
-      : '';
-    const plannotatorPort = options.plannotatorPort !== undefined
-      ? ` --plannotator-port=${shellEscape(String(options.plannotatorPort))}`
-      : '';
-    const once = options.once ? ' --once' : '';
-    return `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(sshHost)}${origin}${plannotatorPort}${once}`;
-  }
-  return `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
 }
 
 export class HttpApiActivation {
@@ -172,7 +146,7 @@ export class HttpApiActivation {
       return;
     }
 
-    let rustOptions: RustActivationOptions;
+    let rustOptions: RemoteAgentStartupOptions;
     try {
       rustOptions = parseRustActivationOptions(payload, runtime);
     } catch (error: unknown) {
@@ -181,11 +155,9 @@ export class HttpApiActivation {
       return;
     }
 
-    const runtimeSession = agentSessionForRuntime(runtime);
-    const oppositeRuntimeSession = oppositeAgentSessionForRuntime(runtime);
-    const startCommand = runtime === 'rust'
-      ? agentStartCommand(runtime, sshHost, rustOptions)
-      : agentStartCommand(runtime, sshHost);
+    const runtimeSession = remoteAgentTmuxSession(runtime);
+    const oppositeRuntimeSession = oppositeRemoteAgentTmuxSession(runtime);
+    const startCommand = remoteAgentCommand(runtime, sshHost, rustOptions);
     const replacesRuntime = !(runtime === 'rust' && rustOptions.once);
 
     try {
