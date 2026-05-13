@@ -51,6 +51,10 @@ function agentSessionForRuntime(runtime: RemoteAgentRuntime): string {
   return runtime === 'rust' ? RUST_AGENT_SESSION : NODE_AGENT_SESSION;
 }
 
+function oppositeAgentSessionForRuntime(runtime: RemoteAgentRuntime): string {
+  return runtime === 'rust' ? NODE_AGENT_SESSION : RUST_AGENT_SESSION;
+}
+
 function parseActivationBody(body: unknown): ActivationBody {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return {};
@@ -167,9 +171,11 @@ export class HttpApiActivation {
 
     const sshHost = this.getSshHost(city);
     const runtimeSession = agentSessionForRuntime(runtime);
+    const oppositeRuntimeSession = oppositeAgentSessionForRuntime(runtime);
     const startCommand = runtime === 'rust'
       ? agentStartCommand(runtime, sshHost, rustOptions)
       : agentStartCommand(runtime, sshHost);
+    const replacesRuntime = !(runtime === 'rust' && rustOptions.once);
 
     try {
       // Reset tunnel first — kills stale ControlMaster and re-establishes
@@ -183,9 +189,24 @@ export class HttpApiActivation {
       );
 
       if (checkOutput.trim() === 'running') {
+        if (replacesRuntime) {
+          await this.execFileFn(
+            'ssh',
+            ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
+            { timeout: 10000 }
+          );
+        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ status: 'already_running', message: `Agent (${runtime}) already running on ${sshHost}` }));
         return;
+      }
+
+      if (replacesRuntime) {
+        await this.execFileFn(
+          'ssh',
+          ['-T', sshHost, `tmux kill-session -t ${exactTmuxTarget(oppositeRuntimeSession)} 2>/dev/null || true`],
+          { timeout: 10000 }
+        );
       }
 
       console.log(`[Activate] Starting ${runtime} portolan agent on ${sshHost}...`);

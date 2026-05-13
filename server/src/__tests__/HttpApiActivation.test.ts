@@ -60,13 +60,18 @@ describe('HttpApiActivation', () => {
     );
 
     expect(reconnectTunnelFn).toHaveBeenCalledWith('candide');
-    expect(execFileFn).toHaveBeenCalledTimes(2);
+    expect(execFileFn).toHaveBeenCalledTimes(3);
     expect(execFileFn.mock.calls[0]?.[1]).toEqual([
       '-T',
       sshHost,
       `tmux has-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null && echo running || echo stopped`,
     ]);
-    const startArgs = execFileFn.mock.calls[1]?.[1] as string[];
+    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      sshHost,
+      `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
+    ]);
+    const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
     const expectedStartCommand = `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
     const expectedCommand = `tmux new-session -d -s ${shellEscape('portolan-agent')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
@@ -124,13 +129,18 @@ describe('HttpApiActivation', () => {
     );
 
     expect(reconnectTunnelFn).toHaveBeenCalledWith(unsafeHost);
-    expect(execFileFn).toHaveBeenCalledTimes(2);
+    expect(execFileFn).toHaveBeenCalledTimes(3);
     expect(execFileFn.mock.calls[0]?.[1]).toEqual([
       '-T',
       unsafeHost,
       `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null && echo running || echo stopped`,
     ]);
-    const startArgs = execFileFn.mock.calls[1]?.[1] as string[];
+    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      unsafeHost,
+      `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+    ]);
+    const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
     const escapedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(unsafeHost)}`;
     const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust-preview')} ${shellEscape(`bash -l -c ${shellEscape(escapedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
@@ -229,7 +239,12 @@ describe('HttpApiActivation', () => {
       res,
     );
 
-    expect(execFileFn).toHaveBeenCalledTimes(1);
+    expect(execFileFn).toHaveBeenCalledTimes(2);
+    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
+    ]);
     expect(result()).toEqual({
       status: 200,
       body: {
