@@ -226,6 +226,7 @@ export class HttpApi {
     });
     this.astraViewApi = new HttpApiAstraView({
       originLookup,
+      remoteDirectoryExecutor: this.remoteDirectoryExecutor,
       remoteFileContentExecutor: this.remoteFileContentExecutor,
       remoteProjectFileExecutor: this.remoteProjectFileExecutor,
     });

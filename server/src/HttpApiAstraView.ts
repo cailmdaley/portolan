@@ -115,6 +115,10 @@ interface OriginLookup {
 
 interface HttpApiAstraViewDeps {
   originLookup: OriginLookup;
+  remoteDirectoryExecutor?: (
+    originId: string,
+    path: string,
+  ) => Promise<Array<{ name: string; type: 'file' | 'dir' }>>;
   remoteFileContentExecutor?: (
     request: RemoteFileContentInvocation,
   ) => Promise<RemoteFileContentResult>;
@@ -526,6 +530,50 @@ async function materializeRemotePaperIndex(sshHost: string, originId: string): P
   return dir;
 }
 
+function isSafePaperCacheKey(cacheKey: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(cacheKey);
+}
+
+async function materializeRemotePaperIndexViaAgent(
+  originId: string,
+  localDir: string,
+  remoteDirectoryExecutor: HttpApiAstraViewDeps['remoteDirectoryExecutor'],
+  remoteFileContentExecutor: HttpApiAstraViewDeps['remoteFileContentExecutor'],
+): Promise<boolean> {
+  if (!remoteDirectoryExecutor || !remoteFileContentExecutor) return false;
+  const cacheRoot = '~/.cache/astra/papers';
+  let entries: Array<{ name: string; type: 'file' | 'dir' }>;
+  try {
+    entries = await remoteDirectoryExecutor(originId, cacheRoot);
+  } catch (err: any) {
+    console.warn('[astra-bundle] remote paper-index agent listing failed, falling back to ssh:', err?.message ?? err);
+    return false;
+  }
+
+  if (existsSync(localDir)) rmSync(localDir, { recursive: true, force: true });
+  mkdirSync(localDir, { recursive: true });
+
+  for (const entry of entries) {
+    if (entry.type !== 'dir' || !isSafePaperCacheKey(entry.name)) continue;
+    try {
+      const result = await remoteFileContentExecutor({
+        originId,
+        path: `${cacheRoot}/${entry.name}/meta.json`,
+        operation: 'read',
+      });
+      if (typeof result.content !== 'string') continue;
+      const dir = join(localDir, entry.name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'meta.json'), result.content);
+      writeFileSync(join(dir, 'paper.pdf'), '');
+    } catch {
+      // Missing metadata just means this cache entry is not usable for
+      // bundle paper enrichment; continue with the rest of the cache.
+    }
+  }
+  return true;
+}
+
 /**
  * Fetch the remote `~/.cache/astra/papers/<cacheKey>/paper.pdf` bytes and
  * cache locally. Returns the local file path, or null if the remote file
@@ -684,11 +732,13 @@ function parseAstraUrl(url: URL, prefix: string): { originId: string; filePath: 
 
 export class HttpApiAstraView {
   private originLookup: OriginLookup;
+  private remoteDirectoryExecutor: HttpApiAstraViewDeps['remoteDirectoryExecutor'];
   private remoteFileContentExecutor: HttpApiAstraViewDeps['remoteFileContentExecutor'];
   private remoteProjectFileExecutor: HttpApiAstraViewDeps['remoteProjectFileExecutor'];
 
   constructor(deps: HttpApiAstraViewDeps) {
     this.originLookup = deps.originLookup;
+    this.remoteDirectoryExecutor = deps.remoteDirectoryExecutor;
     this.remoteFileContentExecutor = deps.remoteFileContentExecutor;
     this.remoteProjectFileExecutor = deps.remoteProjectFileExecutor;
   }
@@ -785,7 +835,7 @@ export class HttpApiAstraView {
     if (originId && originId !== 'local') {
       const origin = this.originLookup.getOrigin(originId);
       if (origin?.sshHost) {
-        const remoteIndex = await materializeRemotePaperIndex(origin.sshHost, originId);
+        const remoteIndex = await this.materializeRemotePaperIndex(origin.sshHost, originId);
         const dois = Object.keys(bundle.papers);
         if (dois.length > 0 && existsSync(remoteIndex)) {
           // Fetch through the lazy resolver — when lightcone-ui-core is on
@@ -1210,6 +1260,18 @@ export class HttpApiAstraView {
       }
     }
     return fetchAstraMtimeToken(originId, filePath, origin);
+  }
+
+  private async materializeRemotePaperIndex(sshHost: string, originId: string): Promise<string> {
+    const dir = paperIndexMirrorDir(originId);
+    const agentOk = await materializeRemotePaperIndexViaAgent(
+      originId,
+      dir,
+      this.remoteDirectoryExecutor,
+      this.remoteFileContentExecutor,
+    );
+    if (agentOk) return dir;
+    return materializeRemotePaperIndex(sshHost, originId);
   }
 
   /** Helper to surface the paper cache dir in /debug-runtime. */

@@ -1168,13 +1168,16 @@ export function resolveRemoteDirectoryPath(dirPath, requireExisting = true) {
     if (typeof dirPath !== 'string' || !dirPath.length) {
         throw new Error(`path must be absolute: ${dirPath}`);
     }
-    if (!isAbsolute(dirPath)) {
+    const expandedPath = dirPath.startsWith('~/')
+        ? join(homedir(), dirPath.slice(2))
+        : dirPath;
+    if (!isAbsolute(expandedPath)) {
         throw new Error(`path must be absolute: ${dirPath}`);
     }
-    if (dirPath.split(sep).includes('..')) {
+    if (expandedPath.split(sep).includes('..')) {
         throw new Error(`invalid path: ${dirPath}`);
     }
-    const fullPath = resolve(dirPath);
+    const fullPath = resolve(expandedPath);
     if (!existsSync(fullPath)) {
         if (requireExisting) {
             throw new Error(`directory missing: ${dirPath}`);

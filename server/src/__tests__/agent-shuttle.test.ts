@@ -256,6 +256,22 @@ describe('agent: remote file request helpers', () => {
     );
   });
 
+  it('expands ~/ paths for remote directory listings', () => {
+    const homeDir = join(homedir(), '.portolan-test-agent-list-dir');
+    mkdirSync(homeDir, { recursive: true });
+    writeFileSync(join(homeDir, 'meta.json'), '{}');
+    try {
+      expect(agentMod.executeListDirectoryRequest({
+        path: '~/.portolan-test-agent-list-dir',
+      })).toEqual({
+        ok: true,
+        entries: [{ name: 'meta.json', type: 'file' }],
+      });
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('reads and writes text through file-content request payloads', () => {
     const source = join(rootDir, 'source.md');
     writeFileSync(source, '# Notes\n');
