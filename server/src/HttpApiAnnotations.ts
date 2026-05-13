@@ -521,10 +521,9 @@ export class HttpApiAnnotations {
       // as a directory tree (e.g. `parent/child` creates `.felt/parent/child/child.md`),
       // matching FiberReader's directory-based shape.
       const slug = parentSlug ? `${parentSlug}/${childSlug}` : childSlug;
-      const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(slug)} ${shellEscape(title)} -t ${shellEscape(kind)} -b ${shellEscape(body)}`;
-
       let invalidateSshHost: string | undefined;
       if (!isRemote) {
+        const feltCmd = `cd ${shellEscape(cityPath)} && felt add ${shellEscape(slug)} ${shellEscape(title)} -t ${shellEscape(kind)} -b ${shellEscape(body)}`;
         const { stdout } = await execAsync(feltCmd, { timeout: 10000, maxBuffer: 1024 * 1024 });
         fiberId = stdout.trim();
       } else {
@@ -534,11 +533,18 @@ export class HttpApiAnnotations {
           return;
         }
 
-        const { stdout } = await execFileAsync(
-          'ssh', [origin.sshHost, feltCmd],
-          { timeout: 30000, maxBuffer: 1024 * 1024 }
-        );
-        fiberId = stdout.trim();
+        const created = await this.createFiberViaShuttle({
+          id: slug,
+          name: title.trim(),
+          body,
+          frontmatter: {
+            name: title.trim(),
+            status: 'open',
+            tags: [kind],
+          },
+          originId,
+        });
+        fiberId = created.id;
         invalidateSshHost = origin.sshHost;
       }
 
