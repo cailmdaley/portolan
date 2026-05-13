@@ -1,3 +1,4 @@
+use chrono::DateTime;
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
     AgentSession, FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
@@ -908,9 +909,18 @@ pub struct ShuttleFiberProjection {
     pub tags: Vec<String>,
     pub has_shuttle_block: bool,
     pub shuttle_enabled: Option<bool>,
+    pub shuttle_kind: Option<String>,
+    pub shuttle_review_state: Option<String>,
+    pub next_due_at: Option<ShuttleDueAt>,
     pub depends_on: Vec<String>,
     pub tempered: Option<bool>,
     pub agent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShuttleDueAt {
+    pub raw: String,
+    pub timestamp_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1010,6 +1020,20 @@ pub fn project_shuttle_fiber(fiber: &Value) -> Option<ShuttleFiberProjection> {
         shuttle_enabled: shuttle
             .and_then(|shuttle| shuttle.get("enabled"))
             .and_then(Value::as_bool),
+        shuttle_kind: shuttle
+            .and_then(|shuttle| shuttle.get("kind").or_else(|| shuttle.get("mode")))
+            .and_then(Value::as_str)
+            .filter(|kind| !kind.is_empty())
+            .map(str::to_string),
+        shuttle_review_state: shuttle
+            .and_then(|shuttle| shuttle.get("review"))
+            .and_then(|review| review.get("state"))
+            .and_then(Value::as_str)
+            .filter(|state| !state.is_empty())
+            .map(str::to_string),
+        next_due_at: shuttle
+            .and_then(|shuttle| shuttle.get("next_due_at"))
+            .and_then(parse_shuttle_due_at),
         depends_on,
         tempered: fiber.get("tempered").and_then(Value::as_bool),
         agent,
@@ -1019,6 +1043,7 @@ pub fn project_shuttle_fiber(fiber: &Value) -> Option<ShuttleFiberProjection> {
 pub fn compute_shuttle_eligibility(
     fibers: &[ShuttleFiberProjection],
     prefixes: &[String],
+    poll_at: i64,
 ) -> ShuttleEligibility {
     let by_id = fibers
         .iter()
@@ -1067,10 +1092,68 @@ pub fn compute_shuttle_eligibility(
             });
             continue;
         }
+        if is_standing_shuttle_fiber(fiber) {
+            let review_state = fiber.shuttle_review_state.as_deref().unwrap_or("scheduled");
+            if matches!(review_state, "awaiting" | "review" | "in_review") {
+                blocked.push(ShuttleBlockedFiber {
+                    fiber_id: fiber.id.clone(),
+                    reason: format!("standing review.state: {review_state}"),
+                });
+                continue;
+            }
+            if !matches!(review_state, "scheduled" | "accepted" | "due") {
+                blocked.push(ShuttleBlockedFiber {
+                    fiber_id: fiber.id.clone(),
+                    reason: format!("unsupported standing review.state: {review_state}"),
+                });
+                continue;
+            }
+            let Some(next_due_at) = &fiber.next_due_at else {
+                blocked.push(ShuttleBlockedFiber {
+                    fiber_id: fiber.id.clone(),
+                    reason: "standing next_due_at: missing".to_string(),
+                });
+                continue;
+            };
+            let Some(due_ms) = next_due_at.timestamp_ms else {
+                blocked.push(ShuttleBlockedFiber {
+                    fiber_id: fiber.id.clone(),
+                    reason: format!("standing next_due_at: unparsable {}", next_due_at.raw),
+                });
+                continue;
+            };
+            if due_ms > poll_at {
+                blocked.push(ShuttleBlockedFiber {
+                    fiber_id: fiber.id.clone(),
+                    reason: format!("standing not due until {}", next_due_at.raw),
+                });
+                continue;
+            }
+        }
         eligible.push(fiber.clone());
     }
 
     ShuttleEligibility { eligible, blocked }
+}
+
+fn is_standing_shuttle_fiber(fiber: &ShuttleFiberProjection) -> bool {
+    fiber.shuttle_kind.as_deref() == Some("standing")
+}
+
+fn parse_shuttle_due_at(value: &Value) -> Option<ShuttleDueAt> {
+    match value {
+        Value::String(raw) if !raw.is_empty() => Some(ShuttleDueAt {
+            raw: raw.clone(),
+            timestamp_ms: DateTime::parse_from_rfc3339(raw)
+                .ok()
+                .map(|dt| dt.timestamp_millis()),
+        }),
+        Value::Number(number) => number.as_i64().map(|timestamp_ms| ShuttleDueAt {
+            raw: timestamp_ms.to_string(),
+            timestamp_ms: Some(timestamp_ms),
+        }),
+        _ => None,
+    }
 }
 
 pub fn build_shuttle_snapshot_frame(
@@ -1079,7 +1162,7 @@ pub fn build_shuttle_snapshot_frame(
     live_sessions: &[String],
     poll_at: i64,
 ) -> AgentFrame {
-    let eligibility = compute_shuttle_eligibility(fibers, prefixes);
+    let eligibility = compute_shuttle_eligibility(fibers, prefixes, poll_at);
     let entries = eligibility
         .eligible
         .iter()
@@ -2348,7 +2431,13 @@ malformed
             "tags": ["constitution", "rust"],
             "depends_on": [{"id": "portolan/tauri"}, "portolan/index"],
             "tempered": false,
-            "shuttle": {"enabled": true, "agent": "codex"}
+            "shuttle": {
+                "enabled": true,
+                "kind": "standing",
+                "review": {"state": "scheduled"},
+                "next_due_at": "2026-05-13T08:00:00+00:00",
+                "agent": "codex"
+            }
         }))
         .expect("expected projection");
 
@@ -2357,6 +2446,15 @@ malformed
         assert_eq!(fiber.tags, vec!["constitution", "rust"]);
         assert!(fiber.has_shuttle_block);
         assert_eq!(fiber.shuttle_enabled, Some(true));
+        assert_eq!(fiber.shuttle_kind.as_deref(), Some("standing"));
+        assert_eq!(fiber.shuttle_review_state.as_deref(), Some("scheduled"));
+        assert_eq!(
+            fiber.next_due_at,
+            Some(ShuttleDueAt {
+                raw: "2026-05-13T08:00:00+00:00".to_string(),
+                timestamp_ms: Some(1_778_659_200_000)
+            })
+        );
         assert_eq!(fiber.depends_on, vec!["portolan/tauri", "portolan/index"]);
         assert_eq!(fiber.tempered, Some(false));
         assert_eq!(fiber.agent.as_deref(), Some("codex"));
@@ -2371,6 +2469,9 @@ malformed
                 tags: vec!["draft".to_string()],
                 has_shuttle_block: true,
                 shuttle_enabled: Some(true),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec!["portolan/dep".to_string()],
                 tempered: None,
                 agent: Some("pi-gpt-5.4".to_string()),
@@ -2381,6 +2482,9 @@ malformed
                 tags: vec!["finding".to_string()],
                 has_shuttle_block: false,
                 shuttle_enabled: None,
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec![],
                 tempered: Some(true),
                 agent: None,
@@ -2391,6 +2495,9 @@ malformed
                 tags: vec!["constitution".to_string()],
                 has_shuttle_block: true,
                 shuttle_enabled: Some(false),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec![],
                 tempered: None,
                 agent: None,
@@ -2401,6 +2508,9 @@ malformed
                 tags: vec!["constitution".to_string()],
                 has_shuttle_block: true,
                 shuttle_enabled: Some(true),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec![],
                 tempered: None,
                 agent: None,
@@ -2411,6 +2521,9 @@ malformed
                 tags: vec!["constitution".to_string()],
                 has_shuttle_block: true,
                 shuttle_enabled: Some(true),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec!["portolan/missing".to_string()],
                 tempered: None,
                 agent: None,
@@ -2421,6 +2534,9 @@ malformed
                 tags: vec!["constitution".to_string()],
                 has_shuttle_block: true,
                 shuttle_enabled: Some(true),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec![],
                 tempered: None,
                 agent: None,
@@ -2431,13 +2547,17 @@ malformed
                 tags: vec!["constitution".to_string()],
                 has_shuttle_block: false,
                 shuttle_enabled: None,
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
                 depends_on: vec![],
                 tempered: None,
                 agent: None,
             },
         ];
 
-        let eligibility = compute_shuttle_eligibility(&fibers, &["portolan".to_string()]);
+        let eligibility =
+            compute_shuttle_eligibility(&fibers, &["portolan".to_string()], 1_778_659_200_000);
 
         assert_eq!(
             eligibility
@@ -2462,6 +2582,97 @@ malformed
     }
 
     #[test]
+    fn standing_shuttle_fibers_follow_daemon_due_contract() {
+        let poll_at = 1_778_659_200_000;
+        let fibers = vec![
+            ShuttleFiberProjection {
+                id: "portolan/due".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                shuttle_kind: Some("standing".to_string()),
+                shuttle_review_state: Some("scheduled".to_string()),
+                next_due_at: Some(ShuttleDueAt {
+                    raw: "2026-05-13T08:00:00+00:00".to_string(),
+                    timestamp_ms: Some(poll_at),
+                }),
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/future".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                shuttle_kind: Some("standing".to_string()),
+                shuttle_review_state: Some("scheduled".to_string()),
+                next_due_at: Some(ShuttleDueAt {
+                    raw: "2026-05-13T09:00:00+00:00".to_string(),
+                    timestamp_ms: Some(poll_at + 3_600_000),
+                }),
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/review".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                shuttle_kind: Some("standing".to_string()),
+                shuttle_review_state: Some("awaiting".to_string()),
+                next_due_at: None,
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+            ShuttleFiberProjection {
+                id: "portolan/missing-due".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                shuttle_kind: Some("standing".to_string()),
+                shuttle_review_state: Some("accepted".to_string()),
+                next_due_at: None,
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+        ];
+
+        let eligibility = compute_shuttle_eligibility(&fibers, &["portolan".to_string()], poll_at);
+
+        assert_eq!(
+            eligibility
+                .eligible
+                .iter()
+                .map(|fiber| fiber.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["portolan/due"]
+        );
+        assert_eq!(
+            eligibility
+                .blocked
+                .iter()
+                .map(|blocked| (blocked.fiber_id.as_str(), blocked.reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "portolan/future",
+                    "standing not due until 2026-05-13T09:00:00+00:00"
+                ),
+                ("portolan/review", "standing review.state: awaiting"),
+                ("portolan/missing-due", "standing next_due_at: missing"),
+            ]
+        );
+    }
+
+    #[test]
     fn builds_server_compatible_read_only_shuttle_snapshot_frame() {
         let frame = build_shuttle_snapshot_frame(
             &[
@@ -2471,6 +2682,9 @@ malformed
                     tags: vec!["constitution".to_string()],
                     has_shuttle_block: true,
                     shuttle_enabled: Some(true),
+                    shuttle_kind: None,
+                    shuttle_review_state: None,
+                    next_due_at: None,
                     depends_on: vec![],
                     tempered: None,
                     agent: Some("codex".to_string()),
@@ -2481,6 +2695,9 @@ malformed
                     tags: vec!["constitution".to_string(), "codex".to_string()],
                     has_shuttle_block: true,
                     shuttle_enabled: Some(true),
+                    shuttle_kind: None,
+                    shuttle_review_state: None,
+                    next_due_at: None,
                     depends_on: vec![],
                     tempered: None,
                     agent: None,
