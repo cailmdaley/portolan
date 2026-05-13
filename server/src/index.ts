@@ -177,6 +177,15 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
     }
     return { body: result.body, sha256: result.sha256 };
   },
+  remoteFiberHistoryExecutor: async ({ originId, feltHost, slug }) => {
+    const result = await agentRequestCoordinator.send<{ events?: unknown[] }>(
+      originId,
+      'fiber-history',
+      { feltHost, slug },
+      10_000,
+    );
+    return { events: result.events };
+  },
 });
 httpApi.setAnnotationPersistence(annotationPersistence);
 httpApi.setSessionLookup(sessionLookup);
@@ -514,6 +523,16 @@ wss.on('connection', async (ws, req) => {
           if (body !== undefined) result.body = body;
           if (sha256 !== undefined) result.sha256 = sha256;
           if (fiber !== undefined) result.fiber = fiber;
+          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+        } else if (message.type === 'fiber-history-result') {
+          const { correlationId, ok, error, events } = message.payload as {
+            correlationId: string;
+            ok: boolean;
+            error?: string;
+            events?: unknown[];
+          };
+          const result: Record<string, unknown> = {};
+          if (events !== undefined) result.events = events;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         }
       } catch (error) {

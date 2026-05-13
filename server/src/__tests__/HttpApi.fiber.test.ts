@@ -209,6 +209,7 @@ describe('HttpApi — /fiber-raw remote endpoint', () => {
   const REMOTE_CITY_DIR = '/remote/portolan';
   let remoteStore: FiberTreeSnapshotStore;
   let calls: Array<Record<string, unknown>>;
+  let historyCalls: Array<Record<string, unknown>>;
   let api: HttpApi;
 
   beforeEach(() => {
@@ -225,6 +226,7 @@ describe('HttpApi — /fiber-raw remote endpoint', () => {
       },
     ]);
     calls = [];
+    historyCalls = [];
     api = new HttpApi(
       makeMultiCityLookup([
         { id: 'remote-city', path: REMOTE_CITY_DIR, name: 'RemoteCity', originId: 'remote-cineca' },
@@ -239,6 +241,19 @@ describe('HttpApi — /fiber-raw remote endpoint', () => {
             return { body: '---\nname: Editable\n---\n\nRemote body\n', sha256: 'remote-read-sha' };
           }
           return { sha256: 'remote-write-sha' };
+        },
+        remoteFiberHistoryExecutor: async (request) => {
+          historyCalls.push(request);
+          return {
+            events: [
+              {
+                occurred_at: '2026-05-13T12:00:00Z',
+                actor: 'tester',
+                event_type: 'editorial',
+                payload: { text: 'Remote review note' },
+              },
+            ],
+          };
         },
       },
     );
@@ -293,5 +308,22 @@ describe('HttpApi — /fiber-raw remote endpoint', () => {
 
     expect(res.status).toBe(501);
     expect(res.data.error).toMatch(/remote agent/i);
+  });
+
+  it('reads remote fiber history through the remote history executor', async () => {
+    const res = await httpRequest(api, 'GET', '/fiber-history/editable?cityId=remote-city');
+
+    expect(res.status).toBe(200);
+    expect(res.data.status).toBe('ok');
+    expect(res.data.events).toHaveLength(1);
+    expect(res.data.events[0].kind).toBe('editorial');
+    expect(res.data.events[0].summary).toBe('Remote review note');
+    expect(historyCalls).toEqual([
+      {
+        originId: 'remote-cineca',
+        feltHost: REMOTE_CITY_DIR,
+        slug: 'editable',
+      },
+    ]);
   });
 });

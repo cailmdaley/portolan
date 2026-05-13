@@ -1,9 +1,9 @@
 use chrono::DateTime;
 use portolan_agent_protocol::{
     is_safe_remote_fiber_path, AgentActivity, AgentFrame, AgentRequestPayload, AgentResultPayload,
-    AgentSession, FiberRawOperation, FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta,
-    FiberTreeDeltaOp, FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile,
-    ShuttleSnapshotPayload,
+    AgentSession, FiberHistoryRequestPayload, FiberHistoryResultPayload, FiberRawOperation,
+    FiberRawRequestPayload, FiberRawResultPayload, FiberTreeDelta, FiberTreeDeltaOp,
+    FiberTreeDeltaPayload, FiberTreeDumpPayload, FiberTreeFile, ShuttleSnapshotPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -479,6 +479,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
             vec![handle_kanban_transition(payload)]
         }
         AgentFrame::FiberRaw { payload } => vec![handle_fiber_raw(payload)],
+        AgentFrame::FiberHistory { payload } => vec![handle_fiber_history(payload)],
         _ => Vec::new(),
     }
 }
@@ -1886,6 +1887,59 @@ fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String
         .map_err(|error| format!("failed to parse felt JSON: {error}"))?;
     if !parsed.is_object() {
         return Err("felt JSON was not an object".to_string());
+    }
+    Ok(parsed)
+}
+
+fn handle_fiber_history(payload: &FiberHistoryRequestPayload) -> AgentFrame {
+    match read_felt_history_json(payload) {
+        Ok(events) => AgentFrame::FiberHistoryResult {
+            payload: FiberHistoryResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                events: Some(events),
+            },
+        },
+        Err(error) => AgentFrame::FiberHistoryResult {
+            payload: FiberHistoryResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                events: None,
+            },
+        },
+    }
+}
+
+fn read_felt_history_json(payload: &FiberHistoryRequestPayload) -> Result<Value, String> {
+    let felt_host = payload.felt_host.clone().unwrap_or_else(default_felt_host);
+    if !is_safe_remote_fiber_path(&payload.slug) {
+        return Err(format!("invalid slug: {}", payload.slug));
+    }
+    let output = Command::new("felt")
+        .args([
+            "-C",
+            &felt_host,
+            "history",
+            &payload.slug,
+            "--mechanical",
+            "-j",
+        ])
+        .output()
+        .map_err(|error| format!("failed to run felt: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.trim().to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.to_lowercase().contains("index busy") {
+        return Err(stderr.trim().to_string());
+    }
+    let parsed: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("failed to parse felt history JSON: {error}"))?;
+    if !parsed.is_array() {
+        return Err("felt history JSON was not an array".to_string());
     }
     Ok(parsed)
 }
@@ -3919,6 +3973,57 @@ malformed
             AgentFrame::FiberRawResult { payload } => {
                 assert!(!payload.ok);
                 assert!(payload.error.as_deref().unwrap().contains("invalid path"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reads_fiber_history_with_events_array() {
+        let dir = temp_host("history-read");
+        let fiber_dir = dir.join(".felt/story");
+        fs::create_dir_all(&fiber_dir).unwrap();
+        fs::write(
+            fiber_dir.join("story.md"),
+            "---\nname: Story\n---\n\nBody\n",
+        )
+        .unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::FiberHistory {
+            payload: FiberHistoryRequestPayload {
+                correlation_id: "history-read".to_string(),
+                slug: "story".to_string(),
+                felt_host: Some(dir.display().to_string()),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].correlation_id(), Some("history-read"));
+        match &responses[0] {
+            AgentFrame::FiberHistoryResult { payload } => {
+                assert!(payload.ok);
+                assert!(payload.events.as_ref().unwrap().is_array());
+                assert!(payload.error.is_none());
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_fiber_history_slugs() {
+        let responses = handle_server_frame(&AgentFrame::FiberHistory {
+            payload: FiberHistoryRequestPayload {
+                correlation_id: "history-bad".to_string(),
+                slug: "../escape".to_string(),
+                felt_host: Some("/tmp/portolan-agent-test".to_string()),
+            },
+        });
+
+        match &responses[0] {
+            AgentFrame::FiberHistoryResult { payload } => {
+                assert!(!payload.ok);
+                assert!(payload.error.as_deref().unwrap().contains("invalid slug"));
             }
             other => panic!("unexpected response: {other:?}"),
         }

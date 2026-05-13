@@ -25,6 +25,10 @@ pub enum AgentFrame {
     FiberRaw { payload: FiberRawRequestPayload },
     #[serde(rename = "fiber-raw-result")]
     FiberRawResult { payload: FiberRawResultPayload },
+    #[serde(rename = "fiber-history")]
+    FiberHistory { payload: FiberHistoryRequestPayload },
+    #[serde(rename = "fiber-history-result")]
+    FiberHistoryResult { payload: FiberHistoryResultPayload },
     #[serde(rename = "shuttle_snapshot")]
     ShuttleSnapshot { payload: ShuttleSnapshotPayload },
 }
@@ -44,6 +48,8 @@ impl AgentFrame {
             AgentFrame::KanbanTransitionResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FiberRaw { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::FiberRawResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::FiberHistory { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::FiberHistoryResult { payload } => Some(payload.correlation_id.as_str()),
             _ => None,
         }
     }
@@ -51,14 +57,18 @@ impl AgentFrame {
     pub fn is_server_request(&self) -> bool {
         matches!(
             self,
-            AgentFrame::KanbanTransition { .. } | AgentFrame::FiberRaw { .. }
+            AgentFrame::KanbanTransition { .. }
+                | AgentFrame::FiberRaw { .. }
+                | AgentFrame::FiberHistory { .. }
         )
     }
 
     pub fn is_agent_result(&self) -> bool {
         matches!(
             self,
-            AgentFrame::KanbanTransitionResult { .. } | AgentFrame::FiberRawResult { .. }
+            AgentFrame::KanbanTransitionResult { .. }
+                | AgentFrame::FiberRawResult { .. }
+                | AgentFrame::FiberHistoryResult { .. }
         )
     }
 }
@@ -237,6 +247,26 @@ pub struct FiberRawResultPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiberHistoryRequestPayload {
+    pub correlation_id: String,
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub felt_host: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiberHistoryResultPayload {
+    pub correlation_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShuttleSnapshotPayload {
     #[serde(flatten)]
     pub fields: BTreeMap<String, Value>,
@@ -403,6 +433,34 @@ mod tests {
         .unwrap();
         assert!(result.is_agent_result());
         assert_eq!(result.correlation_id(), Some("corr-2"));
+    }
+
+    #[test]
+    fn parses_fiber_history_round_trip() {
+        let request = AgentFrame::FiberHistory {
+            payload: FiberHistoryRequestPayload {
+                correlation_id: "corr-history".to_string(),
+                slug: "portolan/native".to_string(),
+                felt_host: Some("/home/cdaley/loom".to_string()),
+            },
+        };
+        let encoded = request.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"fiber-history""#));
+        assert!(encoded.contains(r#""correlationId":"corr-history""#));
+
+        let result = AgentFrame::parse(
+            br#"{
+              "type": "fiber-history-result",
+              "payload": {
+                "correlationId": "corr-history",
+                "ok": true,
+                "events": [{"event_type": "editorial"}]
+              }
+            }"#,
+        )
+        .unwrap();
+        assert!(result.is_agent_result());
+        assert_eq!(result.correlation_id(), Some("corr-history"));
     }
 
     #[test]

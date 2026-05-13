@@ -33,6 +33,7 @@ interface HttpApiTapestryOptions {
   getSshHost: (city: City) => string;
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
   remoteRawFiberExecutor?: (request: RemoteRawFiberInvocation) => Promise<RemoteRawFiberResult>;
+  remoteFiberHistoryExecutor?: (request: RemoteFiberHistoryInvocation) => Promise<RemoteFiberHistoryResult>;
   sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
 }
@@ -50,12 +51,23 @@ export interface RemoteRawFiberResult {
   sha256?: string;
 }
 
+export interface RemoteFiberHistoryInvocation {
+  originId: string;
+  feltHost: string;
+  slug: string;
+}
+
+export interface RemoteFiberHistoryResult {
+  events?: unknown[];
+}
+
 export class HttpApiTapestry {
   private readonly cityLookup: CityLookup;
   private readonly fileContentApi: HttpApiFileContent;
   private readonly getSshHost: (city: City) => string;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
   private readonly remoteRawFiberExecutor: HttpApiTapestryOptions['remoteRawFiberExecutor'];
+  private readonly remoteFiberHistoryExecutor: HttpApiTapestryOptions['remoteFiberHistoryExecutor'];
   private readonly sendJsonError: (res: ServerResponse, status: number, error: string) => void;
   private readonly sendJsonSuccess: (res: ServerResponse, data: Record<string, unknown>) => void;
 
@@ -79,6 +91,7 @@ export class HttpApiTapestry {
     this.getSshHost = options.getSshHost;
     this.remoteSnapshotsProvider = options.remoteSnapshotsProvider;
     this.remoteRawFiberExecutor = options.remoteRawFiberExecutor;
+    this.remoteFiberHistoryExecutor = options.remoteFiberHistoryExecutor;
     this.sendJsonError = options.sendJsonError;
     this.sendJsonSuccess = options.sendJsonSuccess;
   }
@@ -745,6 +758,14 @@ export class HttpApiTapestry {
           );
           raw = result.stdout.trim();
           stderr = result.stderr?.toString() ?? '';
+        } else if (this.remoteFiberHistoryExecutor && city.originId) {
+          const result = await this.remoteFiberHistoryExecutor({
+            originId: city.originId,
+            feltHost: city.path,
+            slug,
+          });
+          raw = JSON.stringify(result.events ?? []);
+          stderr = '';
         } else {
           // Remote: SSH with a shell command string. shellEscape guards
           // cityPath and slug against path traversal/injection. We capture
@@ -819,10 +840,11 @@ export class HttpApiTapestry {
       } catch (error: any) {
         lastError = error;
         const stderr = error.stderr?.toString() ?? '';
+        const busySignal = `${stderr}\n${error.message ?? ''}`;
         lastStderr = stderr;
         // Retry on felt-busy; bail immediately on other errors (felt missing,
         // timeout, etc) — those won't get better with another shot.
-        if (/index busy/i.test(stderr) && attempt < BACKOFFS_MS.length) {
+        if (/index busy/i.test(busySignal) && attempt < BACKOFFS_MS.length) {
           continue;
         }
         break;
@@ -842,7 +864,7 @@ export class HttpApiTapestry {
       this.sendJsonSuccess(res, { events: [], status: 'ok' });
       return;
     }
-    const reason = /index busy/i.test(stderrStr) ? 'busy' : 'error';
+    const reason = /index busy/i.test(`${stderrStr}\n${message}`) ? 'busy' : 'error';
     console.warn(`[fiber-history] ${slug}: unavailable (${reason}) — ${message} stderr=${stderrStr.slice(0, 200)}`);
     this.sendJsonSuccess(res, {
       events: [],
