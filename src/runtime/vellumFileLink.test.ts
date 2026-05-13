@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readUrlState } from './UrlFragment'
-import { buildVellumFileUrl } from './vellumFileLink'
+import { buildVellumFiberUrl, buildVellumFileUrl } from './vellumFileLink'
 
 describe('buildVellumFileUrl', () => {
   it('builds a clean deep link that opens vellum file mode in a new tab', () => {
@@ -45,5 +45,38 @@ describe('buildVellumFileUrl', () => {
     expect(url).toBe(
       'http://localhost:5173/#city=pure-eb&mode=narrative&file=%2Fhome%2Fcdaley%2Floom%2F.felt%2Fscience%2Fpure_eb%2Freview.md&origin=remote-candide',
     )
+  })
+})
+
+describe('buildVellumFiberUrl', () => {
+  it('builds a narrative deep link for a city-scoped fiber', () => {
+    const url = buildVellumFiberUrl({
+      baseUrl: 'http://localhost:5173/?stale=1#city=old',
+      cityId: 'portolan',
+      slug: 'portolan/constitution-native-desktop-portolan',
+    })
+
+    expect(url).toBe(
+      'http://localhost:5173/#city=portolan&mode=narrative&fiber=portolan%2Fconstitution-native-desktop-portolan',
+    )
+  })
+
+  it('round-trips through the URL state parser', () => {
+    const url = buildVellumFiberUrl({
+      baseUrl: window.location.href,
+      cityId: 'portolan',
+      slug: 'portolan/constitution-native-desktop-portolan',
+    })
+
+    window.history.replaceState(null, '', url)
+
+    expect(readUrlState()).toEqual({
+      cityId: 'portolan',
+      mode: 'narrative',
+      fiberSlug: 'portolan/constitution-native-desktop-portolan',
+      filePath: undefined,
+      originId: undefined,
+      scopeCityId: undefined,
+    })
   })
 })

@@ -1499,6 +1499,28 @@ describe('Feature 2: narrow detail modal layout', () => {
   })
 })
 
+describe('FiberDetailModal vellum open options', () => {
+  it('marks command-click on the vellum button as a new-window open', async () => {
+    vi.stubGlobal('fetch', mockFetch({}))
+    const onOpenFiber = vi.fn()
+    const modal = new FiberDetailModal('http://localhost:4004', onOpenFiber, vi.fn())
+    modal.open(makeKanbanCard(), undefined, 'drafts')
+    await tick()
+
+    const button = Array.from(document.querySelectorAll<HTMLButtonElement>('.kbn-detail-vellum-btn'))
+      .find((candidate) => candidate.textContent?.includes('Open in vellum'))
+    if (!button) throw new Error('Open in vellum button not found')
+
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }))
+
+    expect(onOpenFiber).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'test/my-constitution' }),
+      { openInNewWindow: true },
+    )
+    modal.close()
+  })
+})
+
 // ── Feature 3: parent-fiber reactive dropdown ─────────────────────────────────
 // The parent-fiber section in the card modal must:
 //   a) open its dropdown immediately on focus (not only when the input is empty)

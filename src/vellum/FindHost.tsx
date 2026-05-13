@@ -38,7 +38,7 @@
  * the user can open — only what they're presented with by default.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { score as fzyScore, hasMatch as fzyHasMatch } from 'fzy.js'
 import { fiberStatusIcon } from '../ui/utils'
@@ -153,7 +153,7 @@ export function FindHost({
    *  to it (closing the current modal first), with the fiber selected.
    *  Optional — when omitted (no global-search consumer was wired) clicks
    *  are no-ops, but the constitution requires this path for Find. */
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
+  onOpenFiberInCity?: (cityId: string, slug: string, options?: { openInNewWindow?: boolean }) => void
   /** Stage J — initial scope override. `'global'` opens FindHost in
    *  explicit-global scope (overriding the modal's `cityId`); a cityId
    *  string lands at that scope. Undefined ⇒ inherit from modal `cityId`
@@ -659,7 +659,7 @@ interface FibersSectionProps {
   setOpenCityKeys: (updater: (prev: Set<string>) => Set<string>) => void
   openFiberKeys: Set<string>
   setOpenFiberKeys: (updater: (prev: Set<string>) => Set<string>) => void
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
+  onOpenFiberInCity?: (cityId: string, slug: string, options?: { openInNewWindow?: boolean }) => void
 }
 
 function FibersSection(props: FibersSectionProps): JSX.Element {
@@ -791,7 +791,7 @@ function CityGroup({
     })
   }
 
-  const handleFiberClick = (fiber: GlobalFiberNode): void => {
+  const handleFiberClick = (fiber: GlobalFiberNode, openInNewWindow = false): void => {
     if (group.originId !== 'local' || !group.cityId) {
       // Remote-origin click-through is deferred per Scope §"Out". Surface
       // a console warning so the gap is observable rather than silent.
@@ -806,7 +806,7 @@ function CityGroup({
       console.warn('[FindHost] onOpenFiberInCity not wired; click ignored.')
       return
     }
-    onOpenFiberInCity(group.cityId, fiber.id)
+    onOpenFiberInCity(group.cityId, fiber.id, { openInNewWindow })
   }
 
   const toggleFiber = (fiber: GlobalFiberNode): void => {
@@ -973,7 +973,7 @@ function FiberRow({
   childrenByParent: Map<string | null, GlobalFiberNode[]>
   openFiberKeys: Set<string>
   onToggle: (fiber: GlobalFiberNode) => void
-  onOpen: (fiber: GlobalFiberNode) => void
+  onOpen: (fiber: GlobalFiberNode, openInNewWindow?: boolean) => void
   depth: number
 }): JSX.Element {
   const fiberKey = `${groupKey}::${fiber.id}`
@@ -1043,7 +1043,7 @@ function FiberRow({
         </span>
         <button
           type="button"
-          onClick={() => onOpen(fiber)}
+          onClick={(e) => onOpen(fiber, e.metaKey || e.ctrlKey)}
           title={fiber.id}
           style={{
             background: 'transparent',
@@ -1165,7 +1165,7 @@ function RecentsSection({
    *  so a fresh open shows up immediately rather than waiting for the
    *  poll. Threaded through from FindHost. */
   refreshTick: number
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
+  onOpenFiberInCity?: (cityId: string, slug: string, options?: { openInNewWindow?: boolean }) => void
 }): JSX.Element {
   const [entries, setEntries] = useState<RecentEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -1209,13 +1209,13 @@ function RecentsSection({
 
   const cityById = useMemo(() => new Map(cities.map(c => [c.id, c])), [cities])
 
-  const handleClick = (entry: RecentEntry): void => {
+  const handleClick = (entry: RecentEntry, openInNewWindow = false): void => {
     if (entry.kind === 'fiber') {
       if (!onOpenFiberInCity) {
         console.warn('[RecentsSection] onOpenFiberInCity not wired; click ignored.')
         return
       }
-      onOpenFiberInCity(entry.cityId, entry.path)
+      onOpenFiberInCity(entry.cityId, entry.path, { openInNewWindow })
       return
     }
     // File click: route through the mountContext.openFile() callback
@@ -1262,7 +1262,7 @@ function RecentsSection({
               key={`${entry.originId}::${entry.cityId}::${entry.kind}::${entry.path}`}
               entry={entry}
               cityName={cityById.get(entry.cityId)?.name ?? entry.cityId}
-              onClick={() => handleClick(entry)}
+              onClick={(e) => handleClick(entry, e.metaKey || e.ctrlKey)}
             />
           ))}
         </ul>
@@ -1278,7 +1278,7 @@ function RecentsRow({
 }: {
   entry: RecentEntry
   cityName: string
-  onClick: () => void
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
 }): JSX.Element {
   const kindGlyph = entry.kind === 'fiber' ? '⬡' : '📄'
   const lastViewedLabel = formatDistanceToNow(entry.lastViewedAt, { addSuffix: true })
@@ -2331,7 +2331,7 @@ function CombinedResultsSection({
     string,
     { name?: string; path: string; originId: string; gitStatus?: CityGitStatus }
   >
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
+  onOpenFiberInCity?: (cityId: string, slug: string, options?: { openInNewWindow?: boolean }) => void
 }): JSX.Element {
   const ctx = getPortolanMountContext()
   const openFile = ctx?.openFile
@@ -2409,7 +2409,7 @@ function CombinedResultsSection({
     [requestListing],
   )
 
-  const handleClick = (hit: CombinedHit): void => {
+  const handleClick = (hit: CombinedHit, openInNewWindow = false): void => {
     if (hit.kind === 'fiber') {
       if (hit.originId !== 'local' || !hit.cityId) {
         console.warn(
@@ -2418,7 +2418,7 @@ function CombinedResultsSection({
         )
         return
       }
-      onOpenFiberInCity?.(hit.cityId, hit.projectSlug ?? hit.id)
+      onOpenFiberInCity?.(hit.cityId, hit.projectSlug ?? hit.id, { openInNewWindow })
       return
     }
     if (hit.kind === 'file') {
@@ -2505,7 +2505,7 @@ function CombinedResultsSection({
               <CombinedRow
                 hit={hit}
                 cityName={resolveCityName(hit, cityById)}
-                onClick={() => handleClick(hit)}
+                onClick={(e) => handleClick(hit, e.metaKey || e.ctrlKey)}
                 isExpanded={
                   hit.kind === 'dir' &&
                   directoryState?.anchor.cityId === hit.cityId &&
@@ -2537,7 +2537,7 @@ function CombinedRow({
 }: {
   hit: CombinedHit
   cityName?: string
-  onClick: () => void
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
   isExpanded?: boolean
 }): JSX.Element {
   const isFiber = hit.kind === 'fiber'

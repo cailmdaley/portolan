@@ -246,7 +246,7 @@ interface RemoteShuttleSnapshotDiagnostic {
 
 interface KanbanModalOptions {
   /** Called when the user activates a card — host opens the fiber's md in vellum. */
-  onOpenFiber: (card: KanbanCard) => void
+  onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void
   /**
    * Called when the user clicks a card's running-worker indicator. The host
    * resolves the tmux session name to a portolan session id and focuses that
@@ -290,7 +290,7 @@ interface StashCluster {
 }
 
 export class KanbanModal {
-  private readonly onOpenFiber: (card: KanbanCard) => void
+  private readonly onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
   private readonly onStashClick?: () => void
   private readonly apiBase: string
@@ -2157,12 +2157,12 @@ export class FiberDetailModal {
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null
   private searchDebounce: number | null = null
   private readonly apiBase: string
-  private readonly onOpenFiber: (card: KanbanCard) => void
+  private readonly onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void
   private readonly onSaved: () => void
 
   constructor(
     apiBase: string,
-    onOpenFiber: (card: KanbanCard) => void,
+    onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void,
     onSaved: () => void,
   ) {
     this.apiBase = apiBase
@@ -2218,7 +2218,7 @@ export class FiberDetailModal {
     const openInVellum = (e: Event) => {
       e.stopPropagation()
       this.close()
-      this.onOpenFiber(card)
+      this.onOpenFiber(card, { openInNewWindow: e instanceof MouseEvent && (e.metaKey || e.ctrlKey) })
     }
 
     const pill = document.createElement('span')
@@ -2794,7 +2794,7 @@ export class FiberDetailModal {
     vellumBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       this.close()
-      this.onOpenFiber(card)
+      this.onOpenFiber(card, { openInNewWindow: e.metaKey || e.ctrlKey })
     })
 
     const errorEl = document.createElement('div')

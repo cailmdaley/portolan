@@ -30,7 +30,7 @@ import { FrontendStateSync } from './runtime/FrontendStateSync'
 import { DirectoryListingClient } from './runtime/DirectoryListingClient'
 import { FrontendAppRuntime } from './runtime/FrontendAppRuntime'
 import { UrlFragmentSync, SCOPE_GLOBAL, readUrlState, type UrlState, type VellumMode } from './runtime/UrlFragment'
-import { buildVellumFileUrl } from './runtime/vellumFileLink'
+import { buildVellumFiberUrl, buildVellumFileUrl } from './runtime/vellumFileLink'
 import { openNativeWorkspaceWindow } from './runtime/NativeBridge'
 import {
   DEFAULT_FAVICON_HREF,
@@ -507,6 +507,22 @@ async function openFileInNewTab(args: OpenFileArgs): Promise<void> {
   window.open(url, '_blank', 'noopener')
 }
 
+async function openFiberInNewWindow(cityId: string, slug: string): Promise<void> {
+  const url = buildVellumFiberUrl({
+    baseUrl: window.location.href,
+    cityId,
+    slug,
+  })
+  const routeUrl = new URL(url).hash
+  const nativeWindow = await openNativeWorkspaceWindow({
+    routeUrl,
+    title: `Portolan - ${slug.split('/').pop() ?? slug}`,
+  })
+  if (nativeWindow) return
+
+  window.open(url, '_blank', 'noopener')
+}
+
 // Vellum workspace modal for a city — narrative / workspace / delta / map modes
 // against the PortolanAdapter. Single-instance: close the previous handle
 // before opening a new city.
@@ -973,10 +989,18 @@ function openGlobalFind(): void {
  * card that the server somehow tagged with a stale id), we log and bail —
  * the modal stays where it is rather than closing onto nothing.
  */
-function openFiberInCityFromKanban(cityId: string, slug: string): void {
+function openFiberInCityFromKanban(
+  cityId: string,
+  slug: string,
+  options: { openInNewWindow?: boolean } = {},
+): void {
   const city = cities.find(c => c.id === cityId)
   if (!city) {
     console.warn('[Kanban] click-through to unknown cityId:', cityId, 'slug:', slug)
+    return
+  }
+  if (options.openInNewWindow) {
+    void openFiberInNewWindow(city.id, slug)
     return
   }
   openCityWorkspace(city, { initialSlug: slug, initialMode: 'narrative' })

@@ -91,7 +91,7 @@ function KanbanHost({
    * `setMode + navigate(/${id})` path which only works for cards that live
    * in the host vellum's collection.
    */
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
+  onOpenFiberInCity?: (cityId: string, slug: string, options?: { openInNewWindow?: boolean }) => void
   /**
    * Initial kanban scope, from URL restore. `'global'` mounts the kanban
    * in global scope even when the modal has a cityId. Undefined = inherit
@@ -121,7 +121,7 @@ function KanbanHost({
     const host = hostRef.current
     if (!host) return
     const kanban = new KanbanModal({
-      onOpenFiber: (card) => {
+      onOpenFiber: (card, options = {}) => {
         // Three click paths, in order of preference:
         //
         //   1. Card's owning city matches the host vellum's city — navigate to
@@ -141,12 +141,16 @@ function KanbanHost({
         // navigate so the post-paint URL settles on the new fiber inside
         // narrative mode.
         if (card.cityId && card.projectSlug && card.cityId === cityId) {
+          if (options.openInNewWindow && onOpenFiberInCity) {
+            onOpenFiberInCity(card.cityId, card.projectSlug, options)
+            return
+          }
           setMode('narrative')
           navigate(`/${card.projectSlug}`)
           return
         }
         if (card.cityId && card.projectSlug && onOpenFiberInCity) {
-          onOpenFiberInCity(card.cityId, card.projectSlug)
+          onOpenFiberInCity(card.cityId, card.projectSlug, options)
           return
         }
         setMode('narrative')
@@ -1042,7 +1046,7 @@ export interface OpenWorkspaceModalOptions {
    *  the fiber selected. Without this, the global-kanban click path lands
    *  on vellum's "not found" page because the loom-relative card id isn't
    *  in any project-scoped collection. */
-  onOpenFiberInCity?: (cityId: string, slug: string) => void
+  onOpenFiberInCity?: (cityId: string, slug: string, options?: { openInNewWindow?: boolean }) => void
   /** Stage J of `constitution-portolan-navigation-layer` — initial Find
    *  scope override. When undefined (default), Find scope inherits from
    *  the modal's `cityId`. When set to a cityId or the literal `'global'`,
