@@ -1,8 +1,9 @@
 use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
-    build_agent_url, collect_fiber_tree_delta_frame, handle_server_frame, normalize_felt_host,
-    parse_args, AgentCommand, AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
+    build_agent_url, collect_agent_sessions, collect_fiber_tree_delta_frame, handle_server_frame,
+    normalize_felt_host, parse_args, AgentCommand, AgentConfig, FiberTreeFileEvent,
+    FiberTreeFileOp,
 };
 use portolan_agent_protocol::{AgentFrame, AgentSessionsUpdatePayload};
 use std::{
@@ -17,6 +18,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const DEFAULT_FELT_WATCH_DEBOUNCE_MS: u64 = 250;
 const DEFAULT_FELT_POLL_MS: u64 = 5_000;
+const DEFAULT_SESSION_POLL_MS: u64 = 5_000;
 
 #[tokio::main]
 async fn main() {
@@ -67,16 +69,10 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
     flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut poll_interval = tokio::time::interval(fiber_tree_poll_interval());
     poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut session_poll_interval = tokio::time::interval(session_poll_interval());
+    session_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let sessions = AgentFrame::AgentSessionsUpdate {
-        payload: AgentSessionsUpdatePayload { sessions: vec![] },
-    };
-    write
-        .send(Message::Text(sessions.to_json_string().map_err(
-            |error| format!("encode sessions frame failed: {error}"),
-        )?))
-        .await
-        .map_err(|error| format!("send sessions frame failed: {error}"))?;
+    send_agent_session_update(&mut write).await?;
 
     loop {
         tokio::select! {
@@ -102,6 +98,9 @@ async fn connect_once(config: &AgentConfig) -> Result<(), String> {
                         send_agent_frame(&mut write, &frame).await?;
                     }
                 }
+            }
+            _ = session_poll_interval.tick() => {
+                send_agent_session_update(&mut write).await?;
             }
             maybe_message = read.next() => {
                 let Some(message) = maybe_message else { return Ok(()); };
@@ -190,6 +189,27 @@ fn fiber_tree_watch_debounce() -> Duration {
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_FELT_WATCH_DEBOUNCE_MS))
+}
+
+fn session_poll_interval() -> Duration {
+    env::var("PORTOLAN_SESSION_POLL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_SESSION_POLL_MS))
+}
+
+async fn send_agent_session_update<W>(write: &mut W) -> Result<(), String>
+where
+    W: futures_util::Sink<Message> + Unpin,
+    <W as futures_util::Sink<Message>>::Error: std::fmt::Display,
+{
+    let sessions = collect_agent_sessions();
+    let frame = AgentFrame::AgentSessionsUpdate {
+        payload: AgentSessionsUpdatePayload { sessions },
+    };
+    send_agent_frame(write, &frame).await
 }
 
 fn fiber_tree_poll_interval() -> Duration {
