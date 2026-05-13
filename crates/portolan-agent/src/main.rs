@@ -83,7 +83,7 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
     let (mut write, mut read) = stream.split();
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
     let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
-    let mut terminal_subscriptions = HashMap::<String, JoinHandle<()>>::new();
+    let mut terminal_subscriptions = TerminalSubscriptionSet::new();
     let mut fiber_watchers = FiberTreeWatcherSet::new(watch_tx);
     let mut pending_fiber_deltas = BTreeMap::<String, BTreeMap<String, FiberTreeFileOp>>::new();
     let mut active_city_felt_dump_hosts = HashSet::<String>::new();
@@ -161,7 +161,7 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
             }
             Some(frame) = terminal_rx.recv() => {
                 if let AgentFrame::TerminalExit { payload } = &frame {
-                    terminal_subscriptions.remove(&payload.subscription_id);
+                    terminal_subscriptions.remove_completed(&payload.subscription_id);
                 }
                 send_agent_frame(&mut write, &frame).await?;
             }
@@ -285,7 +285,7 @@ async fn handle_text_frame<W>(
     write: &mut W,
     fiber_watchers: &mut FiberTreeWatcherSet,
     terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
-    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    terminal_subscriptions: &mut TerminalSubscriptionSet,
     runtime_origin: &str,
     text: String,
 ) -> Result<(), String>
@@ -307,7 +307,7 @@ async fn handle_binary_frame<W>(
     write: &mut W,
     fiber_watchers: &mut FiberTreeWatcherSet,
     terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
-    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    terminal_subscriptions: &mut TerminalSubscriptionSet,
     runtime_origin: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String>
@@ -327,7 +327,7 @@ where
 
 fn handle_terminal_subscription_frame(
     terminal_tx: &mpsc::UnboundedSender<AgentFrame>,
-    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    terminal_subscriptions: &mut TerminalSubscriptionSet,
     frame: &AgentFrame,
 ) -> bool {
     match frame {
@@ -345,27 +345,57 @@ fn handle_terminal_subscription_frame(
 
 fn start_terminal_subscription(
     terminal_tx: mpsc::UnboundedSender<AgentFrame>,
-    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    terminal_subscriptions: &mut TerminalSubscriptionSet,
     payload: &TerminalSubscribePayload,
 ) {
-    if let Some(existing) = terminal_subscriptions.remove(&payload.subscription_id) {
-        existing.abort();
-    }
     let subscription_id = payload.subscription_id.clone();
     let tmux_session = payload.tmux_session.clone();
     let task_subscription_id = subscription_id.clone();
     let handle = tokio::spawn(async move {
         stream_tmux_control(task_subscription_id, tmux_session, terminal_tx).await;
     });
-    terminal_subscriptions.insert(subscription_id, handle);
+    terminal_subscriptions.replace(subscription_id, handle);
 }
 
 fn stop_terminal_subscription(
-    terminal_subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    terminal_subscriptions: &mut TerminalSubscriptionSet,
     payload: &TerminalUnsubscribePayload,
 ) {
-    if let Some(handle) = terminal_subscriptions.remove(&payload.subscription_id) {
-        handle.abort();
+    terminal_subscriptions.abort(&payload.subscription_id);
+}
+
+struct TerminalSubscriptionSet {
+    handles: HashMap<String, JoinHandle<()>>,
+}
+
+impl TerminalSubscriptionSet {
+    fn new() -> Self {
+        Self {
+            handles: HashMap::new(),
+        }
+    }
+
+    fn replace(&mut self, subscription_id: String, handle: JoinHandle<()>) {
+        self.abort(&subscription_id);
+        self.handles.insert(subscription_id, handle);
+    }
+
+    fn abort(&mut self, subscription_id: &str) {
+        if let Some(handle) = self.handles.remove(subscription_id) {
+            handle.abort();
+        }
+    }
+
+    fn remove_completed(&mut self, subscription_id: &str) {
+        self.handles.remove(subscription_id);
+    }
+}
+
+impl Drop for TerminalSubscriptionSet {
+    fn drop(&mut self) {
+        for (_, handle) in self.handles.drain() {
+            handle.abort();
+        }
     }
 }
 
@@ -380,6 +410,7 @@ async fn stream_tmux_control(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(child) => child,
@@ -859,6 +890,18 @@ fn watched_path_to_fiber_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    struct AbortFlag(Arc<AtomicBool>);
+
+    impl Drop for AbortFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     fn session(cwd: &str) -> AgentSession {
         AgentSession {
@@ -874,14 +917,46 @@ mod tests {
     }
 
     fn temp_events_file(tag: &str) -> PathBuf {
-        env::temp_dir().join(format!(
-            "portolan-agent-rust-{tag}-{}.jsonl",
-            process::id()
-        ))
+        env::temp_dir().join(format!("portolan-agent-rust-{tag}-{}.jsonl", process::id()))
     }
 
     fn write_events_file(path: &Path, lines: &str) {
         fs::write(path, lines).unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_subscription_set_aborts_replaced_and_dropped_tasks() {
+        let replaced_aborted = Arc::new(AtomicBool::new(false));
+        let dropped_aborted = Arc::new(AtomicBool::new(false));
+
+        let mut subscriptions = TerminalSubscriptionSet::new();
+        subscriptions.replace(
+            "terminal".to_string(),
+            tokio::spawn({
+                let replaced_aborted = Arc::clone(&replaced_aborted);
+                async move {
+                    let _guard = AbortFlag(replaced_aborted);
+                    futures_util::future::pending::<()>().await;
+                }
+            }),
+        );
+        tokio::task::yield_now().await;
+        subscriptions.replace(
+            "terminal".to_string(),
+            tokio::spawn({
+                let dropped_aborted = Arc::clone(&dropped_aborted);
+                async move {
+                    let _guard = AbortFlag(dropped_aborted);
+                    futures_util::future::pending::<()>().await;
+                }
+            }),
+        );
+        tokio::task::yield_now().await;
+        assert!(replaced_aborted.load(Ordering::SeqCst));
+
+        drop(subscriptions);
+        tokio::task::yield_now().await;
+        assert!(dropped_aborted.load(Ordering::SeqCst));
     }
 
     #[test]
