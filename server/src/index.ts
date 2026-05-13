@@ -248,6 +248,7 @@ httpApi.setRuntimeDiagnosticsProvider(() => {
     websocket: {
       browserClients: browserStateCoordinator.getClientCount(),
       connectedRemoteOrigins,
+      connectedRemoteAgents: originManager.getConnectedRemoteAgentDiagnostics(),
     },
     browserState: browserStateCoordinator.getBroadcastStats(),
     maps: {

@@ -28,6 +28,18 @@ export interface Origin {
 
 export type RemoteAgentRuntime = 'node' | 'rust';
 
+export interface RemoteAgentConnectionDiagnostic {
+  originId: string;
+  name: string;
+  sshHost: string | null;
+  agentRuntime: RemoteAgentRuntime;
+  agentOnce: boolean;
+  plannotatorPort: number | null;
+  socketCount: number;
+  connectedAt: string;
+  lastSeen: string;
+}
+
 // ============================================================================
 // OriginManager
 // ============================================================================
@@ -153,6 +165,23 @@ export class OriginManager {
    */
   getOrigins(): Origin[] {
     return Array.from(this.origins.values());
+  }
+
+  getConnectedRemoteAgentDiagnostics(): RemoteAgentConnectionDiagnostic[] {
+    return this.getOrigins()
+      .filter((origin) => origin.type === 'remote' && this.isOriginConnected(origin.id))
+      .map((origin) => ({
+        originId: origin.id,
+        name: origin.name,
+        sshHost: origin.sshHost ?? null,
+        agentRuntime: origin.agentRuntime ?? 'node',
+        agentOnce: origin.agentOnce ?? false,
+        plannotatorPort: origin.plannotatorPort ?? null,
+        socketCount: origin.agentSockets.size,
+        connectedAt: new Date(origin.connectedAt).toISOString(),
+        lastSeen: new Date(origin.lastSeen).toISOString(),
+      }))
+      .sort((a, b) => a.originId.localeCompare(b.originId));
   }
 
   /**

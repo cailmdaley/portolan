@@ -59,4 +59,40 @@ describe('OriginManager', () => {
     expect(firstSocket.close).toHaveBeenCalledTimes(1);
     expect(secondOrigin.agentOnce).toBe(false);
   });
+
+  it('reports connected remote agent runtime diagnostics', () => {
+    const manager = new OriginManager();
+    const firstSocket = makeSocket();
+    const secondSocket = makeSocket();
+
+    manager.registerAgent('cineca', firstSocket, 'cineca-login05', 50055, 'rust', true);
+    manager.registerAgent('candide', secondSocket, 'candide', undefined, 'node');
+
+    expect(manager.getConnectedRemoteAgentDiagnostics()).toEqual([
+      expect.objectContaining({
+        originId: 'remote-candide',
+        name: 'candide',
+        sshHost: 'candide',
+        agentRuntime: 'node',
+        agentOnce: false,
+        plannotatorPort: null,
+        socketCount: 1,
+      }),
+      expect.objectContaining({
+        originId: 'remote-cineca',
+        name: 'cineca',
+        sshHost: 'cineca-login05',
+        agentRuntime: 'rust',
+        agentOnce: true,
+        plannotatorPort: 50055,
+        socketCount: 1,
+      }),
+    ]);
+
+    expect(manager.getConnectedRemoteAgentDiagnostics()[0].connectedAt).toMatch(/T/);
+    manager.handleDisconnect(secondSocket);
+    expect(manager.getConnectedRemoteAgentDiagnostics().map((entry) => entry.originId)).toEqual([
+      'remote-cineca',
+    ]);
+  });
 });
