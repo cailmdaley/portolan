@@ -3,10 +3,10 @@ use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use portolan_agent::{
     active_city_felt_hosts, build_agent_url, collect_agent_sessions, collect_agent_status_snapshot,
-    collect_fiber_tree_delta_frame, collect_shuttle_snapshot_frame, events_file_path,
+    collect_fiber_tree_delta_frame, collect_shuttle_dispatch_snapshot_frame, events_file_path,
     format_status_report, handle_server_frame, normalize_felt_host,
     parse_activity_frames_from_events_jsonl, parse_args, rust_agent_ready_marker, AgentCommand,
-    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp,
+    AgentConfig, FiberTreeFileEvent, FiberTreeFileOp, ShuttleDispatchState,
 };
 use portolan_agent_protocol::{
     AgentFrame, AgentSession, AgentSessionsUpdatePayload, FiberTreeHostsPayload,
@@ -97,6 +97,7 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
     events_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let shuttle_enabled = shuttle_enabled();
     let shuttle_prefixes = shuttle_prefixes();
+    let mut shuttle_dispatch_state = ShuttleDispatchState::default();
     let mut shuttle_poll_interval = tokio::time::interval(shuttle_poll_interval());
     shuttle_poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let events_file = events_file_path();
@@ -154,7 +155,7 @@ async fn connect_once(config: &AgentConfig) -> Result<ConnectExit, String> {
                 }
             }
             _ = shuttle_poll_interval.tick(), if shuttle_enabled => {
-                match collect_shuttle_snapshot_frame(&shuttle_prefixes) {
+                match collect_shuttle_dispatch_snapshot_frame(&shuttle_prefixes, &mut shuttle_dispatch_state) {
                     Ok(frame) => send_agent_frame(&mut write, &frame).await?,
                     Err(error) => eprintln!("[portolan-agent-rust] shuttle snapshot skipped: {error}"),
                 }

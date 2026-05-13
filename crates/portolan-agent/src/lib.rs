@@ -14,7 +14,7 @@ use portolan_agent_protocol::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     env,
     ffi::OsString,
     fs,
@@ -968,6 +968,11 @@ pub struct ShuttleReadOnlyEntry {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct ShuttleDispatchState {
+    entries: BTreeMap<String, ShuttleReadOnlyEntry>,
+}
+
 pub fn collect_shuttle_snapshot_frame(prefixes: &[String]) -> Result<AgentFrame, String> {
     let felt_host = default_felt_host();
     let fibers = collect_shuttle_fibers_from_felt(&felt_host)?;
@@ -977,6 +982,22 @@ pub fn collect_shuttle_snapshot_frame(prefixes: &[String]) -> Result<AgentFrame,
         prefixes,
         &live_sessions,
         now_millis(),
+    ))
+}
+
+pub fn collect_shuttle_dispatch_snapshot_frame(
+    prefixes: &[String],
+    state: &mut ShuttleDispatchState,
+) -> Result<AgentFrame, String> {
+    let felt_host = default_felt_host();
+    let fibers = collect_shuttle_fibers_from_felt(&felt_host)?;
+    let live_sessions = list_shuttle_sessions();
+    Ok(build_shuttle_dispatch_snapshot_frame(
+        &fibers,
+        prefixes,
+        &live_sessions,
+        now_millis(),
+        state,
     ))
 }
 
@@ -1218,22 +1239,24 @@ pub fn build_shuttle_snapshot_frame(
         .cloned()
         .collect::<Vec<_>>();
 
-    let mut fields = BTreeMap::new();
-    fields.insert(
-        "snapshot".to_string(),
-        json!({
-            "pollAt": poll_at,
-            "eligible": entries.iter().map(shuttle_entry_json).collect::<Vec<_>>(),
-            "blocked": eligibility.blocked.iter().map(|blocked| json!({
-                "fiberId": blocked.fiber_id,
-                "reason": blocked.reason,
-            })).collect::<Vec<_>>(),
-            "orphans": orphans,
-        }),
-    );
-    AgentFrame::ShuttleSnapshot {
-        payload: ShuttleSnapshotPayload { fields },
-    }
+    build_shuttle_snapshot_payload(entries, eligibility.blocked, orphans, poll_at)
+}
+
+pub fn build_shuttle_dispatch_snapshot_frame(
+    fibers: &[ShuttleFiberProjection],
+    prefixes: &[String],
+    live_sessions: &[String],
+    poll_at: i64,
+    state: &mut ShuttleDispatchState,
+) -> AgentFrame {
+    reconcile_shuttle_dispatch_snapshot(
+        fibers,
+        prefixes,
+        live_sessions,
+        poll_at,
+        state,
+        spawn_shuttle_worker,
+    )
 }
 
 fn list_shuttle_sessions() -> Vec<String> {
@@ -1248,6 +1271,150 @@ fn list_shuttle_sessions() -> Vec<String> {
             .map(str::to_string)
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+fn reconcile_shuttle_dispatch_snapshot(
+    fibers: &[ShuttleFiberProjection],
+    prefixes: &[String],
+    live_sessions: &[String],
+    poll_at: i64,
+    state: &mut ShuttleDispatchState,
+    mut spawn_worker: impl FnMut(&str, &str) -> Option<String>,
+) -> AgentFrame {
+    let eligibility = compute_shuttle_eligibility(fibers, prefixes, poll_at);
+    let eligible_ids = eligibility
+        .eligible
+        .iter()
+        .map(|fiber| fiber.id.as_str())
+        .collect::<HashSet<_>>();
+    let live = live_sessions
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+
+    state.entries.retain(|fiber_id, entry| {
+        eligible_ids.contains(fiber_id.as_str())
+            && match entry.tmux_session.as_deref() {
+                Some(session) => live.contains(session),
+                None => true,
+            }
+    });
+
+    let mut entries = Vec::new();
+    for fiber in &eligibility.eligible {
+        let expected_session = shuttle_session_name(&fiber.id);
+        let agent = agent_for_shuttle_fiber(fiber);
+
+        if let Some(existing) = state.entries.get(&fiber.id) {
+            entries.push(existing.clone());
+            continue;
+        }
+
+        if live.contains(expected_session.as_str()) {
+            let entry = ShuttleReadOnlyEntry {
+                fiber_id: fiber.id.clone(),
+                tmux_session: Some(expected_session),
+                state: "running".to_string(),
+                started_at: Some(poll_at),
+                agent,
+                reason: Some("adopted existing tmux session".to_string()),
+            };
+            state.entries.insert(fiber.id.clone(), entry.clone());
+            entries.push(entry);
+            continue;
+        }
+
+        let entry = match spawn_worker(&fiber.id, &agent) {
+            Some(session) => ShuttleReadOnlyEntry {
+                fiber_id: fiber.id.clone(),
+                tmux_session: Some(session),
+                state: "running".to_string(),
+                started_at: Some(poll_at),
+                agent,
+                reason: None,
+            },
+            None => ShuttleReadOnlyEntry {
+                fiber_id: fiber.id.clone(),
+                tmux_session: None,
+                state: "idle".to_string(),
+                started_at: None,
+                agent,
+                reason: Some("spawn failed (worker script missing or unavailable)".to_string()),
+            },
+        };
+        state.entries.insert(fiber.id.clone(), entry.clone());
+        entries.push(entry);
+    }
+
+    let tracked_sessions = entries
+        .iter()
+        .filter_map(|entry| entry.tmux_session.as_ref())
+        .collect::<HashSet<_>>();
+    let orphans = live_sessions
+        .iter()
+        .filter(|session| !tracked_sessions.contains(session))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    build_shuttle_snapshot_payload(entries, eligibility.blocked, orphans, poll_at)
+}
+
+fn spawn_shuttle_worker(fiber_id: &str, agent: &str) -> Option<String> {
+    let worker_script = env::var("PORTOLAN_SHUTTLE_WORKER").unwrap_or_else(|_| {
+        env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".portolan/bin/shuttle-worker.sh")
+            .display()
+            .to_string()
+    });
+    if !Path::new(&worker_script).exists() {
+        eprintln!(
+            "[portolan-agent-rust] shuttle worker script missing at {worker_script}; skipping {fiber_id}"
+        );
+        return None;
+    }
+
+    match Command::new("bash")
+        .args(["-l", &worker_script, fiber_id, "--agent", agent])
+        .current_dir(default_felt_host())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(_) => Some(shuttle_session_name(fiber_id)),
+        Err(error) => {
+            eprintln!(
+                "[portolan-agent-rust] failed to spawn shuttle worker for {fiber_id}: {error}"
+            );
+            None
+        }
+    }
+}
+
+fn build_shuttle_snapshot_payload(
+    entries: Vec<ShuttleReadOnlyEntry>,
+    blocked: Vec<ShuttleBlockedFiber>,
+    orphans: Vec<String>,
+    poll_at: i64,
+) -> AgentFrame {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "snapshot".to_string(),
+        json!({
+            "pollAt": poll_at,
+            "eligible": entries.iter().map(shuttle_entry_json).collect::<Vec<_>>(),
+            "blocked": blocked.iter().map(|blocked| json!({
+                "fiberId": blocked.fiber_id,
+                "reason": blocked.reason,
+            })).collect::<Vec<_>>(),
+            "orphans": orphans,
+        }),
+    );
+    AgentFrame::ShuttleSnapshot {
+        payload: ShuttleSnapshotPayload { fields },
     }
 }
 
@@ -3461,6 +3628,153 @@ malformed
                 "blocked": [],
                 "orphans": ["shuttle-portolan/orphan"]
             })
+        );
+    }
+
+    #[test]
+    fn rust_shuttle_dispatch_spawns_adopts_and_tracks_orphans() {
+        let mut state = ShuttleDispatchState::default();
+        let mut spawn_calls = Vec::<(String, String)>::new();
+        let fibers = vec![
+            ShuttleFiberProjection {
+                id: "portolan/spawn".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
+                depends_on: vec![],
+                tempered: None,
+                agent: Some("pi-gpt-5.4".to_string()),
+            },
+            ShuttleFiberProjection {
+                id: "portolan/adopt".to_string(),
+                status: Some("active".to_string()),
+                tags: vec!["constitution".to_string(), "codex".to_string()],
+                has_shuttle_block: true,
+                shuttle_enabled: Some(true),
+                shuttle_kind: None,
+                shuttle_review_state: None,
+                next_due_at: None,
+                depends_on: vec![],
+                tempered: None,
+                agent: None,
+            },
+        ];
+
+        let frame = reconcile_shuttle_dispatch_snapshot(
+            &fibers,
+            &["portolan".to_string()],
+            &[
+                "shuttle-portolan/adopt".to_string(),
+                "shuttle-portolan/orphan".to_string(),
+            ],
+            1234,
+            &mut state,
+            |fiber_id, agent| {
+                spawn_calls.push((fiber_id.to_string(), agent.to_string()));
+                Some(shuttle_session_name(fiber_id))
+            },
+        );
+
+        assert_eq!(
+            spawn_calls,
+            vec![("portolan/spawn".to_string(), "pi-gpt-5.4".to_string())]
+        );
+        let AgentFrame::ShuttleSnapshot { payload } = frame else {
+            panic!("expected shuttle snapshot");
+        };
+        assert_eq!(
+            payload.fields["snapshot"],
+            json!({
+                "pollAt": 1234,
+                "eligible": [
+                    {
+                        "fiberId": "portolan/spawn",
+                        "tmuxSession": "shuttle-portolan/spawn",
+                        "state": "running",
+                        "startedAt": 1234,
+                        "agent": "pi-gpt-5.4"
+                    },
+                    {
+                        "fiberId": "portolan/adopt",
+                        "tmuxSession": "shuttle-portolan/adopt",
+                        "state": "running",
+                        "startedAt": 1234,
+                        "agent": "codex",
+                        "reason": "adopted existing tmux session"
+                    }
+                ],
+                "blocked": [],
+                "orphans": ["shuttle-portolan/orphan"]
+            })
+        );
+
+        let frame = reconcile_shuttle_dispatch_snapshot(
+            &fibers,
+            &["portolan".to_string()],
+            &[
+                "shuttle-portolan/spawn".to_string(),
+                "shuttle-portolan/adopt".to_string(),
+            ],
+            2234,
+            &mut state,
+            |fiber_id, agent| {
+                spawn_calls.push((fiber_id.to_string(), agent.to_string()));
+                Some(shuttle_session_name(fiber_id))
+            },
+        );
+
+        assert_eq!(
+            spawn_calls.len(),
+            1,
+            "live tracked sessions are not respawned"
+        );
+        let AgentFrame::ShuttleSnapshot { payload } = frame else {
+            panic!("expected shuttle snapshot");
+        };
+        assert_eq!(payload.fields["snapshot"]["orphans"], json!([]));
+    }
+
+    #[test]
+    fn rust_shuttle_dispatch_reports_spawn_failures_without_losing_visibility() {
+        let mut state = ShuttleDispatchState::default();
+        let fibers = vec![ShuttleFiberProjection {
+            id: "portolan/missing-worker".to_string(),
+            status: Some("active".to_string()),
+            tags: vec!["constitution".to_string()],
+            has_shuttle_block: true,
+            shuttle_enabled: Some(true),
+            shuttle_kind: None,
+            shuttle_review_state: None,
+            next_due_at: None,
+            depends_on: vec![],
+            tempered: None,
+            agent: None,
+        }];
+
+        let frame = reconcile_shuttle_dispatch_snapshot(
+            &fibers,
+            &["portolan".to_string()],
+            &[],
+            1234,
+            &mut state,
+            |_fiber_id, _agent| None,
+        );
+
+        let AgentFrame::ShuttleSnapshot { payload } = frame else {
+            panic!("expected shuttle snapshot");
+        };
+        assert_eq!(
+            payload.fields["snapshot"]["eligible"],
+            json!([{
+                "fiberId": "portolan/missing-worker",
+                "state": "idle",
+                "agent": "claude",
+                "reason": "spawn failed (worker script missing or unavailable)"
+            }])
         );
     }
 
