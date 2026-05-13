@@ -1271,7 +1271,7 @@ where
     ];
 
     match verb {
-        "pause" | "reopen" | "accept" | "resume" => {}
+        "pause" | "reopen" | "accept" => {}
         "close" => {
             if let Some(tempered) = optional_bool_field(payload, "tempered")? {
                 args.push(format!(
@@ -1284,11 +1284,6 @@ where
             let outcome = required_string_field(payload, "outcome")?;
             args.push("--outcome".to_string());
             args.push(outcome.to_string());
-        }
-        "dispatch" => {
-            if optional_bool_field(payload, "adHoc")?.unwrap_or(false) {
-                args.push("--ad-hoc".to_string());
-            }
         }
         _ => return Err(format!("unknown shuttle verb: {verb}")),
     }
@@ -3085,7 +3080,7 @@ malformed
     }
 
     #[test]
-    fn shuttle_kanban_transition_supports_outcome_and_adhoc_dispatch_flags() {
+    fn shuttle_kanban_transition_accepts_supported_shuttle_verbs() {
         let dir = temp_host("kanban-shuttle-flags");
         fs::create_dir_all(dir.join(".felt/story")).unwrap();
         fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
@@ -3097,27 +3092,17 @@ malformed
             ("verb", json!("set-outcome")),
             ("outcome", json!("First line\nSecond line")),
         ]);
-        let dispatch = kanban_payload(&[
-            ("kind", json!("shuttle")),
-            ("path", json!("story/story.md")),
-            ("feltHost", json!(dir.display().to_string())),
-            ("fiberId", json!("story")),
-            ("verb", json!("dispatch")),
-            ("adHoc", json!(true)),
-        ]);
         let mut invocations = Vec::new();
-        for payload in [&outcome, &dispatch] {
-            run_kanban_transition_with(
-                payload,
-                |invocation| {
-                    invocations.push(invocation);
-                    Ok(())
-                },
-                |_, fiber_id| Ok(json!({ "id": fiber_id })),
-            )
-            .unwrap();
-        }
-        fs::remove_dir_all(&dir).unwrap();
+
+        run_kanban_transition_with(
+            &outcome,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        )
+        .unwrap();
 
         assert_eq!(
             invocations[0].args,
@@ -3130,16 +3115,43 @@ malformed
                 "First line\nSecond line"
             ]
         );
-        assert_eq!(
-            invocations[1].args,
-            vec![
-                "--felt-store",
-                dir.to_str().unwrap(),
-                "dispatch",
-                "story",
-                "--ad-hoc"
-            ]
+
+        let dispatch = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("verb", json!("dispatch")),
+            ("adHoc", json!(true)),
+        ]);
+        let dispatch_err = run_kanban_transition_with(
+            &dispatch,
+            |invocation| {
+                panic!("dispatch should be rejected, got invocation: {invocation:?}");
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
         );
+        assert_eq!(
+            dispatch_err,
+            Err("unknown shuttle verb: dispatch".to_string())
+        );
+
+        let resume = kanban_payload(&[
+            ("kind", json!("shuttle")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("story")),
+            ("verb", json!("resume")),
+        ]);
+        let resume_err = run_kanban_transition_with(
+            &resume,
+            |invocation| {
+                panic!("resume should be rejected, got invocation: {invocation:?}");
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        );
+        assert_eq!(resume_err, Err("unknown shuttle verb: resume".to_string()));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
