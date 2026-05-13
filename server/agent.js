@@ -1087,13 +1087,16 @@ export function resolveRemoteFilePath(pathToRead, requireExisting = true) {
     if (typeof pathToRead !== 'string' || !pathToRead.length) {
         throw new Error(`path must be absolute: ${pathToRead}`);
     }
-    if (!isAbsolute(pathToRead)) {
+    const expandedPath = pathToRead.startsWith('~/')
+        ? join(homedir(), pathToRead.slice(2))
+        : pathToRead;
+    if (!isAbsolute(expandedPath)) {
         throw new Error(`path must be absolute: ${pathToRead}`);
     }
-    if (pathToRead.split(sep).includes('..')) {
+    if (expandedPath.split(sep).includes('..')) {
         throw new Error(`invalid path: ${pathToRead}`);
     }
-    const fullPath = resolve(pathToRead);
+    const fullPath = resolve(expandedPath);
     if (!existsSync(fullPath)) {
         if (requireExisting) {
             throw new Error(`file missing: ${pathToRead}`);

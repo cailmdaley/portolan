@@ -506,6 +506,7 @@ describe('HttpApi — /papers/<cacheKey>/paper.pdf endpoint', () => {
   let prevEnv: string | undefined;
 
   beforeEach(() => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
     mkdirSync(PAPER_CACHE_DIR, { recursive: true });
     prevEnv = process.env.ASTRA_PAPER_CACHE_DIR;
     process.env.ASTRA_PAPER_CACHE_DIR = PAPER_CACHE_DIR;
@@ -573,6 +574,38 @@ describe('HttpApi — /papers/<cacheKey>/paper.pdf endpoint', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/pdf');
     expect(res.body).toContain('local-form');
+  });
+
+  it('serves remote paper PDFs through the remote agent before SSH fallback', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const originId = `remote-agent-${process.pid}-${Date.now()}`;
+    const cacheKey = `10.48550_arXiv.AGENT-${process.pid}-${Date.now()}`;
+    const remoteApi = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteProjectFileExecutor: async (request) => {
+          calls.push(request);
+          return {
+            contentBase64: Buffer.from('%PDF-1.4\n%agent\n').toString('base64'),
+            byteLength: 16,
+          };
+        },
+      },
+    );
+
+    const res = await rawRequest(remoteApi, `/papers/${originId}/${cacheKey}/paper.pdf`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/pdf');
+    expect(res.body).toContain('%agent');
+    expect(calls).toEqual([
+      {
+        originId,
+        path: `~/.cache/astra/papers/${cacheKey}/paper.pdf`,
+      },
+    ]);
   });
 
   it('returns 404 when a remote origin is not connected', async () => {

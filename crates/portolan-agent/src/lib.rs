@@ -2684,7 +2684,8 @@ fn resolve_remote_fiber_file(felt_host: &str, rel_path: &str) -> Result<PathBuf,
 }
 
 fn resolve_remote_file_path(path: &str, require_existing: bool) -> Result<PathBuf, String> {
-    let full_path = Path::new(path);
+    let expanded_path = expand_home_path(path);
+    let full_path = expanded_path.as_path();
     if !full_path.is_absolute() {
         return Err(format!("path must be absolute: {path}"));
     }
@@ -2712,7 +2713,8 @@ fn resolve_remote_file_path(path: &str, require_existing: bool) -> Result<PathBu
 }
 
 fn resolve_remote_directory_path(path: &str) -> Result<PathBuf, String> {
-    let full_path = Path::new(path);
+    let expanded_path = expand_home_path(path);
+    let full_path = expanded_path.as_path();
     if !full_path.is_absolute() {
         return Err(format!("path must be absolute: {path}"));
     }
@@ -2729,6 +2731,15 @@ fn resolve_remote_directory_path(path: &str) -> Result<PathBuf, String> {
         return Err(format!("path is not a directory: {path}"));
     }
     Ok(full_path.to_path_buf())
+}
+
+fn expand_home_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
 }
 
 fn normalize_host_path(path: &str) -> PathBuf {
@@ -4655,6 +4666,39 @@ malformed
             AgentFrame::ProjectFileResult { payload } => {
                 assert!(payload.ok);
                 assert_eq!(payload.content_base64.as_deref(), Some("iVBORw=="));
+                assert_eq!(payload.byte_length, Some(4));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expands_home_paths_for_project_file_reads() {
+        let _guard = env_lock();
+        let previous_home = env::var_os("HOME");
+        let dir = temp_host("project-file-home-read");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("paper.pdf"), b"%PDF").unwrap();
+        env::set_var("HOME", &dir);
+
+        let responses = handle_server_frame(&AgentFrame::ProjectFile {
+            payload: ProjectFileRequestPayload {
+                correlation_id: "project-file-home-read".to_string(),
+                path: "~/paper.pdf".to_string(),
+            },
+        });
+
+        if let Some(home) = previous_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::ProjectFileResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.content_base64.as_deref(), Some("JVBERg=="));
                 assert_eq!(payload.byte_length, Some(4));
             }
             other => panic!("unexpected response: {other:?}"),

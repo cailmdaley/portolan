@@ -102,6 +102,8 @@ import type { Origin } from './OriginManager.js';
 import type {
   RemoteFileContentInvocation,
   RemoteFileContentResult,
+  RemoteProjectFileInvocation,
+  RemoteProjectFileResult,
 } from './HttpApiFileContent.js';
 import { shellEscape } from './ShellPathUtils.js';
 
@@ -116,6 +118,9 @@ interface HttpApiAstraViewDeps {
   remoteFileContentExecutor?: (
     request: RemoteFileContentInvocation,
   ) => Promise<RemoteFileContentResult>;
+  remoteProjectFileExecutor?: (
+    request: RemoteProjectFileInvocation,
+  ) => Promise<RemoteProjectFileResult>;
 }
 
 const ASSET_MIME: Record<string, string> = {
@@ -536,15 +541,36 @@ async function materializeRemotePaperPdf(
   sshHost: string,
   originId: string,
   cacheKey: string,
+  remoteProjectFileExecutor?: HttpApiAstraViewDeps['remoteProjectFileExecutor'],
 ): Promise<string | null> {
   const localPath = paperPdfMirrorPath(originId, cacheKey);
   if (existsSync(localPath)) return localPath;
+
+  mkdirSync(dirname(localPath), { recursive: true });
+  const agentPath = `~/.cache/astra/papers/${cacheKey}/paper.pdf`;
+
+  if (remoteProjectFileExecutor) {
+    try {
+      const result = await remoteProjectFileExecutor({ originId, path: agentPath });
+      if (typeof result.contentBase64 !== 'string') {
+        throw new Error('Remote agent did not return project-file content');
+      }
+      const bytes = Buffer.from(result.contentBase64, 'base64');
+      if (typeof result.byteLength === 'number' && result.byteLength !== bytes.length) {
+        throw new Error('Remote agent returned truncated project-file content');
+      }
+      writeFileSync(localPath, bytes);
+      return localPath;
+    } catch (err: any) {
+      // Preserve older/disconnected-agent behavior: fall back to SSH below.
+      console.warn('[paper-pdf] remote agent fetch failed, falling back to ssh:', err?.message ?? err);
+    }
+  }
 
   // SSH-cat the remote PDF into the local file. Streamed via spawn so a
   // large PDF doesn't allocate a giant Node Buffer first. shellEscape on
   // cacheKey is belt-and-suspenders — handlePaperPdf already validates it
   // against `[A-Za-z0-9._-]+` before we get here.
-  mkdirSync(dirname(localPath), { recursive: true });
   const remotePath = `$HOME/.cache/astra/papers/${cacheKey}/paper.pdf`;
   const remoteCmd =
     `if [ -f ${shellEscape(remotePath)} ]; then ` +
@@ -659,10 +685,12 @@ function parseAstraUrl(url: URL, prefix: string): { originId: string; filePath: 
 export class HttpApiAstraView {
   private originLookup: OriginLookup;
   private remoteFileContentExecutor: HttpApiAstraViewDeps['remoteFileContentExecutor'];
+  private remoteProjectFileExecutor: HttpApiAstraViewDeps['remoteProjectFileExecutor'];
 
   constructor(deps: HttpApiAstraViewDeps) {
     this.originLookup = deps.originLookup;
     this.remoteFileContentExecutor = deps.remoteFileContentExecutor;
+    this.remoteProjectFileExecutor = deps.remoteProjectFileExecutor;
   }
 
   /**
@@ -1102,7 +1130,12 @@ export class HttpApiAstraView {
     }
     let localPath: string | null;
     try {
-      localPath = await materializeRemotePaperPdf(origin.sshHost, originId, cacheKey);
+      localPath = await materializeRemotePaperPdf(
+        origin.sshHost,
+        originId,
+        cacheKey,
+        this.remoteProjectFileExecutor,
+      );
     } catch (err: any) {
       console.error('[paper-pdf] remote fetch failed:', err?.message ?? err);
       this.sendError(res, 502, `Remote paper fetch failed: ${err?.message ?? err}`);

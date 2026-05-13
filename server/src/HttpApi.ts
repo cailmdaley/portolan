@@ -227,6 +227,7 @@ export class HttpApi {
     this.astraViewApi = new HttpApiAstraView({
       originLookup,
       remoteFileContentExecutor: this.remoteFileContentExecutor,
+      remoteProjectFileExecutor: this.remoteProjectFileExecutor,
     });
     this.kanbanApi = new HttpApiKanban({
       remoteSnapshotsProvider: this.remoteSnapshotsProvider,

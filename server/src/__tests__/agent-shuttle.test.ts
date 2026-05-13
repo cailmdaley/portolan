@@ -24,7 +24,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 const mockExecFileCalls: Array<{
   command: string;
@@ -285,6 +285,22 @@ describe('agent: remote file request helpers', () => {
       contentBase64: 'iVBORw==',
       byteLength: 4,
     });
+  });
+
+  it('expands ~/ paths for remote project-file reads', () => {
+    const homeFile = join(homedir(), '.portolan-test-agent-project-file.bin');
+    writeFileSync(homeFile, Buffer.from([0x25, 0x50, 0x44, 0x46]));
+    try {
+      expect(agentMod.executeProjectFileRequest({
+        path: '~/.portolan-test-agent-project-file.bin',
+      })).toEqual({
+        ok: true,
+        contentBase64: 'JVBERg==',
+        byteLength: 4,
+      });
+    } finally {
+      rmSync(homeFile, { force: true });
+    }
   });
 
   it('returns tapestry evidence JSON with mtimes', () => {
