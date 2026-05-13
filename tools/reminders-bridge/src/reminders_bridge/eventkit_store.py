@@ -13,6 +13,9 @@ class EventKitUnavailable(RuntimeError):
 
 
 class EventKitReminderStore:
+    LIST_TIMEOUT_SECONDS = 30
+    ACCESS_TIMEOUT_SECONDS = 60
+
     def __init__(self, calendar_name: str):
         try:
             import EventKit  # type: ignore
@@ -38,7 +41,8 @@ class EventKitReminderStore:
             done.set()
 
         self.store.fetchRemindersMatchingPredicate_completion_(predicate, completion)
-        done.wait(30)
+        if not done.wait(self.LIST_TIMEOUT_SECONDS):
+            raise EventKitUnavailable("timed out fetching reminders from EventKit")
         return [self._record(reminder) for reminder in result]
 
     def create_reminder(self, spec: ReminderSpec) -> None:
@@ -77,7 +81,8 @@ class EventKitReminderStore:
         else:
             self.store.requestAccessToEntityType_completion_(self.EventKit.EKEntityTypeReminder, completion)
 
-        done.wait(60)
+        if not done.wait(self.ACCESS_TIMEOUT_SECONDS):
+            raise PermissionError("Reminders access request timed out")
         if not state["granted"]:
             raise PermissionError(f"Reminders access denied: {state['error']}")
 
@@ -184,6 +189,11 @@ def _date_components_to_iso(components) -> str | None:
     year = components.year()
     month = components.month()
     day = components.day()
+    hour = components.hour()
+    minute = components.minute()
     if year == 9223372036854775807 or month == 9223372036854775807 or day == 9223372036854775807:
         return None
-    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    date = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    if hour == 9223372036854775807 or minute == 9223372036854775807:
+        return date
+    return f"{date}T{int(hour):02d}:{int(minute):02d}"

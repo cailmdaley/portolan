@@ -18,6 +18,8 @@ VENV_DIR="$HOME/.local/share/portolan/reminders-bridge-venv"
 FELT_STORE="$HOME/loom"
 CALENDAR="Fibers"
 PYTHON_BIN=""
+FELT_BIN=""
+EXCLUDE_ROOTS=("wedding")
 WRITE_ONLY=false
 SKIP_DEPS=false
 UNINSTALL=false
@@ -36,6 +38,10 @@ Options:
   --log-dir DIR       Log directory (default: ~/.local/state/portolan)
   --venv-dir DIR      Virtualenv directory (default: ~/.local/share/portolan/reminders-bridge-venv)
   --felt-store DIR    felt store root (default: ~/loom)
+  --felt-bin PATH     felt binary used by launchd (default: first felt on PATH)
+  --exclude-root NAME Skip one top-level .felt root (repeatable; default: wedding)
+  --no-default-excludes
+                     Clear the default excluded roots
   --calendar NAME     Reminders list/calendar name (default: Fibers)
   --python PATH       Python used to create the venv
   -h, --help          Show this help
@@ -79,6 +85,18 @@ while [ "$#" -gt 0 ]; do
     --calendar)
       CALENDAR="${2:?--calendar requires a name}"
       shift 2
+      ;;
+    --felt-bin)
+      FELT_BIN="${2:?--felt-bin requires a path}"
+      shift 2
+      ;;
+    --exclude-root)
+      EXCLUDE_ROOTS+=("${2:?--exclude-root requires a root name}")
+      shift 2
+      ;;
+    --no-default-excludes)
+      EXCLUDE_ROOTS=()
+      shift
       ;;
     --python)
       PYTHON_BIN="${2:?--python requires a path}"
@@ -125,6 +143,19 @@ resolve_python() {
   exit 1
 }
 
+resolve_felt() {
+  if [ -n "$FELT_BIN" ]; then
+    printf '%s\n' "$FELT_BIN"
+    return
+  fi
+  if path="$(command -v felt 2>/dev/null)"; then
+    printf '%s\n' "$path"
+    return
+  fi
+  echo "felt not found on PATH; pass --felt-bin /path/to/felt" >&2
+  exit 1
+}
+
 plist_path="$PLIST_DIR/$LABEL.plist"
 target="gui/$(id -u)/$LABEL"
 
@@ -137,6 +168,7 @@ fi
 
 mkdir -p "$PLIST_DIR" "$LOG_DIR" "$(dirname "$VENV_DIR")"
 PYTHON_BIN="$(resolve_python)"
+FELT_BIN="$(resolve_felt)"
 
 if [ "$SKIP_DEPS" != true ]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
@@ -149,11 +181,17 @@ fi
 
 log_path="$LOG_DIR/reminders-bridge.log"
 pythonpath="$TOOL_DIR/src"
+exclude_args=""
+for root in "${EXCLUDE_ROOTS[@]}"; do
+  exclude_args+="<string>--exclude-root</string><string>$(xml_escape "$root")</string>"
+done
 
 sed \
   -e "s#__LABEL__#$(xml_escape "$LABEL")#g" \
   -e "s#__PYTHON__#$(xml_escape "$RUN_PYTHON")#g" \
   -e "s#__FELT_STORE__#$(xml_escape "$FELT_STORE")#g" \
+  -e "s#__FELT_BIN__#$(xml_escape "$FELT_BIN")#g" \
+  -e "s#__EXCLUDE_ROOT_ARGS__#$exclude_args#g" \
   -e "s#__CALENDAR__#$(xml_escape "$CALENDAR")#g" \
   -e "s#__PYTHONPATH__#$(xml_escape "$pythonpath")#g" \
   -e "s#__REPO_DIR__#$(xml_escape "$REPO_DIR")#g" \
@@ -163,6 +201,10 @@ sed \
 echo "installed $LABEL -> $plist_path"
 echo "  log: $log_path"
 echo "  python: $RUN_PYTHON"
+echo "  felt: $FELT_BIN"
+if [ "${#EXCLUDE_ROOTS[@]}" -gt 0 ]; then
+  echo "  excluded roots: ${EXCLUDE_ROOTS[*]}"
+fi
 
 if [ "$WRITE_ONLY" = true ]; then
   exit 0

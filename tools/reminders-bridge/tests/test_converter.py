@@ -1,6 +1,6 @@
 import unittest
 
-from reminders_bridge.converter import extract_fid, fiber_to_reminder_spec, first_body_paragraph, path_tokens
+from reminders_bridge.converter import canonical_due, extract_fid, fiber_to_reminder_spec, first_body_paragraph, path_tokens
 from reminders_bridge.model import FiberRecord
 
 
@@ -38,6 +38,10 @@ class ConverterTest(unittest.TestCase):
 
     def test_path_tokens_skip_umbrella_root(self):
         self.assertEqual(path_tokens("ai-futures/portolan/foo/bar"), ("portolan", "foo"))
+
+    def test_due_with_time_is_canonicalized_to_minute_precision(self):
+        self.assertEqual(canonical_due("2026-05-20T09:30:45Z"), "2026-05-20T09:30")
+        self.assertEqual(canonical_due("2026-05-20"), "2026-05-20")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     logger = logging.getLogger("reminders_bridge")
 
     try:
-        fibers = FeltClient(args.felt_store, args.felt_bin).list_open_fibers(
+        fibers = FeltClient(args.felt_store, args.felt_bin, tuple(args.exclude_root)).list_open_fibers(
             include_body=not args.no_body,
             limit=args.limit,
         )
@@ -51,6 +51,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Mirror open felt fibers into Apple Reminders")
     parser.add_argument("--felt-store", type=Path, default=Path.home() / "loom")
     parser.add_argument("--felt-bin", default="felt")
+    parser.add_argument(
+        "--exclude-root",
+        action="append",
+        default=[],
+        help="skip a top-level .felt root while reading the store; repeatable",
+    )
     parser.add_argument("--calendar", default="Fibers")
     parser.add_argument("--dry-run", action="store_true", help="print the diff plan without writing reminders")
     parser.add_argument(

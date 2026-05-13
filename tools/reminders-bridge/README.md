@@ -23,6 +23,16 @@ tail -f ~/.local/state/portolan/reminders-bridge.log
 On the first EventKit run, macOS may ask for Reminders access. Grant full
 Reminders access so the launchd job can create and maintain the `Fibers` list.
 
+The installer excludes the top-level `wedding` felt root by default because that
+zone is private, iCloud-backed, and launchd may not be allowed to walk it. Add
+more skipped top-level roots with `--exclude-root NAME`; use
+`--no-default-excludes` only if those private roots should be mirrored too.
+If the log then shows `operation not permitted`, grant the launchd executable
+chain access in System Settings. The bridge runs Python, which shells out to
+`felt`, so the practical fix is to grant Full Disk Access to the Python
+interpreter in `~/.local/share/portolan/reminders-bridge-venv/bin/python` and/or
+the `felt` binary named in the plist.
+
 ## Manual Runs
 
 Dry-run against the real `Fibers` list without writing:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import textwrap
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,7 +21,7 @@ def fiber_to_reminder_spec(fiber: FiberRecord) -> ReminderSpec:
         title=fiber.name or fiber.id,
         notes=notes,
         tags=tags,
-        due=fiber.due,
+        due=canonical_due(fiber.due),
         url=fiber.file_url or f"portolan://fiber/{quote(fiber.id, safe='/')}",
         priority=0,
         attachments=fiber.evidence_attachments[:1],
@@ -100,6 +101,15 @@ def truncate(text: str, limit: int) -> str:
     if len(normalized) <= limit:
         return normalized
     return textwrap.shorten(normalized, width=limit, placeholder="...")
+
+
+def canonical_due(value: str | None) -> str | None:
+    if not value:
+        return None
+    if "T" not in value:
+        return value
+    parsed = datetime.fromisoformat(value.removesuffix("Z"))
+    return f"{parsed:%Y-%m-%dT%H:%M}"
 
 
 def _single_line(text: str | None) -> str:

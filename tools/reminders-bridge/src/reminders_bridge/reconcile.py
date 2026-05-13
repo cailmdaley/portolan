@@ -21,10 +21,9 @@ def build_plan(open_fibers: Iterable[FiberRecord], reminders: Iterable[ReminderR
     orphan_complete: list[ReminderRecord] = []
 
     for reminder in reminders:
-        if reminder.completed:
-            continue
         if not reminder.fiber_id:
-            orphan_complete.append(reminder)
+            if not reminder.completed:
+                orphan_complete.append(reminder)
             continue
         if reminder.fiber_id in reminder_index:
             warnings.append(f"duplicate reminder for {reminder.fiber_id}; leaving duplicate unchanged")
@@ -44,7 +43,7 @@ def build_plan(open_fibers: Iterable[FiberRecord], reminders: Iterable[ReminderR
         else:
             updates.append((reminder, spec))
 
-    completes = list(reminder_index.values())
+    completes = [reminder for reminder in reminder_index.values() if not reminder.completed]
     return ReconcilePlan(
         create=tuple(creates),
         update=tuple(updates),

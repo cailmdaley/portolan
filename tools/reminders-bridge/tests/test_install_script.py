@@ -27,6 +27,8 @@ class InstallScriptTest(unittest.TestCase):
                     str(venv_dir),
                     "--python",
                     "/usr/bin/python3",
+                    "--felt-bin",
+                    "/usr/local/bin/felt",
                 ],
                 cwd=REPO_ROOT,
                 check=True,
@@ -39,6 +41,10 @@ class InstallScriptTest(unittest.TestCase):
             self.assertIn("<integer>300</integer>", text)
             self.assertIn("-m</string>", text)
             self.assertIn("reminders_bridge.sync", text)
+            self.assertIn("--felt-bin", text)
+            self.assertIn("/usr/local/bin/felt", text)
+            self.assertIn("--exclude-root", text)
+            self.assertIn("wedding", text)
             self.assertIn("PYTHONPATH", text)
 
 

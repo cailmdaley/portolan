@@ -52,6 +52,31 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(result.updated, 1)
         self.assertEqual(result.completed, 2)
 
+    def test_completed_matching_reminder_is_reopened_not_duplicated(self):
+        plan = build_plan(
+            [FiberRecord(id="same", name="Same", status="open")],
+            [ReminderRecord(fiber_id="same", title="Same", notes="<!-- fid: same -->", completed=True)],
+        )
+
+        self.assertEqual(plan.create, ())
+        self.assertEqual([spec.fiber_id for _, spec in plan.update], ["same"])
+        store = FakeStore()
+        result = apply_plan(store, plan)
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.updated, 1)
+
+    def test_completed_stale_and_orphan_reminders_are_left_alone(self):
+        plan = build_plan(
+            [],
+            [
+                ReminderRecord(fiber_id="stale", title="Stale", notes="<!-- fid: stale -->", completed=True),
+                ReminderRecord(fiber_id=None, title="Manual", notes="", completed=True),
+            ],
+        )
+
+        self.assertEqual(plan.complete, ())
+        self.assertEqual(plan.orphan_complete, ())
+
 
 if __name__ == "__main__":
     unittest.main()
