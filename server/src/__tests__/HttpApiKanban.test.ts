@@ -19,6 +19,7 @@ import YAML from 'yaml';
 import {
   HttpApiKanban,
   classifyFiber,
+  effectiveHorizon,
   type FeltTagEditInvocation,
   type KanbanCard,
   type RemoteKanbanMutationRequest,
@@ -150,6 +151,11 @@ function applyRemoteMutation(content: string, mutation: RemoteKanbanMutationRequ
       if (doc.tags.length === 0) delete doc.tags;
       return;
     }
+    if (mutation.kind === 'felt-horizon') {
+      if (mutation.horizon === null) delete doc.horizon;
+      else doc.horizon = mutation.horizon;
+      return;
+    }
 
     switch (mutation.verb) {
       case 'pause':
@@ -250,6 +256,46 @@ const SHUTTLE_STANDING_SCHEDULED = {
   review: { state: 'scheduled' },
 } as const;
 
+describe('effectiveHorizon', () => {
+  const now = Date.parse('2026-05-12T12:00:00Z');
+
+  it('uses stored valid horizons and defaults missing/unknown values to now', () => {
+    expect(effectiveHorizon({ horizon: 'later' }, now)).toEqual({
+      storedHorizon: 'later',
+      effectiveHorizon: 'later',
+      drifted: false,
+    });
+    expect(effectiveHorizon({}, now)).toEqual({
+      storedHorizon: undefined,
+      effectiveHorizon: 'now',
+      drifted: false,
+    });
+    expect(effectiveHorizon({ horizon: 'cycle' }, now)).toEqual({
+      storedHorizon: undefined,
+      effectiveHorizon: 'now',
+      drifted: false,
+    });
+  });
+
+  it('promotes due-within-seven-days cards to now and marks stored-horizon drift', () => {
+    expect(effectiveHorizon({ horizon: 'later', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
+      storedHorizon: 'later',
+      effectiveHorizon: 'now',
+      drifted: true,
+    });
+    expect(effectiveHorizon({ horizon: 'now', due: '2026-05-18T12:00:00Z' }, now)).toEqual({
+      storedHorizon: 'now',
+      effectiveHorizon: 'now',
+      drifted: false,
+    });
+    expect(effectiveHorizon({ horizon: 'soon', due: '2026-05-25T12:00:00Z' }, now)).toEqual({
+      storedHorizon: 'soon',
+      effectiveHorizon: 'soon',
+      drifted: false,
+    });
+  });
+});
+
 describe('HttpApiKanban — /kanban endpoint', () => {
   beforeEach(() => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
@@ -274,6 +320,49 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
     expect(res.body.totals).toEqual({ ideas: 0, drafts: 0, inFlight: 0, awaitingReview: 0, tempered: 0, composted: 0 });
+  });
+
+  it('includes open due-bearing human fibers as non-dispatchable drafts and surfaces horizon fields on cards', async () => {
+    writeFib('human-due', {
+      name: 'Human due',
+      status: 'open',
+      due: '2020-05-15T00:00:00Z',
+      horizon: 'later',
+      'created-at': '2026-04-01',
+    });
+    writeFib('human-undated', {
+      name: 'Human undated',
+      status: 'open',
+      'created-at': '2026-04-02',
+    });
+    writeFib('agent-later', {
+      name: 'Agent later',
+      status: 'active',
+      shuttle: SHUTTLE_INFLIGHT,
+      horizon: 'later',
+      'created-at': '2026-04-03',
+    });
+
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+    const res = await callKanban(api);
+
+    expect(res.body.columns.inFlight.map((c: any) => c.id)).toEqual(['agent-later']);
+    expect(res.body.columns.drafts.map((c: any) => c.id)).toEqual(['human-due']);
+    expect(res.body.columns.inFlight.find((c: any) => c.id === 'human-undated')).toBeUndefined();
+    expect(res.body.columns.drafts.find((c: any) => c.id === 'human-undated')).toBeUndefined();
+    const human = res.body.columns.drafts.find((c: any) => c.id === 'human-due');
+    expect(human).toMatchObject({
+      due: '2020-05-15T00:00:00Z',
+      storedHorizon: 'later',
+      effectiveHorizon: 'now',
+      drifted: true,
+    });
+    const agent = res.body.columns.inFlight.find((c: any) => c.id === 'agent-later');
+    expect(agent).toMatchObject({
+      storedHorizon: 'later',
+      effectiveHorizon: 'later',
+      drifted: false,
+    });
   });
 
   it('groups shuttle-block fibers into drafts / in-flight / awaiting-review / tempered', async () => {
@@ -853,6 +942,8 @@ describe('HttpApiKanban — /kanban endpoint', () => {
         dependsOnSatisfied: true,
         shuttleEnabled: true,
         shuttleKind: 'oneshot',
+        effectiveHorizon: 'now',
+        drifted: false,
       };
       const shuttleCalls: ShuttleCtlInvocation[] = [];
       const api = new HttpApiKanban({
@@ -1442,6 +1533,102 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     });
   });
 
+  describe('handleHorizon', () => {
+    function jsonReq(body: unknown): IncomingMessage {
+      return Readable.from([Buffer.from(JSON.stringify(body), 'utf-8')]) as unknown as IncomingMessage;
+    }
+
+    function capRes(): { res: ServerResponse; status: () => number; body: () => any } {
+      let status = 0;
+      const chunks: string[] = [];
+      const res = {
+        writeHead(s: number) { status = s; },
+        end(c?: string) { if (c) chunks.push(c); },
+      } as unknown as ServerResponse;
+      return { res, status: () => status, body: () => (chunks.length ? JSON.parse(chunks.join('')) : null) };
+    }
+
+    it('writes the top-level horizon key while preserving unrelated frontmatter bytes', async () => {
+      writeFib('deadline', {
+        name: 'Deadline',
+        status: 'open',
+        due: '2020-05-15',
+        tags: ['task'],
+        'created-at': '2026-04-01',
+      });
+      const path = join(FELT_DIR, 'deadline', 'deadline.md');
+      const before = readFileSync(path, 'utf-8');
+      const beforeWithoutHorizon = before.replace(/\n---\n\n/, '\nhorizon: later\n---\n\n');
+
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+      const { res, status, body } = capRes();
+      await api.handleHorizon(jsonReq({ fiberId: 'deadline', horizon: 'later' }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.storedHorizon).toBe('later');
+      expect(body().card.effectiveHorizon).toBe('now');
+      expect(readFileSync(path, 'utf-8')).toBe(beforeWithoutHorizon);
+    });
+
+    it('clears an existing horizon key', async () => {
+      writeFib('clear-me', {
+        name: 'Clear me',
+        status: 'active',
+        shuttle: SHUTTLE_INFLIGHT,
+        horizon: 'soon',
+        'created-at': '2026-04-01',
+      });
+      const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+      const { res, status, body } = capRes();
+      await api.handleHorizon(jsonReq({ fiberId: 'clear-me', horizon: null }), res);
+
+      expect(status()).toBe(200);
+      expect(body().card.storedHorizon).toBeUndefined();
+      expect(readFileSync(join(FELT_DIR, 'clear-me', 'clear-me.md'), 'utf-8')).not.toContain('horizon:');
+    });
+
+    it('routes remote horizon edits through remoteTransitionExecutor', async () => {
+      const store = new FiberTreeSnapshotStore();
+      const content = [
+        '---',
+        'name: cmbx',
+        'status: active',
+        'due: 2020-05-15',
+        'created-at: 2026-04-15T00:00:00Z',
+        '---',
+        '',
+        'body',
+      ].join('\n');
+      store.upsertFullDump('remote-cineca', '/leonardo/loom', [
+        { path: 'cmbx/cmbx.md', content },
+      ]);
+      const calls: RemoteKanbanMutationRequest[] = [];
+      const api = new HttpApiKanban({
+        feltHost: TEST_DIR,
+        remoteSnapshotsProvider: () => store.getAllSnapshots(),
+        remoteTransitionExecutor: async (args) => {
+          calls.push(args);
+          store.applyDelta(args.originId, [
+            { path: args.path, op: 'upsert', content: applyRemoteMutation(content, args) },
+          ]);
+        },
+        listSessions: () => [],
+      });
+
+      const card = await api.applyHorizon('cmbx', 'someday');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        originId: 'remote-cineca',
+        fiberId: 'cmbx',
+        path: 'cmbx/cmbx.md',
+        kind: 'felt-horizon',
+        horizon: 'someday',
+      });
+      expect(card.storedHorizon).toBe('someday');
+      expect(card.effectiveHorizon).toBe('now');
+    });
+  });
+
   describe('handleFiberPatch', () => {
     function jsonReq(body: unknown): IncomingMessage {
       return Readable.from([Buffer.from(JSON.stringify(body), 'utf-8')]) as unknown as IncomingMessage;
@@ -1803,6 +1990,19 @@ describe('classifyFiber', () => {
 
     it('enabled and not idea → inFlight', () => {
       expect(classifyFiber(fib({ shuttleEnabled: true }))).toBe('inFlight');
+    });
+
+    it('open human due cards without a shuttle block → drafts', () => {
+      expect(
+        classifyFiber(
+          fib({
+            hasShuttleBlock: undefined,
+            shuttleEnabled: undefined,
+            shuttleKind: undefined,
+            due: '2026-05-20T00:00:00Z',
+          }),
+        ),
+      ).toBe('drafts');
     });
 
     it('"draft" tag does NOT influence placement (cosmetic only)', () => {

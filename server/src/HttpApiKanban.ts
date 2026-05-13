@@ -3,12 +3,13 @@
  *
  * Reads fibers from a felt host (defaults to ~/loom — the loom monorepo,
  * which symlinks every project's `.felt/`), filters to shuttle-managed fibers
- * (those with a `shuttle:` frontmatter block), and groups by lifecycle stage.
+ * plus open/active human due-date fibers, and groups by lifecycle stage.
  * `tempered` is a tristate verdict field — absent (no verdict yet),
  * `true` (accepted), `false` (composted: mooted / superseded / did not survive
  * review). The classifier reads all three:
  *
- *   - in-flight       : status != closed (open / active / dispatchable)
+ *   - drafts          : human due-date cards without a shuttle: block
+ *   - in-flight       : shuttle-managed status != closed (open / active / dispatchable)
  *   - awaiting-review : status == closed && tempered absent (agent-paused handoff)
  *   - tempered        : status == closed && tempered === true (human-accepted)
  *   - composted       : status == closed && tempered === false (human-rejected)
@@ -23,10 +24,12 @@
  * primary reason this view exists. See:
  * .felt/ai-futures/portolan/shuttle/constitution-shuttle.
  *
- * Card source filter: post-migration, a fiber must have a `shuttle:` block.
- * Pre-migration (or for legacy fibers), the `constitution` tag is the fallback.
- * After running `shuttle migrate`, every eligible fiber has both, so the union
- * produces the same set as the old tag-only filter — byte-identical eligibility.
+ * Card source filter: post-migration, agent cards need a `shuttle:` block.
+ * Human cards have no shuttle block and enter only when open/active with a
+ * parseable top-level `due:` value. They stay in drafts: visible as human work,
+ * but never presented as Shuttle-dispatchable. Top-level `horizon:` is an
+ * orthogonal row axis; `classifyFiber` remains the sole source of truth for
+ * columns.
  *
  * v0 is read-only — clicking a card opens the fiber's md in vellum on the
  * frontend; tempering/un-tempering happens via CLI for now. Will grow to
@@ -36,10 +39,12 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { URL } from 'url';
 import { existsSync, realpathSync } from 'fs';
+import { readFile, writeFile } from 'fs/promises';
 import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
+import YAML from 'yaml';
 import { getAllFibers, getFiber, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
@@ -49,6 +54,11 @@ import {
 } from './canonicalFiberRef.js';
 
 const execFileAsync = promisify(execFile);
+
+export const KANBAN_HORIZONS = ['now', 'soon', 'later', 'someday'] as const;
+export type KanbanHorizon = typeof KANBAN_HORIZONS[number];
+const HORIZON_SET = new Set<string>(KANBAN_HORIZONS);
+const HORIZON_DRIFT_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface KanbanCard {
   id: string;
@@ -64,6 +74,7 @@ export interface KanbanCard {
   originId: string;
   status: string;
   outcome?: string;
+  due?: string;
   tags?: string[];
   createdAt: string;
   closedAt?: string;
@@ -153,6 +164,12 @@ export interface KanbanCard {
    * (awaiting → scheduled) before forcing a dispatch.
    */
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
+  /** Raw valid `horizon:` value from fiber frontmatter, if present. */
+  storedHorizon?: KanbanHorizon;
+  /** Row where this card renders after due-date promotion/defaulting. */
+  effectiveHorizon: KanbanHorizon;
+  /** True when `due:` pulls a non-now stored horizon into Now. */
+  drifted: boolean;
 }
 
 export interface KanbanColumns {
@@ -164,7 +181,7 @@ export interface KanbanColumns {
   ideas: KanbanCard[];
   /** shuttle.enabled === false (paused / not yet queued). Hidden from Shuttle dispatch. */
   drafts: KanbanCard[];
-  /** shuttle.enabled !== false, status != closed. Queue + active are one bucket. */
+  /** Shuttle-managed open/active fibers. Queue + active are one bucket. */
   inFlight: KanbanCard[];
   /** Shuttle-block fiber, status=closed && tempered absent (the human-tempering queue). */
   awaitingReview: KanbanCard[];
@@ -409,7 +426,8 @@ export type ShuttleActionResolveRequest = {
 
 export type RemoteKanbanMutationInvocation =
   | ({ kind: 'shuttle'; path: string } & ShuttleCtlInvocation)
-  | { kind: 'felt-tags'; fiberId: string; path: string; tags: string[] };
+  | { kind: 'felt-tags'; fiberId: string; path: string; tags: string[] }
+  | { kind: 'felt-horizon'; fiberId: string; path: string; horizon: KanbanHorizon | null };
 
 export type RemoteKanbanMutationRequest =
   RemoteKanbanMutationInvocation & { originId: string; feltHost: string };
@@ -465,6 +483,8 @@ export type KanbanColumn =
 /**
  * Classify a fiber into the kanban column it belongs in. The single source
  * of truth for "what column is this?". The rule, in plain English:
+ * Horizon rows are computed separately by `effectiveHorizon`; they never
+ * participate in column placement.
  *
  *   1. A standing-role fiber whose worker has finished a run (review.state
  *      = `awaiting`) sits in awaitingReview until the human accepts —
@@ -474,6 +494,8 @@ export type KanbanColumn =
  *   2. Otherwise, status drives the open/closed split:
  *
  *      open (status !== `closed`):
+ *        - no shuttle block    → drafts     (human due-date card; visible,
+ *                                            not dispatchable)
  *        - `idea` tag         → ideas      (speculative, pre-formal)
  *        - shuttle.enabled=false → drafts  (paused — has thinking, not yet
  *                                           ready to dispatch)
@@ -502,12 +524,15 @@ export function classifyFiber(
   // from scheduled to "running-in-fact" before any file write, and the
   // user dragging a card and seeing it stay in drafts is the dissonance
   // we're avoiding.
-  if (opts.runningWorker && f.status !== 'closed') return 'inFlight';
+  if (opts.runningWorker && f.status !== 'closed' && f.hasShuttleBlock === true) {
+    return 'inFlight';
+  }
 
   if (f.shuttleKind === 'standing' && f.shuttleReviewState === 'awaiting') {
     return 'awaitingReview';
   }
   if (f.status !== 'closed') {
+    if (f.hasShuttleBlock !== true) return 'drafts';
     if (f.tags?.includes('idea')) return 'ideas';
     if (f.shuttleEnabled === false) return 'drafts';
     // Standing roles in scheduled/accepted state are dispatch-eligible but
@@ -527,6 +552,46 @@ export function classifyFiber(
   if (f.tempered === true) return 'tempered';
   if (f.tempered === false) return 'composted';
   return 'awaitingReview';
+}
+
+export function effectiveHorizon(
+  f: Pick<Fiber, 'due' | 'horizon'>,
+  nowMs: number = Date.now(),
+): { storedHorizon?: KanbanHorizon; effectiveHorizon: KanbanHorizon; drifted: boolean } {
+  const storedHorizon = normalizeHorizon(f.horizon);
+  const dueMs = parseDueMs(f.due);
+  const duePromotesToNow = dueMs !== undefined && dueMs - nowMs <= HORIZON_DRIFT_MS;
+
+  if (duePromotesToNow) {
+    return {
+      storedHorizon,
+      effectiveHorizon: 'now',
+      drifted: storedHorizon !== undefined && storedHorizon !== 'now',
+    };
+  }
+
+  return {
+    storedHorizon,
+    effectiveHorizon: storedHorizon ?? 'now',
+    drifted: false,
+  };
+}
+
+function normalizeHorizon(value: unknown): KanbanHorizon | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return HORIZON_SET.has(trimmed) ? trimmed as KanbanHorizon : undefined;
+}
+
+function parseDueMs(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+function shouldIncludeInKanban(fiber: Fiber): boolean {
+  if (fiber.hasShuttleBlock === true) return true;
+  return (fiber.status === 'open' || fiber.status === 'active') && parseDueMs(fiber.due) !== undefined;
 }
 
 type KanbanFiberEntry = {
@@ -578,6 +643,8 @@ function fiberFromCard(card: KanbanCard): Fiber {
     priority: 2,
     createdAt: card.createdAt,
     outcome: card.outcome,
+    due: card.due,
+    horizon: card.storedHorizon,
     closedAt: card.closedAt,
     tags: card.tags,
     dependsOn: card.dependsOn,
@@ -598,6 +665,13 @@ function fiberFromCard(card: KanbanCard): Fiber {
 export interface KanbanTransitionRequest {
   fiberId: string;
   target: KanbanTarget;
+  card?: KanbanCard;
+}
+
+/** What POST /kanban/horizon expects in the body. */
+export interface KanbanHorizonRequest {
+  fiberId: string;
+  horizon: KanbanHorizon | null;
   card?: KanbanCard;
 }
 
@@ -1025,11 +1099,10 @@ export class HttpApiKanban {
       // in the autocomplete dropdown.
       const tagIndex = collectTagIndex(merged);
 
-      // Shuttle-managed fibers: those with a shuttle: block. Post-cutover,
-      // this is the sole eligibility signal. Run `shuttle migrate` once before
-      // deploying to backfill blocks on legacy constitution-tagged fibers
-      // (see [[ai-futures/portolan/vellum-reader/constitution-vellum-kanban/constitution-shuttle-block-cutover]]).
-      const constitutional = merged.filter(({ fiber }) => fiber.hasShuttleBlock === true);
+      // Kanban-visible fibers: Shuttle-managed cards plus human due-date
+      // cards. The column classifier remains unchanged; horizon rows are a
+      // second axis computed on each card.
+      const kanbanFibers = merged.filter(({ fiber }) => shouldIncludeInKanban(fiber));
 
       // Probe live shuttle workers — drives the running-worker indicator on
       // in-flight cards, and bumps them to the top of the column.
@@ -1045,7 +1118,7 @@ export class HttpApiKanban {
       const buckets: Record<KanbanColumn, KanbanCard[]> = {
         ideas, drafts, inFlight, awaitingReview, tempered, composted,
       };
-      for (const { fiber: f, host, originId, canonicalPath } of constitutional) {
+      for (const { fiber: f, host, originId, canonicalPath } of kanbanFibers) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
         buckets[classifyFiber(f, { runningWorker: !!card.runningWorker })].push(card);
       }
@@ -1498,6 +1571,106 @@ export class HttpApiKanban {
     const refreshed = await getFiber(host, fiberId);
     if (!refreshed) throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
     const refreshedById = new Map(merged.map(({ fiber: f }) => [f.id, f]));
+    refreshedById.set(fiberId, refreshed);
+    let canonicalAfter: string | undefined;
+    try {
+      canonicalAfter = realpathSync(path);
+    } catch {
+      canonicalAfter = undefined;
+    }
+    return this.toCard(refreshed, host, originId, refreshedById, undefined, canonicalAfter);
+  }
+
+  /**
+   * POST /kanban/horizon — set or clear a card's top-level `horizon:`
+   * frontmatter key. Horizon is a Portolan-owned row axis, not a Shuttle
+   * lifecycle field, so local writes edit the fiber file directly and remote
+   * writes route through the existing agent mutation channel.
+   *
+   * Body: { fiberId, horizon: 'now'|'soon'|'later'|'someday'|null, card? }
+   */
+  async handleHorizon(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: KanbanHorizonRequest;
+    try {
+      body = await readJsonBody<KanbanHorizonRequest>(req);
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      this.json(res, 400, { error: `bad request body: ${msg}` });
+      return;
+    }
+    if (!body || typeof body.fiberId !== 'string' || !('horizon' in body)) {
+      this.json(res, 400, { error: 'fiberId and horizon are required' });
+      return;
+    }
+    if (body.horizon !== null && !HORIZON_SET.has(body.horizon)) {
+      this.json(res, 400, { error: `unknown horizon: ${String(body.horizon)}` });
+      return;
+    }
+
+    try {
+      const updated = await this.applyHorizon(body.fiberId, body.horizon, body.card);
+      this.json(res, 200, { ok: true, card: updated });
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err);
+      console.error('[Kanban] horizon edit failed:', msg);
+      this.json(res, 500, { error: msg });
+    }
+  }
+
+  async applyHorizon(
+    fiberId: string,
+    horizon: KanbanHorizon | null,
+    card?: KanbanCard,
+  ): Promise<KanbanCard> {
+    const cardEntry = entryFromLocalCard(card);
+    const canUseCardEntry = cardEntry !== null && cardEntry.fiber.id === fiberId;
+    const pool = canUseCardEntry ? null : await this.collectFibers();
+    const entry = canUseCardEntry
+      ? cardEntry
+      : pool?.merged.find(({ fiber }) => fiber.id === fiberId);
+    if (!entry) throw new Error(`fiber not found: ${fiberId}`);
+    const { fiber, host, originId } = entry;
+    if (!shouldIncludeInKanban(fiber)) {
+      throw new Error(`kanban only mutates visible fibers; ${fiberId} is not on the board`);
+    }
+
+    if (originId !== 'local') {
+      if (!this.remoteTransitionExecutor) {
+        throw new Error(
+          `remote-origin horizon edits require remoteTransitionExecutor wiring ` +
+            `(fiber ${fiberId} is on origin '${originId}')`,
+        );
+      }
+      await this.remoteTransitionExecutor({
+        originId,
+        feltHost: host,
+        fiberId,
+        path: relativeFeltPath(fiber),
+        kind: 'felt-horizon',
+        horizon,
+      });
+      this.clearFiberPoolCache();
+      const refreshedById = new Map<string, Fiber>();
+      if (this.remoteSnapshotsProvider) {
+        for (const snap of this.remoteSnapshotsProvider()) {
+          if (snap.originId !== originId || normalizeRemotePath(snap.feltHost) !== normalizeRemotePath(host)) continue;
+          for (const f of snap.fibers) refreshedById.set(f.id, f);
+        }
+      }
+      const refreshed = refreshedById.get(fiberId);
+      if (!refreshed) throw new Error(`remote fiber disappeared: ${fiberId}`);
+      return this.toCard(refreshed, host, originId, refreshedById);
+    }
+
+    const path = this.fiberPath(host, fiber);
+    if (!existsSync(path)) throw new Error(`fiber file missing: ${path}`);
+    const raw = await readFile(path, 'utf-8');
+    await writeFile(path, rewriteHorizonFrontmatter(raw, horizon), 'utf-8');
+    this.clearFiberPoolCache();
+
+    const refreshed = await getFiber(host, fiberId);
+    if (!refreshed) throw new Error(`failed to refresh fiber through felt show: ${fiberId}`);
+    const refreshedById = new Map(pool?.merged.map(({ fiber: f }) => [f.id, f]) ?? []);
     refreshedById.set(fiberId, refreshed);
     let canonicalAfter: string | undefined;
     try {
@@ -2047,6 +2220,7 @@ export class HttpApiKanban {
     const path = this.fiberPath(host, f);
 
     const runningWorker = resolveRunningWorker(f.id, liveSessions, canonicalPath);
+    const horizon = effectiveHorizon(f);
 
     // Resolve which pinned local city physically owns this fiber so the
     // frontend can pivot vellum to that city and navigate to the project-
@@ -2074,6 +2248,7 @@ export class HttpApiKanban {
       originId,
       status: f.status,
       outcome: f.outcome,
+      due: f.due,
       tags: f.tags,
       createdAt: f.createdAt,
       closedAt: f.closedAt,
@@ -2091,6 +2266,9 @@ export class HttpApiKanban {
       shuttleSchedule: f.shuttleSchedule?.expr,
       shuttleTz: f.shuttleSchedule?.tz,
       shuttleReviewState: f.shuttleReviewState,
+      storedHorizon: horizon.storedHorizon,
+      effectiveHorizon: horizon.effectiveHorizon,
+      drifted: horizon.drifted,
     };
   }
 
@@ -2379,4 +2557,49 @@ function diffTags(current: string[], next: string[]): { add: string[]; remove: s
     add: next.filter((tag) => !currentSet.has(tag)),
     remove: current.filter((tag) => !nextSet.has(tag)),
   };
+}
+
+function rewriteHorizonFrontmatter(raw: string, horizon: KanbanHorizon | null): string {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
+  if (!match) throw new Error('fiber file has no YAML frontmatter');
+
+  const frontmatter = match[1];
+  const parsed = YAML.parse(frontmatter) as unknown;
+  if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+    throw new Error('fiber frontmatter must be a YAML mapping');
+  }
+
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const closingNewline = match[2] ?? '';
+  const body = raw.slice(match[0].length);
+  const lines = frontmatter.length > 0 ? frontmatter.split(/\r?\n/) : [];
+  const range = topLevelKeyRange(lines, 'horizon');
+
+  if (horizon === null) {
+    if (range) lines.splice(range.start, range.end - range.start);
+  } else if (range) {
+    lines.splice(range.start, range.end - range.start, `horizon: ${horizon}`);
+  } else {
+    lines.push(`horizon: ${horizon}`);
+  }
+
+  return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
+}
+
+function topLevelKeyRange(
+  lines: string[],
+  key: string,
+): { start: number; end: number } | null {
+  const keyRe = new RegExp(`^${escapeRegExp(key)}\\s*:`);
+  const topLevelKeyRe = /^[A-Za-z0-9_-]+\s*:/;
+  const start = lines.findIndex((line) => keyRe.test(line));
+  if (start === -1) return null;
+
+  let end = start + 1;
+  while (end < lines.length && !topLevelKeyRe.test(lines[end])) end += 1;
+  return { start, end };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

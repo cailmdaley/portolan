@@ -143,72 +143,115 @@
   border-color: rgba(178, 78, 60, 0.5);
   color: #8B3A28;
 }
-/* Five-column track with a three-column viewport. Drafts/Open/Awaiting
-   are visible at rest; horizontal scroll reveals Tempered and
-   Composted without clone-loop carousel state. Vertical scroll is
-   native/per-column; Shift+vertical wheel pans horizontally. Deliberately
-   no scroll-snap: trackpad deltas are small, and snap makes side-to-side
-   gestures feel stuck. */
+/* Horizon rows: Now expanded by default, future rows as thin foldable
+   headers. The board scrolls vertically; each lifecycle cell handles
+   its own dense card stack. */
 .kbn-body {
   flex: 1;
   display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 12px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   min-height: 0;
 }
-.kbn-body.kbn-can-scroll-right {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
-  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
-}
-.kbn-body.kbn-can-scroll-left {
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px);
-  mask-image: linear-gradient(to right, transparent 0, #000 28px);
-}
-.kbn-body.kbn-can-scroll-left.kbn-can-scroll-right {
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
-}
-.kbn-col {
-  flex: 0 0 max(260px, calc((100% - 20px) / 3));
-  display: flex; flex-direction: column;
+.kbn-horizon-row {
+  /* Expanded rows share remaining vertical space; collapsed rows shrink
+     to header (rule below). With just Now open, Now fills the board. */
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  max-height: 100%;
-  background: #F4F0E8;
   border: 1px solid rgba(46, 42, 38, 0.10);
+  background: rgba(244, 240, 232, 0.62);
   border-radius: 3px;
   overflow: hidden;
-  transition: background 150ms ease, border-color 150ms ease;
+  transition: border-color 140ms ease, background 140ms ease;
 }
-/* When zoomed, the body becomes a single-column view. */
-.kbn-body.kbn-body-zoomed {
-  overflow-x: hidden;
+.kbn-horizon-row-collapsed {
+  flex: 0 0 auto;
 }
-.kbn-body.kbn-body-zoomed .kbn-col:not(.kbn-col-zoomed) {
+.kbn-horizon-row-now {
+  border-color: rgba(154, 123, 53, 0.24);
+  background: rgba(250, 246, 238, 0.78);
+}
+.kbn-horizon-drop {
+  border-color: rgba(154, 123, 53, 0.60);
+  background: rgba(154, 123, 53, 0.10);
+}
+.kbn-horizon-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.10);
+  background: linear-gradient(180deg, rgba(255, 252, 246, 0.32), rgba(237, 232, 224, 0.18));
+  color: #2E2A26;
+  cursor: pointer;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  text-align: left;
+}
+.kbn-horizon-head:hover,
+.kbn-horizon-head:focus-visible {
+  background: rgba(255, 252, 246, 0.46);
+  outline: none;
+}
+.kbn-horizon-head:focus-visible {
+  box-shadow: inset 0 0 0 1px rgba(154, 123, 53, 0.45);
+}
+.kbn-horizon-row-collapsed .kbn-horizon-head {
+  border-bottom: none;
+}
+.kbn-horizon-arrow {
+  width: 12px;
+  font-size: 11px;
+  color: #9A7B35;
+  transition: transform 140ms ease;
+}
+.kbn-horizon-row-collapsed .kbn-horizon-arrow {
+  transform: rotate(-90deg);
+}
+.kbn-horizon-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.kbn-horizon-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(122, 112, 104, 0.35), transparent);
+}
+.kbn-horizon-count {
+  font-size: 11px;
+  color: #7A7068;
+}
+.kbn-horizon-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  min-height: 0;
+}
+.kbn-horizon-row-collapsed .kbn-horizon-body {
   display: none;
 }
-.kbn-body.kbn-body-zoomed .kbn-col-zoomed {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-/* When zoomed, tile cards as a CSS grid filling the available width. */
-.kbn-col-zoomed .kbn-col-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  align-content: start;
-  gap: 12px;
-}
-.kbn-col-head {
-  cursor: zoom-in;
-}
-.kbn-col-zoomed .kbn-col-head {
-  cursor: zoom-out;
-}
 .kbn-col {
-  display: flex; flex-direction: column;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  /* Cap kept as a ceiling for the case where Now is the only expanded row
+     and there's plenty of vertical room; without it a single tall column
+     can stretch unboundedly. The horizon-row's flex:1 still ensures the
+     row fills the board height. */
+  max-height: min(72vh, 760px);
   background: #F4F0E8;
   border: 1px solid rgba(46, 42, 38, 0.10);
   border-radius: 3px;
@@ -244,13 +287,21 @@
 }
 .kbn-col-head {
   display: flex; align-items: baseline; justify-content: space-between;
+  width: 100%;
   padding: 10px 14px 4px;
+  border: none;
+  border-bottom: 1px solid rgba(46, 42, 38, 0.06);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
 }
 .kbn-col-title {
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  margin: 0;
 }
 .kbn-col-awaiting .kbn-col-title { color: #9A7B35; }
 .kbn-col-tempered .kbn-col-title { color: #5A7B7B; }
@@ -330,7 +381,21 @@
   background: #F7F3EA;
 }
 .kbn-card-header {
-  display: flex; align-items: baseline; gap: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.kbn-card-glyph {
+  width: 15px;
+  flex-shrink: 0;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  color: #9A7B35;
+}
+.kbn-card-glyph-human {
+  color: #5A7B7B;
 }
 .kbn-card-name {
   flex: 1;
@@ -470,8 +535,9 @@
 }
 .kbn-card-meta {
   display: flex; align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-top: 2px;
+  flex-wrap: wrap;
 }
 .kbn-card-actions {
   display: flex; gap: 6px; flex-wrap: wrap;
@@ -663,6 +729,42 @@
   flex-shrink: 0;
   margin-left: auto;
 }
+.kbn-card-actor,
+.kbn-card-due,
+.kbn-card-drift {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.kbn-card-actor {
+  color: #4A6868;
+}
+.kbn-card-actor-agent {
+  color: #6B5520;
+}
+.kbn-card-actor-human {
+  color: #4A6868;
+}
+.kbn-card-due {
+  color: #7A7068;
+  background: rgba(46, 42, 38, 0.045);
+  border: 1px solid rgba(46, 42, 38, 0.10);
+  border-radius: 2px;
+  padding: 1px 5px;
+}
+.kbn-card-drift {
+  color: #9A7B35;
+  background: rgba(154, 123, 53, 0.12);
+  border: 1px solid rgba(154, 123, 53, 0.28);
+  border-radius: 50%;
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
 .kbn-card-blocked {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 10.5px;
@@ -784,9 +886,14 @@
 }
 
 @media (max-width: 1100px) {
-  .kbn-col {
-    flex: 0 0 85%;
-    min-width: 0;
+  .kbn-horizon-body {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .kbn-horizon-body {
+    grid-template-columns: 1fr;
   }
 }
 

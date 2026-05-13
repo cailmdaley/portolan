@@ -17,6 +17,8 @@ export interface Fiber {
   body?: string;     // markdown body after frontmatter
   outcome?: string;  // outcome from frontmatter
   closedAt?: string; // ISO date from frontmatter
+  due?: string;       // project-owned frontmatter `due:` for human-facing deadlines
+  horizon?: string;   // project-owned frontmatter `horizon:` for kanban row grouping
   tags?: string[];   // e.g. ["tapestry:cosebis_data_vector"]
   dependsOn?: string[]; // fiber IDs this depends on
   tempered?: boolean;   // human-acceptance signal — agent never sets this itself; Shuttle reads it as the dependency-satisfied edge
@@ -151,6 +153,8 @@ export function mapFeltJsonToFiber(item: unknown): Fiber | null {
   const name = typeof f.name === 'string' && f.name ? f.name : id;
   const outcome = typeof f.outcome === 'string' ? f.outcome : undefined;
   const body = typeof f.body === 'string' ? f.body : undefined;
+  const due = typeof f.due === 'string' && f.due.trim() ? f.due.trim() : undefined;
+  const horizon = typeof f.horizon === 'string' && f.horizon.trim() ? f.horizon.trim() : undefined;
 
   // Prefer canonical *_at fields; fall back to legacy `created`/`closed`
   // for older fibers that haven't been migrated.
@@ -253,6 +257,8 @@ export function mapFeltJsonToFiber(item: unknown): Fiber | null {
     closedAt,
     outcome,
     body,
+    due,
+    horizon,
     tags,
     dependsOn,
     tempered,

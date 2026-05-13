@@ -1,16 +1,14 @@
 /**
  * KanbanModal — global view of Shuttle-managed fibers grouped by lifecycle.
  *
- * Six flat columns: Ideas → Drafts → In flight → Awaiting → Tempered → Composted.
- * Each column scrolls vertically; the body scrolls horizontally when six columns
- * don't all fit. About 3 columns are visible at typical widths.
+ * Four horizon rows: Now → Soon → Later → Someday. Each expanded row contains
+ * the server-owned lifecycle columns Drafts → In flight → Awaiting → Tempered.
+ * Now starts expanded; the other horizons start collapsed and persist that
+ * fold state in localStorage.
  *
- * Ideas (off-screen left at rest) and Tempered/Composted (off-screen right at
- * rest) are the speculative + verdict edges; the central three columns
- * (Drafts → In flight → Awaiting) carry the active constitution lifecycle.
- *
- * Interaction: drag a card to any column (HTML5 DnD). Both surfaces POST to
- * /kanban/transition with {fiberId, target}. Click a card body to open in vellum.
+ * Interaction: drag a card to a horizon row body to POST /kanban/horizon.
+ * Drop on a lifecycle cell header to preserve the existing column transition
+ * path via POST /kanban/transition. Click a card body to open its detail modal.
  */
 
 import './KanbanModal.css'
@@ -19,6 +17,7 @@ import { shouldRunVisiblePoll } from '../runtime/PageAttention'
 
 /** Column identifier — also doubles as the API target. */
 type ColumnKind = 'ideas' | 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' | 'composted'
+type HorizonKind = 'now' | 'soon' | 'later' | 'someday'
 
 const COLUMN_TITLES: Record<ColumnKind, string> = {
   ideas: 'Ideas',
@@ -28,6 +27,17 @@ const COLUMN_TITLES: Record<ColumnKind, string> = {
   tempered: 'Tempered',
   composted: 'Composted',
 }
+
+const HORIZON_TITLES: Record<HorizonKind, string> = {
+  now: 'Now',
+  soon: 'Soon',
+  later: 'Later',
+  someday: 'Someday',
+}
+
+const HORIZON_ORDER: HorizonKind[] = ['now', 'soon', 'later', 'someday']
+const HORIZON_COLUMN_ORDER: ColumnKind[] = ['drafts', 'inFlight', 'awaitingReview', 'tempered']
+const HORIZON_FOLD_STORAGE_KEY = 'portolan.kanban.horizonFoldState.v1'
 
 // (Action-button helpers removed — drag is the only transition surface for
 // now. The DnD drop handler reads `target` from the column the card lands
@@ -47,6 +57,7 @@ interface KanbanCard {
   originId: string
   status: string
   outcome?: string
+  due?: string
   tags?: string[]
   createdAt: string
   closedAt?: string
@@ -115,6 +126,12 @@ interface KanbanCard {
    * `awaiting` state until the pending review is resolved.
    */
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted'
+  /** Raw valid top-level `horizon:` value from fiber frontmatter, if present. */
+  storedHorizon?: HorizonKind
+  /** Row where this card renders after due-date promotion/defaulting. */
+  effectiveHorizon: HorizonKind
+  /** True when `due:` promotes a non-now stored horizon into Now. */
+  drifted: boolean
 }
 
 /**
@@ -193,8 +210,12 @@ interface KanbanCityScope {
 
 interface KanbanScrollSnapshot {
   bodyLeft: number
+  bodyTop: number
   columns: Partial<Record<ColumnKind, number>>
 }
+
+type HorizonCellMap = Record<ColumnKind, KanbanCard[]>
+type HorizonRows = Record<HorizonKind, HorizonCellMap>
 
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard) => void
@@ -210,13 +231,6 @@ export class KanbanModal {
   private liveEl: HTMLDivElement | null = null
   private bannerEl: HTMLDivElement | null = null
   private inflightFetchToken = 0
-  /**
-   * Whether the initial Ideas-off-screen-left scroll has been applied yet.
-   * Distinct from `hasClaimedInitialFocus` (focus tracker) and from
-   * `lastResponse === null` (which gets set in fetchAndRender *before* render
-   * runs, so it can't gate first-render behavior).
-   */
-  private hasInitialScrollApplied = false
   private dragSourceId: string | null = null
   private dragAutoScrollFrame: number | null = null
   private dragAutoScrollVelocity = 0
@@ -231,6 +245,7 @@ export class KanbanModal {
   private lastFetchStartedAt: number | null = null
   /** Intermediate fiber-detail modal — one instance, re-used across opens. */
   private detailModal: FiberDetailModal | null = null
+  private horizonFoldState: Record<HorizonKind, boolean> = loadHorizonFoldState()
 
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
@@ -412,7 +427,6 @@ export class KanbanModal {
     this.bannerEl = null
     this.dragSourceId = null
     this.hasClaimedInitialFocus = false
-    this.hasInitialScrollApplied = false
     this.stopDragAutoScroll()
     // Reset scope on every teardown so the next mount lands at default
     // global scope; a follow-on `mount(...{cityScope})` with a scope
@@ -439,9 +453,25 @@ export class KanbanModal {
     // the local rule misses (or drifts from the server) silently no-ops the
     // drag with a snap-back.
     const fromKind = findCardColumn(this.lastResponse, card.id)
-    if (fromKind === target) return
 
     try {
+      if (target === 'inFlight' && card.status === 'closed' && card.shuttleKind !== undefined) {
+        const commentRes = await fetch(this.reviewCommentUrl(this.cityScope?.cityId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fiberId: card.id,
+            directive: '',
+            resumeMode: 'fresh',
+            interactive: false,
+          }),
+        })
+        if (!commentRes.ok) {
+          const errBody = await commentRes.json().catch(() => ({ error: `${commentRes.status}` })) as { error?: string }
+          throw new Error(errBody.error || `review-comment ${commentRes.status}`)
+        }
+      }
+      if (fromKind === target) return
       const res = await fetch(this.transitionUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -459,6 +489,42 @@ export class KanbanModal {
     }
     // Always refetch — server is the source of truth.
     await this.fetchAndRender()
+  }
+
+  /**
+   * POST a stored-horizon edit. The server immediately re-applies due-date
+   * drift when it refreshes, so a deadline-promoted card dragged out of Now
+   * visibly returns there with its drift marker intact.
+   */
+  private async setHorizon(card: KanbanCard, horizon: HorizonKind): Promise<void> {
+    if (card.effectiveHorizon === horizon && card.storedHorizon === horizon) return
+
+    try {
+      const res = await fetch(this.horizonUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiberId: card.id, horizon, card }),
+      })
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
+        throw new Error(errBody.error || `Horizon edit failed: ${res.status}`)
+      }
+      this.announce(`Moved “${card.name}” to ${HORIZON_TITLES[horizon]}.`)
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? String(err)
+      this.showBanner(`Couldn't move “${card.name}” to ${HORIZON_TITLES[horizon]}: ${msg}`, 'error')
+      this.announce(`Horizon move failed: ${msg}`)
+    }
+    await this.fetchAndRender()
+  }
+
+  private toggleHorizon(horizon: HorizonKind): void {
+    this.horizonFoldState = {
+      ...this.horizonFoldState,
+      [horizon]: !this.horizonFoldState[horizon],
+    }
+    saveHorizonFoldState(this.horizonFoldState)
+    if (this.lastResponse) this.render(this.lastResponse)
   }
 
   private announce(msg: string): void {
@@ -524,6 +590,7 @@ export class KanbanModal {
       c: data.columns,
       t: data.totals,
       tt: data.temperedTotal,
+      h: this.horizonFoldState,
     })
   }
 
@@ -558,23 +625,12 @@ export class KanbanModal {
     this.body.innerHTML = ''
     this.body.classList.remove('kbn-body-zoomed')
 
-    const colOrder: ColumnKind[] = ['ideas', 'drafts', 'inFlight', 'awaitingReview', 'tempered', 'composted']
-    for (const kind of colOrder) {
-      this.body.append(
-        this.renderColumn(kind, columns[kind], staleness, kind === 'tempered' ? temperedTotal : undefined),
-      )
+    const rows = groupCardsByHorizon(columns)
+    for (const horizon of HORIZON_ORDER) {
+      this.body.append(this.renderHorizonRow(horizon, rows[horizon], staleness, temperedTotal))
     }
 
     this.restoreScrollSnapshot(scrollSnapshot)
-    // First render only: scroll Ideas off-screen left so In Flight sits in
-    // the center of the viewport (with Drafts left-of-center and Awaiting
-    // review right-of-center). Mirrors how Tempered/Composted live off-
-    // screen right — the speculative + verdict edges flank the active
-    // lifecycle. Gated on `hasInitialScrollApplied` rather than
-    // `lastResponse === null` because lastResponse is set in
-    // fetchAndRender BEFORE render runs, so it can't be used to detect
-    // the first call.
-    if (!this.hasInitialScrollApplied) this.scrollIdeasOffscreenLeft()
     this.claimInitialFocus()
     this.updateBodyScrollAffordance()
     window.requestAnimationFrame(() => this.updateBodyScrollAffordance())
@@ -683,45 +739,6 @@ export class KanbanModal {
     }
   }
 
-  /**
-   * On first render, scroll the body so Ideas (the leftmost column) sits
-   * just off the left edge — Drafts becomes the first visible column.
-   * Subsequent renders preserve user scroll via captureScrollSnapshot/
-   * restoreScrollSnapshot, so this only fires once per modal mount.
-   */
-  private scrollIdeasOffscreenLeft(): void {
-    if (!this.body) return
-    let applied = false
-    const apply = (): void => {
-      if (!this.body) return
-      const ideasCol = this.body.querySelector<HTMLElement>('.kbn-col[data-column="ideas"]')
-      if (!ideasCol) return
-      // Position so Drafts is flush with the left padding (and In Flight
-      // sits centered, given equal column widths). Read the computed
-      // widths after layout settles.
-      const bodyStyle = window.getComputedStyle(this.body)
-      const gap = parseFloat(bodyStyle.gap || '10') || 10
-      this.body.scrollLeft = ideasCol.offsetWidth + gap
-      applied = true
-      this.hasInitialScrollApplied = true
-    }
-    apply()
-    // Defer through multiple frames AND a setTimeout so the scroll lands
-    // after `claimInitialFocus`'s rAF — focusing a column-head inside Ideas
-    // resets scrollLeft to 0 even with `preventScroll: true` (Chromium quirk
-    // observed against off-screen columns). Running last wins.
-    window.requestAnimationFrame(() => {
-      apply()
-      window.requestAnimationFrame(apply)
-      window.setTimeout(apply, 0)
-    })
-    // If the Ideas column wasn't in the DOM yet (race during very-first
-    // render with empty data), `apply` no-ops; leave the flag false so the
-    // next render call retries. The deferred frames above will succeed
-    // in steady state.
-    if (!applied) this.hasInitialScrollApplied = false
-  }
-
   private claimInitialFocus(): void {
     if (this.hasClaimedInitialFocus || !this.body) return
 
@@ -744,7 +761,7 @@ export class KanbanModal {
       if (kind && list) columns[kind] = list.scrollTop
     }
 
-    return { bodyLeft: this.body.scrollLeft, columns }
+    return { bodyLeft: this.body.scrollLeft, bodyTop: this.body.scrollTop, columns }
   }
 
   private restoreScrollSnapshot(snapshot: KanbanScrollSnapshot | null): void {
@@ -753,6 +770,7 @@ export class KanbanModal {
     const restore = (): void => {
       if (!this.body) return
       this.body.scrollLeft = snapshot.bodyLeft
+      this.body.scrollTop = snapshot.bodyTop
       for (const [kind, scrollTop] of Object.entries(snapshot.columns) as [ColumnKind, number][]) {
         const list = this.body.querySelector<HTMLElement>(`.kbn-col[data-column="${kind}"] .kbn-col-list`)
         if (list) list.scrollTop = scrollTop
@@ -764,14 +782,85 @@ export class KanbanModal {
     window.requestAnimationFrame(restore)
   }
 
+  private renderHorizonRow(
+    horizon: HorizonKind,
+    cells: HorizonCellMap,
+    staleness: Record<string, KanbanOriginStaleness>,
+    temperedTotal: number,
+  ): HTMLElement {
+    const title = HORIZON_TITLES[horizon]
+    const row = document.createElement('section')
+    row.className = `kbn-horizon-row kbn-horizon-row-${horizon}`
+    row.setAttribute('role', 'region')
+    row.setAttribute('aria-label', `${title} horizon`)
+    row.dataset.horizon = horizon
+
+    const collapsed = this.horizonFoldState[horizon]
+    row.classList.toggle('kbn-horizon-row-collapsed', collapsed)
+
+    const head = document.createElement('button')
+    head.type = 'button'
+    head.className = 'kbn-horizon-head'
+    head.setAttribute('aria-expanded', String(!collapsed))
+
+    const arrow = document.createElement('span')
+    arrow.className = 'kbn-horizon-arrow'
+    arrow.textContent = '▾'
+    const name = document.createElement('span')
+    name.className = 'kbn-horizon-title'
+    name.textContent = title
+    const rule = document.createElement('span')
+    rule.className = 'kbn-horizon-rule'
+    const count = document.createElement('span')
+    count.className = 'kbn-horizon-count'
+    count.textContent = String(countHorizonCards(cells))
+
+    head.append(arrow, name, rule, count)
+    head.addEventListener('click', () => this.toggleHorizon(horizon))
+
+    const body = document.createElement('div')
+    body.className = 'kbn-horizon-body'
+    body.dataset.horizon = horizon
+
+    body.addEventListener('dragover', (e) => {
+      if (!this.dragSourceId) return
+      if ((e.target as HTMLElement).closest('.kbn-col-head')) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      row.classList.add('kbn-horizon-drop')
+    })
+    body.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && body.contains(e.relatedTarget as Node)) return
+      row.classList.remove('kbn-horizon-drop')
+    })
+    body.addEventListener('drop', (e) => {
+      if ((e.target as HTMLElement).closest('.kbn-col-head')) return
+      const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
+      row.classList.remove('kbn-horizon-drop')
+      this.dragSourceId = null
+      this.stopDragAutoScroll()
+      if (!fiberId) return
+      e.preventDefault()
+      const card = findCardById(this.lastResponse, fiberId)
+      if (!card) return
+      void this.setHorizon(card, horizon)
+    })
+
+    for (const kind of HORIZON_COLUMN_ORDER) {
+      body.append(
+        this.renderColumn(kind, cells[kind], staleness, kind === 'tempered' ? temperedTotal : undefined),
+      )
+    }
+
+    row.append(head, body)
+    return row
+  }
+
   /**
-   * Render one column. Supports drag-and-drop as a drop target with visual
-   * feedback. The list element carries role="list" and each card carries
-   * role="listitem" so the a11y tree shows a structured "X cards in Y column"
-   * shape that agent-browser's snapshot can navigate cleanly.
-   *
-   * `staleness` is threaded through from the response so each card can look
-   * up its origin's freshness for the Stage 3b drag-disable + waiting badge.
+   * Render one lifecycle cell within a horizon row. The cell header is the
+   * lifecycle-transition drop target; the row body around it is the horizon
+   * drop target. Keeping those targets distinct preserves the server-owned
+   * column classifier while adding the row axis without a second classifier.
    */
   private renderColumn(
     kind: ColumnKind,
@@ -781,16 +870,15 @@ export class KanbanModal {
   ): HTMLElement {
     const title = COLUMN_TITLES[kind]
     const col = document.createElement('section')
-    col.className = `kbn-col kbn-col-${kind}`
+    col.className = `kbn-col kbn-horizon-cell kbn-col-${kind}`
     col.setAttribute('role', 'region')
     col.setAttribute('aria-label', `${title} (${cards.length})`)
     col.dataset.column = kind
 
-    const head = document.createElement('div')
+    const head = document.createElement('button')
+    head.type = 'button'
     head.className = 'kbn-col-head'
-    head.setAttribute('role', 'button')
-    head.setAttribute('tabindex', '0')
-    head.setAttribute('aria-label', `Zoom ${title} column`)
+    head.setAttribute('aria-label', `Drop here to move to ${title}`)
     const headTitle = document.createElement('h2')
     headTitle.className = 'kbn-col-title'
     headTitle.textContent = title
@@ -801,45 +889,36 @@ export class KanbanModal {
       : String(cards.length)
     head.append(headTitle, headCount)
 
-    const toggleZoom = (): void => this.toggleColumnZoom(col)
-    head.addEventListener('click', toggleZoom)
-    head.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        toggleZoom()
-      }
-    })
-
-    const list = document.createElement('div')
-    list.className = 'kbn-col-list'
-    list.setAttribute('role', 'list')
-
-    // Drop zone — accept drag events on the column body and the list.
-    const onDragOver = (e: DragEvent): void => {
+    const onHeaderDragOver = (e: DragEvent): void => {
       if (!this.dragSourceId) return
       e.preventDefault()
+      e.stopPropagation()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
       col.classList.add('kbn-col-drop')
     }
-    const onDragLeave = (e: DragEvent): void => {
-      // Only remove if we're really leaving the column (not just moving between children).
-      if (e.relatedTarget && col.contains(e.relatedTarget as Node)) return
+    const onHeaderDragLeave = (e: DragEvent): void => {
+      if (e.relatedTarget && head.contains(e.relatedTarget as Node)) return
       col.classList.remove('kbn-col-drop')
     }
-    const onDrop = (e: DragEvent): void => {
+    const onHeaderDrop = (e: DragEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
       const fiberId = e.dataTransfer?.getData('text/x-fiber-id') || this.dragSourceId
       col.classList.remove('kbn-col-drop')
       this.dragSourceId = null
       this.stopDragAutoScroll()
       if (!fiberId) return
-      e.preventDefault()
       const card = findCardById(this.lastResponse, fiberId)
       if (!card) return
       void this.transition(card, kind)
     }
-    col.addEventListener('dragover', onDragOver)
-    col.addEventListener('dragleave', onDragLeave)
-    col.addEventListener('drop', onDrop)
+    head.addEventListener('dragover', onHeaderDragOver)
+    head.addEventListener('dragleave', onHeaderDragLeave)
+    head.addEventListener('drop', onHeaderDrop)
+
+    const list = document.createElement('div')
+    list.className = 'kbn-col-list'
+    list.setAttribute('role', 'list')
 
     if (cards.length === 0) {
       const empty = document.createElement('div')
@@ -913,13 +992,15 @@ export class KanbanModal {
       })
     }
 
-    // Header row: title (opens detail modal) + status pill.
-    // Drag handle retired — the whole card is the drag surface. Title is
-    // the only explicit click target; clicks elsewhere on the card body
-    // also open the detail modal (see card-level click handler below).
-    // Vellum is reachable via the modal's "→ vellum" affordance.
+    // Header row: glyph + title. The lifecycle column already provides
+    // status context, so the card face uses actor/deadline instead of tags
+    // or status chips.
     const headerRow = document.createElement('div')
     headerRow.className = 'kbn-card-header'
+
+    const glyph = document.createElement('span')
+    glyph.className = `kbn-card-glyph ${isAgentCard(card) ? 'kbn-card-glyph-agent' : 'kbn-card-glyph-human'}`
+    glyph.textContent = isAgentCard(card) ? '◐' : '✓'
 
     const name = document.createElement('button')
     name.type = 'button'
@@ -932,11 +1013,7 @@ export class KanbanModal {
       this.detailModal?.open(card, this.cityScope?.cityId, kind)
     })
 
-    const pill = document.createElement('span')
-    pill.className = `kbn-pill kbn-pill-${this.pillKind(card)}`
-    pill.textContent = this.pillLabel(card)
-
-    headerRow.append(name, pill)
+    headerRow.append(glyph, name)
     el.append(headerRow)
 
     // Fiber id (small, breadcrumb-ish). Plain text — no click target so
@@ -954,51 +1031,32 @@ export class KanbanModal {
       el.append(outcome)
     }
 
-    // Tags + date row, with Feature 4 inline tag editor.
+    // Actor + due row. Tag chips intentionally do not appear on the card
+    // face; the detail modal remains the tag editing surface.
     const meta = document.createElement('div')
     meta.className = 'kbn-card-meta'
 
-    const tagWrap = document.createElement('div')
-    tagWrap.className = 'kbn-card-tags'
-    const visibleTags = (card.tags ?? []).filter(t => t !== 'constitution')
-    const moreCount = Math.max(0, visibleTags.length - 4)
-    const shownTags = visibleTags.slice(0, 4)
-    for (const t of shownTags) {
-      const chip = document.createElement('span')
-      chip.className = 'kbn-tag'
-      chip.textContent = t
-      tagWrap.append(chip)
-    }
-    if (moreCount > 0) {
-      const more = document.createElement('span')
-      more.className = 'kbn-tag'
-      more.textContent = `+${moreCount}`
-      tagWrap.append(more)
+    const actor = document.createElement('span')
+    actor.className = `kbn-card-actor ${isAgentCard(card) ? 'kbn-card-actor-agent' : 'kbn-card-actor-human'}`
+    actor.textContent = isAgentCard(card) ? (card.shuttleAgent ?? 'agent') : 'me'
+    meta.append(actor)
+
+    if (card.due) {
+      const due = document.createElement('span')
+      due.className = 'kbn-card-due'
+      due.textContent = `due ${formatDue(card.due)}`
+      due.title = card.due
+      meta.append(due)
     }
 
-    // Feature 4: tag edit button — opens an inline tag editor on the card.
-    // Shown on all cards that aren't stale-origin (mutation has nowhere to
-    // land when the agent is disconnected).
-    if (!isStale) {
-      const editBtn = document.createElement('button')
-      editBtn.type = 'button'
-      editBtn.className = 'kbn-tag-edit-btn'
-      editBtn.setAttribute('aria-label', 'Edit tags')
-      editBtn.title = 'Edit tags'
-      editBtn.textContent = '✎'
-      editBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        this.openTagEditor(el, card, tagWrap, editBtn)
-      })
-      tagWrap.append(editBtn)
+    if (card.drifted) {
+      const drift = document.createElement('span')
+      drift.className = 'kbn-card-drift'
+      drift.textContent = '↑'
+      drift.title = `Promoted from ${card.storedHorizon ?? 'unset'} by due date`
+      meta.append(drift)
     }
 
-    const date = document.createElement('div')
-    date.className = 'kbn-card-date'
-    const stamp = card.closedAt || card.createdAt
-    date.textContent = stamp ? formatRelative(stamp) : ''
-
-    meta.append(tagWrap, date)
     if (kind === 'awaitingReview' && !isStale) {
       // Inline temper/compost buttons sit left of the timestamp.
       const reviewMetaActions = document.createElement('div')
@@ -1025,8 +1083,7 @@ export class KanbanModal {
       })
 
       reviewMetaActions.append(temperMetaBtn, compostMetaBtn)
-      // Insert before date so order is: tags … [Temper][Compost] [date]
-      meta.insertBefore(reviewMetaActions, date)
+      meta.append(reviewMetaActions)
     }
 
     // Running-worker pill: single-line, right-justified before the date,
@@ -1047,8 +1104,7 @@ export class KanbanModal {
         e.stopPropagation()
         this.onOpenWorker?.(tmuxName)
       })
-      // Insert before date so order is: tags … ▸ aloft … [date]
-      meta.insertBefore(w, date)
+      meta.append(w)
     }
     el.append(meta)
 
@@ -1117,6 +1173,13 @@ export class KanbanModal {
     return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
   }
 
+  /** POST endpoint for horizon edits, with `?cityId=` when scoped. */
+  private horizonUrl(): string {
+    const base = `${this.apiBase}/kanban/horizon`
+    if (!this.cityScope) return base
+    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
+  }
+
   /** POST endpoint for review comments, with `?cityId=` when scoped. */
   private reviewCommentUrl(cityId: string | undefined): string {
     return cityId
@@ -1147,199 +1210,6 @@ export class KanbanModal {
     }
   }
 
-  /** POST endpoint for tag edits, with `?cityId=` when scoped. */
-  private kanbanTagsUrl(): string {
-    const base = `${this.apiBase}/kanban/tags`
-    if (!this.cityScope) return base
-    return `${base}?cityId=${encodeURIComponent(this.cityScope.cityId)}`
-  }
-
-  /**
-   * Open an inline tag editor on a kanban card, replacing the tag display
-   * with removable chips + add input + save/cancel buttons.
-   *
-   * The editor manages its own DOM inside the card: it caches the original
-   * tag set, renders editable chips (× to remove) and an add-input, and on
-   * save POSTs the full set to /kanban/tags. On error it shows the banner
-   * and restores the original chips; on success `fetchAndRender` refreshes
-   * the entire board.
-   */
-  private openTagEditor(
-    cardEl: HTMLElement,
-    card: KanbanCard,
-    tagWrap: HTMLElement,
-    editBtn: HTMLButtonElement,
-  ): void {
-    const originalTags = (card.tags ?? []).filter(t => t !== 'constitution')
-
-    // Build the editing container.
-    const editor = document.createElement('div')
-    editor.className = 'kbn-tag-editor'
-
-    // Chips row: each tag as a removable chip + the text input replacing
-    // the add-button concept (the input doubles as the "add new" affordance).
-    const chipsRow = document.createElement('div')
-    chipsRow.className = 'kbn-tag-editor-chips'
-
-    const currentTags = [...originalTags]
-    const renderChips = (): void => {
-      chipsRow.innerHTML = ''
-      for (let i = 0; i < currentTags.length; i++) {
-        const t = currentTags[i]
-        const chip = document.createElement('span')
-        chip.className = 'kbn-tag kbn-tag-editable'
-
-        const label = document.createElement('span')
-        label.textContent = t
-
-        const remBtn = document.createElement('button')
-        remBtn.type = 'button'
-        remBtn.className = 'kbn-tag-remove'
-        remBtn.setAttribute('aria-label', `Remove tag ${t}`)
-        remBtn.textContent = '×'
-        remBtn.addEventListener('click', (e) => {
-          e.stopPropagation()
-          currentTags.splice(i, 1)
-          renderChips()
-          addInput.focus()
-        })
-
-        chip.append(label, remBtn)
-        chipsRow.append(chip)
-      }
-
-      // Re-append the add-input after the chips row rebuild.
-      chipsRow.append(addInput)
-    }
-
-    // Text input for adding a new tag. Enter commits the tag + stays in edit
-    // mode so the user can add multiple tags without re-clicking ✎.
-    const addInput = document.createElement('input')
-    addInput.type = 'text'
-    addInput.className = 'kbn-tag-add-input'
-    addInput.placeholder = 'new tag…'
-    addInput.setAttribute('aria-label', 'Add a new tag')
-    addInput.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return
-      e.preventDefault()
-      const val = addInput.value.trim()
-      if (val && !currentTags.includes(val)) {
-        currentTags.push(val)
-        renderChips()
-      }
-      addInput.value = ''
-    })
-    // Stop propagation on mousedown so clicks on the input don't trigger
-    // the card-level click handler (which opens the fiber in vellum).
-    addInput.addEventListener('mousedown', (e) => e.stopPropagation())
-
-    // Action row: Save + Cancel buttons.
-    const actionsRow = document.createElement('div')
-    actionsRow.className = 'kbn-tag-editor-actions'
-
-    const saveBtn = document.createElement('button')
-    saveBtn.type = 'button'
-    saveBtn.className = 'kbn-action kbn-action-inFlight'
-    saveBtn.textContent = 'Save'
-    saveBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      // Commit any pending input value first.
-      const pending = addInput.value.trim()
-      if (pending && !currentTags.includes(pending)) {
-        currentTags.push(pending)
-      }
-      addInput.value = ''
-      saveBtn.disabled = true
-      saveBtn.textContent = 'Saving…'
-      void this.saveTags(card, currentTags, cardEl, editor, tagWrap, editBtn)
-    })
-
-    const cancelBtn = document.createElement('button')
-    cancelBtn.type = 'button'
-    cancelBtn.className = 'kbn-action kbn-action-drafts'
-    cancelBtn.textContent = 'Cancel'
-    cancelBtn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      this.restoreTagDisplay(originalTags, tagWrap, editBtn)
-    })
-
-    actionsRow.append(cancelBtn, saveBtn)
-
-    renderChips()
-    editor.append(chipsRow, actionsRow)
-
-    // Replace the tagWrap content with the editor.
-    tagWrap.innerHTML = ''
-    tagWrap.append(editor)
-
-    // Focus the input after mount.
-    window.requestAnimationFrame(() => addInput.focus())
-  }
-
-  /**
-   * POST the tag set to /kanban/tags and handle the response. On success,
-   * refetch the board (the card will re-render with the new tags). On
-   * failure, restore the original display and show the error banner.
-   */
-  private async saveTags(
-    card: KanbanCard,
-    tags: string[],
-    _cardEl: HTMLElement,
-    _editor: HTMLElement,
-    tagWrap: HTMLElement,
-    editBtn: HTMLButtonElement,
-  ): Promise<void> {
-    const originalTags = (card.tags ?? []).filter(t => t !== 'constitution')
-    try {
-      const res = await fetch(this.kanbanTagsUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fiberId: card.id, tags }),
-      })
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string }
-        throw new Error(errBody.error || `Tags save failed: ${res.status}`)
-      }
-      this.announce(`Tags saved for “${card.name}”.`)
-      // Refetch — the server response includes the refreshed card, but
-      // a full refetch is simplest and keeps the board consistent.
-      void this.fetchAndRender()
-    } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? String(err)
-      this.showBanner(`Couldn't save tags for “${card.name}”: ${msg}`, 'error')
-      this.announce(`Tags save failed: ${msg}`)
-      this.restoreTagDisplay(originalTags, tagWrap, editBtn)
-    }
-  }
-
-  /**
-   * Restore the tag display after a cancel or save failure. Removes the
-   * editor DOM and re-inserts the original tag chips + edit button.
-   */
-  private restoreTagDisplay(
-    originalTags: string[],
-    tagWrap: HTMLElement,
-    editBtn: HTMLButtonElement,
-  ): void {
-    tagWrap.innerHTML = ''
-    const moreCount = Math.max(0, originalTags.length - 4)
-    const shownTags = originalTags.slice(0, 4)
-    for (const t of shownTags) {
-      const chip = document.createElement('span')
-      chip.className = 'kbn-tag'
-      chip.textContent = t
-      tagWrap.append(chip)
-    }
-    if (moreCount > 0) {
-      const more = document.createElement('span')
-      more.className = 'kbn-tag'
-      more.textContent = `+${moreCount}`
-      tagWrap.append(more)
-    }
-    tagWrap.append(editBtn)
-  }
-
-
   /** Update DOM that depends on `cityScope` after a scope swap. */
   private updateScopeChrome(): void {
     if (this.subtitleEl) this.subtitleEl.textContent = this.subtitleText()
@@ -1349,26 +1219,9 @@ export class KanbanModal {
   }
 
   /**
-   * Toggle full-body zoom on a single column. The modal body keeps the
-   * surrounding grid; CSS hides the non-zoomed columns and lets the zoomed
-   * one fill the row. A second click on the same header un-zooms.
-   */
-  private toggleColumnZoom(col: HTMLElement): void {
-    if (!this.body) return
-    const wasZoomed = col.classList.contains('kbn-col-zoomed')
-    // Clear any prior zoom (only one column at a time).
-    for (const c of this.body.querySelectorAll<HTMLElement>('.kbn-col-zoomed')) {
-      c.classList.remove('kbn-col-zoomed')
-    }
-    if (!wasZoomed) col.classList.add('kbn-col-zoomed')
-    this.body.classList.toggle('kbn-body-zoomed', !wasZoomed)
-    this.updateBodyScrollAffordance()
-  }
-
-  /**
-   * Shift+vertical wheel pans the five-column board horizontally. Ordinary
-   * vertical wheel events stay native so column and page scrolling do not fight
-   * trackpads.
+   * Shift+vertical wheel pans horizontally only if a scoped viewport ever
+   * overflows sideways. Ordinary vertical wheel events stay native so row and
+   * cell scrolling do not fight trackpads.
    */
   private handleBodyWheel(e: WheelEvent): void {
     if (!this.body || this.body.classList.contains('kbn-body-zoomed')) return
@@ -1443,15 +1296,15 @@ export class KanbanModal {
 
   private handleBodyDragOver(e: DragEvent): void {
     if (!this.body || !this.dragSourceId || this.body.classList.contains('kbn-body-zoomed')) return
-    if (this.body.scrollWidth <= this.body.clientWidth) return
+    if (this.body.scrollHeight <= this.body.clientHeight) return
 
     const rect = this.body.getBoundingClientRect()
-    const edge = 128
-    const maxStep = 42
-    const leftPressure = Math.max(0, edge - (e.clientX - rect.left))
-    const rightPressure = Math.max(0, edge - (rect.right - e.clientX))
-    const direction = rightPressure > 0 ? 1 : leftPressure > 0 ? -1 : 0
-    const pressure = Math.max(leftPressure, rightPressure) / edge
+    const edge = 96
+    const maxStep = 34
+    const topPressure = Math.max(0, edge - (e.clientY - rect.top))
+    const bottomPressure = Math.max(0, edge - (rect.bottom - e.clientY))
+    const direction = bottomPressure > 0 ? 1 : topPressure > 0 ? -1 : 0
+    const pressure = Math.max(topPressure, bottomPressure) / edge
 
     this.dragAutoScrollVelocity = direction === 0
       ? 0
@@ -1480,7 +1333,7 @@ export class KanbanModal {
         return
       }
 
-      this.body.scrollLeft += this.dragAutoScrollVelocity
+      this.body.scrollTop += this.dragAutoScrollVelocity
       this.updateBodyScrollAffordance()
       this.dragAutoScrollFrame = window.requestAnimationFrame(tick)
     }
@@ -1505,20 +1358,6 @@ export class KanbanModal {
     const maxScrollLeft = this.body.scrollWidth - this.body.clientWidth
     this.body.classList.toggle('kbn-can-scroll-left', this.body.scrollLeft > 1)
     this.body.classList.toggle('kbn-can-scroll-right', this.body.scrollLeft < maxScrollLeft - 1)
-  }
-
-  private pillKind(card: KanbanCard): 'open' | 'active' | 'closed' | 'tempered' | 'composted' {
-    if (card.tempered === true) return 'tempered'
-    if (card.tempered === false) return 'composted'
-    if (card.status === 'closed') return 'closed'
-    if (card.status === 'active') return 'active'
-    return 'open'
-  }
-
-  private pillLabel(card: KanbanCard): string {
-    if (card.tempered === true) return 'tempered'
-    if (card.tempered === false) return 'composted'
-    return card.status || 'open'
   }
 
 }
@@ -1760,6 +1599,12 @@ export class FiberDetailModal {
 
     const resumeBtn = this.buildActionBtn('Resume ▸', 'primary')
     resumeBtn.title = 'Try to resume the previous worker session; outcome preserved'
+    const canResumePrevious = typeof card.sessionId === 'string' && card.sessionId.trim() !== ''
+    if (!canResumePrevious) {
+      resumeBtn.disabled = true
+      resumeBtn.title = 'No previous worker session is recorded; start a new session instead'
+      resumeBtn.setAttribute('aria-disabled', 'true')
+    }
 
     const temperBtn = this.buildActionBtn('Temper', 'tempered')
     temperBtn.title = 'Close as tempered (human-accepted)'
@@ -1790,6 +1635,7 @@ export class FiberDetailModal {
     })
     resumeBtn.addEventListener('click', (e) => {
       e.stopPropagation()
+      if (!canResumePrevious) return
       void this.runRequeue(
         card,
         messageTa.value.trim(),
@@ -2984,6 +2830,85 @@ export class FiberDetailModal {
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
+
+function defaultHorizonFoldState(): Record<HorizonKind, boolean> {
+  return { now: false, soon: true, later: true, someday: true }
+}
+
+function loadHorizonFoldState(): Record<HorizonKind, boolean> {
+  const fallback = defaultHorizonFoldState()
+  try {
+    const raw = window.localStorage.getItem(HORIZON_FOLD_STORAGE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as Partial<Record<HorizonKind, unknown>>
+    return {
+      now: typeof parsed.now === 'boolean' ? parsed.now : fallback.now,
+      soon: typeof parsed.soon === 'boolean' ? parsed.soon : fallback.soon,
+      later: typeof parsed.later === 'boolean' ? parsed.later : fallback.later,
+      someday: typeof parsed.someday === 'boolean' ? parsed.someday : fallback.someday,
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function saveHorizonFoldState(state: Record<HorizonKind, boolean>): void {
+  try {
+    window.localStorage.setItem(HORIZON_FOLD_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // localStorage can be unavailable in privacy modes; folding still works
+    // for the current render.
+  }
+}
+
+function emptyHorizonCellMap(): HorizonCellMap {
+  return {
+    ideas: [],
+    drafts: [],
+    inFlight: [],
+    awaitingReview: [],
+    tempered: [],
+    composted: [],
+  }
+}
+
+function groupCardsByHorizon(columns: KanbanResponse['columns']): HorizonRows {
+  const rows = {
+    now: emptyHorizonCellMap(),
+    soon: emptyHorizonCellMap(),
+    later: emptyHorizonCellMap(),
+    someday: emptyHorizonCellMap(),
+  }
+
+  for (const kind of HORIZON_COLUMN_ORDER) {
+    for (const card of columns[kind]) {
+      rows[card.effectiveHorizon ?? 'now'][kind].push(card)
+    }
+  }
+
+  return rows
+}
+
+function countHorizonCards(cells: HorizonCellMap): number {
+  return HORIZON_COLUMN_ORDER.reduce((sum, kind) => sum + cells[kind].length, 0)
+}
+
+function isAgentCard(card: KanbanCard): boolean {
+  return card.shuttleKind !== undefined ||
+    card.shuttleAgent !== undefined ||
+    card.shuttleEnabled !== undefined ||
+    card.shuttleReviewState !== undefined ||
+    card.shuttleFiberId !== undefined
+}
+
+function formatDue(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
+}
 
 /**
  * Map the daemon's `reason` field from a 422 not_eligible response to a

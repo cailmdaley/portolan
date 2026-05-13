@@ -447,6 +447,15 @@ export class HttpApi {
       return true;
     }
 
+    // POST /kanban/horizon — write Portolan's top-level `horizon:` row axis.
+    // Same city-scope resolution as the kanban read and other mutation routes.
+    if (url.pathname === '/kanban/horizon' && req.method === 'POST') {
+      const kanbanApi = this.resolveKanbanApi(url, res);
+      if (!kanbanApi) return true;
+      await kanbanApi.handleHorizon(req, res);
+      return true;
+    }
+
     // POST /kanban/review-comment — append a review directive to a fiber's
     // felt history while it is in the awaiting-review column. The caller
     // follows up with POST /kanban/transition to move the card back to inFlight.

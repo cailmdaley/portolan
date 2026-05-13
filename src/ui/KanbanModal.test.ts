@@ -40,6 +40,8 @@ function makeInFlightCard(overrides: Partial<{
     shuttleAgent: 'claude-sonnet',
     shuttleFiberId: 'test/my-constitution',
     tags: ['constitution'],
+    effectiveHorizon: 'now' as const,
+    drifted: false,
     ...overrides,
   }
 }
@@ -54,11 +56,16 @@ function makeKanbanCard(overrides: Record<string, unknown> = {}) {
     dependsOnSatisfied: true,
     createdAt: '2026-01-01T00:00:00Z',
     tags: ['constitution'],
+    effectiveHorizon: 'now' as const,
+    drifted: false,
     ...overrides,
   }
 }
 
-function renderGridCard(overrides: Record<string, unknown> = {}, kind: 'drafts' | 'awaitingReview' = 'drafts'): {
+function renderGridCard(
+  overrides: Record<string, unknown> = {},
+  kind: 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered' = 'drafts',
+): {
   el: HTMLElement
   detailOpen: ReturnType<typeof vi.fn>
 } {
@@ -71,7 +78,10 @@ function renderGridCard(overrides: Record<string, unknown> = {}, kind: 'drafts' 
     open: detailOpen,
   }
   const el = (modal as unknown as {
-    renderCard: (card: ReturnType<typeof makeKanbanCard>, kind: 'drafts' | 'awaitingReview') => HTMLElement
+    renderCard: (
+      card: ReturnType<typeof makeKanbanCard>,
+      kind: 'drafts' | 'inFlight' | 'awaitingReview' | 'tempered'
+    ) => HTMLElement
   }).renderCard(makeKanbanCard(overrides), kind)
   document.body.append(el)
   return { el, detailOpen }
@@ -102,12 +112,12 @@ function emptyKanbanResponse() {
   return {
     feltHost: '/tmp/felt',
     columns: {
-      ideas: [],
-      drafts: [],
-      inFlight: [],
-      awaitingReview: [],
-      tempered: [],
-      composted: [],
+      ideas: [] as ReturnType<typeof makeKanbanCard>[],
+      drafts: [] as ReturnType<typeof makeKanbanCard>[],
+      inFlight: [] as ReturnType<typeof makeKanbanCard>[],
+      awaitingReview: [] as ReturnType<typeof makeKanbanCard>[],
+      tempered: [] as ReturnType<typeof makeKanbanCard>[],
+      composted: [] as ReturnType<typeof makeKanbanCard>[],
     },
     totals: {
       ideas: 0,
@@ -125,6 +135,34 @@ function emptyKanbanResponse() {
 /** Wait one microtask tick for async handlers to settle. */
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+function mockDataTransfer(): DataTransfer {
+  const data = new Map<string, string>()
+  return {
+    effectAllowed: 'move',
+    dropEffect: 'move',
+    setData(type: string, value: string) { data.set(type, value) },
+    getData(type: string) { return data.get(type) ?? '' },
+  } as DataTransfer
+}
+
+function dispatchDrag(target: Element, type: string, dataTransfer: DataTransfer): void {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as DragEvent
+  Object.defineProperty(event, 'dataTransfer', { value: dataTransfer })
+  target.dispatchEvent(event)
+}
+
+function installLocalStorageMock(): void {
+  const store = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value) },
+      removeItem: (key: string) => { store.delete(key) },
+    },
+  })
 }
 
 /**
@@ -182,6 +220,7 @@ function detailActionButton(label: string): HTMLButtonElement {
 beforeEach(() => {
   // Clean DOM between tests.
   document.body.innerHTML = ''
+  installLocalStorageMock()
   // Reset fetch mock.
   vi.unstubAllGlobals()
 })
@@ -236,6 +275,211 @@ describe('KanbanModal chrome', () => {
   })
 })
 
+// ── Horizon rows ────────────────────────────────────────────────────────────
+
+describe('KanbanModal horizon rows', () => {
+  it('renders four horizon rows with Now expanded and future horizons collapsed by default', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(emptyKanbanResponse()),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    expect(host.querySelectorAll('.kbn-horizon-row')).toHaveLength(4)
+    expect(host.querySelector('.kbn-horizon-row-now')?.classList.contains('kbn-horizon-row-collapsed')).toBe(false)
+    expect(host.querySelector('.kbn-horizon-row-soon')?.classList.contains('kbn-horizon-row-collapsed')).toBe(true)
+    expect(host.querySelector('.kbn-horizon-row-later')?.classList.contains('kbn-horizon-row-collapsed')).toBe(true)
+    expect(host.querySelector('.kbn-horizon-row-someday')?.classList.contains('kbn-horizon-row-collapsed')).toBe(true)
+    expect(host.querySelector('.kbn-horizon-row-now .kbn-horizon-head')?.getAttribute('aria-expanded')).toBe('true')
+    expect(host.querySelector('.kbn-horizon-row-later .kbn-horizon-head')?.getAttribute('aria-expanded')).toBe('false')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('persists horizon fold state in localStorage', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(emptyKanbanResponse()),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+    host.querySelector<HTMLButtonElement>('.kbn-horizon-row-later .kbn-horizon-head')?.click()
+
+    expect(host.querySelector('.kbn-horizon-row-later')?.classList.contains('kbn-horizon-row-collapsed')).toBe(false)
+
+    modal.unmount()
+    const modal2 = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+    modal2.mount(host)
+    await tick()
+
+    expect(host.querySelector('.kbn-horizon-row-later')?.classList.contains('kbn-horizon-row-collapsed')).toBe(false)
+
+    modal2.unmount()
+    host.remove()
+  })
+
+  it('groups cards by effective horizon inside lifecycle cells', async () => {
+    const response = emptyKanbanResponse()
+    response.columns.drafts = [makeKanbanCard({ id: 'test/now-draft', name: 'Now draft' })]
+    response.columns.inFlight = [
+      makeKanbanCard({
+        id: 'test/later-active',
+        name: 'Later active',
+        storedHorizon: 'later',
+        effectiveHorizon: 'later',
+      }),
+    ]
+    response.totals = { ...response.totals, drafts: 1, inFlight: 1 }
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(response),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+    host.querySelector<HTMLButtonElement>('.kbn-horizon-row-later .kbn-horizon-head')?.click()
+
+    expect(host.querySelector('.kbn-horizon-row-now .kbn-col-drafts')?.textContent).toContain('Now draft')
+    expect(host.querySelector('.kbn-horizon-row-later .kbn-col-inFlight')?.textContent).toContain('Later active')
+    expect(host.querySelector('.kbn-horizon-row-now .kbn-col-inFlight')?.textContent).not.toContain('Later active')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('dragging a card to another horizon row posts /kanban/horizon', async () => {
+    const response = emptyKanbanResponse()
+    const card = makeKanbanCard({
+      id: 'test/horizon-card',
+      name: 'Horizon Card',
+      shuttleKind: 'oneshot',
+      shuttleAgent: 'pi-sonnet',
+    })
+    response.columns.inFlight = [card]
+    response.totals = { ...response.totals, inFlight: 1 }
+    const horizonBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/horizon')) {
+        horizonBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({
+          ok: true,
+          card: { ...card, storedHorizon: 'later', effectiveHorizon: 'later' },
+        }))
+      }
+      if (urlStr.includes('/kanban')) return Promise.resolve(jsonResponse(response))
+      return Promise.resolve(jsonResponse({}))
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+    host.querySelector<HTMLButtonElement>('.kbn-horizon-row-later .kbn-horizon-head')?.click()
+
+    const cardEl = host.querySelector<HTMLElement>('[data-fiber-id="test/horizon-card"]')
+    const laterBody = host.querySelector<HTMLElement>('.kbn-horizon-row-later .kbn-horizon-body')
+    if (!cardEl || !laterBody) throw new Error('drag fixtures not found')
+    const dt = mockDataTransfer()
+    dispatchDrag(cardEl, 'dragstart', dt)
+    dispatchDrag(laterBody, 'drop', dt)
+    await tick()
+    await tick()
+
+    expect(horizonBodies).toHaveLength(1)
+    expect(horizonBodies[0]).toMatchObject({
+      fiberId: 'test/horizon-card',
+      horizon: 'later',
+    })
+    expect((horizonBodies[0] as { card?: { name?: string } }).card?.name).toBe('Horizon Card')
+
+    modal.unmount()
+    host.remove()
+  })
+
+  it('dropping on a lifecycle cell header still posts /kanban/transition', async () => {
+    const response = emptyKanbanResponse()
+    const card = makeKanbanCard({
+      id: 'test/transition-card',
+      name: 'Transition Card',
+      shuttleKind: 'oneshot',
+      shuttleAgent: 'pi-sonnet',
+    })
+    response.columns.inFlight = [card]
+    response.totals = { ...response.totals, inFlight: 1 }
+    const transitionBodies: unknown[] = []
+    const horizonBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/transition')) {
+        transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/kanban/horizon')) {
+        horizonBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/kanban')) return Promise.resolve(jsonResponse(response))
+      return Promise.resolve(jsonResponse({}))
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+
+    modal.mount(host)
+    await tick()
+
+    const cardEl = host.querySelector<HTMLElement>('[data-fiber-id="test/transition-card"]')
+    const awaitingHead = host.querySelector<HTMLElement>('.kbn-horizon-row-now .kbn-col-awaitingReview .kbn-col-head')
+    if (!cardEl || !awaitingHead) throw new Error('transition fixtures not found')
+    const dt = mockDataTransfer()
+    dispatchDrag(cardEl, 'dragstart', dt)
+    dispatchDrag(awaitingHead, 'drop', dt)
+    await tick()
+    await tick()
+
+    expect(horizonBodies).toEqual([])
+    expect(transitionBodies).toHaveLength(1)
+    expect(transitionBodies[0]).toMatchObject({
+      fiberId: 'test/transition-card',
+      target: 'awaitingReview',
+    })
+
+    modal.unmount()
+    host.remove()
+  })
+
+})
+
 // ── Grid card previews ──────────────────────────────────────────────────────
 
 describe('KanbanModal grid card outcome preview', () => {
@@ -264,6 +508,38 @@ describe('KanbanModal grid card outcome preview', () => {
 
     el.querySelector('.kbn-card-outcome')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(detailOpen).toHaveBeenCalledOnce()
+  })
+})
+
+describe('KanbanModal grid card face', () => {
+  it('renders agent glyph, actor label, due badge, and drift marker without tag chips', () => {
+    const { el } = renderGridCard({
+      shuttleKind: 'oneshot',
+      shuttleAgent: 'pi-sonnet',
+      due: '2026-05-15T00:00:00Z',
+      tags: ['urgent', 'constitution'],
+      storedHorizon: 'later',
+      drifted: true,
+    }, 'inFlight')
+
+    expect(el.querySelector('.kbn-card-glyph')?.textContent).toBe('◐')
+    expect(el.querySelector('.kbn-card-actor')?.textContent).toBe('pi-sonnet')
+    expect(el.querySelector('.kbn-card-due')?.textContent).toContain('due')
+    expect(el.querySelector('.kbn-card-drift')?.textContent).toBe('↑')
+    expect(el.querySelector('.kbn-tag')).toBeNull()
+    expect(el.textContent).not.toContain('urgent')
+  })
+
+  it('renders human due cards as me with the check glyph', () => {
+    const { el } = renderGridCard({
+      due: '2026-05-20T00:00:00Z',
+      tags: ['task'],
+    }, 'drafts')
+
+    expect(el.querySelector('.kbn-card-glyph')?.textContent).toBe('✓')
+    expect(el.querySelector('.kbn-card-actor')?.textContent).toBe('me')
+    expect(el.querySelector('.kbn-card-due')?.textContent).toContain('due')
+    expect(el.querySelector('.kbn-tag')).toBeNull()
   })
 })
 
@@ -459,7 +735,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
     expect(onSaved).toHaveBeenCalledOnce()
   })
 
-  it('tries scheduled standing resume via force/non-ad-hoc dispatch without prechecking a session id', async () => {
+  it('tries scheduled standing resume via force/non-ad-hoc dispatch when a session id is recorded', async () => {
     const reviewBodies: unknown[] = []
     const dispatchBodies: unknown[] = []
     vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
@@ -477,6 +753,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
 
     const { resumeBtn, onSaved } = await openDispatchModal(makeInFlightCard({
       shuttleKind: 'standing',
+      sessionId: 'stored-session-id',
     }))
     expect(resumeBtn.disabled).toBe(false)
 
@@ -495,6 +772,33 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       { fiber_id: 'test/my-constitution', force: true },
     ])
     expect(onSaved).toHaveBeenCalledOnce()
+  })
+
+  it('disables previous-session resume when no session id is recorded', async () => {
+    const reviewBodies: unknown[] = []
+    const dispatchBodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
+      if (urlStr.includes('/kanban/review-comment')) {
+        reviewBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ ok: true }))
+      }
+      if (urlStr.includes('/api/v1/dispatch')) {
+        dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return Promise.resolve(jsonResponse({ dispatched: true }))
+      }
+      return Promise.resolve(jsonResponse({}))
+    }))
+
+    const { resumeBtn } = await openDispatchModal(makeInFlightCard())
+
+    expect(resumeBtn.disabled).toBe(true)
+    expect(resumeBtn.title).toContain('No previous worker session')
+    resumeBtn.click()
+    await tick()
+
+    expect(reviewBodies).toEqual([])
+    expect(dispatchBodies).toEqual([])
   })
 
   it('oneshot resume reopens then dispatches immediately so Shuttle can surface resume errors', async () => {
@@ -518,7 +822,9 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       return Promise.resolve(jsonResponse({}))
     }))
 
-    const { resumeBtn, errorEl, onSaved } = await openDispatchModal(makeInFlightCard())
+    const { resumeBtn, errorEl, onSaved } = await openDispatchModal(makeInFlightCard({
+      sessionId: 'stored-session-id',
+    }))
     resumeBtn.click()
     await tick()
 

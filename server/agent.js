@@ -21,6 +21,7 @@
  */
 
 import WebSocket from 'ws';
+import YAML from 'yaml';
 import { exec, execFile, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { hostname, homedir } from 'os';
@@ -861,6 +862,40 @@ function diffTags(current, next) {
     };
 }
 
+const KANBAN_HORIZONS = new Set(['now', 'soon', 'later', 'someday']);
+
+function rewriteHorizonFrontmatter(raw, horizon) {
+    const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n)?/);
+    if (!match) throw new Error('fiber file has no YAML frontmatter');
+
+    const parsed = YAML.parse(match[1]);
+    if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+        throw new Error('fiber frontmatter must be a YAML mapping');
+    }
+
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+    const closingNewline = match[2] || '';
+    const body = raw.slice(match[0].length);
+    const lines = match[1].length > 0 ? match[1].split(/\r?\n/) : [];
+    const keyRe = /^horizon\s*:/;
+    const topLevelKeyRe = /^[A-Za-z0-9_-]+\s*:/;
+    const start = lines.findIndex(line => keyRe.test(line));
+    let end = start + 1;
+    if (start !== -1) {
+        while (end < lines.length && !topLevelKeyRe.test(lines[end])) end += 1;
+    }
+
+    if (horizon === null) {
+        if (start !== -1) lines.splice(start, end - start);
+    } else {
+        if (!KANBAN_HORIZONS.has(horizon)) throw new Error(`unknown horizon: ${horizon}`);
+        if (start === -1) lines.push(`horizon: ${horizon}`);
+        else lines.splice(start, end - start, `horizon: ${horizon}`);
+    }
+
+    return `---${eol}${lines.join(eol)}${eol}---${closingNewline}${body}`;
+}
+
 async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
     const env = {
         ...process.env,
@@ -925,6 +960,16 @@ async function runKanbanMutation(payload, fullPath, feltHost = FELT_HOST) {
             timeout: 10_000,
             maxBuffer: 1024 * 1024,
         });
+        return;
+    }
+
+    if (payload.kind === 'felt-horizon') {
+        if (!('horizon' in payload)) {
+            throw new Error('missing horizon payload');
+        }
+        const horizon = payload.horizon === null ? null : String(payload.horizon);
+        const raw = readFileSync(fullPath, 'utf-8');
+        writeFileSync(fullPath, rewriteHorizonFrontmatter(raw, horizon), 'utf-8');
         return;
     }
 
