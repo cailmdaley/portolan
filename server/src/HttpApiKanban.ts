@@ -27,7 +27,7 @@
  *     shuttle.enabled !== false  AND  effectiveHorizon === 'now'
  *
  * — see `effectiveDispatchEligible`. `effectiveHorizon` honors due-date
- * drift (`due` within 7 days promotes effective horizon to `now`), so a
+ * drift (`due` within 2 days promotes effective horizon to `now`), so a
  * stashed-but-deadline-bearing fiber still dispatches. classifyFiber
  * uses this predicate to gate `inFlight`, which is why "In Flight Soon"
  * is structurally impossible: enabled + horizon:soon lands in drafts.
@@ -79,7 +79,15 @@ const HORIZON_SET = new Set<string>(KANBAN_HORIZONS);
  *  /kanban/horizon`. Keeping a parallel set lets validators give a
  *  helpful "run the migration first" error rather than a bare 400. */
 const LEGACY_HORIZONS = new Set<string>(['later', 'someday']);
-const HORIZON_DRIFT_MS = 7 * 24 * 60 * 60 * 1000;
+// Drift window: a `due:` within this distance promotes a soon/stashed
+// fiber back onto the desk as a deadline-bearing draft. Set to 2 days
+// so true imminence (today + tomorrow) still earns desk presence, but
+// anything 3+ days out lives where the user planned it — on the
+// calendar — instead of crowding the desk. The two failure modes the
+// drift window has to balance: an overwhelming desk that hides what
+// actually matters, vs. quietly-soon deadlines that get missed because
+// they live on the calendar alone. Two days threads that gap.
+const HORIZON_DRIFT_MS = 2 * 24 * 60 * 60 * 1000;
 
 export interface KanbanCard {
   id: string;
@@ -327,6 +335,13 @@ export interface KanbanResponse {
    */
   staleness: Record<string, KanbanOriginStaleness>;
   /**
+   * Read-only Shuttle diagnostics reported by remote agents. These are
+   * operator evidence only: dispatch remains owned by the Shuttle daemon.
+   */
+  shuttleDiagnostics: {
+    remoteSnapshots: RemoteShuttleSnapshotDiagnostic[];
+  };
+  /**
    * Present for a scoped remote-origin Kanban view. The current remote
    * snapshot protocol is origin-scoped, so this tells the frontend when an
    * apparently-empty board actually means "waiting for that remote agent".
@@ -395,6 +410,13 @@ interface HttpApiKanbanOptions {
    * local. Pure remote-only-no-mirror fibers appear once via the agent.
    */
   remoteSnapshotsProvider?: () => FiberTreeSnapshot[];
+  /**
+   * Latest read-only Shuttle snapshots retained from remote agents. Unlike
+   * remoteSnapshotsProvider, this does not contribute fibers to the board;
+   * it only lets the Kanban operator surface report what each remote agent
+   * observed about Shuttle eligibility.
+   */
+  remoteShuttleDiagnosticsProvider?: () => RemoteShuttleSnapshotDiagnostic[];
   /**
    * Optional origin filter for snapshot-backed Kanban views. Used by
    * `?cityId=<remote-city>` so the scoped view is not
@@ -470,6 +492,15 @@ interface HttpApiKanbanOptions {
    * Receives the exact add/remove diff the server would shell out.
    */
   feltEditFn?: (invocation: FeltTagEditInvocation) => Promise<void>;
+}
+
+export interface RemoteShuttleSnapshotDiagnostic {
+  originId: string;
+  receivedAt: string;
+  eligibleCount: number | null;
+  blockedCount: number | null;
+  orphanCount: number | null;
+  snapshot?: unknown;
 }
 
 export type ShuttleCtlInvocation =
@@ -617,7 +648,7 @@ export type KanbanColumn =
  *                                             inFlight; see
  *                                             effectiveDispatchEligible)
  *        - else                  → inFlight  (enabled + horizon=now or
- *                                             due within 7 days)
+ *                                             due within 2 days)
  *
  *      closed (status === `closed`):
  *        - tempered=true   → tempered   (human-accepted)
@@ -683,7 +714,7 @@ export function classifyFiber(
  *
  *     shuttle.enabled !== false  AND  effectiveHorizon === 'now'
  *
- * `effectiveHorizon` honors due-date drift (a `due:` within 7 days
+ * `effectiveHorizon` honors due-date drift (a `due:` within 2 days
  * promotes effectiveHorizon to `now`), so a stashed fiber with an
  * imminent deadline is still picked up — the human committed to a
  * date and the kanban trusts it.
@@ -864,6 +895,7 @@ export class HttpApiKanban {
   private readonly feltHosts: string[] | undefined;
   private readonly cities: Array<{ id: string; path: string }> | undefined;
   private readonly remoteSnapshotsProvider: (() => FiberTreeSnapshot[]) | undefined;
+  private readonly remoteShuttleDiagnosticsProvider: (() => RemoteShuttleSnapshotDiagnostic[]) | undefined;
   private readonly remoteOriginFilter: string | undefined;
   private readonly remoteFeltHostFilter: string | undefined;
   private readonly includeLocalFibers: boolean;
@@ -1046,6 +1078,7 @@ export class HttpApiKanban {
     this.feltHosts = opts.feltHosts && opts.feltHosts.length > 0 ? opts.feltHosts : undefined;
     this.cities = opts.cities && opts.cities.length > 0 ? opts.cities : undefined;
     this.remoteSnapshotsProvider = opts.remoteSnapshotsProvider;
+    this.remoteShuttleDiagnosticsProvider = opts.remoteShuttleDiagnosticsProvider;
     this.remoteOriginFilter = opts.remoteOriginFilter;
     this.remoteFeltHostFilter = opts.remoteFeltHostFilter
       ? normalizeRemotePath(opts.remoteFeltHostFilter)
@@ -1345,7 +1378,7 @@ export class HttpApiKanban {
       const anytimeSoon: KanbanCard[] = [];
       const nowDrafts: KanbanCard[] = [];
       for (const card of drafts) {
-        // Drifted cards (due-date within 7 days) live on the desk
+        // Drifted cards (due-date within 2 days) live on the desk
         // regardless of stored horizon — the deadline outranks the
         // deferral. Without this branch a stashed-but-imminent card
         // would silently hide in the stash cluster grid.
@@ -1402,6 +1435,7 @@ export class HttpApiKanban {
         },
         temperedTotal,
         staleness: this.buildStaleness(),
+        shuttleDiagnostics: this.buildShuttleDiagnostics(),
         remoteScope: this.remoteOriginFilter
           ? {
             originId: this.remoteOriginFilter,
@@ -2549,6 +2583,7 @@ export class HttpApiKanban {
       },
       temperedTotal: 0,
       staleness: this.buildStaleness(),
+      shuttleDiagnostics: this.buildShuttleDiagnostics(),
       remoteScope: this.remoteOriginFilter
         ? {
           originId: this.remoteOriginFilter,
@@ -2594,6 +2629,14 @@ export class HttpApiKanban {
       };
     }
     return out;
+  }
+
+  private buildShuttleDiagnostics(): KanbanResponse['shuttleDiagnostics'] {
+    const all = this.remoteShuttleDiagnosticsProvider?.() ?? [];
+    const filtered = this.remoteOriginFilter
+      ? all.filter((entry) => entry.originId === this.remoteOriginFilter)
+      : all;
+    return { remoteSnapshots: filtered };
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {
