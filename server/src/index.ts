@@ -142,13 +142,13 @@ const remoteFileContentExecutor = async (request: {
   operation: 'read' | 'write';
   content?: string;
 }) => {
-  const result = await agentRequestCoordinator.send<{ content?: string }>(
+  const result = await agentRequestCoordinator.send<{ content?: string; mtimeMs?: number }>(
     request.originId,
     'file-content',
     request,
     10_000,
   );
-  return { content: result.content };
+  return { content: result.content, mtimeMs: result.mtimeMs };
 };
 
 // ============================================================================
@@ -633,14 +633,16 @@ wss.on('connection', async (ws, req) => {
           if (events !== undefined) result.events = events;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         } else if (message.type === 'file-content-result') {
-          const { correlationId, ok, error, content } = message.payload as {
+          const { correlationId, ok, error, content, mtimeMs } = message.payload as {
             correlationId: string;
             ok: boolean;
             error?: string;
             content?: string;
+            mtimeMs?: number;
           };
           const result: Record<string, unknown> = {};
           if (content !== undefined) result.content = content;
+          if (mtimeMs !== undefined) result.mtimeMs = mtimeMs;
           agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
         } else if (message.type === 'project-file-result') {
           const { correlationId, ok, error, contentBase64, byteLength } = message.payload as {

@@ -167,6 +167,7 @@ export interface RemoteFileContentInvocation {
 
 export interface RemoteFileContentResult {
   content?: string;
+  mtimeMs?: number;
 }
 
 export interface RemoteProjectFileInvocation {

@@ -139,6 +139,38 @@ describe('HttpApi — /astra-paper-view endpoint', () => {
     expect(res.body).toContain('Test');
   });
 
+  it('renders remote ?as=source through the remote file-content executor', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const remoteApi = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteFileContentExecutor: async (request) => {
+          calls.push(request);
+          return { content: '# Remote ASTRA\nname: Remote Test\n', mtimeMs: 12345 };
+        },
+      },
+    );
+    const remotePath = '/some/remote/lightcone-spec/astra.yaml';
+    const encodedPath = remotePath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const res = await rawRequest(remoteApi, `/astra-paper-view/remote-fake${encodedPath}?as=source`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('Remote Test');
+    expect(calls).toEqual([
+      {
+        originId: 'remote-fake',
+        path: remotePath,
+        operation: 'read',
+      },
+    ]);
+  });
+
   it('returns 400 for non-astra paths', async () => {
     const txtPath = join(TEST_DIR, 'notes.md');
     writeFileSync(txtPath, '# Hi\n');
@@ -393,6 +425,38 @@ describe('HttpApi — /astra-mtime endpoint', () => {
     const parsed = JSON.parse(res.body) as { mtime: string };
     expect(typeof parsed.mtime).toBe('string');
     expect(parsed.mtime).toBeTruthy();
+  });
+
+  it('returns remote mtime from the remote file-content executor', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const remoteApi = new HttpApi(
+      stubCityLookup as any,
+      stubOriginLookup as any,
+      stubPersistenceLookup as any,
+      {
+        remoteFileContentExecutor: async (request) => {
+          calls.push(request);
+          return { content: 'name: Remote\n', mtimeMs: 98765.5 };
+        },
+      },
+    );
+    const remotePath = '/some/remote/lightcone-spec/astra.yaml';
+    const encodedPath = remotePath
+      .split('/')
+      .map((seg) => (seg ? encodeURIComponent(seg) : seg))
+      .join('/');
+
+    const res = await rawRequest(remoteApi, `/astra-mtime/remote-fake${encodedPath}`);
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ mtime: '98765.5' });
+    expect(calls).toEqual([
+      {
+        originId: 'remote-fake',
+        path: remotePath,
+        operation: 'read',
+      },
+    ]);
   });
 
   it('returns a different token after the file is touched', async () => {

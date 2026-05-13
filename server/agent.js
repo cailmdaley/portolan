@@ -1230,7 +1230,8 @@ export function executeFileContentRequest(payload) {
 
     if (operation === 'read') {
         const body = readFileSync(fullPath, 'utf8');
-        return { ok: true, content: body };
+        const stats = statSync(fullPath);
+        return { ok: true, content: body, mtimeMs: stats.mtimeMs };
     }
 
     if (operation === 'write') {

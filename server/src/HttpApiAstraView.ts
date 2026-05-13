@@ -99,6 +99,10 @@ async function loadCollectPaperMetadata(): Promise<CollectPaperMetadataFn | null
   return collectPaperMetadataMemo;
 }
 import type { Origin } from './OriginManager.js';
+import type {
+  RemoteFileContentInvocation,
+  RemoteFileContentResult,
+} from './HttpApiFileContent.js';
 import { shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
@@ -109,6 +113,9 @@ interface OriginLookup {
 
 interface HttpApiAstraViewDeps {
   originLookup: OriginLookup;
+  remoteFileContentExecutor?: (
+    request: RemoteFileContentInvocation,
+  ) => Promise<RemoteFileContentResult>;
 }
 
 const ASSET_MIME: Record<string, string> = {
@@ -651,9 +658,11 @@ function parseAstraUrl(url: URL, prefix: string): { originId: string; filePath: 
 
 export class HttpApiAstraView {
   private originLookup: OriginLookup;
+  private remoteFileContentExecutor: HttpApiAstraViewDeps['remoteFileContentExecutor'];
 
   constructor(deps: HttpApiAstraViewDeps) {
     this.originLookup = deps.originLookup;
+    this.remoteFileContentExecutor = deps.remoteFileContentExecutor;
   }
 
   /**
@@ -878,7 +887,7 @@ export class HttpApiAstraView {
     // pipeline itself. Returning null is fine; the client just falls back
     // to the iframe-style "always re-fetch on cacheBust" behaviour.
     const origin = this.originLookup.getOrigin(originId);
-    const mtime = await fetchAstraMtimeToken(originId, filePath, origin);
+    const mtime = await this.fetchAstraMtimeToken(originId, filePath, origin);
 
     const body = safeJson({ bundle: built.bundle, csvs: built.csvs, mtime });
     res.writeHead(200, {
@@ -934,7 +943,7 @@ export class HttpApiAstraView {
       return;
     }
 
-    const mtime = await fetchAstraMtimeToken(originId, filePath, origin);
+    const mtime = await this.fetchAstraMtimeToken(originId, filePath, origin);
     if (mtime == null) {
       this.sendError(res, 404, `astra.yaml not found at ${filePath}`);
       return;
@@ -964,12 +973,7 @@ export class HttpApiAstraView {
           this.sendError(res, 404, 'Remote origin not connected');
           return;
         }
-        const { stdout } = await execFileAsync(
-          'ssh',
-          [origin.sshHost, `cat ${shellEscape(filePath)}`],
-          { maxBuffer: 5 * 1024 * 1024, timeout: 10000 },
-        );
-        content = stdout;
+        content = await this.readRemoteTextFile(originId, filePath, origin);
       } else {
         if (!existsSync(filePath)) {
           this.sendError(res, 404, `astra.yaml not found at ${filePath}`);
@@ -1121,6 +1125,58 @@ export class HttpApiAstraView {
       console.error('[paper-pdf] mirrored read failed:', err?.message ?? err);
       this.sendError(res, 500, 'paper read failed');
     }
+  }
+
+  private async readRemoteTextFile(
+    originId: string,
+    filePath: string,
+    origin: { sshHost?: string },
+  ): Promise<string> {
+    if (this.remoteFileContentExecutor) {
+      try {
+        const result = await this.remoteFileContentExecutor({
+          originId,
+          path: filePath,
+          operation: 'read',
+        });
+        if (typeof result.content !== 'string') {
+          throw new Error('Remote agent did not return file content');
+        }
+        return result.content;
+      } catch (error) {
+        if (!origin.sshHost) throw error;
+      }
+    }
+
+    if (!origin.sshHost) {
+      throw new Error('Remote origin not connected');
+    }
+    const { stdout } = await execFileAsync(
+      'ssh',
+      [origin.sshHost, `cat ${shellEscape(filePath)}`],
+      { maxBuffer: 5 * 1024 * 1024, timeout: 10000 },
+    );
+    return stdout;
+  }
+
+  private async fetchAstraMtimeToken(
+    originId: string,
+    filePath: string,
+    origin: { sshHost?: string } | null | undefined,
+  ): Promise<string | null> {
+    if (originId && originId !== 'local' && this.remoteFileContentExecutor) {
+      try {
+        const result = await this.remoteFileContentExecutor({
+          originId,
+          path: filePath,
+          operation: 'read',
+        });
+        if (typeof result.mtimeMs === 'number') return String(result.mtimeMs);
+      } catch {
+        // Keep existing SSH fallback semantics for disconnected or older agents.
+      }
+    }
+    return fetchAstraMtimeToken(originId, filePath, origin);
   }
 
   /** Helper to surface the paper cache dir in /debug-runtime. */

@@ -1896,17 +1896,20 @@ fn write_raw_fiber_with_snapshot(
 
 fn handle_file_content(payload: &FileContentRequestPayload) -> AgentFrame {
     let result = match payload.operation {
-        FileContentOperation::Read => read_text_file_content(&payload.path).map(Some),
-        FileContentOperation::Write => write_text_file_content(payload).map(|_| None),
+        FileContentOperation::Read => {
+            read_text_file_content(&payload.path).map(|read| (Some(read.content), read.mtime_ms))
+        }
+        FileContentOperation::Write => write_text_file_content(payload).map(|_| (None, None)),
     };
 
     match result {
-        Ok(content) => AgentFrame::FileContentResult {
+        Ok((content, mtime_ms)) => AgentFrame::FileContentResult {
             payload: FileContentResultPayload {
                 correlation_id: payload.correlation_id.clone(),
                 ok: true,
                 error: None,
                 content,
+                mtime_ms,
             },
         },
         Err(error) => AgentFrame::FileContentResult {
@@ -1915,14 +1918,29 @@ fn handle_file_content(payload: &FileContentRequestPayload) -> AgentFrame {
                 ok: false,
                 error: Some(error),
                 content: None,
+                mtime_ms: None,
             },
         },
     }
 }
 
-fn read_text_file_content(path: &str) -> Result<String, String> {
+struct TextFileContent {
+    content: String,
+    mtime_ms: Option<f64>,
+}
+
+fn read_text_file_content(path: &str) -> Result<TextFileContent, String> {
     let full_path = resolve_remote_file_path(path, true)?;
-    fs::read_to_string(&full_path).map_err(|error| format!("failed to read file {path}: {error}"))
+    let metadata =
+        fs::metadata(&full_path).map_err(|error| format!("failed to stat file {path}: {error}"))?;
+    let content = fs::read_to_string(&full_path)
+        .map_err(|error| format!("failed to read file {path}: {error}"))?;
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|mtime| mtime.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs_f64() * 1000.0);
+    Ok(TextFileContent { content, mtime_ms })
 }
 
 fn handle_tapestry_evidence(payload: &TapestryEvidenceRequestPayload) -> AgentFrame {

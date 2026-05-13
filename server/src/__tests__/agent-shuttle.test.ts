@@ -259,10 +259,12 @@ describe('agent: remote file request helpers', () => {
     const source = join(rootDir, 'source.md');
     writeFileSync(source, '# Notes\n');
 
-    expect(agentMod.executeFileContentRequest({
+    const readResult = agentMod.executeFileContentRequest({
       operation: 'read',
       path: source,
-    })).toEqual({ ok: true, content: '# Notes\n' });
+    });
+    expect(readResult).toMatchObject({ ok: true, content: '# Notes\n' });
+    expect(typeof readResult.mtimeMs).toBe('number');
 
     const target = join(rootDir, 'target.md');
     expect(agentMod.executeFileContentRequest({

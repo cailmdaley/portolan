@@ -338,6 +338,8 @@ pub struct FileContentResultPayload {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtime_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
