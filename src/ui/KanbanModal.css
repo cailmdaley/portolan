@@ -30,7 +30,10 @@
   font-size: 1.55em;
   line-height: 0.78;
   letter-spacing: 0;
-  vertical-align: -0.06em;
+  /* Sits the cap on the body baseline rather than floating slightly
+     above it. Each typographic context overrides with its own tuned
+     value below (col title / masthead / section strip). */
+  vertical-align: -0.10em;
   margin-right: 0.04em;
   font-style: normal;
   font-variant: normal;
@@ -39,25 +42,44 @@
 .kbn-cap::before {
   content: attr(data-letter);
   font-family: 'EBGI F1', 'EB Garamond', Georgia, serif;
-  color: #BC4538;
-  opacity: 0.55;
+  /* EBGI F1 is pure frill/framing — the F1 glyph alone isn't a
+     readable letter, just the decorative flourishes that surround
+     the position a letter would occupy. So this layer sits ON TOP
+     of the F2 letterform: the colored letter shows through, with
+     the iron-gall calligraphic ornament layered over it as the
+     "detail strokes" pass that traditionally finishes an
+     illumination. */
+  color: #1B1611;
+  opacity: 0.45;
   text-transform: uppercase;
   position: absolute;
   left: 0;
   top: 0;
   pointer-events: none;
 }
-/* Per-column tinting of the dropcap. The F2 body shifts to the column's
-   stage colour while the F1 flourish stays in cinnabar — the second
-   layer ties every cap back to the rubric. */
+/* Per-column F2 body tinting. The three live columns each get a
+   distinct hue against the parchment, with cinnabar pulled OUT of
+   the column row (it already carries the masthead K, the cinnabar
+   fleuron, and the section-strip dropcaps — the page had too much
+   red when In Flight also wore it):
+
+     Drafts          dark warm slate  not-yet-illuminated, neutral
+                                       but strong against parchment
+     In Flight       cobalt            the active rubric, now in blue
+     Awaiting        teal              verdigris, ripening
+
+   F1 flourish (.kbn-cap::before, ochre) stays consistent across all
+   columns — the gilt language ties the row together.
+
+   Tempered + Composted are kept here for safety: the buckets still
+   exist in classifyFiber (server/src/HttpApiKanban.ts) even though the
+   current three-surfaces layout doesn't render them as columns. */
+.kbn-col-drafts .kbn-cap { color: #C49333; }                   /* ochre */
+.kbn-col-inFlight .kbn-cap { color: #3D5BA0; }                 /* cobalt */
 .kbn-col-awaiting .kbn-cap,
-.kbn-col-awaitingReview .kbn-cap { color: #C49333; }
-.kbn-col-tempered .kbn-cap { color: #3F8278; }
-.kbn-col-composted .kbn-cap,
-.kbn-col-drafts .kbn-cap { color: #7A6F5C; }
-.kbn-col-drafts .kbn-cap { opacity: 0.85; }
-.kbn-col-drafts .kbn-cap::before,
-.kbn-col-composted .kbn-cap::before { opacity: 0.35; }
+.kbn-col-awaitingReview .kbn-cap { color: #3F8278; }           /* teal */
+.kbn-col-tempered .kbn-cap { color: #C49333; }                 /* ochre (off-surface) */
+.kbn-col-composted .kbn-cap { color: #7A6F5C; }                /* muted (off-surface) */
 
 /* Fills the host element supplied by vellum's workspace slot
    (KanbanHost in src/vellum/mount.tsx). The host gives us a fixed-
@@ -120,21 +142,10 @@
   box-sizing: border-box;
   position: relative;
 }
-.kbn-header::after {
-  content: '❦';
-  position: absolute;
-  left: 50%;
-  bottom: -10px;
-  transform: translateX(-50%);
-  font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 14px;
-  color: #BC4538;
-  background: #EDE2CE;
-  padding: 0 10px;
-  line-height: 1;
-  pointer-events: none;
-  opacity: 0.7;
-}
+/* Header fleuron retired — it now lives on the canvas divider
+   (.vellum-canvas-divider::before in vellum.css), centred on the
+   thumb-index footprint, as a finder for the resize handle. Same
+   ornament, more functional location. */
 /* The header's left half stacks title + scope + stats vertically so the
    thumb-index-enforced header height fills with substance instead of
    floating a horizontal stats strip in the middle. */
@@ -164,11 +175,26 @@
   color: #1B1611;
 }
 .kbn-title .kbn-cap {
-  /* Body grew 1.5× (26 → 39px); keep the F2+F1 dropcap at its tuned
-     absolute size (~31.7px) by dropping the em multiplier accordingly. */
-  font-size: 0.82em;
-  vertical-align: -0.03em;
+  /* Masthead K wears a larger illuminated initial than the column-
+     title caps — 1.5× the previous size (was 0.82em on 39px body
+     ≈ 32px; now 1.23em on 39px body ≈ 48px). The body line-box
+     stays anchored to the 39px text; the cap extends inside it via
+     the .kbn-cap line-height: 0.78 from above, so the header chrome
+     height doesn't grow even though the K does. */
+  font-size: 1.23em;
+  vertical-align: -0.07em;
   margin-right: 0.04em;
+}
+.kbn-title .kbn-cap::before {
+  /* Masthead K is the page's primary illuminated initial — the
+     canonical manuscript combination is rubric body + gold flourish:
+     cinnabar F2 with ochre F1 ornament layered on top. Reads as
+     "this is the most important letter on the page," the same way a
+     versal initial would be treated in a medieval book. The column
+     dropcaps keep iron-gall F1 (the running illumination idiom);
+     the masthead earns the gilt. */
+  color: #C49333;
+  opacity: 0.7;
 }
 .kbn-subtitle {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
@@ -371,12 +397,13 @@
 }
 .kbn-section-strip-label .kbn-cap {
   /* Body grew 1.5× (17 → 26px); keep the F2+F1 dropcap at its tuned
-     absolute size (~24.7px). 24.7/26 ≈ 0.95em. */
+     absolute size (~24.7px). 24.7/26 ≈ 0.95em. Vertical-align dropped
+     to -0.08em so the cap sits on the baseline. */
   font-size: 0.95em;
   font-style: normal;
   font-variant: normal;
   margin-right: 0.05em;
-  vertical-align: -0.04em;
+  vertical-align: -0.08em;
   line-height: 0.82;
 }
 .kbn-section-strip-count {
@@ -776,7 +803,9 @@
   border-style: dashed;
   opacity: 0.92;
 }
-.kbn-col-drafts .kbn-col-title { color: #7A6F5C; }
+/* Drafts body stays in default iron-gall — only the D dropcap is
+   illuminated. (Earlier passes painted the whole title cobalt; reading
+   the body of "DRAFTS" in pigment felt over-illuminated.) */
 /* Composted column: desaturated Earth tone, visually sits at the
    boundary between Tempered and "the unbuilt" (Drafts on wrap). */
 .kbn-col-composted {
@@ -784,7 +813,9 @@
   border-color: rgba(122, 111, 92, 0.35);
   box-shadow: inset 0 0 0 1px rgba(122, 111, 92, 0.12);
 }
-.kbn-col-composted .kbn-col-title { color: #7A6F5C; font-style: italic; }
+/* Composted column doesn't render in three-surfaces — rule left
+   neutral if a future surface brings it back. */
+.kbn-col-composted .kbn-col-title { color: #7A6F5C; }
 .kbn-col-tempered {
   background: #E8DCC1;
 }
@@ -846,14 +877,21 @@
      from 1.35em (body 18px) to 0.9em (body 27px) keeps that fixed
      while letting the small-caps body grow up to meet it. The cap
      still reads as the decorated initial — its visual weight comes
-     from the F1 flourish overlay + tinted F2 body, not just size. */
+     from the F1 flourish overlay + tinted F2 body, not just size.
+
+     Vertical-align dropped from -0.04em to -0.08em so the cap sits on
+     the body baseline rather than floating slightly above it. */
   font-size: 0.9em;
-  vertical-align: -0.04em;
+  vertical-align: -0.08em;
   margin-right: 0.04em;
   line-height: 0.82;
 }
-.kbn-col-awaiting .kbn-col-title { color: #C49333; }
-.kbn-col-tempered .kbn-col-title { color: #3F8278; }
+/* Awaiting + Tempered title bodies stay default iron-gall too — only
+   the dropcap carries the column pigment, like a rubricated initial
+   on otherwise plain manuscript text. The pigment is the dropcap's
+   job; the body is the body's job. */
+/* (no .kbn-col-awaiting .kbn-col-title color override) */
+/* (no .kbn-col-tempered .kbn-col-title color override) */
 .kbn-col-count {
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 12px;
