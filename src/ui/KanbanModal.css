@@ -106,7 +106,10 @@
    a single printer's ornament announcing the page's vocabulary. */
 .kbn-header {
   display: flex; align-items: stretch; gap: 16px;
-  padding: 12px 20px 14px 44px;
+  /* Bottom padding compressed: with the masthead now at 39px the title
+     itself fills most of the header height, so the gap between status bar
+     and the bottom rule wants to be a hair, not a quarter-inch. */
+  padding: 10px 20px 6px 44px;
   padding-right: calc(20px + var(--canvas-width, 360px));
   min-height: var(--thumb-index-bottom, auto);
   border-bottom: 1px solid rgba(196, 147, 51, 0.35);
@@ -139,7 +142,10 @@
   flex: 1;
   display: flex; flex-direction: column;
   justify-content: center;
-  gap: 4px;
+  /* Tight stack: masthead title → subtitle (scope) → status. With the
+     title at 39px the whole block has plenty of vertical presence; the
+     inter-row gap wants to read as inline-spacing, not column-spacing. */
+  gap: 1px;
   min-width: 0;
 }
 .kbn-title-wrap {
@@ -151,14 +157,16 @@
    the word continues in the body face beside it. */
 .kbn-title {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 26px;
+  font-size: 39px;
   font-weight: 500;
   font-variant-caps: normal;
   letter-spacing: 0.005em;
   color: #1B1611;
 }
 .kbn-title .kbn-cap {
-  font-size: 1.22em;
+  /* Body grew 1.5× (26 → 39px); keep the F2+F1 dropcap at its tuned
+     absolute size (~31.7px) by dropping the em multiplier accordingly. */
+  font-size: 0.82em;
   vertical-align: -0.03em;
   margin-right: 0.04em;
 }
@@ -354,7 +362,7 @@
    marginal tab. */
 .kbn-section-strip-label {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 17px;
+  font-size: 26px;
   font-style: italic;
   font-variant-caps: small-caps;
   font-feature-settings: "smcp";
@@ -362,7 +370,9 @@
   color: #2A231A;
 }
 .kbn-section-strip-label .kbn-cap {
-  font-size: 1.45em;
+  /* Body grew 1.5× (17 → 26px); keep the F2+F1 dropcap at its tuned
+     absolute size (~24.7px). 24.7/26 ≈ 0.95em. */
+  font-size: 0.95em;
   font-style: normal;
   font-variant: normal;
   margin-right: 0.05em;
@@ -766,7 +776,7 @@
   border-style: dashed;
   opacity: 0.92;
 }
-.kbn-col-drafts .kbn-col-title { color: #7A6F5C; font-style: italic; }
+.kbn-col-drafts .kbn-col-title { color: #7A6F5C; }
 /* Composted column: desaturated Earth tone, visually sits at the
    boundary between Tempered and "the unbuilt" (Drafts on wrap). */
 .kbn-col-composted {
@@ -787,7 +797,11 @@
 .kbn-col-head {
   display: flex; align-items: baseline; justify-content: space-between;
   width: 100%;
-  padding: 11px 14px 6px;
+  /* Padding hugs the illuminated character — top/bottom just enough to
+     keep the F1 flourish overlay from clipping the hairline rule or the
+     column edge above. Side padding stays generous so the rule reads as
+     ruled, not bracketed. */
+  padding: 4px 14px 3px;
   border: none;
   /* Single hairline rule under the head — a touch warmer than the
      previous near-invisible setting so it reads as a deliberate stroke,
@@ -813,7 +827,11 @@
    the layered F2 body + F1 flourish dropcap. */
 .kbn-col-title {
   font-family: var(--font-serif, 'EB Garamond', Georgia, serif);
-  font-size: 18px;
+  font-size: 27px;
+  /* Tight line-height keeps the head box hugging the illuminated
+     character; the cap's F1 flourish extends a touch above the cap
+     line so even 1.0 leaves a hair of breathing room. */
+  line-height: 1.0;
   font-weight: 500;
   font-variant-caps: all-small-caps;
   font-feature-settings: "smcp", "c2sc";
@@ -823,7 +841,13 @@
   margin: 0;
 }
 .kbn-col-title .kbn-cap {
-  font-size: 1.35em;
+  /* Body grew 1.5×; the illuminated F2+F1 dropcap stays at the same
+     absolute size it was tuned to (~24px). Reducing the em multiplier
+     from 1.35em (body 18px) to 0.9em (body 27px) keeps that fixed
+     while letting the small-caps body grow up to meet it. The cap
+     still reads as the decorated initial — its visual weight comes
+     from the F1 flourish overlay + tinted F2 body, not just size. */
+  font-size: 0.9em;
   vertical-align: -0.04em;
   margin-right: 0.04em;
   line-height: 0.82;
