@@ -1555,16 +1555,18 @@ where
         .unwrap_or_else(default_felt_host);
     let full_path = resolve_remote_fiber_file(&felt_host, rel_path)?;
 
+    let fiber_id =
+        fiber_id_from_path(rel_path).ok_or_else(|| format!("path is not a fiber: {rel_path}"))?;
+
     run_kanban_mutation_with(
         payload,
         &full_path,
         &felt_host,
+        &fiber_id,
         &mut run_process,
         &read_snapshot,
     )?;
 
-    let fiber_id =
-        fiber_id_from_path(rel_path).ok_or_else(|| format!("path is not a fiber: {rel_path}"))?;
     read_snapshot(&felt_host, &fiber_id)
         .map_err(|error| format!("felt show failed after mutation: {fiber_id}: {error}"))
 }
@@ -1573,6 +1575,7 @@ fn run_kanban_mutation_with<R, S>(
     payload: &AgentRequestPayload,
     full_path: &Path,
     felt_host: &str,
+    expected_fiber_id: &str,
     run_process: &mut R,
     read_snapshot: &S,
 ) -> Result<(), String>
@@ -1581,11 +1584,19 @@ where
     S: Fn(&str, &str) -> Result<Value, String>,
 {
     match required_string_field(payload, "kind")? {
-        "shuttle" => run_shuttle_kanban_mutation(payload, felt_host, run_process),
-        "felt-history" => run_felt_history_kanban_mutation(payload, felt_host, run_process),
-        "felt-tags" => {
-            run_felt_tags_kanban_mutation(payload, felt_host, run_process, read_snapshot)
+        "shuttle" => {
+            run_shuttle_kanban_mutation(payload, felt_host, expected_fiber_id, run_process)
         }
+        "felt-history" => {
+            run_felt_history_kanban_mutation(payload, felt_host, expected_fiber_id, run_process)
+        }
+        "felt-tags" => run_felt_tags_kanban_mutation(
+            payload,
+            felt_host,
+            expected_fiber_id,
+            run_process,
+            read_snapshot,
+        ),
         "felt-horizon" => run_felt_horizon_kanban_mutation(payload, full_path),
         kind => Err(format!("unknown mutation kind: {kind}")),
     }
@@ -1594,13 +1605,14 @@ where
 fn run_shuttle_kanban_mutation<R>(
     payload: &AgentRequestPayload,
     felt_host: &str,
+    expected_fiber_id: &str,
     run_process: &mut R,
 ) -> Result<(), String>
 where
     R: FnMut(ProcessInvocation) -> Result<(), String>,
 {
     let verb = required_string_field(payload, "verb")?;
-    let fiber_id = required_string_field(payload, "fiberId")?;
+    let fiber_id = required_matching_fiber_id(payload, expected_fiber_id)?;
     let mut args = vec![
         "--felt-store".to_string(),
         felt_host.to_string(),
@@ -1663,12 +1675,13 @@ where
 fn run_felt_history_kanban_mutation<R>(
     payload: &AgentRequestPayload,
     felt_host: &str,
+    expected_fiber_id: &str,
     run_process: &mut R,
 ) -> Result<(), String>
 where
     R: FnMut(ProcessInvocation) -> Result<(), String>,
 {
-    let fiber_id = required_string_field(payload, "fiberId")?;
+    let fiber_id = required_matching_fiber_id(payload, expected_fiber_id)?;
     let history_kind = required_string_field(payload, "historyKind")?;
     let summary = required_string_field(payload, "summary")?;
     let mut args = vec![
@@ -1724,6 +1737,7 @@ where
 fn run_felt_tags_kanban_mutation<R, S>(
     payload: &AgentRequestPayload,
     felt_host: &str,
+    expected_fiber_id: &str,
     run_process: &mut R,
     read_snapshot: &S,
 ) -> Result<(), String>
@@ -1731,7 +1745,7 @@ where
     R: FnMut(ProcessInvocation) -> Result<(), String>,
     S: Fn(&str, &str) -> Result<Value, String>,
 {
-    let fiber_id = required_string_field(payload, "fiberId")?;
+    let fiber_id = required_matching_fiber_id(payload, expected_fiber_id)?;
     let tags = payload
         .fields
         .get("tags")
@@ -1888,6 +1902,19 @@ fn required_string_field<'a>(
 
 fn optional_string_field<'a>(payload: &'a AgentRequestPayload, key: &str) -> Option<&'a str> {
     payload.fields.get(key).and_then(Value::as_str)
+}
+
+fn required_matching_fiber_id<'a>(
+    payload: &'a AgentRequestPayload,
+    expected_fiber_id: &str,
+) -> Result<&'a str, String> {
+    let fiber_id = required_string_field(payload, "fiberId")?;
+    if fiber_id != expected_fiber_id {
+        return Err(format!(
+            "fiberId mismatch: payload `{fiber_id}` does not match path `{expected_fiber_id}`"
+        ));
+    }
+    Ok(fiber_id)
 }
 
 fn optional_bool_field(payload: &AgentRequestPayload, key: &str) -> Result<Option<bool>, String> {
@@ -5230,6 +5257,39 @@ malformed
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn kanban_transition_rejects_fiber_id_that_does_not_match_validated_path() {
+        let dir = temp_host("kanban-mismatched-fiber-id");
+        fs::create_dir_all(dir.join(".felt/story")).unwrap();
+        fs::write(dir.join(".felt/story/story.md"), "---\nname: Story\n---\n").unwrap();
+        let payload = kanban_payload(&[
+            ("kind", json!("felt-history")),
+            ("path", json!("story/story.md")),
+            ("feltHost", json!(dir.display().to_string())),
+            ("fiberId", json!("other-story")),
+            ("historyKind", json!("review-comment")),
+            ("summary", json!("Wrong target")),
+        ]);
+        let mut invocations = Vec::new();
+
+        let error = run_kanban_transition_with(
+            &payload,
+            |invocation| {
+                invocations.push(invocation);
+                Ok(())
+            },
+            |_, fiber_id| Ok(json!({ "id": fiber_id })),
+        )
+        .unwrap_err();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(invocations.is_empty());
+        assert_eq!(
+            error,
+            "fiberId mismatch: payload `other-story` does not match path `story`"
+        );
     }
 
     #[test]
