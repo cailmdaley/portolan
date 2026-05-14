@@ -32,7 +32,7 @@ afterEach(() => {
 })
 
 describe('FrontendMapActions.activateRemoteCity', () => {
-  it('posts the persistent Rust preview profile as an activation body', async () => {
+  it('posts the persistent Rust activation as an explicit runtime body', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({ status: 'started' }),
@@ -53,7 +53,7 @@ describe('FrontendMapActions.activateRemoteCity', () => {
     })
   })
 
-  it('posts the Rust preview profile as an activation body', async () => {
+  it('posts the one-shot Rust activation body', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({ status: 'started' }),

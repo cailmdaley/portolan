@@ -79,7 +79,7 @@ afterEach(() => {
 })
 
 describe('MapInteractionController remote activation menu', () => {
-  it('offers Rust-default, one-shot, and Node fallback activation commands for remote cities', () => {
+  it('offers preferred, persistent Rust, one-shot Rust, and Node fallback activation commands for remote cities', () => {
     const { canvas, contextMenu, activateRemoteCity, controller } = makeController()
 
     canvas.dispatchEvent(new MouseEvent('contextmenu', {
@@ -89,13 +89,17 @@ describe('MapInteractionController remote activation menu', () => {
     }))
 
     const items = (contextMenu.show as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as MenuItem[]
+    expect(items.map((item) => item.label)).toContain('Activate Preferred Agent')
     expect(items.map((item) => item.label)).toContain('Activate Rust Agent')
     expect(items.map((item) => item.label)).toContain('Activate Rust Once')
     expect(items.map((item) => item.label)).toContain('Activate Node Fallback')
     expect(items.map((item) => item.label)).not.toContain('Activate Rust Preview')
 
-    items.find((item) => item.label === 'Activate Rust Agent')?.action()
+    items.find((item) => item.label === 'Activate Preferred Agent')?.action()
     expect(activateRemoteCity).toHaveBeenCalledWith(city())
+
+    items.find((item) => item.label === 'Activate Rust Agent')?.action()
+    expect(activateRemoteCity).toHaveBeenCalledWith(city(), { agentRuntime: 'rust' })
 
     items.find((item) => item.label === 'Activate Rust Once')?.action()
     expect(activateRemoteCity).toHaveBeenCalledWith(city(), { agentRuntime: 'rust', once: true })
@@ -118,6 +122,7 @@ describe('MapInteractionController remote activation menu', () => {
     }))
 
     const items = (contextMenu.show as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as MenuItem[]
+    expect(items.map((item) => item.label)).not.toContain('Activate Preferred Agent')
     expect(items.map((item) => item.label)).not.toContain('Activate Rust Agent')
     expect(items.map((item) => item.label)).not.toContain('Activate Rust Once')
     expect(items.map((item) => item.label)).not.toContain('Activate Node Fallback')
