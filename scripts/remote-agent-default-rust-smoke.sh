@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./remote-agent-runtime.sh
+source "$SCRIPT_DIR/remote-agent-runtime.sh"
+
 HOST="candide"
 PORTOLAN_URL="${PORTOLAN_URL:-http://localhost:4004}"
 CITIES_FILE="${PORTOLAN_CITIES_FILE:-$HOME/.portolan/cities.json}"
@@ -145,11 +149,11 @@ NODE
 
 if [ "$REQUIRE_STARTED" = true ]; then
   echo "[portolan] Stopping remote Rust runtime session before activation on $HOST"
-  ssh -T "$HOST" "tmux kill-session -t '=portolan-agent-rust' 2>/dev/null || true"
-  ssh -T "$HOST" "tmux kill-session -t '=portolan-agent-rust-preview' 2>/dev/null || true"
+  ssh -T "$HOST" "tmux kill-session -t '=$RUST_AGENT_SESSION' 2>/dev/null || true"
+  ssh -T "$HOST" "tmux kill-session -t '=$LEGACY_RUST_AGENT_SESSION' 2>/dev/null || true"
   if [ "$STOP_OPPOSITE" = true ]; then
     echo "[portolan] Stopping remote Node fallback session before activation on $HOST"
-    ssh -T "$HOST" "tmux kill-session -t '=portolan-agent' 2>/dev/null || true"
+    ssh -T "$HOST" "tmux kill-session -t '=$NODE_AGENT_SESSION' 2>/dev/null || true"
   fi
 fi
 
@@ -186,12 +190,15 @@ if (!String(response.message ?? '').includes('rust')) {
 }
 NODE
 
-echo "[portolan] Verifying remote tmux session portolan-agent-rust on $HOST"
-ssh -T "$HOST" "tmux has-session -t '=portolan-agent-rust'"
+echo "[portolan] Verifying remote tmux session $RUST_AGENT_SESSION on $HOST"
+ssh -T "$HOST" "tmux has-session -t '=$RUST_AGENT_SESSION'"
+
+echo "[portolan] Verifying legacy preview session $LEGACY_RUST_AGENT_SESSION is not running on $HOST"
+ssh -T "$HOST" "! tmux has-session -t '=$LEGACY_RUST_AGENT_SESSION' 2>/dev/null"
 
 if [ "$REQUIRE_STARTED" = true ] && [ "$STOP_OPPOSITE" = true ]; then
   echo "[portolan] Verifying remote Node fallback session stayed stopped on $HOST"
-  ssh -T "$HOST" "! tmux has-session -t '=portolan-agent' 2>/dev/null"
+  ssh -T "$HOST" "! tmux has-session -t '=$NODE_AGENT_SESSION' 2>/dev/null"
 fi
 
 echo "[portolan] Default Rust remote-agent activation smoke passed for $HOST"

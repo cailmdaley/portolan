@@ -1,3 +1,5 @@
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,6 +8,46 @@ import {
   remoteAgentRuntimeProfiles,
   remoteAgentTmuxSession,
 } from '../RemoteAgentRuntime.js';
+
+function shellRuntimeProfiles(): Record<string, { tmuxSession: string; replacesTmuxSessions: string[] }> {
+  const helperPath = fileURLToPath(new URL('../../../scripts/remote-agent-runtime.sh', import.meta.url));
+  const stdout = execFileSync(
+    'bash',
+    [
+      '-lc',
+      [
+        'source "$HELPER_PATH"',
+        'printf "rust_tmux=%s\\n" "$(remote_agent_tmux_session rust)"',
+        'printf "rust_replaces=%s\\n" "$(replaced_remote_agent_tmux_sessions rust | tr "\\n" " " | sed "s/[[:space:]]*$//")"',
+        'printf "node_tmux=%s\\n" "$(remote_agent_tmux_session node)"',
+        'printf "node_replaces=%s\\n" "$(replaced_remote_agent_tmux_sessions node | tr "\\n" " " | sed "s/[[:space:]]*$//")"',
+      ].join('; '),
+    ],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, HELPER_PATH: helperPath },
+    },
+  );
+  const entries = Object.fromEntries(
+    stdout
+      .trim()
+      .split('\n')
+      .map((line) => {
+        const [key, ...rest] = line.split('=');
+        return [key, rest.join('=')];
+      }),
+  );
+  return {
+    rust: {
+      tmuxSession: entries.rust_tmux,
+      replacesTmuxSessions: entries.rust_replaces.split(' ').filter(Boolean),
+    },
+    node: {
+      tmuxSession: entries.node_tmux,
+      replacesTmuxSessions: entries.node_replaces.split(' ').filter(Boolean),
+    },
+  };
+}
 
 describe('RemoteAgentRuntime', () => {
   it('keeps runtime profile diagnostics aligned with launch helpers', () => {
@@ -31,6 +73,20 @@ describe('RemoteAgentRuntime', () => {
     for (const profile of remoteAgentRuntimeProfiles()) {
       expect(profile.tmuxSession).toBe(remoteAgentTmuxSession(profile.runtime));
     }
+  });
+
+  it('keeps shell runtime helpers aligned with server runtime profiles', () => {
+    expect(shellRuntimeProfiles()).toEqual(
+      Object.fromEntries(
+        remoteAgentRuntimeProfiles().map((profile) => [
+          profile.runtime,
+          {
+            tmuxSession: profile.tmuxSession,
+            replacesTmuxSessions: profile.replacesTmuxSessions,
+          },
+        ]),
+      ),
+    );
   });
 
   it('parses runtime identifiers with an explicit fallback', () => {

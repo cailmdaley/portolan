@@ -1,7 +1,7 @@
 [package]
 name = "portolan-agent"
 version = "0.1.0"
-description = "Preview Rust remote-agent binary for Portolan"
+description = "Rust remote-agent binary for Portolan"
 edition = "2021"
 rust-version = "1.77.2"
 

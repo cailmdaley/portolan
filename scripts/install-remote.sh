@@ -22,6 +22,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=./remote-agent-runtime.sh
+source "$SCRIPT_DIR/remote-agent-runtime.sh"
 
 # Colors
 RED='\033[0;31m'
@@ -55,8 +57,6 @@ SSH_HOST=""
 START_AGENT=false
 AGENT_RUNTIME="rust"
 RUST_AGENT_LOCAL_BINARY=""
-RUST_AGENT_SESSION="portolan-agent-rust"
-NODE_AGENT_SESSION="portolan-agent"
 AGENT_ORIGIN=""
 AGENT_PLANNOTATOR_PORT=""
 AGENT_ONCE=false
@@ -503,15 +503,10 @@ fi
 # Start agent if requested
 if [ "$START_AGENT" = true ]; then
   log "Starting agent..."
-  if [ "$AGENT_RUNTIME" = "rust" ]; then
-    AGENT_SESSION="$RUST_AGENT_SESSION"
-    OPPOSITE_AGENT_SESSION="$NODE_AGENT_SESSION"
-    OPPOSITE_AGENT_SESSIONS="$NODE_AGENT_SESSION"
-  else
-    AGENT_SESSION="$NODE_AGENT_SESSION"
-    OPPOSITE_AGENT_SESSION="$RUST_AGENT_SESSION"
-    OPPOSITE_AGENT_SESSIONS="$RUST_AGENT_SESSION portolan-agent-rust-preview"
-  fi
+  AGENT_SESSION="$(remote_agent_tmux_session "$AGENT_RUNTIME")"
+  OPPOSITE_AGENT_SESSIONS="$(replaced_remote_agent_tmux_sessions "$AGENT_RUNTIME")"
+  OPPOSITE_AGENT_SESSION="$(printf '%s\n' "$OPPOSITE_AGENT_SESSIONS" | head -n 1)"
+  OPPOSITE_AGENT_SESSIONS_STR="$(printf '%s\n' "$OPPOSITE_AGENT_SESSIONS" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   REPLACES_RUNTIME=true
   if [ "$AGENT_RUNTIME" = "rust" ] && [ "$AGENT_ONCE" = true ]; then
     REPLACES_RUNTIME=false
@@ -521,10 +516,10 @@ if [ "$START_AGENT" = true ]; then
     # Kill existing runtime-specific agent if running
     tmux kill-session -t "$AGENT_SESSION" 2>/dev/null || true
     if [ "$REPLACES_RUNTIME" = true ]; then
-      for opposite_session in $OPPOSITE_AGENT_SESSIONS; do
+      for opposite_session in $OPPOSITE_AGENT_SESSIONS_STR; do
         tmux kill-session -t "$opposite_session" 2>/dev/null || true
       done
-      echo "Stopped opposite runtime session(s) '$OPPOSITE_AGENT_SESSIONS'"
+      echo "Stopped opposite runtime session(s) '$OPPOSITE_AGENT_SESSIONS_STR'"
     else
       echo "Leaving opposite runtime session '$OPPOSITE_AGENT_SESSION' untouched for one-shot Rust agent"
     fi

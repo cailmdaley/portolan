@@ -5,6 +5,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./remote-agent-runtime.sh
+source "$SCRIPT_DIR/remote-agent-runtime.sh"
+
 MANUAL=false
 RESTART_AGENT=true
 AGENT_RUNTIME="rust"
@@ -266,11 +270,7 @@ preflight_agent_runtime() {
 }
 
 if [ -z "$AGENT_SESSION" ]; then
-  if [ "$AGENT_RUNTIME" = "rust" ]; then
-    AGENT_SESSION="portolan-agent-rust"
-  else
-    AGENT_SESSION="portolan-agent"
-  fi
+  AGENT_SESSION="$(remote_agent_tmux_session "$AGENT_RUNTIME")"
 fi
 
 AGENT_CMD="$(build_agent_cmd "$AGENT_RUNTIME" "$HOST" "$AGENT_ORIGIN" "$AGENT_PLANNOTATOR_PORT" "$AGENT_ONCE")"
@@ -278,13 +278,9 @@ REPLACES_RUNTIME=true
 if [ "$AGENT_RUNTIME" = "rust" ] && [ "$AGENT_ONCE" = true ]; then
   REPLACES_RUNTIME=false
 fi
-if [ "$AGENT_RUNTIME" = "rust" ]; then
-  OPPOSITE_AGENT_SESSION="portolan-agent"
-  OPPOSITE_AGENT_SESSIONS="portolan-agent"
-else
-  OPPOSITE_AGENT_SESSION="portolan-agent-rust"
-  OPPOSITE_AGENT_SESSIONS="portolan-agent-rust portolan-agent-rust-preview"
-fi
+OPPOSITE_AGENT_SESSIONS="$(replaced_remote_agent_tmux_sessions "$AGENT_RUNTIME")"
+OPPOSITE_AGENT_SESSION="$(printf '%s\n' "$OPPOSITE_AGENT_SESSIONS" | head -n 1)"
+OPPOSITE_AGENT_SESSIONS_STR="$(printf '%s\n' "$OPPOSITE_AGENT_SESSIONS" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 
 LABEL="com.cailmdaley.portolan-tunnel-$HOST"
 TARGET="gui/$(id -u)/$LABEL"
@@ -357,7 +353,7 @@ preflight_agent_runtime "$AGENT_RUNTIME" "$HOST"
 echo "[$HOST] Restarting remote runtime '$AGENT_RUNTIME' in tmux session '$AGENT_SESSION'..."
 ssh "$HOST" "tmux kill-session -t '$AGENT_SESSION' 2>/dev/null; true"
 if [ "$REPLACES_RUNTIME" = true ]; then
-  echo "[$HOST] Stopping opposite runtime session(s) '$OPPOSITE_AGENT_SESSIONS' to keep one live origin socket..."
+  echo "[$HOST] Stopping opposite runtime session(s) '$OPPOSITE_AGENT_SESSIONS_STR' to keep one live origin socket..."
   for opposite_session in $OPPOSITE_AGENT_SESSIONS; do
     ssh "$HOST" "tmux kill-session -t '$opposite_session' 2>/dev/null; true"
   done
