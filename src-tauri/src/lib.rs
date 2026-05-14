@@ -17,6 +17,7 @@ const BACKEND_PORT: u16 = 4004;
 const BACKEND_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MENU_RESTORE_WORKSPACES: &str = "workspace.restoreRecent";
 const MENU_REFRESH_WORKSPACE: &str = "workspace.refresh";
+const MAIN_WINDOW_LABEL: &str = "main";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -609,6 +610,20 @@ fn restore_workspace_records(
     Ok(labels)
 }
 
+fn startup_workspace_records(recent: Vec<WorkspaceWindowRecord>) -> Vec<WorkspaceWindowRecord> {
+    recent
+        .into_iter()
+        .filter(|entry| entry.label != MAIN_WINDOW_LABEL)
+        .collect()
+}
+
+fn restore_startup_workspace_records(
+    app: &tauri::AppHandle,
+    recent: Vec<WorkspaceWindowRecord>,
+) -> Result<Vec<String>, String> {
+    restore_workspace_records(app, startup_workspace_records(recent))
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum NativeMenuAction {
     RestoreWorkspaces,
@@ -734,6 +749,15 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {
+        tauri::RunEvent::Ready => {
+            let recent = app_handle
+                .try_state::<NativeState>()
+                .map(|state| recent_workspace_records(&state))
+                .unwrap_or_default();
+            if let Err(error) = restore_startup_workspace_records(app_handle, recent) {
+                log::warn!("failed to restore startup workspace windows: {error}");
+            }
+        }
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             shutdown_backend(app_handle);
         }
@@ -884,6 +908,29 @@ mod tests {
         assert_eq!(restored.recent()[0].route_url, "#city=portolan&mode=find");
 
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn startup_restore_skips_main_window_record() {
+        let recent = vec![
+            WorkspaceWindowRecord {
+                label: MAIN_WINDOW_LABEL.to_string(),
+                route_url: "#city=portolan".to_string(),
+                title: "Portolan".to_string(),
+                updated_at_unix: 1,
+            },
+            WorkspaceWindowRecord {
+                label: "workspace-1".to_string(),
+                route_url: "#city=portolan&mode=find".to_string(),
+                title: "Portolan - Find".to_string(),
+                updated_at_unix: 2,
+            },
+        ];
+
+        let startup_records = startup_workspace_records(recent);
+        assert_eq!(startup_records.len(), 1);
+        assert_eq!(startup_records[0].label, "workspace-1");
+        assert_eq!(startup_records[0].route_url, "#city=portolan&mode=find");
     }
 
     #[test]
