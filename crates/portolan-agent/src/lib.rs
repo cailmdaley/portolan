@@ -2241,7 +2241,10 @@ fn handle_search_files(payload: &SearchFilesRequestPayload) -> AgentFrame {
 
 fn search_files(payload: &SearchFilesRequestPayload) -> Result<Vec<SearchResultPayload>, String> {
     let root_path = resolve_remote_directory_path(&payload.path)?;
-    let limit = payload.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
+    let limit = payload
+        .limit
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .min(DEFAULT_SEARCH_LIMIT);
     let query = payload.query.trim().to_lowercase();
     if query.is_empty() {
         return Ok(Vec::new());
@@ -6176,6 +6179,34 @@ malformed
                     .collect::<Vec<_>>();
                 assert!(names.contains(&"summary_report.md"));
                 assert!(names.iter().all(|name| *name != "nested/notes.txt"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_limit_is_clamped_to_node_visible_cap() {
+        let dir = temp_host("search-limit-cap");
+        fs::create_dir_all(&dir).unwrap();
+        for index in 0..55 {
+            fs::write(dir.join(format!("summary-{index:02}.txt")), "summary\n").unwrap();
+        }
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-limit-cap".to_string(),
+                path: dir.display().to_string(),
+                query: "summary".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(10_000),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.results.len(), DEFAULT_SEARCH_LIMIT);
             }
             other => panic!("unexpected response: {other:?}"),
         }
