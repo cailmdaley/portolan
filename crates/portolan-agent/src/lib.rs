@@ -2559,7 +2559,7 @@ fn read_remote_directory_entries(path: &Path) -> Result<Vec<DirectoryEntryPayloa
             let is_dir = match entry.file_type().ok()? {
                 file_type if file_type.is_dir() => true,
                 file_type if file_type.is_file() => false,
-                file_type if file_type.is_symlink() => match entry.metadata() {
+                file_type if file_type.is_symlink() => match fs::metadata(entry.path()) {
                     Ok(metadata) => metadata.is_dir(),
                     Err(_) => false,
                 },
@@ -5693,6 +5693,65 @@ malformed
                     .map(|entry| entry.name.as_str())
                     .collect::<Vec<_>>();
                 assert_eq!(names, vec!["Alpha", "beta", "A.txt", "b.txt"]);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lists_symlinked_directories_as_dirs_like_node() {
+        let dir = temp_host("list-dir-symlink");
+        let target = temp_host("list-dir-symlink-target");
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("inside.txt"), "inside\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("linked-reports")).unwrap();
+        fs::write(dir.join("notes.md"), "notes\n").unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "list-dir-symlink".to_string(),
+                path: dir.display().to_string(),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&target).unwrap();
+
+        match &responses[0] {
+            AgentFrame::ListDirectoryResult { payload } => {
+                assert!(payload.ok);
+                let entries = payload.entries.as_ref().unwrap();
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].name, "linked-reports");
+                assert!(matches!(entries[0].kind, DirectoryEntryType::Dir));
+                assert_eq!(entries[1].name, "notes.md");
+                assert!(matches!(entries[1].kind, DirectoryEntryType::File));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lists_broken_symlinks_as_files_like_node() {
+        let dir = temp_host("list-dir-broken-symlink");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("broken-link")).unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "list-dir-broken-symlink".to_string(),
+                path: dir.display().to_string(),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::ListDirectoryResult { payload } => {
+                assert!(payload.ok);
+                let entries = payload.entries.as_ref().unwrap();
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].name, "broken-link");
+                assert!(matches!(entries[0].kind, DirectoryEntryType::File));
             }
             other => panic!("unexpected response: {other:?}"),
         }
