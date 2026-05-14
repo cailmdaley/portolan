@@ -101,7 +101,7 @@ Labels use 3-slice banners (parchment for cities, leather for workers).
 | Sound, voice | — |
 | Stations | — |
 
-This is navigation, not interaction. ~6,200 LOC vs original's 14,000.
+This is navigation, not interaction. ~75K source LOC today (~20K more in tests); the original "stripped-down" framing no longer applies — vellum, the kanban, the Rust crates, and the Tauri shell all live here now.
 
 ## Debugging
 
