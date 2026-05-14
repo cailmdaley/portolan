@@ -156,6 +156,20 @@ interface KanbanCard {
    * `awaiting` state until the pending review is resolved.
    */
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted'
+  /**
+   * ISO timestamp of the next cron occurrence, server-computed from
+   * `shuttleSchedule` + `shuttleTz`. Present only for dormant standing
+   * roles (kind=standing, status open, enabled, reviewState ∈
+   * {scheduled, accepted}); absent in every other case.
+   *
+   * The backend routing layer uses this to lift dormant standing roles
+   * onto `timeline.futureDated` (within ±14d) or `timeline.anytimeSoon`
+   * (further out), so cards arriving with `nextLaunchAt` are guaranteed
+   * to be on a timeline surface, not in `now.drafts`. The strip
+   * placement reads `card.nextLaunchAt ?? card.due` for day-column
+   * lookup. A standing role is a commitment with a date, not a draft.
+   */
+  nextLaunchAt?: string
   /** Raw valid top-level `horizon:` value from fiber frontmatter, if present. */
   storedHorizon?: HorizonKind
   /** Surface this card lives on after due-date promotion. */
@@ -866,7 +880,10 @@ export class KanbanModal {
       strip.append(this.renderTimelineCard(card, col, nextRow(col), 'awaiting', staleness[card.originId]))
     }
     for (const card of timeline.futureDated) {
-      const col = dayIndexForIso(card.due, dayIndex)
+      // Standing roles use their next cron occurrence as the day-column;
+      // human due-date cards use `due`. The backend guarantees one or the
+      // other is set on every futureDated card.
+      const col = dayIndexForIso(card.nextLaunchAt ?? card.due, dayIndex)
       if (col === null) continue
       // Closed-but-not-tempered cards on a future date are scheduled
       // judgments — same gold-dashed treatment as the closedAt ghost,

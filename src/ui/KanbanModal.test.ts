@@ -605,6 +605,72 @@ describe('KanbanModal three-surface layout', () => {
     host.remove()
   })
 
+  it('places standing-role timeline cards at their nextLaunchAt day-column', async () => {
+    // Dormant standing roles arrive on timeline.futureDated with
+    // `nextLaunchAt` (cron-derived) instead of `due` (human-set). The
+    // strip's day-column lookup reads `card.nextLaunchAt ?? card.due`, so
+    // a standing role with nextLaunchAt 3 days out must land in the same
+    // column as a human due-date card 3 days out.
+    const today = new Date()
+    const isoDay = (d: Date) => {
+      const tz = d.getTimezoneOffset() * 60_000
+      return new Date(d.getTime() - tz).toISOString().slice(0, 10)
+    }
+    const dayAt = (offset: number) => {
+      const d = new Date(today)
+      d.setHours(9, 0, 0, 0)
+      d.setDate(d.getDate() + offset)
+      return d.toISOString()
+    }
+    const day3 = new Date(today); day3.setDate(day3.getDate() + 3)
+    const day3Iso = isoDay(day3)
+
+    const response = emptyKanbanResponse()
+    response.timeline.futureDated = [
+      makeKanbanCard({
+        id: 'standing/weekly',
+        name: 'Weekly standing role',
+        shuttleKind: 'standing',
+        shuttleSchedule: '0 9 * * 1',
+        shuttleTz: 'UTC',
+        shuttleReviewState: 'scheduled',
+        nextLaunchAt: dayAt(3),
+      }),
+      makeKanbanCard({
+        id: 'human/deadline',
+        name: 'Human due-date card',
+        due: dayAt(3),
+        storedHorizon: 'soon',
+      }),
+    ]
+    response.totals = { ...response.totals, futureDated: 2 }
+    vi.stubGlobal('fetch', mockFetch({
+      '/kanban': () => jsonResponse(response),
+    }))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const modal = new KanbanModal({
+      apiBase: 'http://localhost:4004',
+      onOpenFiber: vi.fn(),
+    })
+    modal.mount(host)
+    await tick()
+
+    const standingCard = host.querySelector<HTMLElement>('[data-fiber-id="standing/weekly"]')
+    const humanCard = host.querySelector<HTMLElement>('[data-fiber-id="human/deadline"]')
+    expect(standingCard).not.toBeNull()
+    expect(humanCard).not.toBeNull()
+    // Both should land on the same day-column 3 days out.
+    expect(standingCard?.style.gridColumn).toBe(humanCard?.style.gridColumn)
+    // And that column should match the target day's iso.
+    const dayCol = host.querySelector<HTMLElement>(`[data-timeline-day-iso="${day3Iso}"]`)
+    expect(dayCol).not.toBeNull()
+
+    modal.unmount()
+    host.remove()
+  })
+
   it('clusters stash cards by containment-path; held-open below warm', async () => {
     const response = emptyKanbanResponse()
     response.stash = [
