@@ -226,6 +226,28 @@ build_agent_cmd() {
   fi
 }
 
+preflight_agent_runtime() {
+  local runtime="$1"
+  local host="$2"
+
+  if [ "$runtime" = "rust" ]; then
+    echo "[$host] Preflighting Rust agent binary..."
+    ssh "$host" "test -x ~/.local/bin/portolan-agent-rust" || {
+      echo "[$host] ERROR: Rust agent is not installed or executable at ~/.local/bin/portolan-agent-rust" >&2
+      echo "[$host] Install first: ./scripts/install-remote.sh $host" >&2
+      return 1
+    }
+    return 0
+  fi
+
+  echo "[$host] Preflighting explicit Node fallback..."
+  ssh "$host" "test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null 2>&1" || {
+    echo "[$host] ERROR: Node fallback is not installed or node is unavailable" >&2
+    echo "[$host] Install first: ./scripts/install-remote.sh --agent-runtime node $host" >&2
+    return 1
+  }
+}
+
 if [ -z "$AGENT_SESSION" ]; then
   if [ "$AGENT_RUNTIME" = "rust" ]; then
     AGENT_SESSION="portolan-agent-rust"
@@ -310,6 +332,8 @@ echo "[$HOST] Tunnel OK"
 if [ "$RESTART_AGENT" != true ]; then
   exit 0
 fi
+
+preflight_agent_runtime "$AGENT_RUNTIME" "$HOST"
 
 echo "[$HOST] Restarting remote runtime '$AGENT_RUNTIME' in tmux session '$AGENT_SESSION'..."
 ssh "$HOST" "tmux kill-session -t '$AGENT_SESSION' 2>/dev/null; true"
