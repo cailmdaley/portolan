@@ -27,9 +27,15 @@ run_stack() {
   lsof -ti:$SHUTTLE_PORT | xargs kill -9 2>/dev/null || true
   sleep 1
 
-  # Start shuttle daemon
+  # Start shuttle daemon.
+  # SHUTTLE_HOST=local pins the daemon's own_host_id to "local", matching the
+  # default that shuttle_host() in poller.ex returns for fibers without an
+  # explicit shuttle.host: field. Without this, the daemon falls through to
+  # :inet.gethostname() (e.g. "dapmcw68"), and every "legacy/local" fiber
+  # silently fails the eligibility check and sits at idle forever.
+  # See ai-futures/portolan/gotchas/gotcha-shuttle-host-affinity-default.
   echo "Starting shuttle on :$SHUTTLE_PORT..."
-  /opt/homebrew/bin/escript "$SHUTTLE" start >/dev/null 2>&1 &
+  SHUTTLE_HOST=local /opt/homebrew/bin/escript "$SHUTTLE" start >/dev/null 2>&1 &
   SHUTTLE_PID=$!
 
   # Start backend (in subshell with explicit directory)
