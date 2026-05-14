@@ -166,7 +166,7 @@ describe('HttpApiActivation', () => {
     );
 
     expect(reconnectTunnelFn).not.toHaveBeenCalled();
-    expect(execFileFn).toHaveBeenCalledTimes(4);
+    expect(execFileFn).toHaveBeenCalledTimes(5);
     expect(execFileFn.mock.calls[0]?.[1]).toEqual([
       '-T',
       unsafeHost,
@@ -180,12 +180,17 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       unsafeHost,
+      'test -x ~/.local/bin/portolan-agent-rust',
+    ]);
+    expect(execFileFn.mock.calls[3]?.[1]).toEqual([
+      '-T',
+      unsafeHost,
       [
         `tmux kill-session -t ${exactTmuxTarget('portolan-agent')} 2>/dev/null || true`,
         `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
       ].join('; '),
     ]);
-    const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
+    const startArgs = execFileFn.mock.calls[4]?.[1] as string[];
     const escapedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape(unsafeHost)}`;
     const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust')} ${shellEscape(`bash -l -c ${shellEscape(escapedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
@@ -224,6 +229,11 @@ describe('HttpApiActivation', () => {
       `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null && echo running || echo stopped`,
     ]);
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      'candide',
+      'test -x ~/.local/bin/portolan-agent-rust',
+    ]);
+    expect(execFileFn.mock.calls[3]?.[1]).toEqual([
       '-T',
       'candide',
       [
@@ -323,6 +333,7 @@ describe('HttpApiActivation', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockRejectedValueOnce(new Error('duplicate session: portolan-agent-rust'));
     const preferences = runtimePreferences({ candide: 'rust' });
     const api = new HttpApiActivation({
@@ -336,7 +347,7 @@ describe('HttpApiActivation', () => {
 
     await api.handleActivateCity(new URL('http://localhost/activate-city?cityId=remote-city'), res);
 
-    expect(execFileFn).toHaveBeenCalledTimes(4);
+    expect(execFileFn).toHaveBeenCalledTimes(5);
     expect(result()).toEqual({
       status: 200,
       body: {
@@ -435,8 +446,13 @@ describe('HttpApiActivation', () => {
     await api.handleActivateCity(new URL('http://localhost/activate-city'), res, body);
 
     expect(reconnectTunnelFn).not.toHaveBeenCalled();
-    expect(execFileFn).toHaveBeenCalledTimes(3);
-    const startArgs = execFileFn.mock.calls[2]?.[1] as string[];
+    expect(execFileFn).toHaveBeenCalledTimes(4);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      'candide',
+      'test -x ~/.local/bin/portolan-agent-rust',
+    ]);
+    const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
     const escapedOrigin = shellEscape(body.origin);
     const expectedStartCommand = `~/.local/bin/portolan-agent-rust connect --ssh-host=${shellEscape('candide')} --origin=${escapedOrigin} --plannotator-port=${shellEscape('50055')} --once`;
     const expectedRemoteCommand = `tmux new-session -d -s ${shellEscape('portolan-agent-rust')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
@@ -567,6 +583,41 @@ describe('HttpApiActivation', () => {
       status: 500,
       body: {
         error: 'Failed to start agent: candide: Node fallback is not installed; run ./scripts/install-remote.sh --agent-runtime node candide before activating agentRuntime=node',
+      },
+    });
+  });
+
+  it('does not stop the Node fallback when the Rust agent is missing', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockRejectedValueOnce(new Error('missing rust agent'));
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+      runtimePreferences: runtimePreferences({ candide: 'node' }),
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city?cityId=remote-city&agentRuntime=rust'),
+      res,
+    );
+
+    expect(execFileFn).toHaveBeenCalledTimes(3);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      'candide',
+      'test -x ~/.local/bin/portolan-agent-rust',
+    ]);
+    expect(JSON.stringify(execFileFn.mock.calls)).not.toContain('tmux kill-session');
+    expect(result()).toEqual({
+      status: 500,
+      body: {
+        error: 'Failed to start agent: candide: Rust agent is not installed or executable at ~/.local/bin/portolan-agent-rust; run ./scripts/install-remote.sh candide before activating agentRuntime=rust',
       },
     });
   });

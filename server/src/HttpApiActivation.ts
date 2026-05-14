@@ -6,6 +6,7 @@ import { reconnectTunnel } from './RemoteAgentCoordinator.js';
 import type { RemoteAgentConnectionDiagnostic, RemoteAgentRuntime } from './OriginManager.js';
 import {
   NODE_AGENT_FALLBACK_PREFLIGHT_COMMAND,
+  RUST_AGENT_PREFLIGHT_COMMAND,
   parseRemoteAgentRuntime,
   remoteAgentCommand,
   remoteAgentTmuxSession,
@@ -211,6 +212,9 @@ export class HttpApiActivation {
         return;
       }
 
+      if (runtime === 'rust') {
+        await assertRustAgentInstalled(sshHost, this.execFileFn);
+      }
       if (runtime === 'node') {
         await assertNodeFallbackInstalled(sshHost, this.execFileFn);
       }
@@ -322,6 +326,27 @@ async function assertNodeFallbackInstalled(
   } catch {
     throw new Error(
       `${sshHost}: Node fallback is not installed; run ./scripts/install-remote.sh --agent-runtime node ${sshHost} before activating agentRuntime=node`,
+    );
+  }
+}
+
+async function assertRustAgentInstalled(
+  sshHost: string,
+  execFileFn: typeof execFileAsync,
+): Promise<void> {
+  try {
+    await execFileFn(
+      'ssh',
+      [
+        '-T',
+        sshHost,
+        RUST_AGENT_PREFLIGHT_COMMAND,
+      ],
+      { timeout: 60_000 },
+    );
+  } catch {
+    throw new Error(
+      `${sshHost}: Rust agent is not installed or executable at ~/.local/bin/portolan-agent-rust; run ./scripts/install-remote.sh ${sshHost} before activating agentRuntime=rust`,
     );
   }
 }
