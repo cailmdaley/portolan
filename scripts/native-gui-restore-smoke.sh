@@ -211,4 +211,24 @@ if [[ "$PREEXISTING_BACKEND" == "0" ]] && ! printf '%s\n' "$debug_runtime" | gre
   exit 1
 fi
 
+if [[ "$PREEXISTING_BACKEND" == "0" ]]; then
+  DEBUG_RUNTIME="$debug_runtime" node <<'NODE'
+const payload = JSON.parse(process.env.DEBUG_RUNTIME || '{}');
+const nativeBackend = payload.runtime?.nativeBackend;
+const expected = {
+  enabled: true,
+  launchKind: 'node-dist-resource',
+  supervised: true,
+};
+for (const [key, value] of Object.entries(expected)) {
+  if (nativeBackend?.[key] !== value) {
+    console.error(
+      `[portolan] app-owned backend expected runtime.nativeBackend.${key}=${JSON.stringify(value)}; got ${JSON.stringify(nativeBackend?.[key])}`,
+    );
+    process.exit(1);
+  }
+}
+NODE
+fi
+
 echo "[portolan] Built app launch/restore smoke passed"
