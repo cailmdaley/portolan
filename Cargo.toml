@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/portolan-agent",
+  "crates/portolan-agent-protocol",
+  "crates/portolan-index",
+  "src-tauri",
+]
+
