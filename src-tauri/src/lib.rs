@@ -576,7 +576,7 @@ async fn restore_recent_workspace_windows(
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeState>,
 ) -> Result<Vec<String>, String> {
-    restore_workspace_records(&app, recent_workspace_records(&state))
+    restore_recent_workspace_records(&app, recent_workspace_records(&state))
 }
 
 fn recent_workspace_records(state: &NativeState) -> Vec<WorkspaceWindowRecord> {
@@ -624,6 +624,14 @@ fn startup_main_window_record(recent: &[WorkspaceWindowRecord]) -> Option<Worksp
         .cloned()
 }
 
+fn split_main_and_workspace_records(
+    recent: Vec<WorkspaceWindowRecord>,
+) -> (Option<WorkspaceWindowRecord>, Vec<WorkspaceWindowRecord>) {
+    let main = startup_main_window_record(&recent);
+    let workspaces = startup_workspace_records(recent);
+    (main, workspaces)
+}
+
 fn restore_startup_main_window_record(
     app: &tauri::AppHandle,
     recent: &[WorkspaceWindowRecord],
@@ -652,7 +660,16 @@ fn restore_startup_workspace_records(
     app: &tauri::AppHandle,
     recent: Vec<WorkspaceWindowRecord>,
 ) -> Result<Vec<String>, String> {
-    restore_workspace_records(app, startup_workspace_records(recent))
+    let (_, workspaces) = split_main_and_workspace_records(recent);
+    restore_workspace_records(app, workspaces)
+}
+
+fn restore_recent_workspace_records(
+    app: &tauri::AppHandle,
+    recent: Vec<WorkspaceWindowRecord>,
+) -> Result<Vec<String>, String> {
+    restore_startup_main_window_record(app, &recent)?;
+    restore_startup_workspace_records(app, recent)
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -720,7 +737,7 @@ fn handle_native_menu_event(app: &tauri::AppHandle, menu_id: &str) {
                     .try_state::<NativeState>()
                     .map(|state| recent_workspace_records(&state))
                     .unwrap_or_default();
-                if let Err(error) = restore_workspace_records(&app, recent) {
+                if let Err(error) = restore_recent_workspace_records(&app, recent) {
                     log::warn!("failed to restore recent workspace windows: {error}");
                 }
             });
@@ -999,6 +1016,42 @@ mod tests {
         }];
 
         assert!(startup_main_window_record(&recent).is_none());
+    }
+
+    #[test]
+    fn manual_restore_uses_same_main_window_split_as_startup() {
+        let recent = vec![
+            WorkspaceWindowRecord {
+                label: "workspace-1".to_string(),
+                route_url: "#city=portolan&mode=find".to_string(),
+                title: "Portolan - Find".to_string(),
+                updated_at_unix: 3,
+            },
+            WorkspaceWindowRecord {
+                label: MAIN_WINDOW_LABEL.to_string(),
+                route_url: "#city=portolan&mode=kanban".to_string(),
+                title: "Portolan - Kanban".to_string(),
+                updated_at_unix: 2,
+            },
+            WorkspaceWindowRecord {
+                label: "workspace-2".to_string(),
+                route_url: "#city=portolan&mode=narrative&fiber=portolan".to_string(),
+                title: "Portolan - Narrative".to_string(),
+                updated_at_unix: 1,
+            },
+        ];
+
+        let (main, workspaces) = split_main_and_workspace_records(recent);
+        assert_eq!(main.unwrap().route_url, "#city=portolan&mode=kanban");
+        assert_eq!(workspaces.len(), 2);
+        assert!(workspaces
+            .iter()
+            .all(|entry| entry.label != MAIN_WINDOW_LABEL));
+        assert_eq!(workspaces[0].route_url, "#city=portolan&mode=find");
+        assert_eq!(
+            workspaces[1].route_url,
+            "#city=portolan&mode=narrative&fiber=portolan"
+        );
     }
 
     #[test]
