@@ -138,7 +138,7 @@ For Rust agent smoke tests, use a separate runtime session so Node stays as fall
 
 - Build a Linux Rust agent binary from macOS: `npm run native:agent:linux`
 - Install remote hooks and artifacts:
-  - `./scripts/install-remote.sh <host> --agent-runtime rust --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust`
+  - `./scripts/install-remote.sh <host> --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust`
   - Optional session knobs:
     - `--origin <origin>` (defaults to `<host>`)
     - `--plannotator-port <port>` (pass this through to Rust with `--plannotator-port=<port>`)
@@ -152,6 +152,7 @@ Node fallback remains explicit and unchanged:
 - Node runtime is still in session `portolan-agent`.
 - Rust agent runtime is still in session `portolan-agent-rust`.
 - Normal restarts stop the opposite runtime session so only one socket per origin is active at a time; with `--once`, Rust agent runs side-by-side and exits cleanly.
+- Install/start the Node fallback with `./scripts/install-remote.sh --agent-runtime node <host>` when rollback is intentional.
 - Resume Node fallback with `./scripts/reset-tunnel.sh --agent-runtime node <host>` (or let normal self-recovery bring Node back when needed).
 
 Candide-specific model: SSH is ping-gated and seems to impose a short backoff after failed opens.

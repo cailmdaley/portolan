@@ -4,12 +4,13 @@ set -euo pipefail
 HOST="candide"
 PORTOLAN_URL="${PORTOLAN_URL:-http://localhost:4004}"
 CITIES_FILE="${PORTOLAN_CITIES_FILE:-$HOME/.portolan/cities.json}"
+CITY_ID_OVERRIDE=""
 REQUIRE_STARTED=false
 STOP_OPPOSITE=false
 
 usage() {
   cat <<'EOF'
-Usage: scripts/remote-agent-default-rust-smoke.sh [--require-started] [--stop-opposite] [host]
+Usage: scripts/remote-agent-default-rust-smoke.sh [--require-started] [--stop-opposite] [--city-id ID] [host]
 
 Verifies that /activate-city without an agentRuntime override uses the Rust
 remote-agent runtime. By default, an already-running Rust agent is accepted.
@@ -18,6 +19,8 @@ already-running Rust response is accepted if the Node fallback session is not
 running after activation.
 
 Options:
+  --city-id ID       Use an explicit persisted Portolan city id instead of
+                     looking one up by sshHost in ~/.portolan/cities.json.
   --require-started  Stop the Rust runtime session first and require status=started
                      unless auto-recovery self-heals it first.
   --stop-opposite    Also stop the Node fallback session before activation.
@@ -33,6 +36,18 @@ while [ "$#" -gt 0 ]; do
       ;;
     --stop-opposite)
       STOP_OPPOSITE=true
+      shift
+      ;;
+    --city-id)
+      if [ "$#" -lt 2 ]; then
+        echo "[portolan] --city-id requires a value" >&2
+        exit 2
+      fi
+      CITY_ID_OVERRIDE="$2"
+      shift 2
+      ;;
+    --city-id=*)
+      CITY_ID_OVERRIDE="${1#*=}"
       shift
       ;;
     -h|--help)
@@ -66,8 +81,11 @@ if ! command -v ssh >/dev/null 2>&1; then
   exit 1
 fi
 
-CITY_ID="$(
-  HOST="$HOST" CITIES_FILE="$CITIES_FILE" node --input-type=module <<'NODE'
+if [ -n "$CITY_ID_OVERRIDE" ]; then
+  CITY_ID="$CITY_ID_OVERRIDE"
+else
+  CITY_ID="$(
+    HOST="$HOST" CITIES_FILE="$CITIES_FILE" node --input-type=module <<'NODE'
 import { readFileSync } from 'node:fs';
 
 const host = process.env.HOST;
@@ -76,13 +94,20 @@ const data = JSON.parse(readFileSync(citiesFile, 'utf8'));
 const city = data.cities.find((candidate) => candidate.sshHost === host);
 
 if (!city) {
+  const remoteHosts = data.cities
+    .filter((candidate) => candidate.originId !== 'local')
+    .map((candidate) => `${candidate.sshHost ?? '<no-ssh-host>'}:${candidate.id}`)
+    .sort();
   console.error(`[portolan] no persisted city found for sshHost=${host} in ${citiesFile}`);
+  console.error(`[portolan] available remote city hosts: ${remoteHosts.length ? remoteHosts.join(', ') : '<none>'}`);
+  console.error('[portolan] pass --city-id <id> when the city is known but keyed by another host alias');
   process.exit(2);
 }
 
 process.stdout.write(city.id);
 NODE
-)"
+  )"
+fi
 
 echo "[portolan] Checking remote-agent default runtime diagnostics at $PORTOLAN_URL"
 DEBUG_JSON="$(curl -fsS --max-time 5 "$PORTOLAN_URL/debug-runtime")"
