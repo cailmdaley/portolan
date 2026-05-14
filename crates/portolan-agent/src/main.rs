@@ -334,10 +334,31 @@ fn handle_terminal_subscription_frame(
 ) -> bool {
     match frame {
         AgentFrame::TerminalSubscribe { payload } => {
+            if payload
+                .subscription_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .is_none()
+                || payload
+                    .tmux_session
+                    .as_deref()
+                    .filter(|session| !session.is_empty())
+                    .is_none()
+            {
+                return true;
+            }
             start_terminal_subscription(terminal_tx.clone(), terminal_subscriptions, payload);
             true
         }
         AgentFrame::TerminalUnsubscribe { payload } => {
+            if payload
+                .subscription_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .is_none()
+            {
+                return true;
+            }
             stop_terminal_subscription(terminal_subscriptions, payload);
             true
         }
@@ -350,8 +371,8 @@ fn start_terminal_subscription(
     terminal_subscriptions: &mut TerminalSubscriptionSet,
     payload: &TerminalSubscribePayload,
 ) {
-    let subscription_id = payload.subscription_id.clone();
-    let tmux_session = payload.tmux_session.clone();
+    let subscription_id = payload.subscription_id.clone().unwrap_or_default();
+    let tmux_session = payload.tmux_session.clone().unwrap_or_default();
     let task_subscription_id = subscription_id.clone();
     let handle = tokio::spawn(async move {
         stream_tmux_control(task_subscription_id, tmux_session, terminal_tx).await;
@@ -363,7 +384,9 @@ fn stop_terminal_subscription(
     terminal_subscriptions: &mut TerminalSubscriptionSet,
     payload: &TerminalUnsubscribePayload,
 ) {
-    terminal_subscriptions.abort(&payload.subscription_id);
+    if let Some(subscription_id) = payload.subscription_id.as_deref() {
+        terminal_subscriptions.abort(subscription_id);
+    }
 }
 
 struct TerminalSubscriptionSet {
@@ -939,6 +962,55 @@ mod tests {
             terminal_exit_reason("exit status: 0".to_string(), None),
             "exit status: 0",
         );
+    }
+
+    #[test]
+    fn ignores_invalid_terminal_subscribe_payload() {
+        let (terminal_tx, _terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
+        let mut subscriptions = TerminalSubscriptionSet::new();
+
+        let handled = handle_terminal_subscription_frame(
+            &terminal_tx,
+            &mut subscriptions,
+            &AgentFrame::TerminalSubscribe {
+                payload: TerminalSubscribePayload {
+                    subscription_id: Some(String::new()),
+                    tmux_session: Some("worker".to_string()),
+                },
+            },
+        );
+        assert!(handled);
+        assert!(subscriptions.handles.is_empty());
+
+        let handled = handle_terminal_subscription_frame(
+            &terminal_tx,
+            &mut subscriptions,
+            &AgentFrame::TerminalSubscribe {
+                payload: TerminalSubscribePayload {
+                    subscription_id: Some("sub-2".to_string()),
+                    tmux_session: None,
+                },
+            },
+        );
+        assert!(handled);
+        assert!(subscriptions.handles.is_empty());
+    }
+
+    #[test]
+    fn ignores_invalid_terminal_unsubscribe_payload() {
+        let (terminal_tx, _terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
+        let mut subscriptions = TerminalSubscriptionSet::new();
+
+        let handled = handle_terminal_subscription_frame(
+            &terminal_tx,
+            &mut subscriptions,
+            &AgentFrame::TerminalUnsubscribe {
+                payload: TerminalUnsubscribePayload {
+                    subscription_id: None,
+                },
+            },
+        );
+        assert!(handled);
     }
 
     fn temp_events_file(tag: &str) -> PathBuf {

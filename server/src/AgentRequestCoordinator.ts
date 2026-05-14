@@ -70,11 +70,13 @@ export interface AgentRequestDiagnostics {
   byType: Array<{ type: string; pending: number }>;
   requests: AgentRequestDiagnostic[];
   recent: AgentRequestCompletionDiagnostic[];
+  malformedResults: number;
 }
 
 export class AgentRequestCoordinator {
   private pending = new Map<string, PendingRequest>();
   private recentCompletions: AgentRequestCompletionDiagnostic[] = [];
+  private malformedResultFrames = 0;
   private readonly defaultTimeoutMs: number;
   private readonly maxRecentCompletions: number;
   private readonly now: () => number;
@@ -190,6 +192,50 @@ export class AgentRequestCoordinator {
   }
 
   /**
+   * Parse a raw `*-result` frame payload from the Rust/WebSocket protocol.
+   * This keeps result handling centralized and rejects malformed envelopes
+   * early, so protocol drift fails loudly in diagnostics rather than only
+   * via timeouts.
+   */
+  handleResultFrame(type: string, rawPayload: unknown): boolean {
+    if (!isRecord(rawPayload)) {
+      this.recordMalformedResult(type, undefined, 'result payload must be an object');
+      return false;
+    }
+
+    const { correlationId, ok, error, ...result } = rawPayload;
+    if (typeof correlationId !== 'string' || correlationId.length === 0) {
+      this.recordMalformedResult(type, undefined, `malformed ${type}: missing correlationId`);
+      return false;
+    }
+    if (typeof ok !== 'boolean') {
+      this.recordMalformedResult(
+        type,
+        correlationId,
+        `malformed ${type}: expected boolean ok flag`,
+      );
+      const message = typeof error === 'string'
+        ? error
+        : `malformed ${type}: expected boolean ok flag`;
+      this.handleResult(
+        correlationId,
+        false,
+        result as Record<string, unknown>,
+        message,
+      );
+      return true;
+    }
+
+    this.handleResult(
+      correlationId,
+      ok,
+      result as Record<string, unknown>,
+      typeof error === 'string' ? error : undefined,
+    );
+    return true;
+  }
+
+  /**
    * Reject every pending entry for `originId`. Called from the WebSocket
    * close handler so callers don't hang on a dead agent — they get an
    * immediate "agent disconnected" rejection instead of a 5s timeout wait.
@@ -243,7 +289,16 @@ export class AgentRequestCoordinator {
         b.ageMs - a.ageMs || a.originId.localeCompare(b.originId) || a.type.localeCompare(b.type),
       ),
       recent: [...this.recentCompletions],
+      malformedResults: this.malformedResultFrames,
     };
+  }
+
+  private recordMalformedResult(type: string, correlationId: string | undefined, reason: string): void {
+    this.malformedResultFrames += 1;
+    console.warn(
+      `[AgentRequestCoordinator] malformed ${type} frame ` +
+        `(correlationId=${correlationId ?? 'n/a'}): ${reason}`,
+    );
   }
 
   private recordCompletion(
@@ -265,4 +320,8 @@ export class AgentRequestCoordinator {
       this.recentCompletions.length = this.maxRecentCompletions;
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

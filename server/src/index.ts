@@ -688,120 +688,14 @@ wss.on('connection', async (ws, req) => {
           fiberTreeSnapshotStore.applyDelta(origin.id, deltas ?? [], feltHost);
         } else if (message.type === 'shuttle_snapshot') {
           remoteAgentCoordinator.handleShuttleSnapshot(origin.id, message.payload);
-        } else if (message.type === 'kanban-transition-result') {
-          // Stage 4 — agent's reply to a `kanban-transition` round-trip.
-          // Resolves or rejects the matching pending entry in the
-          // coordinator; the executor in HttpApi then applies the delta
-          // and HttpApiKanban builds the refreshed card.
-          const { correlationId, ok, error, fiber } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            fiber?: unknown;
-          };
-          agentRequestCoordinator.handleResult(
-            correlationId,
-            !!ok,
-            fiber !== undefined ? { fiber } : {},
-            error,
+        } else if (typeof message.type === 'string' && message.type.endsWith('-result')) {
+          const handled = agentRequestCoordinator.handleResultFrame(
+            message.type,
+            (message as { payload?: unknown }).payload,
           );
-        } else if (message.type === 'fiber-raw-result') {
-          const { correlationId, ok, error, body, sha256, fiber } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            body?: string;
-            sha256?: string;
-            fiber?: unknown;
-          };
-          const result: Record<string, unknown> = {};
-          if (body !== undefined) result.body = body;
-          if (sha256 !== undefined) result.sha256 = sha256;
-          if (fiber !== undefined) result.fiber = fiber;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
-        } else if (message.type === 'fiber-history-result') {
-          const { correlationId, ok, error, events } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            events?: unknown[];
-          };
-          const result: Record<string, unknown> = {};
-          if (events !== undefined) result.events = events;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
-        } else if (message.type === 'felt-comment-result') {
-          const { correlationId, ok, error } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-          };
-          agentRequestCoordinator.handleResult(correlationId, !!ok, {}, error);
-        } else if (message.type === 'file-content-result') {
-          const { correlationId, ok, error, content, mtimeMs } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            content?: string;
-            mtimeMs?: number;
-          };
-          const result: Record<string, unknown> = {};
-          if (content !== undefined) result.content = content;
-          if (mtimeMs !== undefined) result.mtimeMs = mtimeMs;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
-        } else if (message.type === 'project-file-result') {
-          const { correlationId, ok, error, contentBase64, byteLength } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            contentBase64?: string;
-            byteLength?: number;
-          };
-          const result: Record<string, unknown> = {};
-          if (contentBase64 !== undefined) result.contentBase64 = contentBase64;
-          if (byteLength !== undefined) result.byteLength = byteLength;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
-        } else if (message.type === 'list-directory-result') {
-          const { correlationId, ok, error, entries } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            entries?: Array<{ name: string; type: 'file' | 'dir' }>;
-          };
-          const result: Record<string, unknown> = {};
-          if (entries !== undefined) result.entries = entries;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
-        } else if (message.type === 'search-files-result') {
-          const { correlationId, ok, error, results, timedOut } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            results?: Array<{
-              type: 'file' | 'dir';
-              path: string;
-              fullPath: string;
-              line?: number;
-              match?: string;
-            }>;
-            timedOut?: boolean;
-          };
-          const result: Record<string, unknown> = {};
-          if (results !== undefined) result.results = results;
-          if (timedOut !== undefined) result.timedOut = timedOut;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
-        } else if (message.type === 'terminal-capture-result') {
-          const { correlationId, ok, error, bytesBase64, cols, rows } = message.payload as {
-            correlationId: string;
-            ok: boolean;
-            error?: string;
-            bytesBase64?: string;
-            cols?: number;
-            rows?: number;
-          };
-          const result: Record<string, unknown> = {};
-          if (bytesBase64 !== undefined) result.bytesBase64 = bytesBase64;
-          if (cols !== undefined) result.cols = cols;
-          if (rows !== undefined) result.rows = rows;
-          agentRequestCoordinator.handleResult(correlationId, !!ok, result, error);
+          if (!handled) {
+            console.warn(`[Agent] dropped malformed result message from ${origin.id}: ${message.type}`);
+          }
         } else if (message.type === 'terminal-bytes') {
           const { subscriptionId, bytesBase64 } = message.payload as {
             subscriptionId: string;

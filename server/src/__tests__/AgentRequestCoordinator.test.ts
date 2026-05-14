@@ -247,6 +247,7 @@ describe('AgentRequestCoordinator', () => {
         }),
       ]),
       recent: [],
+      malformedResults: 0,
     });
 
     for (const request of pending) {
@@ -328,5 +329,30 @@ describe('AgentRequestCoordinator', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('handles raw result frames and parses malformed ok flags safely', async () => {
+    const { ws, sent } = makeStubWs();
+    originManager.registerAgent('cineca', ws);
+    coord = new AgentRequestCoordinator(originManager);
+
+    const okRequest = coord.send('remote-cineca', 'file-content', {});
+    const okCorrelationId = lastSent(sent).payload.correlationId;
+    coord.handleResultFrame('file-content-result', {
+      correlationId: okCorrelationId,
+      ok: true,
+      content: 'content',
+    });
+    await expect(okRequest).resolves.toEqual({ content: 'content' });
+
+    const malformedRequest = coord.send('remote-cineca', 'file-content', {});
+    const malformedCorrelationId = lastSent(sent).payload.correlationId;
+    coord.handleResultFrame('file-content-result', {
+      correlationId: malformedCorrelationId,
+      content: 'still-content',
+      byteLength: 12,
+    });
+    await expect(malformedRequest).rejects.toThrow(/expected boolean ok flag/);
+    expect(coord.getDiagnostics().malformedResults).toBe(1);
   });
 });

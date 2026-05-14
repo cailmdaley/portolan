@@ -486,14 +486,17 @@ pub struct TerminalCaptureResultPayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSubscribePayload {
-    pub subscription_id: String,
-    pub tmux_session: String,
+    #[serde(default)]
+    pub subscription_id: Option<String>,
+    #[serde(default)]
+    pub tmux_session: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalUnsubscribePayload {
-    pub subscription_id: String,
+    #[serde(default)]
+    pub subscription_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -897,10 +900,25 @@ mod tests {
         assert!(subscribe.is_server_request());
         match subscribe {
             AgentFrame::TerminalSubscribe { payload } => {
-                assert_eq!(payload.subscription_id, "sub-1");
-                assert_eq!(payload.tmux_session, "worker");
+                assert_eq!(payload.subscription_id.as_deref(), Some("sub-1"));
+                assert_eq!(payload.tmux_session.as_deref(), Some("worker"));
             }
             _ => panic!("unexpected frame: {subscribe:?}"),
+        }
+
+        let partial_subscribe = AgentFrame::parse(
+            br##"{
+              "type": "terminal-subscribe",
+              "payload": {}
+            }"##,
+        )
+        .unwrap();
+        match partial_subscribe {
+            AgentFrame::TerminalSubscribe { payload } => {
+                assert!(payload.subscription_id.is_none());
+                assert!(payload.tmux_session.is_none());
+            }
+            _ => panic!("unexpected frame: {partial_subscribe:?}"),
         }
 
         let bytes = AgentFrame::TerminalBytes {
