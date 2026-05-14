@@ -17,6 +17,12 @@ export class CitySpritesManager {
   private pendingGenerations: Set<string> = new Set()
   private pendingLoads: Set<string> = new Set()  // Track in-flight loads
   private failedLoads: Set<string> = new Set()   // Track failed loads (use default)
+  // Cities that asked for a default sprite before defaults finished loading.
+  // Drained (with a callback per id) when the last default texture arrives so
+  // the renderer can re-render and pick up the now-available default. Without
+  // this, a city whose custom sprite 404s renders as a raw hex tile forever
+  // because nothing notifies the renderer when the default becomes available.
+  private pendingDefaultRequests: Set<string> = new Set()
   private defaultSpritesLoaded = false
   private onSpriteLoadedCallback: ((cityId: string) => void) | null = null
 
@@ -39,6 +45,11 @@ export class CitySpritesManager {
           this.defaultSprites.set(i, texture)
           if (this.defaultSprites.size === NUM_DEFAULT_CITY_SPRITES) {
             this.defaultSpritesLoaded = true
+            // Re-render any cities that asked for a default before we had
+            // one to give. They've been sitting as raw hex tiles in the
+            // meantime; firing the callback drives renderCity → getSprite
+            // → getDefaultSprite, which now returns a real texture.
+            this.flushPendingDefaultRequests()
           }
         },
         undefined,
@@ -46,6 +57,14 @@ export class CitySpritesManager {
           console.warn(`Failed to load default sprite ${i}:`, error)
         }
       )
+    }
+  }
+
+  private flushPendingDefaultRequests(): void {
+    const pending = Array.from(this.pendingDefaultRequests)
+    this.pendingDefaultRequests.clear()
+    for (const cityId of pending) {
+      this.onSpriteLoadedCallback?.(cityId)
     }
   }
 
@@ -100,19 +119,30 @@ export class CitySpritesManager {
       },
       undefined,
       () => {
-        // Failed to load - mark so we don't retry
+        // Failed to load - mark so we don't retry, and notify the renderer
+        // so it re-renders this city against the default sprite. Without the
+        // callback, the city is stuck in whatever state the first render
+        // produced (often a raw hex tile, if defaults hadn't loaded yet).
         this.failedLoads.add(city.id)
         this.pendingLoads.delete(city.id)
+        this.onSpriteLoadedCallback?.(city.id)
       }
     )
   }
 
   /**
-   * Get a default sprite based on city ID (deterministic selection)
+   * Get a default sprite based on city ID (deterministic selection).
+   * If defaults haven't loaded yet, records the city as pending so it will
+   * be re-rendered via the sprite-loaded callback once the defaults arrive.
    */
   getDefaultSprite(cityId: string): Texture | null {
     const index = defaultCitySpriteIndex(cityId)
-    return this.defaultSprites.get(index) || null
+    const texture = this.defaultSprites.get(index)
+    if (!texture) {
+      this.pendingDefaultRequests.add(cityId)
+      return null
+    }
+    return texture
   }
 
   /**
