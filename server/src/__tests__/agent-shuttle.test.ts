@@ -75,6 +75,15 @@ beforeEach(() => {
 });
 
 describe('agent: runKanbanMutation shuttle verbs', () => {
+  it('marks legacy Node fallback connections with an explicit runtime', () => {
+    expect(agentMod.buildAgentWebSocketUrl('localhost:4004', 'candide')).toContain(
+      '?agent=true&agentRuntime=node&origin=',
+    );
+    expect(agentMod.buildAgentWebSocketUrl('localhost:4004', 'candide')).toContain(
+      '&sshHost=candide',
+    );
+  });
+
   it('passes explicit felt-host mutation shape for shuttle verbs', async () => {
     await agentMod.runKanbanMutation(
       { kind: 'shuttle', verb: 'pause', fiberId: 'shuttle/fiber' },

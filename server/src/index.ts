@@ -644,10 +644,10 @@ wss.on('connection', async (ws, req) => {
   const isAgent = url.searchParams.get('agent') === 'true';
   const originName = url.searchParams.get('origin');
   const sshHost = url.searchParams.get('sshHost') || undefined;
-  let agentRuntime: RemoteAgentRuntime = 'node';
+  let agentRuntime: RemoteAgentRuntime = 'rust';
   if (isAgent) {
     try {
-      agentRuntime = parseRemoteAgentRuntime(url.searchParams.get('agentRuntime'), 'node');
+      agentRuntime = parseRemoteAgentRuntime(url.searchParams.get('agentRuntime'), 'rust');
     } catch (error: unknown) {
       ws.close(1008, (error as Error).message);
       console.warn(`[Agent] rejected connection: ${(error as Error).message}`);

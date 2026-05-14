@@ -2220,6 +2220,18 @@ function buildSpecificSshHost(baseSshHost) {
     return baseSshHost;
 }
 
+export function buildAgentWebSocketUrl(serverUrl, sshHost) {
+    const specificSshHost = buildSpecificSshHost(sshHost);
+    let url = `ws://${serverUrl}?agent=true&agentRuntime=node&origin=${encodeURIComponent(ORIGIN_NAME)}`;
+    if (specificSshHost) {
+        url += `&sshHost=${encodeURIComponent(specificSshHost)}`;
+    }
+    if (PLANNOTATOR_PORT) {
+        url += `&plannotatorPort=${PLANNOTATOR_PORT}`;
+    }
+    return url;
+}
+
 /**
  * Connect to portolan server
  */
@@ -2228,18 +2240,8 @@ function connect(serverUrl, sshHost) {
         ws.close();
     }
 
-    // Build specific node SSH alias for multi-node HPC systems
-    const specificSshHost = buildSpecificSshHost(sshHost);
-
-    // Build URL with query params
-    let url = `ws://${serverUrl}?agent=true&agentRuntime=node&origin=${encodeURIComponent(ORIGIN_NAME)}`;
-    if (specificSshHost) {
-        url += `&sshHost=${encodeURIComponent(specificSshHost)}`;
-    }
-    if (PLANNOTATOR_PORT) {
-        url += `&plannotatorPort=${PLANNOTATOR_PORT}`;
-    }
-
+    // Node is explicit rollback now; missing runtime registrations default to Rust server-side.
+    const url = buildAgentWebSocketUrl(serverUrl, sshHost);
     log(`Connecting to ${url}...`);
 
     ws = new WebSocket(url);
