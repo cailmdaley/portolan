@@ -42,6 +42,24 @@ describe('RemoteTerminalSubscriptions', () => {
     }]);
   });
 
+  it('never routes remote frames to a replaced browser session subscription', () => {
+    const table = new RemoteTerminalSubscriptions();
+    const first = fakeSocket();
+
+    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker-a' });
+    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-b', tmuxSession: 'worker-b' });
+
+    table.routeBytes('remote-candide', 'sub-a', 'T2VfZm9yX2FkYQ==');
+    table.routeExit('remote-candide', 'sub-a', 'stale');
+    table.routeBytes('remote-candide', 'sub-b', 'bmV3LXRleHQ=');
+
+    expect(sentFrames(first)).toEqual([
+      { type: 'terminal:bytes', sessionId: 'session-a', bytes: 'bmV3LXRleHQ=' },
+    ]);
+    expect(table.getTargetSubscriptionId('remote-candide', 'worker-a')).toBeUndefined();
+    expect(table.getTargetSubscriptionId('remote-candide', 'worker-b')).toEqual('sub-b');
+  });
+
   it('fans one remote backing subscription out to multiple browser sessions', () => {
     const table = new RemoteTerminalSubscriptions();
     const first = fakeSocket();
@@ -67,6 +85,26 @@ describe('RemoteTerminalSubscriptions', () => {
       browserSessions: 3,
       subscriptions: 1,
     }]);
+  });
+
+  it('routes exit once, then drops stale routing for that remote subscription', () => {
+    const table = new RemoteTerminalSubscriptions();
+    const first = fakeSocket();
+    const second = fakeSocket();
+
+    table.set(first, 'session-a', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+    table.set(second, 'session-b', { originId: 'remote-candide', subscriptionId: 'sub-a', tmuxSession: 'worker' });
+
+    table.routeExit('remote-candide', 'sub-a', 'terminated');
+    table.routeBytes('remote-candide', 'sub-a', 'Tm90IHNob3dlbi4=');
+
+    expect(sentFrames(first)).toEqual([
+      { type: 'terminal:exit', sessionId: 'session-a', reason: 'terminated' },
+    ]);
+    expect(sentFrames(second)).toEqual([
+      { type: 'terminal:exit', sessionId: 'session-b', reason: 'terminated' },
+    ]);
+    expect(table.getStats()).toEqual([]);
   });
 
   it('only returns an unsubscribe entry when the last browser session detaches', () => {
@@ -109,5 +147,17 @@ describe('RemoteTerminalSubscriptions', () => {
       browserSessions: 1,
       subscriptions: 1,
     }]);
+    expect(table.getTargetSubscriptionId('remote-candide', 'worker-a')).toBeUndefined();
+    expect(table.getTargetSubscriptionId('remote-candide', 'worker-b')).toBeUndefined();
+    expect(table.getTargetSubscriptionId('remote-cineca', 'worker-c')).toEqual('sub-c');
+
+    table.routeBytes('remote-candide', 'sub-a', 'bWF0Y2hh');
+    table.routeExit('remote-candide', 'sub-a', 'should-never-deliver');
+    expect(sentFrames(first)).toEqual([
+      { type: 'terminal:exit', sessionId: 'candide-a', reason: 'agent disconnected: candide' },
+    ]);
+    expect(sentFrames(second)).toEqual([
+      { type: 'terminal:exit', sessionId: 'candide-b', reason: 'agent disconnected: candide' },
+    ]);
   });
 });
