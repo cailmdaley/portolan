@@ -2554,10 +2554,7 @@ fn read_remote_directory_entries(path: &Path) -> Result<Vec<DirectoryEntryPayloa
                 .file_name()
                 .into_string()
                 .unwrap_or_else(|name| name.to_string_lossy().into_owned());
-            if matches!(
-                file_name.as_str(),
-                ".git" | "node_modules" | "__pycache__" | ".DS_Store"
-            ) {
+            if SEARCH_SKIP_DIR_NAMES.contains(&file_name.as_str()) {
                 return None;
             }
 
@@ -5637,6 +5634,40 @@ malformed
     }
 
     #[test]
+    fn expands_home_paths_for_file_content_reads() {
+        let _guard = env_lock();
+        let previous_home = env::var_os("HOME");
+        let dir = temp_host("file-content-home-read");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.md"), "home note\n").unwrap();
+        env::set_var("HOME", &dir);
+
+        let responses = handle_server_frame(&AgentFrame::FileContent {
+            payload: FileContentRequestPayload {
+                correlation_id: "file-content-home-read".to_string(),
+                operation: FileContentOperation::Read,
+                path: "~/notes.md".to_string(),
+                content: None,
+            },
+        });
+
+        if let Some(home) = previous_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::FileContentResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.content.as_deref(), Some("home note\n"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
     fn lists_directory_entries_with_dir_first_sorting() {
         let dir = temp_host("list-dir");
         fs::create_dir_all(dir.join("reports")).unwrap();
@@ -5666,6 +5697,47 @@ malformed
                 assert!(matches!(entries[1].kind, DirectoryEntryType::File));
                 assert_eq!(entries[2].name, "notes.md");
                 assert!(matches!(entries[2].kind, DirectoryEntryType::File));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lists_directory_expands_home_and_skips_heavy_dirs() {
+        let _guard = env_lock();
+        let previous_home = env::var_os("HOME");
+        let dir = temp_host("list-dir-home");
+        fs::create_dir_all(dir.join("docs")).unwrap();
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        fs::create_dir_all(dir.join(".felt")).unwrap();
+        fs::write(dir.join("README.md"), "readme\n").unwrap();
+        env::set_var("HOME", &dir);
+
+        let responses = handle_server_frame(&AgentFrame::ListDirectory {
+            payload: ListDirectoryRequestPayload {
+                correlation_id: "list-dir-home".to_string(),
+                path: "~/".to_string(),
+            },
+        });
+
+        if let Some(home) = previous_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::ListDirectoryResult { payload } => {
+                assert!(payload.ok);
+                let names = payload
+                    .entries
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| entry.name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(names, vec!["docs", "README.md"]);
             }
             other => panic!("unexpected response: {other:?}"),
         }
@@ -6284,6 +6356,54 @@ malformed
                 assert!(payload.ok);
                 assert_eq!(payload.results.len(), 1);
                 assert_eq!(payload.results[0].path, "HttpApiFilesSearch.ts");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_expands_home_and_skips_heavy_dirs() {
+        let _guard = env_lock();
+        let previous_home = env::var_os("HOME");
+        let dir = temp_host("search-home-skip");
+        fs::create_dir_all(dir.join("docs")).unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        fs::write(dir.join("docs").join("needle.md"), "visible\n").unwrap();
+        fs::write(dir.join(".git").join("needle-secret.md"), "hidden\n").unwrap();
+        fs::write(
+            dir.join("node_modules").join("needle-package.md"),
+            "dependency\n",
+        )
+        .unwrap();
+        env::set_var("HOME", &dir);
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-home-skip".to_string(),
+                path: "~/".to_string(),
+                query: "needle".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(10),
+            },
+        });
+
+        if let Some(home) = previous_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                let paths = payload
+                    .results
+                    .iter()
+                    .map(|result| result.path.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(paths, vec!["docs/needle.md"]);
             }
             other => panic!("unexpected response: {other:?}"),
         }
