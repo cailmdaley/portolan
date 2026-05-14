@@ -4059,6 +4059,23 @@ malformed
     }
 
     #[test]
+    fn detects_playgrounds_only_when_html_files_exist() {
+        let dir = temp_host("playground-detection");
+        let playgrounds = dir.join(".portolan").join("playgrounds");
+        fs::create_dir_all(&playgrounds).unwrap();
+
+        assert!(!detect_playgrounds_in_cwd(dir.to_str().unwrap()));
+
+        fs::write(playgrounds.join("notes.txt"), "not a playground\n").unwrap();
+        assert!(!detect_playgrounds_in_cwd(dir.to_str().unwrap()));
+
+        fs::write(playgrounds.join("map.html"), "<!doctype html>\n").unwrap();
+        assert!(detect_playgrounds_in_cwd(dir.to_str().unwrap()));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn detects_cli_process_from_descendants_without_real_tmux() {
         let mut commands = HashMap::<(String, String), String>::new();
         commands.insert(
