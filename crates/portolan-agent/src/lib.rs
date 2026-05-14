@@ -5564,6 +5564,10 @@ malformed
             AgentFrame::FileContentResult { payload } => {
                 assert!(payload.ok);
                 assert_eq!(payload.content.as_deref(), Some("# Notes\n"));
+                assert!(
+                    payload.mtime_ms.is_some_and(|mtime_ms| mtime_ms > 0.0),
+                    "file-content reads should return Node-compatible mtimeMs"
+                );
             }
             other => panic!("unexpected response: {other:?}"),
         }
@@ -5990,6 +5994,47 @@ malformed
                 assert!(payload.ok);
                 assert!(payload.content.is_none());
                 assert_eq!(body, "updated\n");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_content_write_rejects_missing_or_oversized_content() {
+        let dir = temp_host("file-content-write-validation");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("notes.md");
+
+        let missing_content = handle_server_frame(&AgentFrame::FileContent {
+            payload: FileContentRequestPayload {
+                correlation_id: "file-write-missing".to_string(),
+                operation: FileContentOperation::Write,
+                path: file_path.display().to_string(),
+                content: None,
+            },
+        });
+        match &missing_content[0] {
+            AgentFrame::FileContentResult { payload } => {
+                assert!(!payload.ok);
+                assert_eq!(payload.error.as_deref(), Some("missing content"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let oversized = handle_server_frame(&AgentFrame::FileContent {
+            payload: FileContentRequestPayload {
+                correlation_id: "file-write-oversized".to_string(),
+                operation: FileContentOperation::Write,
+                path: file_path.display().to_string(),
+                content: Some("x".repeat(10 * 1024 * 1024 + 1)),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &oversized[0] {
+            AgentFrame::FileContentResult { payload } => {
+                assert!(!payload.ok);
+                assert_eq!(payload.error.as_deref(), Some("file content exceeds 10 MB"));
             }
             other => panic!("unexpected response: {other:?}"),
         }
