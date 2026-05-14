@@ -69,7 +69,7 @@ describe('AgentRequestCoordinator', () => {
     // Register an agent then disconnect — origin exists but agentSockets is empty.
     const now = 20_000;
     const { ws } = makeStubWs();
-    originManager.registerAgent('cineca', ws);
+    originManager.registerAgent('cineca', ws, 'cineca-login05', undefined, 'rust');
     originManager.handleDisconnect(ws);
     coord = new AgentRequestCoordinator(originManager, { now: () => now });
     await expect(coord.send('remote-cineca', 'noop', {})).rejects.toThrow(
@@ -79,6 +79,11 @@ describe('AgentRequestCoordinator', () => {
       expect.objectContaining({
         correlationId: '',
         originId: 'remote-cineca',
+        originName: 'cineca',
+        sshHost: 'cineca-login05',
+        agentRuntime: 'rust',
+        agentOnce: false,
+        socketCount: 0,
         type: 'noop',
         status: 'unavailable',
         durationMs: 0,
@@ -166,7 +171,7 @@ describe('AgentRequestCoordinator', () => {
   it('drainOnDisconnect rejects all pending entries for the dropped origin only', async () => {
     const { ws: cinecaWs, sent: cinecaSent } = makeStubWs();
     const { ws: candideWs, sent: candideSent } = makeStubWs();
-    originManager.registerAgent('cineca', cinecaWs);
+    originManager.registerAgent('cineca', cinecaWs, 'cineca-login05', 4008, 'rust', true);
     originManager.registerAgent('candide', candideWs);
     coord = new AgentRequestCoordinator(originManager);
 
@@ -232,7 +237,7 @@ describe('AgentRequestCoordinator', () => {
     let now = 1_000;
     const { ws: cinecaWs } = makeStubWs();
     const { ws: candideWs } = makeStubWs();
-    originManager.registerAgent('cineca', cinecaWs);
+    originManager.registerAgent('cineca', cinecaWs, 'cineca-login05', 4008, 'rust', true);
     originManager.registerAgent('candide', candideWs);
     coord = new AgentRequestCoordinator(originManager, { now: () => now });
 
@@ -256,6 +261,11 @@ describe('AgentRequestCoordinator', () => {
       requests: expect.arrayContaining([
         expect.objectContaining({
           originId: 'remote-cineca',
+          originName: 'cineca',
+          sshHost: 'cineca-login05',
+          agentRuntime: 'rust',
+          agentOnce: true,
+          socketCount: 1,
           type: 'terminal-capture',
           ageMs: 250,
         }),

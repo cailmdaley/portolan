@@ -31,6 +31,11 @@ import type { OriginManager } from './OriginManager.js';
 interface PendingRequest {
   correlationId: string;
   originId: string;
+  originName?: string;
+  sshHost?: string;
+  agentRuntime?: string;
+  agentOnce?: boolean;
+  socketCount?: number;
   type: string;
   startedAt: number;
   resolve: (result: unknown) => void;
@@ -49,6 +54,11 @@ export type AgentRequestCompletionStatus =
 export interface AgentRequestCompletionDiagnostic {
   correlationId: string;
   originId: string;
+  originName?: string;
+  sshHost?: string;
+  agentRuntime?: string;
+  agentOnce?: boolean;
+  socketCount?: number;
   type: string;
   status: AgentRequestCompletionStatus;
   durationMs: number;
@@ -66,6 +76,11 @@ export interface AgentRequestCoordinatorOptions {
 export interface AgentRequestDiagnostic {
   correlationId: string;
   originId: string;
+  originName?: string;
+  sshHost?: string;
+  agentRuntime?: string;
+  agentOnce?: boolean;
+  socketCount?: number;
   type: string;
   ageMs: number;
 }
@@ -128,7 +143,7 @@ export class AgentRequestCoordinator {
       const ws = [...origin.agentSockets].find(s => s.readyState === WebSocket.OPEN);
       if (!ws) {
         const message = `origin ${originId} has no connected agent`;
-        this.recordSyntheticCompletion(originId, type, 'unavailable', message);
+        this.recordSyntheticCompletion(originId, type, 'unavailable', message, origin);
         reject(new Error(message));
         return;
       }
@@ -148,6 +163,7 @@ export class AgentRequestCoordinator {
       this.pending.set(correlationId, {
         correlationId,
         originId,
+        ...originDiagnosticFields(origin),
         type,
         startedAt: this.now(),
         resolve: resolve as (r: unknown) => void,
@@ -276,6 +292,7 @@ export class AgentRequestCoordinator {
       return {
         correlationId: entry.correlationId,
         originId: entry.originId,
+        ...originDiagnosticFields(entry),
         type: entry.type,
         ageMs: Math.max(0, now - entry.startedAt),
       };
@@ -320,6 +337,7 @@ export class AgentRequestCoordinator {
     this.recentCompletions.unshift({
       correlationId: entry.correlationId,
       originId: entry.originId,
+      ...originDiagnosticFields(entry),
       type: entry.type,
       status,
       durationMs: Math.max(0, completedAt - entry.startedAt),
@@ -336,11 +354,13 @@ export class AgentRequestCoordinator {
     type: string,
     status: AgentRequestCompletionStatus,
     error: string,
+    origin?: OriginLike,
   ): void {
     const completedAt = this.now();
     this.recentCompletions.unshift({
       correlationId: '',
       originId,
+      ...(origin ? originDiagnosticFields(origin) : {}),
       type,
       status,
       durationMs: 0,
@@ -355,4 +375,26 @@ export class AgentRequestCoordinator {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+interface OriginLike {
+  originName?: string;
+  name?: string;
+  sshHost?: string;
+  agentRuntime?: string;
+  agentOnce?: boolean;
+  agentSockets?: Set<WebSocket>;
+  socketCount?: number;
+}
+
+function originDiagnosticFields(origin: OriginLike) {
+  const originName = origin.originName ?? origin.name;
+  return {
+    ...(originName ? { originName } : {}),
+    ...(origin.sshHost ? { sshHost: origin.sshHost } : {}),
+    ...(origin.agentRuntime ? { agentRuntime: origin.agentRuntime } : {}),
+    ...(origin.agentOnce !== undefined ? { agentOnce: origin.agentOnce } : {}),
+    ...(origin.agentSockets ? { socketCount: origin.agentSockets.size } : {}),
+    ...(origin.socketCount !== undefined ? { socketCount: origin.socketCount } : {}),
+  };
 }
