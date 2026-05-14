@@ -90,8 +90,7 @@ a recent stable Rust toolchain.
 - `scripts/` — install scripts for tunnels, hooks, the reminders bridge
 - `tools/` — auxiliary tools (`reminders-bridge` syncs felt fibers to macOS Reminders)
 - `share/` — installable templates (launchd plists, etc.)
-- `reference/` — design playgrounds and visual studies (HTML + small images)
-- `public/` — static assets (fonts, sprites, terrain)
+- `public/` — static assets (fonts, sprites)
 - `.claude/skills/` — Claude Code skill definitions used while developing Portolan
 
 ## Related projects
