@@ -25,6 +25,19 @@ export function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string
   return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;
 }
 
+export function parseRemoteAgentRuntime(
+  value: string | null | undefined,
+  fallback: RemoteAgentRuntime = 'rust',
+): RemoteAgentRuntime {
+  if (!value) {
+    return fallback;
+  }
+  if (value === 'node' || value === 'rust') {
+    return value;
+  }
+  throw new Error(`Invalid agent runtime: ${value}`);
+}
+
 export function replacedRemoteAgentTmuxSessions(agentRuntime: RemoteAgentRuntime): string[] {
   if (agentRuntime === 'rust') {
     return [NODE_AGENT_TMUX_SESSION, LEGACY_RUST_AGENT_TMUX_SESSION];

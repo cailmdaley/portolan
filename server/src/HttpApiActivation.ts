@@ -5,6 +5,7 @@ import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
 import type { RemoteAgentConnectionDiagnostic, RemoteAgentRuntime } from './OriginManager.js';
 import {
+  parseRemoteAgentRuntime,
   remoteAgentCommand,
   remoteAgentTmuxSession,
   replacedRemoteAgentTmuxSessions,
@@ -35,19 +36,6 @@ interface ActivationBody {
   origin?: string;
   plannotatorPort?: number | string;
   once?: boolean;
-}
-
-function parseAgentRuntime(value: string | null, fallback: RemoteAgentRuntime = 'rust'): RemoteAgentRuntime {
-  if (!value) {
-    return fallback;
-  }
-  if (value === 'node') {
-    return 'node';
-  }
-  if (value === 'rust') {
-    return 'rust';
-  }
-  throw new Error(`Invalid agent runtime: ${value}`);
 }
 
 function parseActivationBody(body: unknown): ActivationBody {
@@ -149,7 +137,7 @@ export class HttpApiActivation {
       ?? 'rust';
     let runtime: RemoteAgentRuntime;
     try {
-      runtime = parseAgentRuntime(requestedRuntime, preferredRuntime);
+      runtime = parseRemoteAgentRuntime(requestedRuntime, preferredRuntime);
     } catch (error: unknown) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: (error as Error).message }));

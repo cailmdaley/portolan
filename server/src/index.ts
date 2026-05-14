@@ -26,7 +26,7 @@ import { MeetingBridge } from './MeetingBridge.js';
 import { ParakeetTranscriptSource } from './ParakeetTranscriptSource.js';
 import { VibeVoiceTranscriptSource } from './VibeVoiceTranscriptSource.js';
 import { RemoteAgentCoordinator, recoverRemoteAgent } from './RemoteAgentCoordinator.js';
-import { remoteAgentRuntimeProfiles } from './RemoteAgentRuntime.js';
+import { parseRemoteAgentRuntime, remoteAgentRuntimeProfiles } from './RemoteAgentRuntime.js';
 import { RemoteAgentRuntimePreferenceStore } from './RemoteAgentRuntimePreferenceStore.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
@@ -46,10 +46,6 @@ const FIBER_REFRESH_INTERVAL = 10000; // 10 seconds
 const LOCAL_ORIGIN_ID = 'local';
 let remoteWorkingTimeoutIntervalHandle: NodeJS.Timeout | null = null;
 const remoteTerminalSubscriptions = new RemoteTerminalSubscriptions();
-
-function parseRemoteAgentRuntime(value: string | null): RemoteAgentRuntime {
-  return value === 'rust' ? 'rust' : 'node';
-}
 
 // ============================================================================
 // Initialization
@@ -631,7 +627,16 @@ wss.on('connection', async (ws, req) => {
   const isAgent = url.searchParams.get('agent') === 'true';
   const originName = url.searchParams.get('origin');
   const sshHost = url.searchParams.get('sshHost') || undefined;
-  const agentRuntime = parseRemoteAgentRuntime(url.searchParams.get('agentRuntime'));
+  let agentRuntime: RemoteAgentRuntime = 'node';
+  if (isAgent) {
+    try {
+      agentRuntime = parseRemoteAgentRuntime(url.searchParams.get('agentRuntime'), 'node');
+    } catch (error: unknown) {
+      ws.close(1008, (error as Error).message);
+      console.warn(`[Agent] rejected connection: ${(error as Error).message}`);
+      return;
+    }
+  }
   const plannotatorPortParam = url.searchParams.get('plannotatorPort');
   const plannotatorPort = plannotatorPortParam ? parseInt(plannotatorPortParam, 10) : undefined;
   const agentOnce = url.searchParams.get('once') === 'true';

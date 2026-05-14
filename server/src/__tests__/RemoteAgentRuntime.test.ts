@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  parseRemoteAgentRuntime,
   remoteAgentCommand,
   remoteAgentRuntimeProfiles,
   remoteAgentTmuxSession,
@@ -30,5 +31,13 @@ describe('RemoteAgentRuntime', () => {
     for (const profile of remoteAgentRuntimeProfiles()) {
       expect(profile.tmuxSession).toBe(remoteAgentTmuxSession(profile.runtime));
     }
+  });
+
+  it('parses runtime identifiers with an explicit fallback', () => {
+    expect(parseRemoteAgentRuntime(null, 'node')).toBe('node');
+    expect(parseRemoteAgentRuntime(undefined, 'rust')).toBe('rust');
+    expect(parseRemoteAgentRuntime('node', 'rust')).toBe('node');
+    expect(parseRemoteAgentRuntime('rust', 'node')).toBe('rust');
+    expect(() => parseRemoteAgentRuntime('python', 'rust')).toThrow('Invalid agent runtime: python');
   });
 });
