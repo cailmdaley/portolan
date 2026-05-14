@@ -340,6 +340,38 @@ describe('agent: remote file request helpers', () => {
     });
   });
 
+  it('writes felt comments through the Node fallback agent', async () => {
+    await expect(agentMod.executeFeltCommentRequest({
+      claimId: 'claim-remote',
+      comment: 'Needs stronger evidence',
+      feltHost: '/remote/loom',
+    })).resolves.toEqual({ ok: true });
+
+    expect(mockExecFileCalls[0]).toEqual({
+      command: 'felt',
+      args: ['-C', '/remote/loom', 'comment', 'claim-remote', 'Needs stronger evidence'],
+      options: expect.objectContaining({
+        cwd: '/remote/loom',
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      }),
+    });
+  });
+
+  it('rejects malformed felt comment requests', async () => {
+    await expect(agentMod.executeFeltCommentRequest({
+      claimId: '',
+      comment: 'Missing claim',
+      feltHost: '/remote/loom',
+    })).rejects.toThrow('missing claimId');
+
+    await expect(agentMod.executeFeltCommentRequest({
+      claimId: 'claim-remote',
+      comment: '',
+      feltHost: '/remote/loom',
+    })).rejects.toThrow('missing comment');
+  });
+
   it('rejects unsafe fiber history slugs', async () => {
     await expect(agentMod.executeFiberHistoryRequest({
       slug: '../escape',

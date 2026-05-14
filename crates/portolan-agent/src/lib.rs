@@ -1879,7 +1879,10 @@ fn required_string_field<'a>(
     payload: &'a AgentRequestPayload,
     key: &str,
 ) -> Result<&'a str, String> {
-    optional_string_field(payload, key).ok_or_else(|| format!("missing {key}"))
+    match optional_string_field(payload, key) {
+        Some(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(format!("missing {key}")),
+    }
 }
 
 fn optional_string_field<'a>(payload: &'a AgentRequestPayload, key: &str) -> Option<&'a str> {
@@ -4863,6 +4866,21 @@ malformed
             ]
         );
         assert_eq!(invocations[0].cwd, dir);
+    }
+
+    #[test]
+    fn felt_comment_server_frame_reports_validation_errors() {
+        let payload = kanban_payload(&[("claimId", json!("claim-1")), ("comment", json!(""))]);
+
+        let responses = handle_server_frame(&AgentFrame::FeltComment { payload });
+
+        assert_eq!(responses.len(), 1);
+        let AgentFrame::FeltCommentResult { payload } = &responses[0] else {
+            panic!("expected felt-comment-result");
+        };
+        assert!(!payload.ok);
+        assert_eq!(payload.correlation_id, "abc");
+        assert_eq!(payload.error.as_deref(), Some("missing comment"));
     }
 
     #[test]

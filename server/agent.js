@@ -1782,7 +1782,7 @@ async function handleFiberHistory(message) {
     }
 }
 
-async function executeFeltCommentRequest(payload) {
+export async function executeFeltCommentRequest(payload) {
     const { claimId, comment } = payload || {};
     if (typeof claimId !== 'string' || claimId.trim().length === 0) {
         throw new Error('missing claimId');
