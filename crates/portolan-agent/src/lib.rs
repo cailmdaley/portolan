@@ -2581,25 +2581,52 @@ fn handle_terminal_capture(payload: &TerminalCaptureRequestPayload) -> AgentFram
 fn capture_terminal(
     payload: &TerminalCaptureRequestPayload,
 ) -> Result<(String, Option<usize>, Option<usize>), String> {
+    capture_terminal_with(payload, run_terminal_command)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalCommandOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    success: bool,
+}
+
+fn run_terminal_command(program: &str, args: &[String]) -> Result<TerminalCommandOutput, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to run {program}: {error}"))?;
+    Ok(TerminalCommandOutput {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        success: output.status.success(),
+    })
+}
+
+fn capture_terminal_with<R>(
+    payload: &TerminalCaptureRequestPayload,
+    mut run_command: R,
+) -> Result<(String, Option<usize>, Option<usize>), String>
+where
+    R: FnMut(&str, &[String]) -> Result<TerminalCommandOutput, String>,
+{
     if payload.tmux_session.trim().is_empty() {
         return Err("tmux session is required".to_string());
     }
     let lines = payload.lines.unwrap_or(5000).clamp(1, 20_000);
     let target = format!("={}:", payload.tmux_session);
-    let capture = Command::new("tmux")
-        .args([
-            "capture-pane",
-            "-p",
-            "-e",
-            "-J",
-            "-S",
-            &format!("-{lines}"),
-            "-t",
-            &target,
-        ])
-        .output()
-        .map_err(|error| format!("failed to run tmux capture-pane: {error}"))?;
-    if !capture.status.success() {
+    let capture_args = vec![
+        "capture-pane".to_string(),
+        "-p".to_string(),
+        "-e".to_string(),
+        "-J".to_string(),
+        "-S".to_string(),
+        format!("-{lines}"),
+        "-t".to_string(),
+        target.clone(),
+    ];
+    let capture = run_command("tmux", &capture_args)?;
+    if !capture.success {
         let stderr = String::from_utf8_lossy(&capture.stderr);
         return Err(stderr.trim().to_string());
     }
@@ -2607,17 +2634,16 @@ fn capture_terminal(
         return Err("terminal capture exceeds 16 MB".to_string());
     }
 
-    let size = Command::new("tmux")
-        .args([
-            "display",
-            "-p",
-            "-t",
-            &target,
-            "#{pane_width} #{pane_height}",
-        ])
-        .output()
+    let size_args = vec![
+        "display".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        target,
+        "#{pane_width} #{pane_height}".to_string(),
+    ];
+    let size = run_command("tmux", &size_args)
         .ok()
-        .filter(|output| output.status.success())
+        .filter(|output| output.success)
         .and_then(|output| {
             let text = String::from_utf8_lossy(&output.stdout);
             let mut parts = text.split_whitespace();
@@ -5409,6 +5435,134 @@ malformed
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminal_capture_uses_node_compatible_tmux_capture_and_size_commands() {
+        let payload = TerminalCaptureRequestPayload {
+            correlation_id: "terminal-ok".to_string(),
+            tmux_session: "remote-worker".to_string(),
+            lines: Some(123),
+        };
+        let mut calls: Vec<(String, Vec<String>)> = Vec::new();
+
+        let result = capture_terminal_with(&payload, |program, args| {
+            calls.push((program.to_string(), args.to_vec()));
+            Ok(match calls.len() {
+                1 => TerminalCommandOutput {
+                    stdout: b"\x1b[32mready\x1b[0m\n".to_vec(),
+                    stderr: Vec::new(),
+                    success: true,
+                },
+                2 => TerminalCommandOutput {
+                    stdout: b"132 41\n".to_vec(),
+                    stderr: Vec::new(),
+                    success: true,
+                },
+                _ => panic!("unexpected terminal command"),
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            result,
+            (
+                BASE64_STANDARD.encode(b"\x1b[32mready\x1b[0m\n"),
+                Some(132),
+                Some(41)
+            )
+        );
+        assert_eq!(
+            calls,
+            vec![
+                (
+                    "tmux".to_string(),
+                    vec![
+                        "capture-pane".to_string(),
+                        "-p".to_string(),
+                        "-e".to_string(),
+                        "-J".to_string(),
+                        "-S".to_string(),
+                        "-123".to_string(),
+                        "-t".to_string(),
+                        "=remote-worker:".to_string(),
+                    ],
+                ),
+                (
+                    "tmux".to_string(),
+                    vec![
+                        "display".to_string(),
+                        "-p".to_string(),
+                        "-t".to_string(),
+                        "=remote-worker:".to_string(),
+                        "#{pane_width} #{pane_height}".to_string(),
+                    ],
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_capture_clamps_lines_and_tolerates_missing_size() {
+        let payload = TerminalCaptureRequestPayload {
+            correlation_id: "terminal-clamp".to_string(),
+            tmux_session: "tiny".to_string(),
+            lines: Some(0),
+        };
+        let mut calls: Vec<Vec<String>> = Vec::new();
+
+        let result = capture_terminal_with(&payload, |_, args| {
+            calls.push(args.to_vec());
+            Ok(match calls.len() {
+                1 => TerminalCommandOutput {
+                    stdout: b"history\n".to_vec(),
+                    stderr: Vec::new(),
+                    success: true,
+                },
+                2 => TerminalCommandOutput {
+                    stdout: b"not-a-size\n".to_vec(),
+                    stderr: Vec::new(),
+                    success: true,
+                },
+                _ => panic!("unexpected terminal command"),
+            })
+        })
+        .unwrap();
+
+        assert_eq!(calls[0][5], "-1");
+        assert_eq!(result, (BASE64_STANDARD.encode(b"history\n"), None, None));
+    }
+
+    #[test]
+    fn terminal_capture_reports_tmux_errors_and_oversized_output() {
+        let payload = TerminalCaptureRequestPayload {
+            correlation_id: "terminal-error".to_string(),
+            tmux_session: "missing".to_string(),
+            lines: Some(20_001),
+        };
+        let mut capture_args: Vec<String> = Vec::new();
+
+        let tmux_error = capture_terminal_with(&payload, |_, args| {
+            capture_args = args.to_vec();
+            Ok(TerminalCommandOutput {
+                stdout: Vec::new(),
+                stderr: b"can't find pane: missing\n".to_vec(),
+                success: false,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(capture_args[5], "-20000");
+        assert_eq!(tmux_error, "can't find pane: missing");
+
+        let oversized = capture_terminal_with(&payload, |_, _| {
+            Ok(TerminalCommandOutput {
+                stdout: vec![b'x'; 16 * 1024 * 1024 + 1],
+                stderr: Vec::new(),
+                success: true,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(oversized, "terminal capture exceeds 16 MB");
     }
 
     #[test]
