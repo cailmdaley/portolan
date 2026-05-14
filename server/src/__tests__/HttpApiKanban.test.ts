@@ -9,7 +9,7 @@
  * lookup we don't need here).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -21,6 +21,7 @@ import {
   classifyFiber,
   effectiveDispatchEligible,
   effectiveHorizon,
+  nextStandingLaunch,
   type FeltStatusEditInvocation,
   type FeltTagEditInvocation,
   type KanbanCard,
@@ -308,12 +309,21 @@ const SHUTTLE_DRAFT = { enabled: false, kind: 'oneshot' } as const;
 const SHUTTLE_STANDING_AWAITING = {
   enabled: true,
   kind: 'standing',
+  schedule: { expr: '0 9 * * 1', tz: 'UTC' },
   review: { state: 'awaiting' },
 } as const;
 /** A standing-role shuttle block scheduled for the next cron tick (no review pending). */
 const SHUTTLE_STANDING_SCHEDULED = {
   enabled: true,
   kind: 'standing',
+  schedule: { expr: '0 9 * * 1', tz: 'UTC' },
+  review: { state: 'scheduled' },
+} as const;
+/** A standing-role with a far-future cron (1st of each month, 09:00) — outside the ±14d window when used a day or two after a firing. */
+const SHUTTLE_STANDING_SCHEDULED_MONTHLY = {
+  enabled: true,
+  kind: 'standing',
+  schedule: { expr: '0 9 1 * *', tz: 'UTC' },
   review: { state: 'scheduled' },
 } as const;
 
@@ -537,19 +547,20 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.now.awaitingReview.map((c: any) => c.id)).toEqual(['canary']);
-    // Standing roles in scheduled state are dormant (waiting for next cron),
-    // so they land in drafts (sorted to the bottom) rather than crowding
-    // inFlight with cards that aren't actively running. inFlight stays empty
-    // here because there are no active oneshots.
     expect(res.body.now.inFlight.map((c: any) => c.id)).toEqual([]);
-    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual(['canary-scheduled']);
+    // Dormant standing roles leave the desk for the timeline — a commitment
+    // with a date, not a draft. The weekly Monday-9am cron is always within
+    // the ±14d strip window, so it lands in futureDated.
+    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual([]);
+    expect(res.body.timeline.futureDated.map((c: any) => c.id)).toEqual(['canary-scheduled']);
+    expect(res.body.timeline.futureDated[0].nextLaunchAt).toMatch(/^\d{4}-\d{2}-\d{2}T09:00:00\.000Z$/);
   });
 
-  it('sorts drafts with active drafts on top, dormant standing roles on bottom', async () => {
-    // Drafts hold two distinct kinds: paused/work-in-progress fibers (the
-    // ones a user is reviewing or about to dispatch) and dormant standing
-    // roles (waiting for cron). The standing roles get pushed below by the
-    // drafts comparator so they don't crowd the user's active drafts.
+  it('lifts dormant standing roles out of drafts onto the timeline; only paused fibers stay on the desk', async () => {
+    // Drafts is no longer a grab-bag for "anything not actively dispatching".
+    // Paused (enabled=false) fibers stay on the desk; dormant standing roles
+    // route to timeline.futureDated (near cron) or timeline.anytimeSoon (far
+    // cron) based on next-occurrence distance.
     writeFib('paused-old', {
       name: 'Paused (old)',
       status: 'active',
@@ -562,11 +573,11 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       shuttle: SHUTTLE_DRAFT,
       'created-at': '2026-04-03',
     });
-    writeFib('standing-dormant', {
-      name: 'Standing (dormant, recently created)',
+    writeFib('standing-weekly', {
+      name: 'Standing (weekly cron, within strip)',
       status: 'active',
       shuttle: SHUTTLE_STANDING_SCHEDULED,
-      'created-at': '2026-04-05', // newest, but dormant — should still be below paused
+      'created-at': '2026-04-05',
     });
     const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
     const res = await callKanban(api);
@@ -575,8 +586,35 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     expect(res.body.now.drafts.map((c: any) => c.id)).toEqual([
       'paused-new',
       'paused-old',
-      'standing-dormant',
     ]);
+    expect(res.body.timeline.futureDated.map((c: any) => c.id)).toEqual(['standing-weekly']);
+    expect(res.body.timeline.anytimeSoon.map((c: any) => c.id)).toEqual([]);
+  });
+
+  it('routes a far-future-cron standing role to timeline.anytimeSoon, not futureDated', async () => {
+    // A monthly cron's next firing is up to ~30 days out, well outside the
+    // ±14d strip window for most of the month. anytimeSoon (the pool below
+    // the strip) keeps these visible so the user knows the commitment is
+    // live — without claiming a day-column the role won't fire on.
+    //
+    // The test fires near the start of the month (just after the 1st-of-
+    // month cron has run), so the next occurrence is ~30 days out.
+    vi.setSystemTime(new Date('2026-05-03T12:00:00Z'));
+    writeFib('monthly', {
+      name: 'Monthly standing role',
+      status: 'active',
+      shuttle: SHUTTLE_STANDING_SCHEDULED_MONTHLY,
+      'created-at': '2026-04-01',
+    });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => [] });
+    const res = await callKanban(api);
+
+    expect(res.status).toBe(200);
+    expect(res.body.now.drafts.map((c: any) => c.id)).toEqual([]);
+    expect(res.body.timeline.futureDated.map((c: any) => c.id)).toEqual([]);
+    expect(res.body.timeline.anytimeSoon.map((c: any) => c.id)).toEqual(['monthly']);
+    expect(res.body.timeline.anytimeSoon[0].nextLaunchAt).toMatch(/^2026-06-01T09:00:00\.000Z$/);
+    vi.useRealTimers();
   });
 
   it('keeps a paused (enabled=false) closed fiber in awaiting/tempered, not drafts', async () => {
@@ -2508,6 +2546,145 @@ describe('effectiveDispatchEligible', () => {
   });
 });
 
+describe('nextStandingLaunch', () => {
+  // The function returns ISO timestamps; cron expressions are deterministic
+  // given a fixed `nowMs`, so each case asserts an exact next occurrence.
+  const monday = Date.parse('2026-05-11T12:00:00Z'); // a Monday afternoon UTC
+
+  it('returns the next cron occurrence for a dormant standing role', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'scheduled',
+          status: 'active',
+          shuttleSchedule: { expr: '0 9 * * 1', tz: 'UTC' },
+        },
+        monday,
+      ),
+    ).toBe('2026-05-18T09:00:00.000Z');
+  });
+
+  it('honors the schedule timezone (Europe/Paris 9am = 07:00 UTC in summer)', () => {
+    // Europe/Paris in May is CEST (+02:00), so 09:00 local = 07:00 UTC.
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'scheduled',
+          status: 'active',
+          shuttleSchedule: { expr: '0 9 * * 1', tz: 'Europe/Paris' },
+        },
+        monday,
+      ),
+    ).toBe('2026-05-18T07:00:00.000Z');
+  });
+
+  it('treats accepted state as dormant (about to schedule the next run)', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'accepted',
+          status: 'active',
+          shuttleSchedule: { expr: '0 9 * * 1', tz: 'UTC' },
+        },
+        monday,
+      ),
+    ).toBe('2026-05-18T09:00:00.000Z');
+  });
+
+  it('returns undefined when role is awaiting review (next launch is gated on human verdict)', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'awaiting',
+          status: 'active',
+          shuttleSchedule: { expr: '0 9 * * 1', tz: 'UTC' },
+        },
+        monday,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when role is paused', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: false,
+          shuttleReviewState: 'scheduled',
+          status: 'active',
+          shuttleSchedule: { expr: '0 9 * * 1', tz: 'UTC' },
+        },
+        monday,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for oneshot fibers', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'oneshot',
+          shuttleEnabled: true,
+          status: 'open',
+        },
+        monday,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when status is closed', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'scheduled',
+          status: 'closed',
+          shuttleSchedule: { expr: '0 9 * * 1', tz: 'UTC' },
+        },
+        monday,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when the cron expression is malformed', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'scheduled',
+          status: 'active',
+          shuttleSchedule: { expr: 'not a cron', tz: 'UTC' },
+        },
+        monday,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when the schedule block is missing', () => {
+    expect(
+      nextStandingLaunch(
+        {
+          shuttleKind: 'standing',
+          shuttleEnabled: true,
+          shuttleReviewState: 'scheduled',
+          status: 'active',
+        },
+        monday,
+      ),
+    ).toBeUndefined();
+  });
+});
+
 describe('classifyFiber', () => {
   // Minimal fiber factory: only id/name/status/kind/priority/createdAt are
   // required by the type; everything else is optional. Pass overrides to
@@ -2619,13 +2796,13 @@ describe('classifyFiber', () => {
       ).toBe('awaitingReview');
     });
 
-    it('review.state=`scheduled` → drafts (between runs, sorted to bottom)', () => {
+    it('review.state=`scheduled` → scheduled (a commitment with a date, not a draft)', () => {
       // Standing roles between runs are dispatch-eligible but dormant —
-      // waiting for the next cron tick. They share the drafts column with
-      // paused fibers (sorted to the bottom by the drafts comparator) so
-      // the inFlight column stays focused on what's running or immediately
-      // due. View-only — the daemon's eligibility check reads shuttle:
-      // directly and is unaffected by column membership.
+      // waiting for the next cron tick. They get their own classifier
+      // label (`scheduled`); the handler's surface-routing layer places
+      // them on the timeline at their next cron occurrence rather than
+      // in now.drafts. View-only — the daemon's eligibility check reads
+      // shuttle: directly and is unaffected by column membership.
       expect(
         classifyFiber(
           fib({
@@ -2635,10 +2812,10 @@ describe('classifyFiber', () => {
             shuttleEnabled: true,
           }),
         ),
-      ).toBe('drafts');
+      ).toBe('scheduled');
     });
 
-    it('review.state=`accepted` → drafts (just accepted, awaiting next cron)', () => {
+    it('review.state=`accepted` → scheduled (just accepted, awaiting next cron)', () => {
       // Same as scheduled: post-accept, the role is dormant until the next
       // cron occurrence. accepted is a transient state that the daemon
       // collapses to scheduled on next dispatch.
@@ -2651,10 +2828,13 @@ describe('classifyFiber', () => {
             shuttleEnabled: true,
           }),
         ),
-      ).toBe('drafts');
+      ).toBe('scheduled');
     });
 
-    it('paused standing role → drafts', () => {
+    it('paused standing role → drafts (the desk, regardless of schedule)', () => {
+      // shuttle.enabled=false short-circuits to drafts before the standing-
+      // role dormant branch fires. The role belongs on the desk where the
+      // human pauses see it; cron is irrelevant while it's paused.
       expect(
         classifyFiber(
           fib({

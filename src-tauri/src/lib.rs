@@ -617,6 +617,37 @@ fn startup_workspace_records(recent: Vec<WorkspaceWindowRecord>) -> Vec<Workspac
         .collect()
 }
 
+fn startup_main_window_record(recent: &[WorkspaceWindowRecord]) -> Option<WorkspaceWindowRecord> {
+    recent
+        .iter()
+        .find(|entry| entry.label == MAIN_WINDOW_LABEL)
+        .cloned()
+}
+
+fn restore_startup_main_window_record(
+    app: &tauri::AppHandle,
+    recent: &[WorkspaceWindowRecord],
+) -> Result<(), String> {
+    let Some(entry) = startup_main_window_record(recent) else {
+        return Ok(());
+    };
+    let route = workspace_route_path(&entry.route_url)?;
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Err("main window not found".to_string());
+    };
+    let route_json = serde_json::to_string(&route).map_err(|error| error.to_string())?;
+    window
+        .eval(format!("window.location.replace({route_json})"))
+        .map_err(|error| error.to_string())?;
+    let title = sanitize_window_title(&entry.title);
+    if !title.is_empty() {
+        window
+            .set_title(&title)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn restore_startup_workspace_records(
     app: &tauri::AppHandle,
     recent: Vec<WorkspaceWindowRecord>,
@@ -754,6 +785,9 @@ pub fn run() {
                 .try_state::<NativeState>()
                 .map(|state| recent_workspace_records(&state))
                 .unwrap_or_default();
+            if let Err(error) = restore_startup_main_window_record(app_handle, &recent) {
+                log::warn!("failed to restore main workspace window route: {error}");
+            }
             if let Err(error) = restore_startup_workspace_records(app_handle, recent) {
                 log::warn!("failed to restore startup workspace windows: {error}");
             }
@@ -931,6 +965,40 @@ mod tests {
         assert_eq!(startup_records.len(), 1);
         assert_eq!(startup_records[0].label, "workspace-1");
         assert_eq!(startup_records[0].route_url, "#city=portolan&mode=find");
+    }
+
+    #[test]
+    fn startup_main_window_record_returns_saved_main_route() {
+        let recent = vec![
+            WorkspaceWindowRecord {
+                label: "workspace-1".to_string(),
+                route_url: "#city=portolan&mode=find".to_string(),
+                title: "Portolan - Find".to_string(),
+                updated_at_unix: 2,
+            },
+            WorkspaceWindowRecord {
+                label: MAIN_WINDOW_LABEL.to_string(),
+                route_url: "#city=portolan&mode=kanban".to_string(),
+                title: "Portolan - Kanban".to_string(),
+                updated_at_unix: 1,
+            },
+        ];
+
+        let main_record = startup_main_window_record(&recent).unwrap();
+        assert_eq!(main_record.label, MAIN_WINDOW_LABEL);
+        assert_eq!(main_record.route_url, "#city=portolan&mode=kanban");
+    }
+
+    #[test]
+    fn startup_main_window_record_is_optional() {
+        let recent = vec![WorkspaceWindowRecord {
+            label: "workspace-1".to_string(),
+            route_url: "#city=portolan&mode=find".to_string(),
+            title: "Portolan - Find".to_string(),
+            updated_at_unix: 2,
+        }];
+
+        assert!(startup_main_window_record(&recent).is_none());
     }
 
     #[test]

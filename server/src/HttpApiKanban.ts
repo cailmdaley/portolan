@@ -36,7 +36,15 @@
  * `true` (accepted), `false` (composted). classifyFiber emits:
  *
  *   - drafts          : human due-date OR enabled-but-deferred OR
- *                       shuttle.enabled=false OR dormant standing role
+ *                       shuttle.enabled=false (the desk's "needs work
+ *                       or attention" pile)
+ *   - scheduled       : dormant standing role (enabled, status open,
+ *                       reviewState ∈ {scheduled, accepted}). Waiting
+ *                       for cron, not for a human. The response routing
+ *                       layer always lifts these onto
+ *                       timeline.futureDated | anytimeSoon at their
+ *                       next cron occurrence; a standing role is a
+ *                       commitment with a date, not a draft.
  *   - inFlight        : enabled + effectiveHorizon=now (the only
  *                       dispatch-eligible bucket)
  *   - awaitingReview  : status=closed + tempered absent, OR standing
@@ -62,6 +70,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
 import YAML from 'yaml';
+import { CronExpressionParser } from 'cron-parser';
 import { getAllFibers, getFiber, type Fiber } from './FiberReader.js';
 import type { FiberTreeSnapshot } from './FiberTreeSnapshotStore.js';
 import { listShuttleSessions, shuttleSessionName } from './Shuttle.js';
@@ -88,6 +97,14 @@ const LEGACY_HORIZONS = new Set<string>(['later', 'someday']);
 // actually matters, vs. quietly-soon deadlines that get missed because
 // they live on the calendar alone. Two days threads that gap.
 const HORIZON_DRIFT_MS = 2 * 24 * 60 * 60 * 1000;
+
+// Forward-looking window for dormant standing roles on the timeline.
+// A standing role whose next cron occurrence falls within this window
+// renders on the timeline strip (futureDated); further out it lives in
+// the anytimeSoon pool below the strip so a monthly cron isn't invisible
+// for 16/30 days. Must match the frontend's `TIMELINE_FUTURE_DAYS` in
+// `src/ui/KanbanModal.ts` — they're the same conceptual window.
+const STANDING_TIMELINE_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
 
 export interface KanbanCard {
   id: string;
@@ -193,6 +210,24 @@ export interface KanbanCard {
    * (awaiting → scheduled) before forcing a dispatch.
    */
   shuttleReviewState?: 'scheduled' | 'awaiting' | 'accepted';
+  /**
+   * ISO timestamp of the next cron occurrence, computed from
+   * `shuttleSchedule.expr` + `shuttleSchedule.tz` for dormant standing
+   * roles only — i.e. `shuttleKind=standing` + status open + enabled +
+   * `reviewState ∈ {scheduled, accepted}`. Absent in every other case
+   * (oneshot, paused, running, awaiting review, closed, malformed cron).
+   *
+   * The kanban routing layer uses this field to lift dormant standing
+   * roles out of `now.drafts` onto `timeline.futureDated` (within the
+   * ±14d strip window) or `timeline.anytimeSoon` (further out). The
+   * lifecycle column from `classifyFiber` is still `drafts`; only the
+   * *surface* changes. A standing role is a commitment with a date,
+   * not a draft.
+   *
+   * The frontend timeline strip uses `card.nextLaunchAt ?? card.due`
+   * for day-column placement.
+   */
+  nextLaunchAt?: string;
   /** Raw valid `horizon:` value from fiber frontmatter, if present. */
   storedHorizon?: KanbanHorizon;
   /**
@@ -254,9 +289,20 @@ export interface KanbanTimelineSurface {
    * and ignores tempered=undefined (those route to now.awaitingReview).
    */
   past: KanbanCard[];
-  /** horizon=soon AND due set; rendered at the due-date column. */
+  /**
+   * Rendered at a day-column on the strip. Includes both:
+   *   • drafts/awaitingReview cards with horizon=soon + due
+   *   • dormant standing roles whose next cron occurrence falls within
+   *     the ±14d strip window (placed at `nextLaunchAt`'s day-column)
+   * The frontend reads `card.nextLaunchAt ?? card.due` for placement.
+   */
   futureDated: KanbanCard[];
-  /** horizon=soon without a due date; rendered in the anytime pool. */
+  /**
+   * Rendered in the anytime pool below the strip. Includes both:
+   *   • drafts/awaitingReview cards with horizon=soon without a due date
+   *   • dormant standing roles whose next cron occurrence falls outside
+   *     the strip window (so a monthly cron stays visible between firings)
+   */
   anytimeSoon: KanbanCard[];
 }
 
@@ -637,6 +683,7 @@ export type KanbanTarget =
 export type KanbanColumn =
   | 'ideas'
   | 'drafts'
+  | 'scheduled'
   | 'inFlight'
   | 'awaitingReview'
   | 'tempered'
@@ -713,13 +760,17 @@ export function classifyFiber(
     if (f.shuttleEnabled === false) return 'drafts';
     // Standing roles in scheduled/accepted state are dispatch-eligible but
     // dormant — waiting for the next cron occurrence, not actively being
-    // worked on. Route them to drafts (sorted to the bottom by the drafts
-    // comparator below) so inFlight stays focused on what's running.
+    // worked on. They get their own lifecycle column (`scheduled`); the
+    // response routing layer reads `card.nextLaunchAt` and routes the
+    // whole bucket onto timeline.futureDated | anytimeSoon at the next
+    // cron occurrence. `scheduled` is a read-only label (like `ideas`,
+    // `tempered`, `composted`) — drag-into doesn't make sense without
+    // specifying the schedule, which happens via the fiber-detail modal.
     if (
       f.shuttleKind === 'standing' &&
       (f.shuttleReviewState === 'scheduled' || f.shuttleReviewState === 'accepted')
     ) {
-      return 'drafts';
+      return 'scheduled';
     }
     // Auto-pause-on-defer: a shuttle-enabled fiber whose effective
     // horizon is anything other than `now` lands in drafts, not
@@ -791,6 +842,55 @@ function normalizeHorizon(value: unknown): KanbanHorizon | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return HORIZON_SET.has(trimmed) ? trimmed as KanbanHorizon : undefined;
+}
+
+/**
+ * Compute the ISO timestamp of the next cron occurrence for a dormant
+ * standing-role fiber — the schedule's "due date" as far as the kanban
+ * timeline is concerned. Returns undefined for anything not eligible
+ * for next-launch placement:
+ *
+ *   - oneshot fibers (no schedule)
+ *   - closed fibers (lifecycle is over)
+ *   - paused (`shuttleEnabled === false`) — these belong on the desk
+ *     as drafts, regardless of schedule
+ *   - awaiting review (`shuttleReviewState === 'awaiting'`) — these
+ *     belong in awaitingReview; the next launch is gated on the
+ *     human's verdict, not on the cron
+ *   - missing or malformed cron expressions
+ *
+ * The kanban routing layer uses this to lift dormant standing roles
+ * out of now.drafts onto timeline.futureDated|anytimeSoon. A standing
+ * role is a commitment with a date, not a draft.
+ *
+ * Timezone defaults to UTC when `shuttleSchedule.tz` is absent — the
+ * write path enforces a tz on every standing-role schedule, so the
+ * fallback is mostly defensive.
+ */
+export function nextStandingLaunch(
+  f: Pick<
+    Fiber,
+    'shuttleKind' | 'shuttleSchedule' | 'shuttleEnabled' | 'shuttleReviewState' | 'status'
+  >,
+  nowMs: number = Date.now(),
+): string | undefined {
+  if (f.shuttleKind !== 'standing') return undefined;
+  if (f.status === 'closed') return undefined;
+  if (f.shuttleEnabled === false) return undefined;
+  if (f.shuttleReviewState === 'awaiting') return undefined;
+  const expr = f.shuttleSchedule?.expr;
+  if (typeof expr !== 'string' || !expr.trim()) return undefined;
+  const rawTz = f.shuttleSchedule?.tz;
+  const tz = typeof rawTz === 'string' && rawTz.trim() ? rawTz : 'UTC';
+  try {
+    const it = CronExpressionParser.parse(expr, {
+      tz,
+      currentDate: new Date(nowMs),
+    });
+    return it.next().toISOString() ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseDueMs(value: unknown): number | undefined {
@@ -1387,13 +1487,14 @@ export class HttpApiKanban {
 
       const ideas: KanbanCard[] = [];
       const drafts: KanbanCard[] = [];
+      const scheduled: KanbanCard[] = [];
       const inFlight: KanbanCard[] = [];
       const awaitingReview: KanbanCard[] = [];
       const tempered: KanbanCard[] = [];
       const composted: KanbanCard[] = [];
 
       const buckets: Record<KanbanColumn, KanbanCard[]> = {
-        ideas, drafts, inFlight, awaitingReview, tempered, composted,
+        ideas, drafts, scheduled, inFlight, awaitingReview, tempered, composted,
       };
       for (const { fiber: f, host, originId, canonicalPath } of kanbanFibers) {
         const card = this.toCard(f, host, originId, byId, liveSessions, canonicalPath);
@@ -1408,16 +1509,12 @@ export class HttpApiKanban {
       //   tempered        : most-recently-closed first
       //   composted       : most-recently-closed first (the discarded, in reverse chrono)
       ideas.sort(byCreatedAtDesc);
-      // Drafts: paused/work-in-progress at top, dormant standing roles at
-      // bottom. Standing roles in scheduled/accepted state share this column
-      // because they're waiting for cron, not being actively worked on — but
-      // they shouldn't crowd out the actual drafts the user is reviewing.
-      drafts.sort((a, b) => {
-        const aDormantStanding = a.shuttleKind === 'standing' ? 1 : 0;
-        const bDormantStanding = b.shuttleKind === 'standing' ? 1 : 0;
-        if (aDormantStanding !== bDormantStanding) return aDormantStanding - bDormantStanding;
-        return byCreatedAtDesc(a, b);
-      });
+      scheduled.sort(byCreatedAtDesc);
+      // Drafts sort by createdAt desc. Dormant standing roles used to sit
+      // at the bottom of this column (waiting for cron, not being actively
+      // worked on); they now leave drafts entirely for timeline.futureDated
+      // | anytimeSoon, so no dormant-standing tiebreaker is needed.
+      drafts.sort(byCreatedAtDesc);
       inFlight.sort((a, b) => {
         const aActive = a.runningWorker || a.status === 'active' ? 0 : 1;
         const bActive = b.runningWorker || b.status === 'active' ? 0 : 1;
@@ -1430,22 +1527,31 @@ export class HttpApiKanban {
 
       // Compose the three surfaces from the flat classifier output:
       //   • now      : drafts + inFlight + awaitingReview (open lifecycle)
-      //   • timeline : past (closed: tempered + composted, sorted by
-      //                       closedAt desc), futureDated (soon + due),
-      //                       anytimeSoon (soon, no due)
+      //   • timeline : past (closed: tempered + composted), futureDated
+      //                (scheduled-with-near-cron OR draft-with-soon+due),
+      //                anytimeSoon (scheduled-with-far-cron OR draft-
+      //                with-soon-no-due)
       //   • stash    : horizon=stashed (drawn from drafts, since deferred
       //                fibers route to drafts in classifyFiber)
       //
-      // Cards may appear in at most one surface. A drafts-classified card
-      // with horizon=stashed moves to stash; with horizon=soon moves to
-      // timeline.futureDated or timeline.anytimeSoon; otherwise stays in
-      // now.drafts. inFlight and awaitingReview always live on now (an
-      // enabled+soon fiber would route to drafts, not inFlight, via
-      // auto-pause-on-defer).
+      // Cards may appear in at most one surface. The `scheduled` bucket
+      // (dormant standing roles) always routes to timeline at the next
+      // cron occurrence. The `drafts` bucket routes by stored horizon.
+      // inFlight and awaitingReview always live on now (an enabled+soon
+      // fiber would route to drafts, not inFlight, via auto-pause-on-
+      // defer).
       const stash: KanbanCard[] = [];
       const futureDated: KanbanCard[] = [];
       const anytimeSoon: KanbanCard[] = [];
       const nowDrafts: KanbanCard[] = [];
+      for (const card of scheduled) {
+        const launchMs = card.nextLaunchAt ? Date.parse(card.nextLaunchAt) : NaN;
+        const withinStrip =
+          Number.isFinite(launchMs) &&
+          launchMs - Date.now() <= STANDING_TIMELINE_HORIZON_MS;
+        if (withinStrip) futureDated.push(card);
+        else anytimeSoon.push(card);
+      }
       for (const card of drafts) {
         // Drifted cards (due-date within 2 days) live on the desk
         // regardless of stored horizon — the deadline outranks the
@@ -2854,6 +2960,7 @@ export class HttpApiKanban {
       shuttleSchedule: f.shuttleSchedule?.expr,
       shuttleTz: f.shuttleSchedule?.tz,
       shuttleReviewState: f.shuttleReviewState,
+      nextLaunchAt: nextStandingLaunch(f),
       storedHorizon: horizon.storedHorizon,
       effectiveHorizon: horizon.effectiveHorizon,
       drifted: horizon.drifted,
@@ -2990,11 +3097,13 @@ function byClosedAtDesc(a: KanbanCard, b: KanbanCard): number {
   return bT.localeCompare(aT);
 }
 
-/** Ascending sort by `due:` (earliest deadline first). Cards without a
- *  due date sort last; ISO timestamp string compare is order-correct. */
+/** Ascending sort by next-occurrence-or-due (earliest deadline first).
+ *  Standing roles use `nextLaunchAt` (cron-derived), human due-date cards
+ *  use `due`; both are ISO timestamps so string compare is order-correct.
+ *  Cards with neither sort last. */
 function byDueAtAsc(a: KanbanCard, b: KanbanCard): number {
-  const aT = a.due ?? '';
-  const bT = b.due ?? '';
+  const aT = a.nextLaunchAt ?? a.due ?? '';
+  const bT = b.nextLaunchAt ?? b.due ?? '';
   if (aT === bT) return 0;
   if (!aT) return 1;
   if (!bT) return -1;
