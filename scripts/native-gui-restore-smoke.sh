@@ -6,6 +6,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_PATH="${PORTOLAN_APP_PATH:-$REPO_DIR/src-tauri/target/release/bundle/macos/Portolan.app}"
 APP_ID="${PORTOLAN_APP_ID:-com.cailmdaley.portolan}"
 APP_DATA_DIR="${PORTOLAN_APP_DATA_DIR:-$HOME/Library/Application Support/$APP_ID}"
+APP_NAME="${PORTOLAN_APP_NAME:-}"
 WINDOW_STORE="$APP_DATA_DIR/workspace-windows.json"
 BACKUP_PATH=""
 HAD_STORE=0
@@ -45,6 +46,7 @@ Environment:
   PORTOLAN_APP_PATH       Override the app bundle path.
   PORTOLAN_APP_ID         Override the Tauri bundle identifier.
   PORTOLAN_APP_DATA_DIR   Override the app data directory.
+  PORTOLAN_APP_NAME       Override the app/process name for AppleScript targeting.
   PORTOLAN_DEBUG_RUNTIME_COMMAND
                           Optional shell command that prints window.debugRuntime().
                           If set, it is used for frontend lifecycle diagnostics.
@@ -85,9 +87,7 @@ require_command() {
 }
 
 osascript_quit() {
-  osascript <<'OSA' >/dev/null 2>&1 || true
-tell application "Portolan" to quit
-OSA
+  osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
 }
 
 restore_store() {
@@ -138,10 +138,10 @@ wait_for_window_count() {
   local deadline=$((SECONDS + 30))
   local count
   while (( SECONDS < deadline )); do
-    count="$(osascript <<'OSA' 2>/dev/null || true
+    count="$(osascript <<OSA 2>/dev/null || true
 tell application "System Events"
-  if exists process "Portolan" then
-    count windows of process "Portolan"
+  if exists process "${APP_NAME}" then
+    count windows of process "${APP_NAME}"
   else
     0
   end if
@@ -205,11 +205,11 @@ wait_for_native_status() {
 }
 
 window_titles() {
-  osascript <<'OSA' 2>/dev/null || true
+  osascript <<OSA 2>/dev/null || true
 tell application "System Events"
-  if exists process "Portolan" then
+  if exists process "${APP_NAME}" then
     set output to ""
-    repeat with w in windows of process "Portolan"
+    repeat with w in windows of process "${APP_NAME}"
       set output to output & name of w & linefeed
     end repeat
     output
@@ -236,6 +236,10 @@ if [[ -z "$APP_EXECUTABLE_NAME" ]]; then
   echo "[portolan] could not read CFBundleExecutable from $APP_PATH/Contents/Info.plist" >&2
   exit 1
 fi
+APP_NAME="${APP_NAME:-$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PATH/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true
+)}"
+APP_NAME="${APP_NAME:-Portolan}"
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_EXECUTABLE_NAME"
 if [[ ! -x "$APP_EXECUTABLE" ]]; then
   echo "[portolan] app executable not found: $APP_EXECUTABLE" >&2
