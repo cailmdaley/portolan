@@ -71,7 +71,7 @@ export class OriginManager {
     ws: WebSocket,
     sshHost?: string,
     plannotatorPort?: number,
-    agentRuntime: RemoteAgentRuntime = 'node',
+    agentRuntime: RemoteAgentRuntime = 'rust',
     agentOnce = false,
   ): Origin {
     const originId = `remote-${originName}`;
@@ -174,7 +174,7 @@ export class OriginManager {
         originId: origin.id,
         name: origin.name,
         sshHost: origin.sshHost ?? null,
-        agentRuntime: origin.agentRuntime ?? 'node',
+        agentRuntime: origin.agentRuntime ?? 'rust',
         agentOnce: origin.agentOnce ?? false,
         plannotatorPort: origin.plannotatorPort ?? null,
         socketCount: origin.agentSockets.size,

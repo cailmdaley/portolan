@@ -24,6 +24,21 @@ describe('OriginManager', () => {
     expect(manager.isOriginConnected(secondOrigin.id)).toBe(true);
   });
 
+  it('defaults omitted runtime registrations to rust and reports rust diagnostics', () => {
+    const manager = new OriginManager();
+    const socket = makeSocket();
+
+    const origin = manager.registerAgent('candide', socket, 'candide');
+
+    expect(origin.agentRuntime).toBe('rust');
+    expect(manager.getConnectedRemoteAgentDiagnostics()).toEqual([
+      expect.objectContaining({
+        originId: 'remote-candide',
+        agentRuntime: 'rust',
+      }),
+    ]);
+  });
+
   it('retains only the latest runtime registration per origin', () => {
     const manager = new OriginManager();
     const firstSocket = makeSocket();
