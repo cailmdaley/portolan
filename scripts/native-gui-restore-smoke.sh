@@ -13,6 +13,8 @@ WINDOW_STORE="$APP_DATA_DIR/workspace-windows.json"
 RESTORE_MAIN_LABEL="main"
 RESTORE_MAIN_ROUTE="#city=portolan&mode=kanban"
 RESTORE_MAIN_TITLE="Portolan - Kanban"
+RESTORE_MAIN_MAP_ROUTE="#city=portolan"
+RESTORE_MAIN_MAP_TITLE="Portolan"
 RESTORE_MAIN_SEEDED_UPDATED_AT=1700000002
 RESTORE_WORKSPACE_LABEL="workspace-restore-smoke"
 RESTORE_WORKSPACE_ROUTE="#city=portolan&mode=find"
@@ -307,40 +309,64 @@ NODE
   return 1
 }
 
-wait_for_duplicate_workspace_store() {
+wait_for_main_map_workspace_store() {
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
     if [[ -s "$WINDOW_STORE" ]] && WINDOW_STORE_JSON="$(cat "$WINDOW_STORE" 2>/dev/null || true)" \
       RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" \
-      RESTORE_MAIN_ROUTE="$RESTORE_MAIN_ROUTE" \
-      RESTORE_MAIN_TITLE="$RESTORE_MAIN_TITLE" \
+      RESTORE_MAIN_MAP_TITLE="$RESTORE_MAIN_MAP_TITLE" \
+      RESTORE_MAIN_SEEDED_UPDATED_AT="$RESTORE_MAIN_SEEDED_UPDATED_AT" \
+      node --input-type=module >/dev/null 2>&1 <<'NODE'
+const recent = JSON.parse(process.env.WINDOW_STORE_JSON || '[]');
+if (!Array.isArray(recent)) process.exit(1);
+const parseRoute = (routeUrl) => {
+  if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
+  const params = new URLSearchParams(routeUrl.slice(1));
+  const city = params.get('city');
+  return city ? { city, mode: params.get('mode') } : null;
+};
+const main = recent.find(entry => entry && typeof entry === 'object' && entry.label === process.env.RESTORE_MAIN_LABEL);
+if (!main) process.exit(1);
+const mainRoute = parseRoute(main.routeUrl);
+if (!mainRoute || mainRoute.mode !== null) process.exit(1);
+if (main.title !== process.env.RESTORE_MAIN_MAP_TITLE) process.exit(1);
+if (typeof main.updatedAtUnix !== 'number' || !Number.isFinite(main.updatedAtUnix)) process.exit(1);
+if (main.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) process.exit(1);
+NODE
+    then
+      echo "[portolan] main workspace recorded map route after closing vellum"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[portolan] timed out waiting for main workspace to record map route" >&2
+  if [[ -f "$WINDOW_STORE" ]]; then
+    echo "[portolan] latest workspace store contents:" >&2
+    sed 's/^/[portolan] workspace-store: /' "$WINDOW_STORE" >&2
+  fi
+  return 1
+}
+
+wait_for_map_duplicate_workspace_store() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if [[ -s "$WINDOW_STORE" ]] && WINDOW_STORE_JSON="$(cat "$WINDOW_STORE" 2>/dev/null || true)" \
+      RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" \
+      RESTORE_MAIN_MAP_TITLE="$RESTORE_MAIN_MAP_TITLE" \
+      RESTORE_MAIN_SEEDED_UPDATED_AT="$RESTORE_MAIN_SEEDED_UPDATED_AT" \
       RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" \
-      RESTORE_WORKSPACE_ROUTE="$RESTORE_WORKSPACE_ROUTE" \
-      RESTORE_WORKSPACE_TITLE="$RESTORE_WORKSPACE_TITLE" \
       RESTORE_WORKSPACE_SEEDED_UPDATED_AT="$RESTORE_WORKSPACE_SEEDED_UPDATED_AT" \
       node --input-type=module >/dev/null 2>&1 <<'NODE'
 const recent = JSON.parse(process.env.WINDOW_STORE_JSON || '[]');
 if (!Array.isArray(recent) || recent.length !== 3) process.exit(1);
 
-const required = new Map([
-  [process.env.RESTORE_MAIN_LABEL, {
-    mode: 'kanban',
-    titleToken: 'Kanban',
-    isMain: true,
-  }],
-  [process.env.RESTORE_WORKSPACE_LABEL, {
-    mode: 'find',
-    titleToken: 'Find',
-    isMain: false,
-  }],
-]);
 const titleMatches = (title, token) => typeof title === 'string' && title.includes(token) && title.includes('Portolan');
 const parseRoute = (routeUrl) => {
   if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
   const params = new URLSearchParams(routeUrl.slice(1));
   const city = params.get('city');
-  const mode = params.get('mode');
-  return city && mode ? { city, mode } : null;
+  return city ? { city, mode: params.get('mode') } : null;
 };
 const byLabel = new Map();
 for (const entry of recent) {
@@ -348,34 +374,116 @@ for (const entry of recent) {
   if (byLabel.has(entry.label)) process.exit(1);
   byLabel.set(entry.label, entry);
 }
-let expectedCity = null;
-for (const [label, expected] of required) {
-  const entry = byLabel.get(label);
-  if (!entry) process.exit(1);
-  const route = parseRoute(entry.routeUrl);
-  if (!route || route.mode !== expected.mode) process.exit(1);
-  if (!titleMatches(entry.title, expected.titleToken)) process.exit(1);
-  if (typeof entry.updatedAtUnix !== 'number' || !Number.isFinite(entry.updatedAtUnix)) process.exit(1);
-  expectedCity = expectedCity || route.city;
-  if (route.city !== expectedCity) process.exit(1);
-}
-const duplicates = recent.filter(entry => !required.has(entry.label));
+const main = byLabel.get(process.env.RESTORE_MAIN_LABEL);
+if (!main) process.exit(1);
+const mainRoute = parseRoute(main.routeUrl);
+if (!mainRoute || mainRoute.mode !== null) process.exit(1);
+if (main.title !== process.env.RESTORE_MAIN_MAP_TITLE) process.exit(1);
+if (typeof main.updatedAtUnix !== 'number' || !Number.isFinite(main.updatedAtUnix)) process.exit(1);
+if (main.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) process.exit(1);
+
+const workspace = byLabel.get(process.env.RESTORE_WORKSPACE_LABEL);
+if (!workspace) process.exit(1);
+const workspaceRoute = parseRoute(workspace.routeUrl);
+if (!workspaceRoute || workspaceRoute.mode !== 'find') process.exit(1);
+if (!titleMatches(workspace.title, 'Find')) process.exit(1);
+if (typeof workspace.updatedAtUnix !== 'number' || !Number.isFinite(workspace.updatedAtUnix)) process.exit(1);
+if (workspace.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) process.exit(1);
+
+const duplicates = recent.filter(entry => ![process.env.RESTORE_MAIN_LABEL, process.env.RESTORE_WORKSPACE_LABEL].includes(entry.label));
 if (duplicates.length !== 1) process.exit(1);
 const duplicate = duplicates[0];
 const duplicateRoute = parseRoute(duplicate.routeUrl);
-if (!duplicateRoute || duplicateRoute.mode !== 'find' || duplicateRoute.city !== expectedCity) process.exit(1);
-if (!titleMatches(duplicate.title, 'Find')) process.exit(1);
+if (!duplicateRoute || duplicateRoute.mode !== null || duplicateRoute.city !== mainRoute.city) process.exit(1);
+if (duplicate.title !== process.env.RESTORE_MAIN_MAP_TITLE) process.exit(1);
 if (typeof duplicate.updatedAtUnix !== 'number' || !Number.isFinite(duplicate.updatedAtUnix)) process.exit(1);
-if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) process.exit(1);
+if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) process.exit(1);
 NODE
     then
-      echo "[portolan] workspace store recorded duplicated current route"
+      echo "[portolan] workspace store recorded duplicated map route"
       return 0
     fi
     sleep 1
   done
 
-  echo "[portolan] timed out waiting for duplicated workspace entry in store" >&2
+  echo "[portolan] timed out waiting for duplicated map entry in store" >&2
+  if [[ -f "$WINDOW_STORE" ]]; then
+    echo "[portolan] latest workspace store contents:" >&2
+    sed 's/^/[portolan] workspace-store: /' "$WINDOW_STORE" >&2
+  fi
+  return 1
+}
+
+wait_for_duplicate_workspace_store() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if [[ -s "$WINDOW_STORE" ]] && WINDOW_STORE_JSON="$(cat "$WINDOW_STORE" 2>/dev/null || true)" \
+      RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" \
+      RESTORE_MAIN_MAP_TITLE="$RESTORE_MAIN_MAP_TITLE" \
+      RESTORE_MAIN_SEEDED_UPDATED_AT="$RESTORE_MAIN_SEEDED_UPDATED_AT" \
+      RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" \
+      RESTORE_WORKSPACE_SEEDED_UPDATED_AT="$RESTORE_WORKSPACE_SEEDED_UPDATED_AT" \
+      node --input-type=module >/dev/null 2>&1 <<'NODE'
+const recent = JSON.parse(process.env.WINDOW_STORE_JSON || '[]');
+if (!Array.isArray(recent) || recent.length !== 4) process.exit(1);
+
+const titleMatches = (title, token) => typeof title === 'string' && title.includes(token) && title.includes('Portolan');
+const parseRoute = (routeUrl) => {
+  if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
+  const params = new URLSearchParams(routeUrl.slice(1));
+  const city = params.get('city');
+  return city ? { city, mode: params.get('mode') } : null;
+};
+const byLabel = new Map();
+for (const entry of recent) {
+  if (!entry || typeof entry !== 'object' || typeof entry.label !== 'string') process.exit(1);
+  if (byLabel.has(entry.label)) process.exit(1);
+  byLabel.set(entry.label, entry);
+}
+const main = byLabel.get(process.env.RESTORE_MAIN_LABEL);
+if (!main) process.exit(1);
+const mainRoute = parseRoute(main.routeUrl);
+if (!mainRoute || mainRoute.mode !== null) process.exit(1);
+if (main.title !== process.env.RESTORE_MAIN_MAP_TITLE) process.exit(1);
+if (typeof main.updatedAtUnix !== 'number' || !Number.isFinite(main.updatedAtUnix)) process.exit(1);
+if (main.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) process.exit(1);
+
+const workspace = byLabel.get(process.env.RESTORE_WORKSPACE_LABEL);
+if (!workspace) process.exit(1);
+const workspaceRoute = parseRoute(workspace.routeUrl);
+if (!workspaceRoute || workspaceRoute.mode !== 'find') process.exit(1);
+if (!titleMatches(workspace.title, 'Find')) process.exit(1);
+if (typeof workspace.updatedAtUnix !== 'number' || !Number.isFinite(workspace.updatedAtUnix)) process.exit(1);
+if (workspace.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) process.exit(1);
+
+const duplicates = recent.filter(entry => ![process.env.RESTORE_MAIN_LABEL, process.env.RESTORE_WORKSPACE_LABEL].includes(entry.label));
+if (duplicates.length !== 2) process.exit(1);
+const mapDuplicates = duplicates.filter(entry => {
+  const route = parseRoute(entry.routeUrl);
+  return route && route.mode === null && route.city === mainRoute.city;
+});
+const findDuplicates = duplicates.filter(entry => {
+  const route = parseRoute(entry.routeUrl);
+  return route && route.mode === 'find' && route.city === workspaceRoute.city;
+});
+if (mapDuplicates.length !== 1 || findDuplicates.length !== 1) process.exit(1);
+const mapDuplicate = mapDuplicates[0];
+const findDuplicate = findDuplicates[0];
+if (mapDuplicate.title !== process.env.RESTORE_MAIN_MAP_TITLE) process.exit(1);
+if (typeof mapDuplicate.updatedAtUnix !== 'number' || !Number.isFinite(mapDuplicate.updatedAtUnix)) process.exit(1);
+if (mapDuplicate.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) process.exit(1);
+if (!titleMatches(findDuplicate.title, 'Find')) process.exit(1);
+if (typeof findDuplicate.updatedAtUnix !== 'number' || !Number.isFinite(findDuplicate.updatedAtUnix)) process.exit(1);
+if (findDuplicate.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) process.exit(1);
+NODE
+    then
+      echo "[portolan] workspace store recorded duplicated map + find routes"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[portolan] timed out waiting for duplicated map + find entries in store" >&2
   if [[ -f "$WINDOW_STORE" ]]; then
     echo "[portolan] latest workspace store contents:" >&2
     sed 's/^/[portolan] workspace-store: /' "$WINDOW_STORE" >&2
@@ -406,6 +514,48 @@ tell application "System Events"
     set frontmost to true
     perform action "AXRaise" of window "${title}"
   end tell
+end tell
+OSA
+}
+
+click_close_workspace_button() {
+  local title="$1"
+  osascript <<OSA >/dev/null 2>&1
+tell application "${APP_NAME}" to activate
+delay 0.2
+tell application "System Events"
+  tell process "${APP_NAME}"
+    set frontmost to true
+    perform action "AXRaise" of window "${title}"
+    repeat with attempt from 1 to 30
+      try
+        set w to window "${title}"
+        set g1 to item 1 of groups of w
+        set g2 to item 1 of groups of g1
+        set sa to item 1 of scroll areas of g2
+        set webarea to item 1 of UI elements of sa
+        set workspaceGroup to item 1 of groups of webarea
+        click button "Close vellum workspace (Esc)" of workspaceGroup
+        return
+      on error
+        delay 1
+      end try
+    end repeat
+    error "close button not found in ${title}"
+  end tell
+end tell
+OSA
+}
+
+duplicate_focused_window_via_shortcut() {
+  osascript <<OSA >/dev/null 2>&1
+tell application "${APP_NAME}" to activate
+delay 0.2
+tell application "System Events"
+  tell process "${APP_NAME}"
+    set frontmost to true
+  end tell
+  keystroke "n" using {command down}
 end tell
 OSA
 }
@@ -563,6 +713,30 @@ collect_frontend_debug_runtime || true
 NATIVE_STATUS_JSON="$(wait_for_native_status)"
 wait_for_workspace_store_rewrite
 
+echo "[portolan] Closing ${RESTORE_MAIN_TITLE} back to the map via close chrome"
+if ! click_close_workspace_button "$RESTORE_MAIN_TITLE"; then
+  echo "[portolan] failed to click close chrome in restored main workspace window: $RESTORE_MAIN_TITLE" >&2
+  exit 1
+fi
+wait_for_main_map_workspace_store
+NATIVE_STATUS_JSON="$(wait_for_native_status_change "$NATIVE_STATUS_JSON")"
+
+titles="$(window_titles)"
+echo "[portolan] Observed Portolan windows after closing the main workspace"
+printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
+
+echo "[portolan] Duplicating the frontmost map route via Cmd+N"
+if ! duplicate_focused_window_via_shortcut; then
+  echo "[portolan] failed to duplicate the frontmost map route via Cmd+N" >&2
+  exit 1
+fi
+window_count="$(wait_for_window_count 3)"
+titles="$(window_titles)"
+echo "[portolan] Observed $window_count Portolan windows after duplicating the map route"
+printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
+wait_for_map_duplicate_workspace_store
+NATIVE_STATUS_JSON="$(wait_for_native_status_change "$NATIVE_STATUS_JSON")"
+
 echo "[portolan] Duplicating ${RESTORE_WORKSPACE_TITLE} via duplicate-window chrome"
 if ! focus_window_title "$RESTORE_WORKSPACE_TITLE"; then
   echo "[portolan] failed to focus restored workspace window: $RESTORE_WORKSPACE_TITLE" >&2
@@ -573,9 +747,9 @@ if ! click_duplicate_workspace_button "$RESTORE_WORKSPACE_TITLE"; then
   exit 1
 fi
 
-window_count="$(wait_for_window_count 3)"
+window_count="$(wait_for_window_count 4)"
 titles="$(window_titles)"
-echo "[portolan] Observed $window_count Portolan windows after duplication"
+echo "[portolan] Observed $window_count Portolan windows after map + workspace duplication"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
 if [[ "$(printf '%s\n' "$titles" | grep -c 'Find')" -lt 2 ]]; then
   echo "[portolan] expected two Find-flavored workspace windows after duplicate-window chrome" >&2
@@ -587,6 +761,7 @@ NATIVE_STATUS_JSON="$(wait_for_native_status_change "$NATIVE_STATUS_JSON")"
 DEBUG_RUNTIME="$debug_runtime" WINDOW_DEBUG_RUNTIME_JSON="$WINDOW_DEBUG_RUNTIME_JSON" NATIVE_STATUS_JSON="$NATIVE_STATUS_JSON" \
   STRICT_APP_OWNED="$STRICT_APP_OWNED" ALLOW_EXTERNAL_BACKEND="$ALLOW_EXTERNAL_BACKEND" \
   RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" RESTORE_MAIN_ROUTE="$RESTORE_MAIN_ROUTE" RESTORE_MAIN_TITLE="$RESTORE_MAIN_TITLE" \
+  RESTORE_MAIN_MAP_ROUTE="$RESTORE_MAIN_MAP_ROUTE" RESTORE_MAIN_MAP_TITLE="$RESTORE_MAIN_MAP_TITLE" RESTORE_MAIN_SEEDED_UPDATED_AT="$RESTORE_MAIN_SEEDED_UPDATED_AT" \
   RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" RESTORE_WORKSPACE_ROUTE="$RESTORE_WORKSPACE_ROUTE" RESTORE_WORKSPACE_TITLE="$RESTORE_WORKSPACE_TITLE" \
   RESTORE_WORKSPACE_SEEDED_UPDATED_AT="$RESTORE_WORKSPACE_SEEDED_UPDATED_AT" \
   node --input-type=module <<'NODE'
@@ -715,28 +890,15 @@ function compareWorkspaceWindows(nativePayload) {
     };
   }
 
-  const requiredByLabel = new Map([
-    [process.env.RESTORE_MAIN_LABEL, {
-      mode: 'kanban',
-      titleToken: 'Kanban',
-      isMain: true,
-    }],
-    [process.env.RESTORE_WORKSPACE_LABEL, {
-      mode: 'find',
-      titleToken: 'Find',
-      isMain: false,
-    }],
-  ]);
   const titleMatches = (title, token) => typeof title === 'string' && title.includes(token) && title.includes('Portolan');
   const parseRoute = (routeUrl) => {
     if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
     const params = new URLSearchParams(routeUrl.slice(1));
     const city = params.get('city');
-    const mode = params.get('mode');
-    return city && mode ? { city, mode } : null;
+    return city ? { city, mode: params.get('mode') } : null;
   };
-  const expectedRecentCount = 3;
-  const expectedWorkspaceCount = 2;
+  const expectedRecentCount = 4;
+  const expectedWorkspaceCount = 3;
   const mismatches = [];
   if (workspaceWindows.recentCount !== expectedRecentCount) {
     mismatches.push(`native_status.workspaceWindows.recentCount expected ${expectedRecentCount}; got ${JSON.stringify(workspaceWindows.recentCount)}`);
@@ -745,8 +907,8 @@ function compareWorkspaceWindows(nativePayload) {
     mismatches.push(`native_status.workspaceWindows.workspaceCount expected ${expectedWorkspaceCount}; got ${JSON.stringify(workspaceWindows.workspaceCount)}`);
   }
   const mainRoute = parseRoute(workspaceWindows.mainRouteUrl);
-  if (!mainRoute || mainRoute.mode !== 'kanban') {
-    mismatches.push(`native_status.workspaceWindows.mainRouteUrl expected a local kanban route; got ${JSON.stringify(workspaceWindows.mainRouteUrl)}`);
+  if (!mainRoute || mainRoute.mode !== null) {
+    mismatches.push(`native_status.workspaceWindows.mainRouteUrl expected a local map route; got ${JSON.stringify(workspaceWindows.mainRouteUrl)}`);
   }
 
   const routes = Array.isArray(workspaceWindows.routes) ? workspaceWindows.routes : null;
@@ -768,53 +930,97 @@ function compareWorkspaceWindows(nativePayload) {
       }
       byLabel.set(entry.label, entry);
     }
-    let expectedCity = mainRoute?.city ?? null;
-    for (const [label, expected] of requiredByLabel) {
-      const entry = byLabel.get(label);
-      if (!entry) {
-        mismatches.push(`native_status.workspaceWindows.routes missing ${JSON.stringify(label)}`);
-        continue;
+
+    const mainEntry = byLabel.get(process.env.RESTORE_MAIN_LABEL);
+    if (!mainEntry) {
+      mismatches.push(`native_status.workspaceWindows.routes missing ${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}`);
+    } else {
+      const route = parseRoute(mainEntry.routeUrl);
+      if (!route || route.mode !== null) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}].routeUrl expected a local map route; got ${JSON.stringify(mainEntry.routeUrl)}`);
+      } else if (mainRoute && route.city !== mainRoute.city) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}].city expected ${JSON.stringify(mainRoute.city)}; got ${JSON.stringify(route.city)}`);
       }
-      const route = parseRoute(entry.routeUrl);
-      if (!route || route.mode !== expected.mode) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].routeUrl expected a local ${expected.mode} route; got ${JSON.stringify(entry.routeUrl)}`);
-      } else {
-        expectedCity = expectedCity ?? route.city;
-        if (route.city !== expectedCity) {
-          mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].city expected ${JSON.stringify(expectedCity)}; got ${JSON.stringify(route.city)}`);
-        }
+      if (mainEntry.title !== process.env.RESTORE_MAIN_MAP_TITLE) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}].title expected ${JSON.stringify(process.env.RESTORE_MAIN_MAP_TITLE)}; got ${JSON.stringify(mainEntry.title)}`);
       }
-      if (!titleMatches(entry.title, expected.titleToken)) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].title expected token ${JSON.stringify(expected.titleToken)} + Portolan; got ${JSON.stringify(entry.title)}`);
+      if (mainEntry.isMain !== true) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}].isMain expected true; got ${JSON.stringify(mainEntry.isMain)}`);
       }
-      if (entry.isMain !== expected.isMain) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].isMain expected ${JSON.stringify(expected.isMain)}; got ${JSON.stringify(entry.isMain)}`);
-      }
-      if (typeof entry.updatedAtUnix !== 'number' || !Number.isFinite(entry.updatedAtUnix)) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].updatedAtUnix must be a finite number`);
+      if (typeof mainEntry.updatedAtUnix !== 'number' || !Number.isFinite(mainEntry.updatedAtUnix)) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}].updatedAtUnix must be a finite number`);
+      } else if (mainEntry.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_MAIN_LABEL)}].updatedAtUnix expected > ${JSON.stringify(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT)}; got ${JSON.stringify(mainEntry.updatedAtUnix)}`);
       }
     }
-    const duplicates = routes.filter(entry => entry && typeof entry === 'object' && typeof entry.label === 'string' && !requiredByLabel.has(entry.label));
-    if (duplicates.length !== 1) {
-      mismatches.push(`native_status.workspaceWindows.routes expected 1 duplicated workspace entry; got ${duplicates.length}`);
+
+    const workspaceEntry = byLabel.get(process.env.RESTORE_WORKSPACE_LABEL);
+    let findCity = null;
+    if (!workspaceEntry) {
+      mismatches.push(`native_status.workspaceWindows.routes missing ${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}`);
     } else {
-      const duplicate = duplicates[0];
-      const duplicateRoute = parseRoute(duplicate.routeUrl);
-      if (!duplicateRoute || duplicateRoute.mode !== 'find') {
-        mismatches.push(`native_status.workspaceWindows.duplicate.routeUrl expected a local find route; got ${JSON.stringify(duplicate.routeUrl)}`);
-      } else if (expectedCity && duplicateRoute.city !== expectedCity) {
-        mismatches.push(`native_status.workspaceWindows.duplicate.city expected ${JSON.stringify(expectedCity)}; got ${JSON.stringify(duplicateRoute.city)}`);
+      const route = parseRoute(workspaceEntry.routeUrl);
+      if (!route || route.mode !== 'find') {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].routeUrl expected a local find route; got ${JSON.stringify(workspaceEntry.routeUrl)}`);
+      } else {
+        findCity = route.city;
       }
-      if (!titleMatches(duplicate.title, 'Find')) {
-        mismatches.push(`native_status.workspaceWindows.duplicate.title expected token "Find" + Portolan; got ${JSON.stringify(duplicate.title)}`);
+      if (!titleMatches(workspaceEntry.title, 'Find')) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].title expected token "Find" + Portolan; got ${JSON.stringify(workspaceEntry.title)}`);
       }
-      if (duplicate.isMain !== false) {
-        mismatches.push(`native_status.workspaceWindows.duplicate.isMain expected false; got ${JSON.stringify(duplicate.isMain)}`);
+      if (workspaceEntry.isMain !== false) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].isMain expected false; got ${JSON.stringify(workspaceEntry.isMain)}`);
       }
-      if (typeof duplicate.updatedAtUnix !== 'number' || !Number.isFinite(duplicate.updatedAtUnix)) {
-        mismatches.push('native_status.workspaceWindows.duplicate.updatedAtUnix must be a finite number');
-      } else if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) {
-        mismatches.push(`native_status.workspaceWindows.duplicate.updatedAtUnix expected > ${JSON.stringify(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT)}; got ${JSON.stringify(duplicate.updatedAtUnix)}`);
+      if (typeof workspaceEntry.updatedAtUnix !== 'number' || !Number.isFinite(workspaceEntry.updatedAtUnix)) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].updatedAtUnix must be a finite number`);
+      } else if (workspaceEntry.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].updatedAtUnix expected > ${JSON.stringify(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT)}; got ${JSON.stringify(workspaceEntry.updatedAtUnix)}`);
+      }
+    }
+
+    const duplicates = routes.filter(entry => entry && typeof entry === 'object' && typeof entry.label === 'string' && ![process.env.RESTORE_MAIN_LABEL, process.env.RESTORE_WORKSPACE_LABEL].includes(entry.label));
+    if (duplicates.length !== 2) {
+      mismatches.push(`native_status.workspaceWindows.routes expected 2 duplicated workspace entries; got ${duplicates.length}`);
+    } else {
+      const mapDuplicates = duplicates.filter(entry => {
+        const route = parseRoute(entry.routeUrl);
+        return route && route.mode === null && (!mainRoute || route.city === mainRoute.city);
+      });
+      const findDuplicates = duplicates.filter(entry => {
+        const route = parseRoute(entry.routeUrl);
+        return route && route.mode === 'find' && (!findCity || route.city === findCity);
+      });
+      if (mapDuplicates.length !== 1) {
+        mismatches.push(`native_status.workspaceWindows.routes expected 1 duplicated map entry; got ${mapDuplicates.length}`);
+      } else {
+        const duplicate = mapDuplicates[0];
+        if (duplicate.title !== process.env.RESTORE_MAIN_MAP_TITLE) {
+          mismatches.push(`native_status.workspaceWindows.duplicateMap.title expected ${JSON.stringify(process.env.RESTORE_MAIN_MAP_TITLE)}; got ${JSON.stringify(duplicate.title)}`);
+        }
+        if (duplicate.isMain !== false) {
+          mismatches.push(`native_status.workspaceWindows.duplicateMap.isMain expected false; got ${JSON.stringify(duplicate.isMain)}`);
+        }
+        if (typeof duplicate.updatedAtUnix !== 'number' || !Number.isFinite(duplicate.updatedAtUnix)) {
+          mismatches.push('native_status.workspaceWindows.duplicateMap.updatedAtUnix must be a finite number');
+        } else if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT || '0')) {
+          mismatches.push(`native_status.workspaceWindows.duplicateMap.updatedAtUnix expected > ${JSON.stringify(process.env.RESTORE_MAIN_SEEDED_UPDATED_AT)}; got ${JSON.stringify(duplicate.updatedAtUnix)}`);
+        }
+      }
+      if (findDuplicates.length !== 1) {
+        mismatches.push(`native_status.workspaceWindows.routes expected 1 duplicated find entry; got ${findDuplicates.length}`);
+      } else {
+        const duplicate = findDuplicates[0];
+        if (!titleMatches(duplicate.title, 'Find')) {
+          mismatches.push(`native_status.workspaceWindows.duplicateFind.title expected token "Find" + Portolan; got ${JSON.stringify(duplicate.title)}`);
+        }
+        if (duplicate.isMain !== false) {
+          mismatches.push(`native_status.workspaceWindows.duplicateFind.isMain expected false; got ${JSON.stringify(duplicate.isMain)}`);
+        }
+        if (typeof duplicate.updatedAtUnix !== 'number' || !Number.isFinite(duplicate.updatedAtUnix)) {
+          mismatches.push('native_status.workspaceWindows.duplicateFind.updatedAtUnix must be a finite number');
+        } else if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) {
+          mismatches.push(`native_status.workspaceWindows.duplicateFind.updatedAtUnix expected > ${JSON.stringify(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT)}; got ${JSON.stringify(duplicate.updatedAtUnix)}`);
+        }
       }
     }
   }
