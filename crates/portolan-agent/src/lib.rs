@@ -2235,10 +2235,14 @@ fn search_filenames(
 ) -> Result<Vec<SearchResultPayload>, String> {
     let mut results = Vec::new();
     let mut directories = vec![root_path.to_path_buf()];
+    let mut visited_directories = HashSet::new();
 
     while let Some(directory) = directories.pop() {
         if results.len() >= limit {
             break;
+        }
+        if !mark_search_directory_visited(&directory, &mut visited_directories) {
+            continue;
         }
 
         let mut entries = fs::read_dir(&directory)
@@ -2260,10 +2264,7 @@ fn search_filenames(
                 continue;
             }
 
-            let is_dir = entry
-                .file_type()
-                .ok()
-                .is_some_and(|file_type| file_type.is_dir());
+            let is_dir = is_search_directory_entry(&entry);
             let relative_path = relative_search_path(&entry.path(), root_path)?;
 
             if is_match(&relative_path, normalized_query) {
@@ -2299,10 +2300,14 @@ fn search_file_contents(
 ) -> Result<Vec<SearchResultPayload>, String> {
     let mut results = Vec::new();
     let mut directories = vec![root_path.to_path_buf()];
+    let mut visited_directories = HashSet::new();
 
     while let Some(directory) = directories.pop() {
         if results.len() >= limit {
             break;
+        }
+        if !mark_search_directory_visited(&directory, &mut visited_directories) {
+            continue;
         }
 
         let mut entries = fs::read_dir(&directory)
@@ -2324,10 +2329,7 @@ fn search_file_contents(
                 continue;
             }
 
-            let is_dir = entry
-                .file_type()
-                .ok()
-                .is_some_and(|file_type| file_type.is_dir());
+            let is_dir = is_search_directory_entry(&entry);
             if is_dir {
                 directories.push(entry.path());
                 continue;
@@ -2369,6 +2371,20 @@ fn search_file_contents(
 
     sort_search_results(&mut results);
     Ok(results)
+}
+
+fn is_search_directory_entry(entry: &fs::DirEntry) -> bool {
+    fs::metadata(entry.path())
+        .ok()
+        .is_some_and(|metadata| metadata.is_dir())
+}
+
+fn mark_search_directory_visited(
+    directory: &Path,
+    visited_directories: &mut HashSet<PathBuf>,
+) -> bool {
+    let canonical = fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
+    visited_directories.insert(canonical)
 }
 
 fn should_skip_search_entry(name: &str) -> bool {
@@ -5463,6 +5479,44 @@ malformed
     }
 
     #[test]
+    fn searches_files_by_filename_through_symlinked_directories() {
+        let dir = temp_host("search-filename-symlink");
+        let target = temp_host("search-filename-symlink-target");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(target.join("linked-summary.md"), "summary\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("reports-link")).unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-filename-symlink".to_string(),
+                path: dir.display().to_string(),
+                query: "linked-summary".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(10),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&target).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                let paths = payload
+                    .results
+                    .iter()
+                    .map(|result| result.path.as_str())
+                    .collect::<Vec<_>>();
+                assert!(
+                    paths.contains(&"reports-link/linked-summary.md"),
+                    "paths: {paths:?}"
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
     fn searches_files_by_content_with_first_match_per_file() {
         let dir = temp_host("search-content");
         fs::create_dir_all(&dir).unwrap();
@@ -5494,6 +5548,43 @@ malformed
                     payload.results[0].result_match.as_deref(),
                     Some("search hit line")
                 );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn searches_files_by_content_through_symlinked_directories_without_cycles() {
+        let dir = temp_host("search-content-symlink");
+        let target = temp_host("search-content-symlink-target");
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("notes.md"), "alpha\nneedle from linked docs\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("docs-link")).unwrap();
+        std::os::unix::fs::symlink(&dir, target.join("cycle")).unwrap();
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-content-symlink".to_string(),
+                path: dir.display().to_string(),
+                query: "needle".to_string(),
+                mode: SearchFilesMode::Content,
+                limit: Some(10),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&target).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                let paths = payload
+                    .results
+                    .iter()
+                    .map(|result| result.path.as_str())
+                    .collect::<Vec<_>>();
+                assert!(paths.contains(&"docs-link/notes.md"), "paths: {paths:?}");
+                assert_eq!(payload.results.len(), 1);
             }
             other => panic!("unexpected response: {other:?}"),
         }
