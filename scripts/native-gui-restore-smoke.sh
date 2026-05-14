@@ -14,6 +14,8 @@ STARTED_APP=0
 PREEXISTING_BACKEND=0
 ALLOW_EXTERNAL_BACKEND=0
 STRICT_APP_OWNED=0
+MANAGE_DEV_STACK=0
+DEV_STACK_WAS_RUNNING=0
 WINDOW_DEBUG_RUNTIME_JSON=""
 SMOKE_DIR=""
 NATIVE_STATUS_PATH=""
@@ -21,7 +23,7 @@ NATIVE_STATUS_JSON=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/native-gui-restore-smoke.sh [--app /path/to/Portolan.app] [--allow-external-backend]
+Usage: scripts/native-gui-restore-smoke.sh [--app /path/to/Portolan.app] [--allow-external-backend] [--manage-dev-stack]
 
 Launches the built macOS Portolan.app, seeds native workspace restore state,
 checks that the main window and one restored workspace window appear, verifies
@@ -36,6 +38,8 @@ nativeLifecycle diagnostic directly.
 By default this smoke requires :4004 to be free before launch, so it proves the
 built app supervises the bundled backend. Use --allow-external-backend only when
 you intentionally want to verify GUI restore against an already-running backend.
+Use --manage-dev-stack to temporarily stop the shared portolan-dev tmux stack
+for strict app-owned validation, then restart it during cleanup.
 
 Environment:
   PORTOLAN_APP_PATH       Override the app bundle path.
@@ -55,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-external-backend)
       ALLOW_EXTERNAL_BACKEND=1
+      shift
+      ;;
+    --manage-dev-stack)
+      MANAGE_DEV_STACK=1
       shift
       ;;
     -h|--help)
@@ -98,8 +106,32 @@ restore_store() {
   if [[ -n "$SMOKE_DIR" ]]; then
     rm -rf "$SMOKE_DIR"
   fi
+  if [[ "$DEV_STACK_WAS_RUNNING" == "1" ]]; then
+    echo "[portolan] Restarting shared dev stack"
+    "$REPO_DIR/dev.sh" restart >/dev/null
+  fi
 }
 trap restore_store EXIT
+
+has_dev_stack() {
+  tmux has-session -t "=portolan-dev" 2>/dev/null
+}
+
+stop_dev_stack_for_strict_smoke() {
+  if [[ "$MANAGE_DEV_STACK" != "1" ]]; then
+    return 0
+  fi
+  if [[ "$ALLOW_EXTERNAL_BACKEND" == "1" ]]; then
+    echo "[portolan] --manage-dev-stack is only used for strict app-owned validation; ignoring because --allow-external-backend was passed"
+    return 0
+  fi
+  require_command tmux
+  if has_dev_stack; then
+    DEV_STACK_WAS_RUNNING=1
+    echo "[portolan] Stopping shared dev stack for strict app-owned validation"
+    "$REPO_DIR/dev.sh" kill >/dev/null
+  fi
+}
 
 wait_for_window_count() {
   local expected="$1"
@@ -136,6 +168,10 @@ wait_for_backend_shutdown() {
     sleep 1
   done
   return 1
+}
+
+backend_runtime_json() {
+  curl -fsS --max-time 1 http://127.0.0.1:4004/debug-runtime 2>/dev/null || true
 }
 
 collect_frontend_debug_runtime() {
@@ -188,6 +224,8 @@ require_command curl
 require_command node
 require_command /usr/libexec/PlistBuddy
 
+stop_dev_stack_for_strict_smoke
+
 if [[ ! -d "$APP_PATH" ]]; then
   echo "[portolan] built app bundle not found: $APP_PATH" >&2
   echo "[portolan] run npm run tauri:build first, or pass --app /path/to/Portolan.app" >&2
@@ -204,11 +242,21 @@ if [[ ! -x "$APP_EXECUTABLE" ]]; then
   exit 1
 fi
 
-if curl -fsS --max-time 1 http://127.0.0.1:4004/debug-runtime >/dev/null 2>&1; then
+if [[ "$ALLOW_EXTERNAL_BACKEND" != "1" && "$MANAGE_DEV_STACK" == "1" ]]; then
+  echo "[portolan] Waiting for shared dev stack shutdown to free :4004"
+  if ! wait_for_backend_shutdown; then
+    echo "[portolan] existing backend still responding on :4004 after dev stack shutdown" >&2
+    echo "[portolan] --manage-dev-stack is only best-effort for strict validation; rerun with --allow-external-backend if this is intentional" >&2
+    exit 1
+  fi
+fi
+
+PREEXISTING_BACKEND_RUNTIME="$(backend_runtime_json)"
+if [[ -n "$PREEXISTING_BACKEND_RUNTIME" ]]; then
   PREEXISTING_BACKEND=1
   if [[ "$ALLOW_EXTERNAL_BACKEND" != "1" ]]; then
     echo "[portolan] existing backend detected on :4004" >&2
-    echo "[portolan] stop the dev backend for app-owned validation, or pass --allow-external-backend for GUI-only restore evidence" >&2
+    echo "[portolan] stop the dev backend for app-owned validation, or pass --allow-external-backend for GUI-only evidence" >&2
     exit 1
   fi
   echo "[portolan] Existing backend detected on :4004; validating GUI restore against the external backend by explicit opt-in"
