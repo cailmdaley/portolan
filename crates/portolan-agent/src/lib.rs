@@ -2683,45 +2683,105 @@ fn handle_tmux_message(payload: &TmuxMessageRequestPayload) -> AgentFrame {
 }
 
 fn send_tmux_message(payload: &TmuxMessageRequestPayload) -> Result<(), String> {
+    send_tmux_message_with(payload, run_tmux_message_command)
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TmuxMessageCommand {
+    program: String,
+    args: Vec<String>,
+    stdin: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TmuxMessageCommandOutput {
+    stderr: Vec<u8>,
+    success: bool,
+}
+
+fn run_tmux_message_command(
+    program: &str,
+    args: &[String],
+    stdin: Option<&[u8]>,
+) -> Result<TmuxMessageCommandOutput, String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run {program}: {error}"))?;
+    if let Some(input) = stdin {
+        let mut child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("{program} stdin unavailable"))?;
+        child_stdin
+            .write_all(input)
+            .map_err(|error| format!("failed to write {program} stdin: {error}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for {program}: {error}"))?;
+    Ok(TmuxMessageCommandOutput {
+        stderr: output.stderr,
+        success: output.status.success(),
+    })
+}
+
+fn tmux_command_error(label: &str, output: TmuxMessageCommandOutput) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        format!("tmux {label} failed")
+    } else {
+        stderr
+    }
+}
+
+fn send_tmux_message_with<R>(
+    payload: &TmuxMessageRequestPayload,
+    mut run_command: R,
+) -> Result<(), String>
+where
+    R: FnMut(&str, &[String], Option<&[u8]>) -> Result<TmuxMessageCommandOutput, String>,
+{
     if payload.tmux_session.trim().is_empty() {
         return Err("tmux session is required".to_string());
     }
-    let target = format!("={}:", payload.tmux_session);
-    let mut load = Command::new("tmux")
-        .args(["load-buffer", "-"])
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to run tmux load-buffer: {error}"))?;
-    {
-        let mut stdin = load
-            .stdin
-            .take()
-            .ok_or_else(|| "tmux load-buffer stdin unavailable".to_string())?;
-        stdin
-            .write_all(payload.message.as_bytes())
-            .map_err(|error| format!("failed to write tmux buffer: {error}"))?;
+    if payload.message.is_empty() {
+        return Err("message is required".to_string());
     }
-    let load_status = load
-        .wait()
-        .map_err(|error| format!("failed to wait for tmux load-buffer: {error}"))?;
-    if !load_status.success() {
-        return Err(format!("tmux load-buffer failed: {load_status}"));
+    let target = format!("={}:", payload.tmux_session);
+    let load_args = vec!["load-buffer".to_string(), "-".to_string()];
+    let load_output = run_command("tmux", &load_args, Some(payload.message.as_bytes()))?;
+    if !load_output.success {
+        return Err(tmux_command_error("load-buffer", load_output));
     }
 
-    let paste_status = Command::new("tmux")
-        .args(["paste-buffer", "-p", "-t", &target])
-        .status()
-        .map_err(|error| format!("failed to run tmux paste-buffer: {error}"))?;
-    if !paste_status.success() {
-        return Err(format!("tmux paste-buffer failed: {paste_status}"));
+    let paste_args = vec![
+        "paste-buffer".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        target.clone(),
+    ];
+    let paste_output = run_command("tmux", &paste_args, None)?;
+    if !paste_output.success {
+        return Err(tmux_command_error("paste-buffer", paste_output));
     }
+
     if payload.press_enter {
-        let enter_status = Command::new("tmux")
-            .args(["send-keys", "-t", &target, "Enter"])
-            .status()
-            .map_err(|error| format!("failed to run tmux send-keys: {error}"))?;
-        if !enter_status.success() {
-            return Err(format!("tmux send-keys failed: {enter_status}"));
+        let enter_args = vec![
+            "send-keys".to_string(),
+            "-t".to_string(),
+            target,
+            "Enter".to_string(),
+        ];
+        let enter_output = run_command("tmux", &enter_args, None)?;
+        if !enter_output.success {
+            return Err(tmux_command_error("send-keys", enter_output));
         }
     }
     Ok(())
@@ -5563,6 +5623,111 @@ malformed
         })
         .unwrap_err();
         assert_eq!(oversized, "terminal capture exceeds 16 MB");
+    }
+
+    #[test]
+    fn tmux_message_uses_node_compatible_load_paste_and_enter_commands() {
+        let payload = TmuxMessageRequestPayload {
+            correlation_id: "tmux-message-ok".to_string(),
+            tmux_session: "remote-worker".to_string(),
+            message: "deliver this\n".to_string(),
+            press_enter: true,
+        };
+        let mut calls: Vec<TmuxMessageCommand> = Vec::new();
+
+        send_tmux_message_with(&payload, |program, args, stdin| {
+            calls.push(TmuxMessageCommand {
+                program: program.to_string(),
+                args: args.to_vec(),
+                stdin: stdin.map(|input| input.to_vec()),
+            });
+            Ok(TmuxMessageCommandOutput {
+                stderr: Vec::new(),
+                success: true,
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            calls,
+            vec![
+                TmuxMessageCommand {
+                    program: "tmux".to_string(),
+                    args: vec!["load-buffer".to_string(), "-".to_string()],
+                    stdin: Some(b"deliver this\n".to_vec()),
+                },
+                TmuxMessageCommand {
+                    program: "tmux".to_string(),
+                    args: vec![
+                        "paste-buffer".to_string(),
+                        "-p".to_string(),
+                        "-t".to_string(),
+                        "=remote-worker:".to_string(),
+                    ],
+                    stdin: None,
+                },
+                TmuxMessageCommand {
+                    program: "tmux".to_string(),
+                    args: vec![
+                        "send-keys".to_string(),
+                        "-t".to_string(),
+                        "=remote-worker:".to_string(),
+                        "Enter".to_string(),
+                    ],
+                    stdin: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tmux_message_reports_validation_and_tmux_errors() {
+        let missing_session = send_tmux_message_with(
+            &TmuxMessageRequestPayload {
+                correlation_id: "tmux-message-bad-session".to_string(),
+                tmux_session: String::new(),
+                message: "hello".to_string(),
+                press_enter: false,
+            },
+            |_, _, _| unreachable!("validation should run before tmux"),
+        )
+        .unwrap_err();
+        assert_eq!(missing_session, "tmux session is required");
+
+        let missing_message = send_tmux_message_with(
+            &TmuxMessageRequestPayload {
+                correlation_id: "tmux-message-bad-message".to_string(),
+                tmux_session: "remote-worker".to_string(),
+                message: String::new(),
+                press_enter: false,
+            },
+            |_, _, _| unreachable!("validation should run before tmux"),
+        )
+        .unwrap_err();
+        assert_eq!(missing_message, "message is required");
+
+        let payload = TmuxMessageRequestPayload {
+            correlation_id: "tmux-message-error".to_string(),
+            tmux_session: "missing".to_string(),
+            message: "hello".to_string(),
+            press_enter: false,
+        };
+        let mut calls = 0;
+        let error = send_tmux_message_with(&payload, |_, _, _| {
+            calls += 1;
+            Ok(TmuxMessageCommandOutput {
+                stderr: if calls == 2 {
+                    b"can't find pane: missing\n".to_vec()
+                } else {
+                    Vec::new()
+                },
+                success: calls != 2,
+            })
+        })
+        .unwrap_err();
+
+        assert_eq!(calls, 2);
+        assert_eq!(error, "can't find pane: missing");
     }
 
     #[test]
