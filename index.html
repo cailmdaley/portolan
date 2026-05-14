@@ -1998,17 +1998,23 @@
         animation: subtlePulse 1.5s ease-in-out infinite;
       }
 
-      /* Modal chrome alignment — the portolan-injected close button (×),
+      /* Modal chrome alignment — the portolan-injected window-action
+         cluster (close everywhere; duplicate-window in native runtime),
          vellum's file-mode toolbar (left column top), and the thumb-index
          header (right column top) share the same horizontal band.
          The toolbar gets bumped padding-top/bottom so its content centres
          on the same y as the thumb-index's first row of mode tabs; the
          thumb-index's own top padding is tightened so the bands' bottoms
-         align at ~46-48px. The close button (× in mount.tsx) follows
-         the new centreline via top:14px. See vellum-reader/modal-chrome-alignment
-         and vellum-reader/title-bar-thumb-index-alignment. */
+         align at ~46-48px. Browser/runtime-neutral padding assumes the
+         close button alone; native windows opt into extra left padding so
+         file paths clear the duplicate button too. See vellum-reader/
+         modal-chrome-alignment and vellum-reader/
+         title-bar-thumb-index-alignment. */
       .vellum-workspace-modal-container .vellum-file-mode__toolbar {
         padding: 14px 8px 14px 44px;
+      }
+      .vellum-workspace-modal-container.vellum-workspace-modal-has-window-actions .vellum-file-mode__toolbar {
+        padding-left: 68px;
       }
       .vellum-workspace-modal-container .thumb-index {
         /* Tight top + bottom padding so the published --thumb-index-bottom
@@ -2041,15 +2047,65 @@
            shouldn't gate access to the mode tabs. */
         display: block !important;
       }
-      /* Active state for the close button (overrides the inline mouseenter
-         styles when held down). Also lightens the affordance for keyboard
-         focus so tab-navigators see it. */
-      .vellum-workspace-modal-close:active {
-        background: rgba(160, 48, 48, 0.16) !important;
+      .vellum-workspace-modal-actions {
+        position: fixed;
+        top: 14px;
+        left: 8px;
+        z-index: 1001;
+        display: flex;
+        align-items: center;
+        gap: 4px;
       }
-      .vellum-workspace-modal-close:focus-visible {
+      .vellum-workspace-modal-action {
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-muted, #7A6F5C);
+        cursor: pointer;
+        font-size: 17px;
+        line-height: 1;
+        font-family: inherit;
+        padding: 0;
+        transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
+      }
+      .vellum-workspace-modal-action svg {
+        width: 14px;
+        height: 14px;
+        display: block;
+      }
+      .vellum-workspace-modal-action:hover:not(:disabled) {
+        background: rgba(154, 123, 53, 0.08);
+        border-color: rgba(154, 123, 53, 0.28);
+        color: var(--gold, #9A7B35);
+      }
+      .vellum-workspace-modal-action--duplicate:hover:not(:disabled) {
+        background: rgba(90, 123, 123, 0.10);
+        border-color: rgba(90, 123, 123, 0.32);
+        color: var(--accent, #5A7B7B);
+      }
+      .vellum-workspace-modal-action--close:hover:not(:disabled) {
+        background: rgba(160, 48, 48, 0.10);
+        border-color: rgba(160, 48, 48, 0.32);
+        color: #A03030;
+      }
+      .vellum-workspace-modal-action:active:not(:disabled) {
+        background: rgba(154, 123, 53, 0.16);
+      }
+      .vellum-workspace-modal-action--close:active:not(:disabled) {
+        background: rgba(160, 48, 48, 0.16);
+      }
+      .vellum-workspace-modal-action:focus-visible {
         outline: 2px solid rgba(154, 123, 53, 0.55);
         outline-offset: 2px;
+      }
+      .vellum-workspace-modal-action:disabled {
+        opacity: 0.5;
+        cursor: progress;
       }
 
       /* Vellum's HtmlReader doesn't size its iframe — cross-origin

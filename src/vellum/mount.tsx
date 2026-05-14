@@ -39,12 +39,14 @@ import {
 } from 'vellum-reader'
 import 'vellum-reader/css'
 import { KanbanModal } from '../ui/KanbanModal'
+import { duplicateNativeWorkspaceWindow, isNativePortolanRuntime } from '../runtime/NativeBridge'
 import { createPortolanAdapter } from './portolan-adapter'
 import { openWorkerPicker, type WorkerOption, type WorkerPickerChoice } from './workerPicker'
 import { showToast } from '../ui/utils'
 import { lockModalBackground } from '../ui/modalBackgroundLock'
 import { StashForm, injectStashFormStyles } from './StashForm'
 import { FindHost, injectFindHostStyles } from './FindHost'
+import { createWorkspaceModalActions } from './workspaceModalActions'
 
 const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:4004`
 
@@ -1175,71 +1177,18 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
   document.body.appendChild(container)
 
   // React mounts into its own child div so we can keep portolan-owned
-  // chrome (the close button) as a sibling: createRoot() takes ownership
+  // window-action chrome (close + optional duplicate-window button) as a
+  // sibling: createRoot() takes ownership
   // of its container's children and would wipe any DOM we appended to
   // `container` directly on every render.
   const reactHost = document.createElement('div')
   container.appendChild(reactHost)
   const root = createRoot(reactHost)
   const unlockBackground = lockModalBackground(container)
-
-  // Visible escape hatch — Escape works, but a button is what every other
-  // user expects. Sits in the leftmost position of vellum's file-mode
-  // toolbar (or above the thumb-index header in narrative mode) so it
-  // shares the chrome's vertical rhythm with the file path / fiber title
-  // and the action group on the right. The toolbar's padding-left is
-  // bumped via a sibling stylesheet rule (index.html) so the path text
-  // flows past the button instead of underneath it. Quiet at rest —
-  // border only on hover/focus — so it reads as chrome, not a CTA.
-  // See vellum-dogfood/vellum-workspace-modal-no-close-button.
-  const closeBtn = document.createElement('button')
-  closeBtn.type = 'button'
-  closeBtn.className = 'vellum-workspace-modal-close'
-  closeBtn.setAttribute('aria-label', 'Close vellum workspace (Esc)')
-  closeBtn.title = 'Close (Esc)'
-  closeBtn.textContent = '×'
-  Object.assign(closeBtn.style, {
-    position: 'fixed',
-    // Workspace modal's three top elements — close button (here), the
-    // file-mode toolbar's path text, and the thumb-index header — share
-    // a single horizontal centreline. The portolan-injected CSS in
-    // index.html pads the toolbar to padding 14px y (toolbar ≈ 53px
-    // tall) and tightens the thumb-index padding-top to 10px so its
-    // first row of mode tabs centres at the same y. Centre the 24px
-    // button on that band: top = (53 − 24)/2 ≈ 14. See
-    // vellum-reader/modal-chrome-alignment and
-    // vellum-reader/title-bar-thumb-index-alignment.
-    top: '14px',
-    left: '8px',
-    zIndex: '1001',
-    width: '24px',
-    height: '24px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: '1px solid transparent',
-    borderRadius: '4px',
-    background: 'transparent',
-    color: 'var(--text-muted, #7A6F5C)',
-    cursor: 'pointer',
-    fontSize: '17px',
-    lineHeight: '1',
-    fontFamily: 'inherit',
-    padding: '0',
-    transition: 'background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out',
-  })
-  closeBtn.addEventListener('mouseenter', () => {
-    closeBtn.style.background = 'rgba(160, 48, 48, 0.10)'
-    closeBtn.style.borderColor = 'rgba(160, 48, 48, 0.32)'
-    closeBtn.style.color = '#A03030'
-  })
-  closeBtn.addEventListener('mouseleave', () => {
-    closeBtn.style.background = 'transparent'
-    closeBtn.style.borderColor = 'transparent'
-    closeBtn.style.color = 'var(--text-muted, #7A6F5C)'
-  })
-  closeBtn.addEventListener('click', () => close())
-  container.appendChild(closeBtn)
+  const showDuplicateCurrentWindow = isNativePortolanRuntime()
+  if (showDuplicateCurrentWindow) {
+    container.classList.add('vellum-workspace-modal-has-window-actions')
+  }
 
   const adapter = createPortolanAdapter({
     collectionId: opts.cityId,
@@ -1266,6 +1215,21 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       }
     }
   }
+
+  const modalActions = createWorkspaceModalActions({
+    onClose: close,
+    showDuplicateCurrentWindow,
+    onDuplicateCurrentWindow: async () => {
+      try {
+        const label = await duplicateNativeWorkspaceWindow()
+        if (!label) throw new Error('native bridge unavailable')
+      } catch (err) {
+        console.error('[vellum-modal] failed to duplicate native workspace window:', err)
+        showToast('Could not open a new window', 'error')
+      }
+    },
+  })
+  container.appendChild(modalActions.container)
 
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== 'Escape') return
