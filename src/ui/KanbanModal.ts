@@ -268,6 +268,21 @@ interface KanbanModalOptions {
    */
   onOpenWorker?: (tmuxSessionName: string) => void
   /**
+   * Called right after a successful Shuttle dispatch (Resume / New Session
+   * buttons → daemon `tmux new-session -d` succeeded) to attach a kitty
+   * tab to the freshly-spawned tmux session by name. Distinct from
+   * `onOpenWorker` because portolan's SessionTracker hasn't polled the
+   * new session yet, so a session-id lookup would silently no-op.
+   *
+   * Pairs with the wait-for-client gate in shuttle's run-script: the
+   * harness pauses until an interactive client attaches, then renders
+   * its first frame at the kitty terminal's size instead of tmux's
+   * detached default-size 80x24. Without this auto-attach the gate
+   * would time out (~10s) and the harness would proceed at default-size,
+   * leaving content baked into scrollback at 80 cols.
+   */
+  onAttachFreshTmux?: (tmuxSessionName: string) => void
+  /**
    * Called when the user clicks the header's `+` stash button. The host
    * (KanbanHost in src/vellum/mount.tsx) opens the StashForm modal. Mirrors
    * the `n` hotkey path so keyboard and mouse converge on the same affordance.
@@ -306,6 +321,7 @@ interface StashCluster {
 export class KanbanModal {
   private readonly onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void
   private readonly onOpenWorker?: (tmuxSessionName: string) => void
+  private readonly onAttachFreshTmux?: (tmuxSessionName: string) => void
   private readonly onStashClick?: () => void
   private readonly apiBase: string
   private readonly handleDocumentKeyDown = (e: KeyboardEvent): void => this.handleKanbanKeyDown(e)
@@ -346,12 +362,14 @@ export class KanbanModal {
   constructor(options: KanbanModalOptions) {
     this.onOpenFiber = options.onOpenFiber
     this.onOpenWorker = options.onOpenWorker
+    this.onAttachFreshTmux = options.onAttachFreshTmux
     this.onStashClick = options.onStashClick
     this.apiBase = options.apiBase ?? `http://${window.location.hostname}:4004`
     this.detailModal = new FiberDetailModal(
       this.apiBase,
       this.onOpenFiber,
       () => { void this.fetchAndRender() },
+      this.onAttachFreshTmux,
     )
   }
 
@@ -2176,15 +2194,18 @@ export class FiberDetailModal {
   private readonly apiBase: string
   private readonly onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void
   private readonly onSaved: () => void
+  private readonly onAttachFreshTmux?: (tmuxSessionName: string) => void
 
   constructor(
     apiBase: string,
     onOpenFiber: (card: KanbanCard, options?: { openInNewWindow?: boolean }) => void,
     onSaved: () => void,
+    onAttachFreshTmux?: (tmuxSessionName: string) => void,
   ) {
     this.apiBase = apiBase
     this.onOpenFiber = onOpenFiber
     this.onSaved = onSaved
+    this.onAttachFreshTmux = onAttachFreshTmux
   }
 
   /**
@@ -3296,8 +3317,17 @@ export class FiberDetailModal {
     }
 
     // 200 success — close the modal and refresh the kanban board.
+    // Then auto-attach a kitty tab to the freshly-spawned tmux session
+    // so the harness's wait-for-client gate completes immediately and
+    // its first frame renders at the kitty terminal's real size. Without
+    // this attach the gate would time out (~10s) and the harness would
+    // proceed at tmux's detached default-size 80x24, baking tiny content
+    // into the scrollback (`gotchas/shuttle-detached-session-bakes-content-at-default-size`).
     this.close()
     this.onSaved()
+    if (body.tmux_session) {
+      this.onAttachFreshTmux?.(body.tmux_session)
+    }
     return true
   }
 

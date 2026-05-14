@@ -11,6 +11,7 @@ import { MessageRouter } from '../MessageRouter.js';
 function makeRouter() {
   const handlers = {
     onFocus: vi.fn(),
+    onFocusByTmuxName: vi.fn(),
     onGetFibers: vi.fn(),
     onHandoff: vi.fn(),
     onNewWorker: vi.fn(),
@@ -21,6 +22,7 @@ function makeRouter() {
     onSearchFiles: vi.fn(),
     onMoveCity: vi.fn(),
     onListDirectory: vi.fn(),
+    onBrowserAttention: vi.fn(),
     onTerminalAttach: vi.fn(),
     onTerminalDetach: vi.fn(),
   };
@@ -48,5 +50,25 @@ describe('MessageRouter terminal messages', () => {
   it('does not crash on malformed terminal messages', () => {
     const { router } = makeRouter();
     expect(() => router.routeClientMessage(ws, '{"type":"terminal:attach"}')).not.toThrow();
+  });
+});
+
+describe('MessageRouter focusByTmuxName', () => {
+  const ws = {} as WebSocket;
+
+  it('routes focusByTmuxName to onFocusByTmuxName with the tmux session name', () => {
+    // The kanban modal sends this right after a successful Shuttle
+    // dispatch — portolan's SessionTracker hasn't polled the new
+    // session yet so the `focus` (session-id-keyed) path would no-op.
+    // Auto-attach via this message closes the wait-for-client gate in
+    // shuttle's run-script and keeps the harness from rendering at the
+    // 80x24 default-size.
+    const { router, handlers } = makeRouter();
+    router.routeClientMessage(
+      ws,
+      JSON.stringify({ type: 'focusByTmuxName', tmuxSession: 'cv-rebuild-shuttle' }),
+    );
+    expect(handlers.onFocusByTmuxName).toHaveBeenCalledWith('cv-rebuild-shuttle');
+    expect(handlers.onFocus).not.toHaveBeenCalled();
   });
 });

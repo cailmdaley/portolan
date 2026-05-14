@@ -96,6 +96,45 @@ export class KittyIntegration {
   }
 
   /**
+   * Focus or launch a kitty tab attached to a local tmux session by name.
+   * Used by the kanban modal right after a Shuttle dispatch: the new
+   * tmux session exists on the local daemon but portolan's SessionTracker
+   * hasn't polled it yet, so `focusSession(portolanSessionId)` would
+   * silently no-op against `findSession`. Pairs with the shuttle daemon's
+   * wait-for-client gate in the run-script — this is what attaches the
+   * client the gate is waiting on, so the harness initializes at the
+   * kitty terminal's real size from the first frame.
+   *
+   * Local-only: the shuttle daemon spawns workers on the host it runs on.
+   * Remote shuttle dispatch is a future concern and would route through
+   * a different path (origin lookup + SSH attach), not this method.
+   */
+  focusTabByTmuxName(tmuxSession: string): void {
+    const socket = this.getSocket();
+    const escapedSession = shellEscape(tmuxSession);
+    const exactSessionTarget = exactTmuxTarget(tmuxSession);
+    const exactTitleMatch = shellEscape(`^${tmuxSession}$`);
+
+    try {
+      execSync(`kitty @ --to ${socket} focus-tab --match title:${exactTitleMatch}`, {
+        stdio: 'ignore',
+      });
+      console.log(`[FocusByTmuxName] focused existing tab: ${tmuxSession}`);
+    } catch {
+      try {
+        execSync(
+          `kitty @ --to ${socket} launch --type=tab --title=${escapedSession} tmux attach -t ${exactSessionTarget}`,
+          { stdio: 'ignore' }
+        );
+        console.log(`[FocusByTmuxName] launched new tab: ${tmuxSession}`);
+      } catch (error) {
+        console.error(`[FocusByTmuxName] failed for ${tmuxSession}:`, error);
+      }
+    }
+    this.activateKitty();
+  }
+
+  /**
    * Core worker creation logic - creates tmux session and kitty tab.
    * Returns tmux session name on success, throws on error.
    * Used by newWorker() and HttpApi callback.

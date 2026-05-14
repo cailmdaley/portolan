@@ -78,6 +78,18 @@ export class FrontendMapActions {
     this.sendMessage({ type: 'focus', sessionId })
   }
 
+  /**
+   * Focus or launch a kitty tab attached to a local tmux session by name.
+   * Used by the kanban modal after a Shuttle dispatch to attach the
+   * freshly-spawned worker before portolan's SessionTracker has had a
+   * chance to discover it (`focusKittyTab` requires a tracked session id).
+   * Pairs with the shuttle daemon's wait-for-client gate; with this
+   * attach, the gate completes in <1s instead of timing out at 10s.
+   */
+  focusKittyTabByTmuxName(tmuxSession: string): void {
+    this.sendMessage({ type: 'focusByTmuxName', tmuxSession })
+  }
+
   async activateRemoteCity(city: City, options: RemoteCityActivationOptions = {}): Promise<void> {
     try {
       const response = await fetch('http://localhost:4004/activate-city', {

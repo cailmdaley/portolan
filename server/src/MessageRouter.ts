@@ -19,6 +19,18 @@ export interface FocusMessage {
   sessionId: string;
 }
 
+/** Focus or launch a kitty tab attached to a tmux session named directly,
+ *  rather than via a portolan session id. Used by the kanban modal right
+ *  after a Shuttle dispatch — the new tmux session exists but portolan's
+ *  SessionTracker hasn't polled it yet, so a `focus` keyed on portolan
+ *  session id would silently no-op. Pairs with the shuttle daemon's
+ *  wait-for-client gate in the run-script: the daemon waits for an
+ *  interactive client; this is what attaches it. */
+export interface FocusByTmuxNameMessage {
+  type: 'focusByTmuxName';
+  tmuxSession: string;
+}
+
 export interface AgentSessionsUpdateMessage {
   type: 'agent_sessions_update';
   payload: {
@@ -132,6 +144,7 @@ export interface TerminalDetachMessage {
 
 export type ClientMessage =
   | FocusMessage
+  | FocusByTmuxNameMessage
   | AgentSessionsUpdateMessage
   | GetFibersMessage
   | HandoffMessage
@@ -153,6 +166,7 @@ export type ClientMessage =
 
 export interface MessageHandlers {
   onFocus(sessionId: string): void;
+  onFocusByTmuxName(tmuxSession: string): void;
   onGetFibers(ws: WebSocket, cityId: string): Promise<void>;
   onHandoff(fiberId: string, cityPath: string): void | Promise<void>;
   onNewWorker(ws: WebSocket, cityPath: string, name?: string, chrome?: boolean, continueSession?: boolean, cli?: string): void;
@@ -190,6 +204,10 @@ export class MessageRouter {
       switch (message.type) {
         case 'focus':
           this.handlers.onFocus(message.sessionId);
+          break;
+
+        case 'focusByTmuxName':
+          this.handlers.onFocusByTmuxName(message.tmuxSession);
           break;
 
         case 'getFibers':

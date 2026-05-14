@@ -70,6 +70,7 @@ function KanbanHost({
   cityId: propCityId,
   cityName: propCityName,
   onOpenWorker,
+  onAttachFreshTmux,
   onOpenFiberInCity,
   kanbanInitialScope: propInitialScope,
 }: {
@@ -79,6 +80,11 @@ function KanbanHost({
    *  `openVellumWorkspaceModal({ onOpenWorker })` — main.ts owns the camera
    *  + kitty-focus state, so this side just forwards the tmux session name. */
   onOpenWorker?: (tmuxSessionName: string) => void
+  /** Auto-attach a kitty tab to a freshly-dispatched Shuttle tmux session.
+   *  Bypasses portolan's SessionTracker (which hasn't polled the new
+   *  session yet) and goes straight to a kitty `launch --type=tab tmux
+   *  attach`. See KanbanModalOptions.onAttachFreshTmux. */
+  onAttachFreshTmux?: (tmuxSessionName: string) => void
   /**
    * Called when the user clicks a card whose owning city is different from
    * the host vellum's current city (or when the host is global, which has
@@ -161,6 +167,9 @@ function KanbanHost({
       // owns the actual focus implementation. Wired through Stage 6's
       // openVellumWorkspaceModal({onOpenWorker}) plumbing.
       onOpenWorker,
+      // Same plumbing, distinct callback: dispatch-success auto-attach
+      // goes straight to a kitty tab without a SessionTracker lookup.
+      onAttachFreshTmux,
       // Header `+` button mirrors the `n` hotkey: both open the StashForm
       // modal owned by this React host. The kanban renders the button in
       // its own header so it's reliably visible regardless of vellum's
@@ -179,7 +188,7 @@ function KanbanHost({
       kanban.unmount()
       kanbanRef.current = null
     }
-  }, [cityId, cityName, navigate, setMode, onOpenWorker, onOpenFiberInCity])
+  }, [cityId, cityName, navigate, setMode, onOpenWorker, onAttachFreshTmux, onOpenFiberInCity])
 
   // Hotkey: `n` opens the stash form. Active whenever KanbanHost is mounted
   // (i.e. the user is on the kanban tab) — vellum tears KanbanHost down on
@@ -804,10 +813,11 @@ function portolanHeaderActions(args: {
     },
     {
       // Nuclear option — clear every annotation on this file regardless
-      // of sent state. Confirms first because the action is irreversible
-      // and easy to mis-click against a dense margin. Uses window.confirm
-      // for now; can graduate to an inline confirm popover if the gesture
-      // proves too jarring.
+      // of sent state. No confirmation: the button is `destructive: true`
+      // (rendered as such by the chrome) and clearing is a low-stakes
+      // recovery move in practice — comments live in the digest, the
+      // fiber, or downstream worker prompts long before they reach the
+      // "stranded with zombies" state Clear targets.
       //
       // `scope: 'stored'` is the load-bearing bit: when prose has drifted
       // past existing annotation anchors (rewrites, deletions) the visible
@@ -822,9 +832,6 @@ function portolanHeaderActions(args: {
       scope: 'stored',
       title: 'Delete all comments on this file',
       onInvoke: async (annotations, ctx) => {
-        const n = annotations.length
-        const noun = n === 1 ? 'comment' : 'comments'
-        if (!window.confirm(`Delete all ${n} ${noun} on this file? This can't be undone.`)) return
         const ids = annotations.map((a) => a.id).filter((id): id is string => !!id)
         await deleteAnnotationsById(ids, ctx.refreshAnnotations)
       },
@@ -904,21 +911,20 @@ function portolanFiberBulkActions(args: {
     },
     {
       // Nuclear option for fiber mode — symmetric with the file-mode
-      // variant in `portolanHeaderActions`. Confirms first; with
-      // `scope: 'stored'` the bar's count reflects every annotation on
-      // disk for this fiber's slug (after the currentSlug filter), so
-      // the prompt's number matches what Clear is actually about to
-      // delete — including annotations whose anchors no longer resolve
-      // because the prose has been rewritten beneath them.
+      // variant in `portolanHeaderActions`. No confirmation: comments are
+      // recoverable from upstream surfaces (digest, worker prompts) long
+      // before they'd be missed, and the friction was getting in the way
+      // of normal kanban hygiene. With `scope: 'stored'` the bar's count
+      // reflects every annotation on disk for this fiber's slug (after
+      // the currentSlug filter), so the action targets exactly what the
+      // visible count implies — including annotations whose anchors no
+      // longer resolve because the prose has been rewritten beneath them.
       id: 'clear-all',
       label: 'Clear',
       destructive: true,
       scope: 'stored',
       title: 'Delete all comments on this fiber',
       onInvoke: async (annotations, ctx) => {
-        const n = annotations.length
-        const noun = n === 1 ? 'comment' : 'comments'
-        if (!window.confirm(`Delete all ${n} ${noun} on this fiber? This can't be undone.`)) return
         const ids = annotations.map((a) => a.id).filter((id): id is string => !!id)
         await deleteAnnotationsById(ids, ctx.refreshAnnotations)
       },
@@ -1052,6 +1058,10 @@ export interface OpenWorkspaceModalOptions {
    *  clicks the indicator. Optional; if omitted the indicator is informational
    *  only. */
   onOpenWorker?: (tmuxSessionName: string) => void
+  /** Auto-attach a kitty tab to a freshly-dispatched Shuttle tmux session.
+   *  Fired by the kanban modal's Resume / New Session success path so the
+   *  harness's wait-for-client gate completes before the timeout. */
+  onAttachFreshTmux?: (tmuxSessionName: string) => void
   /** Click-through for a kanban card whose owning city differs from this
    *  modal's `cityId` (or when this modal is global). The host closes the
    *  current vellum and opens a fresh one scoped to the card's city with
@@ -1330,6 +1340,7 @@ export function openVellumWorkspaceModal(opts: OpenWorkspaceModalOptions): Vellu
       cityId={opts.cityId}
       cityName={opts.cityName}
       onOpenWorker={opts.onOpenWorker}
+      onAttachFreshTmux={opts.onAttachFreshTmux}
       onOpenFiberInCity={opts.onOpenFiberInCity}
       kanbanInitialScope={opts.kanbanInitialScope}
     />

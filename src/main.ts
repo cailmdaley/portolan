@@ -670,6 +670,7 @@ function openCityWorkspace(city: City, opts: OpenCityWorkspaceOpts = {}): void {
       // pivot. Single shared helper so the standalone-modal vs vellum-embedded
       // paths don't drift in their session-resolve logic.
       onOpenWorker: focusWorkerByTmuxSession,
+      onAttachFreshTmux: (tmuxSession) => mapActions?.focusKittyTabByTmuxName(tmuxSession),
       // City-scoped kanban: cards from another city pivot vellum across.
       // Flipping the kanban tab in the new city would be surprising though —
       // the user clicked through *to* a fiber, so land on its prose.
@@ -857,6 +858,7 @@ function openGlobalVellumIndex(): void {
       initialMode: 'narrative',
       cityName: 'loom',
       onOpenWorker: focusWorkerByTmuxSession,
+      onAttachFreshTmux: (tmuxSession) => mapActions?.focusKittyTabByTmuxName(tmuxSession),
       onFindScopeChange: handleFindScopeChange,
       // Cards from the (currently empty) kanban or Find tab in this
       // global mount pivot to their owning city's narrative — same
@@ -914,6 +916,7 @@ function openGlobalKanban(): void {
     activeWorkspaceHandle = openVellumWorkspaceModal({
       initialMode: 'kanban',
       onOpenWorker: focusWorkerByTmuxSession,
+      onAttachFreshTmux: (tmuxSession) => mapActions?.focusKittyTabByTmuxName(tmuxSession),
       // Stage J — Find scope-change callback; the kanban tab itself doesn't
       // surface scope, but if the user flips to Find from here the change
       // path goes through this same modal handle.
@@ -972,6 +975,7 @@ function openGlobalFind(): void {
       findInitialScope: SCOPE_GLOBAL,
       onFindScopeChange: handleFindScopeChange,
       onOpenWorker: focusWorkerByTmuxSession,
+      onAttachFreshTmux: (tmuxSession) => mapActions?.focusKittyTabByTmuxName(tmuxSession),
       // Global Find has no fiber graph (cityId undefined); fiber clicks from
       // the (forthcoming Stage B) tree pivot vellum to the card's owning city.
       onOpenFiberInCity: openFiberInCityFromKanban,

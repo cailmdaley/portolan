@@ -505,6 +505,7 @@ function routeRemoteTerminalExit(originId: string, subscriptionId: string, reaso
 
 const messageRouter = new MessageRouter({
   onFocus: (sessionId) => kitty.focusSession(sessionId),
+  onFocusByTmuxName: (tmuxSession) => kitty.focusTabByTmuxName(tmuxSession),
   onGetFibers: browserStateCoordinator.handleGetFibers.bind(browserStateCoordinator),
   onHandoff: (fiberId, cityPath) => kitty.handoff(fiberId, cityPath),
   onNewWorker: (ws, cityPath, name, chrome, continueSession, cli) => kitty.newWorker(ws, cityPath, name, chrome, continueSession, cli),
