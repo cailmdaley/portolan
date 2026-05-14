@@ -16,6 +16,7 @@ import {
   replacedRemoteAgentTmuxSessions,
   type RemoteAgentStartupOptions,
 } from './RemoteAgentRuntime.js';
+import { baseRemoteSshHost } from './RemoteAgentHostIdentity.js';
 import { RemoteWorkingSessionTracker } from './RemoteWorkingSessionTracker.js';
 import { shellEscape } from './ShellPathUtils.js';
 import type { Session } from './SessionTracker.js';
@@ -553,7 +554,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function portolanTunnelLabel(sshHost: string): string {
-  return `com.cailmdaley.portolan-tunnel-${sshHost}`;
+  return `com.cailmdaley.portolan-tunnel-${baseRemoteSshHost(sshHost)}`;
 }
 
 function delay(ms: number): Promise<void> {
