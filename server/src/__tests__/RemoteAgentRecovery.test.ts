@@ -79,7 +79,26 @@ describe('recoverRemoteAgent', () => {
     ]);
   });
 
-  it('reports agent restart failures without restarting a healthy tunnel', async () => {
+  it('defaults recovery to the Rust agent when no runtime is supplied', async () => {
+    mockExecFile.mockImplementation(resolveExec());
+
+    const result = await recoverRemoteAgent('candide');
+
+    expect(result).toEqual({
+      sshHost: 'candide',
+      tunnel: 'reachable',
+      agent: 'restarted',
+      message: 'candide: tunnel already reachable; restarted portolan-agent-rust',
+    });
+    expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
+      `tmux kill-session -t ${shellEscape(`=${NODE_AGENT_SESSION}:`)} 2>/dev/null || true`,
+    );
+    expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
+      `tmux new-session -d -s ${shellEscape(RUST_AGENT_SESSION)}`,
+    );
+  });
+
+  it('reports explicit Node agent restart failures without restarting a healthy tunnel', async () => {
     mockExecFile
       .mockImplementationOnce(resolveExec())
       .mockImplementationOnce((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
@@ -87,7 +106,7 @@ describe('recoverRemoteAgent', () => {
         return {} as any;
       });
 
-    const result = await recoverRemoteAgent('candide');
+    const result = await recoverRemoteAgent('candide', 'node');
 
     expect(result).toEqual({
       sshHost: 'candide',

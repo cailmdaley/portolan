@@ -74,8 +74,15 @@ describe('RemoteAgentCoordinator', () => {
     ]);
   });
 
-  it('starts remote agent recovery when the agent WebSocket disconnects', async () => {
-    const { originManager, callbacks, coordinator } = createCoordinator();
+  it('defaults remote agent recovery to Rust when runtime metadata is omitted', async () => {
+    const { originManager, callbacks, coordinator } = createCoordinator({
+      recoverRemoteAgent: vi.fn().mockResolvedValue({
+        sshHost: 'candide',
+        tunnel: 'reachable',
+        agent: 'restarted',
+        message: 'candide: tunnel reachable; restarted portolan-agent-rust',
+      }),
+    });
     const ws = { close: vi.fn() } as any;
 
     const origin = originManager.registerAgent('candide', ws, 'candide');
@@ -84,6 +91,40 @@ describe('RemoteAgentCoordinator', () => {
     expect(disconnectedOrigin?.id).toBe(origin.id);
 
     coordinator.handleAgentDisconnect(disconnectedOrigin!.id, disconnectedOrigin!.sshHost);
+
+    await vi.waitFor(() => {
+      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'rust', expect.objectContaining({
+        origin: 'candide',
+      }));
+    });
+    await vi.waitFor(() => {
+      expect(coordinator.getRemoteAgentRecoveryStats()[0]).toEqual(expect.objectContaining({
+        originId: 'remote-candide',
+        sshHost: 'candide',
+        agentRuntime: 'rust',
+        inFlight: false,
+        lastResult: expect.objectContaining({
+          tunnel: 'reachable',
+          agent: 'restarted',
+        }),
+      }));
+    });
+  });
+
+  it('preserves explicit Node fallback recovery for Node-owned disconnects', async () => {
+    const { originManager, callbacks, coordinator } = createCoordinator();
+    const ws = { close: vi.fn() } as any;
+
+    const origin = originManager.registerAgent('candide', ws, 'candide', undefined, 'node');
+    const disconnectedOrigin = originManager.handleDisconnect(ws);
+
+    expect(disconnectedOrigin?.id).toBe(origin.id);
+
+    coordinator.handleAgentDisconnect(
+      disconnectedOrigin!.id,
+      disconnectedOrigin!.sshHost,
+      disconnectedOrigin!.agentRuntime,
+    );
 
     await vi.waitFor(() => {
       expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'node', expect.objectContaining({
@@ -95,11 +136,6 @@ describe('RemoteAgentCoordinator', () => {
         originId: 'remote-candide',
         sshHost: 'candide',
         agentRuntime: 'node',
-        inFlight: false,
-        lastResult: expect.objectContaining({
-          tunnel: 'reachable',
-          agent: 'restarted',
-        }),
       }));
     });
   });
@@ -113,7 +149,7 @@ describe('RemoteAgentCoordinator', () => {
     coordinator.handleAgentDisconnect(disconnectedOrigin.id, disconnectedOrigin.sshHost);
 
     await vi.waitFor(() => {
-      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'node', expect.objectContaining({
+      expect(callbacks.recoverRemoteAgent).toHaveBeenCalledWith('candide', 'rust', expect.objectContaining({
         origin: 'candide',
       }));
     });

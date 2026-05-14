@@ -343,7 +343,7 @@ export class RemoteAgentCoordinator {
   handleAgentDisconnect(
     originId: string,
     sshHost?: string,
-    agentRuntime: RemoteAgentRuntime = 'node',
+    agentRuntime: RemoteAgentRuntime = 'rust',
   ): void {
     const originSessionsMap = this.remoteSessions.get(originId);
     if (this.originManager.isOriginConnected(originId)) return;
@@ -401,7 +401,7 @@ export class RemoteAgentCoordinator {
       if (!state) continue;
       if (now - state.disconnectedAt < 15_000) continue;
       const startupOptions = this.runtimeStartupOptions(origin);
-      void this.recoverRemoteAgent(origin.id, origin.sshHost, now, origin.agentRuntime ?? 'node', startupOptions);
+      void this.recoverRemoteAgent(origin.id, origin.sshHost, now, origin.agentRuntime ?? 'rust', startupOptions);
     }
   }
 
@@ -409,7 +409,7 @@ export class RemoteAgentCoordinator {
     originId: string,
     sshHost: string,
     now = Date.now(),
-    agentRuntime: RemoteAgentRuntime = 'node',
+    agentRuntime: RemoteAgentRuntime = 'rust',
     startupOptions: RemoteAgentStartupOptions = {},
   ): Promise<void> {
     const existing = this.recoveryStates.get(originId) ?? {
@@ -669,7 +669,7 @@ async function startRemoteAgent(
 
 export async function recoverRemoteAgent(
   sshHost: string,
-  agentRuntime: RemoteAgentRuntime = 'node',
+  agentRuntime: RemoteAgentRuntime = 'rust',
   startupOptions: RemoteAgentStartupOptions = {},
 ): Promise<RemoteAgentRecoveryResult> {
   const session = remoteAgentTmuxSession(agentRuntime);
