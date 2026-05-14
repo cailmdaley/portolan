@@ -2826,22 +2826,52 @@ fn handle_fiber_history(payload: &FiberHistoryRequestPayload) -> AgentFrame {
 }
 
 fn read_felt_history_json(payload: &FiberHistoryRequestPayload) -> Result<Value, String> {
+    read_felt_history_json_with(payload, run_felt_history_command)
+}
+
+#[derive(Debug, Clone)]
+struct FeltHistoryCommandOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    success: bool,
+}
+
+fn run_felt_history_command(
+    program: &str,
+    args: &[String],
+) -> Result<FeltHistoryCommandOutput, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to run {program}: {error}"))?;
+    Ok(FeltHistoryCommandOutput {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        success: output.status.success(),
+    })
+}
+
+fn read_felt_history_json_with<R>(
+    payload: &FiberHistoryRequestPayload,
+    mut run_command: R,
+) -> Result<Value, String>
+where
+    R: FnMut(&str, &[String]) -> Result<FeltHistoryCommandOutput, String>,
+{
     let felt_host = payload.felt_host.clone().unwrap_or_else(default_felt_host);
     if !is_safe_remote_fiber_path(&payload.slug) {
         return Err(format!("invalid slug: {}", payload.slug));
     }
-    let output = Command::new("felt")
-        .args([
-            "-C",
-            &felt_host,
-            "history",
-            &payload.slug,
-            "--mechanical",
-            "-j",
-        ])
-        .output()
-        .map_err(|error| format!("failed to run felt: {error}"))?;
-    if !output.status.success() {
+    let args = vec![
+        "-C".to_string(),
+        felt_host,
+        "history".to_string(),
+        payload.slug.clone(),
+        "--mechanical".to_string(),
+        "-j".to_string(),
+    ];
+    let output = run_command("felt", &args)?;
+    if !output.success {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(stderr.trim().to_string());
     }
@@ -5303,6 +5333,81 @@ malformed
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn fiber_history_uses_node_compatible_felt_history_command() {
+        let payload = FiberHistoryRequestPayload {
+            correlation_id: "history-command".to_string(),
+            slug: "story/chapter".to_string(),
+            felt_host: Some("/tmp/portolan-felt-host".to_string()),
+        };
+        let mut calls: Vec<(String, Vec<String>)> = Vec::new();
+
+        let events = read_felt_history_json_with(&payload, |program, args| {
+            calls.push((program.to_string(), args.to_vec()));
+            Ok(FeltHistoryCommandOutput {
+                stdout: br#"[{"kind":"edit","summary":"landed"}]"#.to_vec(),
+                stderr: Vec::new(),
+                success: true,
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            calls,
+            vec![(
+                "felt".to_string(),
+                vec![
+                    "-C".to_string(),
+                    "/tmp/portolan-felt-host".to_string(),
+                    "history".to_string(),
+                    "story/chapter".to_string(),
+                    "--mechanical".to_string(),
+                    "-j".to_string(),
+                ],
+            )]
+        );
+        assert_eq!(events.as_array().unwrap()[0]["summary"], json!("landed"));
+    }
+
+    #[test]
+    fn fiber_history_reports_felt_errors_busy_index_and_bad_json() {
+        let payload = FiberHistoryRequestPayload {
+            correlation_id: "history-errors".to_string(),
+            slug: "story".to_string(),
+            felt_host: Some("/tmp/portolan-felt-host".to_string()),
+        };
+
+        let felt_error = read_felt_history_json_with(&payload, |_, _| {
+            Ok(FeltHistoryCommandOutput {
+                stdout: Vec::new(),
+                stderr: b"no felt found matching story\n".to_vec(),
+                success: false,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(felt_error, "no felt found matching story");
+
+        let busy_error = read_felt_history_json_with(&payload, |_, _| {
+            Ok(FeltHistoryCommandOutput {
+                stdout: b"[]".to_vec(),
+                stderr: b"index busy: retry later\n".to_vec(),
+                success: true,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(busy_error, "index busy: retry later");
+
+        let parse_error = read_felt_history_json_with(&payload, |_, _| {
+            Ok(FeltHistoryCommandOutput {
+                stdout: br#"{"not":"an array"}"#.to_vec(),
+                stderr: Vec::new(),
+                success: true,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(parse_error, "felt history JSON was not an array");
     }
 
     #[test]
