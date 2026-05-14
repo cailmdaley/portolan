@@ -500,6 +500,10 @@ fn unix_now() -> u64 {
 
 #[tauri::command]
 fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
+    current_native_status(&state)
+}
+
+fn current_native_status(state: &NativeState) -> NativeStatus {
     let backend = state.backend.lock().expect("native backend state poisoned");
     let workspace_windows = state
         .windows
@@ -526,6 +530,23 @@ fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
         backend: backend.status(),
         workspace_windows,
     }
+}
+
+fn write_smoke_native_status(app: &tauri::AppHandle) {
+    let Some(path) = std::env::var_os("PORTOLAN_NATIVE_STATUS_PATH").map(PathBuf::from) else {
+        return;
+    };
+    let Some(state) = app.try_state::<NativeState>() else {
+        return;
+    };
+    let status = current_native_status(&state);
+    let Ok(body) = serde_json::to_string_pretty(&status) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, body);
 }
 
 #[tauri::command]
@@ -864,6 +885,7 @@ pub fn run() {
             if let Err(error) = restore_startup_workspace_records(app_handle, recent) {
                 log::warn!("failed to restore startup workspace windows: {error}");
             }
+            write_smoke_native_status(app_handle);
         }
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             shutdown_backend(app_handle);

@@ -14,6 +14,10 @@ STARTED_APP=0
 PREEXISTING_BACKEND=0
 ALLOW_EXTERNAL_BACKEND=0
 STRICT_APP_OWNED=0
+WINDOW_DEBUG_RUNTIME_JSON=""
+SMOKE_DIR=""
+NATIVE_STATUS_PATH=""
+NATIVE_STATUS_JSON=""
 
 usage() {
   cat <<'EOF'
@@ -21,7 +25,13 @@ Usage: scripts/native-gui-restore-smoke.sh [--app /path/to/Portolan.app] [--allo
 
 Launches the built macOS Portolan.app, seeds native workspace restore state,
 checks that the main window and one restored workspace window appear, verifies
-/debug-runtime native backend state, then restores the user's app data store.
+/debug-runtime/native runtime lifecycle, then restores the user's app data store.
+
+The smoke launches the built app executable with PORTOLAN_NATIVE_STATUS_PATH
+so it can compare the app's native_status snapshot with /debug-runtime. If
+PORTOLAN_DEBUG_RUNTIME_COMMAND is set, that command can additionally print
+window.debugRuntime() JSON and the smoke will assert the frontend-computed
+nativeLifecycle diagnostic directly.
 
 By default this smoke requires :4004 to be free before launch, so it proves the
 built app supervises the bundled backend. Use --allow-external-backend only when
@@ -31,6 +41,9 @@ Environment:
   PORTOLAN_APP_PATH       Override the app bundle path.
   PORTOLAN_APP_ID         Override the Tauri bundle identifier.
   PORTOLAN_APP_DATA_DIR   Override the app data directory.
+  PORTOLAN_DEBUG_RUNTIME_COMMAND
+                          Optional shell command that prints window.debugRuntime().
+                          If set, it is used for frontend lifecycle diagnostics.
 EOF
 }
 
@@ -82,6 +95,9 @@ restore_store() {
       rmdir "$APP_DATA_DIR" >/dev/null 2>&1 || true
     fi
   fi
+  if [[ -n "$SMOKE_DIR" ]]; then
+    rm -rf "$SMOKE_DIR"
+  fi
 }
 trap restore_store EXIT
 
@@ -122,6 +138,36 @@ wait_for_backend_shutdown() {
   return 1
 }
 
+collect_frontend_debug_runtime() {
+  if [[ -z "${PORTOLAN_DEBUG_RUNTIME_COMMAND:-}" ]]; then
+    return 1
+  fi
+
+  echo "[portolan] Probing frontend window.debugRuntime() via PORTOLAN_DEBUG_RUNTIME_COMMAND"
+  if ! WINDOW_DEBUG_RUNTIME_JSON="$(sh -lc "$PORTOLAN_DEBUG_RUNTIME_COMMAND" 2>/dev/null || true)"; then
+    return 1
+  fi
+
+  if [[ -z "$WINDOW_DEBUG_RUNTIME_JSON" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+wait_for_native_status() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if [[ -s "$NATIVE_STATUS_PATH" ]]; then
+      cat "$NATIVE_STATUS_PATH"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[portolan] timed out waiting for native status export" >&2
+  return 1
+}
+
 window_titles() {
   osascript <<'OSA' 2>/dev/null || true
 tell application "System Events"
@@ -139,10 +185,22 @@ OSA
 require_command open
 require_command osascript
 require_command curl
+require_command node
+require_command /usr/libexec/PlistBuddy
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "[portolan] built app bundle not found: $APP_PATH" >&2
   echo "[portolan] run npm run tauri:build first, or pass --app /path/to/Portolan.app" >&2
+  exit 1
+fi
+APP_EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+if [[ -z "$APP_EXECUTABLE_NAME" ]]; then
+  echo "[portolan] could not read CFBundleExecutable from $APP_PATH/Contents/Info.plist" >&2
+  exit 1
+fi
+APP_EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_EXECUTABLE_NAME"
+if [[ ! -x "$APP_EXECUTABLE" ]]; then
+  echo "[portolan] app executable not found: $APP_EXECUTABLE" >&2
   exit 1
 fi
 
@@ -190,7 +248,9 @@ JSON
 
 osascript_quit
 echo "[portolan] Launching $APP_PATH with seeded workspace restore state"
-open -n "$APP_PATH"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/portolan-native-gui-smoke.XXXXXX")"
+NATIVE_STATUS_PATH="$SMOKE_DIR/native-status.json"
+PORTOLAN_NATIVE_STATUS_PATH="$NATIVE_STATUS_PATH" "$APP_EXECUTABLE" >/dev/null 2>&1 &
 STARTED_APP=1
 
 window_count="$(wait_for_window_count 2)"
@@ -221,30 +281,160 @@ if [[ -z "$debug_runtime" ]]; then
   exit 1
 fi
 
-if [[ "$PREEXISTING_BACKEND" == "0" ]] && ! printf '%s\n' "$debug_runtime" | grep -F '"nativeBackend"' >/dev/null; then
-  echo "[portolan] app-owned backend answered /debug-runtime without runtime.nativeBackend" >&2
-  exit 1
-fi
+collect_frontend_debug_runtime || true
+NATIVE_STATUS_JSON="$(wait_for_native_status)"
 
-if [[ "$PREEXISTING_BACKEND" == "0" ]]; then
-  DEBUG_RUNTIME="$debug_runtime" node <<'NODE'
-const payload = JSON.parse(process.env.DEBUG_RUNTIME || '{}');
-const nativeBackend = payload.runtime?.nativeBackend;
-const expected = {
-  enabled: true,
-  launchKind: 'node-dist-resource',
-  supervised: true,
-};
-for (const [key, value] of Object.entries(expected)) {
-  if (nativeBackend?.[key] !== value) {
+DEBUG_RUNTIME="$debug_runtime" WINDOW_DEBUG_RUNTIME_JSON="$WINDOW_DEBUG_RUNTIME_JSON" NATIVE_STATUS_JSON="$NATIVE_STATUS_JSON" \
+  STRICT_APP_OWNED="$STRICT_APP_OWNED" ALLOW_EXTERNAL_BACKEND="$ALLOW_EXTERNAL_BACKEND" \
+  node --input-type=module <<'NODE'
+const debugRuntime = process.env.DEBUG_RUNTIME || '{}';
+const frontendRuntime = process.env.WINDOW_DEBUG_RUNTIME_JSON || '';
+const nativeStatusRuntime = process.env.NATIVE_STATUS_JSON || '{}';
+const strictOwned = process.env.STRICT_APP_OWNED === '1';
+const allowExternal = process.env.ALLOW_EXTERNAL_BACKEND === '1';
+
+let payload;
+let front;
+let native;
+
+try {
+  payload = JSON.parse(debugRuntime);
+} catch (error) {
+  console.error('[portolan] failed to parse /debug-runtime JSON:', error.message);
+  process.exit(1);
+}
+
+try {
+  front = frontendRuntime ? JSON.parse(frontendRuntime) : null;
+} catch (error) {
+  console.error('[portolan] failed to parse frontend debug runtime JSON:', error.message);
+  process.exit(1);
+}
+
+try {
+  native = JSON.parse(nativeStatusRuntime);
+} catch (error) {
+  console.error('[portolan] failed to parse native_status JSON:', error.message);
+  process.exit(1);
+}
+
+function readServerNativeBackend(data) {
+  if (!data || typeof data !== 'object') return null;
+  const runtime = data?.runtime;
+  if (!runtime || typeof runtime !== 'object') return null;
+  const nativeBackend = runtime?.nativeBackend;
+  return nativeBackend && typeof nativeBackend === 'object' ? nativeBackend : null;
+}
+
+function compareNativeLifecycle(serverPayload, nativePayload) {
+  const nativeBackend = readServerNativeBackend(serverPayload);
+  const nativeBackendStatus = nativePayload?.backend ?? null;
+
+  if (!nativeBackendStatus || typeof nativeBackendStatus !== 'object') {
+    return {
+      status: 'unavailable',
+      backendOwner: null,
+      serverNativeBackend: nativeBackend,
+      mismatches: ['native_status export did not include backend status'],
+    };
+  }
+
+  if (nativeBackendStatus.owner === 'external') {
+    return {
+      status: nativeBackend ? 'owner-mismatch' : 'matched',
+      backendOwner: nativeBackendStatus.owner,
+      serverNativeBackend: nativeBackend,
+      mismatches: nativeBackend
+        ? ['native_status reports an external backend, but /debug-runtime reports PORTOLAN_NATIVE=1']
+        : [],
+    };
+  }
+
+  if (!nativeBackend) {
+    return {
+      status: 'missing-server-native-backend',
+      backendOwner: nativeBackendStatus.owner,
+      serverNativeBackend: null,
+      mismatches: [`native_status reports a ${nativeBackendStatus.owner} backend, but /debug-runtime has no nativeBackend block`],
+    };
+  }
+
+  const expectedRuntime = {
+    enabled: true,
+    launchKind: 'node-dist-resource',
+    supervised: true,
+  };
+  const mismatches = Object.entries(expectedRuntime)
+    .map(([key, value]) =>
+      nativeBackend?.[key] !== value
+        ? `runtime.nativeBackend.${key} expected ${JSON.stringify(value)}; got ${JSON.stringify(nativeBackend?.[key])}`
+        : null,
+    )
+    .filter(Boolean);
+  if (nativeBackendStatus.owner !== 'app') {
+    mismatches.push(`native_status.backend.owner expected "app"; got ${JSON.stringify(nativeBackendStatus.owner)}`);
+  }
+  if (nativeBackendStatus.reachable !== true) {
+    mismatches.push(`native_status.backend.reachable expected true; got ${JSON.stringify(nativeBackendStatus.reachable)}`);
+  }
+  if (nativeBackendStatus.pid == null) {
+    mismatches.push('native_status.backend.pid must be present for app-owned backend');
+  }
+  for (const mismatch of [
+    nativeBackend.launchKind !== undefined && nativeBackend.launchKind !== nativeBackendStatus.launchKind
+      ? `launchKind differs: native_status=${nativeBackendStatus.launchKind} debug-runtime=${String(nativeBackend.launchKind)}`
+      : null,
+    nativeBackend.backendRoot !== undefined && nativeBackend.backendRoot !== nativeBackendStatus.cwd
+      ? `backendRoot differs: native_status.cwd=${nativeBackendStatus.cwd} debug-runtime=${String(nativeBackend.backendRoot)}`
+      : null,
+    nativeBackend.resourceDir !== undefined && nativeBackend.resourceDir !== nativeBackendStatus.resourceDir
+      ? `resourceDir differs: native_status=${String(nativeBackendStatus.resourceDir)} debug-runtime=${String(nativeBackend.resourceDir)}`
+      : null,
+    nativeBackend.processGroup !== undefined && nativeBackend.processGroup !== nativeBackendStatus.processGroup
+      ? `processGroup differs: native_status=${String(nativeBackendStatus.processGroup)} debug-runtime=${String(nativeBackend.processGroup)}`
+      : null,
+  ].filter(Boolean)) mismatches.push(mismatch);
+
+  return {
+    status: mismatches.length === 0 ? 'matched' : 'drift',
+    backendOwner: nativeBackendStatus.owner,
+    serverNativeBackend: nativeBackend,
+    mismatches,
+  };
+}
+
+const nativeLifecycle = front?.nativeLifecycle ?? compareNativeLifecycle(payload, native);
+
+if (strictOwned) {
+  if (nativeLifecycle.status !== 'matched' || nativeLifecycle.backendOwner !== 'app') {
+    const mismatches = Array.isArray(nativeLifecycle.mismatches)
+      ? nativeLifecycle.mismatches.join('; ')
+      : String(nativeLifecycle.mismatches || '');
+    const detail = mismatches || '<none>';
     console.error(
-      `[portolan] app-owned backend expected runtime.nativeBackend.${key}=${JSON.stringify(value)}; got ${JSON.stringify(nativeBackend?.[key])}`,
+      `[portolan] strict app-owned validation failed: status=${nativeLifecycle.status} owner=${nativeLifecycle.backendOwner} mismatches=${detail}`,
     );
     process.exit(1);
   }
+  console.log('[portolan] native lifecycle validated as app-owned matched');
+  console.log('[portolan] nativeLifecycle', JSON.stringify(nativeLifecycle, null, 2));
+} else if (allowExternal) {
+  if (nativeLifecycle.status === 'unavailable') {
+    console.log('[portolan] native status unavailable; skipping lifecycle ownership assertion for external mode');
+  } else if (nativeLifecycle.status !== 'matched' || nativeLifecycle.backendOwner !== 'external') {
+    const mismatches = Array.isArray(nativeLifecycle.mismatches)
+      ? nativeLifecycle.mismatches.join('; ')
+      : String(nativeLifecycle.mismatches || '');
+    const detail = mismatches || '<none>';
+    console.error(
+      `[portolan] external mode expects nativeLifecycle.status=matched owner=external; got status=${nativeLifecycle.status} owner=${nativeLifecycle.backendOwner} mismatches=${detail}`,
+    );
+    process.exit(1);
+  } else {
+    console.log('[portolan] native lifecycle validated as external matched');
+  }
 }
 NODE
-fi
 
 if [[ "$STRICT_APP_OWNED" == "1" ]]; then
   echo "[portolan] Verifying app-owned backend shutdown after quit"
