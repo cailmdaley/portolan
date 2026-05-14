@@ -44,7 +44,6 @@
     "katex": "0.16.27",
     "marked": "17.0.1",
     "marked-katex-extension": "5.1.6",
-    "pdfjs-dist": "5.6.205",
     "react": "18.3.1",
     "react-arborist": "3.5.0",
     "react-dom": "18.3.1",

@@ -102,7 +102,6 @@ function makeMockOptions(): RuntimeOptions {
     contextMenu: { dispose: vi.fn() } as unknown as RuntimeOptions['contextMenu'],
     newWorkerDialog: { dispose: vi.fn() } as unknown as RuntimeOptions['newWorkerDialog'],
     playgroundViewer: { dispose: vi.fn() } as unknown as RuntimeOptions['playgroundViewer'],
-    clearArtifactMediaCaches: vi.fn(),
     getCities: vi.fn().mockReturnValue([]),
     updateWorkerHud: vi.fn(),
     isWorkerHudVisible: vi.fn().mockReturnValue(false),

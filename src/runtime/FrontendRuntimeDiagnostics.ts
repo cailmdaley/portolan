@@ -2,7 +2,6 @@ import type { WebGLRenderer } from 'three'
 import type { ZoneRenderer } from '../render/ZoneRenderer'
 import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
-import type { getArtifactMediaCacheStats } from '../ui/ArtifactMedia'
 import type { FrontendRenderLoopStats } from './FrontendAppRuntime'
 import {
   getNativePortolanStatus,
@@ -16,7 +15,6 @@ import {
 export type DebugRuntimeWindow = Window & {
   zoneRenderer: ZoneRenderer
   debugWebGL: () => void
-  debugArtifactCaches: () => void
   getFrontendRuntimeDiagnostics: () => FrontendRuntimeDiagnostics
   debugNativePortolan: () => Promise<NativePortolanStatus | null>
   debugNativeWorkspaceWindows: () => Promise<NativeWorkspaceWindowRecord[] | null>
@@ -82,7 +80,6 @@ export interface FrontendRuntimeDiagnostics {
     points: number
     lines: number
   }
-  artifactMediaCaches: ReturnType<typeof getArtifactMediaCacheStats>
   views: {
     /** Stage I — the CityHUD overlay retired, so its `getRuntimeStats()`
      *  contribution went with it. Kept the wrapper struct (and the
@@ -103,7 +100,6 @@ interface InstallFrontendRuntimeDiagnosticsOptions {
   renderer: WebGLRenderer
   zoneRenderer: ZoneRenderer
   playgroundViewer: PlaygroundViewer
-  getArtifactMediaCacheStats: () => ReturnType<typeof getArtifactMediaCacheStats>
   getRuntimeDisposed: () => boolean
   getWebSocketState: () => 'missing' | 'connecting' | 'open' | 'closing' | 'closed'
   hasReconnectTimeout: () => boolean
@@ -219,9 +215,6 @@ export function installFrontendRuntimeDiagnostics(
       'Lines': info.render.lines,
     })
   }
-  debugWindow.debugArtifactCaches = () => {
-    console.table(options.getArtifactMediaCacheStats())
-  }
   debugWindow.debugNativePortolan = async () => {
     const native = await getNativePortolanStatus()
     console.log('[debugNativePortolan] snapshot', native)
@@ -270,7 +263,6 @@ export function installFrontendRuntimeDiagnostics(
         points: webglInfo.render.points,
         lines: webglInfo.render.lines,
       },
-      artifactMediaCaches: options.getArtifactMediaCacheStats(),
       views: {
         playground: options.playgroundViewer.getRuntimeStats(),
       },

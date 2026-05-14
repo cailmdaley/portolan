@@ -44,7 +44,6 @@ interface FrontendAppRuntimeOptions {
   contextMenu: ContextMenu
   newWorkerDialog: NewWorkerDialog
   playgroundViewer: PlaygroundViewer
-  clearArtifactMediaCaches: () => void
   getCities: () => City[]
   /** Re-render the workers surface — Stage I retired the CityHUD; the
    *  surviving consumer is the chrome bar's worker-bird strip. Kept as a
@@ -126,7 +125,6 @@ export class FrontendAppRuntime {
     this.options.zoneRenderer.dispose()
     this.options.renderer.dispose()
 
-    this.options.clearArtifactMediaCaches()
     this.options.labelRenderer.domElement.remove()
   }
 

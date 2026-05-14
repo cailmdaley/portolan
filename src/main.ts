@@ -49,7 +49,6 @@ import { NewWorkerDialog } from './ui/NewWorkerDialog'
 // back as a map navigator for cities and workers.
 import { MapChromeBar } from './ui/MapChromeBar'
 import { GlobalSearchPalette } from './ui/GlobalSearchPalette'
-import { clearArtifactMediaCaches, getArtifactMediaCacheStats } from './ui/ArtifactMedia'
 import type { City, Session, ServerOrigin } from './state/types'
 import { findBestMatchingCity, findBestMatchingCityForPath, findNearestCity } from './state/cityLookup'
 import { PALETTE } from './state/types'
@@ -1914,7 +1913,6 @@ const appRuntime = new FrontendAppRuntime({
   contextMenu,
   newWorkerDialog,
   playgroundViewer,
-  clearArtifactMediaCaches,
   getCities: () => cities,
   // Stage I — workers used to be re-rendered onto the HUD whenever a
   // worker activity event arrived. Without the HUD, the chrome bar's
@@ -1936,7 +1934,6 @@ installFrontendRuntimeDiagnostics({
   renderer,
   zoneRenderer,
   playgroundViewer,
-  getArtifactMediaCacheStats,
   getRuntimeDisposed: () => appRuntime.isDisposed(),
   getWebSocketState: () => stateSync.getWebSocketState(),
   hasReconnectTimeout: () => stateSync.hasPendingReconnect(),
