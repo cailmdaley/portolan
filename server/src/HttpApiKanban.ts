@@ -502,8 +502,8 @@ interface HttpApiKanbanOptions {
   /** Max tempered cards to return. Defaults to 30. */
   temperedLimit?: number;
   /**
-   * Test seam: list of currently-running shuttle session names
-   * (`shuttle-<fiber-id>`). Defaults to a real `tmux ls` probe via
+   * Test seam: list of currently-running Shuttle session names
+   * (`shuttleSessionName(fiberId)`). Defaults to a real `tmux ls` probe via
    * Shuttle.listShuttleSessions. Empty list = no workers known to be running.
    */
   listSessions?: () => string[];
@@ -3131,11 +3131,9 @@ function resolveRunningWorker(
   liveSessions: Set<string>,
   canonicalPath?: string,
 ): string | undefined {
-  // Prefer the canonical-store id when we have one — shuttle's session names
-  // are keyed off it, so this is an exact-match probe with no namespace
-  // ambiguity. Only present for local fibers (canonicalPath set in
-  // collectFibersFresh); remote-origin fibers fall through to the fiber-id
-  // path below.
+  // Prefer the canonical-store id when we have one so loom/project views that
+  // expose the same fiber under different ids still converge on Shuttle's
+  // canonical leaf-derived tmux session name.
   if (canonicalPath !== undefined) {
     const canonicalId = canonicalStoreRelativeId(canonicalPath);
     if (canonicalId !== undefined) {
@@ -3144,21 +3142,10 @@ function resolveRunningWorker(
     }
   }
 
-  // No canonical path (remote fibers): exact match against the fiber id as
-  // the kanban view sees it. Then fall back to a slash-boundary suffix
-  // probe in either direction so a worker dispatched under a more- or
-  // less-qualified namespace still surfaces in scoped/global views.
+  // Remote fibers don't carry a local canonical path; probe using the id as
+  // seen in this view. `shuttleSessionName` itself truncates to the leaf.
   const exact = shuttleSessionName(fiberId);
-  if (liveSessions.has(exact)) return exact;
-  const fiberIdSuffix = `/${fiberId}`;
-  for (const session of [...liveSessions].sort()) {
-    if (session.endsWith(fiberIdSuffix)) return session;
-    const tail = session.startsWith('shuttle-')
-      ? session.slice('shuttle-'.length)
-      : null;
-    if (tail !== null && fiberId.endsWith(`/${tail}`)) return session;
-  }
-  return undefined;
+  return liveSessions.has(exact) ? exact : undefined;
 }
 
 /**

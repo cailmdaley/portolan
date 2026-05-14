@@ -1269,7 +1269,7 @@ fn list_shuttle_sessions() -> Vec<String> {
         Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(str::trim)
-            .filter(|session| session.starts_with("shuttle-"))
+            .filter(|session| is_shuttle_session(session))
             .map(str::to_string)
             .collect(),
         _ => Vec::new(),
@@ -1440,8 +1440,20 @@ fn shuttle_entry_json(entry: &ShuttleReadOnlyEntry) -> Value {
     value
 }
 
+fn shuttle_fiber_leaf(fiber_id: &str) -> &str {
+    fiber_id
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+}
+
 fn shuttle_session_name(fiber_id: &str) -> String {
-    format!("shuttle-{fiber_id}")
+    format!("{}-shuttle", shuttle_fiber_leaf(fiber_id))
+}
+
+fn is_shuttle_session(session: &str) -> bool {
+    session.ends_with("-shuttle")
 }
 
 fn agent_for_shuttle_fiber(fiber: &ShuttleFiberProjection) -> String {
@@ -3886,10 +3898,7 @@ malformed
                 },
             ],
             &["portolan".to_string()],
-            &[
-                "shuttle-portolan/running".to_string(),
-                "shuttle-portolan/orphan".to_string(),
-            ],
+            &["running-shuttle".to_string(), "orphan-shuttle".to_string()],
             1234,
         );
 
@@ -3903,7 +3912,7 @@ malformed
                 "eligible": [
                     {
                         "fiberId": "portolan/running",
-                        "tmuxSession": "shuttle-portolan/running",
+                        "tmuxSession": "running-shuttle",
                         "state": "running",
                         "agent": "codex",
                         "reason": "adopted existing tmux session"
@@ -3916,7 +3925,7 @@ malformed
                     }
                 ],
                 "blocked": [],
-                "orphans": ["shuttle-portolan/orphan"]
+                "orphans": ["orphan-shuttle"]
             })
         );
     }
@@ -3957,10 +3966,7 @@ malformed
         let frame = reconcile_shuttle_dispatch_snapshot(
             &fibers,
             &["portolan".to_string()],
-            &[
-                "shuttle-portolan/adopt".to_string(),
-                "shuttle-portolan/orphan".to_string(),
-            ],
+            &["adopt-shuttle".to_string(), "orphan-shuttle".to_string()],
             1234,
             &mut state,
             |fiber_id, agent| {
@@ -3983,14 +3989,14 @@ malformed
                 "eligible": [
                     {
                         "fiberId": "portolan/spawn",
-                        "tmuxSession": "shuttle-portolan/spawn",
+                        "tmuxSession": "spawn-shuttle",
                         "state": "running",
                         "startedAt": 1234,
                         "agent": "pi-gpt-5.4"
                     },
                     {
                         "fiberId": "portolan/adopt",
-                        "tmuxSession": "shuttle-portolan/adopt",
+                        "tmuxSession": "adopt-shuttle",
                         "state": "running",
                         "startedAt": 1234,
                         "agent": "codex",
@@ -3998,17 +4004,14 @@ malformed
                     }
                 ],
                 "blocked": [],
-                "orphans": ["shuttle-portolan/orphan"]
+                "orphans": ["orphan-shuttle"]
             })
         );
 
         let frame = reconcile_shuttle_dispatch_snapshot(
             &fibers,
             &["portolan".to_string()],
-            &[
-                "shuttle-portolan/spawn".to_string(),
-                "shuttle-portolan/adopt".to_string(),
-            ],
+            &["spawn-shuttle".to_string(), "adopt-shuttle".to_string()],
             2234,
             &mut state,
             |fiber_id, agent| {

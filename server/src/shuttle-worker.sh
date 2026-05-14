@@ -43,7 +43,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-SESSION="shuttle-$FIBER_ID"
+shuttle_session_name() {
+    local fiber_id="${1%/}"
+    local leaf="${fiber_id##*/}"
+    printf '%s-shuttle' "$leaf"
+}
+
+SESSION="$(shuttle_session_name "$FIBER_ID")"
 WORK_DIR="$(pwd)"
 FELT_BIN="${FELT_BIN:-felt}"
 
@@ -62,7 +68,7 @@ if [ "$STATUS" = "closed" ]; then
     exit 1
 fi
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
+if tmux has-session -t "=$SESSION" 2>/dev/null; then
     echo "shuttle-worker: already running: $SESSION"
     exit 0
 fi

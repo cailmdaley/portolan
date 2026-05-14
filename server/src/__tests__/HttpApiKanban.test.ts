@@ -640,12 +640,12 @@ describe('HttpApiKanban — /kanban endpoint', () => {
     writeFib('x', { name: 'X', status: 'closed', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01', 'closed-at': '2026-04-04' });
     writeFib('y', { name: 'Y', status: 'closed', shuttle: SHUTTLE_INFLIGHT, 'created-at': '2026-04-01', 'closed-at': '2026-04-05' });
 
-    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => ['shuttle-a'] });
+    const api = new HttpApiKanban({ feltHost: TEST_DIR, listSessions: () => ['a-shuttle'] });
     const res = await callKanban(api);
 
     // 'a' has a running worker → active-first, then 'busy' (newer) and 'b' (older) by createdAt desc.
     expect(res.body.now.inFlight.map((c: any) => c.id)).toEqual(['a', 'busy', 'b']);
-    expect(res.body.now.inFlight[0].runningWorker).toBe('shuttle-a');
+    expect(res.body.now.inFlight[0].runningWorker).toBe('a-shuttle');
     expect(res.body.now.awaitingReview.map((c: any) => c.id)).toEqual(['y', 'x']);
   });
 
@@ -655,13 +655,13 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
     const api = new HttpApiKanban({
       feltHost: TEST_DIR,
-      listSessions: () => ['shuttle-busy'],
+      listSessions: () => ['busy-shuttle'],
     });
     const res = await callKanban(api);
 
     const cards = res.body.now.inFlight;
     expect(cards.map((c: any) => c.id)).toEqual(['busy', 'idle']); // running first
-    expect(cards.find((c: any) => c.id === 'busy').runningWorker).toBe('shuttle-busy');
+    expect(cards.find((c: any) => c.id === 'busy').runningWorker).toBe('busy-shuttle');
     expect(cards.find((c: any) => c.id === 'idle').runningWorker).toBeUndefined();
   });
 
@@ -690,8 +690,8 @@ describe('HttpApiKanban — /kanban endpoint', () => {
 
     const api = new HttpApiKanban({
       feltHost: TEST_DIR,
-      // Session name uses the canonical-store id, not the kanban-view id.
-      listSessions: () => ['shuttle-inner-fiber'],
+      // Session name uses the canonical-store leaf, not the kanban-view id.
+      listSessions: () => ['inner-fiber-shuttle'],
     });
     const res = await callKanban(api);
 
@@ -699,7 +699,7 @@ describe('HttpApiKanban — /kanban endpoint', () => {
       c.id.endsWith('inner-fiber'),
     );
     expect(card).toBeDefined();
-    expect(card.runningWorker).toBe('shuttle-inner-fiber');
+    expect(card.runningWorker).toBe('inner-fiber-shuttle');
   });
 
   it('marks dependsOnSatisfied=false when a depends_on target is not tempered', async () => {

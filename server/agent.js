@@ -1886,7 +1886,8 @@ async function handleFeltComment(message) {
 // The path: on each tick, ask felt for the fiber tree as JSON (felt is the
 // sole reader since Phase 1 of constitution-four-package-cleanup), project
 // onto {id, status, tags, dependsOn, tempered}, then run the predicate and
-// dispatch. tmux is probed by `tmux ls` filtered to `shuttle-*`.
+// dispatch. tmux is probed by `tmux ls` filtered to Shuttle's canonical
+// `<leaf>-shuttle` session names.
 
 /**
  * Project a felt fiber JSON object onto the minimal shape `computeShuttleEligibility`
@@ -2063,21 +2064,32 @@ export function computeShuttleEligibility(fibers, prefixes, pollAt = Date.now())
     return { eligible, blocked };
 }
 
-/** Probe tmux for `shuttle-*` sessions. Empty array if tmux isn't running. */
+function shuttleFiberLeaf(fiberId) {
+    const trimmed = String(fiberId ?? '').replace(/\/+$/, '');
+    if (!trimmed) return '';
+    const parts = trimmed.split('/');
+    return parts[parts.length - 1] ?? '';
+}
+
+function shuttleSessionName(fiberId) {
+    return `${shuttleFiberLeaf(fiberId)}-shuttle`;
+}
+
+function isShuttleSession(sessionName) {
+    return String(sessionName ?? '').endsWith('-shuttle');
+}
+
+/** Probe tmux for Shuttle worker sessions. Empty array if tmux isn't running. */
 async function listShuttleSessions() {
     try {
         const { stdout } = await execAsync(
             'tmux ls -F "#{session_name}" 2>/dev/null',
             { timeout: 3000 }
         );
-        return stdout.split('\n').map(s => s.trim()).filter(s => s.startsWith('shuttle-'));
+        return stdout.split('\n').map(s => s.trim()).filter(isShuttleSession);
     } catch {
         return [];
     }
-}
-
-function shuttleSessionName(fiberId) {
-    return `shuttle-${fiberId}`;
 }
 
 /**

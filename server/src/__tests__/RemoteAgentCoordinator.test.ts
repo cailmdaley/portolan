@@ -229,7 +229,7 @@ describe('RemoteAgentCoordinator', () => {
         pollAt: 1234,
         eligible: [{ fiberId: 'work', state: 'idle' }],
         blocked: [{ fiberId: 'blocked', reason: 'dependency dep is not tempered' }],
-        orphans: ['shuttle-ghost'],
+        orphans: ['ghost-shuttle'],
       },
     });
 

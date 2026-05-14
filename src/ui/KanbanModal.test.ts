@@ -1005,7 +1005,7 @@ describe('dispatchIneligibleReason', () => {
 describe('FiberDetailModal dispatch — 200 success', () => {
   it('closes the modal and calls onSaved when daemon returns 200', async () => {
     vi.stubGlobal('fetch', mockFetch({
-      '/api/v1/dispatch': () => jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }),
+      '/api/v1/dispatch': () => jsonResponse({ dispatched: true, tmux_session: 'my-constitution-shuttle' }),
     }))
 
     const { dispatchBtn, onSaved } = await openDispatchModal(makeInFlightCard())
@@ -1024,7 +1024,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
       if (urlStr.includes('/api/v1/dispatch')) {
         dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
-        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'my-constitution-shuttle' }))
       }
       return Promise.resolve(jsonResponse({}))
     }))
@@ -1044,7 +1044,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
       if (urlStr.includes('/api/v1/dispatch')) {
         dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
-        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'my-constitution-shuttle' }))
       }
       return Promise.resolve(jsonResponse({}))
     }))
@@ -1064,7 +1064,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
       if (urlStr.includes('/api/v1/dispatch')) {
         dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
-        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-ai-futures/portolan/backend/work' }))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'work-shuttle' }))
       }
       return Promise.resolve(jsonResponse({}))
     }))
@@ -1094,7 +1094,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       }
       if (urlStr.includes('/api/v1/dispatch')) {
         dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
-        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'my-constitution-shuttle' }))
       }
       if (urlStr.includes('/kanban/transition')) {
         transitionBodies.push(JSON.parse(String(init?.body ?? '{}')))
@@ -1134,7 +1134,7 @@ describe('FiberDetailModal dispatch — 200 success', () => {
       }
       if (urlStr.includes('/api/v1/dispatch')) {
         dispatchBodies.push(JSON.parse(String(init?.body ?? '{}')))
-        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/my-constitution' }))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'my-constitution-shuttle' }))
       }
       return Promise.resolve(jsonResponse({}))
     }))
@@ -1434,7 +1434,7 @@ describe('FiberDetailModal dispatch — URL target (regression: Tauri IPv6 trap)
       const urlStr = String(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)
       if (urlStr.includes('/api/v1/dispatch')) {
         capturedUrls.push(urlStr)
-        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'shuttle-test/x' }))
+        return Promise.resolve(jsonResponse({ dispatched: true, tmux_session: 'x-shuttle' }))
       }
       return Promise.resolve(jsonResponse({}))
     }))
