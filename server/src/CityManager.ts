@@ -17,6 +17,7 @@
 import { resolve, basename } from 'path';
 import { createHash } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
+import { baseRemoteSshHost } from './RemoteAgentHostIdentity.js';
 
 export function stableCityId(key: string): string {
   return createHash('sha256').update(key).digest('hex').slice(0, 32);
@@ -78,12 +79,10 @@ export class CityManager {
 
   /**
    * Set the sshHost for an origin (used for key normalization)
-   * e.g., "remote-login05.leonardo.local" → "cineca-login05"
+   * e.g., "remote-login05.leonardo.local" → "cineca"
    */
   setOriginSshHost(originId: string, sshHost: string): void {
-    // Extract base sshHost (e.g., "cineca-login05" → "cineca")
-    const baseSshHost = sshHost.replace(/-login\d+$/, '');
-    this.originSshHosts.set(originId, baseSshHost);
+    this.originSshHosts.set(originId, baseRemoteSshHost(sshHost));
   }
 
   /**

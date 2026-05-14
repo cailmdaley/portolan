@@ -28,6 +28,7 @@ import { VibeVoiceTranscriptSource } from './VibeVoiceTranscriptSource.js';
 import { RemoteAgentCoordinator, recoverRemoteAgent } from './RemoteAgentCoordinator.js';
 import { parseRemoteAgentRuntime, remoteAgentRuntimeProfiles } from './RemoteAgentRuntime.js';
 import { RemoteAgentRuntimePreferenceStore } from './RemoteAgentRuntimePreferenceStore.js';
+import { normalizedRemoteOriginIdForSshHost, normalizedRemoteOriginName } from './RemoteAgentHostIdentity.js';
 import { WorkspaceBrowser } from './WorkspaceBrowser.js';
 import { BrowserStateCoordinator } from './BrowserStateCoordinator.js';
 import { TerminalStreamManager } from './TerminalStreamManager.js';
@@ -81,8 +82,7 @@ for (const pc of persistedCities) {
   if (pc.sshHost && pc.originId !== 'local') {
     // Normalize originId to use sshHost instead of raw hostname (e.g., "remote-c02" → "remote-candide").
     // Different login nodes produce different hostnames; the SSH config name is the stable identifier.
-    const baseSshHost = pc.sshHost.replace(/-login\d+$/, '');
-    const normalizedOriginId = `remote-${baseSshHost}`;
+    const normalizedOriginId = normalizedRemoteOriginIdForSshHost(pc.sshHost);
     if (pc.originId !== normalizedOriginId) {
       cityPersistence.normalizeOriginId(pc.originId, normalizedOriginId, pc.sshHost);
       pc.originId = normalizedOriginId;
@@ -644,7 +644,7 @@ wss.on('connection', async (ws, req) => {
   if (isAgent && originName) {
     // Agent connection — normalize origin name using sshHost when available
     // so different login nodes (login07.leonardo.local) map to the same origin (cineca).
-    const effectiveOriginName = sshHost ? sshHost.replace(/-login\d+$/, '') : originName;
+    const effectiveOriginName = normalizedRemoteOriginName(originName, sshHost);
     const origin = originManager.registerAgent(effectiveOriginName, ws, sshHost, plannotatorPort, agentRuntime, agentOnce);
     cityManager.setOriginPosition(origin.id, origin.position);
     // Track sshHost for city key normalization (so different login nodes share cities)

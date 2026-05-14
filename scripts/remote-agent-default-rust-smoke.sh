@@ -91,7 +91,10 @@ import { readFileSync } from 'node:fs';
 const host = process.env.HOST;
 const citiesFile = process.env.CITIES_FILE;
 const data = JSON.parse(readFileSync(citiesFile, 'utf8'));
-const city = data.cities.find((candidate) => candidate.sshHost === host);
+const baseHost = (value) => String(value ?? '').replace(/-login\d+$/, '');
+const city = data.cities.find((candidate) =>
+  candidate.sshHost === host || baseHost(candidate.sshHost) === baseHost(host)
+);
 
 if (!city) {
   const remoteHosts = data.cities
