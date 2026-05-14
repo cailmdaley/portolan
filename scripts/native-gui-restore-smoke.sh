@@ -654,7 +654,7 @@ fi
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "[portolan] built app bundle not found: $APP_PATH" >&2
-  echo "[portolan] run npm run tauri:build first, or pass --app /path/to/Portolan.app" >&2
+  echo "[portolan] run bun run tauri:build first, or pass --app /path/to/Portolan.app" >&2
   exit 1
 fi
 APP_EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
