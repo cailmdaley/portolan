@@ -117,6 +117,12 @@ interface HttpApiAnnotationsOptions {
     claimId: string;
     comment: string;
   }) => Promise<void>;
+  remoteTmuxMessageExecutor?: (request: {
+    originId: string;
+    tmuxSession: string;
+    message: string;
+    pressEnter?: boolean;
+  }) => Promise<void>;
 }
 
 export class HttpApiAnnotations {
@@ -130,6 +136,9 @@ export class HttpApiAnnotations {
     | undefined;
   private readonly remoteFeltCommentExecutor:
     | HttpApiAnnotationsOptions['remoteFeltCommentExecutor']
+    | undefined;
+  private readonly remoteTmuxMessageExecutor:
+    | HttpApiAnnotationsOptions['remoteTmuxMessageExecutor']
     | undefined;
   private annotationPersistence: AnnotationPersistence | null = null;
   private sessionLookup: SessionLookup | null = null;
@@ -150,6 +159,7 @@ export class HttpApiAnnotations {
     this.sendJsonSuccess = options.sendJsonSuccess;
     this.shuttleFiberCreateFn = options.shuttleFiberCreateFn;
     this.remoteFeltCommentExecutor = options.remoteFeltCommentExecutor;
+    this.remoteTmuxMessageExecutor = options.remoteTmuxMessageExecutor;
   }
 
   setAnnotationPersistence(persistence: AnnotationPersistence): void {
@@ -459,7 +469,24 @@ export class HttpApiAnnotations {
         return;
       }
 
-      this.tmuxMessenger.send({ tmuxSession, sshHost }, formattedMessage);
+      if (isRemote && this.remoteTmuxMessageExecutor) {
+        try {
+          await this.remoteTmuxMessageExecutor({
+            originId,
+            tmuxSession,
+            message: formattedMessage,
+          });
+        } catch (error: any) {
+          if (!sshHost) throw error;
+          console.warn(
+            '[SendAnnotations] remote tmux message via agent failed; falling back to SSH',
+            error?.message || error,
+          );
+          this.tmuxMessenger.send({ tmuxSession, sshHost }, formattedMessage);
+        }
+      } else {
+        this.tmuxMessenger.send({ tmuxSession, sshHost }, formattedMessage);
+      }
 
       if (workerId && this.onFocusSession) {
         this.onFocusSession(workerId);

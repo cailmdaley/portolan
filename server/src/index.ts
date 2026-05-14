@@ -215,6 +215,14 @@ const httpApi = new HttpApi(cityManager, originManager, cityPersistence, {
       10_000,
     );
   },
+  remoteTmuxMessageExecutor: async ({ originId, tmuxSession, message, pressEnter }) => {
+    await agentRequestCoordinator.send(
+      originId,
+      'tmux-message',
+      { tmuxSession, message, pressEnter: pressEnter ?? false },
+      10_000,
+    );
+  },
   remoteFileContentExecutor,
   remoteDirectoryExecutor,
   remoteProjectFileExecutor: async ({ originId, ...payload }) => {

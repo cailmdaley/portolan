@@ -9,7 +9,7 @@ use portolan_agent_protocol::{
     ListDirectoryRequestPayload, ListDirectoryResultPayload, ProjectFileRequestPayload,
     ProjectFileResultPayload, SearchFilesMode, SearchFilesRequestPayload, SearchFilesResultPayload,
     SearchResultPayload, ShuttleSnapshotPayload, TerminalCaptureRequestPayload,
-    TerminalCaptureResultPayload,
+    TerminalCaptureResultPayload, TmuxMessageRequestPayload,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -18,7 +18,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -505,6 +505,7 @@ pub fn handle_server_frame(frame: &AgentFrame) -> Vec<AgentFrame> {
         AgentFrame::ProjectFile { payload } => vec![handle_project_file(payload)],
         AgentFrame::ListDirectory { payload } => vec![handle_list_directory(payload)],
         AgentFrame::TerminalCapture { payload } => vec![handle_terminal_capture(payload)],
+        AgentFrame::TmuxMessage { payload } => vec![handle_tmux_message(payload)],
         _ => Vec::new(),
     }
 }
@@ -2630,6 +2631,74 @@ fn capture_terminal(
         size.map(|(cols, _)| cols),
         size.map(|(_, rows)| rows),
     ))
+}
+
+fn handle_tmux_message(payload: &TmuxMessageRequestPayload) -> AgentFrame {
+    match send_tmux_message(payload) {
+        Ok(()) => AgentFrame::TmuxMessageResult {
+            payload: AgentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: true,
+                error: None,
+                fiber: None,
+                fields: BTreeMap::new(),
+            },
+        },
+        Err(error) => AgentFrame::TmuxMessageResult {
+            payload: AgentResultPayload {
+                correlation_id: payload.correlation_id.clone(),
+                ok: false,
+                error: Some(error),
+                fiber: None,
+                fields: BTreeMap::new(),
+            },
+        },
+    }
+}
+
+fn send_tmux_message(payload: &TmuxMessageRequestPayload) -> Result<(), String> {
+    if payload.tmux_session.trim().is_empty() {
+        return Err("tmux session is required".to_string());
+    }
+    let target = format!("={}:", payload.tmux_session);
+    let mut load = Command::new("tmux")
+        .args(["load-buffer", "-"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run tmux load-buffer: {error}"))?;
+    {
+        let stdin = load
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "tmux load-buffer stdin unavailable".to_string())?;
+        stdin
+            .write_all(payload.message.as_bytes())
+            .map_err(|error| format!("failed to write tmux buffer: {error}"))?;
+    }
+    let load_status = load
+        .wait()
+        .map_err(|error| format!("failed to wait for tmux load-buffer: {error}"))?;
+    if !load_status.success() {
+        return Err(format!("tmux load-buffer failed: {load_status}"));
+    }
+
+    let paste_status = Command::new("tmux")
+        .args(["paste-buffer", "-p", "-t", &target])
+        .status()
+        .map_err(|error| format!("failed to run tmux paste-buffer: {error}"))?;
+    if !paste_status.success() {
+        return Err(format!("tmux paste-buffer failed: {paste_status}"));
+    }
+    if payload.press_enter {
+        let enter_status = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .status()
+            .map_err(|error| format!("failed to run tmux send-keys: {error}"))?;
+        if !enter_status.success() {
+            return Err(format!("tmux send-keys failed: {enter_status}"));
+        }
+    }
+    Ok(())
 }
 
 fn read_felt_fiber_json(felt_host: &str, fiber_id: &str) -> Result<Value, String> {

@@ -141,6 +141,53 @@ describe('HttpApi — claims annotations', () => {
     });
   });
 
+  it('sends remote annotation prompts through the connected agent tmux path before SSH', async () => {
+    const remoteTmuxMessageExecutor = vi.fn(async () => undefined);
+    const remoteCityLookup = makeMultiCityLookup([
+      { id: 'remote-city', path: '/remote/project', originId: 'remote-candide' },
+    ]);
+    const remoteOriginLookup = {
+      getOrigin: (originId: string) => originId === 'remote-candide'
+        ? { id: originId, type: 'remote', name: 'candide', sshHost: 'candide' }
+        : null,
+    };
+    const remoteApi = new HttpApi(
+      remoteCityLookup as any,
+      remoteOriginLookup as any,
+      stubPersistenceLookup as any,
+      { remoteTmuxMessageExecutor },
+    );
+    remoteApi.setAnnotationPersistence(persistence);
+    remoteApi.setSessionLookup({
+      findSession: (sessionId: string) => sessionId === 'worker-remote'
+        ? {
+          id: 'worker-remote',
+          tmuxSession: 'remote-worker',
+          cwd: '/remote/project',
+          originId: 'remote-candide',
+          name: 'remote-worker',
+          status: 'idle',
+        }
+        : undefined,
+      getAllSessions: () => [],
+      findLocalByTmuxSession: () => undefined,
+    } as any);
+
+    const res = await httpRequest(remoteApi, 'POST', '/send-annotations', {
+      workerId: 'worker-remote',
+      originId: 'remote-candide',
+      filePath: '/remote/project/notes.md',
+      annotations: [{ comment: 'Tighten this paragraph.', originalText: 'draft text', line: 4 }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(remoteTmuxMessageExecutor).toHaveBeenCalledWith(expect.objectContaining({
+      originId: 'remote-candide',
+      tmuxSession: 'remote-worker',
+      message: expect.stringContaining('Tighten this paragraph.'),
+    }));
+  });
+
   // ────────────────────────────────────────────────────────────
   // GET /annotations?claimId=
   // ────────────────────────────────────────────────────────────

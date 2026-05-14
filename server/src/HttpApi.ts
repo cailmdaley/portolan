@@ -149,6 +149,12 @@ export interface HttpApiOptions {
     claimId: string;
     comment: string;
   }) => Promise<void>;
+  remoteTmuxMessageExecutor?: (request: {
+    originId: string;
+    tmuxSession: string;
+    message: string;
+    pressEnter?: boolean;
+  }) => Promise<void>;
   remoteAgentRuntimePreferences?: RemoteAgentRuntimePreferences;
 }
 
@@ -211,6 +217,7 @@ export class HttpApi {
       sendJsonSuccess: (res, data) => this.sendJsonSuccess(res, data),
       shuttleFiberCreateFn: options.shuttleFiberCreateFn,
       remoteFeltCommentExecutor: options.remoteFeltCommentExecutor,
+      remoteTmuxMessageExecutor: options.remoteTmuxMessageExecutor,
     });
     this.fileContentApi = new HttpApiFileContent({
       originLookup,

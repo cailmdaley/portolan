@@ -59,6 +59,10 @@ pub enum AgentFrame {
     TerminalCaptureResult {
         payload: TerminalCaptureResultPayload,
     },
+    #[serde(rename = "tmux-message")]
+    TmuxMessage { payload: TmuxMessageRequestPayload },
+    #[serde(rename = "tmux-message-result")]
+    TmuxMessageResult { payload: AgentResultPayload },
     #[serde(rename = "terminal-subscribe")]
     TerminalSubscribe { payload: TerminalSubscribePayload },
     #[serde(rename = "terminal-unsubscribe")]
@@ -100,6 +104,8 @@ impl AgentFrame {
             AgentFrame::ListDirectoryResult { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::TerminalCapture { payload } => Some(payload.correlation_id.as_str()),
             AgentFrame::TerminalCaptureResult { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::TmuxMessage { payload } => Some(payload.correlation_id.as_str()),
+            AgentFrame::TmuxMessageResult { payload } => Some(payload.correlation_id.as_str()),
             _ => None,
         }
     }
@@ -116,6 +122,7 @@ impl AgentFrame {
                 | AgentFrame::ProjectFile { .. }
                 | AgentFrame::ListDirectory { .. }
                 | AgentFrame::TerminalCapture { .. }
+                | AgentFrame::TmuxMessage { .. }
                 | AgentFrame::TerminalSubscribe { .. }
                 | AgentFrame::TerminalUnsubscribe { .. }
         )
@@ -133,6 +140,7 @@ impl AgentFrame {
                 | AgentFrame::ProjectFileResult { .. }
                 | AgentFrame::ListDirectoryResult { .. }
                 | AgentFrame::TerminalCaptureResult { .. }
+                | AgentFrame::TmuxMessageResult { .. }
                 | AgentFrame::TerminalBytes { .. }
                 | AgentFrame::TerminalExit { .. }
         )
@@ -481,6 +489,16 @@ pub struct TerminalCaptureResultPayload {
     pub cols: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxMessageRequestPayload {
+    pub correlation_id: String,
+    pub tmux_session: String,
+    pub message: String,
+    #[serde(default)]
+    pub press_enter: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -997,6 +1015,42 @@ mod tests {
             payload.results[0].result_match.as_deref(),
             Some("meeting notes")
         );
+    }
+
+    #[test]
+    fn parses_tmux_message_round_trip() {
+        let request = AgentFrame::parse(
+            br##"{
+              "type": "tmux-message",
+              "payload": {
+                "correlationId": "corr-tmux",
+                "tmuxSession": "worker-1",
+                "message": "Read the fiber.",
+                "pressEnter": true
+              }
+            }"##,
+        )
+        .unwrap();
+        assert!(request.is_server_request());
+        assert_eq!(request.correlation_id(), Some("corr-tmux"));
+        let AgentFrame::TmuxMessage { payload } = request else {
+            panic!("expected tmux-message");
+        };
+        assert_eq!(payload.tmux_session, "worker-1");
+        assert!(payload.press_enter);
+
+        let result = AgentFrame::TmuxMessageResult {
+            payload: AgentResultPayload {
+                correlation_id: "corr-tmux".to_string(),
+                ok: true,
+                error: None,
+                fiber: None,
+                fields: BTreeMap::new(),
+            },
+        };
+        let encoded = result.to_json_string().unwrap();
+        assert!(encoded.contains(r#""type":"tmux-message-result""#));
+        assert!(encoded.contains(r#""correlationId":"corr-tmux""#));
     }
 
     #[test]

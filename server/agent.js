@@ -1285,6 +1285,24 @@ export async function executeTerminalCaptureRequest(payload) {
     };
 }
 
+export async function executeTmuxMessageRequest(payload) {
+    const tmuxSession = payload?.tmuxSession;
+    const message = payload?.message;
+    if (!tmuxSession || typeof tmuxSession !== 'string') {
+        throw new Error('tmux session is required');
+    }
+    if (typeof message !== 'string') {
+        throw new Error('message is required');
+    }
+    const target = `=${tmuxSession}:`;
+    await execFileAsync('tmux', ['load-buffer', '-'], { input: message });
+    await execFileAsync('tmux', ['paste-buffer', '-p', '-t', target]);
+    if (payload.pressEnter) {
+        await execFileAsync('tmux', ['send-keys', '-t', target, 'Enter']);
+    }
+    return { ok: true };
+}
+
 function handleTerminalCapture(message) {
     const payload = message.payload || {};
     const { correlationId } = payload;
@@ -1306,6 +1324,31 @@ function handleTerminalCapture(message) {
     }).catch((err) => {
         const msg = err && err.message ? err.message : String(err);
         log(`terminal-capture failed (${payload.tmuxSession}): ${msg}`);
+        reply({ ok: false, error: msg });
+    });
+}
+
+function handleTmuxMessage(message) {
+    const payload = message.payload || {};
+    const { correlationId } = payload;
+    if (!correlationId) {
+        debug('tmux-message without correlationId; ignoring');
+        return;
+    }
+    const reply = (extra) => {
+        if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+            type: 'tmux-message-result',
+            payload: { correlationId, ...extra },
+        }));
+    };
+
+    executeTmuxMessageRequest(payload).then((result) => {
+        reply(result);
+        debug(`tmux-message ok: ${payload.tmuxSession}`);
+    }).catch((err) => {
+        const msg = err && err.message ? err.message : String(err);
+        log(`tmux-message failed (${payload.tmuxSession}): ${msg}`);
         reply({ ok: false, error: msg });
     });
 }
@@ -2294,6 +2337,9 @@ function handleMessage(message) {
             break;
         case 'terminal-capture':
             handleTerminalCapture(message);
+            break;
+        case 'tmux-message':
+            handleTmuxMessage(message);
             break;
         case 'terminal-subscribe':
             handleTerminalSubscribe(message);
