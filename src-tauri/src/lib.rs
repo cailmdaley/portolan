@@ -9,11 +9,14 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 4004;
 const BACKEND_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const MENU_RESTORE_WORKSPACES: &str = "workspace.restoreRecent";
+const MENU_REFRESH_WORKSPACE: &str = "workspace.refresh";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -572,16 +575,26 @@ async fn restore_recent_workspace_windows(
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeState>,
 ) -> Result<Vec<String>, String> {
-    let recent = state
+    restore_workspace_records(&app, recent_workspace_records(&state))
+}
+
+fn recent_workspace_records(state: &NativeState) -> Vec<WorkspaceWindowRecord> {
+    state
         .windows
         .lock()
         .expect("workspace window registry poisoned")
-        .recent();
+        .recent()
+}
+
+fn restore_workspace_records(
+    app: &tauri::AppHandle,
+    recent: Vec<WorkspaceWindowRecord>,
+) -> Result<Vec<String>, String> {
     let mut labels = Vec::new();
     for (index, entry) in recent.into_iter().enumerate() {
         let label = format!("workspace-restore-{}-{index}", unix_now_millis());
         tauri::WebviewWindowBuilder::new(
-            &app,
+            app,
             label.clone(),
             tauri::WebviewUrl::App(PathBuf::from(workspace_route_path(&entry.route_url)?)),
         )
@@ -591,14 +604,88 @@ async fn restore_recent_workspace_windows(
         .resizable(true)
         .build()
         .map_err(|error| error.to_string())?;
-        state
-            .windows
-            .lock()
-            .expect("workspace window registry poisoned")
-            .record(label.clone(), entry.route_url, entry.title);
         labels.push(label);
     }
     Ok(labels)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum NativeMenuAction {
+    RestoreWorkspaces,
+    RefreshWorkspace,
+    Ignore,
+}
+
+fn native_menu_action(menu_id: &str) -> NativeMenuAction {
+    match menu_id {
+        MENU_RESTORE_WORKSPACES => NativeMenuAction::RestoreWorkspaces,
+        MENU_REFRESH_WORKSPACE => NativeMenuAction::RefreshWorkspace,
+        _ => NativeMenuAction::Ignore,
+    }
+}
+
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let about = PredefinedMenuItem::about(app, Some("About Portolan"), None)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit = PredefinedMenuItem::quit(app, Some("Quit Portolan"))?;
+    let app_menu = Submenu::with_items(app, "Portolan", true, &[&about, &separator, &quit])?;
+
+    let restore = MenuItem::with_id(
+        app,
+        MENU_RESTORE_WORKSPACES,
+        "Restore Recent Workspace Windows",
+        true,
+        Some("CmdOrCtrl+Shift+R"),
+    )?;
+    let refresh = MenuItem::with_id(
+        app,
+        MENU_REFRESH_WORKSPACE,
+        "Refresh Workspace Window",
+        true,
+        Some("CmdOrCtrl+R"),
+    )?;
+    let workspace_menu = Submenu::with_items(app, "Workspace", true, &[&restore, &refresh])?;
+
+    let close = PredefinedMenuItem::close_window(app, Some("Close Window"))?;
+    let minimize = PredefinedMenuItem::minimize(app, Some("Minimize"))?;
+    let fullscreen = PredefinedMenuItem::fullscreen(app, Some("Toggle Full Screen"))?;
+    let window_menu = Submenu::with_items(app, "Window", true, &[&close, &minimize, &fullscreen])?;
+
+    Menu::with_items(app, &[&app_menu, &workspace_menu, &window_menu])
+}
+
+fn refresh_focused_workspace_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app
+        .webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false))
+    else {
+        return Err("no focused workspace window".to_string());
+    };
+    refresh_workspace_window(window)
+}
+
+fn handle_native_menu_event(app: &tauri::AppHandle, menu_id: &str) {
+    match native_menu_action(menu_id) {
+        NativeMenuAction::RestoreWorkspaces => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let recent = app
+                    .try_state::<NativeState>()
+                    .map(|state| recent_workspace_records(&state))
+                    .unwrap_or_default();
+                if let Err(error) = restore_workspace_records(&app, recent) {
+                    log::warn!("failed to restore recent workspace windows: {error}");
+                }
+            });
+        }
+        NativeMenuAction::RefreshWorkspace => {
+            if let Err(error) = refresh_focused_workspace_window(app) {
+                log::warn!("failed to refresh focused workspace window: {error}");
+            }
+        }
+        NativeMenuAction::Ignore => {}
+    }
 }
 
 fn shutdown_backend(app: &tauri::AppHandle) {
@@ -612,6 +699,8 @@ fn shutdown_backend(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| handle_native_menu_event(app, event.id().as_ref()))
         .invoke_handler(tauri::generate_handler![
             native_status,
             open_workspace_window,
@@ -719,6 +808,19 @@ mod tests {
     #[test]
     fn workspace_route_rejects_external_urls() {
         assert!(workspace_route_path("https://example.com/#city=portolan").is_err());
+    }
+
+    #[test]
+    fn native_menu_ids_map_to_workspace_actions() {
+        assert_eq!(
+            native_menu_action(MENU_RESTORE_WORKSPACES),
+            NativeMenuAction::RestoreWorkspaces
+        );
+        assert_eq!(
+            native_menu_action(MENU_REFRESH_WORKSPACE),
+            NativeMenuAction::RefreshWorkspace
+        );
+        assert_eq!(native_menu_action("file.close"), NativeMenuAction::Ignore);
     }
 
     #[test]
