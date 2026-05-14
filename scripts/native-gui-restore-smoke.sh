@@ -410,12 +410,31 @@ end tell
 OSA
 }
 
-trigger_new_workspace_window_shortcut() {
+click_duplicate_workspace_button() {
+  local title="$1"
   osascript <<OSA >/dev/null 2>&1
 tell application "${APP_NAME}" to activate
 delay 0.2
 tell application "System Events"
-  keystroke "n" using command down
+  tell process "${APP_NAME}"
+    set frontmost to true
+    perform action "AXRaise" of window "${title}"
+    repeat with attempt from 1 to 30
+      try
+        set w to window "${title}"
+        set g1 to item 1 of groups of w
+        set g2 to item 1 of groups of g1
+        set sa to item 1 of scroll areas of g2
+        set webarea to item 1 of UI elements of sa
+        set workspaceGroup to item 1 of groups of webarea
+        click button "Open this workspace in a new window" of workspaceGroup
+        return
+      on error
+        delay 1
+      end try
+    end repeat
+    error "duplicate button not found in ${title}"
+  end tell
 end tell
 OSA
 }
@@ -544,13 +563,13 @@ collect_frontend_debug_runtime || true
 NATIVE_STATUS_JSON="$(wait_for_native_status)"
 wait_for_workspace_store_rewrite
 
-echo "[portolan] Duplicating ${RESTORE_WORKSPACE_TITLE} via Cmd+N"
+echo "[portolan] Duplicating ${RESTORE_WORKSPACE_TITLE} via duplicate-window chrome"
 if ! focus_window_title "$RESTORE_WORKSPACE_TITLE"; then
   echo "[portolan] failed to focus restored workspace window: $RESTORE_WORKSPACE_TITLE" >&2
   exit 1
 fi
-if ! trigger_new_workspace_window_shortcut; then
-  echo "[portolan] failed to send Cmd+N to ${APP_NAME}" >&2
+if ! click_duplicate_workspace_button "$RESTORE_WORKSPACE_TITLE"; then
+  echo "[portolan] failed to click duplicate-window button in ${RESTORE_WORKSPACE_TITLE}" >&2
   exit 1
 fi
 
@@ -559,7 +578,7 @@ titles="$(window_titles)"
 echo "[portolan] Observed $window_count Portolan windows after duplication"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
 if [[ "$(printf '%s\n' "$titles" | grep -c 'Find')" -lt 2 ]]; then
-  echo "[portolan] expected two Find-flavored workspace windows after Cmd+N" >&2
+  echo "[portolan] expected two Find-flavored workspace windows after duplicate-window chrome" >&2
   exit 1
 fi
 wait_for_duplicate_workspace_store
