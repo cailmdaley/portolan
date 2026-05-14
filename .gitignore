@@ -24,3 +24,19 @@ tsconfig.tsbuildinfo
 
 # Rust build output
 target/
+
+# Per-clone Claude Code permissions and session-local agent state.
+.claude/settings.local.json
+
+# Per-clone Portolan runtime state — playgrounds, screenshots, kanban iterations.
+.portolan/
+
+# Local research artifacts — generated tapestries, downloaded papers, evidence files.
+# These belong in the user's working directory, not in git.
+results/
+
+# Personal scratch transcripts (voice ingress, meeting captures).
+transcription.md
+
+# Felt store symlinks into the user's loom; never commit it.
+.felt
