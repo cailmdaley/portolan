@@ -22,16 +22,21 @@ export default defineConfig({
       // that rely on it. Points at the npm-installed package's src.
       '~': fileURLToPath(new URL('./node_modules/vellum-reader/src', import.meta.url)),
     },
-    // pdfjs-dist is owned end-to-end by vellum-reader; it intentionally is not
-    // installed at portolan's top level. Do NOT add `dedupe: ['pdfjs-dist']`
-    // here — Vite's dedupe forces resolution from the project root, and with
-    // no top-level copy that fails the bare import
-    //   `pdfjs-dist/build/pdf.worker.min.mjs?url`
-    // from vellum's symlinked source. The structural guarantee against the
-    // earlier API/Worker version-mismatch (gotchas/pdfjs-api-worker-version-mismatch)
-    // is that pdfjs-dist appears in exactly one package.json (vellum's). If
-    // portolan ever re-adds pdfjs-dist, `npm ls pdfjs-dist` will show the dup
-    // and PDFs will start failing with the version-mismatch error.
+    // Dedupe runtime-singleton libraries that BOTH portolan and vellum import.
+    // Vellum is npm-linked from a sibling checkout, so its symlinked source
+    // (`/@fs/.../vellum/src/...`) resolves bare imports against vellum's own
+    // `node_modules`. Without dedupe, vite ships two copies of any package
+    // that exists in both trees. For React that means
+    //   "Invalid hook call ... You might have more than one copy of React"
+    // crashing every vellum-mounted view (`WorkspaceMount`, narrative, etc.).
+    // Both `react` and `react-dom` are present in portolan's package.json, so
+    // dedupe collapses to portolan's top-level copy.
+    //
+    // Do NOT add `pdfjs-dist` here — it intentionally lives only in vellum
+    // (see gotchas/pdfjs-api-worker-version-mismatch). Dedupe forces resolution
+    // from the project root, and with no top-level pdfjs the worker `?url`
+    // import fails outright. Dedupe is only safe for packages portolan owns.
+    dedupe: ['react', 'react-dom'],
   },
   server: {
     // Tauri expects this exact URL in `src-tauri/tauri.conf.json`.
