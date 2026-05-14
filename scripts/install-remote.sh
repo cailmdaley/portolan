@@ -1,12 +1,12 @@
 #!/bin/bash
 # Install portolan agent and hooks on a remote machine.
 #
-# Usage: ./scripts/install-remote.sh <ssh-host> [--start] [--agent-runtime node|rust] [options]
+# Usage: ./scripts/install-remote.sh <ssh-host> [--start] [--agent-runtime rust|node] [options]
 #
 # This script:
 # 1. Copies portolan-hook.sh to remote ~/.portolan/hooks/
 # 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js (Node fallback, always kept)
-# 3. Optionally copies Rust agent binary to remote ~/.local/bin/portolan-agent-rust
+# 3. Copies Rust agent binary to remote ~/.local/bin/portolan-agent-rust by default
 # 4. Creates ~/.portolan/data/ directory
 # 5. Patches ~/.claude/settings.json to add:
 #    - command hooks for canonical Portolan activity and file-touch tracking
@@ -36,7 +36,7 @@ error() { echo -e "${RED}[portolan]${NC} $1" >&2; }
 # Parse arguments
 SSH_HOST=""
 START_AGENT=false
-AGENT_RUNTIME="node"
+AGENT_RUNTIME="rust"
 RUST_AGENT_LOCAL_BINARY=""
 RUST_AGENT_SESSION="portolan-agent-rust"
 NODE_AGENT_SESSION="portolan-agent"
@@ -46,11 +46,11 @@ AGENT_ONCE=false
 
 usage() {
   cat <<EOF
-Usage: $0 <ssh-host> [--start] [--agent-runtime node|rust] [options]
+Usage: $0 <ssh-host> [--start] [--agent-runtime rust|node] [options]
 
 Options:
   --start                 Start one runtime in tmux after installation
-  --agent-runtime VALUE   node or rust (default: node)
+  --agent-runtime VALUE   rust or node (default: rust)
   --agent-binary PATH     Local path to rust binary (defaults to crates/portolan-agent/target/release/portolan-agent-rust)
   --agent-session NAME    Override tmux session name for rust agent runtime
   --origin VALUE          Origin identifier for rust agent runtime (if different from hostname)
