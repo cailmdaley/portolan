@@ -16,7 +16,8 @@
 # - jq (for JSON patching)
 # - tmux (for running agent)
 # - Claude Code installed
-# - Node.js with npm (only required for explicit Node fallback installs)
+# - Node.js with bun (only required for explicit Node fallback installs;
+#   bun honors the 7-day release-age guard from bunfig.toml)
 
 set -e
 
@@ -82,7 +83,7 @@ Prerequisites on remote:
   - jq
   - tmux
   - Claude Code
-  - Node.js + npm (only required for explicit Node fallback installs)
+  - Node.js + bun (only required for explicit Node fallback installs)
 EOF
 }
 
@@ -367,7 +368,12 @@ if ! grep -q "\"type\": \"module\"" package.json; then
   jq ". + {type: \"module\"}" package.json > package.json.tmp && mv package.json.tmp package.json
 fi
 if [ ! -d node_modules/ws ]; then
-  npm install ws --save >/dev/null 2>&1
+  if command -v bun >/dev/null 2>&1; then
+    bun add ws >/dev/null 2>&1
+  else
+    echo "[install-remote] bun not found on remote; install bun (https://bun.sh) so the 7-day release-age guard applies. Aborting." >&2
+    exit 1
+  fi
 fi
 '\'''
 fi
