@@ -13,6 +13,7 @@ import {
   type RemoteAgentStartupOptions,
 } from './RemoteAgentRuntime.js';
 import type { RemoteAgentRuntimePreferences } from './RemoteAgentRuntimePreferenceStore.js';
+import { baseRemoteSshHost } from './RemoteAgentHostIdentity.js';
 import { exactTmuxTarget, shellEscape } from './ShellPathUtils.js';
 
 const execFileAsync = promisify(execFile);
@@ -279,8 +280,10 @@ export class HttpApiActivation {
     sshHost: string,
     runtime: RemoteAgentRuntime,
   ): RemoteAgentConnectionDiagnostic | undefined {
+    const normalizedSshHost = baseRemoteSshHost(sshHost);
     return this.getConnectedRemoteAgents?.().find((agent) => (
-      agent.sshHost === sshHost
+      agent.sshHost !== null
+      && baseRemoteSshHost(agent.sshHost) === normalizedSshHost
       && agent.agentRuntime === runtime
       && agent.socketCount > 0
     ));

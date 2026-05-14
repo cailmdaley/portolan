@@ -48,6 +48,25 @@ describe('RemoteAgentRuntimePreferenceStore', () => {
     });
   });
 
+  it('normalizes login-node ssh hosts to one runtime preference', () => {
+    const path = storePath();
+    const first = new RemoteAgentRuntimePreferenceStore(path);
+
+    first.setPreferredRuntime('cineca-login01', 'node');
+    first.setPreferredRuntime('candide', 'rust');
+
+    const second = new RemoteAgentRuntimePreferenceStore(path);
+    expect(second.getPreferredRuntime('cineca')).toBe('node');
+    expect(second.getPreferredRuntime('cineca-login02')).toBe('node');
+    expect(second.getDiagnostics()).toEqual({
+      defaultRuntime: 'rust',
+      preferences: [
+        expect.objectContaining({ sshHost: 'candide', runtime: 'rust' }),
+        expect.objectContaining({ sshHost: 'cineca', runtime: 'node' }),
+      ],
+    });
+  });
+
   it('accepts an explicit Node default for rollback-oriented launches', () => {
     const store = new RemoteAgentRuntimePreferenceStore(storePath(), 'node');
 

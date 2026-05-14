@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type { RemoteAgentRuntime } from './OriginManager.js';
+import { baseRemoteSshHost } from './RemoteAgentHostIdentity.js';
 
 export interface RemoteAgentRuntimePreference {
   sshHost: string;
@@ -47,12 +48,13 @@ export class RemoteAgentRuntimePreferenceStore implements RemoteAgentRuntimePref
   }
 
   getPreferredRuntime(sshHost: string): RemoteAgentRuntime | undefined {
-    return this.preferences.get(sshHost)?.runtime;
+    return this.preferences.get(baseRemoteSshHost(sshHost))?.runtime;
   }
 
   setPreferredRuntime(sshHost: string, runtime: RemoteAgentRuntime): void {
-    this.preferences.set(sshHost, {
-      sshHost,
+    const normalizedSshHost = baseRemoteSshHost(sshHost);
+    this.preferences.set(normalizedSshHost, {
+      sshHost: normalizedSshHost,
       runtime,
       updatedAt: new Date().toISOString(),
     });
@@ -75,7 +77,8 @@ export class RemoteAgentRuntimePreferenceStore implements RemoteAgentRuntimePref
 
       for (const preference of data.preferences) {
         if (!isRemoteAgentRuntime(preference.runtime) || !preference.sshHost) continue;
-        this.preferences.set(preference.sshHost, preference);
+        const sshHost = baseRemoteSshHost(preference.sshHost);
+        this.preferences.set(sshHost, { ...preference, sshHost });
       }
       console.log(`[RemoteAgent] Loaded ${this.preferences.size} runtime preferences`);
     } catch (error) {
