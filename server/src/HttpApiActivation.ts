@@ -5,6 +5,7 @@ import type { City } from './CityManager.js';
 import { reconnectTunnel } from './RemoteAgentCoordinator.js';
 import type { RemoteAgentConnectionDiagnostic, RemoteAgentRuntime } from './OriginManager.js';
 import {
+  NODE_AGENT_FALLBACK_PREFLIGHT_COMMAND,
   parseRemoteAgentRuntime,
   remoteAgentCommand,
   remoteAgentTmuxSession,
@@ -311,7 +312,7 @@ async function assertNodeFallbackInstalled(
       [
         '-T',
         sshHost,
-        'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+        NODE_AGENT_FALLBACK_PREFLIGHT_COMMAND,
       ],
       { timeout: 60_000 },
     );

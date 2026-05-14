@@ -10,6 +10,7 @@ import type { AgentActivityMessage, AgentSessionsUpdateMessage } from './Message
 import { OriginManager, type Origin, type RemoteAgentRuntime } from './OriginManager.js';
 import { RecentFileTracker } from './RecentFileTracker.js';
 import {
+  NODE_AGENT_FALLBACK_PREFLIGHT_COMMAND,
   remoteAgentCommand,
   remoteAgentTmuxSession,
   replacedRemoteAgentTmuxSessions,
@@ -644,6 +645,10 @@ async function startRemoteAgent(
   agentRuntime: RemoteAgentRuntime,
   startupOptions: RemoteAgentStartupOptions = {},
 ): Promise<void> {
+  if (agentRuntime === 'node') {
+    await assertNodeFallbackInstalled(sshHost);
+  }
+
   const session = remoteAgentTmuxSession(agentRuntime);
   const replacedSessions = replacedRemoteAgentTmuxSessions(agentRuntime);
   const agentCommand = remoteAgentCommand(agentRuntime, sshHost, startupOptions);
@@ -665,6 +670,24 @@ async function startRemoteAgent(
   );
 
   await execFileAsync('ssh', ['-T', sshHost, remoteCommands.join('; ')], { timeout: 30_000 });
+}
+
+async function assertNodeFallbackInstalled(sshHost: string): Promise<void> {
+  try {
+    await execFileAsync(
+      'ssh',
+      [
+        '-T',
+        sshHost,
+        NODE_AGENT_FALLBACK_PREFLIGHT_COMMAND,
+      ],
+      { timeout: 10_000 },
+    );
+  } catch {
+    throw new Error(
+      `${sshHost}: Node fallback is not installed; run ./scripts/install-remote.sh --agent-runtime node ${sshHost} before recovering agentRuntime=node`,
+    );
+  }
 }
 
 export async function recoverRemoteAgent(

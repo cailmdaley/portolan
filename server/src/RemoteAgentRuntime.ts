@@ -20,6 +20,7 @@ export interface RemoteAgentRuntimeProfile {
 }
 
 const TEMPLATE_SSH_HOST = '<ssh-host>';
+export const NODE_AGENT_FALLBACK_PREFLIGHT_COMMAND = 'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null';
 
 export function remoteAgentTmuxSession(agentRuntime: RemoteAgentRuntime): string {
   return agentRuntime === 'rust' ? RUST_AGENT_TMUX_SESSION : NODE_AGENT_TMUX_SESSION;

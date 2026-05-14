@@ -101,6 +101,7 @@ describe('recoverRemoteAgent', () => {
   it('reports explicit Node agent restart failures without restarting a healthy tunnel', async () => {
     mockExecFile
       .mockImplementationOnce(resolveExec())
+      .mockImplementationOnce(resolveExec())
       .mockImplementationOnce((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
         callback(new Error('tmux refused'), '', 'tmux refused');
         return {} as any;
@@ -115,14 +116,45 @@ describe('recoverRemoteAgent', () => {
       message: 'candide: tunnel already reachable; failed to restart portolan-agent: tmux refused',
     });
     expect(mockExecFile.mock.calls.some((call) => call[0] === 'launchctl')).toBe(false);
-    expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
+    expect(mockExecFile.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+    ]);
+    expect((mockExecFile.mock.calls[2]?.[1] as string[])[2]).toContain(
       `tmux kill-session -t ${shellEscape(`=${NODE_AGENT_SESSION}:`)} 2>/dev/null || true`,
     );
-    expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
+    expect((mockExecFile.mock.calls[2]?.[1] as string[])[2]).toContain(
       `tmux kill-session -t ${shellEscape(`=${RUST_AGENT_SESSION}:`)} 2>/dev/null || true`,
     );
-    expect((mockExecFile.mock.calls[1]?.[1] as string[])[2]).toContain(
+    expect((mockExecFile.mock.calls[2]?.[1] as string[])[2]).toContain(
       `tmux kill-session -t ${shellEscape(`=${LEGACY_RUST_AGENT_SESSION}:`)} 2>/dev/null || true`,
     );
+  });
+
+  it('does not stop Rust when explicit Node recovery lacks a fallback install', async () => {
+    mockExecFile
+      .mockImplementationOnce(resolveExec())
+      .mockImplementationOnce((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        callback(new Error('missing fallback'), '', 'missing fallback');
+        return {} as any;
+      });
+
+    const result = await recoverRemoteAgent('candide', 'node');
+
+    expect(result).toEqual({
+      sshHost: 'candide',
+      tunnel: 'reachable',
+      agent: 'failed',
+      message: 'candide: tunnel already reachable; failed to restart portolan-agent: candide: Node fallback is not installed; run ./scripts/install-remote.sh --agent-runtime node candide before recovering agentRuntime=node',
+    });
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    expect(mockExecFile.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+    ]);
+    expect(JSON.stringify(mockExecFile.mock.calls)).not.toContain('tmux kill-session');
+    expect(JSON.stringify(mockExecFile.mock.calls)).not.toContain('portolan-agent-rust');
   });
 });
