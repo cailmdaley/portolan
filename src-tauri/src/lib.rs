@@ -15,6 +15,7 @@ use tauri::Manager;
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 4004;
 const BACKEND_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const MENU_NEW_WORKSPACE: &str = "workspace.new";
 const MENU_RESTORE_WORKSPACES: &str = "workspace.restoreRecent";
 const MENU_REFRESH_WORKSPACE: &str = "workspace.refresh";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -556,6 +557,68 @@ fn workspace_window_title(title: Option<&str>) -> String {
         .unwrap_or_else(|| "Portolan".to_string())
 }
 
+fn record_workspace_window_state(
+    app: &tauri::AppHandle,
+    state: &NativeState,
+    label: impl Into<String>,
+    route_url: String,
+    title: String,
+) {
+    state
+        .windows
+        .lock()
+        .expect("workspace window registry poisoned")
+        .record(label, route_url, title);
+    write_smoke_native_status(app);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DuplicateWorkspaceSpec {
+    label: String,
+    route: String,
+    route_url: String,
+    title: String,
+}
+
+fn duplicate_workspace_spec(
+    source_label: &str,
+    recent: &[WorkspaceWindowRecord],
+    now_millis: u128,
+) -> Result<DuplicateWorkspaceSpec, String> {
+    let entry = recent
+        .iter()
+        .find(|entry| entry.label == source_label)
+        .cloned()
+        .ok_or_else(|| format!("window {source_label} has no recorded route"))?;
+    Ok(DuplicateWorkspaceSpec {
+        label: format!("workspace-{now_millis}"),
+        route: workspace_route_path(&entry.route_url)?,
+        route_url: entry.route_url,
+        title: workspace_window_title(Some(&entry.title)),
+    })
+}
+
+fn duplicate_workspace_record(
+    app: &tauri::AppHandle,
+    state: &NativeState,
+    source_label: &str,
+) -> Result<String, String> {
+    let duplicate = duplicate_workspace_spec(
+        source_label,
+        &recent_workspace_records(state),
+        unix_now_millis(),
+    )?;
+    build_workspace_window(app, &duplicate.label, &duplicate.route, &duplicate.title)?;
+    record_workspace_window_state(
+        app,
+        state,
+        duplicate.label.clone(),
+        duplicate.route_url,
+        duplicate.title,
+    );
+    Ok(duplicate.label)
+}
+
 fn build_workspace_window(
     app: &tauri::AppHandle,
     label: &str,
@@ -610,14 +673,18 @@ async fn open_workspace_window(
     let window_title = workspace_window_title(title.as_deref());
 
     build_workspace_window(&app, &label, &route, &window_title)?;
-
-    state
-        .windows
-        .lock()
-        .expect("workspace window registry poisoned")
-        .record(label.clone(), route_url, window_title);
+    record_workspace_window_state(&app, &state, label.clone(), route_url, window_title);
 
     Ok(label)
+}
+
+#[tauri::command]
+fn duplicate_workspace_window(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, NativeState>,
+) -> Result<String, String> {
+    let app = window.app_handle();
+    duplicate_workspace_record(&app, &state, window.label())
 }
 
 #[tauri::command]
@@ -629,11 +696,8 @@ fn record_workspace_window_route(
 ) -> Result<(), String> {
     let _ = workspace_route_path(&route_url)?;
     let window_title = workspace_window_title(title.as_deref());
-    state
-        .windows
-        .lock()
-        .expect("workspace window registry poisoned")
-        .record(window.label(), route_url, window_title);
+    let app = window.app_handle();
+    record_workspace_window_state(&app, &state, window.label(), route_url, window_title);
     Ok(())
 }
 
@@ -658,7 +722,9 @@ async fn restore_recent_workspace_windows(
     app: tauri::AppHandle,
     state: tauri::State<'_, NativeState>,
 ) -> Result<Vec<String>, String> {
-    restore_recent_workspace_records(&app, recent_workspace_records(&state))
+    let labels = restore_recent_workspace_records(&app, recent_workspace_records(&state))?;
+    write_smoke_native_status(&app);
+    Ok(labels)
 }
 
 fn recent_workspace_records(state: &NativeState) -> Vec<WorkspaceWindowRecord> {
@@ -892,6 +958,7 @@ fn restore_recent_workspace_records(
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum NativeMenuAction {
+    NewWorkspace,
     RestoreWorkspaces,
     RefreshWorkspace,
     Ignore,
@@ -899,6 +966,7 @@ enum NativeMenuAction {
 
 fn native_menu_action(menu_id: &str) -> NativeMenuAction {
     match menu_id {
+        MENU_NEW_WORKSPACE => NativeMenuAction::NewWorkspace,
         MENU_RESTORE_WORKSPACES => NativeMenuAction::RestoreWorkspaces,
         MENU_REFRESH_WORKSPACE => NativeMenuAction::RefreshWorkspace,
         _ => NativeMenuAction::Ignore,
@@ -911,6 +979,13 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let quit = PredefinedMenuItem::quit(app, Some("Quit Portolan"))?;
     let app_menu = Submenu::with_items(app, "Portolan", true, &[&about, &separator, &quit])?;
 
+    let new_workspace = MenuItem::with_id(
+        app,
+        MENU_NEW_WORKSPACE,
+        "New Workspace Window",
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
     let restore = MenuItem::with_id(
         app,
         MENU_RESTORE_WORKSPACES,
@@ -925,7 +1000,12 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         Some("CmdOrCtrl+R"),
     )?;
-    let workspace_menu = Submenu::with_items(app, "Workspace", true, &[&restore, &refresh])?;
+    let workspace_menu = Submenu::with_items(
+        app,
+        "Workspace",
+        true,
+        &[&new_workspace, &restore, &refresh],
+    )?;
 
     let close = PredefinedMenuItem::close_window(app, Some("Close Window"))?;
     let minimize = PredefinedMenuItem::minimize(app, Some("Minimize"))?;
@@ -935,19 +1015,32 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Menu::with_items(app, &[&app_menu, &workspace_menu, &window_menu])
 }
 
-fn refresh_focused_workspace_window(app: &tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app
-        .webview_windows()
+fn focused_workspace_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    app.webview_windows()
         .into_values()
         .find(|window| window.is_focused().unwrap_or(false))
-    else {
-        return Err("no focused workspace window".to_string());
+        .ok_or_else(|| "no focused workspace window".to_string())
+}
+
+fn refresh_focused_workspace_window(app: &tauri::AppHandle) -> Result<(), String> {
+    refresh_workspace_window(focused_workspace_window(app)?)
+}
+
+fn new_workspace_from_focused_route(app: &tauri::AppHandle) -> Result<String, String> {
+    let window = focused_workspace_window(app)?;
+    let Some(state) = app.try_state::<NativeState>() else {
+        return Err("native state missing".to_string());
     };
-    refresh_workspace_window(window)
+    duplicate_workspace_record(app, &state, window.label())
 }
 
 fn handle_native_menu_event(app: &tauri::AppHandle, menu_id: &str) {
     match native_menu_action(menu_id) {
+        NativeMenuAction::NewWorkspace => {
+            if let Err(error) = new_workspace_from_focused_route(app) {
+                log::warn!("failed to open new workspace window from current route: {error}");
+            }
+        }
         NativeMenuAction::RestoreWorkspaces => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
@@ -955,8 +1048,11 @@ fn handle_native_menu_event(app: &tauri::AppHandle, menu_id: &str) {
                     .try_state::<NativeState>()
                     .map(|state| recent_workspace_records(&state))
                     .unwrap_or_default();
-                if let Err(error) = restore_recent_workspace_records(&app, recent) {
-                    log::warn!("failed to restore recent workspace windows: {error}");
+                match restore_recent_workspace_records(&app, recent) {
+                    Ok(_) => write_smoke_native_status(&app),
+                    Err(error) => {
+                        log::warn!("failed to restore recent workspace windows: {error}");
+                    }
                 }
             });
         }
@@ -985,6 +1081,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             native_status,
             open_workspace_window,
+            duplicate_workspace_window,
             record_workspace_window_route,
             recent_workspace_windows,
             refresh_workspace_window,
@@ -1106,6 +1203,10 @@ mod tests {
 
     #[test]
     fn native_menu_ids_map_to_workspace_actions() {
+        assert_eq!(
+            native_menu_action(MENU_NEW_WORKSPACE),
+            NativeMenuAction::NewWorkspace
+        );
         assert_eq!(
             native_menu_action(MENU_RESTORE_WORKSPACES),
             NativeMenuAction::RestoreWorkspaces
@@ -1335,6 +1436,65 @@ mod tests {
                     title: "Portolan - Kanban".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn duplicate_workspace_spec_preserves_recorded_route_and_title() {
+        let duplicate = duplicate_workspace_spec(
+            "workspace-restore-smoke",
+            &[
+                WorkspaceWindowRecord {
+                    label: MAIN_WINDOW_LABEL.to_string(),
+                    route_url: "#city=portolan&mode=kanban".to_string(),
+                    title: "Portolan - Kanban".to_string(),
+                    updated_at_unix: 2,
+                },
+                WorkspaceWindowRecord {
+                    label: "workspace-restore-smoke".to_string(),
+                    route_url: "#city=portolan&mode=find".to_string(),
+                    title: "Portolan - Find".to_string(),
+                    updated_at_unix: 1,
+                },
+            ],
+            1234,
+        )
+        .unwrap();
+
+        assert_eq!(
+            duplicate,
+            DuplicateWorkspaceSpec {
+                label: "workspace-1234".to_string(),
+                route: "index.html#city=portolan&mode=find".to_string(),
+                route_url: "#city=portolan&mode=find".to_string(),
+                title: "Portolan - Find".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_workspace_spec_rejects_missing_route_record() {
+        assert_eq!(
+            duplicate_workspace_spec("workspace-missing", &[], 1234).unwrap_err(),
+            "window workspace-missing has no recorded route"
+        );
+    }
+
+    #[test]
+    fn duplicate_workspace_spec_rejects_invalid_saved_route() {
+        assert_eq!(
+            duplicate_workspace_spec(
+                "workspace-bad",
+                &[WorkspaceWindowRecord {
+                    label: "workspace-bad".to_string(),
+                    route_url: "https://example.com/#city=portolan".to_string(),
+                    title: "Portolan - Bad".to_string(),
+                    updated_at_unix: 1,
+                }],
+                1234,
+            )
+            .unwrap_err(),
+            "workspace windows must use app-local routes"
         );
     }
 

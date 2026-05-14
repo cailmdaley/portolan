@@ -70,6 +70,13 @@ export async function openNativeWorkspaceWindow(
   return invoke<string>('open_workspace_window', { ...args })
 }
 
+export async function duplicateNativeWorkspaceWindow(): Promise<string | null> {
+  if (!isNativePortolanRuntime()) return null
+
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<string>('duplicate_workspace_window')
+}
+
 export async function recordNativeWorkspaceWindowRoute(
   args: NativeWorkspaceWindowArgs,
 ): Promise<boolean> {

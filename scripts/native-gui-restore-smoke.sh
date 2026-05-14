@@ -214,6 +214,28 @@ wait_for_native_status() {
   return 1
 }
 
+wait_for_native_status_change() {
+  local previous="$1"
+  local deadline=$((SECONDS + 30))
+  local current
+  while (( SECONDS < deadline )); do
+    if [[ -s "$NATIVE_STATUS_PATH" ]]; then
+      current="$(cat "$NATIVE_STATUS_PATH" 2>/dev/null || true)"
+      if [[ -n "$current" && "$current" != "$previous" ]]; then
+        printf '%s' "$current"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "[portolan] timed out waiting for native status export to update" >&2
+  if [[ -f "$NATIVE_STATUS_PATH" ]]; then
+    echo "[portolan] latest native status export:" >&2
+    sed 's/^/[portolan] native-status: /' "$NATIVE_STATUS_PATH" >&2
+  fi
+  return 1
+}
+
 wait_for_workspace_store_rewrite() {
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
@@ -285,6 +307,82 @@ NODE
   return 1
 }
 
+wait_for_duplicate_workspace_store() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if [[ -s "$WINDOW_STORE" ]] && WINDOW_STORE_JSON="$(cat "$WINDOW_STORE" 2>/dev/null || true)" \
+      RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" \
+      RESTORE_MAIN_ROUTE="$RESTORE_MAIN_ROUTE" \
+      RESTORE_MAIN_TITLE="$RESTORE_MAIN_TITLE" \
+      RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" \
+      RESTORE_WORKSPACE_ROUTE="$RESTORE_WORKSPACE_ROUTE" \
+      RESTORE_WORKSPACE_TITLE="$RESTORE_WORKSPACE_TITLE" \
+      RESTORE_WORKSPACE_SEEDED_UPDATED_AT="$RESTORE_WORKSPACE_SEEDED_UPDATED_AT" \
+      node --input-type=module >/dev/null 2>&1 <<'NODE'
+const recent = JSON.parse(process.env.WINDOW_STORE_JSON || '[]');
+if (!Array.isArray(recent) || recent.length !== 3) process.exit(1);
+
+const required = new Map([
+  [process.env.RESTORE_MAIN_LABEL, {
+    mode: 'kanban',
+    titleToken: 'Kanban',
+    isMain: true,
+  }],
+  [process.env.RESTORE_WORKSPACE_LABEL, {
+    mode: 'find',
+    titleToken: 'Find',
+    isMain: false,
+  }],
+]);
+const titleMatches = (title, token) => typeof title === 'string' && title.includes(token) && title.includes('Portolan');
+const parseRoute = (routeUrl) => {
+  if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
+  const params = new URLSearchParams(routeUrl.slice(1));
+  const city = params.get('city');
+  const mode = params.get('mode');
+  return city && mode ? { city, mode } : null;
+};
+const byLabel = new Map();
+for (const entry of recent) {
+  if (!entry || typeof entry !== 'object' || typeof entry.label !== 'string') process.exit(1);
+  if (byLabel.has(entry.label)) process.exit(1);
+  byLabel.set(entry.label, entry);
+}
+let expectedCity = null;
+for (const [label, expected] of required) {
+  const entry = byLabel.get(label);
+  if (!entry) process.exit(1);
+  const route = parseRoute(entry.routeUrl);
+  if (!route || route.mode !== expected.mode) process.exit(1);
+  if (!titleMatches(entry.title, expected.titleToken)) process.exit(1);
+  if (typeof entry.updatedAtUnix !== 'number' || !Number.isFinite(entry.updatedAtUnix)) process.exit(1);
+  expectedCity = expectedCity || route.city;
+  if (route.city !== expectedCity) process.exit(1);
+}
+const duplicates = recent.filter(entry => !required.has(entry.label));
+if (duplicates.length !== 1) process.exit(1);
+const duplicate = duplicates[0];
+const duplicateRoute = parseRoute(duplicate.routeUrl);
+if (!duplicateRoute || duplicateRoute.mode !== 'find' || duplicateRoute.city !== expectedCity) process.exit(1);
+if (!titleMatches(duplicate.title, 'Find')) process.exit(1);
+if (typeof duplicate.updatedAtUnix !== 'number' || !Number.isFinite(duplicate.updatedAtUnix)) process.exit(1);
+if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) process.exit(1);
+NODE
+    then
+      echo "[portolan] workspace store recorded duplicated current route"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[portolan] timed out waiting for duplicated workspace entry in store" >&2
+  if [[ -f "$WINDOW_STORE" ]]; then
+    echo "[portolan] latest workspace store contents:" >&2
+    sed 's/^/[portolan] workspace-store: /' "$WINDOW_STORE" >&2
+  fi
+  return 1
+}
+
 window_titles() {
   osascript <<OSA 2>/dev/null || true
 tell application "System Events"
@@ -295,6 +393,29 @@ tell application "System Events"
     end repeat
     output
   end if
+end tell
+OSA
+}
+
+focus_window_title() {
+  local title="$1"
+  osascript <<OSA >/dev/null 2>&1
+tell application "${APP_NAME}" to activate
+tell application "System Events"
+  tell process "${APP_NAME}"
+    set frontmost to true
+    perform action "AXRaise" of window "${title}"
+  end tell
+end tell
+OSA
+}
+
+trigger_new_workspace_window_shortcut() {
+  osascript <<OSA >/dev/null 2>&1
+tell application "${APP_NAME}" to activate
+delay 0.2
+tell application "System Events"
+  keystroke "n" using command down
 end tell
 OSA
 }
@@ -423,10 +544,32 @@ collect_frontend_debug_runtime || true
 NATIVE_STATUS_JSON="$(wait_for_native_status)"
 wait_for_workspace_store_rewrite
 
+echo "[portolan] Duplicating ${RESTORE_WORKSPACE_TITLE} via Cmd+N"
+if ! focus_window_title "$RESTORE_WORKSPACE_TITLE"; then
+  echo "[portolan] failed to focus restored workspace window: $RESTORE_WORKSPACE_TITLE" >&2
+  exit 1
+fi
+if ! trigger_new_workspace_window_shortcut; then
+  echo "[portolan] failed to send Cmd+N to ${APP_NAME}" >&2
+  exit 1
+fi
+
+window_count="$(wait_for_window_count 3)"
+titles="$(window_titles)"
+echo "[portolan] Observed $window_count Portolan windows after duplication"
+printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
+if [[ "$(printf '%s\n' "$titles" | grep -c 'Find')" -lt 2 ]]; then
+  echo "[portolan] expected two Find-flavored workspace windows after Cmd+N" >&2
+  exit 1
+fi
+wait_for_duplicate_workspace_store
+NATIVE_STATUS_JSON="$(wait_for_native_status_change "$NATIVE_STATUS_JSON")"
+
 DEBUG_RUNTIME="$debug_runtime" WINDOW_DEBUG_RUNTIME_JSON="$WINDOW_DEBUG_RUNTIME_JSON" NATIVE_STATUS_JSON="$NATIVE_STATUS_JSON" \
   STRICT_APP_OWNED="$STRICT_APP_OWNED" ALLOW_EXTERNAL_BACKEND="$ALLOW_EXTERNAL_BACKEND" \
   RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" RESTORE_MAIN_ROUTE="$RESTORE_MAIN_ROUTE" RESTORE_MAIN_TITLE="$RESTORE_MAIN_TITLE" \
   RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" RESTORE_WORKSPACE_ROUTE="$RESTORE_WORKSPACE_ROUTE" RESTORE_WORKSPACE_TITLE="$RESTORE_WORKSPACE_TITLE" \
+  RESTORE_WORKSPACE_SEEDED_UPDATED_AT="$RESTORE_WORKSPACE_SEEDED_UPDATED_AT" \
   node --input-type=module <<'NODE'
 const debugRuntime = process.env.DEBUG_RUNTIME || '{}';
 const frontendRuntime = process.env.WINDOW_DEBUG_RUNTIME_JSON || '';
@@ -544,7 +687,7 @@ function compareNativeLifecycle(serverPayload, nativePayload) {
   };
 }
 
-function compareWorkspaceRestore(nativePayload) {
+function compareWorkspaceWindows(nativePayload) {
   const workspaceWindows = nativePayload?.workspaceWindows ?? null;
   if (!workspaceWindows || typeof workspaceWindows !== 'object') {
     return {
@@ -553,35 +696,46 @@ function compareWorkspaceRestore(nativePayload) {
     };
   }
 
-  const expectedByLabel = new Map([
+  const requiredByLabel = new Map([
     [process.env.RESTORE_MAIN_LABEL, {
-      routeUrl: process.env.RESTORE_MAIN_ROUTE,
-      title: process.env.RESTORE_MAIN_TITLE,
+      mode: 'kanban',
+      titleToken: 'Kanban',
       isMain: true,
     }],
     [process.env.RESTORE_WORKSPACE_LABEL, {
-      routeUrl: process.env.RESTORE_WORKSPACE_ROUTE,
-      title: process.env.RESTORE_WORKSPACE_TITLE,
+      mode: 'find',
+      titleToken: 'Find',
       isMain: false,
     }],
   ]);
+  const titleMatches = (title, token) => typeof title === 'string' && title.includes(token) && title.includes('Portolan');
+  const parseRoute = (routeUrl) => {
+    if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
+    const params = new URLSearchParams(routeUrl.slice(1));
+    const city = params.get('city');
+    const mode = params.get('mode');
+    return city && mode ? { city, mode } : null;
+  };
+  const expectedRecentCount = 3;
+  const expectedWorkspaceCount = 2;
   const mismatches = [];
-  if (workspaceWindows.recentCount !== expectedByLabel.size) {
-    mismatches.push(`native_status.workspaceWindows.recentCount expected ${expectedByLabel.size}; got ${JSON.stringify(workspaceWindows.recentCount)}`);
+  if (workspaceWindows.recentCount !== expectedRecentCount) {
+    mismatches.push(`native_status.workspaceWindows.recentCount expected ${expectedRecentCount}; got ${JSON.stringify(workspaceWindows.recentCount)}`);
   }
-  if (workspaceWindows.workspaceCount !== expectedByLabel.size - 1) {
-    mismatches.push(`native_status.workspaceWindows.workspaceCount expected ${expectedByLabel.size - 1}; got ${JSON.stringify(workspaceWindows.workspaceCount)}`);
+  if (workspaceWindows.workspaceCount !== expectedWorkspaceCount) {
+    mismatches.push(`native_status.workspaceWindows.workspaceCount expected ${expectedWorkspaceCount}; got ${JSON.stringify(workspaceWindows.workspaceCount)}`);
   }
-  if (workspaceWindows.mainRouteUrl !== process.env.RESTORE_MAIN_ROUTE) {
-    mismatches.push(`native_status.workspaceWindows.mainRouteUrl expected ${JSON.stringify(process.env.RESTORE_MAIN_ROUTE)}; got ${JSON.stringify(workspaceWindows.mainRouteUrl)}`);
+  const mainRoute = parseRoute(workspaceWindows.mainRouteUrl);
+  if (!mainRoute || mainRoute.mode !== 'kanban') {
+    mismatches.push(`native_status.workspaceWindows.mainRouteUrl expected a local kanban route; got ${JSON.stringify(workspaceWindows.mainRouteUrl)}`);
   }
 
   const routes = Array.isArray(workspaceWindows.routes) ? workspaceWindows.routes : null;
   if (!routes) {
     mismatches.push('native_status.workspaceWindows.routes must be an array');
   } else {
-    if (routes.length !== expectedByLabel.size) {
-      mismatches.push(`native_status.workspaceWindows.routes length expected ${expectedByLabel.size}; got ${routes.length}`);
+    if (routes.length !== expectedRecentCount) {
+      mismatches.push(`native_status.workspaceWindows.routes length expected ${expectedRecentCount}; got ${routes.length}`);
     }
     const byLabel = new Map();
     for (const entry of routes) {
@@ -595,20 +749,53 @@ function compareWorkspaceRestore(nativePayload) {
       }
       byLabel.set(entry.label, entry);
     }
-    for (const [label, expected] of expectedByLabel) {
+    let expectedCity = mainRoute?.city ?? null;
+    for (const [label, expected] of requiredByLabel) {
       const entry = byLabel.get(label);
       if (!entry) {
         mismatches.push(`native_status.workspaceWindows.routes missing ${JSON.stringify(label)}`);
         continue;
       }
-      if (entry.routeUrl !== expected.routeUrl) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].routeUrl expected ${JSON.stringify(expected.routeUrl)}; got ${JSON.stringify(entry.routeUrl)}`);
+      const route = parseRoute(entry.routeUrl);
+      if (!route || route.mode !== expected.mode) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].routeUrl expected a local ${expected.mode} route; got ${JSON.stringify(entry.routeUrl)}`);
+      } else {
+        expectedCity = expectedCity ?? route.city;
+        if (route.city !== expectedCity) {
+          mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].city expected ${JSON.stringify(expectedCity)}; got ${JSON.stringify(route.city)}`);
+        }
       }
-      if (entry.title !== expected.title) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].title expected ${JSON.stringify(expected.title)}; got ${JSON.stringify(entry.title)}`);
+      if (!titleMatches(entry.title, expected.titleToken)) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].title expected token ${JSON.stringify(expected.titleToken)} + Portolan; got ${JSON.stringify(entry.title)}`);
       }
       if (entry.isMain !== expected.isMain) {
         mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].isMain expected ${JSON.stringify(expected.isMain)}; got ${JSON.stringify(entry.isMain)}`);
+      }
+      if (typeof entry.updatedAtUnix !== 'number' || !Number.isFinite(entry.updatedAtUnix)) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].updatedAtUnix must be a finite number`);
+      }
+    }
+    const duplicates = routes.filter(entry => entry && typeof entry === 'object' && typeof entry.label === 'string' && !requiredByLabel.has(entry.label));
+    if (duplicates.length !== 1) {
+      mismatches.push(`native_status.workspaceWindows.routes expected 1 duplicated workspace entry; got ${duplicates.length}`);
+    } else {
+      const duplicate = duplicates[0];
+      const duplicateRoute = parseRoute(duplicate.routeUrl);
+      if (!duplicateRoute || duplicateRoute.mode !== 'find') {
+        mismatches.push(`native_status.workspaceWindows.duplicate.routeUrl expected a local find route; got ${JSON.stringify(duplicate.routeUrl)}`);
+      } else if (expectedCity && duplicateRoute.city !== expectedCity) {
+        mismatches.push(`native_status.workspaceWindows.duplicate.city expected ${JSON.stringify(expectedCity)}; got ${JSON.stringify(duplicateRoute.city)}`);
+      }
+      if (!titleMatches(duplicate.title, 'Find')) {
+        mismatches.push(`native_status.workspaceWindows.duplicate.title expected token "Find" + Portolan; got ${JSON.stringify(duplicate.title)}`);
+      }
+      if (duplicate.isMain !== false) {
+        mismatches.push(`native_status.workspaceWindows.duplicate.isMain expected false; got ${JSON.stringify(duplicate.isMain)}`);
+      }
+      if (typeof duplicate.updatedAtUnix !== 'number' || !Number.isFinite(duplicate.updatedAtUnix)) {
+        mismatches.push('native_status.workspaceWindows.duplicate.updatedAtUnix must be a finite number');
+      } else if (duplicate.updatedAtUnix <= Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0')) {
+        mismatches.push(`native_status.workspaceWindows.duplicate.updatedAtUnix expected > ${JSON.stringify(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT)}; got ${JSON.stringify(duplicate.updatedAtUnix)}`);
       }
     }
   }
@@ -620,16 +807,16 @@ function compareWorkspaceRestore(nativePayload) {
 }
 
 const nativeLifecycle = front?.nativeLifecycle ?? compareNativeLifecycle(payload, native);
-const workspaceRestore = compareWorkspaceRestore(native);
-if (workspaceRestore.status !== 'matched') {
-  const mismatches = Array.isArray(workspaceRestore.mismatches)
-    ? workspaceRestore.mismatches.join('; ')
-    : String(workspaceRestore.mismatches || '');
+const workspaceWindows = compareWorkspaceWindows(native);
+if (workspaceWindows.status !== 'matched') {
+  const mismatches = Array.isArray(workspaceWindows.mismatches)
+    ? workspaceWindows.mismatches.join('; ')
+    : String(workspaceWindows.mismatches || '');
   const detail = mismatches || '<none>';
-  console.error(`[portolan] native_status workspace restore shape mismatch: status=${workspaceRestore.status} mismatches=${detail}`);
+  console.error(`[portolan] native_status workspace duplication shape mismatch: status=${workspaceWindows.status} mismatches=${detail}`);
   process.exit(1);
 }
-console.log('[portolan] native_status workspace restore shape validated');
+console.log('[portolan] native_status workspace duplication shape validated');
 
 if (strictOwned) {
   if (nativeLifecycle.status !== 'matched' || nativeLifecycle.backendOwner !== 'app') {

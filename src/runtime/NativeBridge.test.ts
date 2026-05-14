@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  duplicateNativeWorkspaceWindow,
   getNativePortolanStatus,
   getRecentNativeWorkspaceWindows,
   isNativePortolanRuntime,
@@ -103,6 +104,19 @@ describe('openNativeWorkspaceWindow', () => {
 })
 
 describe('native workspace window state commands', () => {
+  it('skips workspace duplication outside the native runtime', async () => {
+    await expect(duplicateNativeWorkspaceWindow()).resolves.toBeNull()
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('duplicates the current native window in Tauri', async () => {
+    ;(window as any).__TAURI_INTERNALS__ = {}
+    invoke.mockResolvedValueOnce('workspace-2')
+
+    await expect(duplicateNativeWorkspaceWindow()).resolves.toBe('workspace-2')
+    expect(invoke).toHaveBeenCalledWith('duplicate_workspace_window')
+  })
+
   it('skips route persistence outside the native runtime', async () => {
     await expect(recordNativeWorkspaceWindowRoute({
       routeUrl: '#city=portolan',

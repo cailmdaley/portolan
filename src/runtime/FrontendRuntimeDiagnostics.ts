@@ -4,6 +4,7 @@ import type { PlaygroundViewer } from '../ui/PlaygroundViewer'
 import type { HexCoord } from '../state/types'
 import type { FrontendRenderLoopStats } from './FrontendAppRuntime'
 import {
+  duplicateNativeWorkspaceWindow,
   getNativePortolanStatus,
   getRecentNativeWorkspaceWindows,
   refreshNativeWorkspaceWindow,
@@ -18,6 +19,7 @@ export type DebugRuntimeWindow = Window & {
   getFrontendRuntimeDiagnostics: () => FrontendRuntimeDiagnostics
   debugNativePortolan: () => Promise<NativePortolanStatus | null>
   debugNativeWorkspaceWindows: () => Promise<NativeWorkspaceWindowRecord[] | null>
+  duplicateNativeWorkspaceWindow: () => Promise<string | null>
   refreshNativeWorkspaceWindow: () => Promise<boolean>
   restoreNativeWorkspaceWindows: () => Promise<string[] | null>
   debugRuntime: () => Promise<{
@@ -225,6 +227,7 @@ export function installFrontendRuntimeDiagnostics(
     console.log('[debugNativeWorkspaceWindows] snapshot', windows)
     return windows
   }
+  debugWindow.duplicateNativeWorkspaceWindow = duplicateNativeWorkspaceWindow
   debugWindow.refreshNativeWorkspaceWindow = refreshNativeWorkspaceWindow
   debugWindow.restoreNativeWorkspaceWindows = restoreRecentNativeWorkspaceWindows
   debugWindow.getFrontendRuntimeDiagnostics = () => {
