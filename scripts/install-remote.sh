@@ -334,7 +334,7 @@ if [ "$AGENT_RUNTIME" = "rust" ]; then
   RUST_AGENT_LOCAL_BINARY="${RUST_AGENT_LOCAL_BINARY:-$REPO_DIR/crates/portolan-agent/target/release/portolan-agent-rust}"
   if [ ! -f "$RUST_AGENT_LOCAL_BINARY" ]; then
     error "Rust agent binary not found: $RUST_AGENT_LOCAL_BINARY"
-    error "Run: npm run native:agent, or for Linux remotes run npm run native:agent:linux and pass --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust"
+    error "Run: bun run native:agent, or for Linux remotes run bun run native:agent:linux and pass --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust"
     exit 1
   fi
   remote_rust_tmp=".local/bin/portolan-agent-rust.upload.$$"
