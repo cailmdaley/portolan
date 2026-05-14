@@ -20,6 +20,18 @@ export interface NativePortolanStatus {
     startedAtUnix: number | null
     lastError: string | null
   }
+  workspaceWindows: {
+    recentCount: number
+    mainRouteUrl: string | null
+    workspaceCount: number
+    routes: Array<{
+      label: string
+      routeUrl: string
+      title: string
+      isMain: boolean
+      updatedAtUnix: number
+    }>
+  }
 }
 
 type TauriWindow = Window & {

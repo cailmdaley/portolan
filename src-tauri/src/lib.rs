@@ -24,6 +24,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 struct NativeStatus {
     app: NativeAppStatus,
     backend: BackendStatus,
+    workspace_windows: WorkspaceWindowsStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +52,25 @@ struct BackendStatus {
     pid: Option<u32>,
     started_at_unix: Option<u64>,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceWindowsStatus {
+    recent_count: usize,
+    main_route_url: Option<String>,
+    workspace_count: usize,
+    routes: Vec<WorkspaceWindowStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceWindowStatus {
+    label: String,
+    route_url: String,
+    title: String,
+    is_main: bool,
+    updated_at_unix: u64,
 }
 
 struct NativeState {
@@ -122,6 +142,10 @@ impl WorkspaceWindowRegistry {
 
     fn recent(&self) -> Vec<WorkspaceWindowRecord> {
         self.recent.iter().cloned().collect()
+    }
+
+    fn status(&self) -> WorkspaceWindowsStatus {
+        workspace_windows_status(self.recent())
     }
 }
 
@@ -477,6 +501,11 @@ fn unix_now() -> u64 {
 #[tauri::command]
 fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
     let backend = state.backend.lock().expect("native backend state poisoned");
+    let workspace_windows = state
+        .windows
+        .lock()
+        .expect("workspace window registry poisoned")
+        .status();
     NativeStatus {
         app: NativeAppStatus {
             product_name: "Portolan".to_string(),
@@ -495,6 +524,7 @@ fn native_status(state: tauri::State<'_, NativeState>) -> NativeStatus {
                 .map(|path| path.display().to_string()),
         },
         backend: backend.status(),
+        workspace_windows,
     }
 }
 
@@ -630,6 +660,32 @@ fn split_main_and_workspace_records(
     let main = startup_main_window_record(&recent);
     let workspaces = startup_workspace_records(recent);
     (main, workspaces)
+}
+
+fn workspace_windows_status(recent: Vec<WorkspaceWindowRecord>) -> WorkspaceWindowsStatus {
+    let recent_count = recent.len();
+    let main_route_url = startup_main_window_record(&recent).map(|entry| entry.route_url);
+    let workspace_count = recent
+        .iter()
+        .filter(|entry| entry.label != MAIN_WINDOW_LABEL)
+        .count();
+    let routes = recent
+        .into_iter()
+        .map(|entry| WorkspaceWindowStatus {
+            is_main: entry.label == MAIN_WINDOW_LABEL,
+            label: entry.label,
+            route_url: entry.route_url,
+            title: entry.title,
+            updated_at_unix: entry.updated_at_unix,
+        })
+        .collect();
+
+    WorkspaceWindowsStatus {
+        recent_count,
+        main_route_url,
+        workspace_count,
+        routes,
+    }
 }
 
 fn restore_startup_main_window_record(
@@ -1052,6 +1108,34 @@ mod tests {
             workspaces[1].route_url,
             "#city=portolan&mode=narrative&fiber=portolan"
         );
+    }
+
+    #[test]
+    fn workspace_window_status_exposes_restore_shape() {
+        let status = workspace_windows_status(vec![
+            WorkspaceWindowRecord {
+                label: "workspace-1".to_string(),
+                route_url: "#city=portolan&mode=find".to_string(),
+                title: "Portolan - Find".to_string(),
+                updated_at_unix: 3,
+            },
+            WorkspaceWindowRecord {
+                label: MAIN_WINDOW_LABEL.to_string(),
+                route_url: "#city=portolan&mode=kanban".to_string(),
+                title: "Portolan - Kanban".to_string(),
+                updated_at_unix: 2,
+            },
+        ]);
+
+        assert_eq!(status.recent_count, 2);
+        assert_eq!(
+            status.main_route_url.as_deref(),
+            Some("#city=portolan&mode=kanban")
+        );
+        assert_eq!(status.workspace_count, 1);
+        assert!(!status.routes[0].is_main);
+        assert_eq!(status.routes[0].route_url, "#city=portolan&mode=find");
+        assert!(status.routes[1].is_main);
     }
 
     #[test]
