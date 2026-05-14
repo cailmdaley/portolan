@@ -808,9 +808,18 @@ function portolanHeaderActions(args: {
       // and easy to mis-click against a dense margin. Uses window.confirm
       // for now; can graduate to an inline confirm popover if the gesture
       // proves too jarring.
+      //
+      // `scope: 'stored'` is the load-bearing bit: when prose has drifted
+      // past existing annotation anchors (rewrites, deletions) the visible
+      // list shrinks or empties out, but the on-disk rows stay. Clear has
+      // to reach into the stored set or the user is stranded with zombies
+      // — and at zero visible we wouldn't even render the button. The
+      // chrome routes `storedAnnotations` here instead of the anchor-
+      // resolved subset.
       id: 'clear-all',
       label: 'Clear',
       destructive: true,
+      scope: 'stored',
       title: 'Delete all comments on this file',
       onInvoke: async (annotations, ctx) => {
         const n = annotations.length
@@ -895,13 +904,16 @@ function portolanFiberBulkActions(args: {
     },
     {
       // Nuclear option for fiber mode — symmetric with the file-mode
-      // variant in `portolanHeaderActions`. Confirms first; the bar's
-      // count badge reflects just this fiber's annotations (the
-      // currentSlug filter), so the prompt's number matches what the
-      // user sees.
+      // variant in `portolanHeaderActions`. Confirms first; with
+      // `scope: 'stored'` the bar's count reflects every annotation on
+      // disk for this fiber's slug (after the currentSlug filter), so
+      // the prompt's number matches what Clear is actually about to
+      // delete — including annotations whose anchors no longer resolve
+      // because the prose has been rewritten beneath them.
       id: 'clear-all',
       label: 'Clear',
       destructive: true,
+      scope: 'stored',
       title: 'Delete all comments on this fiber',
       onInvoke: async (annotations, ctx) => {
         const n = annotations.length
