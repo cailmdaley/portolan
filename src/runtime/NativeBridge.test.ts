@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  getNativePortolanStatus,
   getRecentNativeWorkspaceWindows,
   isNativePortolanRuntime,
   openNativeWorkspaceWindow,
@@ -27,6 +28,51 @@ describe('isNativePortolanRuntime', () => {
 
   it('is true when Tauri injects its internals marker', () => {
     expect(isNativePortolanRuntime({ __TAURI_INTERNALS__: {} })).toBe(true)
+  })
+})
+
+describe('getNativePortolanStatus', () => {
+  it('returns native bridge status only in the native runtime', async () => {
+    await expect(getNativePortolanStatus()).resolves.toBeNull()
+    expect(invoke).not.toHaveBeenCalled()
+
+    ;(window as any).__TAURI_INTERNALS__ = {}
+    invoke.mockResolvedValueOnce({
+      app: {
+        productName: 'Portolan',
+        version: '0.0.0',
+        profile: 'debug',
+        frontendDist: '../dist',
+        projectRoot: '/app',
+        resourceDir: '/app/Resources',
+      },
+      backend: {
+        url: 'http://localhost:4004',
+        reachable: true,
+        owner: 'app',
+        launchKind: 'node-dist-resource',
+        processGroup: false,
+        cwd: '/app/server',
+        entry: null,
+        resourceDir: '/app/Resources',
+        pid: 123,
+        startedAtUnix: 1700000000,
+        lastError: null,
+      },
+      workspaceWindows: {
+        recentCount: 0,
+        mainRouteUrl: null,
+        workspaceCount: 0,
+        routes: [],
+      },
+    })
+
+    await expect(getNativePortolanStatus()).resolves.toMatchObject({
+      app: { productName: 'Portolan' },
+      backend: { launchKind: 'node-dist-resource', owner: 'app' },
+      workspaceWindows: { recentCount: 0 },
+    })
+    expect(invoke).toHaveBeenCalledWith('native_status')
   })
 })
 

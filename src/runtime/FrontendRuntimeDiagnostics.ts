@@ -26,7 +26,23 @@ export type DebugRuntimeWindow = Window & {
     frontend: FrontendRuntimeDiagnostics
     server: unknown | null
     native: NativePortolanStatus | null
+    nativeLifecycle: NativeLifecycleDiagnostics
   }>
+}
+
+export type NativeLifecycleDiagnosticStatus =
+  | 'browser'
+  | 'unavailable'
+  | 'matched'
+  | 'missing-server-native-backend'
+  | 'owner-mismatch'
+  | 'drift'
+
+export interface NativeLifecycleDiagnostics {
+  status: NativeLifecycleDiagnosticStatus
+  backendOwner: NativePortolanStatus['backend']['owner'] | null
+  serverNativeBackend: unknown | null
+  mismatches: string[]
 }
 
 export interface FrontendRuntimeDiagnostics {
@@ -109,6 +125,82 @@ interface InstallFrontendRuntimeDiagnosticsOptions {
     totalWorkerHudUpdates: number
   }
   getRenderLoopStats: () => FrontendRenderLoopStats
+}
+
+interface ServerNativeBackendDiagnostics {
+  enabled?: unknown
+  backendRoot?: unknown
+  resourceDir?: unknown
+  launchKind?: unknown
+  processGroup?: unknown
+}
+
+function readServerNativeBackend(server: unknown): ServerNativeBackendDiagnostics | null {
+  if (typeof server !== 'object' || server === null || Array.isArray(server)) return null
+  const runtime = (server as { runtime?: unknown }).runtime
+  if (typeof runtime !== 'object' || runtime === null || Array.isArray(runtime)) return null
+  const nativeBackend = (runtime as { nativeBackend?: unknown }).nativeBackend
+  if (typeof nativeBackend !== 'object' || nativeBackend === null || Array.isArray(nativeBackend)) return null
+  return nativeBackend as ServerNativeBackendDiagnostics
+}
+
+export function compareNativeLifecycleDiagnostics(
+  server: unknown | null,
+  native: NativePortolanStatus | null,
+): NativeLifecycleDiagnostics {
+  const serverNativeBackend = readServerNativeBackend(server)
+  if (!native) {
+    return {
+      status: serverNativeBackend ? 'unavailable' : 'browser',
+      backendOwner: null,
+      serverNativeBackend,
+      mismatches: serverNativeBackend
+        ? ['server reports a native-owned backend, but the frontend is not running in Tauri']
+        : [],
+    }
+  }
+
+  if (native.backend.owner === 'external') {
+    return {
+      status: serverNativeBackend ? 'owner-mismatch' : 'matched',
+      backendOwner: native.backend.owner,
+      serverNativeBackend,
+      mismatches: serverNativeBackend
+        ? ['native_status reports an external backend, but /debug-runtime reports PORTOLAN_NATIVE=1']
+        : [],
+    }
+  }
+
+  if (!serverNativeBackend) {
+    return {
+      status: 'missing-server-native-backend',
+      backendOwner: native.backend.owner,
+      serverNativeBackend: null,
+      mismatches: [`native_status reports a ${native.backend.owner} backend, but /debug-runtime has no nativeBackend block`],
+    }
+  }
+
+  const mismatches = [
+    serverNativeBackend.launchKind !== undefined && serverNativeBackend.launchKind !== native.backend.launchKind
+      ? `launchKind differs: native_status=${native.backend.launchKind} debug-runtime=${String(serverNativeBackend.launchKind)}`
+      : null,
+    serverNativeBackend.backendRoot !== undefined && serverNativeBackend.backendRoot !== native.backend.cwd
+      ? `backendRoot differs: native_status.cwd=${native.backend.cwd} debug-runtime=${String(serverNativeBackend.backendRoot)}`
+      : null,
+    serverNativeBackend.resourceDir !== undefined && serverNativeBackend.resourceDir !== native.backend.resourceDir
+      ? `resourceDir differs: native_status=${String(native.backend.resourceDir)} debug-runtime=${String(serverNativeBackend.resourceDir)}`
+      : null,
+    serverNativeBackend.processGroup !== undefined && serverNativeBackend.processGroup !== native.backend.processGroup
+      ? `processGroup differs: native_status=${String(native.backend.processGroup)} debug-runtime=${String(serverNativeBackend.processGroup)}`
+      : null,
+  ].filter((mismatch): mismatch is string => Boolean(mismatch))
+
+  return {
+    status: mismatches.length > 0 ? 'drift' : 'matched',
+    backendOwner: native.backend.owner,
+    serverNativeBackend,
+    mismatches,
+  }
 }
 
 export function installFrontendRuntimeDiagnostics(
@@ -206,7 +298,8 @@ export function installFrontendRuntimeDiagnostics(
       console.warn('[debugRuntime] Failed to fetch native status:', error)
     }
 
-    const snapshot = { frontend, server, native }
+    const nativeLifecycle = compareNativeLifecycleDiagnostics(server, native)
+    const snapshot = { frontend, server, native, nativeLifecycle }
     console.log('[debugRuntime] snapshot', snapshot)
     return snapshot
   }
