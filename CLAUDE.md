@@ -152,6 +152,7 @@ Node fallback remains explicit and unchanged:
 - Node runtime is still in session `portolan-agent`.
 - Rust agent runtime is still in session `portolan-agent-rust`.
 - Normal restarts stop the opposite runtime session so only one socket per origin is active at a time; with `--once`, Rust agent runs side-by-side and exits cleanly.
+- Default Rust installs do not refresh `~/.local/bin/portolan-agent.js`; pass `--install-node-fallback` with a Rust install only when you deliberately want rollback staged.
 - Install/start the Node fallback with `./scripts/install-remote.sh --agent-runtime node <host>` when rollback is intentional.
 - Resume Node fallback with `./scripts/reset-tunnel.sh --agent-runtime node <host>` (or let normal self-recovery bring Node back when needed).
 

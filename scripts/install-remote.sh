@@ -5,8 +5,8 @@
 #
 # This script:
 # 1. Copies portolan-hook.sh to remote ~/.portolan/hooks/
-# 2. Copies agent.js to remote ~/.local/bin/portolan-agent.js (Node fallback, always kept)
-# 3. Copies Rust agent binary to remote ~/.local/bin/portolan-agent-rust by default
+# 2. Copies Rust agent binary to remote ~/.local/bin/portolan-agent-rust by default
+# 3. Copies agent.js only for an explicit Node fallback install
 # 4. Creates ~/.portolan/data/ directory
 # 5. Patches ~/.claude/settings.json to add:
 #    - command hooks for canonical Portolan activity and file-touch tracking
@@ -16,7 +16,7 @@
 # - jq (for JSON patching)
 # - tmux (for running agent)
 # - Claude Code installed
-# - Node.js with npm (optional for Rust agent, but used to keep Node fallback ready)
+# - Node.js with npm (only required for explicit Node fallback installs)
 
 set -e
 
@@ -43,6 +43,7 @@ NODE_AGENT_SESSION="portolan-agent"
 AGENT_ORIGIN=""
 AGENT_PLANNOTATOR_PORT=""
 AGENT_ONCE=false
+INSTALL_NODE_FALLBACK=false
 
 usage() {
   cat <<EOF
@@ -53,6 +54,8 @@ Options:
   --agent-runtime VALUE   rust or node (default: rust)
   --agent-binary PATH     Local path to rust binary (defaults to crates/portolan-agent/target/release/portolan-agent-rust)
   --agent-session NAME    Override tmux session name for rust agent runtime
+  --install-node-fallback Also install ~/.local/bin/portolan-agent.js and ws
+                          while keeping Rust as the selected runtime
   --origin VALUE          Origin identifier for rust agent runtime (if different from hostname)
   --plannotator-port PORT Optional plannotator socket port (rust agent only)
   --once                  Run rust agent once (exits after disconnect)
@@ -62,7 +65,7 @@ Prerequisites on remote:
   - jq
   - tmux
   - Claude Code
-  - Node.js + npm (optional for rust agent, but used to keep Node fallback ready)
+  - Node.js + npm (only required for explicit Node fallback installs)
 EOF
 }
 
@@ -106,6 +109,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --agent-session=*)
       RUST_AGENT_SESSION="${1#*=}"
+      shift
+      ;;
+    --install-node-fallback)
+      INSTALL_NODE_FALLBACK=true
       shift
       ;;
     --origin)
@@ -187,6 +194,10 @@ if [ "$AGENT_RUNTIME" != "rust" ]; then
   if [ "$AGENT_ONCE" = true ]; then
     warn "Ignoring --once for node runtime (unsupported)"
   fi
+fi
+
+if [ "$AGENT_RUNTIME" = "node" ]; then
+  INSTALL_NODE_FALLBACK=true
 fi
 
 shell_quote_word() {
@@ -278,7 +289,7 @@ missing=\"\"
 command -v jq >/dev/null 2>&1 || missing=\"\$missing jq\"
 command -v tmux >/dev/null 2>&1 || missing=\"\$missing tmux\"
 [ -d ~/.claude ] || missing=\"\$missing claude-code\"
-if [ \"$AGENT_RUNTIME\" = \"node\" ]; then
+if [ \"$INSTALL_NODE_FALLBACK\" = true ]; then
   command -v node >/dev/null 2>&1 || missing=\"\$missing node\"
 fi
 if [ -n \"\$missing\" ]; then
@@ -296,8 +307,12 @@ log "Copying portolan-hook.sh..."
 scp -q "$REPO_DIR/server/hooks/portolan-hook.sh" "$SSH_HOST:~/.portolan/hooks/"
 ssh "$SSH_HOST" "chmod +x ~/.portolan/hooks/portolan-hook.sh"
 
-log "Copying agent.js..."
-scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/.local/bin/portolan-agent.js"
+if [ "$INSTALL_NODE_FALLBACK" = true ]; then
+  log "Copying Node fallback agent.js..."
+  scp -q "$REPO_DIR/server/agent.js" "$SSH_HOST:~/.local/bin/portolan-agent.js"
+else
+  log "Skipping Node fallback install; pass --install-node-fallback or --agent-runtime node to refresh it"
+fi
 
 if [ "$AGENT_RUNTIME" = "rust" ]; then
   log "Copying Rust agent..."
@@ -324,10 +339,9 @@ else
   warn "shuttle-worker.sh not present; remote Shuttle dispatch will report spawn failures"
 fi
 
-# Install ws dependency for the Node fallback whenever Node is available. Rust
-# Rust agent installs should leave `portolan-agent` restartable without a second
-# install pass.
-if ssh "$SSH_HOST" 'bash -l -c "command -v node >/dev/null 2>&1"'; then
+# Install ws only when Node fallback is explicitly installed. Default Rust
+# installs should not quietly refresh the legacy runtime.
+if [ "$INSTALL_NODE_FALLBACK" = true ]; then
   log "Installing ws package..."
   ssh "$SSH_HOST" 'bash -l -c '\''
 cd ~/.local/bin
@@ -342,8 +356,6 @@ if [ ! -d node_modules/ws ]; then
   npm install ws --save >/dev/null 2>&1
 fi
 '\'''
-elif [ "$AGENT_RUNTIME" = "rust" ]; then
-  warn "Node not found on remote; Rust agent can run, but Node fallback is not startable until Node is installed"
 fi
 
 # Patch Claude settings
@@ -413,10 +425,14 @@ log "Installation complete!"
 log "Verifying..."
 ssh "$SSH_HOST" bash <<VERIFY
 echo "  Hook: \$(ls ~/.portolan/hooks/portolan-hook.sh 2>/dev/null && echo 'OK' || echo 'MISSING')"
-echo "  Agent: \$(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
+if [ "$INSTALL_NODE_FALLBACK" = true ]; then
+  echo "  Node fallback: \$(ls ~/.local/bin/portolan-agent.js 2>/dev/null && echo 'OK' || echo 'MISSING')"
+else
+  echo "  Node fallback: SKIPPED"
+fi
 echo "  Rust Agent: \$(ls ~/.local/bin/portolan-agent-rust 2>/dev/null && echo 'OK' || echo 'NOT PROVIDED')"
 echo "  Shuttle worker: \$(test -x ~/.portolan/bin/shuttle-worker.sh && echo 'OK' || echo 'MISSING')"
-if command -v node >/dev/null 2>&1; then
+if [ "$INSTALL_NODE_FALLBACK" = true ]; then
   echo "  ws: \$(ls ~/.local/bin/node_modules/ws 2>/dev/null && echo 'OK' || echo 'MISSING')"
 fi
 echo "  Settings: \$(grep -q portolan-hook ~/.claude/settings.json 2>/dev/null && echo 'OK' || echo 'NOT CONFIGURED')"
@@ -519,7 +535,8 @@ if [ "$AGENT_RUNTIME" = "rust" ]; then
   echo "       tmux new-session -d -s '$RUST_AGENT_SESSION' \"bash -l -c '$agent_next_cmd'\""
   echo ""
   echo "  3. Rust agent temporarily owns the origin socket while connected."
-  echo "     Node fallback remains available in tmux session '$NODE_AGENT_SESSION':"
+  echo "     Explicit Node rollback uses tmux session '$NODE_AGENT_SESSION' after a fallback install:"
+  echo "       ./scripts/install-remote.sh --agent-runtime node $SSH_HOST"
   echo "       tmux new-session -d -s '$NODE_AGENT_SESSION' \"bash -l -c 'node ~/.local/bin/portolan-agent.js connect --ssh-host=$SSH_HOST'\""
   if [ "$AGENT_ONCE" = true ]; then
     echo "     Start Rust with --once to test a one-shot promotion/demotion cycle."
