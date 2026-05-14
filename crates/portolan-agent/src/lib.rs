@@ -5087,6 +5087,49 @@ malformed
     }
 
     #[test]
+    fn felt_comment_request_defaults_felt_host_from_env() {
+        let _guard = env_lock();
+        let dir = temp_host("felt-comment-default-host");
+        fs::create_dir_all(&dir).unwrap();
+        let previous = env::var_os("PORTOLAN_FELT_HOST");
+        env::set_var("PORTOLAN_FELT_HOST", dir.to_str().unwrap());
+        let payload = kanban_payload(&[
+            ("claimId", json!("claim-1")),
+            ("comment", json!("Use the remote default host")),
+        ]);
+        let mut invocations = Vec::new();
+
+        run_felt_comment_with(&payload, |invocation| {
+            invocations.push(invocation);
+            Ok(())
+        })
+        .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(
+            invocations[0].args,
+            vec![
+                "-C",
+                dir.to_str().unwrap(),
+                "comment",
+                "claim-1",
+                "Use the remote default host"
+            ]
+        );
+        assert_eq!(invocations[0].cwd, dir);
+        assert_eq!(
+            invocations[0].envs.get("LOOM_HOME"),
+            Some(&dir.to_string_lossy().into_owned())
+        );
+
+        match previous {
+            Some(previous) => env::set_var("PORTOLAN_FELT_HOST", previous),
+            None => env::remove_var("PORTOLAN_FELT_HOST"),
+        }
+    }
+
+    #[test]
     fn felt_comment_server_frame_reports_validation_errors() {
         let payload = kanban_payload(&[("claimId", json!("claim-1")), ("comment", json!(""))]);
 
@@ -5099,6 +5142,19 @@ malformed
         assert!(!payload.ok);
         assert_eq!(payload.correlation_id, "abc");
         assert_eq!(payload.error.as_deref(), Some("missing comment"));
+    }
+
+    #[test]
+    fn felt_comment_request_propagates_command_errors() {
+        let payload = kanban_payload(&[
+            ("feltHost", json!("/remote/loom")),
+            ("claimId", json!("claim-1")),
+            ("comment", json!("Needs follow-up")),
+        ]);
+
+        let result = run_felt_comment_with(&payload, |_| Err("felt comment failed".to_string()));
+
+        assert_eq!(result.unwrap_err(), "felt comment failed");
     }
 
     #[test]
