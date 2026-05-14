@@ -12,13 +12,13 @@ APP_NAME="${PORTOLAN_APP_NAME:-}"
 WINDOW_STORE="$APP_DATA_DIR/workspace-windows.json"
 RESTORE_MAIN_LABEL="main"
 RESTORE_MAIN_ROUTE="#city=portolan&mode=kanban"
-RESTORE_MAIN_TITLE="Portolan - Kanban"
+RESTORE_MAIN_TITLE="Kanban · portolan · Portolan"
 RESTORE_MAIN_MAP_ROUTE="#city=portolan"
 RESTORE_MAIN_MAP_TITLE="Portolan"
 RESTORE_MAIN_SEEDED_UPDATED_AT=1700000002
 RESTORE_WORKSPACE_LABEL="workspace-restore-smoke"
 RESTORE_WORKSPACE_ROUTE="#city=portolan&mode=find"
-RESTORE_WORKSPACE_TITLE="Portolan - Find"
+RESTORE_WORKSPACE_TITLE="Find · portolan · Portolan"
 RESTORE_WORKSPACE_SEEDED_UPDATED_AT=1700000001
 BACKUP_PATH=""
 HAD_STORE=0
@@ -256,13 +256,13 @@ if (!Array.isArray(recent)) process.exit(1);
 const expectedByLabel = new Map([
   [process.env.RESTORE_MAIN_LABEL, {
     mode: 'kanban',
-    titleToken: 'Kanban',
+    title: process.env.RESTORE_MAIN_TITLE,
     requireAdvance: false,
     minUpdatedAt: 0,
   }],
   [process.env.RESTORE_WORKSPACE_LABEL, {
     mode: 'find',
-    titleToken: 'Find',
+    title: process.env.RESTORE_WORKSPACE_TITLE,
     requireAdvance: true,
     minUpdatedAt: Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0'),
   }],
@@ -284,8 +284,7 @@ for (const [label, expected] of expectedByLabel) {
   const params = new URLSearchParams(entry.routeUrl.slice(1));
   if (params.get('mode') !== expected.mode) process.exit(1);
   if (!params.get('city')) process.exit(1);
-  if (typeof entry.title !== 'string') process.exit(1);
-  if (!entry.title.includes(expected.titleToken) || !entry.title.includes('Portolan')) process.exit(1);
+  if (entry.title !== expected.title) process.exit(1);
   if (typeof entry.updatedAtUnix !== 'number' || !Number.isFinite(entry.updatedAtUnix)) {
     process.exit(1);
   }
@@ -737,6 +736,14 @@ titles="$(window_titles)"
 echo "[portolan] Observed $window_count Portolan windows"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
 
+if ! wait_for_window_title_presence "$RESTORE_MAIN_TITLE"; then
+  echo "[portolan] main workspace window never exposed the canonical restore title: $RESTORE_MAIN_TITLE" >&2
+  exit 1
+fi
+if ! wait_for_window_title_presence "$RESTORE_WORKSPACE_TITLE"; then
+  echo "[portolan] secondary workspace window never exposed the canonical restore title: $RESTORE_WORKSPACE_TITLE" >&2
+  exit 1
+fi
 main_window_title="$(wait_for_window_title_token 'Kanban')"
 workspace_window_title="$(wait_for_window_title_token 'Find')"
 echo "[portolan] Resolved main workspace window title: $main_window_title"
@@ -812,8 +819,8 @@ window_count="$(wait_for_window_count 4)"
 titles="$(window_titles)"
 echo "[portolan] Observed $window_count Portolan windows after map + workspace duplication"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
-if [[ "$(printf '%s\n' "$titles" | grep -c 'Find')" -lt 2 ]]; then
-  echo "[portolan] expected two Find-flavored workspace windows after duplicate-window chrome" >&2
+if [[ "$(printf '%s\n' "$titles" | grep -Fxc "$RESTORE_WORKSPACE_TITLE")" -lt 2 ]]; then
+  echo "[portolan] expected two exact Find workspace titles after duplicate-window chrome: $RESTORE_WORKSPACE_TITLE" >&2
   exit 1
 fi
 wait_for_duplicate_workspace_store
@@ -951,7 +958,7 @@ function compareWorkspaceWindows(nativePayload) {
     };
   }
 
-  const titleMatches = (title, token) => typeof title === 'string' && title.includes(token) && title.includes('Portolan');
+  const exactTitleMatches = (title, expected) => title === expected;
   const parseRoute = (routeUrl) => {
     if (typeof routeUrl !== 'string' || !routeUrl.startsWith('#')) return null;
     const params = new URLSearchParams(routeUrl.slice(1));
@@ -1026,8 +1033,8 @@ function compareWorkspaceWindows(nativePayload) {
       } else {
         findCity = route.city;
       }
-      if (!titleMatches(workspaceEntry.title, 'Find')) {
-        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].title expected token "Find" + Portolan; got ${JSON.stringify(workspaceEntry.title)}`);
+      if (!exactTitleMatches(workspaceEntry.title, process.env.RESTORE_WORKSPACE_TITLE)) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].title expected ${JSON.stringify(process.env.RESTORE_WORKSPACE_TITLE)}; got ${JSON.stringify(workspaceEntry.title)}`);
       }
       if (workspaceEntry.isMain !== false) {
         mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(process.env.RESTORE_WORKSPACE_LABEL)}].isMain expected false; got ${JSON.stringify(workspaceEntry.isMain)}`);
@@ -1071,8 +1078,8 @@ function compareWorkspaceWindows(nativePayload) {
         mismatches.push(`native_status.workspaceWindows.routes expected 1 duplicated find entry; got ${findDuplicates.length}`);
       } else {
         const duplicate = findDuplicates[0];
-        if (!titleMatches(duplicate.title, 'Find')) {
-          mismatches.push(`native_status.workspaceWindows.duplicateFind.title expected token "Find" + Portolan; got ${JSON.stringify(duplicate.title)}`);
+        if (!exactTitleMatches(duplicate.title, process.env.RESTORE_WORKSPACE_TITLE)) {
+          mismatches.push(`native_status.workspaceWindows.duplicateFind.title expected ${JSON.stringify(process.env.RESTORE_WORKSPACE_TITLE)}; got ${JSON.stringify(duplicate.title)}`);
         }
         if (duplicate.isMain !== false) {
           mismatches.push(`native_status.workspaceWindows.duplicateFind.isMain expected false; got ${JSON.stringify(duplicate.isMain)}`);

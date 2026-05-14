@@ -499,6 +499,23 @@ function openFile(args: OpenFileArgs): void {
   })
 }
 
+function buildNativeNarrativeWindowTitle(args: {
+  cityId?: string
+  filePath?: string
+  fiberSlug?: string
+}): string {
+  const city = args.cityId
+    ? cities.find((candidate) => candidate.id === args.cityId || candidate.name === args.cityId) ?? null
+    : null
+  return buildBrowserTabTitle({
+    city,
+    isOpen: true,
+    mode: 'narrative',
+    filePath: args.filePath,
+    fiberSlug: args.fiberSlug,
+  })
+}
+
 async function openFileInNewTab(args: OpenFileArgs): Promise<void> {
   const url = buildVellumFileUrl({
     baseUrl: window.location.href,
@@ -509,7 +526,10 @@ async function openFileInNewTab(args: OpenFileArgs): Promise<void> {
   const routeUrl = new URL(url).hash
   const nativeWindow = await openNativeWorkspaceWindow({
     routeUrl,
-    title: `Portolan - ${args.path.split('/').pop() ?? args.path}`,
+    title: buildNativeNarrativeWindowTitle({
+      cityId: args.cityId,
+      filePath: args.path,
+    }),
   })
   if (nativeWindow) return
 
@@ -525,7 +545,10 @@ async function openFiberInNewWindow(cityId: string, slug: string): Promise<void>
   const routeUrl = new URL(url).hash
   const nativeWindow = await openNativeWorkspaceWindow({
     routeUrl,
-    title: `Portolan - ${slug.split('/').pop() ?? slug}`,
+    title: buildNativeNarrativeWindowTitle({
+      cityId,
+      fiberSlug: slug,
+    }),
   })
   if (nativeWindow) return
 

@@ -93,12 +93,12 @@ describe('openNativeWorkspaceWindow', () => {
 
     await expect(openNativeWorkspaceWindow({
       routeUrl: '#city=portolan&mode=narrative&file=%2Ftmp%2Fnote.md',
-      title: 'Portolan - note.md',
+      title: 'note.md · portolan · Portolan',
     })).resolves.toBe('workspace-1')
 
     expect(invoke).toHaveBeenCalledWith('open_workspace_window', {
       routeUrl: '#city=portolan&mode=narrative&file=%2Ftmp%2Fnote.md',
-      title: 'Portolan - note.md',
+      title: 'note.md · portolan · Portolan',
     })
   })
 })
@@ -131,12 +131,12 @@ describe('native workspace window state commands', () => {
 
     await expect(recordNativeWorkspaceWindowRoute({
       routeUrl: '#city=portolan&mode=find',
-      title: 'Portolan - Find',
+      title: 'Find · portolan · Portolan',
     })).resolves.toBe(true)
 
     expect(invoke).toHaveBeenCalledWith('record_workspace_window_route', {
       routeUrl: '#city=portolan&mode=find',
-      title: 'Portolan - Find',
+      title: 'Find · portolan · Portolan',
     })
   })
 

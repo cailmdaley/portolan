@@ -23,6 +23,15 @@ describe('BrowserTabIdentity', () => {
     })).toBe('main.ts · portolan · Portolan')
   })
 
+  it('uses the fiber leaf for narrative fibers', () => {
+    expect(buildBrowserTabTitle({
+      city: { id: 'portolan', name: 'portolan' },
+      isOpen: true,
+      mode: 'narrative',
+      fiberSlug: 'constitution-native-desktop-portolan/finding-native-window-title-sync',
+    })).toBe('finding-native-window-title-sync · portolan · Portolan')
+  })
+
   it('names global tab surfaces without a focused city', () => {
     expect(buildBrowserTabTitle({
       isOpen: true,
