@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs, io,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
@@ -549,6 +549,55 @@ fn write_smoke_native_status(app: &tauri::AppHandle) {
     let _ = fs::write(path, body);
 }
 
+fn workspace_window_title(title: Option<&str>) -> String {
+    title
+        .map(sanitize_window_title)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Portolan".to_string())
+}
+
+fn build_workspace_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    route: &str,
+    window_title: &str,
+) -> Result<(), String> {
+    tauri::WebviewWindowBuilder::new(
+        app,
+        label.to_string(),
+        tauri::WebviewUrl::App(PathBuf::from(route)),
+    )
+    .title(window_title)
+    .inner_size(1200.0, 860.0)
+    .min_inner_size(960.0, 640.0)
+    .resizable(true)
+    .build()
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+fn navigate_workspace_window(
+    window: &tauri::WebviewWindow,
+    route: &str,
+    window_title: &str,
+    focus: bool,
+) -> Result<(), String> {
+    let route_json = serde_json::to_string(route).map_err(|error| error.to_string())?;
+    window
+        .eval(format!("window.location.replace({route_json})"))
+        .map_err(|error| error.to_string())?;
+    if !window_title.is_empty() {
+        window
+            .set_title(window_title)
+            .map_err(|error| error.to_string())?;
+    }
+    if focus {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn open_workspace_window(
     app: tauri::AppHandle,
@@ -558,23 +607,9 @@ async fn open_workspace_window(
 ) -> Result<String, String> {
     let route = workspace_route_path(&route_url)?;
     let label = format!("workspace-{}", unix_now_millis());
-    let window_title = title
-        .as_deref()
-        .map(sanitize_window_title)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "Portolan".to_string());
+    let window_title = workspace_window_title(title.as_deref());
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        label.clone(),
-        tauri::WebviewUrl::App(PathBuf::from(route)),
-    )
-    .title(&window_title)
-    .inner_size(1200.0, 860.0)
-    .min_inner_size(960.0, 640.0)
-    .resizable(true)
-    .build()
-    .map_err(|error| error.to_string())?;
+    build_workspace_window(&app, &label, &route, &window_title)?;
 
     state
         .windows
@@ -593,11 +628,7 @@ fn record_workspace_window_route(
     title: Option<String>,
 ) -> Result<(), String> {
     let _ = workspace_route_path(&route_url)?;
-    let window_title = title
-        .as_deref()
-        .map(sanitize_window_title)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "Portolan".to_string());
+    let window_title = workspace_window_title(title.as_deref());
     state
         .windows
         .lock()
@@ -638,27 +669,109 @@ fn recent_workspace_records(state: &NativeState) -> Vec<WorkspaceWindowRecord> {
         .recent()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkspaceRestorePlan {
+    Create {
+        label: String,
+        route: String,
+        title: String,
+    },
+    Reuse {
+        label: String,
+        route: String,
+        title: String,
+    },
+    Skip {
+        label: String,
+        error: String,
+    },
+}
+
+fn plan_workspace_restores(
+    existing_labels: impl IntoIterator<Item = String>,
+    recent: Vec<WorkspaceWindowRecord>,
+) -> Vec<WorkspaceRestorePlan> {
+    let mut seen = existing_labels.into_iter().collect::<HashSet<_>>();
+    recent
+        .into_iter()
+        .map(|entry| {
+            let title = workspace_window_title(Some(&entry.title));
+            match workspace_route_path(&entry.route_url) {
+                Ok(route) if seen.insert(entry.label.clone()) => WorkspaceRestorePlan::Create {
+                    label: entry.label,
+                    route,
+                    title,
+                },
+                Ok(route) => WorkspaceRestorePlan::Reuse {
+                    label: entry.label,
+                    route,
+                    title,
+                },
+                Err(error) => WorkspaceRestorePlan::Skip {
+                    label: entry.label,
+                    error,
+                },
+            }
+        })
+        .collect()
+}
+
 fn restore_workspace_records(
     app: &tauri::AppHandle,
     recent: Vec<WorkspaceWindowRecord>,
 ) -> Result<Vec<String>, String> {
+    let existing_labels = app
+        .webview_windows()
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
     let mut labels = Vec::new();
-    for (index, entry) in recent.into_iter().enumerate() {
-        let label = format!("workspace-restore-{}-{index}", unix_now_millis());
-        tauri::WebviewWindowBuilder::new(
-            app,
-            label.clone(),
-            tauri::WebviewUrl::App(PathBuf::from(workspace_route_path(&entry.route_url)?)),
-        )
-        .title(entry.title.clone())
-        .inner_size(1200.0, 860.0)
-        .min_inner_size(960.0, 640.0)
-        .resizable(true)
-        .build()
-        .map_err(|error| error.to_string())?;
-        labels.push(label);
+    let mut errors = Vec::new();
+
+    for plan in plan_workspace_restores(existing_labels, recent) {
+        match plan {
+            WorkspaceRestorePlan::Create {
+                label,
+                route,
+                title,
+            } => match build_workspace_window(app, &label, &route, &title) {
+                Ok(()) => labels.push(label),
+                Err(error) => {
+                    log::warn!("failed to create restored workspace window {label}: {error}");
+                    errors.push(format!("{label}: {error}"));
+                }
+            },
+            WorkspaceRestorePlan::Reuse {
+                label,
+                route,
+                title,
+            } => {
+                let Some(window) = app.get_webview_window(&label) else {
+                    let error = "window disappeared before restore".to_string();
+                    log::warn!("failed to reuse restored workspace window {label}: {error}");
+                    errors.push(format!("{label}: {error}"));
+                    continue;
+                };
+                match navigate_workspace_window(&window, &route, &title, true) {
+                    Ok(()) => labels.push(label),
+                    Err(error) => {
+                        log::warn!("failed to reuse restored workspace window {label}: {error}");
+                        errors.push(format!("{label}: {error}"));
+                    }
+                }
+            }
+            WorkspaceRestorePlan::Skip { label, error } => {
+                log::warn!("skipping restored workspace window {label}: {error}");
+                errors.push(format!("{label}: {error}"));
+            }
+        }
     }
-    Ok(labels)
+
+    if labels.is_empty() && !errors.is_empty() {
+        Err(errors.join("; "))
+    } else {
+        Ok(labels)
+    }
 }
 
 fn startup_workspace_records(recent: Vec<WorkspaceWindowRecord>) -> Vec<WorkspaceWindowRecord> {
@@ -709,6 +822,22 @@ fn workspace_windows_status(recent: Vec<WorkspaceWindowRecord>) -> WorkspaceWind
     }
 }
 
+fn restore_main_workspace_window(
+    app: &tauri::AppHandle,
+    entry: &WorkspaceWindowRecord,
+) -> Result<(), String> {
+    let route = workspace_route_path(&entry.route_url)?;
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Err("main window not found".to_string());
+    };
+    navigate_workspace_window(
+        &window,
+        &route,
+        &workspace_window_title(Some(&entry.title)),
+        false,
+    )
+}
+
 fn restore_startup_main_window_record(
     app: &tauri::AppHandle,
     recent: &[WorkspaceWindowRecord],
@@ -716,21 +845,7 @@ fn restore_startup_main_window_record(
     let Some(entry) = startup_main_window_record(recent) else {
         return Ok(());
     };
-    let route = workspace_route_path(&entry.route_url)?;
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
-        return Err("main window not found".to_string());
-    };
-    let route_json = serde_json::to_string(&route).map_err(|error| error.to_string())?;
-    window
-        .eval(format!("window.location.replace({route_json})"))
-        .map_err(|error| error.to_string())?;
-    let title = sanitize_window_title(&entry.title);
-    if !title.is_empty() {
-        window
-            .set_title(&title)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    restore_main_workspace_window(app, &entry)
 }
 
 fn restore_startup_workspace_records(
@@ -745,8 +860,34 @@ fn restore_recent_workspace_records(
     app: &tauri::AppHandle,
     recent: Vec<WorkspaceWindowRecord>,
 ) -> Result<Vec<String>, String> {
-    restore_startup_main_window_record(app, &recent)?;
-    restore_startup_workspace_records(app, recent)
+    let (main, workspaces) = split_main_and_workspace_records(recent);
+    let mut restored_main = false;
+    let mut errors = Vec::new();
+
+    if let Some(entry) = main {
+        match restore_main_workspace_window(app, &entry) {
+            Ok(()) => restored_main = true,
+            Err(error) => {
+                log::warn!("failed to restore main workspace window: {error}");
+                errors.push(format!("main: {error}"));
+            }
+        }
+    }
+
+    match restore_workspace_records(app, workspaces) {
+        Ok(labels) if labels.is_empty() && !restored_main && !errors.is_empty() => {
+            Err(errors.join("; "))
+        }
+        Ok(labels) => Ok(labels),
+        Err(error) if restored_main => {
+            log::warn!("workspace restore failed after main-window success: {error}");
+            Ok(Vec::new())
+        }
+        Err(error) => {
+            errors.push(error);
+            Err(errors.join("; "))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1158,6 +1299,79 @@ mod tests {
         assert!(!status.routes[0].is_main);
         assert_eq!(status.routes[0].route_url, "#city=portolan&mode=find");
         assert!(status.routes[1].is_main);
+    }
+
+    #[test]
+    fn workspace_restore_plan_reuses_open_labels_and_preserves_saved_new_labels() {
+        let plan = plan_workspace_restores(
+            vec!["workspace-1".to_string()],
+            vec![
+                WorkspaceWindowRecord {
+                    label: "workspace-1".to_string(),
+                    route_url: "#city=portolan&mode=find".to_string(),
+                    title: "Portolan - Find".to_string(),
+                    updated_at_unix: 2,
+                },
+                WorkspaceWindowRecord {
+                    label: "workspace-2".to_string(),
+                    route_url: "#city=portolan&mode=kanban".to_string(),
+                    title: "Portolan - Kanban".to_string(),
+                    updated_at_unix: 1,
+                },
+            ],
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                WorkspaceRestorePlan::Reuse {
+                    label: "workspace-1".to_string(),
+                    route: "index.html#city=portolan&mode=find".to_string(),
+                    title: "Portolan - Find".to_string(),
+                },
+                WorkspaceRestorePlan::Create {
+                    label: "workspace-2".to_string(),
+                    route: "index.html#city=portolan&mode=kanban".to_string(),
+                    title: "Portolan - Kanban".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_restore_plan_skips_invalid_routes_without_blocking_following_entries() {
+        let plan = plan_workspace_restores(
+            Vec::<String>::new(),
+            vec![
+                WorkspaceWindowRecord {
+                    label: "workspace-bad".to_string(),
+                    route_url: "https://example.com/#city=portolan".to_string(),
+                    title: "Bad".to_string(),
+                    updated_at_unix: 2,
+                },
+                WorkspaceWindowRecord {
+                    label: "workspace-good".to_string(),
+                    route_url: "#city=portolan&mode=find".to_string(),
+                    title: "Portolan - Find".to_string(),
+                    updated_at_unix: 1,
+                },
+            ],
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                WorkspaceRestorePlan::Skip {
+                    label: "workspace-bad".to_string(),
+                    error: "workspace windows must use app-local routes".to_string(),
+                },
+                WorkspaceRestorePlan::Create {
+                    label: "workspace-good".to_string(),
+                    route: "index.html#city=portolan&mode=find".to_string(),
+                    title: "Portolan - Find".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
