@@ -505,6 +505,57 @@ end tell
 OSA
 }
 
+wait_for_window_title_presence() {
+  local title="$1"
+  local deadline=$((SECONDS + 30))
+  local titles
+  while (( SECONDS < deadline )); do
+    titles="$(window_titles)"
+    if printf '%s\n' "$titles" | grep -Fqx "$title"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[portolan] timed out waiting for window title: $title" >&2
+  printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /' >&2
+  return 1
+}
+
+wait_for_window_title_token() {
+  local token="$1"
+  local deadline=$((SECONDS + 30))
+  local titles
+  local match
+  while (( SECONDS < deadline )); do
+    titles="$(window_titles)"
+    match="$(printf '%s\n' "$titles" | grep -F "$token" | head -n 1 || true)"
+    if [[ -n "$match" ]]; then
+      printf '%s\n' "$match"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[portolan] timed out waiting for a window title containing: $token" >&2
+  printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /' >&2
+  return 1
+}
+
+wait_for_window_title_token_absence() {
+  local token="$1"
+  local deadline=$((SECONDS + 30))
+  local titles
+  while (( SECONDS < deadline )); do
+    titles="$(window_titles)"
+    if ! printf '%s\n' "$titles" | grep -Fq "$token"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[portolan] timed out waiting for stale window-title token to disappear: $token" >&2
+  printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /' >&2
+  return 1
+}
+
 focus_window_title() {
   local title="$1"
   osascript <<OSA >/dev/null 2>&1
@@ -686,14 +737,10 @@ titles="$(window_titles)"
 echo "[portolan] Observed $window_count Portolan windows"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
 
-if ! printf '%s\n' "$titles" | grep -F "$RESTORE_MAIN_TITLE" >/dev/null; then
-  echo "[portolan] missing restored main window title: $RESTORE_MAIN_TITLE" >&2
-  exit 1
-fi
-if ! printf '%s\n' "$titles" | grep -F "$RESTORE_WORKSPACE_TITLE" >/dev/null; then
-  echo "[portolan] missing restored workspace window title: $RESTORE_WORKSPACE_TITLE" >&2
-  exit 1
-fi
+main_window_title="$(wait_for_window_title_token 'Kanban')"
+workspace_window_title="$(wait_for_window_title_token 'Find')"
+echo "[portolan] Resolved main workspace window title: $main_window_title"
+echo "[portolan] Resolved secondary workspace window title: $workspace_window_title"
 
 deadline=$((SECONDS + 30))
 debug_runtime=""
@@ -712,10 +759,11 @@ fi
 collect_frontend_debug_runtime || true
 NATIVE_STATUS_JSON="$(wait_for_native_status)"
 wait_for_workspace_store_rewrite
+main_window_title="$(wait_for_window_title_token 'Kanban')"
 
-echo "[portolan] Closing ${RESTORE_MAIN_TITLE} back to the map via close chrome"
-if ! click_close_workspace_button "$RESTORE_MAIN_TITLE"; then
-  echo "[portolan] failed to click close chrome in restored main workspace window: $RESTORE_MAIN_TITLE" >&2
+echo "[portolan] Closing ${main_window_title} back to the map via close chrome"
+if ! click_close_workspace_button "$main_window_title"; then
+  echo "[portolan] failed to click close chrome in restored main workspace window: $main_window_title" >&2
   exit 1
 fi
 wait_for_main_map_workspace_store
@@ -724,6 +772,14 @@ NATIVE_STATUS_JSON="$(wait_for_native_status_change "$NATIVE_STATUS_JSON")"
 titles="$(window_titles)"
 echo "[portolan] Observed Portolan windows after closing the main workspace"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
+if ! wait_for_window_title_presence "$RESTORE_MAIN_MAP_TITLE"; then
+  echo "[portolan] main window title never updated to the post-close map title: $RESTORE_MAIN_MAP_TITLE" >&2
+  exit 1
+fi
+if ! wait_for_window_title_token_absence 'Kanban'; then
+  echo "[portolan] stale Kanban-flavored window title persisted after the main workspace closed back to the map" >&2
+  exit 1
+fi
 
 echo "[portolan] Duplicating the frontmost map route via Cmd+N"
 if ! duplicate_focused_window_via_shortcut; then
@@ -734,16 +790,21 @@ window_count="$(wait_for_window_count 3)"
 titles="$(window_titles)"
 echo "[portolan] Observed $window_count Portolan windows after duplicating the map route"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
+if [[ "$(printf '%s\n' "$titles" | grep -Fxc "$RESTORE_MAIN_MAP_TITLE")" -lt 2 ]]; then
+  echo "[portolan] expected both map windows to expose the map title after Cmd+N: $RESTORE_MAIN_MAP_TITLE" >&2
+  exit 1
+fi
 wait_for_map_duplicate_workspace_store
 NATIVE_STATUS_JSON="$(wait_for_native_status_change "$NATIVE_STATUS_JSON")"
 
-echo "[portolan] Duplicating ${RESTORE_WORKSPACE_TITLE} via duplicate-window chrome"
-if ! focus_window_title "$RESTORE_WORKSPACE_TITLE"; then
-  echo "[portolan] failed to focus restored workspace window: $RESTORE_WORKSPACE_TITLE" >&2
+workspace_window_title="$(wait_for_window_title_token 'Find')"
+echo "[portolan] Duplicating ${workspace_window_title} via duplicate-window chrome"
+if ! focus_window_title "$workspace_window_title"; then
+  echo "[portolan] failed to focus restored workspace window: $workspace_window_title" >&2
   exit 1
 fi
-if ! click_duplicate_workspace_button "$RESTORE_WORKSPACE_TITLE"; then
-  echo "[portolan] failed to click duplicate-window button in ${RESTORE_WORKSPACE_TITLE}" >&2
+if ! click_duplicate_workspace_button "$workspace_window_title"; then
+  echo "[portolan] failed to click duplicate-window button in ${workspace_window_title}" >&2
   exit 1
 fi
 

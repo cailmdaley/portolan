@@ -639,6 +639,18 @@ fn build_workspace_window(
     .map_err(|error| error.to_string())
 }
 
+fn sync_workspace_window_title(
+    window: &tauri::WebviewWindow,
+    window_title: &str,
+) -> Result<(), String> {
+    if window_title.is_empty() {
+        return Ok(());
+    }
+    window
+        .set_title(window_title)
+        .map_err(|error| error.to_string())
+}
+
 fn navigate_workspace_window(
     window: &tauri::WebviewWindow,
     route: &str,
@@ -649,11 +661,7 @@ fn navigate_workspace_window(
     window
         .eval(format!("window.location.replace({route_json})"))
         .map_err(|error| error.to_string())?;
-    if !window_title.is_empty() {
-        window
-            .set_title(window_title)
-            .map_err(|error| error.to_string())?;
-    }
+    sync_workspace_window_title(window, window_title)?;
     if focus {
         let _ = window.show();
         let _ = window.set_focus();
@@ -684,7 +692,7 @@ fn duplicate_workspace_window(
     state: tauri::State<'_, NativeState>,
 ) -> Result<String, String> {
     let app = window.app_handle();
-    duplicate_workspace_record(&app, &state, window.label())
+    duplicate_workspace_record(app, &state, window.label())
 }
 
 #[tauri::command]
@@ -696,8 +704,9 @@ fn record_workspace_window_route(
 ) -> Result<(), String> {
     let _ = workspace_route_path(&route_url)?;
     let window_title = workspace_window_title(title.as_deref());
+    sync_workspace_window_title(&window, &window_title)?;
     let app = window.app_handle();
-    record_workspace_window_state(&app, &state, window.label(), route_url, window_title);
+    record_workspace_window_state(app, &state, window.label(), route_url, window_title);
     Ok(())
 }
 
