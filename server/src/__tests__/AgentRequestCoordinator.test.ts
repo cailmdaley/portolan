@@ -47,21 +47,45 @@ describe('AgentRequestCoordinator', () => {
   });
 
   it('rejects when the origin is unregistered', async () => {
-    coord = new AgentRequestCoordinator(originManager);
+    const now = 10_000;
+    coord = new AgentRequestCoordinator(originManager, { now: () => now });
     await expect(coord.send('remote-nonexistent', 'noop', {})).rejects.toThrow(
       /unknown origin/,
     );
+    expect(coord.getDiagnostics().recent).toEqual([
+      expect.objectContaining({
+        correlationId: '',
+        originId: 'remote-nonexistent',
+        type: 'noop',
+        status: 'unavailable',
+        durationMs: 0,
+        completedAt: 10_000,
+        error: 'unknown origin: remote-nonexistent',
+      }),
+    ]);
   });
 
   it('rejects when the origin has no connected agent', async () => {
     // Register an agent then disconnect — origin exists but agentSockets is empty.
+    const now = 20_000;
     const { ws } = makeStubWs();
     originManager.registerAgent('cineca', ws);
     originManager.handleDisconnect(ws);
-    coord = new AgentRequestCoordinator(originManager);
+    coord = new AgentRequestCoordinator(originManager, { now: () => now });
     await expect(coord.send('remote-cineca', 'noop', {})).rejects.toThrow(
       /no connected agent/,
     );
+    expect(coord.getDiagnostics().recent).toEqual([
+      expect.objectContaining({
+        correlationId: '',
+        originId: 'remote-cineca',
+        type: 'noop',
+        status: 'unavailable',
+        durationMs: 0,
+        completedAt: 20_000,
+        error: 'origin remote-cineca has no connected agent',
+      }),
+    ]);
   });
 
   it('sends a correlation-tagged frame to the agent ws', async () => {

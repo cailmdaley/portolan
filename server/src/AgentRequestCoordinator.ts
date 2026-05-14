@@ -38,7 +38,13 @@ interface PendingRequest {
   timeoutHandle: NodeJS.Timeout;
 }
 
-export type AgentRequestCompletionStatus = 'ok' | 'error' | 'timeout' | 'disconnect' | 'send_error';
+export type AgentRequestCompletionStatus =
+  | 'ok'
+  | 'error'
+  | 'timeout'
+  | 'disconnect'
+  | 'send_error'
+  | 'unavailable';
 
 export interface AgentRequestCompletionDiagnostic {
   correlationId: string;
@@ -114,12 +120,16 @@ export class AgentRequestCoordinator {
     return new Promise<T>((resolve, reject) => {
       const origin = this.originManager.getOrigin(originId);
       if (!origin) {
-        reject(new Error(`unknown origin: ${originId}`));
+        const message = `unknown origin: ${originId}`;
+        this.recordSyntheticCompletion(originId, type, 'unavailable', message);
+        reject(new Error(message));
         return;
       }
       const ws = [...origin.agentSockets].find(s => s.readyState === WebSocket.OPEN);
       if (!ws) {
-        reject(new Error(`origin ${originId} has no connected agent`));
+        const message = `origin ${originId} has no connected agent`;
+        this.recordSyntheticCompletion(originId, type, 'unavailable', message);
+        reject(new Error(message));
         return;
       }
       const correlationId = randomUUID();
@@ -315,6 +325,27 @@ export class AgentRequestCoordinator {
       durationMs: Math.max(0, completedAt - entry.startedAt),
       completedAt,
       ...(error ? { error } : {}),
+    });
+    if (this.recentCompletions.length > this.maxRecentCompletions) {
+      this.recentCompletions.length = this.maxRecentCompletions;
+    }
+  }
+
+  private recordSyntheticCompletion(
+    originId: string,
+    type: string,
+    status: AgentRequestCompletionStatus,
+    error: string,
+  ): void {
+    const completedAt = this.now();
+    this.recentCompletions.unshift({
+      correlationId: '',
+      originId,
+      type,
+      status,
+      durationMs: 0,
+      completedAt,
+      error,
     });
     if (this.recentCompletions.length > this.maxRecentCompletions) {
       this.recentCompletions.length = this.maxRecentCompletions;
