@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AnnotationPersistence, Annotation } from '../AnnotationPersistence.js';
 import { HttpApi } from '../HttpApi.js';
 import { shellEscape } from '../ShellPathUtils.js';
+import { TmuxSessionMessenger } from '../TmuxSessionMessenger.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -65,6 +66,7 @@ describe('HttpApi — claims annotations', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (existsSync(TEST_DIR)) {
       rmSync(TEST_DIR, { recursive: true, force: true });
     }
@@ -186,6 +188,53 @@ describe('HttpApi — claims annotations', () => {
       tmuxSession: 'remote-worker',
       message: expect.stringContaining('Tighten this paragraph.'),
     }));
+  });
+
+  it('does not SSH-fallback after an ambiguous remote agent tmux disconnect', async () => {
+    const remoteTmuxMessageExecutor = vi.fn(async () => {
+      throw new Error('agent for remote-candide disconnected');
+    });
+    const sshFallback = vi.spyOn(TmuxSessionMessenger.prototype, 'send');
+    const remoteCityLookup = makeMultiCityLookup([
+      { id: 'remote-city', path: '/remote/project', originId: 'remote-candide' },
+    ]);
+    const remoteOriginLookup = {
+      getOrigin: (originId: string) => originId === 'remote-candide'
+        ? { id: originId, type: 'remote', name: 'candide', sshHost: 'candide' }
+        : null,
+    };
+    const remoteApi = new HttpApi(
+      remoteCityLookup as any,
+      remoteOriginLookup as any,
+      stubPersistenceLookup as any,
+      { remoteTmuxMessageExecutor },
+    );
+    remoteApi.setAnnotationPersistence(persistence);
+    remoteApi.setSessionLookup({
+      findSession: (sessionId: string) => sessionId === 'worker-remote'
+        ? {
+          id: 'worker-remote',
+          tmuxSession: 'remote-worker',
+          cwd: '/remote/project',
+          originId: 'remote-candide',
+          name: 'remote-worker',
+          status: 'idle',
+        }
+        : undefined,
+      getAllSessions: () => [],
+      findLocalByTmuxSession: () => undefined,
+    } as any);
+
+    const res = await httpRequest(remoteApi, 'POST', '/send-annotations', {
+      workerId: 'worker-remote',
+      originId: 'remote-candide',
+      filePath: '/remote/project/notes.md',
+      annotations: [{ comment: 'Tighten this paragraph.', originalText: 'draft text', line: 4 }],
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.data.error).toContain('agent for remote-candide disconnected');
+    expect(sshFallback).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────

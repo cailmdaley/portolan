@@ -26,6 +26,11 @@ type JsonBodyParser = <T>(req: IncomingMessage, res: ServerResponse) => Promise<
 type JsonErrorSender = (res: ServerResponse, status: number, error: string) => void;
 type JsonSuccessSender = (res: ServerResponse, data: Record<string, unknown>) => void;
 
+function isAmbiguousRemoteTmuxDeliveryError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /disconnected|didn't acknowledge|did not acknowledge|timeout|timed out/i.test(message);
+}
+
 /**
  * Convert an absolute fiber file path to its canonical slug, or return the
  * input unchanged when the path doesn't live under any `.felt/` directory.
@@ -478,6 +483,9 @@ export class HttpApiAnnotations {
           });
         } catch (error: any) {
           if (!sshHost) throw error;
+          if (isAmbiguousRemoteTmuxDeliveryError(error)) {
+            throw error;
+          }
           console.warn(
             '[SendAnnotations] remote tmux message via agent failed; falling back to SSH',
             error?.message || error,

@@ -2667,9 +2667,9 @@ fn send_tmux_message(payload: &TmuxMessageRequestPayload) -> Result<(), String> 
         .spawn()
         .map_err(|error| format!("failed to run tmux load-buffer: {error}"))?;
     {
-        let stdin = load
+        let mut stdin = load
             .stdin
-            .as_mut()
+            .take()
             .ok_or_else(|| "tmux load-buffer stdin unavailable".to_string())?;
         stdin
             .write_all(payload.message.as_bytes())
