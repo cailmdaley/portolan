@@ -13,6 +13,7 @@ HAD_APP_DATA_DIR=0
 STARTED_APP=0
 PREEXISTING_BACKEND=0
 ALLOW_EXTERNAL_BACKEND=0
+STRICT_APP_OWNED=0
 
 usage() {
   cat <<'EOF'
@@ -110,6 +111,17 @@ OSA
   return 1
 }
 
+wait_for_backend_shutdown() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if ! curl -fsS --max-time 1 http://127.0.0.1:4004/debug-runtime >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 window_titles() {
   osascript <<'OSA' 2>/dev/null || true
 tell application "System Events"
@@ -144,6 +156,9 @@ if curl -fsS --max-time 1 http://127.0.0.1:4004/debug-runtime >/dev/null 2>&1; t
   echo "[portolan] Existing backend detected on :4004; validating GUI restore against the external backend by explicit opt-in"
 else
   echo "[portolan] No backend detected on :4004; app is expected to supervise the bundled backend"
+  if [[ "$ALLOW_EXTERNAL_BACKEND" != "1" ]]; then
+    STRICT_APP_OWNED=1
+  fi
 fi
 
 if [[ -d "$APP_DATA_DIR" ]]; then
@@ -229,6 +244,16 @@ for (const [key, value] of Object.entries(expected)) {
   }
 }
 NODE
+fi
+
+if [[ "$STRICT_APP_OWNED" == "1" ]]; then
+  echo "[portolan] Verifying app-owned backend shutdown after quit"
+  osascript_quit
+  if ! wait_for_backend_shutdown; then
+    echo "[portolan] backend on :4004 still responding after app quit" >&2
+    exit 1
+  fi
+  echo "[portolan] App-owned backend stopped cleanly after quit"
 fi
 
 echo "[portolan] Built app launch/restore smoke passed"
