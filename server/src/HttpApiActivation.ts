@@ -209,6 +209,10 @@ export class HttpApiActivation {
         return;
       }
 
+      if (runtime === 'node') {
+        await assertNodeFallbackInstalled(sshHost, this.execFileFn);
+      }
+
       if (replacesRuntime) {
         await killRemoteAgentSessions(sshHost, replacedRuntimeSessions, this.execFileFn);
       }
@@ -295,6 +299,27 @@ async function killRemoteAgentSessions(
     )).join('; ')],
     { timeout: 60_000 },
   );
+}
+
+async function assertNodeFallbackInstalled(
+  sshHost: string,
+  execFileFn: typeof execFileAsync,
+): Promise<void> {
+  try {
+    await execFileFn(
+      'ssh',
+      [
+        '-T',
+        sshHost,
+        'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+      ],
+      { timeout: 60_000 },
+    );
+  } catch {
+    throw new Error(
+      `${sshHost}: Node fallback is not installed; run ./scripts/install-remote.sh --agent-runtime node ${sshHost} before activating agentRuntime=node`,
+    );
+  }
 }
 
 function delay(ms: number): Promise<void> {

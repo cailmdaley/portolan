@@ -63,6 +63,7 @@ describe('HttpApiActivation', () => {
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '/usr/bin/node\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
     const remoteCity = city();
@@ -81,7 +82,7 @@ describe('HttpApiActivation', () => {
     );
 
     expect(reconnectTunnelFn).not.toHaveBeenCalled();
-    expect(execFileFn).toHaveBeenCalledTimes(4);
+    expect(execFileFn).toHaveBeenCalledTimes(5);
     expect(execFileFn.mock.calls[0]?.[1]).toEqual([
       '-T',
       sshHost,
@@ -95,12 +96,17 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       sshHost,
+      'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+    ]);
+    expect(execFileFn.mock.calls[3]?.[1]).toEqual([
+      '-T',
+      sshHost,
       [
         `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null || true`,
         `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
       ].join('; '),
     ]);
-    const startArgs = execFileFn.mock.calls[3]?.[1] as string[];
+    const startArgs = execFileFn.mock.calls[4]?.[1] as string[];
     const expectedStartCommand = `node ~/.local/bin/portolan-agent.js connect --ssh-host=${shellEscape(sshHost)}`;
     const expectedCommand = `tmux new-session -d -s ${shellEscape('portolan-agent')} ${shellEscape(`bash -l -c ${shellEscape(expectedStartCommand)}`)}`;
     expect(startArgs[0]).toBe('-T');
@@ -142,6 +148,7 @@ describe('HttpApiActivation', () => {
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
       .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '/usr/bin/node\n', stderr: '' })
       .mockResolvedValueOnce({ stdout: '', stderr: '' });
     const reconnectTunnelFn = vi.fn().mockResolvedValue(undefined);
     const remoteCity = city();
@@ -472,6 +479,11 @@ describe('HttpApiActivation', () => {
     expect(execFileFn.mock.calls[2]?.[1]).toEqual([
       '-T',
       'candide',
+      'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+    ]);
+    expect(execFileFn.mock.calls[3]?.[1]).toEqual([
+      '-T',
+      'candide',
       [
         `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null || true`,
         `tmux kill-session -t ${exactTmuxTarget('portolan-agent-rust-preview')} 2>/dev/null || true`,
@@ -483,6 +495,40 @@ describe('HttpApiActivation', () => {
         status: 'started',
         message: 'node agent started on candide (portolan-agent)',
         preferredRuntime: 'node',
+      },
+    });
+  });
+
+  it('does not stop a Rust session when explicit Node fallback is missing', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockRejectedValueOnce(new Error('missing node fallback'));
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+      runtimePreferences: runtimePreferences({ candide: 'rust' }),
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(
+      new URL('http://localhost/activate-city?cityId=remote-city&agentRuntime=node'),
+      res,
+    );
+
+    expect(execFileFn).toHaveBeenCalledTimes(3);
+    expect(execFileFn.mock.calls[2]?.[1]).toEqual([
+      '-T',
+      'candide',
+      'test -f ~/.local/bin/portolan-agent.js && command -v node >/dev/null',
+    ]);
+    expect(result()).toEqual({
+      status: 500,
+      body: {
+        error: 'Failed to start agent: candide: Node fallback is not installed; run ./scripts/install-remote.sh --agent-runtime node candide before activating agentRuntime=node',
       },
     });
   });
