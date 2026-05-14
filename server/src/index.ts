@@ -37,6 +37,7 @@ import { AgentRequestCoordinator } from './AgentRequestCoordinator.js';
 import { publishShuttleFeltStores } from './ShuttleFeltStoresPublisher.js';
 import { visibleRemoteCityPaths, visibleRemoteSnapshots } from './RemoteSnapshotPolicy.js';
 import { RemoteTerminalSubscriptions } from './RemoteTerminalSubscriptions.js';
+import { AgentAwareMeetingMessenger } from './AgentAwareMeetingMessenger.js';
 
 // ============================================================================
 // Constants
@@ -65,6 +66,14 @@ const fiberTreeSnapshotStore = new FiberTreeSnapshotStore();
 const agentRequestCoordinator = new AgentRequestCoordinator(originManager);
 const remoteAgentRuntimePreferences = new RemoteAgentRuntimePreferenceStore();
 const meetingBridge = new MeetingBridge({
+  messenger: new AgentAwareMeetingMessenger(async ({ originId, tmuxSession, message, pressEnter }) => {
+    await agentRequestCoordinator.send(
+      originId,
+      'tmux-message',
+      { tmuxSession, message, pressEnter: pressEnter ?? false },
+      10_000,
+    );
+  }),
   sourceFactory: {
     createParakeetSource: (parakeetOptions, callbacks) =>
       new ParakeetTranscriptSource(parakeetOptions, callbacks),
