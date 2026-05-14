@@ -35,6 +35,7 @@ const DEFAULT_FELT_POLL_MS: u64 = 5_000;
 const DEFAULT_SESSION_POLL_MS: u64 = 5_000;
 const DEFAULT_EVENT_POLL_MS: u64 = 1_000;
 const DEFAULT_SHUTTLE_POLL_MS: u64 = 30_000;
+const TERMINAL_STREAM_DECLARED_SIZE: &str = "200x50";
 
 enum ConnectExit {
     Disconnected,
@@ -429,9 +430,9 @@ async fn stream_tmux_control(
     tmux_session: String,
     terminal_tx: mpsc::UnboundedSender<AgentFrame>,
 ) {
-    let target = format!("={tmux_session}:");
+    let args = tmux_control_attach_args(&tmux_session);
     let mut child = match Command::new("tmux")
-        .args(["-C", "attach", "-r", "-t", &target])
+        .args(&args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -452,7 +453,9 @@ async fn stream_tmux_control(
     let mut control_stdin = child.stdin.take();
     if let Some(stdin) = control_stdin.as_mut() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(b"refresh-client -C 200x50\n").await;
+        let _ = stdin
+            .write_all(tmux_control_refresh_command().as_bytes())
+            .await;
     }
 
     let Some(stdout) = child.stdout.take() else {
@@ -512,6 +515,20 @@ async fn stream_tmux_control(
     let stderr_reason = last_stderr.lock().ok().and_then(|reason| reason.clone());
     let reason = terminal_exit_reason(status_reason, stderr_reason);
     send_terminal_exit(&terminal_tx, &subscription_id, Some(reason));
+}
+
+fn tmux_control_attach_args(tmux_session: &str) -> Vec<String> {
+    vec![
+        "-C".to_string(),
+        "attach".to_string(),
+        "-r".to_string(),
+        "-t".to_string(),
+        format!("={tmux_session}:"),
+    ]
+}
+
+fn tmux_control_refresh_command() -> String {
+    format!("refresh-client -C {TERMINAL_STREAM_DECLARED_SIZE}\n")
 }
 
 fn terminal_exit_reason(status_reason: String, stderr_reason: Option<String>) -> String {
@@ -1024,6 +1041,15 @@ mod tests {
             other => panic!("unexpected frame: {other:?}"),
         }
         assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn terminal_stream_uses_node_compatible_tmux_control_boundary() {
+        assert_eq!(
+            tmux_control_attach_args("worker-abc"),
+            vec!["-C", "attach", "-r", "-t", "=worker-abc:"],
+        );
+        assert_eq!(tmux_control_refresh_command(), "refresh-client -C 200x50\n");
     }
 
     #[test]
