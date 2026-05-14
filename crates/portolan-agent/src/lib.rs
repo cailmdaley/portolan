@@ -14,7 +14,7 @@ use portolan_agent_protocol::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     env,
     ffi::OsString,
     fs,
@@ -2265,15 +2265,11 @@ fn search_filenames(
     limit: usize,
 ) -> Result<Vec<SearchResultPayload>, String> {
     let mut results = Vec::new();
-    let mut directories = vec![root_path.to_path_buf()];
-    let mut visited_directories = HashSet::new();
+    let (mut directories, mut visited_directories) = search_walk_roots(root_path);
 
-    while let Some(directory) = directories.pop() {
+    while let Some(directory) = directories.pop_front() {
         if results.len() >= limit {
             break;
-        }
-        if !mark_search_directory_visited(&directory, &mut visited_directories) {
-            continue;
         }
 
         let mut entries = fs::read_dir(&directory)
@@ -2314,8 +2310,8 @@ fn search_filenames(
                 });
             }
 
-            if is_dir {
-                directories.push(entry.path());
+            if is_dir && mark_search_directory_visited(&entry.path(), &mut visited_directories) {
+                directories.push_back(entry.path());
             }
         }
     }
@@ -2330,15 +2326,11 @@ fn search_file_contents(
     limit: usize,
 ) -> Result<Vec<SearchResultPayload>, String> {
     let mut results = Vec::new();
-    let mut directories = vec![root_path.to_path_buf()];
-    let mut visited_directories = HashSet::new();
+    let (mut directories, mut visited_directories) = search_walk_roots(root_path);
 
-    while let Some(directory) = directories.pop() {
+    while let Some(directory) = directories.pop_front() {
         if results.len() >= limit {
             break;
-        }
-        if !mark_search_directory_visited(&directory, &mut visited_directories) {
-            continue;
         }
 
         let mut entries = fs::read_dir(&directory)
@@ -2362,7 +2354,9 @@ fn search_file_contents(
 
             let is_dir = is_search_directory_entry(&entry);
             if is_dir {
-                directories.push(entry.path());
+                if mark_search_directory_visited(&entry.path(), &mut visited_directories) {
+                    directories.push_back(entry.path());
+                }
                 continue;
             }
 
@@ -2402,6 +2396,14 @@ fn search_file_contents(
 
     sort_search_results(&mut results);
     Ok(results)
+}
+
+fn search_walk_roots(root_path: &Path) -> (VecDeque<PathBuf>, HashSet<PathBuf>) {
+    let mut directories = VecDeque::new();
+    directories.push_back(root_path.to_path_buf());
+    let mut visited_directories = HashSet::new();
+    mark_search_directory_visited(root_path, &mut visited_directories);
+    (directories, visited_directories)
 }
 
 fn is_search_directory_entry(entry: &fs::DirEntry) -> bool {
@@ -6207,6 +6209,54 @@ malformed
             AgentFrame::SearchFilesResult { payload } => {
                 assert!(payload.ok);
                 assert_eq!(payload.results.len(), DEFAULT_SEARCH_LIMIT);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_limit_uses_node_compatible_breadth_first_walk() {
+        let dir = temp_host("search-breadth-first-limit");
+        let alpha = dir.join("alpha");
+        let beta = dir.join("beta");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta).unwrap();
+        for index in 0..30 {
+            fs::write(
+                alpha.join(format!("needle-alpha-{index:02}.txt")),
+                "alpha\n",
+            )
+            .unwrap();
+            fs::write(beta.join(format!("needle-beta-{index:02}.txt")), "beta\n").unwrap();
+        }
+
+        let responses = handle_server_frame(&AgentFrame::SearchFiles {
+            payload: SearchFilesRequestPayload {
+                correlation_id: "search-breadth-first-limit".to_string(),
+                path: dir.display().to_string(),
+                query: "needle".to_string(),
+                mode: SearchFilesMode::Filename,
+                limit: Some(50),
+            },
+        });
+        fs::remove_dir_all(&dir).unwrap();
+
+        match &responses[0] {
+            AgentFrame::SearchFilesResult { payload } => {
+                assert!(payload.ok);
+                assert_eq!(payload.results.len(), DEFAULT_SEARCH_LIMIT);
+                let alpha_matches = payload
+                    .results
+                    .iter()
+                    .filter(|result| result.path.starts_with("alpha/"))
+                    .count();
+                let beta_matches = payload
+                    .results
+                    .iter()
+                    .filter(|result| result.path.starts_with("beta/"))
+                    .count();
+                assert_eq!(alpha_matches, 30);
+                assert_eq!(beta_matches, 20);
             }
             other => panic!("unexpected response: {other:?}"),
         }
