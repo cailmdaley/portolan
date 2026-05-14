@@ -132,6 +132,13 @@ describe('agent: shuttleFiberFromFeltJson', () => {
       tags: ['constitution', 'cmbx'],
       depends_on: [{ id: 'cmbx/setup' }],
       tempered: true,
+      shuttle: {
+        enabled: true,
+        kind: 'standing',
+        agent: 'pi-gpt-5.4',
+        review: { state: 'scheduled' },
+        next_due_at: '2026-05-14T08:00:00+02:00',
+      },
     });
     expect(projected).toEqual({
       id: 'cmbx',
@@ -139,6 +146,12 @@ describe('agent: shuttleFiberFromFeltJson', () => {
       tags: ['constitution', 'cmbx'],
       dependsOn: ['cmbx/setup'],
       tempered: true,
+      hasShuttleBlock: true,
+      shuttleEnabled: true,
+      shuttleKind: 'standing',
+      shuttleReviewState: 'scheduled',
+      nextDueAt: '2026-05-14T08:00:00+02:00',
+      agent: 'pi-gpt-5.4',
     });
   });
 
@@ -175,6 +188,12 @@ describe('agent: shuttleFiberFromFeltJson', () => {
       tags: [],
       dependsOn: [],
       tempered: undefined,
+      hasShuttleBlock: false,
+      shuttleEnabled: undefined,
+      shuttleKind: undefined,
+      shuttleReviewState: undefined,
+      nextDueAt: undefined,
+      agent: undefined,
     });
   });
 
@@ -555,30 +574,37 @@ describe('agent: computeShuttleEligibility', () => {
     tags: [],
     dependsOn: [],
     tempered: undefined,
+    hasShuttleBlock: true,
+    shuttleEnabled: true,
+    shuttleKind: undefined,
+    shuttleReviewState: undefined,
+    nextDueAt: undefined,
+    agent: undefined,
     ...overrides,
   });
 
-  it('selects constitution-tagged, unblocked, non-closed fibers', () => {
+  it('selects shuttle-enabled open or active fibers regardless of tags', () => {
     const fibers = [
-      fiber({ id: 'a', tags: ['constitution'] }),
+      fiber({ id: 'a', tags: [] }),
       fiber({ id: 'b', tags: ['constitution'], status: 'closed' }),
-      fiber({ id: 'c', tags: ['decision'] }),
+      fiber({ id: 'c', tags: ['decision'], hasShuttleBlock: false }),
       fiber({ id: 'd', tags: ['constitution'], status: 'active' }),
+      fiber({ id: 'e', tags: ['anything'], status: 'open' }),
     ];
     const { eligible, blocked } = agentMod.computeShuttleEligibility(fibers, []);
-    expect(eligible.map((f: { id: string }) => f.id).sort()).toEqual(['a', 'd']);
+    expect(eligible.map((f: { id: string }) => f.id).sort()).toEqual(['a', 'd', 'e']);
     expect(blocked.map((b: { fiberId: string }) => b.fiberId)).toEqual(['b']);
   });
 
-  it('excludes draft-tagged fibers', () => {
+  it('blocks disabled shuttle fibers instead of reading draft tags', () => {
     const fibers = [
-      fiber({ id: 'ready', tags: ['constitution'] }),
-      fiber({ id: 'parked', tags: ['constitution', 'draft'] }),
+      fiber({ id: 'ready', tags: ['constitution', 'draft'] }),
+      fiber({ id: 'parked', tags: ['constitution'], shuttleEnabled: false }),
     ];
     const { eligible, blocked } = agentMod.computeShuttleEligibility(fibers, []);
     expect(eligible.map((f: { id: string }) => f.id)).toEqual(['ready']);
     expect(blocked[0].fiberId).toBe('parked');
-    expect(blocked[0].reason).toContain('draft');
+    expect(blocked[0].reason).toBe('shuttle.enabled: false');
   });
 
   it('blocks on unsatisfied depends_on', () => {
@@ -625,5 +651,42 @@ describe('agent: computeShuttleEligibility', () => {
     const { eligible, blocked } = agentMod.computeShuttleEligibility(fibers, []);
     expect(eligible).toEqual([]);
     expect(blocked[0].reason).toContain('ghost');
+  });
+
+  it('follows standing-role review and due-time gates', () => {
+    const pollAt = Date.parse('2026-05-14T08:00:00Z');
+    const fibers = [
+      fiber({
+        id: 'standing/due',
+        shuttleKind: 'standing',
+        shuttleReviewState: 'scheduled',
+        nextDueAt: '2026-05-14T08:00:00Z',
+      }),
+      fiber({
+        id: 'standing/future',
+        shuttleKind: 'standing',
+        shuttleReviewState: 'accepted',
+        nextDueAt: '2026-05-14T09:00:00Z',
+      }),
+      fiber({
+        id: 'standing/review',
+        shuttleKind: 'standing',
+        shuttleReviewState: 'awaiting',
+      }),
+      fiber({
+        id: 'standing/missing-due',
+        shuttleKind: 'standing',
+        shuttleReviewState: 'accepted',
+      }),
+    ];
+
+    const { eligible, blocked } = agentMod.computeShuttleEligibility(fibers, ['standing'], pollAt);
+    expect(eligible.map((f: { id: string }) => f.id)).toEqual(['standing/due']);
+    expect(blocked.map((b: { fiberId: string; reason: string }) => [b.fiberId, b.reason]))
+      .toEqual([
+        ['standing/future', 'standing not due until 2026-05-14T09:00:00Z'],
+        ['standing/review', 'standing review.state: awaiting'],
+        ['standing/missing-due', 'standing next_due_at: missing'],
+      ]);
   });
 });

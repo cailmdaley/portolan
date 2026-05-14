@@ -1910,12 +1910,28 @@ export function shuttleFiberFromFeltJson(fiber) {
               })
               .filter((s) => typeof s === 'string' && s.length > 0)
         : [];
+    const shuttle = fiber.shuttle && typeof fiber.shuttle === 'object' && !Array.isArray(fiber.shuttle)
+        ? fiber.shuttle
+        : null;
+    const review = shuttle?.review && typeof shuttle.review === 'object' && !Array.isArray(shuttle.review)
+        ? shuttle.review
+        : null;
     return {
         id,
         status: typeof fiber.status === 'string' ? fiber.status : undefined,
         tags,
         dependsOn,
         tempered: fiber.tempered === true ? true : fiber.tempered === false ? false : undefined,
+        hasShuttleBlock: Boolean(shuttle),
+        shuttleEnabled: typeof shuttle?.enabled === 'boolean' ? shuttle.enabled : undefined,
+        shuttleKind: typeof shuttle?.kind === 'string'
+            ? shuttle.kind
+            : typeof shuttle?.mode === 'string'
+                ? shuttle.mode
+                : undefined,
+        shuttleReviewState: typeof review?.state === 'string' ? review.state : undefined,
+        nextDueAt: typeof shuttle?.next_due_at === 'string' ? shuttle.next_due_at : undefined,
+        agent: typeof shuttle?.agent === 'string' ? shuttle.agent : undefined,
     };
 }
 
@@ -1941,8 +1957,9 @@ export function shuttleIdFromPath(filePath) {
 }
 
 /**
- * Ask felt for `[{ id, status, tags, dependsOn, tempered }]` for every
- * container fiber on FELT_HOST. One `felt ls -s all -j` shellout per tick;
+ * Ask felt for every container fiber on FELT_HOST and project the shuttle-owned
+ * dispatch fields used by `computeShuttleEligibility`. One
+ * `felt ls -s all -j` shellout per tick;
  * felt's index is fast and avoids re-implementing fiber parsing in the
  * agent. On felt errors (e.g. felt unavailable) returns an empty list so
  * the poller no-ops rather than crashing.
@@ -1971,15 +1988,11 @@ async function collectShuttleFibers() {
 }
 
 /**
- * Eligibility predicate. Mirror of server/src/Shuttle.ts
- * `computeEligibility` semantics:
- *   1. tags includes 'constitution'
- *   2. NOT tagged 'draft'
- *   3. status != 'closed'
- *   4. all dependsOn references resolve to fibers with tempered === true
- *   5. id is in scope per SHUTTLE_PREFIXES (when set)
+ * Eligibility predicate. Mirrors the standalone Shuttle daemon contract:
+ * the `shuttle:` block drives dispatch, felt status/dependencies gate it,
+ * and tags are only fallback metadata.
  */
-export function computeShuttleEligibility(fibers, prefixes) {
+export function computeShuttleEligibility(fibers, prefixes, pollAt = Date.now()) {
     const byId = new Map(fibers.map(f => [f.id, f]));
     const eligible = [];
     const blocked = [];
@@ -1990,14 +2003,14 @@ export function computeShuttleEligibility(fibers, prefixes) {
     };
 
     for (const f of fibers) {
-        if (!f.tags || !f.tags.includes('constitution')) continue;
         if (!inScope(f.id)) continue;
-        if (f.tags.includes('draft')) {
-            blocked.push({ fiberId: f.id, reason: 'tag: draft' });
+        if (!f.hasShuttleBlock) continue;
+        if (f.shuttleEnabled !== true) {
+            blocked.push({ fiberId: f.id, reason: 'shuttle.enabled: false' });
             continue;
         }
-        if (f.status === 'closed') {
-            blocked.push({ fiberId: f.id, reason: 'status: closed' });
+        if (f.status !== 'active' && f.status !== 'open') {
+            blocked.push({ fiberId: f.id, reason: `status: ${f.status ?? 'missing'}` });
             continue;
         }
         const deps = f.dependsOn || [];
@@ -2011,6 +2024,39 @@ export function computeShuttleEligibility(fibers, prefixes) {
                 reason: `blocked on: ${unsatisfied.join(', ')}`,
             });
             continue;
+        }
+        if (f.shuttleKind === 'standing') {
+            const reviewState = f.shuttleReviewState ?? 'scheduled';
+            if (['awaiting', 'review', 'in_review'].includes(reviewState)) {
+                blocked.push({ fiberId: f.id, reason: `standing review.state: ${reviewState}` });
+                continue;
+            }
+            if (!['scheduled', 'accepted', 'due'].includes(reviewState)) {
+                blocked.push({
+                    fiberId: f.id,
+                    reason: `unsupported standing review.state: ${reviewState}`,
+                });
+                continue;
+            }
+            if (!f.nextDueAt) {
+                blocked.push({ fiberId: f.id, reason: 'standing next_due_at: missing' });
+                continue;
+            }
+            const dueAt = Date.parse(f.nextDueAt);
+            if (Number.isNaN(dueAt)) {
+                blocked.push({
+                    fiberId: f.id,
+                    reason: `standing next_due_at: unparsable ${f.nextDueAt}`,
+                });
+                continue;
+            }
+            if (dueAt > pollAt) {
+                blocked.push({
+                    fiberId: f.id,
+                    reason: `standing not due until ${f.nextDueAt}`,
+                });
+                continue;
+            }
         }
         eligible.push(f);
     }
@@ -2035,14 +2081,12 @@ function shuttleSessionName(fiberId) {
 }
 
 /**
- * Map a fiber's tags to the dispatch agent. Mirrors `agentForFiber()`
- * in `server/src/Shuttle.ts` — the `codex` tag selects codex, anything
- * else falls back to claude. Same semantics, kept in lockstep so a
- * single fiber dispatches identically whether picked up by the
- * server-side Shuttle or by an agent on its own host.
+ * Map a projected fiber to the dispatch agent. `shuttle.agent` is the current
+ * contract; the old `codex` tag remains a rollback alias for legacy fibers.
  */
-function agentForFiber(tags) {
-    if (Array.isArray(tags) && tags.includes('codex')) return 'codex';
+function agentForFiber(fiber) {
+    if (typeof fiber?.agent === 'string' && fiber.agent.trim()) return fiber.agent;
+    if (Array.isArray(fiber?.tags) && fiber.tags.includes('codex')) return 'codex';
     return 'claude';
 }
 
@@ -2052,9 +2096,9 @@ function agentForFiber(tags) {
  * The worker script itself runs `tmux new-session -d`, so we shell out
  * once and trust tmux to take ownership of the actual session.
  *
- * `agent` ('claude' | 'codex') is appended as `--agent <agent>` so the
- * worker script picks the right CLI invocation; selection is
- * tag-driven (see `agentForFiber`).
+ * `agent` is appended as `--agent <agent>` so the worker script picks the
+ * right CLI invocation. `shuttle.agent` is authoritative, with legacy tag
+ * aliases retained only as fallback metadata.
  */
 function spawnShuttleWorker(fiberId, agent) {
     if (!existsSync(SHUTTLE_WORKER_SCRIPT)) {
@@ -2103,7 +2147,7 @@ async function pollShuttle() {
         const expectedSession = shuttleSessionName(f.id);
         const existing = shuttleDispatched.get(f.id);
         const sessionLive = existing && existing.tmuxSession && liveSessions.has(existing.tmuxSession);
-        const agent = agentForFiber(f.tags);
+        const agent = agentForFiber(f);
 
         if (sessionLive) {
             eligibleEntries.push(existing);
