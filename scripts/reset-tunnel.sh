@@ -156,6 +156,23 @@ shell_quote_word() {
   printf "%q" "$1"
 }
 
+require_ssh_connection() {
+  local host="$1"
+  local output
+
+  if output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "echo ok" 2>&1)"; then
+    return 0
+  fi
+
+  echo "[$host] ERROR: SSH preflight failed before touching tunnels or agent sessions" >&2
+  if echo "$output" | grep -Fq "no such identity:"; then
+    echo "[$host] Missing SSH identity file in local ssh config:" >&2
+    echo "$output" | grep -F "no such identity:" >&2
+  fi
+  echo "$output" >&2
+  return 1
+}
+
 wait_for_agent_connect() {
   local host="$1"
   local session="$2"
@@ -271,6 +288,8 @@ fi
 
 LABEL="com.cailmdaley.portolan-tunnel-$HOST"
 TARGET="gui/$(id -u)/$LABEL"
+
+require_ssh_connection "$HOST"
 
 manual_reconnect() {
   echo "[$HOST] Killing ControlMaster..."

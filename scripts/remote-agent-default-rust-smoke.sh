@@ -81,6 +81,23 @@ if ! command -v ssh >/dev/null 2>&1; then
   exit 1
 fi
 
+require_ssh_connection() {
+  local host="$1"
+  local output
+
+  if output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "echo ok" 2>&1)"; then
+    return 0
+  fi
+
+  echo "[portolan] SSH preflight failed for $host before activation smoke" >&2
+  if echo "$output" | grep -Fq "no such identity:"; then
+    echo "[portolan] missing SSH identity file in local ssh config:" >&2
+    echo "$output" | grep -F "no such identity:" >&2
+  fi
+  echo "$output" >&2
+  return 1
+}
+
 if [ -n "$CITY_ID_OVERRIDE" ]; then
   CITY_ID="$CITY_ID_OVERRIDE"
 else
@@ -111,6 +128,8 @@ process.stdout.write(city.id);
 NODE
   )"
 fi
+
+require_ssh_connection "$HOST"
 
 echo "[portolan] Checking remote-agent default runtime diagnostics at $PORTOLAN_URL"
 DEBUG_JSON="$(curl -fsS --max-time 5 "$PORTOLAN_URL/debug-runtime")"

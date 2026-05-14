@@ -33,6 +33,23 @@ log() { echo -e "${GREEN}[portolan]${NC} $1"; }
 warn() { echo -e "${YELLOW}[portolan]${NC} $1"; }
 error() { echo -e "${RED}[portolan]${NC} $1" >&2; }
 
+require_ssh_connection() {
+  local host="$1"
+  local output
+
+  if output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "echo ok" 2>&1)"; then
+    return 0
+  fi
+
+  error "SSH preflight failed for $host"
+  if echo "$output" | grep -Fq "no such identity:"; then
+    error "Missing SSH identity file in local ssh config:"
+    echo "$output" | grep -F "no such identity:" >&2
+  fi
+  echo "$output" >&2
+  return 1
+}
+
 # Parse arguments
 SSH_HOST=""
 START_AGENT=false
@@ -277,10 +294,7 @@ log "Installing portolan on $SSH_HOST..."
 
 # Check SSH connectivity
 log "Testing SSH connection..."
-if ! ssh "$SSH_HOST" "echo ok" >/dev/null 2>&1; then
-  error "Cannot connect to $SSH_HOST"
-  exit 1
-fi
+require_ssh_connection "$SSH_HOST"
 
 # Check prerequisites on remote (use login shell for nvm)
 log "Checking prerequisites..."
