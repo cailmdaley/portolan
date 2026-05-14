@@ -3,11 +3,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_PATH="${PORTOLAN_APP_PATH:-$REPO_DIR/src-tauri/target/release/bundle/macos/Portolan.app}"
+DEFAULT_APP_PATH="$REPO_DIR/target/release/bundle/macos/Portolan.app"
+LEGACY_APP_PATH="$REPO_DIR/src-tauri/target/release/bundle/macos/Portolan.app"
+APP_PATH="${PORTOLAN_APP_PATH:-$DEFAULT_APP_PATH}"
 APP_ID="${PORTOLAN_APP_ID:-com.cailmdaley.portolan}"
 APP_DATA_DIR="${PORTOLAN_APP_DATA_DIR:-$HOME/Library/Application Support/$APP_ID}"
 APP_NAME="${PORTOLAN_APP_NAME:-}"
 WINDOW_STORE="$APP_DATA_DIR/workspace-windows.json"
+RESTORE_MAIN_LABEL="main"
+RESTORE_MAIN_ROUTE="#city=portolan&mode=kanban"
+RESTORE_MAIN_TITLE="Portolan - Kanban"
+RESTORE_MAIN_SEEDED_UPDATED_AT=1700000002
+RESTORE_WORKSPACE_LABEL="workspace-restore-smoke"
+RESTORE_WORKSPACE_ROUTE="#city=portolan&mode=find"
+RESTORE_WORKSPACE_TITLE="Portolan - Find"
+RESTORE_WORKSPACE_SEEDED_UPDATED_AT=1700000001
 BACKUP_PATH=""
 HAD_STORE=0
 HAD_APP_DATA_DIR=0
@@ -204,6 +214,77 @@ wait_for_native_status() {
   return 1
 }
 
+wait_for_workspace_store_rewrite() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if [[ -s "$WINDOW_STORE" ]] && WINDOW_STORE_JSON="$(cat "$WINDOW_STORE" 2>/dev/null || true)" \
+      RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" \
+      RESTORE_MAIN_ROUTE="$RESTORE_MAIN_ROUTE" \
+      RESTORE_MAIN_TITLE="$RESTORE_MAIN_TITLE" \
+      RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" \
+      RESTORE_WORKSPACE_ROUTE="$RESTORE_WORKSPACE_ROUTE" \
+      RESTORE_WORKSPACE_TITLE="$RESTORE_WORKSPACE_TITLE" \
+      RESTORE_WORKSPACE_SEEDED_UPDATED_AT="$RESTORE_WORKSPACE_SEEDED_UPDATED_AT" \
+      node --input-type=module >/dev/null 2>&1 <<'NODE'
+const recent = JSON.parse(process.env.WINDOW_STORE_JSON || '[]');
+if (!Array.isArray(recent)) process.exit(1);
+
+const expectedByLabel = new Map([
+  [process.env.RESTORE_MAIN_LABEL, {
+    mode: 'kanban',
+    titleToken: 'Kanban',
+    requireAdvance: false,
+    minUpdatedAt: 0,
+  }],
+  [process.env.RESTORE_WORKSPACE_LABEL, {
+    mode: 'find',
+    titleToken: 'Find',
+    requireAdvance: true,
+    minUpdatedAt: Number(process.env.RESTORE_WORKSPACE_SEEDED_UPDATED_AT || '0'),
+  }],
+]);
+
+if (recent.length !== expectedByLabel.size) process.exit(1);
+const byLabel = new Map();
+for (const entry of recent) {
+  if (!entry || typeof entry !== 'object' || typeof entry.label !== 'string') process.exit(1);
+  if (byLabel.has(entry.label)) process.exit(1);
+  byLabel.set(entry.label, entry);
+}
+if (byLabel.size !== expectedByLabel.size) process.exit(1);
+
+for (const [label, expected] of expectedByLabel) {
+  const entry = byLabel.get(label);
+  if (!entry) process.exit(1);
+  if (typeof entry.routeUrl !== 'string' || !entry.routeUrl.startsWith('#')) process.exit(1);
+  const params = new URLSearchParams(entry.routeUrl.slice(1));
+  if (params.get('mode') !== expected.mode) process.exit(1);
+  if (!params.get('city')) process.exit(1);
+  if (typeof entry.title !== 'string') process.exit(1);
+  if (!entry.title.includes(expected.titleToken) || !entry.title.includes('Portolan')) process.exit(1);
+  if (typeof entry.updatedAtUnix !== 'number' || !Number.isFinite(entry.updatedAtUnix)) {
+    process.exit(1);
+  }
+  if (expected.requireAdvance && entry.updatedAtUnix <= expected.minUpdatedAt) {
+    process.exit(1);
+  }
+}
+NODE
+    then
+      echo "[portolan] workspace store replay preserved saved labels"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[portolan] timed out waiting for workspace store replay to preserve saved labels" >&2
+  if [[ -f "$WINDOW_STORE" ]]; then
+    echo "[portolan] latest workspace store contents:" >&2
+    sed 's/^/[portolan] workspace-store: /' "$WINDOW_STORE" >&2
+  fi
+  return 1
+}
+
 window_titles() {
   osascript <<OSA 2>/dev/null || true
 tell application "System Events"
@@ -225,6 +306,11 @@ require_command node
 require_command /usr/libexec/PlistBuddy
 
 stop_dev_stack_for_strict_smoke
+
+if [[ -z "${PORTOLAN_APP_PATH:-}" && ! -d "$APP_PATH" && -d "$LEGACY_APP_PATH" ]]; then
+  APP_PATH="$LEGACY_APP_PATH"
+  echo "[portolan] Falling back to legacy bundle path: $APP_PATH"
+fi
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "[portolan] built app bundle not found: $APP_PATH" >&2
@@ -281,19 +367,19 @@ if [[ -f "$WINDOW_STORE" ]]; then
   cp "$WINDOW_STORE" "$BACKUP_PATH"
 fi
 
-cat >"$WINDOW_STORE" <<'JSON'
+cat >"$WINDOW_STORE" <<JSON
 [
   {
-    "label": "main",
-    "routeUrl": "#city=portolan&mode=kanban",
-    "title": "Portolan - Kanban",
-    "updatedAtUnix": 2000000002
+    "label": "$RESTORE_MAIN_LABEL",
+    "routeUrl": "$RESTORE_MAIN_ROUTE",
+    "title": "$RESTORE_MAIN_TITLE",
+    "updatedAtUnix": $RESTORE_MAIN_SEEDED_UPDATED_AT
   },
   {
-    "label": "workspace-restore-smoke",
-    "routeUrl": "#city=portolan&mode=find",
-    "title": "Portolan - Find",
-    "updatedAtUnix": 2000000001
+    "label": "$RESTORE_WORKSPACE_LABEL",
+    "routeUrl": "$RESTORE_WORKSPACE_ROUTE",
+    "title": "$RESTORE_WORKSPACE_TITLE",
+    "updatedAtUnix": $RESTORE_WORKSPACE_SEEDED_UPDATED_AT
   }
 ]
 JSON
@@ -310,12 +396,12 @@ titles="$(window_titles)"
 echo "[portolan] Observed $window_count Portolan windows"
 printf '%s\n' "$titles" | sed '/^$/d;s/^/[portolan] window: /'
 
-if ! printf '%s\n' "$titles" | grep -F "Portolan - Kanban" >/dev/null; then
-  echo "[portolan] missing restored main window title: Portolan - Kanban" >&2
+if ! printf '%s\n' "$titles" | grep -F "$RESTORE_MAIN_TITLE" >/dev/null; then
+  echo "[portolan] missing restored main window title: $RESTORE_MAIN_TITLE" >&2
   exit 1
 fi
-if ! printf '%s\n' "$titles" | grep -F "Portolan - Find" >/dev/null; then
-  echo "[portolan] missing restored workspace window title: Portolan - Find" >&2
+if ! printf '%s\n' "$titles" | grep -F "$RESTORE_WORKSPACE_TITLE" >/dev/null; then
+  echo "[portolan] missing restored workspace window title: $RESTORE_WORKSPACE_TITLE" >&2
   exit 1
 fi
 
@@ -335,9 +421,12 @@ fi
 
 collect_frontend_debug_runtime || true
 NATIVE_STATUS_JSON="$(wait_for_native_status)"
+wait_for_workspace_store_rewrite
 
 DEBUG_RUNTIME="$debug_runtime" WINDOW_DEBUG_RUNTIME_JSON="$WINDOW_DEBUG_RUNTIME_JSON" NATIVE_STATUS_JSON="$NATIVE_STATUS_JSON" \
   STRICT_APP_OWNED="$STRICT_APP_OWNED" ALLOW_EXTERNAL_BACKEND="$ALLOW_EXTERNAL_BACKEND" \
+  RESTORE_MAIN_LABEL="$RESTORE_MAIN_LABEL" RESTORE_MAIN_ROUTE="$RESTORE_MAIN_ROUTE" RESTORE_MAIN_TITLE="$RESTORE_MAIN_TITLE" \
+  RESTORE_WORKSPACE_LABEL="$RESTORE_WORKSPACE_LABEL" RESTORE_WORKSPACE_ROUTE="$RESTORE_WORKSPACE_ROUTE" RESTORE_WORKSPACE_TITLE="$RESTORE_WORKSPACE_TITLE" \
   node --input-type=module <<'NODE'
 const debugRuntime = process.env.DEBUG_RUNTIME || '{}';
 const frontendRuntime = process.env.WINDOW_DEBUG_RUNTIME_JSON || '';
@@ -455,7 +544,92 @@ function compareNativeLifecycle(serverPayload, nativePayload) {
   };
 }
 
+function compareWorkspaceRestore(nativePayload) {
+  const workspaceWindows = nativePayload?.workspaceWindows ?? null;
+  if (!workspaceWindows || typeof workspaceWindows !== 'object') {
+    return {
+      status: 'unavailable',
+      mismatches: ['native_status export did not include workspaceWindows status'],
+    };
+  }
+
+  const expectedByLabel = new Map([
+    [process.env.RESTORE_MAIN_LABEL, {
+      routeUrl: process.env.RESTORE_MAIN_ROUTE,
+      title: process.env.RESTORE_MAIN_TITLE,
+      isMain: true,
+    }],
+    [process.env.RESTORE_WORKSPACE_LABEL, {
+      routeUrl: process.env.RESTORE_WORKSPACE_ROUTE,
+      title: process.env.RESTORE_WORKSPACE_TITLE,
+      isMain: false,
+    }],
+  ]);
+  const mismatches = [];
+  if (workspaceWindows.recentCount !== expectedByLabel.size) {
+    mismatches.push(`native_status.workspaceWindows.recentCount expected ${expectedByLabel.size}; got ${JSON.stringify(workspaceWindows.recentCount)}`);
+  }
+  if (workspaceWindows.workspaceCount !== expectedByLabel.size - 1) {
+    mismatches.push(`native_status.workspaceWindows.workspaceCount expected ${expectedByLabel.size - 1}; got ${JSON.stringify(workspaceWindows.workspaceCount)}`);
+  }
+  if (workspaceWindows.mainRouteUrl !== process.env.RESTORE_MAIN_ROUTE) {
+    mismatches.push(`native_status.workspaceWindows.mainRouteUrl expected ${JSON.stringify(process.env.RESTORE_MAIN_ROUTE)}; got ${JSON.stringify(workspaceWindows.mainRouteUrl)}`);
+  }
+
+  const routes = Array.isArray(workspaceWindows.routes) ? workspaceWindows.routes : null;
+  if (!routes) {
+    mismatches.push('native_status.workspaceWindows.routes must be an array');
+  } else {
+    if (routes.length !== expectedByLabel.size) {
+      mismatches.push(`native_status.workspaceWindows.routes length expected ${expectedByLabel.size}; got ${routes.length}`);
+    }
+    const byLabel = new Map();
+    for (const entry of routes) {
+      if (!entry || typeof entry !== 'object' || typeof entry.label !== 'string') {
+        mismatches.push('native_status.workspaceWindows.routes contains a malformed entry');
+        continue;
+      }
+      if (byLabel.has(entry.label)) {
+        mismatches.push(`native_status.workspaceWindows.routes duplicated label ${JSON.stringify(entry.label)}`);
+        continue;
+      }
+      byLabel.set(entry.label, entry);
+    }
+    for (const [label, expected] of expectedByLabel) {
+      const entry = byLabel.get(label);
+      if (!entry) {
+        mismatches.push(`native_status.workspaceWindows.routes missing ${JSON.stringify(label)}`);
+        continue;
+      }
+      if (entry.routeUrl !== expected.routeUrl) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].routeUrl expected ${JSON.stringify(expected.routeUrl)}; got ${JSON.stringify(entry.routeUrl)}`);
+      }
+      if (entry.title !== expected.title) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].title expected ${JSON.stringify(expected.title)}; got ${JSON.stringify(entry.title)}`);
+      }
+      if (entry.isMain !== expected.isMain) {
+        mismatches.push(`native_status.workspaceWindows.routes[${JSON.stringify(label)}].isMain expected ${JSON.stringify(expected.isMain)}; got ${JSON.stringify(entry.isMain)}`);
+      }
+    }
+  }
+
+  return {
+    status: mismatches.length === 0 ? 'matched' : 'drift',
+    mismatches,
+  };
+}
+
 const nativeLifecycle = front?.nativeLifecycle ?? compareNativeLifecycle(payload, native);
+const workspaceRestore = compareWorkspaceRestore(native);
+if (workspaceRestore.status !== 'matched') {
+  const mismatches = Array.isArray(workspaceRestore.mismatches)
+    ? workspaceRestore.mismatches.join('; ')
+    : String(workspaceRestore.mismatches || '');
+  const detail = mismatches || '<none>';
+  console.error(`[portolan] native_status workspace restore shape mismatch: status=${workspaceRestore.status} mismatches=${detail}`);
+  process.exit(1);
+}
+console.log('[portolan] native_status workspace restore shape validated');
 
 if (strictOwned) {
   if (nativeLifecycle.status !== 'matched' || nativeLifecycle.backendOwner !== 'app') {
