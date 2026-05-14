@@ -37,7 +37,7 @@ interface ActivationBody {
   once?: boolean;
 }
 
-function parseAgentRuntime(value: string | null, fallback: RemoteAgentRuntime = 'node'): RemoteAgentRuntime {
+function parseAgentRuntime(value: string | null, fallback: RemoteAgentRuntime = 'rust'): RemoteAgentRuntime {
   if (!value) {
     return fallback;
   }
@@ -146,7 +146,7 @@ export class HttpApiActivation {
     const sshHost = this.getSshHost(city);
     const preferredRuntime = this.runtimePreferences?.getPreferredRuntime(sshHost)
       ?? this.runtimePreferences?.getDefaultRuntime()
-      ?? 'node';
+      ?? 'rust';
     let runtime: RemoteAgentRuntime;
     try {
       runtime = parseAgentRuntime(requestedRuntime, preferredRuntime);

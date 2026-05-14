@@ -334,6 +334,36 @@ describe('HttpApiActivation', () => {
     });
   });
 
+  it('defaults to Rust even when no preference store is wired', async () => {
+    const execFileFn = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'stopped\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
+    const api = new HttpApiActivation({
+      cityLookup: { getCityById: vi.fn().mockReturnValue(city()) },
+      getSshHost: () => 'candide',
+      reconnectTunnelFn: vi.fn().mockResolvedValue(undefined),
+      execFileFn: execFileFn as any,
+    });
+    const { res, result } = captureResponse();
+
+    await api.handleActivateCity(new URL('http://localhost/activate-city?cityId=remote-city'), res);
+
+    expect(execFileFn.mock.calls[1]?.[1]).toEqual([
+      '-T',
+      'candide',
+      `tmux has-session -t ${exactTmuxTarget('portolan-agent-rust')} 2>/dev/null && echo running || echo stopped`,
+    ]);
+    expect(result()).toEqual({
+      status: 200,
+      body: {
+        status: 'started',
+        message: 'rust agent started on candide (portolan-agent-rust)',
+      },
+    });
+  });
+
   it('accepts rust agent activation options from request body', async () => {
     const execFileFn = vi
       .fn()
