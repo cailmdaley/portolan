@@ -18,12 +18,19 @@ Click worker → Kitty focuses that tab. Work happens in terminal, not here.
 ./dev.sh                    # Start/attach shared tmux session (frontend + backend + Shuttle)
 ./dev.sh restart            # Bounce the shared tmux session from any terminal/agent
 ./dev.sh kill               # Stop session and clear ports 5173, 4004, 4000
-npm run tauri:dev           # Native desktop shell around the same dev stack
-npm run tauri:build         # Build Portolan.app + DMG under target/release/bundle/ (legacy src-tauri/target may linger)
-npm run native:backend-smoke  # App-owned native backend boundary smoke without launching GUI
+bun run tauri:dev           # Native desktop shell around the same dev stack
+bun run tauri:build         # Build Portolan.app + DMG under target/release/bundle/ (legacy src-tauri/target may linger)
+bun run native:backend-smoke  # App-owned native backend boundary smoke without launching GUI
 ./scripts/install-tunnels.sh # Install launchd-managed autossh tunnels for candide + cineca
-cd server && npm test       # ~282 tests
+cd server && bun test       # ~700 tests
 ```
+
+This repo installs with **bun** (see `bunfig.toml`), which is the only manager
+in the package-manager triad whose 7-day release-age guard
+(`minimumReleaseAge = 604800`) is actually honored end-to-end. `npm install`
+silently bypasses that cooldown — don't use it. The Tauri Rust dev launcher
+in `src-tauri/src/lib.rs` still hardcodes `npm`; swap to `bun` when the
+in-progress native-window work commits.
 
 Requires Kitty with `allow_remote_control yes` and `listen_on unix:/tmp/kitty-socket`.
 The dev stack lives in tmux session `portolan-dev`; detach with `Ctrl+B`, then `D`.
@@ -136,7 +143,7 @@ and `gotchas/gotcha-candide-reverse-tunnel-backoff`.
 
 For Rust agent smoke tests, use a separate runtime session so Node stays as fallback:
 
-- Build a Linux Rust agent binary from macOS: `npm run native:agent:linux`
+- Build a Linux Rust agent binary from macOS: `bun run native:agent:linux`
 - Install remote hooks and artifacts:
   - `./scripts/install-remote.sh <host> --agent-binary crates/portolan-agent/target/x86_64-unknown-linux-gnu/release/portolan-agent-rust`
   - Optional session knobs:

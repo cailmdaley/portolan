@@ -40,7 +40,7 @@ run_stack() {
 
   # Start backend (in subshell with explicit directory)
   echo "Starting backend on :$BACKEND_PORT..."
-  (cd "$SCRIPT_DIR/server" && npm run dev) &
+  (cd "$SCRIPT_DIR/server" && bun run dev) &
   BACKEND_PID=$!
 
   # Give backend a moment to start
@@ -48,7 +48,7 @@ run_stack() {
 
   # Start frontend (in subshell with explicit directory)
   echo "Starting frontend on :$FRONTEND_PORT..."
-  (cd "$SCRIPT_DIR" && npm run dev) &
+  (cd "$SCRIPT_DIR" && bun run dev) &
   FRONTEND_PID=$!
 
   echo ""

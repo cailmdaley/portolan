@@ -68,18 +68,22 @@ the map, renderer, chrome bar, and worker dialogs are vanilla TypeScript.
 ## Running
 
 ```bash
+bun install           # First-time setup (also installs server/ workspace)
+cd server && bun install
+
 ./dev.sh              # Start/attach the shared tmux session (frontend + backend + Shuttle)
 ./dev.sh restart      # Bounce it from any terminal
 ./dev.sh kill         # Stop and free ports 5173, 4004, 4000
 
-npm run tauri:dev     # Native desktop shell around the same dev stack
-npm run tauri:build   # Build Portolan.app + DMG
-cd server && npm test # ~282 tests
+bun run tauri:dev     # Native desktop shell around the same dev stack
+bun run tauri:build   # Build Portolan.app + DMG
+cd server && bun test # ~700 tests
 ```
 
 Requirements: Kitty with `allow_remote_control yes` and
-`listen_on unix:/tmp/kitty-socket`, tmux, Node 20+, and (for the Rust crates)
-a recent stable Rust toolchain.
+`listen_on unix:/tmp/kitty-socket`, tmux, [bun](https://bun.sh) 1.3+ (for the
+7-day package-release cooldown configured in `bunfig.toml`), Node 20+ for the
+runtime side, and a recent stable Rust toolchain for the `crates/` workspace.
 
 ## Repo layout
 

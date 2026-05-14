@@ -45,9 +45,9 @@ Unit tests for the portolan server components, verifying edge cases from the spe
 ## Running Tests
 
 ```bash
-npm test              # Run all tests
-npm test -- --watch   # Watch mode
-npm test -- --coverage # Coverage report
+bun test               # Run all tests
+bun run test:watch     # Watch mode
+bun test -- --coverage # Coverage report
 ```
 
 ## Notes
