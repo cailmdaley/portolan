@@ -965,6 +965,68 @@ mod tests {
     }
 
     #[test]
+    fn terminal_control_output_decodes_tmux_octal_bytes() {
+        let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
+
+        handle_tmux_control_line(&terminal_tx, "sub-1", r"%output %1 hello\040world\012\033");
+
+        match terminal_rx.try_recv().unwrap() {
+            AgentFrame::TerminalBytes { payload } => {
+                assert_eq!(payload.subscription_id, "sub-1");
+                assert_eq!(
+                    BASE64_STANDARD.decode(payload.bytes_base64).unwrap(),
+                    b"hello world\n\x1b"
+                );
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn terminal_control_ignores_malformed_or_empty_output() {
+        let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
+
+        handle_tmux_control_line(&terminal_tx, "sub-1", "%output missing-pane-separator");
+        handle_tmux_control_line(&terminal_tx, "sub-1", "%output %1 ");
+        handle_tmux_control_line(&terminal_tx, "sub-1", "%begin 1 2 3");
+
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn terminal_control_exit_and_error_emit_final_frames() {
+        let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
+
+        handle_tmux_control_line(&terminal_tx, "sub-1", "%exit detached");
+        handle_tmux_control_line(&terminal_tx, "sub-2", "%exit");
+        handle_tmux_control_line(&terminal_tx, "sub-3", "%error can't find pane");
+
+        match terminal_rx.try_recv().unwrap() {
+            AgentFrame::TerminalExit { payload } => {
+                assert_eq!(payload.subscription_id, "sub-1");
+                assert_eq!(payload.reason.as_deref(), Some("detached"));
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        match terminal_rx.try_recv().unwrap() {
+            AgentFrame::TerminalExit { payload } => {
+                assert_eq!(payload.subscription_id, "sub-2");
+                assert!(payload.reason.is_none());
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        match terminal_rx.try_recv().unwrap() {
+            AgentFrame::TerminalExit { payload } => {
+                assert_eq!(payload.subscription_id, "sub-3");
+                assert_eq!(payload.reason.as_deref(), Some("can't find pane"));
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        assert!(terminal_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn ignores_invalid_terminal_subscribe_payload() {
         let (terminal_tx, _terminal_rx) = mpsc::unbounded_channel::<AgentFrame>();
         let mut subscriptions = TerminalSubscriptionSet::new();
